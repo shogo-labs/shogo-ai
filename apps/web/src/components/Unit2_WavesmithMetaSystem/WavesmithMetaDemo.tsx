@@ -20,6 +20,7 @@ import helpersStore from '../../../../../packages/state-api/src/schematic/helper
 import enhancedJsonSchemaToMst from '../../../../../packages/state-api/src/schematic/enhanced-json-schema-to-mst.ts?raw'
 
 // Meta Layer
+import metaIndex from '../../../../../packages/state-api/src/meta/index.ts?raw'
 import metaRegistry from '../../../../../packages/state-api/src/meta/meta-registry.ts?raw'
 import metaStore from '../../../../../packages/state-api/src/meta/meta-store.ts?raw'
 import metaStorePropertyEnhancements from '../../../../../packages/state-api/src/meta/meta-store-property-enhancements.ts?raw'
@@ -42,8 +43,14 @@ import stringUtils from '../../../../../packages/state-api/src/utils/string.ts?r
 import templateUtils from '../../../../../packages/state-api/src/utils/template.ts?raw'
 import utilsIndex from '../../../../../packages/state-api/src/utils/index.ts?raw'
 
-// Persistence Layer (types)
+// Persistence Layer
+import persistenceIndex from '../../../../../packages/state-api/src/persistence/index.ts?raw'
 import persistenceTypes from '../../../../../packages/state-api/src/persistence/types.ts?raw'
+import persistenceIo from '../../../../../packages/state-api/src/persistence/io.ts?raw'
+import persistenceSchemaIo from '../../../../../packages/state-api/src/persistence/schema-io.ts?raw'
+import persistenceDataIo from '../../../../../packages/state-api/src/persistence/data-io.ts?raw'
+import persistenceFilesystem from '../../../../../packages/state-api/src/persistence/filesystem.ts?raw'
+import persistenceNull from '../../../../../packages/state-api/src/persistence/null.ts?raw'
 
 // MCP Layer (types only) - now in @shogo/mcp package
 import mcpState from '../../../../../packages/mcp/src/state.ts?raw'
@@ -84,6 +91,20 @@ import appTsx from './sandpack-files/App-HostDemo.tsx?raw'
 // Import workspace schemas from backend-generated index
 import { workspaceSchemas } from '../../../../../.schemas/index'
 
+/**
+ * Transform @shogo/state-api imports to /src paths for Sandpack virtual filesystem.
+ *
+ * Sandpack doesn't have npm package resolution for workspace packages.
+ * The @shogo/state-api source is already loaded at /src/... paths.
+ */
+function transformForSandpack(content: string): string {
+  return content
+    // Transform: import { X } from '@shogo/state-api' → import { X } from '/src'
+    .replace(/from ['"]@shogo\/state-api['"]/g, "from '/src'")
+    // Transform: import type { X } from '@shogo/state-api/subpath' → import type { X } from '/src/subpath'
+    .replace(/from ['"]@shogo\/state-api\/([^'"]+)['"]/g, "from '/src/$1'")
+}
+
 export function WavesmithMetaDemo() {
   // Callback handler for new schema generation
   const handleSchemaGenerated = useCallback((schemaName: string) => {
@@ -119,6 +140,7 @@ export function WavesmithMetaDemo() {
     '/src/meta/runtime-store-cache.ts': runtimeStoreCache,
     '/src/meta/meta-helpers.ts': metaHelpers,
     '/src/meta/view-executor.ts': viewExecutor,
+    '/src/meta/index.ts': metaIndex,
     '/src/core/types.ts': coreTypes,
     '/src/core/arktype.ts': coreArktype,
     '/src/core/environment.ts': coreEnvironment,
@@ -127,6 +149,12 @@ export function WavesmithMetaDemo() {
     '/src/utils/template.ts': templateUtils,
     '/src/utils/index.ts': utilsIndex,
     '/src/persistence/types.ts': persistenceTypes,
+    '/src/persistence/io.ts': persistenceIo,
+    '/src/persistence/schema-io.ts': persistenceSchemaIo,
+    '/src/persistence/data-io.ts': persistenceDataIo,
+    '/src/persistence/filesystem.ts': persistenceFilesystem,
+    '/src/persistence/null.ts': persistenceNull,
+    '/src/persistence/index.ts': persistenceIndex,
     '/src/mcp/state.ts': mcpState,
     '/src/environment/index.ts': environmentIndex,
     '/src/environment/types.ts': environmentTypes,
@@ -135,14 +163,15 @@ export function WavesmithMetaDemo() {
     '/src/index.ts': wavesmithIndex,
 
     // Client core - mirrors real disk structure at /client/src/
-    '/client/src/contexts/WavesmithStoreContext.tsx': wavesmithStoreContext,
+    // Apply transformForSandpack to resolve @shogo/state-api → /src
+    '/client/src/contexts/WavesmithStoreContext.tsx': transformForSandpack(wavesmithStoreContext),
     '/client/src/components/EntityList.tsx': entityList,
 
     // Client contexts - meta-store (NEW for dynamic schema loading)
-    '/client/src/contexts/WavesmithMetaStoreContext.tsx': wavesmithMetaStoreContext,
+    '/client/src/contexts/WavesmithMetaStoreContext.tsx': transformForSandpack(wavesmithMetaStoreContext),
 
     // Client persistence & services (NEW for MCP bridge)
-    '/client/src/persistence/MCPPersistence.ts': mcpPersistence,
+    '/client/src/persistence/MCPPersistence.ts': transformForSandpack(mcpPersistence),
     '/client/src/services/mcpService.ts': mcpService,
 
     // Demo application
