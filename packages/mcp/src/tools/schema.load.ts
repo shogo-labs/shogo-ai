@@ -1,7 +1,6 @@
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
 import { types } from "mobx-state-tree"
-import { resolve } from "path"
 import { getMetaStore } from "@shogo/state-api"
 import { cacheRuntimeStore, getRuntimeStore } from "@shogo/state-api"
 import { enhancedJsonSchemaToMST } from "@shogo/state-api"
@@ -9,7 +8,7 @@ import { loadSchema } from "@shogo/state-api"
 import { CollectionPersistable } from "@shogo/state-api"
 import { FileSystemPersistence } from "@shogo/state-api"
 import type { IEnvironment } from "@shogo/state-api"
-import { MONOREPO_ROOT } from "../state"
+import { getEffectiveWorkspace } from "../state"
 
 const Params = t({
   name: "string",
@@ -25,7 +24,7 @@ export function registerSchemaLoad(server: FastMCP) {
       const { name, workspace } = args as { name: string; workspace?: string }
 
       // If no workspace provided, use monorepo's .schemas directory
-      const effectiveWorkspace = workspace || resolve(MONOREPO_ROOT, '.schemas')
+      const effectiveWorkspace = getEffectiveWorkspace(workspace)
 
       try {
         // 1. Check if schema already exists in meta-store

@@ -17,6 +17,7 @@ import { v4 as uuid } from 'uuid'
 
 import { WavesmithMetaStoreProvider, useWavesmithMetaStore } from '../../contexts/WavesmithMetaStoreContext'
 import { getRuntimeStore } from '@shogo/state-api'
+import { mcpService } from '../../services/mcpService'
 
 /**
  * Main demo component - wraps in MetaStoreProvider
@@ -60,6 +61,12 @@ const DynamicSchemaDemo = observer(function DynamicSchemaDemo() {
       setLoading(true)
       setError(null)
       console.log('[HostMSTDemo] Loading schema via meta-store...')
+
+      // Initialize MCP session if not already done (required for stateful HTTP server)
+      if (!mcpService.getMcpSessionId()) {
+        console.log('[HostMSTDemo] Initializing MCP session...')
+        await mcpService.initializeSession()
+      }
 
       // Dynamic schema loading via meta-store
       // This uses MCPPersistence under the hood

@@ -1,13 +1,13 @@
 {
-  "id": "248015c9-f1b7-4c68-b106-6878f8596e82",
+  "id": "8bfce1d4-9d62-4cc2-abe3-6815bdd91532",
   "name": "pos-app",
   "format": "enhanced-json-schema",
-  "createdAt": 1764729558101,
+  "createdAt": 1764737858477,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "Product": {
       "type": "object",
-      "description": "Items available for sale",
+      "description": "A product available for sale",
       "properties": {
         "id": {
           "type": "string",
@@ -21,40 +21,47 @@
         },
         "sku": {
           "type": "string",
-          "description": "Stock Keeping Unit - unique product code",
+          "description": "Stock keeping unit",
           "enum": []
         },
         "price": {
           "type": "number",
-          "description": "Unit price in cents",
-          "minimum": 0,
-          "enum": []
-        },
-        "quantity": {
-          "type": "integer",
-          "description": "Current stock quantity",
+          "description": "Price in cents",
           "minimum": 0,
           "enum": []
         },
         "category": {
           "type": "string",
+          "enum": [
+            "food",
+            "beverage",
+            "merchandise",
+            "service",
+            "other"
+          ]
+        },
+        "inStock": {
+          "type": "boolean",
           "enum": []
         },
-        "active": {
-          "type": "boolean",
+        "quantity": {
+          "type": "integer",
+          "description": "Current inventory count",
+          "minimum": 0,
           "enum": []
         }
       },
       "required": [
         "id",
         "name",
-        "price"
+        "price",
+        "category"
       ],
       "x-original-name": "Product"
     },
     "Customer": {
       "type": "object",
-      "description": "Customer information",
+      "description": "A customer record",
       "properties": {
         "id": {
           "type": "string",
@@ -75,9 +82,9 @@
           "type": "string",
           "enum": []
         },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
+        "loyaltyPoints": {
+          "type": "integer",
+          "minimum": 0,
           "enum": []
         }
       },
@@ -96,40 +103,40 @@
           "enum": [],
           "x-mst-type": "identifier"
         },
-        "productId": {
+        "product": {
           "type": "string",
           "enum": [],
           "x-mst-type": "reference"
-        },
-        "productName": {
-          "type": "string",
-          "description": "Snapshot of product name at time of sale",
-          "enum": []
-        },
-        "unitPrice": {
-          "type": "number",
-          "description": "Price per unit at time of sale (in cents)",
-          "minimum": 0,
-          "enum": []
         },
         "quantity": {
           "type": "integer",
           "minimum": 1,
           "enum": []
+        },
+        "unitPrice": {
+          "type": "number",
+          "description": "Price at time of sale (in cents)",
+          "minimum": 0,
+          "enum": []
+        },
+        "discount": {
+          "type": "number",
+          "description": "Discount amount in cents",
+          "minimum": 0,
+          "enum": []
         }
       },
       "required": [
         "id",
-        "productId",
-        "productName",
-        "unitPrice",
-        "quantity"
+        "product",
+        "quantity",
+        "unitPrice"
       ],
       "x-original-name": "OrderItem"
     },
     "Order": {
       "type": "object",
-      "description": "A sales transaction",
+      "description": "A sales order/transaction",
       "properties": {
         "id": {
           "type": "string",
@@ -141,41 +148,14 @@
           "description": "Human-readable order number",
           "enum": []
         },
-        "customerId": {
+        "customer": {
           "type": "string",
-          "description": "Optional customer reference",
           "enum": [],
           "x-mst-type": "maybe-reference"
         },
         "items": {
           "type": "array",
           "enum": []
-        },
-        "subtotal": {
-          "type": "number",
-          "description": "Total before tax (in cents)",
-          "minimum": 0,
-          "enum": []
-        },
-        "taxAmount": {
-          "type": "number",
-          "description": "Tax amount (in cents)",
-          "minimum": 0,
-          "enum": []
-        },
-        "total": {
-          "type": "number",
-          "description": "Final total (in cents)",
-          "minimum": 0,
-          "enum": []
-        },
-        "paymentMethod": {
-          "type": "string",
-          "enum": [
-            "cash",
-            "card",
-            "other"
-          ]
         },
         "status": {
           "type": "string",
@@ -186,6 +166,33 @@
             "cancelled"
           ]
         },
+        "paymentMethod": {
+          "type": "string",
+          "enum": [
+            "cash",
+            "card",
+            "mobile",
+            "other"
+          ]
+        },
+        "subtotal": {
+          "type": "number",
+          "description": "Subtotal before tax (in cents)",
+          "minimum": 0,
+          "enum": []
+        },
+        "tax": {
+          "type": "number",
+          "description": "Tax amount (in cents)",
+          "minimum": 0,
+          "enum": []
+        },
+        "total": {
+          "type": "number",
+          "description": "Total amount (in cents)",
+          "minimum": 0,
+          "enum": []
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -195,9 +202,6 @@
       "required": [
         "id",
         "orderNumber",
-        "items",
-        "subtotal",
-        "total",
         "status",
         "createdAt"
       ],

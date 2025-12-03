@@ -1,8 +1,7 @@
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
-import { resolve } from "path"
 import { listSchemas } from "@shogo/state-api"
-import { MONOREPO_ROOT } from "../state"
+import { getEffectiveWorkspace } from "../state"
 
 export function registerSchemaList(server: FastMCP) {
   server.addTool({
@@ -11,7 +10,7 @@ export function registerSchemaList(server: FastMCP) {
     parameters: t({}),
     execute: async () => {
       // Use monorepo's .schemas directory
-      const effectiveWorkspace = resolve(MONOREPO_ROOT, '.schemas')
+      const effectiveWorkspace = getEffectiveWorkspace()
 
       try {
         const schemas = await listSchemas(effectiveWorkspace)

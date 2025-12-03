@@ -3,6 +3,7 @@ import { FastMCP } from "fastmcp"
 import { getSnapshot } from "mobx-state-tree"
 import { getMetaStore } from "@shogo/state-api"
 import { getRuntimeStore } from "@shogo/state-api"
+import { getEffectiveWorkspace } from "../state"
 
 const Params = t({
   schema: "string",
@@ -48,7 +49,8 @@ export function registerStoreCreate(server: FastMCP) {
         }
 
         // 3. Get runtime store from cache (Unit 3: workspace-aware caching)
-        const runtimeStore = getRuntimeStore(schemaEntity.id, workspace)
+        const effectiveWorkspace = getEffectiveWorkspace(workspace)
+        const runtimeStore = getRuntimeStore(schemaEntity.id, effectiveWorkspace)
         if (!runtimeStore) {
           return JSON.stringify({
             ok: false,

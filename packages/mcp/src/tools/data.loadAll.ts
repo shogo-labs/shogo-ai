@@ -1,9 +1,8 @@
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
-import { resolve } from "path"
 import { getMetaStore } from "@shogo/state-api"
 import { getRuntimeStore } from "@shogo/state-api"
-import { MONOREPO_ROOT } from "../state"
+import { getEffectiveWorkspace } from "../state"
 
 const Params = t({
   schemaName: "string",
@@ -42,7 +41,7 @@ export function registerDataLoadAll(server: FastMCP) {
       const { schemaName, workspace } = args as { schemaName: string; workspace?: string }
 
       // If no workspace provided, use monorepo's .schemas directory
-      const effectiveWorkspace = workspace || resolve(MONOREPO_ROOT, '.schemas')
+      const effectiveWorkspace = getEffectiveWorkspace(workspace)
 
       try {
         // 1. Find schema in meta-store
