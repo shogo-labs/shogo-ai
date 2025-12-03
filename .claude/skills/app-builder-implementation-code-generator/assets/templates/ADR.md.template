@@ -1,0 +1,188 @@
+# Architecture Decisions Record
+
+**Generated**: {{ timestamp }}
+**Source**: Cross-phase design decisions (Schema → Spec → Code)
+
+This file documents key design decisions made during the app-builder pipeline. Each decision follows the ADR (Architecture Decision Record) format for traceability and context preservation.
+
+---
+
+{% for adr in decisions %}
+## ADR-{{ loop.index }}: {{ adr.title }}
+
+**Status**: {{ adr.status }}
+**Decision Date**: {{ adr.date or timestamp }}
+**Phase**: {{ adr.phase or "Unknown" }}
+
+### Context
+
+{{ adr.context }}
+
+### Decision
+
+{{ adr.decision }}
+
+### Rationale
+
+{% for reason in adr.rationale %}
+- {{ reason }}
+{% endfor %}
+
+### Consequences
+
+**Benefits**:
+{% for benefit in adr.consequences.benefits %}
+- {{ benefit }}
+{% endfor %}
+
+**Trade-offs**:
+{% for tradeoff in adr.consequences.tradeoffs %}
+- {{ tradeoff }}
+{% endfor %}
+
+{% if adr.consequences.mitigation %}
+**Mitigation**:
+{% for mitigation in adr.consequences.mitigation %}
+- {{ mitigation }}
+{% endfor %}
+{% endif %}
+
+{% if adr.alternativesConsidered %}
+### Alternatives Considered
+
+{% for alternative in adr.alternativesConsidered %}
+- **{{ alternative.name }}**: {{ alternative.reason }}
+{% endfor %}
+{% endif %}
+
+{% if adr.references %}
+### References
+
+{% for reference in adr.references %}
+- {{ reference }}
+{% endfor %}
+{% endif %}
+
+---
+
+{% endfor %}
+
+{% if decisions.length == 0 %}
+## No Architecture Decisions Documented
+
+This generated project has no explicit architecture decisions documented. This may indicate:
+- Simple, straightforward implementation with minimal design choices
+- Design decisions were made implicitly during earlier phases
+- Additional ADRs should be added manually as design evolves
+
+Consider documenting:
+- Technology choices (libraries, frameworks)
+- Processing approaches (code-based vs LLM, SQL vs in-memory, etc.)
+- Deferred features and rationale
+- Performance vs simplicity trade-offs
+{% endif %}
+
+---
+
+## ADR Template
+
+When adding new architecture decisions, use this format:
+
+```markdown
+## ADR-{number}: {Decision Title}
+
+**Status**: Accepted | Deferred | Rejected | Superseded
+**Decision Date**: YYYY-MM-DD
+**Phase**: Discovery | Schema | Implementation Spec | Code Generation | Post-Generation
+
+### Context
+
+Describe the problem or requirement driving this decision. What forces are at play?
+
+### Decision
+
+State the decision clearly and concisely.
+
+### Rationale
+
+- Reason 1
+- Reason 2
+- Reason 3
+
+### Consequences
+
+**Benefits**:
+- Positive outcome 1
+- Positive outcome 2
+
+**Trade-offs**:
+- Negative outcome or risk 1
+- Negative outcome or risk 2
+
+**Mitigation** (if applicable):
+- How to address trade-offs
+
+### Alternatives Considered
+
+- **Alternative A**: Why rejected
+- **Alternative B**: Why rejected
+
+### References
+
+- Link to requirement
+- Link to spec interface
+- External documentation
+```
+
+---
+
+## Common Decision Patterns
+
+### Processing Approach Decisions
+
+**Code-Based vs LLM**:
+- Context: Feature requires extraction/analysis/transformation
+- Options: Pure code (regex, heuristics), LLM-assisted, hybrid
+- Factors: Cost constraints, accuracy requirements, data structure predictability
+
+**In-Memory vs Database**:
+- Context: Data transformation or aggregation required
+- Options: Pandas/in-memory, SQL in database, streaming
+- Factors: Data volume, memory constraints, query complexity
+
+### Gap Deferral Decisions
+
+**Feature Deferred to Manual Implementation**:
+- Context: Schema/spec includes feature, but implementation requires domain-specific knowledge
+- Decision: Generate stubs, defer to GREEN phase or post-MVP
+- Rationale: Pattern varies, requires testing with real data, application-specific
+
+### Partial Implementation Decisions
+
+**Models Only (No Orchestration)**:
+- Context: Schema includes workflow entities, but orchestration is application-specific
+- Decision: Generate data models, defer workflow logic
+- Rationale: Enables future implementation without schema changes
+
+---
+
+## Maintenance
+
+**Updating ADRs**:
+- Mark as "Superseded" when decision changes, create new ADR
+- Never delete ADRs - historical context is valuable
+- Link new ADR to superseded one
+
+**When to Add ADRs**:
+- Technology choice (library, framework, database)
+- Architecture pattern selection
+- Performance vs simplicity trade-off
+- Security or compliance decision
+- Deferral of significant feature
+
+**ADR Lifecycle**:
+1. **Proposed**: Decision under consideration
+2. **Accepted**: Decision made and implemented
+3. **Deferred**: Decision postponed to later phase
+4. **Rejected**: Decision considered but not chosen
+5. **Superseded**: Decision replaced by newer ADR

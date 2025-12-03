@@ -1,0 +1,125 @@
+/**
+ * Persistence Type Definitions
+ *
+ * Pure type definitions for the persistence layer.
+ * This file contains NO runtime imports, making it safe to import
+ * from both server (Node.js) and client (browser) contexts.
+ *
+ * @example Server usage:
+ * import type { IPersistenceService } from './types'
+ *
+ * @example Client usage:
+ * import type { IPersistenceService } from '../../../src/persistence/types'
+ */
+
+/**
+ * Generic persistence interface for runtime store data.
+ *
+ * This interface abstracts persistence operations, allowing pluggable backends
+ * (filesystem, SQLite, Postgres, S3, MCP, etc.) without changing MST code.
+ *
+ * NOTE: This interface does NOT handle schema persistence - that remains in
+ * the meta-layer (schema-io.ts). This is purely for runtime store entity data.
+ */
+export interface IPersistenceService {
+  /**
+   * Save an entire collection snapshot to persistence.
+   *
+   * @param context - Persistence context (schema, model, location)
+   * @param snapshot - MST collection snapshot (typically { items: { [id]: entity } })
+   * @throws Error if write fails (permission denied, disk full, etc.)
+   */
+  saveCollection(context: PersistenceContext, snapshot: any): Promise<void>
+
+  /**
+   * Load an entire collection snapshot from persistence.
+   *
+   * @param context - Persistence context (schema, model, location)
+   * @returns Collection snapshot or null if not found
+   * @throws Error if read fails (permission denied, invalid JSON, etc.)
+   */
+  loadCollection(context: PersistenceContext): Promise<any | null>
+
+  /**
+   * Save a single entity within a collection.
+   *
+   * ⚠️ WARNING: NOT SAFE for concurrent writes to the same collection.
+   * Implementation typically uses read-modify-write pattern which can lose
+   * data if multiple writes happen simultaneously. Use saveAll() for batch
+   * updates or implement queueing in future units.
+   *
+   * @param context - Entity context (schema, model, location, entityId)
+   * @param snapshot - Entity snapshot
+   * @throws Error if write fails
+   */
+  saveEntity(context: EntityContext, snapshot: any): Promise<void>
+
+  /**
+   * Load a single entity from a collection.
+   *
+   * @param context - Entity context (schema, model, location, entityId)
+   * @returns Entity snapshot or null if collection or entity not found
+   * @throws Error if read fails
+   */
+  loadEntity(context: EntityContext): Promise<any | null>
+
+  // === Schema operations (optional - for isomorphic support) ===
+
+  /**
+   * Load a schema definition from persistence.
+   *
+   * Used for isomorphic schema loading - allows browser to fetch schema
+   * via MCP while server loads from filesystem.
+   *
+   * @param name - Schema name
+   * @param location - Optional location override (workspace path, etc.)
+   * @returns Schema metadata + enhanced JSON schema, or null if not found
+   */
+  loadSchema?(name: string, location?: string): Promise<{
+    metadata: { name: string; id?: string; views?: Record<string, any> }
+    enhanced: any
+  } | null>
+
+  /**
+   * List available schemas.
+   *
+   * @param location - Optional location to search
+   * @returns Array of schema names
+   */
+  listSchemas?(location?: string): Promise<string[]>
+}
+
+/**
+ * Context for persistence operations.
+ *
+ * Uses generic "location" primitive rather than app-specific vocabulary
+ * like "workspace". Location can be:
+ * - File path (FileSystemPersistence): "./data" or "/absolute/path"
+ * - Database name (PostgresPersistence): "production_db"
+ * - Bucket prefix (S3Persistence): "s3://bucket/prefix"
+ * - Etc.
+ */
+export type PersistenceContext = {
+  /** Schema name (folder name in filesystem, table prefix in database, etc.) */
+  schemaName: string
+
+  /**
+   * Model name (NOT collection name - no "Collection" suffix).
+   * Example: "Task" not "TaskCollection"
+   */
+  modelName: string
+
+  /**
+   * Generic location identifier.
+   * If not provided, implementation should use a sensible default.
+   */
+  location?: string
+}
+
+/**
+ * Extended context for single-entity operations.
+ */
+export type EntityContext = PersistenceContext & {
+  /** Entity identifier (typically matches entity's id field) */
+  entityId: string
+}

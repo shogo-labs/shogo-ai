@@ -1,0 +1,384 @@
+{
+  "id": "7edc3a70-8dce-4bfd-a205-3b1a7202bda7",
+  "name": "app-builder-implementation-spec",
+  "format": "enhanced-json-schema",
+  "createdAt": 1761860019615,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ImplementationSession": {
+      "type": "object",
+      "description": "Root orchestrator for an implementation specification session",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the implementation session",
+          "enum": []
+        },
+        "name": {
+          "type": "string",
+          "description": "Session name (typically matches discovery session name)",
+          "enum": []
+        },
+        "discoverySession": {
+          "type": "string",
+          "description": "Reference to Layer 1 DiscoverySession",
+          "enum": [],
+          "x-mst-type": "reference"
+        },
+        "appSchemaName": {
+          "type": "string",
+          "description": "Name of the Layer 2 application schema (e.g., 'contract-template-updater')",
+          "enum": []
+        },
+        "currentPhase": {
+          "type": "string",
+          "description": "Current phase in the implementation specification workflow",
+          "enum": [
+            "planning",
+            "module_design",
+            "interface_definition",
+            "test_specification",
+            "review",
+            "complete"
+          ]
+        },
+        "modules": {
+          "type": "array",
+          "description": "Module specifications for this implementation",
+          "enum": [],
+          "items": {
+            "type": "string",
+            "enum": [],
+            "x-mst-type": "reference"
+          }
+        },
+        "workspacePath": {
+          "type": "string",
+          "description": "Path to workspace folder for artifacts (e.g., '.schemas/app-builder-implementation-spec/workspaces/session-name/')",
+          "enum": []
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Unix timestamp when session was created",
+          "enum": []
+        },
+        "completedAt": {
+          "type": "number",
+          "description": "Unix timestamp when session was completed",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "appSchemaName",
+        "currentPhase",
+        "workspacePath",
+        "createdAt"
+      ],
+      "x-original-name": "ImplementationSession"
+    },
+    "ModuleSpecification": {
+      "type": "object",
+      "description": "Specification for a module/black box in the implementation",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the module specification",
+          "enum": []
+        },
+        "session": {
+          "type": "string",
+          "description": "Reference to parent ImplementationSession",
+          "enum": [],
+          "x-mst-type": "reference"
+        },
+        "name": {
+          "type": "string",
+          "description": "Module name (e.g., 'template-parser', 'comparison-engine')",
+          "enum": []
+        },
+        "purpose": {
+          "type": "string",
+          "description": "High-level description of what this module does",
+          "enum": []
+        },
+        "category": {
+          "type": "string",
+          "description": "Structural category (generic, not domain-specific)",
+          "enum": [
+            "input",
+            "process",
+            "output"
+          ]
+        },
+        "details": {
+          "type": "object",
+          "description": "OPAQUE: Domain-specific implementation details (algorithms, libraries, strategies, constraints)",
+          "enum": []
+        },
+        "implementsRequirements": {
+          "type": "array",
+          "description": "References to Layer 1 requirements this module implements",
+          "enum": [],
+          "items": {
+            "type": "string",
+            "enum": [],
+            "x-mst-type": "reference"
+          }
+        },
+        "interfaces": {
+          "type": "array",
+          "description": "Interface contracts defined for this module",
+          "enum": [],
+          "items": {
+            "type": "string",
+            "enum": [],
+            "x-mst-type": "reference"
+          }
+        },
+        "tests": {
+          "type": "array",
+          "description": "Test specifications for this module",
+          "enum": [],
+          "items": {
+            "type": "string",
+            "enum": [],
+            "x-mst-type": "reference"
+          }
+        },
+        "dependsOn": {
+          "type": "array",
+          "description": "Other modules this module depends on",
+          "enum": [],
+          "items": {
+            "type": "string",
+            "enum": [],
+            "x-mst-type": "reference"
+          }
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Unix timestamp when module spec was created",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "name",
+        "purpose",
+        "category",
+        "details",
+        "createdAt"
+      ],
+      "x-original-name": "ModuleSpecification"
+    },
+    "InterfaceContract": {
+      "type": "object",
+      "description": "Contract specification for a module interface (function signature)",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the interface contract",
+          "enum": []
+        },
+        "module": {
+          "type": "string",
+          "description": "Reference to parent ModuleSpecification",
+          "enum": [],
+          "x-mst-type": "reference"
+        },
+        "functionName": {
+          "type": "string",
+          "description": "Name of the function/method",
+          "enum": []
+        },
+        "purpose": {
+          "type": "string",
+          "description": "What this function does",
+          "enum": []
+        },
+        "inputs": {
+          "type": "object",
+          "description": "OPAQUE: Input parameters (may reference Layer 2 schema entity types)",
+          "enum": []
+        },
+        "outputs": {
+          "type": "object",
+          "description": "OPAQUE: Output/return type (may reference Layer 2 schema entity types)",
+          "enum": []
+        },
+        "errors": {
+          "type": "object",
+          "description": "OPAQUE: Possible errors/exceptions",
+          "enum": []
+        },
+        "algorithmStrategy": {
+          "type": "string",
+          "description": "High-level algorithm or strategy description (e.g., 'two-pass fuzzy matching with 80% threshold')",
+          "enum": []
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Unix timestamp when interface contract was created",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "module",
+        "functionName",
+        "purpose",
+        "inputs",
+        "outputs",
+        "createdAt"
+      ],
+      "x-original-name": "InterfaceContract"
+    },
+    "TestSpecification": {
+      "type": "object",
+      "description": "Test specification in Given/When/Then format",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the test specification",
+          "enum": []
+        },
+        "module": {
+          "type": "string",
+          "description": "Reference to parent ModuleSpecification",
+          "enum": [],
+          "x-mst-type": "reference"
+        },
+        "scenario": {
+          "type": "string",
+          "description": "Test scenario name",
+          "enum": []
+        },
+        "testType": {
+          "type": "string",
+          "description": "Type of test",
+          "enum": [
+            "unit",
+            "integration",
+            "acceptance"
+          ]
+        },
+        "given": {
+          "type": "array",
+          "description": "Preconditions (abstract strings, not code)",
+          "enum": [],
+          "items": {
+            "type": "string",
+            "enum": []
+          }
+        },
+        "when": {
+          "type": "string",
+          "description": "Action/trigger (abstract string, not code)",
+          "enum": []
+        },
+        "then": {
+          "type": "array",
+          "description": "Expected outcomes (abstract strings, not code)",
+          "enum": [],
+          "items": {
+            "type": "string",
+            "enum": []
+          }
+        },
+        "validatesRequirement": {
+          "type": "string",
+          "description": "Reference to Layer 1 Requirement this test validates",
+          "enum": [],
+          "x-mst-type": "reference"
+        },
+        "validatesAcceptanceCriteria": {
+          "type": "string",
+          "description": "Specific acceptance criteria from the requirement this test validates",
+          "enum": []
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Unix timestamp when test spec was created",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "module",
+        "scenario",
+        "testType",
+        "given",
+        "when",
+        "then",
+        "createdAt"
+      ],
+      "x-original-name": "TestSpecification"
+    }
+  },
+  "views": {
+    "module_interfaces": {
+      "type": "query",
+      "collection": "InterfaceContract",
+      "filter": {
+        "module": "${moduleId}"
+      },
+      "select": [
+        "id",
+        "functionName",
+        "inputs",
+        "outputs",
+        "errors",
+        "purpose",
+        "algorithmStrategy"
+      ]
+    },
+    "module_interfaces_json": {
+      "type": "template",
+      "select": [],
+      "dataSource": "module_interfaces",
+      "template": "interfaces.njk"
+    },
+    "module_tests": {
+      "type": "query",
+      "collection": "TestSpecification",
+      "filter": {
+        "module": "${moduleId}"
+      },
+      "select": [
+        "id",
+        "scenario",
+        "testType",
+        "given",
+        "when",
+        "then",
+        "validatesRequirement",
+        "validatesAcceptanceCriteria"
+      ]
+    },
+    "module_tests_json": {
+      "type": "template",
+      "select": [],
+      "dataSource": "module_tests",
+      "template": "tests.njk"
+    },
+    "interfaces_by_module": {
+      "type": "query",
+      "collection": "InterfaceContract",
+      "filter": {
+        "module": "{{moduleId}}"
+      },
+      "select": []
+    },
+    "tests_by_module": {
+      "type": "query",
+      "collection": "TestSpecification",
+      "filter": {
+        "module": "{{moduleId}}"
+      },
+      "select": []
+    }
+  }
+}

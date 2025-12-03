@@ -1,0 +1,34 @@
+{
+  "name": "@shogo/state-api",
+  "version": "0.1.0",
+  "description": "Schema-first reactive state management bridging arkType to MST with isomorphic execution",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node",
+    "dev": "bun run --watch src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "arktype": "^2.0.0-beta.7",
+    "jsondiffpatch": "^0.6.0",
+    "mobx": "^6.13.5",
+    "mobx-state-tree": "^6.0.1",
+    "nunjucks": "^3.2.4",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/nunjucks": "^3.2.6",
+    "@types/uuid": "^11.0.0",
+    "typescript": "^5.7.2"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

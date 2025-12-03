@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "composite": false
+  },
+  "include": ["src/**/*"],
+  "references": [{ "path": "../../packages/state-api" }]
+}

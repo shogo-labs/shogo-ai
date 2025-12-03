@@ -1,0 +1,7 @@
+// Auto-generated schema index - do not edit manually
+// Generated: 2025-12-03T00:25:55.068Z
+// Schemas: 1
+
+export const workspaceSchemas: Record<string, string> = {
+  "template-test-schema/schema.json": "{\n  \"id\": \"bcc989d0-88fe-496c-8841-00e2d90f9381\",\n  \"name\": \"template-test-schema\",\n  \"format\": \"enhanced-json-schema\",\n  \"createdAt\": 1764721555066,\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"$defs\": {\n    \"Article\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"author\": {\n          \"type\": \"string\",\n          \"enum\": [],\n          \"x-arktype\": \"string\"\n        },\n        \"id\": {\n          \"type\": \"string\",\n          \"enum\": [],\n          \"x-arktype\": \"string\"\n        },\n        \"title\": {\n          \"type\": \"string\",\n          \"enum\": [],\n          \"x-arktype\": \"string\"\n        }\n      },\n      \"required\": [\n        \"author\",\n        \"id\",\n        \"title\"\n      ],\n      \"x-original-name\": \"Article\"\n    }\n  },\n  \"views\": {\n    \"articlesByAuthor\": {\n      \"type\": \"query\",\n      \"collection\": \"Article\",\n      \"filter\": {\n        \"author\": \"${author}\"\n      },\n      \"select\": []\n    },\n    \"articleList\": {\n      \"type\": \"template\",\n      \"select\": [],\n      \"dataSource\": \"articlesByAuthor\",\n      \"template\": \"list.njk\"\n    }\n  }\n}"
+}

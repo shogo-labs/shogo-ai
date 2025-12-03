@@ -1,0 +1,58 @@
+# dependencies (bun install)
+node_modules
+
+# virtual environments
+**/.venv/
+**/.venv.bak/
+
+# output
+out
+dist
+dist-client
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# Turbo
+.turbo
+
+# Tool directories (Claude Code patterns)
+_tmp/
+.superdesign/
+.cursor/
+.codanna/
+.codex/
+.playwright-mcp/
+.serena/
+
+# Workspace files
+*.code-workspace
+
+# Schema session data (user-specific, generated at runtime)
+.schemas/*/data/
+.schemas/*/workspaces/

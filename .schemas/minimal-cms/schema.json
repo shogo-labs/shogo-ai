@@ -1,0 +1,112 @@
+{
+  "id": "fc9218b4-5ec2-4b02-9806-8d42e401662a",
+  "name": "minimal-cms",
+  "format": "enhanced-json-schema",
+  "createdAt": 1763858638440,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Page": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": []
+        },
+        "title": {
+          "type": "string",
+          "enum": []
+        },
+        "slug": {
+          "type": "string",
+          "enum": []
+        },
+        "description": {
+          "type": "string",
+          "enum": []
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "published",
+            "archived"
+          ]
+        },
+        "publishedAt": {
+          "type": "string",
+          "enum": []
+        },
+        "createdAt": {
+          "type": "string",
+          "enum": []
+        },
+        "updatedAt": {
+          "type": "string",
+          "enum": []
+        },
+        "contentBlocks": {
+          "type": "array",
+          "enum": [],
+          "x-mst-type": "reference",
+          "x-reference-type": "array",
+          "items": {
+            "$ref": "#/$defs/ContentBlock"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "slug",
+        "status"
+      ],
+      "x-original-name": "Page"
+    },
+    "ContentBlock": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": []
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "image",
+            "video",
+            "gallery",
+            "code",
+            "quote",
+            "heading"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "enum": []
+        },
+        "metadata": {
+          "type": "object",
+          "enum": []
+        },
+        "order": {
+          "type": "number",
+          "enum": []
+        },
+        "pageId": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "content",
+        "order"
+      ],
+      "x-original-name": "ContentBlock"
+    }
+  }
+}

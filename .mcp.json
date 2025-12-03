@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "wavesmith": {
+      "command": "bun",
+      "args": ["run", "packages/mcp/src/server.ts"]
+    }
+  }
+}
