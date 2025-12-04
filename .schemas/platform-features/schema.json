@@ -1,0 +1,248 @@
+{
+  "id": "7d8425b4-fe89-4c3c-8ccb-b5d7b8e6ffcd",
+  "name": "platform-features",
+  "format": "enhanced-json-schema",
+  "createdAt": 1764793352349,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "PlatformFeatureSession": {
+      "type": "object",
+      "description": "Container for a platform feature development session",
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "description": "Short name for the feature",
+          "enum": []
+        },
+        "intent": {
+          "type": "string",
+          "description": "Original ask in natural language",
+          "enum": []
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "discovery",
+            "design",
+            "integration",
+            "testing",
+            "complete"
+          ]
+        },
+        "affectedPackages": {
+          "type": "array",
+          "description": "Which packages this feature touches",
+          "enum": []
+        },
+        "schemaName": {
+          "type": "string",
+          "description": "If this feature produces a schema, its name",
+          "enum": []
+        },
+        "createdAt": {
+          "type": "number",
+          "enum": []
+        },
+        "updatedAt": {
+          "type": "number",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "intent",
+        "status",
+        "createdAt"
+      ],
+      "x-original-name": "PlatformFeatureSession"
+    },
+    "Requirement": {
+      "type": "object",
+      "description": "A requirement derived from the feature intent",
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "description": {
+          "type": "string",
+          "enum": []
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "must",
+            "should",
+            "could"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "proposed",
+            "accepted",
+            "implemented"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "description",
+        "priority",
+        "status"
+      ],
+      "x-original-name": "Requirement"
+    },
+    "DesignDecision": {
+      "type": "object",
+      "description": "A design decision made during feature development",
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "question": {
+          "type": "string",
+          "description": "What needed deciding",
+          "enum": []
+        },
+        "decision": {
+          "type": "string",
+          "description": "What we chose",
+          "enum": []
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Why we chose it",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "question",
+        "decision",
+        "rationale"
+      ],
+      "x-original-name": "DesignDecision"
+    },
+    "IntegrationPoint": {
+      "type": "object",
+      "description": "Where the feature integrates with existing code",
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "targetPackage": {
+          "type": "string",
+          "description": "Which package this integrates with",
+          "enum": []
+        },
+        "description": {
+          "type": "string",
+          "description": "What the integration does",
+          "enum": []
+        },
+        "isGenerated": {
+          "type": "boolean",
+          "description": "Whether this is template-generated vs manual",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "targetPackage",
+        "description"
+      ],
+      "x-original-name": "IntegrationPoint"
+    },
+    "TestCase": {
+      "type": "object",
+      "description": "A test case for the feature",
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "requirement": {
+          "type": "string",
+          "description": "Optional link to requirement for traceability",
+          "enum": [],
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single"
+        },
+        "description": {
+          "type": "string",
+          "enum": []
+        },
+        "given": {
+          "type": "string",
+          "enum": []
+        },
+        "when": {
+          "type": "string",
+          "enum": []
+        },
+        "then": {
+          "type": "string",
+          "enum": []
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "specified",
+            "implemented",
+            "passing"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "description",
+        "given",
+        "when",
+        "then",
+        "status"
+      ],
+      "x-original-name": "TestCase"
+    }
+  }
+}
