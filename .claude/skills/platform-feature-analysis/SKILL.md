@@ -61,6 +61,21 @@ For each affected package, explore to understand:
 | `apps/web` | Component patterns, hooks, state management, routing |
 | `.claude/skills` | Skill structure, Wavesmith usage patterns |
 
+**Pattern Recognition** - For Service/Hybrid features, look for existing implementations of:
+
+| Pattern | What to Look For | Typical Locations |
+|---------|------------------|-------------------|
+| Service Interface | `interface I{X}Service`, domain types | `src/{domain}/types.ts` |
+| Environment Extension | `I{X}Environment extends IEnvironment` | `src/environment/types.ts` |
+| Provider Sync | `_syncFromProvider`, `setupSubscription` | `src/{domain}/domain.ts` |
+
+See pattern references for full structure details:
+- [patterns/02-service-interface.md](references/patterns/02-service-interface.md)
+- [patterns/03-environment-extension.md](references/patterns/03-environment-extension.md)
+- [patterns/06-provider-synchronization.md](references/patterns/06-provider-synchronization.md)
+
+When patterns don't exist, record as integration point with `changeType: "add"`.
+
 **Exploration techniques**:
 - Glob for relevant file patterns
 - Grep for existing similar functionality
@@ -159,3 +174,6 @@ Ready for platform-feature-spec to create implementation tasks.
 ## References
 
 - [exploration-patterns.md](references/exploration-patterns.md) - Package-specific exploration guidance
+- [patterns/02-service-interface.md](references/patterns/02-service-interface.md) - IService abstraction pattern
+- [patterns/03-environment-extension.md](references/patterns/03-environment-extension.md) - MST environment DI pattern
+- [patterns/06-provider-synchronization.md](references/patterns/06-provider-synchronization.md) - External state sync pattern

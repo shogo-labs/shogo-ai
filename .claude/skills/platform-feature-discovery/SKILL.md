@@ -27,12 +27,25 @@ Stored in `platform-features` schema via Wavesmith.
 
 1. Understand what the developer wants to add
 2. Clarify scope if ambiguous ("What problem does this solve?", "Who needs this?")
-3. Create PlatformFeatureSession:
+3. **Classify the feature archetype** using the decision tree:
+
+   | Archetype | Indicators | Applicable Patterns |
+   |-----------|------------|---------------------|
+   | **Service** | External API, credentials, multiple providers | Service Interface, Environment, Mock Testing, Provider Sync |
+   | **Domain** | New entities, business rules, relationships | Enhancement Hooks, relationship patterns |
+   | **Infrastructure** | Cross-cutting, used by multiple features | Service Interface, Environment, Mixin Composition |
+   | **Hybrid** | External provider + local domain modeling | All of the above |
+
+   See [patterns/01-feature-classification.md](references/patterns/01-feature-classification.md) for the full decision tree and worked examples.
+
+4. Create PlatformFeatureSession with archetype:
    ```
    store.create("PlatformFeatureSession", "platform-features", {
      id: uuid(),
      name: "<short-name>",
      intent: "<original ask>",
+     featureArchetype: "service" | "domain" | "infrastructure" | "hybrid",
+     applicablePatterns: ["service-interface", "environment-extension", ...],
      status: "discovery",
      createdAt: Date.now()
    })
@@ -114,3 +127,5 @@ store.list("PlatformFeatureSession", "platform-features", { name: "auth" })
 
 - [codebase-context.md](references/codebase-context.md) - Package structure and purposes
 - [example-sessions.md](references/example-sessions.md) - Worked discovery examples
+- [patterns/00-pattern-inventory.md](references/patterns/00-pattern-inventory.md) - Complete pattern catalog and decision frameworks
+- [patterns/01-feature-classification.md](references/patterns/01-feature-classification.md) - Feature archetype decision tree

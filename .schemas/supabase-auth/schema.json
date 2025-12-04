@@ -1,0 +1,59 @@
+{
+  "id": "b1532c36-3729-4134-ab0f-ac0606aaf2ed",
+  "name": "supabase-auth",
+  "format": "enhanced-json-schema",
+  "createdAt": 1764838952147,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "AuthStatus": {
+      "type": "object",
+      "description": "Current authentication status",
+      "x-original-name": "AuthStatus"
+    },
+    "AuthState": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Singleton identifier for auth state",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "status": {
+          "$ref": "#/$defs/AuthStatus"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Supabase user UUID when authenticated",
+          "enum": []
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User email when authenticated",
+          "enum": []
+        },
+        "expiresAt": {
+          "type": "number",
+          "description": "Session expiry timestamp (ms)",
+          "enum": []
+        },
+        "errorCode": {
+          "type": "string",
+          "description": "Error code from last failed operation",
+          "enum": []
+        },
+        "errorMessage": {
+          "type": "string",
+          "description": "Human-readable error message",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "status"
+      ],
+      "x-original-name": "AuthState"
+    }
+  }
+}

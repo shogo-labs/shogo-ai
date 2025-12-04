@@ -1,0 +1,16 @@
+{
+  "items": {
+    "supabase-auth-001": {
+      "id": "supabase-auth-001",
+      "name": "supabase-auth",
+      "intent": "Add Supabase Auth layer for web app with email/password authentication. Service-style integration with Supabase client, session management in React. RLS integration deferred.",
+      "status": "testing",
+      "affectedPackages": [
+        "apps/web"
+      ],
+      "schemaName": "supabase-auth",
+      "createdAt": 1733329200000,
+      "updatedAt": 1733330400000
+    }
+  }
+}

@@ -55,6 +55,21 @@ Ready to create implementation tasks?
 
 Analyze integration points and group them into logical implementation tasks:
 
+**Pattern-Based Task Templates** - Use patterns as task templates:
+
+| Pattern | Task Type | Typical Acceptance Criteria |
+|---------|-----------|----------------------------|
+| Service Interface | Add types.ts, {provider}.ts, mock.ts | Interface has no runtime imports; mock implements full interface |
+| Environment Extension | Extend IEnvironment | Services accessible via getEnv() |
+| Provider Sync | Add _syncFromProvider, initialize, setupSubscription | Initialize fetches state; subscription returns cleanup |
+| React Context | Add Provider, hook, observer components | useRef for store; cleanup in useEffect |
+
+See pattern references for detailed structure and anti-patterns:
+- [patterns/02-service-interface.md](references/patterns/02-service-interface.md)
+- [patterns/03-environment-extension.md](references/patterns/03-environment-extension.md)
+- [patterns/06-provider-synchronization.md](references/patterns/06-provider-synchronization.md)
+- [patterns/07-react-context-integration.md](references/patterns/07-react-context-integration.md)
+
 **Grouping heuristics**:
 - Same module/feature area (e.g., all auth tools together)
 - Shared dependencies (e.g., utility modules before consumers)
@@ -176,3 +191,7 @@ Default to **medium** granularity. Adjust based on:
 ## References
 
 - [task-patterns.md](references/task-patterns.md) - Common task structures by change type
+- [patterns/02-service-interface.md](references/patterns/02-service-interface.md) - Service task template
+- [patterns/03-environment-extension.md](references/patterns/03-environment-extension.md) - Environment task template
+- [patterns/06-provider-synchronization.md](references/patterns/06-provider-synchronization.md) - Sync task template
+- [patterns/07-react-context-integration.md](references/patterns/07-react-context-integration.md) - React integration template

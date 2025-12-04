@@ -51,6 +51,27 @@ Ready to generate test specifications?
 
 For each task, transform acceptance criteria into test specifications:
 
+**Mock Service Test Patterns** - For Service/Hybrid features:
+
+| Test Type | Given Setup | When/Then Pattern |
+|-----------|-------------|-------------------|
+| Success | MockService with default config | Action succeeds, state updated, mock.getCalls() verified |
+| Failure | MockService with `simulateFailure: true` | Action fails, error returned, state rolled back |
+| Edge case | MockService with specific config (e.g., `declineCardNumbers`) | Specific behavior triggered |
+
+See [patterns/05-mock-service-testing.md](references/patterns/05-mock-service-testing.md) for mock structure and test setup.
+
+**React Component Test Patterns** - For UI components:
+
+| Test Type | Setup | Assertion Pattern |
+|-----------|-------|-------------------|
+| Loading state | Render with Provider | Loading indicator visible initially |
+| Success state | Pre-seed mock data | `waitFor()` content visible |
+| Error state | Mock with `simulateFailure: true` | Error message displayed |
+| Interaction | Render with mock | Click action, verify mock.getCalls() |
+
+See [patterns/07-react-context-integration.md](references/patterns/07-react-context-integration.md) for component testing patterns.
+
 **Mapping heuristics**:
 - Each acceptance criterion → 1+ test specs
 - Success cases → unit tests
@@ -178,3 +199,5 @@ Then: Navigation shows logged-in state
 ## References
 
 - [test-patterns.md](references/test-patterns.md) - Common test patterns by component type
+- [patterns/05-mock-service-testing.md](references/patterns/05-mock-service-testing.md) - Mock service implementation patterns
+- [patterns/07-react-context-integration.md](references/patterns/07-react-context-integration.md) - React component testing patterns

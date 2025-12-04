@@ -50,6 +50,19 @@ Transform discovery requirements into Enhanced JSON Schema for Wavesmith.
 - 1:1 or N:1 → `x-reference-type: "single"`
 - 1:N or N:M → `x-reference-type: "array"`
 
+**Design for Enhancement Hooks** - Consider what hooks will add:
+
+| Schema Element | Enhancement Hook | Design Implication |
+|----------------|------------------|-------------------|
+| Raw value fields | `enhanceModels` views | Store priceInCents, hook provides displayPrice |
+| Status enums | `enhanceModels` views | Store status, hook provides isActive, isComplete |
+| Collection queries | `enhanceCollections` views | Index by field, hook provides findBy{Field} |
+| Cross-entity actions | `enhanceRootStore` actions | Ensure fields needed for coordination exist |
+
+**Key principle**: Don't duplicate in schema what hooks will compute. Ensure raw fields exist for hooks to derive from.
+
+See [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.md) for hook structure and anti-patterns.
+
 **Review gate**: Present conceptual model for approval:
 ```
 Entities:
@@ -137,3 +150,4 @@ store.create("DesignDecision", "platform-features", {...})
 
 - [schema-patterns.md](references/schema-patterns.md) - Enhanced JSON Schema conventions
 - [example-designs.md](references/example-designs.md) - Auth example walkthrough
+- [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.md) - Enhancement hook patterns for domain logic

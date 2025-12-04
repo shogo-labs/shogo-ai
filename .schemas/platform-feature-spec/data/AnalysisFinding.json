@@ -1,0 +1,122 @@
+{
+  "items": {
+    "finding-001": {
+      "id": "finding-001",
+      "sessionId": "auth-layer-001",
+      "type": "pattern",
+      "description": "MCP tools follow a consistent registration pattern via registerAllTools() in registry.ts. Each tool is defined in a separate file with registerXxx(server) function using ArkType for parameter validation.",
+      "location": "packages/mcp/src/tools/registry.ts",
+      "relevantCode": "registerSchemaSet(server); registerSchemaGet(server); ... // 16 tools across 5 namespaces",
+      "recommendation": "Auth tools should follow same pattern: auth.register, auth.login, auth.refresh, auth.logout in separate files, registered via registerAuthTools() added to registry.ts",
+      "createdAt": 1733270700000
+    },
+    "finding-002": {
+      "id": "finding-002",
+      "sessionId": "auth-layer-001",
+      "type": "pattern",
+      "description": "HTTP transport in server-http.ts uses FastMCP with stateful session tracking via mcp-session-id header. Server supports both SSE streaming and request-response patterns.",
+      "location": "packages/mcp/src/server-http.ts",
+      "relevantCode": "server.start({ transportType: 'httpStream', httpStream: { port: 3100, endpoint: '/mcp' } })",
+      "recommendation": "JWT auth middleware can intercept before FastMCP processing. Check Authorization header for 'Bearer <token>' on protected endpoints.",
+      "createdAt": 1733270701000
+    },
+    "finding-003": {
+      "id": "finding-003",
+      "sessionId": "auth-layer-001",
+      "type": "pattern",
+      "description": "Web app uses React Context for state injection. WavesmithStoreContext.tsx shows pattern: createContext, Provider component with useRef for stable instance, useWavesmithStore hook with error handling.",
+      "location": "apps/web/src/contexts/WavesmithStoreContext.tsx",
+      "relevantCode": "const StoreContext = createContext<any>(null); export function WavesmithStoreProvider({ schema, children })",
+      "recommendation": "Create AuthContext.tsx following same pattern: AuthProvider with user state, useAuth hook. Store JWT in memory (not localStorage for XSS protection), refresh token in httpOnly cookie ideally.",
+      "createdAt": 1733270702000
+    },
+    "finding-004": {
+      "id": "finding-004",
+      "sessionId": "auth-layer-001",
+      "type": "pattern",
+      "description": "MCPService class in mcpService.ts handles all HTTP communication with MCP server. Manages session initialization, tool calls, and SSE streaming. Uses fetch with custom headers.",
+      "location": "apps/web/src/services/mcpService.ts",
+      "relevantCode": "const headers: HeadersInit = { 'Content-Type': 'application/json', 'mcp-session-id': this.mcpSessionId }",
+      "recommendation": "Add Authorization header with JWT token. Create method setAuthToken(token) to store token and include in all requests. Token should be passed from AuthContext after login.",
+      "createdAt": 1733270703000
+    },
+    "finding-005": {
+      "id": "finding-005",
+      "sessionId": "auth-layer-001",
+      "type": "gap",
+      "description": "No password hashing library exists in the codebase. Requirements specify bcrypt or argon2 with secure defaults (req-auth-006).",
+      "location": "packages/mcp/package.json",
+      "relevantCode": "dependencies: { 'fastmcp', 'arktype', '@anthropic-ai/claude-agent-sdk' }",
+      "recommendation": "Add 'bcrypt' or '@node-rs/argon2' to MCP package dependencies. Argon2 is recommended as it's the winner of the Password Hashing Competition and more resistant to GPU attacks.",
+      "createdAt": 1733270704000
+    },
+    "finding-006": {
+      "id": "finding-006",
+      "sessionId": "auth-layer-001",
+      "type": "gap",
+      "description": "No JWT library exists in the codebase. Need library for signing/verifying tokens with support for RS256 or HS256.",
+      "location": "packages/mcp/package.json",
+      "recommendation": "Add 'jose' package - modern, zero-dependency JWT library that works in all JS runtimes including Bun. Supports all standard algorithms.",
+      "createdAt": 1733270705000
+    },
+    "finding-007": {
+      "id": "finding-007",
+      "sessionId": "auth-layer-001",
+      "type": "pattern",
+      "description": "App routing uses react-router-dom v7 with BrowserRouter in App.tsx. Routes are defined declaratively with Route components. Navigation component shows active state styling.",
+      "location": "apps/web/src/App.tsx",
+      "relevantCode": "<Routes><Route path='/' element={<HomePage />} /><Route path='/unit1' element={<Unit1Page />} />...</Routes>",
+      "recommendation": "Create ProtectedRoute component wrapper that checks auth state from AuthContext and redirects to /login if unauthenticated. Add /login and /register routes.",
+      "createdAt": 1733270706000
+    },
+    "finding-008": {
+      "id": "finding-008",
+      "sessionId": "auth-layer-001",
+      "type": "integration_point",
+      "description": "FileSystemPersistence stores entities as JSON files. User passwords will be stored hashed in .schemas/auth-layer/data/User.json. This is acceptable for MVP but production should use encrypted storage.",
+      "location": "packages/state-api/src/persistence/filesystem.ts",
+      "relevantCode": "return path.join(baseDir, ctx.schemaName, 'data', `${ctx.modelName}.json`)",
+      "recommendation": "Current persistence is adequate for MVP. passwordHash field already designed in schema. Consider adding data encryption at rest for production (future enhancement).",
+      "createdAt": 1733270707000
+    },
+    "finding-009": {
+      "id": "finding-009",
+      "sessionId": "auth-layer-001",
+      "type": "existing_test",
+      "description": "MCP tool tests use bun:test with beforeEach reset pattern. Tests directly call tool handler logic extracted from registration. Pattern: define handleXxx function, test it directly, then register it.",
+      "location": "packages/mcp/src/tools/__tests__/schema.set.test.ts",
+      "relevantCode": "beforeEach(() => { resetMetaStore(); clearRuntimeStores(); })",
+      "recommendation": "Auth tool tests should follow same pattern. Test auth.register, auth.login, auth.refresh, auth.logout handlers with mock users. Test JWT expiration, invalid credentials, token refresh scenarios.",
+      "createdAt": 1733270708000
+    },
+    "finding-010": {
+      "id": "finding-010",
+      "sessionId": "auth-layer-001",
+      "type": "risk",
+      "description": "FastMCP httpStream transport doesn't expose native middleware hooks. JWT validation may need to happen at tool level rather than transport level, or require custom HTTP wrapper.",
+      "location": "packages/mcp/src/server-http.ts",
+      "recommendation": "Two options: (1) Validate JWT inside each protected tool handler, or (2) Wrap FastMCP's HTTP handler with custom Express/Bun middleware. Option 1 is simpler but requires per-tool boilerplate. Option 2 is cleaner but adds complexity.",
+      "createdAt": 1733270709000
+    },
+    "finding-011": {
+      "id": "finding-011",
+      "sessionId": "auth-layer-001",
+      "type": "pattern",
+      "description": "Hooks in apps/web/src/hooks/ follow React hooks convention. useAgentChat demonstrates state management with useState, useCallback, useRef pattern for async operations with session tracking.",
+      "location": "apps/web/src/hooks/useAgentChat.ts",
+      "relevantCode": "const sessionIdRef = useRef<string | null>(null); sessionIdRef.current = state.sessionId",
+      "recommendation": "Create useAuth hook that exposes: user, isAuthenticated, isLoading, login(), logout(), register(). Use similar ref pattern for token to avoid stale closure issues.",
+      "createdAt": 1733270710000
+    },
+    "finding-012": {
+      "id": "finding-012",
+      "sessionId": "auth-layer-001",
+      "type": "pattern",
+      "description": "Auth-layer schema already exists with User and RefreshToken entities. User has id, email, passwordHash, timestamps. RefreshToken has user reference, token (hashed), expiresAt, revokedAt for logout support.",
+      "location": ".schemas/auth-layer/schema.json",
+      "relevantCode": "User: { id, email, passwordHash, createdAt, updatedAt }, RefreshToken: { id, user (ref), token, expiresAt, revokedAt, createdAt, userAgent }",
+      "recommendation": "Schema is complete and matches requirements. Load with schema.load('auth-layer') before auth tools use store.create/store.list operations.",
+      "createdAt": 1733270711000
+    }
+  }
+}
