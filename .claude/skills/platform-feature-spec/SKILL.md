@@ -84,6 +84,31 @@ See pattern references for detailed structure and anti-patterns:
 5. UI components (pages, routes)
 6. Tests (can be parallel with implementation)
 
+### Package Placement Guidance
+
+**Default: `packages/state-api/src/{domain}/`**
+
+Domain logic belongs in state-api for isomorphic reuse across consumers (web, mcp, tests).
+
+| Component | Package | Path |
+|-----------|---------|------|
+| Service interface (`I{Domain}Service`) | state-api | `src/{domain}/types.ts` |
+| Service implementations | state-api | `src/{domain}/{provider}.ts` |
+| Mock service | state-api | `src/{domain}/mock.ts` |
+| Domain store (`create{Domain}Store`) | state-api | `src/{domain}/domain.ts` |
+| Environment extension | state-api | `src/environment/types.ts` |
+| React Provider/Context | apps/web | `src/contexts/{Domain}Context.tsx` |
+| UI Components | apps/web | `src/components/{Domain}/*.tsx` |
+| MCP Tools (if needed) | packages/mcp | `src/tools/{domain}.ts` |
+
+**Exception:** Pure UI features with no domain logic can live entirely in apps/web.
+
+**Decision Tree:**
+1. Does feature have service interface? → state-api
+2. Does feature have MST store with domain logic? → state-api
+3. Does feature need to be used from MCP? → state-api
+4. Is it only React UI with no business logic? → apps/web
+
 ### Phase 3: Create Tasks (Review Gate)
 
 For each task group, create ImplementationTask:

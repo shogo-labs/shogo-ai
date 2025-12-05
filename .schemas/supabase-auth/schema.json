@@ -1,0 +1,115 @@
+{
+  "id": "02e7abc9-b284-4032-8470-e641693a0534",
+  "name": "supabase-auth",
+  "format": "enhanced-json-schema",
+  "createdAt": 1764967481654,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "AuthUser": {
+      "type": "object",
+      "description": "Authenticated user information from provider",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "User ID from auth provider",
+          "enum": []
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User email address",
+          "enum": []
+        },
+        "emailVerified": {
+          "type": "boolean",
+          "description": "Whether email has been verified",
+          "enum": []
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Account creation timestamp",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "email"
+      ],
+      "x-original-name": "AuthUser"
+    },
+    "AuthSession": {
+      "type": "object",
+      "description": "Current auth session with tokens",
+      "properties": {
+        "accessToken": {
+          "type": "string",
+          "description": "JWT access token",
+          "enum": []
+        },
+        "refreshToken": {
+          "type": "string",
+          "description": "Refresh token for obtaining new access tokens",
+          "enum": []
+        },
+        "expiresAt": {
+          "type": "number",
+          "description": "Token expiration timestamp (Unix ms)",
+          "enum": []
+        },
+        "provider": {
+          "type": "string",
+          "description": "Auth provider identifier",
+          "enum": []
+        }
+      },
+      "required": [
+        "accessToken",
+        "expiresAt",
+        "provider"
+      ],
+      "x-original-name": "AuthSession"
+    },
+    "AuthStatus": {
+      "type": "object",
+      "description": "Current authentication state",
+      "x-original-name": "AuthStatus"
+    },
+    "AuthState": {
+      "type": "object",
+      "description": "Singleton auth state container",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Singleton identifier",
+          "enum": [],
+          "const": "auth-state",
+          "x-mst-type": "identifier"
+        },
+        "user": {
+          "description": "Current authenticated user or null",
+          "enum": []
+        },
+        "session": {
+          "description": "Current auth session or null",
+          "enum": []
+        },
+        "status": {
+          "$ref": "#/$defs/AuthStatus"
+        },
+        "error": {
+          "description": "Error message if status is error",
+          "enum": []
+        },
+        "lastAuthenticatedAt": {
+          "description": "Timestamp of last successful authentication",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "status"
+      ],
+      "x-original-name": "AuthState"
+    }
+  }
+}

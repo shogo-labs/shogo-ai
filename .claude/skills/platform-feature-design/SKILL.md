@@ -38,6 +38,32 @@ Transform discovery requirements into Enhanced JSON Schema for Wavesmith.
 
 ### Phase 2: Entity Design
 
+#### Entity Modeling Decision
+
+Before designing schema structure, determine the modeling approach:
+
+**Use Entity Collections when:**
+- Multiple instances of same type exist (products, orders, contacts)
+- Need to query/filter across instances (findBySku, getActive)
+- Entities have create/update/delete lifecycle
+- Relationships exist between entity types
+
+**Use Singleton State when:**
+- Only one instance ever exists (currentTheme, appConfig)
+- No need to query across instances
+- State is derived/computed from other sources
+
+**For Service/Hybrid features:** Almost always use entity collections. Even if the app only shows "current item", the domain typically has multiple instances with lifecycle.
+
+| Feature Type | Likely Model | Example |
+|--------------|--------------|---------|
+| Inventory | Collections | Product, Warehouse, StockLevel entities |
+| CRM | Collections | Contact, Company, Deal entities |
+| Settings | Singleton | AppSettings with theme, locale |
+| Notifications | Collections | Notification, Subscription entities |
+
+#### Extract Entities from Requirements
+
 **Extract entities from requirements** - Look for nouns with independent lifecycle:
 
 | Concept Type | Criteria | Schema Pattern |

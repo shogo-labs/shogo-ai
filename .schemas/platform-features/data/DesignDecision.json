@@ -1,0 +1,25 @@
+{
+  "items": {
+    "dd-auth-001": {
+      "id": "dd-auth-001",
+      "question": "Should auth state be a singleton or entity collection?",
+      "decision": "Singleton AuthState with embedded user/session value objects",
+      "rationale": "Only one current auth state exists. Supabase is source of truth for users. MST store tracks current session only, not user database.",
+      "session": "auth-supabase-001"
+    },
+    "dd-auth-002": {
+      "id": "dd-auth-002",
+      "question": "Should tokens be stored in MST state?",
+      "decision": "Yes, store accessToken, refreshToken, expiresAt in AuthSession",
+      "rationale": "Enables computed properties (isExpired) and allows React components to react to token changes. Tokens are already in browser memory via Supabase client.",
+      "session": "auth-supabase-001"
+    },
+    "dd-auth-003": {
+      "id": "dd-auth-003",
+      "question": "How to make auth provider swappable?",
+      "decision": "AuthService interface injected via MST environment",
+      "rationale": "Follows existing environment pattern in state-api. Allows SupabaseAuthProvider, MockAuthProvider, or future providers without changing store code.",
+      "session": "auth-supabase-001"
+    }
+  }
+}
