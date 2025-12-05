@@ -38,29 +38,96 @@ Transform discovery requirements into Enhanced JSON Schema for Wavesmith.
 
 ### Phase 2: Entity Design
 
-#### Entity Modeling Decision
+#### Entity Modeling: Always Use Collections
 
-Before designing schema structure, determine the modeling approach:
+All domain entities use the collection pattern. What might seem like a "singleton" (e.g., app settings, current preferences) is simply a collection with one instance.
 
-**Use Entity Collections when:**
-- Multiple instances of same type exist (products, orders, contacts)
-- Need to query/filter across instances (findBySku, getActive)
-- Entities have create/update/delete lifecycle
-- Relationships exist between entity types
+**Why collections for everything:**
+- Uniform pattern across all entities - no special cases
+- Schema-to-MST transformation works identically
+- "Singleton" behavior achieved via `collection.get(knownId)` or `first()` helper
+- Easier to evolve if requirements change (e.g., multi-tenant settings)
 
-**Use Singleton State when:**
-- Only one instance ever exists (currentTheme, appConfig)
-- No need to query across instances
-- State is derived/computed from other sources
+**Example - Settings as Collection:**
+```json
+"AppSettings": {
+  "properties": {
+    "id": { "type": "string", "x-mst-type": "identifier" },
+    "theme": { "type": "string", "enum": ["light", "dark"] },
+    "locale": { "type": "string" }
+  }
+}
+```
+Access: `store.appSettingsCollection.get("default")` or add a `currentSettings` view in enhanceRootStore.
 
-**For Service/Hybrid features:** Almost always use entity collections. Even if the app only shows "current item", the domain typically has multiple instances with lifecycle.
+| Feature Type | Entities | Notes |
+|--------------|----------|-------|
+| Inventory | Product, Warehouse, StockLevel | Multiple instances with relationships |
+| CRM | Contact, Company, Deal | Full lifecycle entities |
+| Settings | AppSettings | Single instance accessed via known ID |
+| Notifications | Notification, NotificationPreference | Per-user preferences as collection |
 
-| Feature Type | Likely Model | Example |
-|--------------|--------------|---------|
-| Inventory | Collections | Product, Warehouse, StockLevel entities |
-| CRM | Collections | Contact, Company, Deal entities |
-| Settings | Singleton | AppSettings with theme, locale |
-| Notifications | Collections | Notification, Subscription entities |
+#### Service Integration: Always Use Interface Pattern
+
+External services (auth providers, databases, APIs, third-party SDKs) always use the service interface pattern. This is not a design choice to offer users - it's the architectural standard.
+
+**Required structure:**
+- `I{Service}Service` interface in `types.ts` - defines contract
+- Provider implementation (e.g., `supabase.ts`) - real service
+- Mock implementation (`mock.ts`) - for testing
+
+**Why this is non-negotiable:**
+- **Testability** - Unit tests need mocks; without DI you're stuck with integration tests
+- **Consistency** - The codebase uses `IEnvironment` with injected services throughout
+- **Flexibility** - Swap providers, run offline, test edge cases
+- **Low cost** - Interface + implementations is minimal overhead
+
+**Don't ask:** "Should we make this swappable or use Supabase directly?"
+**Do say:** "The auth service will use the interface pattern with Supabase as the initial provider."
+
+See [patterns/02-service-interface.md](references/patterns/02-service-interface.md) for implementation details.
+
+#### Schema Always Required: Local State Pattern
+
+Every feature needs a schema. The question is never "schema or no schema?" but rather "what local state does this feature need?"
+
+**Why schema is always required:**
+- Schematic layers transform schema → MST models
+- MST provides reactive state for React
+- Without schema, no local state management
+- Even "pure service wrappers" have local state (loading, error, cached data)
+
+**Service integration local state pattern:**
+
+External services own their data. We don't duplicate it. But we DO need local state to:
+- Track operation status (loading, error)
+- Cache current data for reactive UI
+- Coordinate across components
+
+**Example - Weather service local state:**
+```json
+"WeatherReading": {
+  "properties": {
+    "id": { "type": "string", "x-mst-type": "identifier" },
+    "locationId": { "type": "string", "description": "External weather API location" },
+    "temperatureCelsius": { "type": "number" },
+    "conditions": { "type": "string" },
+    "lastFetched": { "type": "string", "format": "date-time" }
+  }
+}
+```
+
+This doesn't duplicate the weather API's data - it tracks LOCAL cached state that the UI observes reactively.
+
+**The pattern:**
+1. Service interface wraps external provider (IWeatherService → OpenWeather API)
+2. Schema defines local state (WeatherReading entity)
+3. Schematic transforms → MST models
+4. Service results sync → local MST state
+5. React observes → reactive UI
+
+**Don't ask:** "Do you need a schema for this?"
+**Do ask:** "What local state does this feature need to track?"
 
 #### Extract Entities from Requirements
 
@@ -92,13 +159,13 @@ See [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.
 **Review gate**: Present conceptual model for approval:
 ```
 Entities:
-- User (id, email, passwordHash, createdAt)
-- ApiKey (id, user→, key, expiresAt, revokedAt)
-- AuditLog (id, user→, action, timestamp)
+- Product (id, sku, name, priceInCents)
+- Warehouse (id, name, location)
+- StockLevel (id, product→, warehouse→, quantity, lastUpdated)
 
 Relationships:
-- ApiKey references User (N:1)
-- AuditLog references User (N:1)
+- StockLevel references Product (N:1)
+- StockLevel references Warehouse (N:1)
 
 Does this capture the domain correctly?
 ```
@@ -115,10 +182,10 @@ Does this capture the domain correctly?
 
 **Coverage check format**:
 ```
-✅ req-001: User registration → User entity
-✅ req-002: Login → User.passwordHash, ApiKey creation
-✅ req-003: Token refresh → ApiKey.expiresAt
-⚠️ req-005: Rate limiting → Added User.requestCount field
+✅ req-001: Track products → Product entity with sku, name, priceInCents
+✅ req-002: Multiple warehouses → Warehouse entity with location
+✅ req-003: Stock per location → StockLevel references Product, Warehouse
+⚠️ req-005: Low stock alerts → Added StockLevel.reorderPoint field
 ```
 
 ### Phase 4: Validate & Handoff
@@ -129,12 +196,28 @@ Does this capture the domain correctly?
    store.create("DesignDecision", "platform-features", {
      id: uuid(),
      session: sessionId,
-     question: "How to store API keys?",
-     decision: "Separate ApiKey entity with user reference",
-     rationale: "Supports multiple keys per user and revocation"
+     question: "How to model stock levels?",
+     decision: "Separate StockLevel entity referencing Product and Warehouse",
+     rationale: "Supports tracking quantity at multiple locations per product"
    })
    ```
-3. Update session:
+3. **Required: Create Enhancement Hooks DesignDecision** - Document planned hooks:
+   ```
+   store.create("DesignDecision", "platform-features", {
+     id: uuid(),
+     session: sessionId,
+     question: "What enhancement hooks will the domain need?",
+     decision: "enhanceModels: Product.displayPrice, Product.stockStatus; enhanceCollections: ProductCollection.findBySku, ProductCollection.lowStock; enhanceRootStore: initialize(), totalInventoryValue view",
+     rationale: "Computed views derive from raw schema fields; collection queries index by common access patterns; root store coordinates loading and cross-entity aggregations"
+   })
+   ```
+
+   **Enhancement hooks template:**
+   - `enhanceModels: EntityName.viewOrAction` - computed from entity fields
+   - `enhanceCollections: EntityCollection.method` - query helpers
+   - `enhanceRootStore: actionOrView` - coordination, initialization, cross-entity
+
+4. Update session:
    ```
    store.update(sessionId, "PlatformFeatureSession", "platform-features", {
      schemaName: session.name,
@@ -142,7 +225,7 @@ Does this capture the domain correctly?
      updatedAt: Date.now()
    })
    ```
-4. Present handoff summary with next steps
+5. Present handoff summary with next steps
 
 ## Wavesmith Operations
 

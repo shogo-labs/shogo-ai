@@ -1,0 +1,53 @@
+{
+  "items": {
+    "req-auth-001": {
+      "id": "req-auth-001",
+      "description": "Supabase client initialized with project credentials from environment variables",
+      "priority": "must",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-002": {
+      "id": "req-auth-002",
+      "description": "User can sign up with email and password",
+      "priority": "must",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-003": {
+      "id": "req-auth-003",
+      "description": "User can log in with email and password",
+      "priority": "must",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-004": {
+      "id": "req-auth-004",
+      "description": "User can log out and session is cleared",
+      "priority": "must",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-005": {
+      "id": "req-auth-005",
+      "description": "Auth state persists across page refreshes (session recovery)",
+      "priority": "must",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-006": {
+      "id": "req-auth-006",
+      "description": "Demo page (Unit 4) showing authenticated user info and auth state",
+      "priority": "must",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-007": {
+      "id": "req-auth-007",
+      "description": "React context/hook for accessing auth state throughout the app",
+      "priority": "should",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    }
+  }
+}

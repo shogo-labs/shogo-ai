@@ -1,0 +1,181 @@
+{
+  "items": {
+    "task-auth-001": {
+      "id": "task-auth-001",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-001",
+      "description": "Add Supabase client dependency to web app",
+      "acceptanceCriteria": [
+        "@supabase/supabase-js is added to apps/web/package.json dependencies",
+        "bun install succeeds without errors",
+        "Supabase types are available for import"
+      ],
+      "status": "planned",
+      "createdAt": 1733408600000,
+      "integrationPoint": "ip-auth-001",
+      "dependencies": []
+    },
+    "task-auth-002": {
+      "id": "task-auth-002",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-001",
+      "description": "Create IAuthService interface and auth types",
+      "acceptanceCriteria": [
+        "IAuthService interface exports signUp, signIn, signOut, getSession, onAuthStateChange methods",
+        "AuthUser type defined with id, email fields",
+        "AuthSession type defined with user, accessToken fields",
+        "AuthResult type defined with success/error union",
+        "Interface has no runtime imports (types only)"
+      ],
+      "status": "planned",
+      "createdAt": 1733408600000,
+      "integrationPoint": "ip-auth-002",
+      "dependencies": []
+    },
+    "task-auth-003": {
+      "id": "task-auth-003",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-002",
+      "description": "Implement SupabaseAuthService",
+      "acceptanceCriteria": [
+        "SupabaseAuthService implements IAuthService interface",
+        "Constructor accepts supabaseUrl and supabaseAnonKey",
+        "signUp calls supabase.auth.signUp and returns AuthResult",
+        "signIn calls supabase.auth.signInWithPassword and returns AuthResult",
+        "signOut calls supabase.auth.signOut",
+        "getSession returns current session or null",
+        "onAuthStateChange subscribes to auth changes and returns unsubscribe function"
+      ],
+      "status": "planned",
+      "createdAt": 1733408600000,
+      "integrationPoint": "ip-auth-003",
+      "dependencies": [
+        "task-auth-002"
+      ]
+    },
+    "task-auth-004": {
+      "id": "task-auth-004",
+      "sessionId": "supabase-auth-001",
+      "description": "Implement MockAuthService for testing",
+      "acceptanceCriteria": [
+        "MockAuthService implements IAuthService interface",
+        "Stores users in memory Map",
+        "signUp adds user to map and returns success",
+        "signIn validates credentials against map",
+        "signOut clears current session",
+        "onAuthStateChange accepts callback and returns unsubscribe",
+        "Provides reset() method to clear state between tests"
+      ],
+      "status": "planned",
+      "createdAt": 1733408600000,
+      "integrationPoint": "ip-auth-004",
+      "dependencies": [
+        "task-auth-002"
+      ]
+    },
+    "task-auth-005": {
+      "id": "task-auth-005",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-005",
+      "description": "Create auth domain store with MST models and enhancement hooks",
+      "acceptanceCriteria": [
+        "createAuthStore factory function exported",
+        "AuthSession MST model matches schema (id, userId, email, status, error)",
+        "enhanceModels adds isAuthenticated view (status === 'authenticated')",
+        "enhanceModels adds displayName view (email or 'Guest')",
+        "enhanceRootStore adds initialize action that recovers session via authService.getSession",
+        "enhanceRootStore adds signUp, signIn, signOut actions that update AuthSession",
+        "Actions set status to 'loading' during operations",
+        "Actions handle errors and set error field"
+      ],
+      "status": "planned",
+      "createdAt": 1733408600000,
+      "integrationPoint": "ip-auth-005",
+      "dependencies": [
+        "task-auth-002",
+        "task-auth-003"
+      ]
+    },
+    "task-auth-006": {
+      "id": "task-auth-006",
+      "sessionId": "supabase-auth-001",
+      "description": "Add auth module exports",
+      "acceptanceCriteria": [
+        "src/auth/index.ts exports IAuthService, AuthUser, AuthSession, AuthResult types",
+        "src/auth/index.ts exports SupabaseAuthService, MockAuthService",
+        "src/auth/index.ts exports createAuthStore",
+        "src/index.ts re-exports auth module"
+      ],
+      "status": "planned",
+      "createdAt": 1733408600000,
+      "integrationPoint": "ip-auth-006",
+      "dependencies": [
+        "task-auth-002",
+        "task-auth-003",
+        "task-auth-004",
+        "task-auth-005"
+      ]
+    },
+    "task-auth-007": {
+      "id": "task-auth-007",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-007",
+      "description": "Create React auth context provider and useAuth hook",
+      "acceptanceCriteria": [
+        "AuthProvider component creates and provides auth store",
+        "AuthProvider initializes store on mount (calls initialize action)",
+        "AuthProvider sets up onAuthStateChange subscription",
+        "AuthProvider cleans up subscription on unmount",
+        "useAuth hook returns auth store with typed access",
+        "useAuth throws if used outside AuthProvider"
+      ],
+      "status": "planned",
+      "createdAt": 1733408600000,
+      "integrationPoint": "ip-auth-007",
+      "dependencies": [
+        "task-auth-005",
+        "task-auth-006"
+      ]
+    },
+    "task-auth-008": {
+      "id": "task-auth-008",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-006",
+      "description": "Create Unit 4 auth demo page",
+      "acceptanceCriteria": [
+        "Unit4.tsx component created with observer wrapper",
+        "Shows signup form when unauthenticated (email, password, confirm password)",
+        "Shows login form when unauthenticated (email, password)",
+        "Displays loading state during auth operations",
+        "Shows error messages when auth fails",
+        "Shows authenticated user info when logged in (email, user ID)",
+        "Logout button visible when authenticated",
+        "Route added to app router at /unit4"
+      ],
+      "status": "planned",
+      "createdAt": 1733408600000,
+      "integrationPoint": "ip-auth-008",
+      "dependencies": [
+        "task-auth-007"
+      ]
+    },
+    "task-auth-009": {
+      "id": "task-auth-009",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-001",
+      "description": "Add environment configuration for Supabase",
+      "acceptanceCriteria": [
+        ".env.example created with VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY placeholders",
+        "vite.config.ts exposes env variables to client",
+        "AuthProvider reads credentials from import.meta.env",
+        "App fails gracefully with clear error if credentials missing"
+      ],
+      "status": "planned",
+      "createdAt": 1733408600000,
+      "integrationPoint": "ip-auth-009",
+      "dependencies": [
+        "task-auth-001"
+      ]
+    }
+  }
+}

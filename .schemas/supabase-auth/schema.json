@@ -1,0 +1,51 @@
+{
+  "id": "5ab60e24-dfe3-4b76-9c1f-84aade3982ae",
+  "name": "supabase-auth",
+  "format": "enhanced-json-schema",
+  "createdAt": 1764973850047,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "AuthSession": {
+      "type": "object",
+      "description": "Local auth state singleton. Access via authSessionCollection.get('current')",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Always 'current' for singleton access pattern",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Supabase user ID when authenticated",
+          "enum": []
+        },
+        "email": {
+          "type": "string",
+          "description": "Cached email from Supabase session",
+          "enum": []
+        },
+        "status": {
+          "type": "string",
+          "description": "Current auth state for UI",
+          "enum": [
+            "idle",
+            "loading",
+            "authenticated",
+            "unauthenticated"
+          ]
+        },
+        "error": {
+          "type": "string",
+          "description": "Last error message from auth operation",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "status"
+      ],
+      "x-original-name": "AuthSession"
+    }
+  }
+}

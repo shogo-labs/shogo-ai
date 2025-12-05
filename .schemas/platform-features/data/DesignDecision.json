@@ -1,0 +1,25 @@
+{
+  "items": {
+    "dd-auth-001": {
+      "id": "dd-auth-001",
+      "question": "How to model auth state given Supabase owns user data?",
+      "decision": "Single AuthSession entity tracking local state only (status, cached userId/email, error). No User entity - Supabase is source of truth.",
+      "rationale": "Avoids data duplication. Local state enables reactive UI without duplicating profile management. Singleton pattern via collection.get('current').",
+      "session": "supabase-auth-001"
+    },
+    "dd-auth-002": {
+      "id": "dd-auth-002",
+      "question": "How to integrate Supabase client?",
+      "decision": "IAuthService interface with SupabaseAuthService implementation. Mock implementation for testing.",
+      "rationale": "Standard service interface pattern enables unit testing without live Supabase, consistent with codebase IEnvironment pattern.",
+      "session": "supabase-auth-001"
+    },
+    "dd-auth-003": {
+      "id": "dd-auth-003",
+      "question": "What enhancement hooks will the domain need?",
+      "decision": "enhanceModels: AuthSession.isAuthenticated, AuthSession.displayName; enhanceRootStore: initialize() for session recovery, authService injection via environment",
+      "rationale": "Computed views derive from status field. Root store handles initialization and service injection per codebase patterns.",
+      "session": "supabase-auth-001"
+    }
+  }
+}

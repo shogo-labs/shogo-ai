@@ -1,0 +1,94 @@
+{
+  "items": {
+    "ip-auth-001": {
+      "id": "ip-auth-001",
+      "sessionId": "supabase-auth-001",
+      "package": "apps/web",
+      "filePath": "package.json",
+      "changeType": "modify",
+      "description": "Add @supabase/supabase-js dependency",
+      "rationale": "Required client library for Supabase auth",
+      "createdAt": 1733408500000
+    },
+    "ip-auth-002": {
+      "id": "ip-auth-002",
+      "sessionId": "supabase-auth-001",
+      "package": "packages/state-api",
+      "filePath": "src/auth/types.ts",
+      "changeType": "create",
+      "description": "Define IAuthService interface and auth types",
+      "rationale": "Service interface pattern for testability",
+      "createdAt": 1733408500000
+    },
+    "ip-auth-003": {
+      "id": "ip-auth-003",
+      "sessionId": "supabase-auth-001",
+      "package": "packages/state-api",
+      "filePath": "src/auth/supabase.ts",
+      "changeType": "create",
+      "description": "Implement SupabaseAuthService",
+      "rationale": "Real provider implementation",
+      "createdAt": 1733408500000
+    },
+    "ip-auth-004": {
+      "id": "ip-auth-004",
+      "sessionId": "supabase-auth-001",
+      "package": "packages/state-api",
+      "filePath": "src/auth/mock.ts",
+      "changeType": "create",
+      "description": "Implement MockAuthService for testing",
+      "rationale": "Enables unit tests without live Supabase",
+      "createdAt": 1733408500000
+    },
+    "ip-auth-005": {
+      "id": "ip-auth-005",
+      "sessionId": "supabase-auth-001",
+      "package": "packages/state-api",
+      "filePath": "src/auth/domain.ts",
+      "changeType": "create",
+      "description": "Create auth domain store with MST models and enhancement hooks",
+      "rationale": "Reactive state management for auth",
+      "createdAt": 1733408500000
+    },
+    "ip-auth-006": {
+      "id": "ip-auth-006",
+      "sessionId": "supabase-auth-001",
+      "package": "packages/state-api",
+      "filePath": "src/auth/index.ts",
+      "changeType": "create",
+      "description": "Auth module barrel export",
+      "rationale": "Clean public API",
+      "createdAt": 1733408500000
+    },
+    "ip-auth-007": {
+      "id": "ip-auth-007",
+      "sessionId": "supabase-auth-001",
+      "package": "apps/web",
+      "filePath": "src/contexts/AuthContext.tsx",
+      "changeType": "create",
+      "description": "React context provider and useAuth hook",
+      "rationale": "App-wide auth state access",
+      "createdAt": 1733408500000
+    },
+    "ip-auth-008": {
+      "id": "ip-auth-008",
+      "sessionId": "supabase-auth-001",
+      "package": "apps/web",
+      "filePath": "src/units/Unit4.tsx",
+      "changeType": "create",
+      "description": "Auth demo page with signup/login/logout UI",
+      "rationale": "MVP demo proving auth flow works",
+      "createdAt": 1733408500000
+    },
+    "ip-auth-009": {
+      "id": "ip-auth-009",
+      "sessionId": "supabase-auth-001",
+      "package": "apps/web",
+      "filePath": ".env.example",
+      "changeType": "create",
+      "description": "Environment variable template for Supabase credentials",
+      "rationale": "Developer onboarding",
+      "createdAt": 1733408500000
+    }
+  }
+}
