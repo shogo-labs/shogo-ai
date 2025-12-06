@@ -194,8 +194,20 @@ Does this capture the domain correctly?
 
 ### Phase 3: Schema Generation + Coverage
 
-**Autonomous phase** - Generate schema and verify coverage:
+**Autonomous phase** - Generate schema and verify coverage.
 
+The schema you create will be used in TWO ways:
+1. **Wavesmith** - Stored via `schema.set` for session tracking
+2. **Runtime** - Translated to ArkType scope in `domain.ts` during implementation
+
+When designing entities, consider how they'll flow through the schematic pipeline:
+- Entity with `x-mst-type: identifier` → ArkType `id: 'string'`
+- Reference with `x-reference-type: single` → ArkType `product: 'Product'` (entity name only, no `.id` suffix)
+- Reference with `x-reference-type: array` → ArkType `items: 'Item[]'` (entity name with `[]`)
+- Computed inverse arrays → Include them - system auto-detects and marks `x-computed: true`
+- Computed **views** (derived values) → **NOT in schema** - added via `enhanceModels` hook during implementation
+
+**Steps:**
 1. Build Enhanced JSON Schema structure
 2. For each requirement, verify schema element supports it
 3. If gaps found, extend schema (add fields, entities, or relationships)

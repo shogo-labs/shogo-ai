@@ -153,6 +153,40 @@ Total: {n} tasks across {m} dependency levels
 Proceed with implementation?
 ```
 
+---
+
+## Schema-First Principle
+
+**NEVER hand-code MST models.** Always use the schematic pipeline:
+
+1. Domain entities defined in ArkType scope (translate from design phase schema)
+2. `createStoreFromScope()` generates MST models + collections + root store
+3. Enhancement hooks add domain behavior:
+   - `enhanceModels`: Computed views on entities
+   - `enhanceCollections`: Query methods
+   - `enhanceRootStore`: Domain actions, orchestration
+
+### The domain.ts Pattern
+
+Every feature MUST have a `domain.ts` that exports:
+- `{Feature}Domain` - ArkType scope defining entities
+- `create{Feature}Store(options)` - Factory with enhancement hooks
+
+See [domain-pattern.md](references/domain-pattern.md) for the full template and examples.
+
+### What NOT to Do
+
+❌ Don't create `mixin.ts` with hand-coded MST models
+❌ Don't use `types.model()` directly for domain entities
+❌ Don't create standalone `hooks.ts` applied to manual models
+❌ Don't define MST models inline in React contexts
+
+✅ Always use `createStoreFromScope()` with enhancement hooks
+✅ Let the schematic pipeline generate MST boilerplate
+✅ Add behavior via hooks, not manual composition
+
+---
+
 ### Phase 4: TDD Loop
 
 Create implementation run record:
@@ -506,6 +540,7 @@ if (existingRun) {
 
 ## References
 
+- [domain-pattern.md](references/domain-pattern.md) - **Schema-first domain.ts pattern (CRITICAL)**
 - [tdd-workflow.md](references/tdd-workflow.md) - Detailed RED/GREEN cycle
 - [test-templates.md](references/test-templates.md) - Test generation patterns
 - [../platform-feature-analysis/references/patterns/](../platform-feature-analysis/references/patterns/) - Implementation patterns
