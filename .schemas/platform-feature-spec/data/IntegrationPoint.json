@@ -1,94 +1,206 @@
 {
   "items": {
-    "ip-auth-001": {
-      "id": "ip-auth-001",
+    "ip-001": {
+      "id": "ip-001",
       "sessionId": "supabase-auth-001",
-      "package": "apps/web",
-      "filePath": "package.json",
+      "package": "packages/state-api",
+      "filePath": "packages/state-api/src/auth/types.ts",
+      "changeType": "add",
+      "description": "Create IAuthService interface defining auth contract: signIn, signUp, signOut, getSession, onAuthStateChange",
+      "rationale": "Per finding-001/002: follow IPersistenceService pattern with async methods, null returns",
+      "createdAt": 1733418700000,
+      "finding": "finding-001"
+    },
+    "ip-002": {
+      "id": "ip-002",
+      "sessionId": "supabase-auth-001",
+      "package": "packages/state-api",
+      "filePath": "packages/state-api/src/auth/types.ts",
+      "changeType": "add",
+      "description": "Define AuthUser, AuthSession, AuthResult domain types matching schema entities",
+      "rationale": "Types shared between service interface and MST models",
+      "createdAt": 1733418700000,
+      "finding": "finding-001"
+    },
+    "ip-003": {
+      "id": "ip-003",
+      "sessionId": "supabase-auth-001",
+      "package": "packages/state-api",
+      "filePath": "packages/state-api/src/auth/supabase.ts",
+      "changeType": "add",
+      "description": "Create SupabaseAuthService implementing IAuthService, wrapping @supabase/supabase-js client",
+      "rationale": "Per finding-010: singleton service pattern. Browser-only (uses Supabase SDK)",
+      "createdAt": 1733418700000,
+      "finding": "finding-010"
+    },
+    "ip-004": {
+      "id": "ip-004",
+      "sessionId": "supabase-auth-001",
+      "package": "packages/state-api",
+      "filePath": "packages/state-api/src/auth/mock.ts",
+      "changeType": "add",
+      "description": "Create MockAuthService implementing IAuthService with in-memory user/session storage for tests",
+      "rationale": "Per finding-003: follow NullPersistence pattern for test doubles",
+      "createdAt": 1733418700000,
+      "finding": "finding-003"
+    },
+    "ip-005": {
+      "id": "ip-005",
+      "sessionId": "supabase-auth-001",
+      "package": "packages/state-api",
+      "filePath": "packages/state-api/src/environment/types.ts",
       "changeType": "modify",
-      "description": "Add @supabase/supabase-js dependency",
-      "rationale": "Required client library for Supabase auth",
-      "createdAt": 1733408500000
+      "description": "Extend IEnvironment.services to include optional auth?: IAuthService",
+      "rationale": "Per finding-001: services injected via environment, not imported directly",
+      "createdAt": 1733418700000,
+      "finding": "finding-001"
     },
-    "ip-auth-002": {
-      "id": "ip-auth-002",
+    "ip-006": {
+      "id": "ip-006",
       "sessionId": "supabase-auth-001",
       "package": "packages/state-api",
-      "filePath": "src/auth/types.ts",
-      "changeType": "create",
-      "description": "Define IAuthService interface and auth types",
-      "rationale": "Service interface pattern for testability",
-      "createdAt": 1733408500000
+      "filePath": "packages/state-api/src/auth/mixin.ts",
+      "changeType": "add",
+      "description": "Create AuthStateMixin with initialize(), syncFromSupabase(), signIn(), signUp(), signOut() actions",
+      "rationale": "Per finding-004/005 and dd-auth-003: composable mixin for auth actions in root store",
+      "createdAt": 1733418700000,
+      "finding": "finding-004"
     },
-    "ip-auth-003": {
-      "id": "ip-auth-003",
+    "ip-007": {
+      "id": "ip-007",
       "sessionId": "supabase-auth-001",
       "package": "packages/state-api",
-      "filePath": "src/auth/supabase.ts",
-      "changeType": "create",
-      "description": "Implement SupabaseAuthService",
-      "rationale": "Real provider implementation",
-      "createdAt": 1733408500000
+      "filePath": "packages/state-api/src/auth/hooks.ts",
+      "changeType": "add",
+      "description": "Create createAuthEnhancementHooks() returning enhanceModels, enhanceCollections, enhanceRootStore functions",
+      "rationale": "Per dd-auth-003: enhancement hooks for computed views (isExpired, isAuthenticated, currentUser)",
+      "createdAt": 1733418700000
     },
-    "ip-auth-004": {
-      "id": "ip-auth-004",
+    "ip-008": {
+      "id": "ip-008",
       "sessionId": "supabase-auth-001",
       "package": "packages/state-api",
-      "filePath": "src/auth/mock.ts",
-      "changeType": "create",
-      "description": "Implement MockAuthService for testing",
-      "rationale": "Enables unit tests without live Supabase",
-      "createdAt": 1733408500000
+      "filePath": "packages/state-api/src/auth/index.ts",
+      "changeType": "add",
+      "description": "Create barrel export for auth module: types, services, mixin, hooks",
+      "rationale": "Standard module organization pattern",
+      "createdAt": 1733418700000
     },
-    "ip-auth-005": {
-      "id": "ip-auth-005",
-      "sessionId": "supabase-auth-001",
-      "package": "packages/state-api",
-      "filePath": "src/auth/domain.ts",
-      "changeType": "create",
-      "description": "Create auth domain store with MST models and enhancement hooks",
-      "rationale": "Reactive state management for auth",
-      "createdAt": 1733408500000
-    },
-    "ip-auth-006": {
-      "id": "ip-auth-006",
-      "sessionId": "supabase-auth-001",
-      "package": "packages/state-api",
-      "filePath": "src/auth/index.ts",
-      "changeType": "create",
-      "description": "Auth module barrel export",
-      "rationale": "Clean public API",
-      "createdAt": 1733408500000
-    },
-    "ip-auth-007": {
-      "id": "ip-auth-007",
+    "ip-009": {
+      "id": "ip-009",
       "sessionId": "supabase-auth-001",
       "package": "apps/web",
-      "filePath": "src/contexts/AuthContext.tsx",
-      "changeType": "create",
-      "description": "React context provider and useAuth hook",
-      "rationale": "App-wide auth state access",
-      "createdAt": 1733408500000
+      "filePath": "apps/web/src/contexts/AuthContext.tsx",
+      "changeType": "add",
+      "description": "Create AuthProvider and useAuth() hook wrapping MST auth store with React Context",
+      "rationale": "Per finding-009: follow WavesmithStoreContext pattern for app-wide auth state",
+      "createdAt": 1733418700000,
+      "finding": "finding-009"
     },
-    "ip-auth-008": {
-      "id": "ip-auth-008",
+    "ip-010": {
+      "id": "ip-010",
       "sessionId": "supabase-auth-001",
       "package": "apps/web",
-      "filePath": "src/units/Unit4.tsx",
-      "changeType": "create",
-      "description": "Auth demo page with signup/login/logout UI",
-      "rationale": "MVP demo proving auth flow works",
-      "createdAt": 1733408500000
+      "filePath": "apps/web/src/components/Auth/LoginForm.tsx",
+      "changeType": "add",
+      "description": "Create LoginForm component with email/password inputs, error display, loading state",
+      "rationale": "Per finding-012: no existing auth components - need to create",
+      "createdAt": 1733418700000,
+      "finding": "finding-012"
     },
-    "ip-auth-009": {
-      "id": "ip-auth-009",
+    "ip-011": {
+      "id": "ip-011",
       "sessionId": "supabase-auth-001",
       "package": "apps/web",
-      "filePath": ".env.example",
-      "changeType": "create",
-      "description": "Environment variable template for Supabase credentials",
-      "rationale": "Developer onboarding",
-      "createdAt": 1733408500000
+      "filePath": "apps/web/src/components/Auth/SignupForm.tsx",
+      "changeType": "add",
+      "description": "Create SignupForm component with email/password inputs, confirmation, verification message",
+      "rationale": "Per finding-012: no existing auth components - need to create",
+      "createdAt": 1733418700000,
+      "finding": "finding-012"
+    },
+    "ip-012": {
+      "id": "ip-012",
+      "sessionId": "supabase-auth-001",
+      "package": "apps/web",
+      "filePath": "apps/web/src/components/Auth/ProtectedRoute.tsx",
+      "changeType": "add",
+      "description": "Create ProtectedRoute wrapper that redirects unauthenticated users to login",
+      "rationale": "Per finding-013: flat routing needs guards for protected pages",
+      "createdAt": 1733418700000,
+      "finding": "finding-013"
+    },
+    "ip-013": {
+      "id": "ip-013",
+      "sessionId": "supabase-auth-001",
+      "package": "apps/web",
+      "filePath": "apps/web/src/components/Auth/UserMenu.tsx",
+      "changeType": "add",
+      "description": "Create UserMenu component showing current user info and logout button",
+      "rationale": "Common UI pattern for authenticated state display",
+      "createdAt": 1733418700000
+    },
+    "ip-014": {
+      "id": "ip-014",
+      "sessionId": "supabase-auth-001",
+      "package": "apps/web",
+      "filePath": "apps/web/src/components/Auth/index.ts",
+      "changeType": "add",
+      "description": "Create barrel export for Auth components",
+      "rationale": "Standard module organization pattern",
+      "createdAt": 1733418700000
+    },
+    "ip-015": {
+      "id": "ip-015",
+      "sessionId": "supabase-auth-001",
+      "package": "apps/web",
+      "filePath": "apps/web/src/App.tsx",
+      "changeType": "modify",
+      "description": "Wrap app with AuthProvider, add /login and /signup routes, wrap protected routes",
+      "rationale": "Per finding-013: integrate auth into existing routing",
+      "createdAt": 1733418700000,
+      "finding": "finding-013"
+    },
+    "ip-016": {
+      "id": "ip-016",
+      "sessionId": "supabase-auth-001",
+      "package": "apps/web",
+      "filePath": "apps/web/src/pages/LoginPage.tsx",
+      "changeType": "add",
+      "description": "Create LoginPage hosting LoginForm with redirect on success",
+      "rationale": "Page component for /login route",
+      "createdAt": 1733418700000
+    },
+    "ip-017": {
+      "id": "ip-017",
+      "sessionId": "supabase-auth-001",
+      "package": "apps/web",
+      "filePath": "apps/web/src/pages/SignupPage.tsx",
+      "changeType": "add",
+      "description": "Create SignupPage hosting SignupForm with verification flow",
+      "rationale": "Page component for /signup route",
+      "createdAt": 1733418700000
+    },
+    "ip-018": {
+      "id": "ip-018",
+      "sessionId": "supabase-auth-001",
+      "package": "packages/state-api",
+      "filePath": "packages/state-api/tests/auth/auth.test.ts",
+      "changeType": "add",
+      "description": "Create unit tests for IAuthService implementations using MockAuthService",
+      "rationale": "Per finding-008: follow test isolation pattern with mock service reset",
+      "createdAt": 1733418700000,
+      "finding": "finding-008"
+    },
+    "ip-019": {
+      "id": "ip-019",
+      "sessionId": "supabase-auth-001",
+      "package": "packages/state-api",
+      "filePath": "packages/state-api/tests/auth/mixin.test.ts",
+      "changeType": "add",
+      "description": "Create unit tests for AuthStateMixin with mock auth service",
+      "rationale": "Test mixin actions in isolation",
+      "createdAt": 1733418700000
     }
   }
 }

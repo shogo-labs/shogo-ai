@@ -2,50 +2,50 @@
   "items": {
     "req-auth-001": {
       "id": "req-auth-001",
-      "description": "Supabase client initialized with project credentials from environment variables",
+      "description": "Supabase client initialization with environment-based config (SUPABASE_URL, SUPABASE_ANON_KEY)",
       "priority": "must",
       "status": "proposed",
       "session": "supabase-auth-001"
     },
     "req-auth-002": {
       "id": "req-auth-002",
-      "description": "User can sign up with email and password",
+      "description": "Sign up with email/password and email verification flow",
       "priority": "must",
       "status": "proposed",
       "session": "supabase-auth-001"
     },
     "req-auth-003": {
       "id": "req-auth-003",
-      "description": "User can log in with email and password",
+      "description": "Sign in with email/password",
       "priority": "must",
       "status": "proposed",
       "session": "supabase-auth-001"
     },
     "req-auth-004": {
       "id": "req-auth-004",
-      "description": "User can log out and session is cleared",
+      "description": "Session persistence and auto-refresh with reactive local state (loading, error, user)",
       "priority": "must",
       "status": "proposed",
       "session": "supabase-auth-001"
     },
     "req-auth-005": {
       "id": "req-auth-005",
-      "description": "Auth state persists across page refreshes (session recovery)",
+      "description": "Sign out and session invalidation",
       "priority": "must",
       "status": "proposed",
       "session": "supabase-auth-001"
     },
     "req-auth-006": {
       "id": "req-auth-006",
-      "description": "Demo page (Unit 4) showing authenticated user info and auth state",
-      "priority": "must",
+      "description": "Auth service interface abstraction for testability (mock provider support)",
+      "priority": "should",
       "status": "proposed",
       "session": "supabase-auth-001"
     },
     "req-auth-007": {
       "id": "req-auth-007",
-      "description": "React context/hook for accessing auth state throughout the app",
-      "priority": "should",
+      "description": "OAuth providers (Google, GitHub) for social sign-in",
+      "priority": "could",
       "status": "proposed",
       "session": "supabase-auth-001"
     }

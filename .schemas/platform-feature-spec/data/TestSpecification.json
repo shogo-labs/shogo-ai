@@ -1,554 +1,620 @@
 {
   "items": {
-    "test-auth-001": {
-      "id": "test-auth-001",
+    "test-001": {
+      "id": "test-001",
       "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-001",
-      "scenario": "IAuthService interface has required methods",
+      "requirementId": "req-auth-006",
+      "scenario": "MockAuthService.signUp creates user and session",
       "given": [
-        "types.ts file exists in src/auth/"
-      ],
-      "when": "IAuthService interface is inspected",
-      "then": [
-        "Interface has signUp(email, password) method",
-        "Interface has signIn(email, password) method",
-        "Interface has signOut() method",
-        "Interface has getSession() method",
-        "Interface has onAuthStateChange(callback) method"
-      ],
-      "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/types.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-002"
-    },
-    "test-auth-002": {
-      "id": "test-auth-002",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-001",
-      "scenario": "Auth types are properly defined",
-      "given": [
-        "types.ts file exists in src/auth/"
-      ],
-      "when": "Types are imported",
-      "then": [
-        "AuthUser has id and email fields",
-        "AuthSession has user and accessToken fields",
-        "AuthResult is success/error union type"
-      ],
-      "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/types.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-002"
-    },
-    "test-auth-003": {
-      "id": "test-auth-003",
-      "sessionId": "supabase-auth-001",
-      "scenario": "MockAuthService signUp success",
-      "given": [
-        "MockAuthService is instantiated",
+        "MockAuthService instance is created",
         "No user exists with email 'test@example.com'"
       ],
       "when": "signUp('test@example.com', 'password123') is called",
       "then": [
-        "Returns success result with user data",
-        "User is added to internal map",
-        "User id and email are correct"
+        "Returns AuthResult with user.email === 'test@example.com'",
+        "Returns AuthResult with session.userId matching user.id",
+        "user.emailVerified === false initially"
       ],
       "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/mock.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-004"
+      "targetFile": "packages/state-api/tests/auth/mock-auth-service.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-002"
     },
-    "test-auth-004": {
-      "id": "test-auth-004",
+    "test-002": {
+      "id": "test-002",
       "sessionId": "supabase-auth-001",
-      "scenario": "MockAuthService signUp duplicate email",
+      "requirementId": "req-auth-006",
+      "scenario": "MockAuthService.signIn with valid credentials returns session",
       "given": [
-        "MockAuthService is instantiated",
-        "User exists with email 'test@example.com'"
-      ],
-      "when": "signUp('test@example.com', 'password123') is called",
-      "then": [
-        "Returns error result",
-        "Error message indicates email already exists"
-      ],
-      "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/mock.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-004"
-    },
-    "test-auth-005": {
-      "id": "test-auth-005",
-      "sessionId": "supabase-auth-001",
-      "scenario": "MockAuthService signIn success",
-      "given": [
-        "MockAuthService is instantiated",
-        "User exists with email 'test@example.com' and password 'password123'"
+        "MockAuthService instance is created",
+        "User with email 'test@example.com' was signed up with password 'password123'"
       ],
       "when": "signIn('test@example.com', 'password123') is called",
       "then": [
-        "Returns success result with session",
-        "Session contains user and accessToken"
+        "Returns AuthResult with user.email === 'test@example.com'",
+        "Returns AuthResult with valid session",
+        "AuthResult.error is undefined"
       ],
       "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/mock.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-004"
+      "targetFile": "packages/state-api/tests/auth/mock-auth-service.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-002"
     },
-    "test-auth-006": {
-      "id": "test-auth-006",
+    "test-003": {
+      "id": "test-003",
       "sessionId": "supabase-auth-001",
-      "scenario": "MockAuthService signIn invalid credentials",
+      "requirementId": "req-auth-006",
+      "scenario": "MockAuthService.signIn with invalid password returns error",
       "given": [
-        "MockAuthService is instantiated",
-        "User exists with email 'test@example.com' and password 'password123'"
+        "MockAuthService instance is created",
+        "User with email 'test@example.com' was signed up with password 'password123'"
       ],
       "when": "signIn('test@example.com', 'wrongpassword') is called",
       "then": [
-        "Returns error result",
-        "Error message indicates invalid credentials"
+        "Returns AuthResult with user === null",
+        "Returns AuthResult with session === null",
+        "AuthResult.error contains 'Invalid credentials'"
       ],
       "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/mock.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-004"
+      "targetFile": "packages/state-api/tests/auth/mock-auth-service.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-002"
     },
-    "test-auth-007": {
-      "id": "test-auth-007",
+    "test-004": {
+      "id": "test-004",
       "sessionId": "supabase-auth-001",
-      "scenario": "MockAuthService signOut clears session",
+      "requirementId": "req-auth-006",
+      "scenario": "MockAuthService.signOut clears current session",
       "given": [
-        "MockAuthService is instantiated",
-        "User is signed in"
+        "MockAuthService instance is created",
+        "User is signed in with valid session"
       ],
       "when": "signOut() is called",
       "then": [
-        "Returns success",
-        "getSession() returns null"
+        "Resolves without error",
+        "getSession() returns null",
+        "onAuthStateChange callback was invoked with null user"
       ],
       "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/mock.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-004"
+      "targetFile": "packages/state-api/tests/auth/mock-auth-service.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-002"
     },
-    "test-auth-008": {
-      "id": "test-auth-008",
+    "test-005": {
+      "id": "test-005",
       "sessionId": "supabase-auth-001",
-      "scenario": "MockAuthService onAuthStateChange fires on sign in",
+      "requirementId": "req-auth-006",
+      "scenario": "MockAuthService.getSession returns current session",
       "given": [
-        "MockAuthService is instantiated",
+        "MockAuthService instance is created",
+        "User is signed in with valid session"
+      ],
+      "when": "getSession() is called",
+      "then": [
+        "Returns session object with valid id",
+        "Returns session with correct userId",
+        "Returns session with expiresAt in the future"
+      ],
+      "testType": "unit",
+      "targetFile": "packages/state-api/tests/auth/mock-auth-service.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-002"
+    },
+    "test-006": {
+      "id": "test-006",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-006",
+      "scenario": "MockAuthService.onAuthStateChange notifies on auth events",
+      "given": [
+        "MockAuthService instance is created",
         "Callback registered via onAuthStateChange"
       ],
-      "when": "User signs in",
+      "when": "signIn is called with valid credentials",
       "then": [
-        "Callback is called with session data",
-        "Session contains user info"
+        "Callback is invoked with user and session",
+        "Callback receives user.email matching signed-in user"
       ],
       "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/mock.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-004"
+      "targetFile": "packages/state-api/tests/auth/mock-auth-service.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-002"
     },
-    "test-auth-009": {
-      "id": "test-auth-009",
+    "test-007": {
+      "id": "test-007",
       "sessionId": "supabase-auth-001",
-      "scenario": "MockAuthService reset clears all state",
+      "requirementId": "req-auth-006",
+      "scenario": "MockAuthService.reset clears all state for test isolation",
       "given": [
-        "MockAuthService is instantiated",
-        "Users have been registered",
-        "A user is signed in"
+        "MockAuthService instance is created",
+        "User is signed up and signed in"
       ],
       "when": "reset() is called",
       "then": [
-        "All users are cleared",
-        "Current session is null",
-        "Service is in initial state"
+        "getSession() returns null",
+        "signIn with previous credentials fails",
+        "Internal user/session maps are cleared"
       ],
       "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/mock.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-004"
+      "targetFile": "packages/state-api/tests/auth/mock-auth-service.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-002"
     },
-    "test-auth-010": {
-      "id": "test-auth-010",
+    "test-008": {
+      "id": "test-008",
       "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-005",
-      "scenario": "createAuthStore creates store with AuthSession model",
+      "requirementId": "req-auth-004",
+      "scenario": "AuthStateMixin.initialize sets isInitialized and syncs existing session",
       "given": [
-        "MockAuthService is instantiated"
-      ],
-      "when": "createAuthStore is called with authService",
-      "then": [
-        "Store has authSessionCollection",
-        "Can create AuthSession with id, status fields",
-        "Optional userId, email, error fields work"
-      ],
-      "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-005"
-    },
-    "test-auth-011": {
-      "id": "test-auth-011",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-005",
-      "scenario": "AuthSession isAuthenticated view",
-      "given": [
-        "Auth store is created",
-        "AuthSession exists with status 'authenticated'"
-      ],
-      "when": "isAuthenticated view is accessed",
-      "then": [
-        "Returns true when status is 'authenticated'",
-        "Returns false for other statuses"
-      ],
-      "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-005"
-    },
-    "test-auth-012": {
-      "id": "test-auth-012",
-      "sessionId": "supabase-auth-001",
-      "scenario": "AuthSession displayName view",
-      "given": [
-        "Auth store is created",
-        "AuthSession exists with email 'test@example.com'"
-      ],
-      "when": "displayName view is accessed",
-      "then": [
-        "Returns email when set",
-        "Returns 'Guest' when email is null"
-      ],
-      "testType": "unit",
-      "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-005"
-    },
-    "test-auth-013": {
-      "id": "test-auth-013",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-005",
-      "scenario": "Store initialize action recovers session",
-      "given": [
-        "Auth store is created with MockAuthService",
+        "Store created with AuthStateMixin composed",
+        "MockAuthService injected via environment",
         "MockAuthService has existing session"
       ],
       "when": "store.initialize() is called",
       "then": [
-        "AuthSession status becomes 'authenticated'",
-        "AuthSession userId and email are populated from service"
+        "AuthState.isInitialized === true",
+        "AuthState.status === 'authenticated'",
+        "AuthState.user references synced AuthUser entity",
+        "AuthState.session references synced AuthSession entity"
       ],
-      "testType": "integration",
-      "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-005"
+      "testType": "unit",
+      "targetFile": "packages/state-api/tests/auth/auth-state-mixin.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-005"
     },
-    "test-auth-014": {
-      "id": "test-auth-014",
+    "test-009": {
+      "id": "test-009",
       "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-002",
-      "scenario": "Store signUp action success flow",
+      "requirementId": "req-auth-004",
+      "scenario": "AuthStateMixin.initialize with no session sets unauthenticated",
       "given": [
-        "Auth store is created with MockAuthService",
-        "No user exists with email 'new@example.com'"
+        "Store created with AuthStateMixin composed",
+        "MockAuthService injected via environment",
+        "MockAuthService has no existing session"
       ],
-      "when": "store.signUp('new@example.com', 'password123') is called",
+      "when": "store.initialize() is called",
       "then": [
-        "Status transitions to 'loading' during operation",
-        "Status becomes 'authenticated' on success",
-        "userId and email are populated"
+        "AuthState.isInitialized === true",
+        "AuthState.status === 'unauthenticated'",
+        "AuthState.user === null",
+        "AuthState.session === null"
       ],
-      "testType": "integration",
-      "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-005"
+      "testType": "unit",
+      "targetFile": "packages/state-api/tests/auth/auth-state-mixin.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-005"
     },
-    "test-auth-015": {
-      "id": "test-auth-015",
+    "test-010": {
+      "id": "test-010",
       "sessionId": "supabase-auth-001",
-      "scenario": "Store signUp action error handling",
+      "requirementId": "req-auth-004",
+      "scenario": "AuthStateMixin.signIn success updates state",
       "given": [
-        "Auth store is created with MockAuthService",
-        "User already exists with email 'existing@example.com'"
-      ],
-      "when": "store.signUp('existing@example.com', 'password123') is called",
-      "then": [
-        "Status becomes 'unauthenticated'",
-        "Error field contains error message"
-      ],
-      "testType": "integration",
-      "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-005"
-    },
-    "test-auth-016": {
-      "id": "test-auth-016",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-003",
-      "scenario": "Store signIn action success flow",
-      "given": [
-        "Auth store is created with MockAuthService",
-        "User exists with email 'test@example.com'"
+        "Store created with AuthStateMixin composed",
+        "MockAuthService injected via environment",
+        "User 'test@example.com' exists in MockAuthService"
       ],
       "when": "store.signIn('test@example.com', 'password123') is called",
       "then": [
-        "Status transitions to 'loading' during operation",
-        "Status becomes 'authenticated' on success",
-        "userId and email are populated"
+        "AuthState.isLoading === true during operation",
+        "AuthState.status === 'authenticated' after success",
+        "AuthState.user.email === 'test@example.com'",
+        "AuthState.error === null"
       ],
-      "testType": "integration",
-      "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-005"
+      "testType": "unit",
+      "targetFile": "packages/state-api/tests/auth/auth-state-mixin.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-005"
     },
-    "test-auth-017": {
-      "id": "test-auth-017",
+    "test-011": {
+      "id": "test-011",
       "sessionId": "supabase-auth-001",
       "requirementId": "req-auth-004",
-      "scenario": "Store signOut action clears session",
+      "scenario": "AuthStateMixin.signIn failure sets error state",
       "given": [
-        "Auth store is created with MockAuthService",
-        "User is authenticated"
+        "Store created with AuthStateMixin composed",
+        "MockAuthService injected via environment"
+      ],
+      "when": "store.signIn('test@example.com', 'wrongpassword') is called",
+      "then": [
+        "AuthState.isLoading === false after operation",
+        "AuthState.status === 'error'",
+        "AuthState.error contains error message",
+        "AuthState.lastOperation === 'signIn'"
+      ],
+      "testType": "unit",
+      "targetFile": "packages/state-api/tests/auth/auth-state-mixin.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-005"
+    },
+    "test-012": {
+      "id": "test-012",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "AuthStateMixin.signUp success updates state",
+      "given": [
+        "Store created with AuthStateMixin composed",
+        "MockAuthService injected via environment"
+      ],
+      "when": "store.signUp('new@example.com', 'password123') is called",
+      "then": [
+        "AuthState.isLoading === true during operation",
+        "AuthState.status === 'authenticated' after success",
+        "AuthUser entity created with email 'new@example.com'",
+        "AuthUser.emailVerified === false"
+      ],
+      "testType": "unit",
+      "targetFile": "packages/state-api/tests/auth/auth-state-mixin.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-005"
+    },
+    "test-013": {
+      "id": "test-013",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "AuthStateMixin.signOut clears state",
+      "given": [
+        "Store created with AuthStateMixin composed",
+        "User is currently authenticated"
       ],
       "when": "store.signOut() is called",
       "then": [
-        "Status becomes 'unauthenticated'",
-        "userId and email are cleared"
+        "AuthState.status === 'unauthenticated'",
+        "AuthState.user === null",
+        "AuthState.session === null",
+        "AuthState.isLoading === false"
       ],
-      "testType": "integration",
-      "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-005"
+      "testType": "unit",
+      "targetFile": "packages/state-api/tests/auth/auth-state-mixin.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-005"
     },
-    "test-auth-018": {
-      "id": "test-auth-018",
+    "test-014": {
+      "id": "test-014",
       "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-007",
-      "scenario": "AuthProvider initializes store on mount",
+      "requirementId": "req-auth-004",
+      "scenario": "AuthSession.isExpired computed view",
       "given": [
-        "AuthProvider is rendered with MockAuthService",
-        "MockAuthService has no existing session"
+        "AuthSession entity with expiresAt in the past"
+      ],
+      "when": "session.isExpired is accessed",
+      "then": [
+        "Returns true for expired session",
+        "Returns false for session with future expiresAt"
+      ],
+      "testType": "unit",
+      "targetFile": "packages/state-api/tests/auth/auth-enhancement-hooks.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-006"
+    },
+    "test-015": {
+      "id": "test-015",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "authStateCollection.current singleton access",
+      "given": [
+        "Store with authStateCollection",
+        "AuthState entity with id 'current' exists"
+      ],
+      "when": "store.authStateCollection.current is accessed",
+      "then": [
+        "Returns the AuthState entity with id 'current'",
+        "Returns same instance on repeated access"
+      ],
+      "testType": "unit",
+      "targetFile": "packages/state-api/tests/auth/auth-enhancement-hooks.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-006"
+    },
+    "test-016": {
+      "id": "test-016",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "store.isAuthenticated view",
+      "given": [
+        "Store with enhanced root store"
+      ],
+      "when": "store.isAuthenticated is accessed",
+      "then": [
+        "Returns true when AuthState.status === 'authenticated'",
+        "Returns false when AuthState.status === 'unauthenticated'",
+        "Returns false when AuthState.status === 'error'"
+      ],
+      "testType": "unit",
+      "targetFile": "packages/state-api/tests/auth/auth-enhancement-hooks.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-006"
+    },
+    "test-017": {
+      "id": "test-017",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "store.currentUser view",
+      "given": [
+        "Store with enhanced root store",
+        "User is authenticated"
+      ],
+      "when": "store.currentUser is accessed",
+      "then": [
+        "Returns AuthUser entity from AuthState.user",
+        "Returns null when not authenticated"
+      ],
+      "testType": "unit",
+      "targetFile": "packages/state-api/tests/auth/auth-enhancement-hooks.test.ts",
+      "createdAt": 1733419000000,
+      "task": "task-006"
+    },
+    "test-018": {
+      "id": "test-018",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "useAuth hook returns auth state and methods",
+      "given": [
+        "Component wrapped in AuthProvider",
+        "MockAuthService injected"
+      ],
+      "when": "useAuth() is called in component",
+      "then": [
+        "Returns user, session, status, isLoading, error properties",
+        "Returns signIn, signUp, signOut methods",
+        "Methods are callable functions"
+      ],
+      "testType": "unit",
+      "targetFile": "apps/web/src/contexts/__tests__/AuthContext.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-008"
+    },
+    "test-019": {
+      "id": "test-019",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "useAuth throws when used outside AuthProvider",
+      "given": [
+        "Component NOT wrapped in AuthProvider"
+      ],
+      "when": "useAuth() is called in component",
+      "then": [
+        "Throws error with message about missing AuthProvider"
+      ],
+      "testType": "unit",
+      "targetFile": "apps/web/src/contexts/__tests__/AuthContext.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-008"
+    },
+    "test-020": {
+      "id": "test-020",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "AuthProvider initializes on mount",
+      "given": [
+        "AuthProvider rendered with MockAuthService"
       ],
       "when": "Component mounts",
       "then": [
         "store.initialize() is called",
-        "Auth state is 'unauthenticated'"
+        "isInitialized becomes true",
+        "Loading indicator shown during initialization"
       ],
       "testType": "integration",
       "targetFile": "apps/web/src/contexts/__tests__/AuthContext.test.tsx",
-      "createdAt": 1733408800000,
-      "task": "task-auth-007"
+      "createdAt": 1733419000000,
+      "task": "task-008"
     },
-    "test-auth-019": {
-      "id": "test-auth-019",
+    "test-021": {
+      "id": "test-021",
       "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-007",
-      "scenario": "AuthProvider sets up auth state subscription",
+      "requirementId": "req-auth-003",
+      "scenario": "LoginForm submits credentials and calls signIn",
       "given": [
-        "AuthProvider is rendered with MockAuthService"
+        "LoginForm rendered within AuthProvider",
+        "MockAuthService with registered user"
       ],
-      "when": "Auth state changes in service",
+      "when": "User enters email/password and clicks submit",
       "then": [
-        "Store is updated with new auth state",
-        "Components re-render with new state"
+        "signIn is called with entered credentials",
+        "Loading state shown during submission",
+        "onSuccess callback triggered on success"
       ],
       "testType": "integration",
-      "targetFile": "apps/web/src/contexts/__tests__/AuthContext.test.tsx",
-      "createdAt": 1733408800000,
-      "task": "task-auth-007"
+      "targetFile": "apps/web/src/components/Auth/__tests__/LoginForm.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-009"
     },
-    "test-auth-020": {
-      "id": "test-auth-020",
+    "test-022": {
+      "id": "test-022",
       "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-007",
-      "scenario": "AuthProvider cleans up subscription on unmount",
+      "requirementId": "req-auth-003",
+      "scenario": "LoginForm displays error on failed sign in",
       "given": [
-        "AuthProvider is rendered with MockAuthService",
-        "Subscription is active"
+        "LoginForm rendered within AuthProvider",
+        "MockAuthService configured to reject credentials"
       ],
-      "when": "Component unmounts",
-      "then": [
-        "Unsubscribe function is called",
-        "No memory leaks from dangling subscriptions"
-      ],
-      "testType": "integration",
-      "targetFile": "apps/web/src/contexts/__tests__/AuthContext.test.tsx",
-      "createdAt": 1733408800000,
-      "task": "task-auth-007"
-    },
-    "test-auth-021": {
-      "id": "test-auth-021",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-007",
-      "scenario": "useAuth hook provides typed store access",
-      "given": [
-        "Component is wrapped in AuthProvider"
-      ],
-      "when": "useAuth() is called",
-      "then": [
-        "Returns auth store with correct types",
-        "Can access authSession, signIn, signUp, signOut"
-      ],
-      "testType": "unit",
-      "targetFile": "apps/web/src/contexts/__tests__/AuthContext.test.tsx",
-      "createdAt": 1733408800000,
-      "task": "task-auth-007"
-    },
-    "test-auth-022": {
-      "id": "test-auth-022",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-007",
-      "scenario": "useAuth throws outside AuthProvider",
-      "given": [
-        "Component is NOT wrapped in AuthProvider"
-      ],
-      "when": "useAuth() is called",
-      "then": [
-        "Throws error with helpful message",
-        "Message indicates AuthProvider is required"
-      ],
-      "testType": "unit",
-      "targetFile": "apps/web/src/contexts/__tests__/AuthContext.test.tsx",
-      "createdAt": 1733408800000,
-      "task": "task-auth-007"
-    },
-    "test-auth-023": {
-      "id": "test-auth-023",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-006",
-      "scenario": "Unit4 shows signup form when unauthenticated",
-      "given": [
-        "User is not authenticated",
-        "Unit4 component is rendered"
-      ],
-      "when": "Page loads",
-      "then": [
-        "Email input is visible",
-        "Password input is visible",
-        "Confirm password input is visible",
-        "Sign Up button is visible"
-      ],
-      "testType": "acceptance",
-      "targetFile": "apps/web/src/units/__tests__/Unit4.test.tsx",
-      "createdAt": 1733408800000,
-      "task": "task-auth-008"
-    },
-    "test-auth-024": {
-      "id": "test-auth-024",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-006",
-      "scenario": "Unit4 shows login form when unauthenticated",
-      "given": [
-        "User is not authenticated",
-        "Unit4 component is rendered"
-      ],
-      "when": "Page loads",
-      "then": [
-        "Email input is visible",
-        "Password input is visible",
-        "Login button is visible"
-      ],
-      "testType": "acceptance",
-      "targetFile": "apps/web/src/units/__tests__/Unit4.test.tsx",
-      "createdAt": 1733408800000,
-      "task": "task-auth-008"
-    },
-    "test-auth-025": {
-      "id": "test-auth-025",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-006",
-      "scenario": "Unit4 displays loading state during auth",
-      "given": [
-        "User submits login form",
-        "Auth operation is in progress"
-      ],
-      "when": "Status is 'loading'",
-      "then": [
-        "Loading indicator is visible",
-        "Form inputs are disabled",
-        "Submit button is disabled"
-      ],
-      "testType": "acceptance",
-      "targetFile": "apps/web/src/units/__tests__/Unit4.test.tsx",
-      "createdAt": 1733408800000,
-      "task": "task-auth-008"
-    },
-    "test-auth-026": {
-      "id": "test-auth-026",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-006",
-      "scenario": "Unit4 shows error messages on auth failure",
-      "given": [
-        "User submits login with invalid credentials"
-      ],
-      "when": "Auth fails with error",
+      "when": "User enters invalid credentials and clicks submit",
       "then": [
         "Error message is displayed",
-        "Form remains visible for retry"
-      ],
-      "testType": "acceptance",
-      "targetFile": "apps/web/src/units/__tests__/Unit4.test.tsx",
-      "createdAt": 1733408800000,
-      "task": "task-auth-008"
-    },
-    "test-auth-027": {
-      "id": "test-auth-027",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-006",
-      "scenario": "Unit4 shows authenticated user info",
-      "given": [
-        "User is authenticated as 'test@example.com'"
-      ],
-      "when": "Page is rendered",
-      "then": [
-        "User email is displayed",
-        "User ID is displayed",
-        "Logout button is visible"
-      ],
-      "testType": "acceptance",
-      "targetFile": "apps/web/src/units/__tests__/Unit4.test.tsx",
-      "createdAt": 1733408800000,
-      "task": "task-auth-008"
-    },
-    "test-auth-028": {
-      "id": "test-auth-028",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-006",
-      "scenario": "Unit4 logout flow",
-      "given": [
-        "User is authenticated"
-      ],
-      "when": "User clicks Logout button",
-      "then": [
-        "signOut action is called",
-        "UI transitions to unauthenticated state",
-        "Login/signup forms are shown"
-      ],
-      "testType": "acceptance",
-      "targetFile": "apps/web/src/units/__tests__/Unit4.test.tsx",
-      "createdAt": 1733408800000,
-      "task": "task-auth-008"
-    },
-    "test-auth-029": {
-      "id": "test-auth-029",
-      "sessionId": "supabase-auth-001",
-      "requirementId": "req-auth-001",
-      "scenario": "App shows error when credentials missing",
-      "given": [
-        "VITE_SUPABASE_URL is not set",
-        "VITE_SUPABASE_ANON_KEY is not set"
-      ],
-      "when": "App attempts to initialize auth",
-      "then": [
-        "Clear error message is shown",
-        "App does not crash",
-        "Error indicates which env vars are missing"
+        "Form is not disabled after error",
+        "User can retry"
       ],
       "testType": "integration",
-      "targetFile": "apps/web/src/__tests__/env.test.ts",
-      "createdAt": 1733408800000,
-      "task": "task-auth-009"
+      "targetFile": "apps/web/src/components/Auth/__tests__/LoginForm.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-009"
+    },
+    "test-023": {
+      "id": "test-023",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-002",
+      "scenario": "SignupForm validates password confirmation",
+      "given": [
+        "SignupForm rendered within AuthProvider"
+      ],
+      "when": "User enters mismatched passwords",
+      "then": [
+        "Validation error shown for password mismatch",
+        "Form submission is prevented",
+        "signUp is not called"
+      ],
+      "testType": "unit",
+      "targetFile": "apps/web/src/components/Auth/__tests__/SignupForm.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-010"
+    },
+    "test-024": {
+      "id": "test-024",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-002",
+      "scenario": "SignupForm shows verification message on success",
+      "given": [
+        "SignupForm rendered within AuthProvider",
+        "MockAuthService accepts signup"
+      ],
+      "when": "User submits valid signup form",
+      "then": [
+        "signUp is called with credentials",
+        "Email verification message is displayed",
+        "Form inputs are cleared or disabled"
+      ],
+      "testType": "integration",
+      "targetFile": "apps/web/src/components/Auth/__tests__/SignupForm.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-010"
+    },
+    "test-025": {
+      "id": "test-025",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "ProtectedRoute redirects unauthenticated users",
+      "given": [
+        "ProtectedRoute wrapping child content",
+        "User is not authenticated"
+      ],
+      "when": "ProtectedRoute is rendered",
+      "then": [
+        "Navigate to /login is rendered",
+        "Child content is not rendered"
+      ],
+      "testType": "unit",
+      "targetFile": "apps/web/src/components/Auth/__tests__/ProtectedRoute.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-011"
+    },
+    "test-026": {
+      "id": "test-026",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "ProtectedRoute renders children when authenticated",
+      "given": [
+        "ProtectedRoute wrapping child content",
+        "User is authenticated"
+      ],
+      "when": "ProtectedRoute is rendered",
+      "then": [
+        "Child content is rendered",
+        "No redirect occurs"
+      ],
+      "testType": "unit",
+      "targetFile": "apps/web/src/components/Auth/__tests__/ProtectedRoute.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-011"
+    },
+    "test-027": {
+      "id": "test-027",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "ProtectedRoute shows loading during initialization",
+      "given": [
+        "ProtectedRoute wrapping child content",
+        "Auth is still initializing (isInitialized === false)"
+      ],
+      "when": "ProtectedRoute is rendered",
+      "then": [
+        "Loading indicator is displayed",
+        "Child content is not rendered",
+        "No redirect occurs"
+      ],
+      "testType": "unit",
+      "targetFile": "apps/web/src/components/Auth/__tests__/ProtectedRoute.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-011"
+    },
+    "test-028": {
+      "id": "test-028",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-005",
+      "scenario": "UserMenu displays user info and logout button",
+      "given": [
+        "UserMenu rendered within AuthProvider",
+        "User is authenticated with email 'test@example.com'"
+      ],
+      "when": "UserMenu is rendered",
+      "then": [
+        "User email is displayed",
+        "Logout button is visible"
+      ],
+      "testType": "unit",
+      "targetFile": "apps/web/src/components/Auth/__tests__/UserMenu.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-012"
+    },
+    "test-029": {
+      "id": "test-029",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-005",
+      "scenario": "UserMenu logout button calls signOut",
+      "given": [
+        "UserMenu rendered within AuthProvider",
+        "User is authenticated"
+      ],
+      "when": "User clicks logout button",
+      "then": [
+        "signOut is called",
+        "Loading state shown during signOut"
+      ],
+      "testType": "integration",
+      "targetFile": "apps/web/src/components/Auth/__tests__/UserMenu.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-012"
+    },
+    "test-030": {
+      "id": "test-030",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "Full login flow end-to-end",
+      "given": [
+        "App rendered with all auth components",
+        "User exists in MockAuthService",
+        "User is on /login page"
+      ],
+      "when": "User enters valid credentials and submits",
+      "then": [
+        "User is redirected to home page",
+        "Navigation shows UserMenu instead of login link",
+        "Protected routes become accessible"
+      ],
+      "testType": "acceptance",
+      "targetFile": "apps/web/src/__tests__/auth-flow.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-014"
+    },
+    "test-031": {
+      "id": "test-031",
+      "sessionId": "supabase-auth-001",
+      "requirementId": "req-auth-004",
+      "scenario": "Full logout flow end-to-end",
+      "given": [
+        "App rendered with all auth components",
+        "User is authenticated",
+        "User is on protected page"
+      ],
+      "when": "User clicks logout in UserMenu",
+      "then": [
+        "User is redirected to login page",
+        "Navigation shows login link instead of UserMenu",
+        "Accessing protected route redirects to login"
+      ],
+      "testType": "acceptance",
+      "targetFile": "apps/web/src/__tests__/auth-flow.test.tsx",
+      "createdAt": 1733419000000,
+      "task": "task-014"
     }
   }
 }

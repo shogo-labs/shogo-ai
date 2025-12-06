@@ -28,7 +28,8 @@
             "integration_point",
             "risk",
             "gap",
-            "existing_test"
+            "existing_test",
+            "verification"
           ]
         },
         "description": {
@@ -191,7 +192,8 @@
           "enum": [
             "planned",
             "in_progress",
-            "complete"
+            "complete",
+            "blocked"
           ]
         },
         "createdAt": {
@@ -295,6 +297,151 @@
         "createdAt"
       ],
       "x-original-name": "TestSpecification"
+    },
+    "ImplementationRun": {
+      "type": "object",
+      "description": "A single execution run of the implementation skill",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique run identifier",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Reference to PlatformFeatureSession ID (cross-schema)",
+          "enum": []
+        },
+        "status": {
+          "type": "string",
+          "description": "Current run status",
+          "enum": [
+            "in_progress",
+            "blocked",
+            "complete",
+            "failed"
+          ]
+        },
+        "currentTaskId": {
+          "type": "string",
+          "description": "Task currently being executed",
+          "enum": []
+        },
+        "completedTasks": {
+          "type": "array",
+          "description": "IDs of successfully completed tasks",
+          "enum": []
+        },
+        "failedTasks": {
+          "type": "array",
+          "description": "IDs of tasks that failed/blocked",
+          "enum": []
+        },
+        "startedAt": {
+          "type": "number",
+          "description": "Run start timestamp (epoch ms)",
+          "enum": []
+        },
+        "completedAt": {
+          "type": "number",
+          "description": "Run completion timestamp (epoch ms)",
+          "enum": []
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Most recent error message if any",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "status",
+        "startedAt"
+      ],
+      "x-original-name": "ImplementationRun"
+    },
+    "TaskExecution": {
+      "type": "object",
+      "description": "Execution record for a single task attempt",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique execution identifier",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "runId": {
+          "type": "string",
+          "description": "Reference to ImplementationRun",
+          "enum": [],
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "taskId": {
+          "type": "string",
+          "description": "Reference to ImplementationTask",
+          "enum": [],
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "status": {
+          "type": "string",
+          "description": "Current execution status",
+          "enum": [
+            "pending",
+            "test_written",
+            "test_failing",
+            "implementing",
+            "test_passing",
+            "failed"
+          ]
+        },
+        "testFilePath": {
+          "type": "string",
+          "description": "Path to generated test file",
+          "enum": []
+        },
+        "implementationFilePath": {
+          "type": "string",
+          "description": "Path to implementation file",
+          "enum": []
+        },
+        "testOutput": {
+          "type": "string",
+          "description": "Output from test runner",
+          "enum": []
+        },
+        "retryCount": {
+          "type": "number",
+          "description": "Number of retry attempts",
+          "enum": []
+        },
+        "errorMessage": {
+          "type": "string",
+          "description": "Error message if failed",
+          "enum": []
+        },
+        "startedAt": {
+          "type": "number",
+          "description": "Execution start timestamp (epoch ms)",
+          "enum": []
+        },
+        "completedAt": {
+          "type": "number",
+          "description": "Execution completion timestamp (epoch ms)",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "runId",
+        "taskId",
+        "status",
+        "startedAt"
+      ],
+      "x-original-name": "TaskExecution"
     }
   }
 }

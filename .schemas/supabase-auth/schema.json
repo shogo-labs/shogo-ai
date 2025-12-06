@@ -1,51 +1,200 @@
 {
-  "id": "5ab60e24-dfe3-4b76-9c1f-84aade3982ae",
+  "id": "fbc7f146-16f9-46fa-a3d1-1f65ff139900",
   "name": "supabase-auth",
   "format": "enhanced-json-schema",
-  "createdAt": 1764973850047,
+  "createdAt": 1764982527092,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
-    "AuthSession": {
+    "AuthUser": {
       "type": "object",
-      "description": "Local auth state singleton. Access via authSessionCollection.get('current')",
+      "description": "Cached Supabase user data for reactive UI observation. Synced from onAuthStateChange.",
       "properties": {
         "id": {
           "type": "string",
-          "description": "Always 'current' for singleton access pattern",
+          "description": "Supabase user UUID",
           "enum": [],
           "x-mst-type": "identifier"
         },
-        "userId": {
-          "type": "string",
-          "description": "Supabase user ID when authenticated",
-          "enum": []
-        },
         "email": {
           "type": "string",
-          "description": "Cached email from Supabase session",
+          "format": "email",
+          "description": "User email address",
           "enum": []
         },
-        "status": {
+        "emailVerified": {
+          "type": "boolean",
+          "description": "Whether email has been verified",
+          "enum": []
+        },
+        "phone": {
           "type": "string",
-          "description": "Current auth state for UI",
+          "description": "User phone number (optional)",
+          "enum": []
+        },
+        "phoneVerified": {
+          "type": "boolean",
+          "description": "Whether phone has been verified",
+          "enum": []
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Account creation timestamp",
+          "enum": []
+        },
+        "lastSignIn": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last successful sign-in timestamp",
+          "enum": []
+        },
+        "provider": {
+          "type": "string",
+          "description": "Authentication provider used",
           "enum": [
-            "idle",
-            "loading",
-            "authenticated",
-            "unauthenticated"
+            "email",
+            "google",
+            "github"
           ]
         },
-        "error": {
+        "displayName": {
           "type": "string",
-          "description": "Last error message from auth operation",
+          "description": "User display name from profile or OAuth",
+          "enum": []
+        },
+        "avatarUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Profile avatar URL from OAuth provider",
           "enum": []
         }
       },
       "required": [
         "id",
-        "status"
+        "email",
+        "emailVerified",
+        "createdAt"
+      ],
+      "x-original-name": "AuthUser"
+    },
+    "AuthSession": {
+      "type": "object",
+      "description": "Cached session metadata for tracking expiry/refresh. NO tokens stored (security).",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Session identifier",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "user": {
+          "type": "string",
+          "description": "Reference to AuthUser",
+          "enum": [],
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Session expiration timestamp",
+          "enum": []
+        },
+        "refreshedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last token refresh timestamp",
+          "enum": []
+        },
+        "isExpired": {
+          "type": "boolean",
+          "description": "Computed: whether session has expired",
+          "enum": [],
+          "x-computed": true
+        }
+      },
+      "required": [
+        "id",
+        "user",
+        "expiresAt"
       ],
       "x-original-name": "AuthSession"
+    },
+    "AuthState": {
+      "type": "object",
+      "description": "Current auth UI state - singleton accessed via known ID 'current'. Tracks status, loading, errors.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "State identifier (use 'current' for singleton access)",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "status": {
+          "type": "string",
+          "description": "Current authentication status",
+          "enum": [
+            "unauthenticated",
+            "authenticating",
+            "authenticated",
+            "error",
+            "initializing"
+          ]
+        },
+        "user": {
+          "type": "string",
+          "description": "Reference to current AuthUser (null if unauthenticated)",
+          "enum": [],
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single"
+        },
+        "session": {
+          "type": "string",
+          "description": "Reference to current AuthSession (null if unauthenticated)",
+          "enum": [],
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single"
+        },
+        "error": {
+          "type": "string",
+          "description": "Current error message (null if no error)",
+          "enum": []
+        },
+        "errorCode": {
+          "type": "string",
+          "description": "Error code for programmatic handling",
+          "enum": []
+        },
+        "isLoading": {
+          "type": "boolean",
+          "description": "Whether an auth operation is in progress",
+          "enum": []
+        },
+        "isInitialized": {
+          "type": "boolean",
+          "description": "Whether initial session check has completed",
+          "enum": []
+        },
+        "lastOperation": {
+          "type": "string",
+          "description": "Last attempted operation (for error context)",
+          "enum": [
+            "signIn",
+            "signUp",
+            "signOut",
+            "refresh",
+            "passwordReset",
+            "none"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "isLoading",
+        "isInitialized"
+      ],
+      "x-original-name": "AuthState"
     }
   }
 }

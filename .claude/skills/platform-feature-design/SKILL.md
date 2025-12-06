@@ -2,16 +2,16 @@
 name: platform-feature-design
 description: >
   Domain modeling and schema design for platform features. Use after
-  platform-feature-discovery to create Enhanced JSON Schema for features
-  that need persistent entities. Takes a PlatformFeatureSession with
-  requirements and produces a schema in .schemas/{feature}/. Invoke when
-  ready to "design the schema", "create the domain model", "continue to
-  design phase", or after discovery handoff.
+  platform-feature-analysis (explore mode) to create Enhanced JSON Schema
+  informed by codebase patterns. Takes a PlatformFeatureSession with
+  requirements and analysis findings, produces schema in .schemas/{feature}/.
+  Invoke when ready to "design the schema", "create the domain model",
+  or when session status=design.
 ---
 
 # Platform Feature Design
 
-Transform discovery requirements into Enhanced JSON Schema for Wavesmith.
+Transform discovery requirements into Enhanced JSON Schema for Wavesmith, informed by analysis findings.
 
 ## Output
 
@@ -26,15 +26,37 @@ Transform discovery requirements into Enhanced JSON Schema for Wavesmith.
 1. Load `platform-features` schema
 2. Find session by name or ID (ask if ambiguous)
 3. Load associated Requirements
-4. Present summary:
+4. **Check for Analysis Findings**:
+   ```javascript
+   schema.load("platform-feature-spec")
+   data.loadAll("platform-feature-spec")
+   findings = store.list("AnalysisFinding", "platform-feature-spec", { sessionId: session.id })
+   ```
+5. Present summary:
    ```
    Session: {name}
    Intent: {intent}
    Requirements: {count}
    Affected packages: {list}
 
+   Analysis Findings: {count}
+   - Patterns: {pattern findings}
+   - Gaps: {gap findings}
+   - Risks: {risk findings}
+
    Ready to design the domain model?
    ```
+
+**If no analysis findings exist:**
+```
+⚠️ No analysis findings found for this session.
+
+Analysis helps discover existing patterns to follow. Options:
+1. Run analysis first (recommended) - invoke platform-feature-analysis
+2. Proceed without analysis (may miss existing patterns)
+
+Which approach?
+```
 
 ### Phase 2: Entity Design
 

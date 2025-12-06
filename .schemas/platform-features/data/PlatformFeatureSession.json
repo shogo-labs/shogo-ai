@@ -3,14 +3,17 @@
     "supabase-auth-001": {
       "id": "supabase-auth-001",
       "name": "supabase-auth",
-      "intent": "Add Supabase auth layer to web app with email/password flow. MVP demo page proving signup/login/logout works. Foundation for future multi-user platform support.",
-      "status": "testing",
+      "intent": "Add an authentication layer using Supabase Auth for user sign-in, sign-up, session management, and protected routes/actions",
+      "status": "complete",
       "affectedPackages": [
-        "apps/web"
+        "packages/state-api",
+        "packages/mcp",
+        "apps/web",
+        ".schemas"
       ],
       "schemaName": "supabase-auth",
-      "createdAt": 1733407200000,
-      "updatedAt": 1733408700000
+      "createdAt": 1733418000000,
+      "updatedAt": 1733419100000
     }
   }
 }

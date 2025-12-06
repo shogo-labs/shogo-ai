@@ -27,6 +27,9 @@ Stored in `platform-features` schema via Wavesmith.
 
 1. Understand what the developer wants to add
 2. Clarify scope if ambiguous ("What problem does this solve?", "Who needs this?")
+
+**Local State Principle**: All features that have state needs will have local MST models. This is not a question to ask - it's how the platform works. External services own their data, but local state tracks loading/error/cached data for reactive UI. Don't ask "should we sync locally?" - the answer is always yes.
+
 3. **Classify the feature archetype** using the decision tree:
 
    | Archetype | Indicators | Applicable Patterns |
@@ -95,14 +98,17 @@ Typical count: 3-5 for simple features, 5-7 for complex ones.
 
 1. Summarize session state to developer
 2. Confirm requirements coverage ("Does this capture what you need?")
-3. Update session status if moving forward:
+3. **Do NOT change session status** - it stays at `discovery`
+   - Analysis skill expects `status: "discovery"` to run explore mode
+   - Analysis will transition to `design` after exploration
+4. Present handoff:
    ```
-   store.update(sessionId, "PlatformFeatureSession", "platform-features", {
-     status: "design",
-     updatedAt: Date.now()
-   })
+   Discovery complete. Session: {name}
+   Status: discovery (unchanged)
+
+   Next step: Run platform-feature-analysis to explore existing codebase patterns.
+   Analysis will discover integration points and transition status to "design".
    ```
-4. Indicate readiness for `platform-feature-design` skill
 
 ## Wavesmith Operations
 
