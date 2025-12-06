@@ -25,3 +25,6 @@ export * from './persistence'
 
 // Utilities
 export * from './utils'
+
+// Auth module
+export * from './auth'

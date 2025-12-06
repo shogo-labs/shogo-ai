@@ -1,0 +1,13 @@
+{
+  "items": {
+    "run-supabase-auth-001": {
+      "id": "run-supabase-auth-001",
+      "sessionId": "supabase-auth-001",
+      "status": "complete",
+      "completedTasks": [],
+      "failedTasks": [],
+      "startedAt": 1733497200000,
+      "completedAt": 1733486400000
+    }
+  }
+}

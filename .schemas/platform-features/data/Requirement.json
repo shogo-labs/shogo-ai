@@ -1,0 +1,53 @@
+{
+  "items": {
+    "req-auth-001": {
+      "id": "req-auth-001",
+      "description": "Users can sign up with email and password via Supabase Auth",
+      "priority": "must",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-002": {
+      "id": "req-auth-002",
+      "description": "Users can log in with email and password via Supabase Auth",
+      "priority": "must",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-003": {
+      "id": "req-auth-003",
+      "description": "Users can log out, clearing session state",
+      "priority": "must",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-004": {
+      "id": "req-auth-004",
+      "description": "Local MST state tracks current user, loading states, and errors for reactive UI",
+      "priority": "must",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-005": {
+      "id": "req-auth-005",
+      "description": "Auth state persists across page refreshes (session restoration)",
+      "priority": "must",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-006": {
+      "id": "req-auth-006",
+      "description": "Supabase client is injected via MST environment for testability",
+      "priority": "should",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    },
+    "req-auth-007": {
+      "id": "req-auth-007",
+      "description": "Auth errors are captured and surfaced to UI (invalid credentials, network errors)",
+      "priority": "should",
+      "status": "proposed",
+      "session": "supabase-auth-001"
+    }
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "items": {
+    "finding-001": {
+      "id": "finding-001",
+      "sessionId": "supabase-auth-001",
+      "type": "pattern",
+      "description": "IEnvironment interface with services injection pattern exists and supports extensibility",
+      "location": "packages/state-api/src/environment/types.ts",
+      "relevantCode": "export interface IEnvironment { services: { persistence: IPersistenceService }, context: { schemaName: string, location?: string } }",
+      "recommendation": "Extend IEnvironment with auth service: services.auth: IAuthService",
+      "createdAt": 1733524800000
+    },
+    "finding-002": {
+      "id": "finding-002",
+      "sessionId": "supabase-auth-001",
+      "type": "pattern",
+      "description": "IPersistenceService interface pattern provides template for IAuthService design",
+      "location": "packages/state-api/src/persistence/types.ts",
+      "relevantCode": "export interface IPersistenceService { saveCollection(...), loadCollection(...), saveEntity(...), loadEntity(...) }",
+      "recommendation": "Follow same interface pattern for IAuthService with signUp(), signIn(), signOut(), getCurrentSession(), onAuthStateChange()",
+      "createdAt": 1733524800000
+    },
+    "finding-003": {
+      "id": "finding-003",
+      "sessionId": "supabase-auth-001",
+      "type": "pattern",
+      "description": "NullPersistence provides mock implementation pattern for testing",
+      "location": "packages/state-api/src/persistence/null.ts",
+      "relevantCode": "export class NullPersistence implements IPersistenceService { private store = new Map<string, any>() ... }",
+      "recommendation": "Create MockAuthService for testing that implements IAuthService with in-memory session state",
+      "createdAt": 1733524800000
+    },
+    "finding-004": {
+      "id": "finding-004",
+      "sessionId": "supabase-auth-001",
+      "type": "pattern",
+      "description": "React context provider pattern with useRef for stable store instance",
+      "location": "apps/web/src/contexts/WavesmithStoreContext.tsx",
+      "relevantCode": "const storeRef = useRef<any>(null); if (!storeRef.current) { storeRef.current = createStore() }",
+      "recommendation": "Create AuthContext with similar pattern - stable Supabase client and auth store instance",
+      "createdAt": 1733524800000
+    },
+    "finding-005": {
+      "id": "finding-005",
+      "sessionId": "supabase-auth-001",
+      "type": "pattern",
+      "description": "Observer-wrapped components for MobX reactivity",
+      "location": "apps/web/src/components/Unit1_HostDemo/HostMSTDemo.tsx",
+      "relevantCode": "const DemoContent = observer(function DemoContent({ ... }) { ... })",
+      "recommendation": "Auth-dependent components should be wrapped in observer() to react to auth state changes",
+      "createdAt": 1733524800000
+    },
+    "finding-006": {
+      "id": "finding-006",
+      "sessionId": "supabase-auth-001",
+      "type": "gap",
+      "description": "No existing authentication infrastructure - need to create from scratch",
+      "location": "packages/state-api/src/",
+      "relevantCode": "",
+      "recommendation": "Create new auth/ directory in state-api with types.ts, supabase.ts, mock.ts",
+      "createdAt": 1733524800000
+    },
+    "finding-007": {
+      "id": "finding-007",
+      "sessionId": "supabase-auth-001",
+      "type": "gap",
+      "description": "No route protection pattern - all routes are currently public",
+      "location": "apps/web/src/App.tsx",
+      "relevantCode": "<Route path='/unit1' element={<Unit1Page />} />",
+      "recommendation": "Create ProtectedRoute component wrapper for auth-required routes",
+      "createdAt": 1733524800000
+    },
+    "finding-008": {
+      "id": "finding-008",
+      "sessionId": "supabase-auth-001",
+      "type": "pattern",
+      "description": "Custom hooks pattern for state access (useWavesmithStore, useSchemaPreview)",
+      "location": "apps/web/src/hooks/",
+      "relevantCode": "export function useWavesmithStore<T = any>(): T { const store = useContext(StoreContext); if (!store) throw Error(...) }",
+      "recommendation": "Create useAuth() hook that returns { user, loading, error, signIn, signUp, signOut }",
+      "createdAt": 1733524800000
+    },
+    "finding-009": {
+      "id": "finding-009",
+      "sessionId": "supabase-auth-001",
+      "type": "existing_test",
+      "description": "Environment types test provides pattern for testing service injection",
+      "location": "packages/state-api/tests/environment/types.test.ts",
+      "relevantCode": "const env: IEnvironment = { services: { persistence: new NullPersistence() }, context: { schemaName: 'TestSchema' } }",
+      "recommendation": "Follow this pattern for auth service tests with MockAuthService injection",
+      "createdAt": 1733524800000
+    },
+    "finding-010": {
+      "id": "finding-010",
+      "sessionId": "supabase-auth-001",
+      "type": "risk",
+      "description": "Supabase client initialization requires environment variables (SUPABASE_URL, SUPABASE_ANON_KEY)",
+      "location": "apps/web/",
+      "relevantCode": "",
+      "recommendation": "Add .env.example with required vars; validate at app startup; fail gracefully if missing",
+      "createdAt": 1733524800000
+    }
+  }
+}
