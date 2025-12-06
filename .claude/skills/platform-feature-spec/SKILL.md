@@ -61,16 +61,17 @@ Analyze integration points and group them into logical implementation tasks:
 |---------|-----------|----------------------------|
 | Service Interface | Add types.ts, {provider}.ts, mock.ts | Interface has no runtime imports; mock implements full interface |
 | Environment Extension | Extend IEnvironment | Services accessible via getEnv() |
-| Provider Sync | Add _syncFromProvider, initialize, setupSubscription | Initialize fetches state; subscription returns cleanup |
+| **Domain Store** | Add domain.ts with createStoreFromScope | Exports {Domain}Domain scope and create{Domain}Store factory; enhancement hooks add views/actions |
 | React Context | Add Provider, hook, observer components | useRef for store; cleanup in useEffect |
 
 See pattern references for detailed structure and anti-patterns:
 - [patterns/02-service-interface.md](references/patterns/02-service-interface.md)
 - [patterns/03-environment-extension.md](references/patterns/03-environment-extension.md)
-- [patterns/06-provider-synchronization.md](references/patterns/06-provider-synchronization.md)
+- [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.md)
 - [patterns/07-react-context-integration.md](references/patterns/07-react-context-integration.md)
 
 **Grouping heuristics**:
+- **Domain store = single task**: All enhancement hooks (models, collections, root) belong together in domain.ts - never split into separate mixin.ts or hooks.ts files
 - Same module/feature area (e.g., all auth tools together)
 - Shared dependencies (e.g., utility modules before consumers)
 - Same package when tightly coupled
@@ -213,10 +214,47 @@ Default to **medium** granularity. Adjust based on:
 - {Flow} works end-to-end
 ```
 
+## Domain Store Task Template
+
+When a feature needs domain logic with MST state, create a **single task** for the domain store. This is the most important pattern - never split domain logic across multiple files.
+
+**Task structure:**
+```javascript
+store.create("ImplementationTask", "platform-feature-spec", {
+  id: "task-domain-store",
+  sessionId: session.id,
+  integrationPoint: "ip-domain",
+  description: "Create {domain} domain store with enhancement hooks",
+  acceptanceCriteria: [
+    "domain.ts exports {Domain}Domain ArkType scope",
+    "domain.ts exports create{Domain}Store() factory using createStoreFromScope",
+    "enhanceModels adds computed views: {list from DesignDecision}",
+    "enhanceCollections adds query methods: {list from DesignDecision}",
+    "enhanceRootStore adds initialize() and domain actions",
+    "Store integrates with I{Domain}Service via getEnv()"
+  ],
+  dependencies: ["task-service-interface", "task-environment-extension"],
+  status: "planned",
+  createdAt: Date.now()
+})
+```
+
+**What this pattern replaces** (DO NOT create these):
+- ❌ "Create {Domain}Mixin" task → would create mixin.ts with hand-coded MST
+- ❌ "Create enhancement hooks" task → would create separate hooks.ts
+- ❌ Multiple tasks for views/actions/initialization → fragments cohesive domain logic
+
+**Single domain.ts contains:**
+- ArkType scope defining all domain entities
+- `createStoreFromScope()` call with all three enhancement hook callbacks
+- All domain logic in one cohesive, testable unit
+
+See [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.md) for the complete hook API and examples.
+
 ## References
 
 - [task-patterns.md](references/task-patterns.md) - Common task structures by change type
 - [patterns/02-service-interface.md](references/patterns/02-service-interface.md) - Service task template
 - [patterns/03-environment-extension.md](references/patterns/03-environment-extension.md) - Environment task template
-- [patterns/06-provider-synchronization.md](references/patterns/06-provider-synchronization.md) - Sync task template
+- [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.md) - **Domain store pattern (CRITICAL)**
 - [patterns/07-react-context-integration.md](references/patterns/07-react-context-integration.md) - React integration template

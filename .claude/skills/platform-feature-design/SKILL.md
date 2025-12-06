@@ -235,14 +235,14 @@ When designing entities, consider how they'll flow through the schematic pipelin
      rationale: "Supports tracking quantity at multiple locations per product"
    })
    ```
-3. **Required: Create Enhancement Hooks DesignDecision** - Document planned hooks:
+3. **Required: Create Enhancement Hooks DesignDecision** - Document planned hooks for the spec skill to consume:
    ```
    store.create("DesignDecision", "platform-features", {
      id: uuid(),
      session: sessionId,
      question: "What enhancement hooks will the domain need?",
-     decision: "enhanceModels: Product.displayPrice, Product.stockStatus; enhanceCollections: ProductCollection.findBySku, ProductCollection.lowStock; enhanceRootStore: initialize(), totalInventoryValue view",
-     rationale: "Computed views derive from raw schema fields; collection queries index by common access patterns; root store coordinates loading and cross-entity aggregations"
+     decision: "enhanceModels: {Entity}.{view}; enhanceCollections: {Collection}.{method}; enhanceRootStore: {actions}",
+     rationale: "All hooks will be implemented in a single domain.ts using createStoreFromScope(). The spec skill will create ONE 'Domain Store' task for this - never separate mixin.ts or hooks.ts files."
    })
    ```
 
@@ -250,6 +250,8 @@ When designing entities, consider how they'll flow through the schematic pipelin
    - `enhanceModels: EntityName.viewOrAction` - computed from entity fields
    - `enhanceCollections: EntityCollection.method` - query helpers
    - `enhanceRootStore: actionOrView` - coordination, initialization, cross-entity
+
+   **Important**: This DesignDecision directly informs the spec skill. The spec skill reads these hooks and creates a single "Domain Store" task with acceptance criteria derived from this decision. See [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.md).
 
 4. Update session:
    ```
