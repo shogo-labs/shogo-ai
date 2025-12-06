@@ -102,4 +102,87 @@ describe("Basic arkType → MST transformation", () => {
       })
     }).toThrow()
   })
+
+  test("handles optional fields with undefined values", () => {
+    // Given: Domain with optional fields
+    const DomainWithOptionals = scope({
+      User: {
+        id: "string.uuid",
+        email: "string",           // Required
+        "displayName?": "string",  // Optional
+        "avatarUrl?": "string",    // Optional
+      }
+    })
+
+    // When: we create a store
+    const result = createStoreFromScope(DomainWithOptionals)
+    const store = result.createStore({})
+
+    // Then: we can add entities with undefined optional fields
+    const user = store.userCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      email: "test@example.com",
+      displayName: undefined,  // Explicitly undefined
+      // avatarUrl omitted entirely
+    })
+
+    expect(user.id).toBe("550e8400-e29b-41d4-a716-446655440000")
+    expect(user.email).toBe("test@example.com")
+    expect(user.displayName).toBeUndefined()
+    expect(user.avatarUrl).toBeUndefined()
+  })
+
+  test("validates optional fields when present", () => {
+    // Given: Domain with optional fields that have constraints
+    const DomainWithOptionals = scope({
+      User: {
+        id: "string.uuid",
+        email: "string",
+        "bio?": "string >= 10",  // Optional but must be >= 10 chars if present
+      }
+    })
+
+    const result = createStoreFromScope(DomainWithOptionals)
+    const store = result.createStore({})
+
+    // Then: valid optional field works
+    const user = store.userCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      email: "test@example.com",
+      bio: "This is a long enough bio"
+    })
+    expect(user.bio).toBe("This is a long enough bio")
+
+    // And: invalid optional field is rejected
+    expect(() => {
+      store.userCollection.add({
+        id: "550e8400-e29b-41d4-a716-446655440001",
+        email: "test2@example.com",
+        bio: "short"  // Too short, should fail validation
+      })
+    }).toThrow()
+  })
+
+  test("still validates required fields", () => {
+    // Given: Domain with required and optional fields
+    const DomainWithOptionals = scope({
+      User: {
+        id: "string.uuid",
+        email: "string",           // Required
+        "displayName?": "string",  // Optional
+      }
+    })
+
+    const result = createStoreFromScope(DomainWithOptionals)
+    const store = result.createStore({})
+
+    // Then: missing required field fails
+    expect(() => {
+      store.userCollection.add({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        // email missing - should fail
+        displayName: "Alice"
+      } as any)
+    }).toThrow()
+  })
 })

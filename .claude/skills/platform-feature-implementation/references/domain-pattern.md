@@ -231,6 +231,78 @@ The design phase creates Enhanced JSON Schema. Translate to ArkType:
 
 **Reference syntax key insight**: The system detects references by checking if the type name exists as another entity in the scope. You don't use `.id` suffix - just the entity name. MST handles ID↔instance translation automatically at runtime.
 
+### Identifier Format
+
+Use `string.uuid` for entity identifiers to ensure proper MST reference resolution:
+
+```typescript
+// ✅ CORRECT: Use string.uuid for identifiers
+export const MyDomain = scope({
+  User: {
+    id: 'string.uuid',  // Validates UUID format, works reliably with references
+    name: 'string',
+  },
+  Order: {
+    id: 'string.uuid',
+    customer: 'User',  // Reference resolves correctly
+  }
+})
+
+// ❌ AVOID: Plain string identifiers may cause reference issues
+export const MyDomain = scope({
+  User: {
+    id: 'string',  // May cause reference resolution issues
+    name: 'string',
+  }
+})
+```
+
+### Optional Field Syntax
+
+ArkType uses property-level optionality—the `?` goes on the property name, NOT the type:
+
+```typescript
+// ✅ CORRECT: Question mark on property name
+export const UserDomain = scope({
+  User: {
+    id: 'string.uuid',
+    email: 'string',
+    "displayName?": 'string',   // Optional property
+    "avatarUrl?": 'string',     // Optional property
+    "manager?": 'User',         // Optional reference
+  }
+})
+
+// ❌ INCORRECT: This will FAIL validation
+export const UserDomain = scope({
+  User: {
+    id: 'string.uuid',
+    displayName: 'string?',     // WRONG - not valid ArkType syntax
+  }
+})
+```
+
+### Reference Field Naming
+
+Both naming styles work—the reference detection matches the type value, not the field name:
+
+```typescript
+export const BusinessDomain = scope({
+  User: { id: 'string.uuid', name: 'string' },
+  Order: {
+    id: 'string.uuid',
+    customer: 'User',     // ✅ Field matches entity (recommended for clarity)
+    createdBy: 'User',    // ✅ Field differs from entity (also works)
+  },
+  Company: { id: 'string.uuid', name: 'string' }
+})
+```
+
+**CamelCase entities**: Multi-word entity names are handled correctly:
+- `AuthUser` → collection: `authUserCollection`
+- `ProductCategory` → collection: `productCategoryCollection`
+- `OrderLineItem` → collection: `orderLineItemCollection`
+
 ## Service Integration Pattern
 
 The domain store coordinates with external services via environment injection:

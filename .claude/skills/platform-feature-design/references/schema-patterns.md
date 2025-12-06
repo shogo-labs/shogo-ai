@@ -127,6 +127,67 @@
 | Many-to-many relationship | One-to-one, tightly coupled |
 | Entity is shared across parents | Data is unique to each parent |
 
+## Reference vs String ID Decision
+
+When relating entities, always prefer MST references over string IDs within the same schema.
+
+| Scenario | Use | ArkType Syntax | JSON Schema |
+|----------|-----|----------------|-------------|
+| Entity in same schema, queried together | MST Reference | `product: 'Product'` | `x-reference-type: single` |
+| Optional relationship | Maybe Reference | `manager?: 'Employee'` | `x-mst-type: maybe-reference` |
+| Array of related entities | Reference Array | `items: 'LineItem[]'` | `x-reference-type: array` |
+| Cross-schema reference (external) | String ID | `externalOrderId: 'string'` | Plain `type: string` |
+| External system ID (Stripe, etc.) | String ID | `stripeCustomerId: 'string'` | Plain `type: string` |
+
+**Key insight**: The schematic system auto-detects references by checking if the type name exists in the scope. Use entity names directly—no `.id` suffix needed.
+
+**Anti-pattern to avoid:**
+```typescript
+// ❌ WRONG: String IDs lose MST's automatic resolution
+const OrderDomain = scope({
+  Order: { id: 'string', customerId: 'string' },  // customerId is just a string
+  Customer: { id: 'string', name: 'string' }
+})
+
+// ✅ CORRECT: MST references with auto-resolution
+const OrderDomain = scope({
+  Order: { id: 'string', customer: 'Customer' },  // customer auto-resolves to instance
+  Customer: { id: 'string', name: 'string' }
+})
+```
+
+With proper references, `order.customer.name` works directly—no manual lookup required.
+
+## Domain Purity Checklist
+
+Before finalizing schema, verify each field passes these tests:
+
+**Include if ANY is true:**
+- [ ] This is domain/business data (not UI concern)
+- [ ] This will be persisted to storage
+- [ ] MCP tools need to read/write this
+- [ ] This represents a relationship between entities
+
+**Exclude if ALL are true:**
+- [ ] This is transient state (loading, error, selection)
+- [ ] This is only needed by React components
+- [ ] This would never be persisted
+- [ ] MCP would never use this
+
+**Fields that do NOT belong in schema:**
+- `isLoading: boolean` → React useState
+- `error: string | null` → React useState
+- `isSelected: boolean` → React useState
+- `isExpanded: boolean` → React useState
+- `draftValue: string` → React useState or useRef
+- `currentPage: number` → React useState
+
+**Fields that DO belong in schema:**
+- `status: 'pending' | 'active' | 'completed'` → Business state
+- `createdAt: number` → Domain event timestamp
+- `customer: 'Customer'` → Entity relationship
+- `items: 'LineItem[]'` → Entity relationship
+
 ## Naming Conventions
 
 - **Entities**: PascalCase (`User`, `ApiKey`, `AuditLog`)

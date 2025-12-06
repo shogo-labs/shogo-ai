@@ -294,6 +294,30 @@ store.update(execId, "TaskExecution", "platform-feature-spec", {
 })
 ```
 
+### TDD Gate: Mandatory Test Execution
+
+**CRITICAL**: Do NOT proceed to implementation (4.3) until tests have been:
+1. Written to the test file
+2. Executed with `bun test {testFile}`
+3. Confirmed to be RED (failing)
+
+**Gate Check**:
+```
+Before implementing {task.description}:
+[ ] Test file created: {testFilePath}
+[ ] Tests executed: bun test {testFilePath}
+[ ] Status: RED (tests failing as expected)
+
+Proceeding to implementation...
+```
+
+If tests pass before implementation, **STOP** — either:
+- Tests are not testing new functionality (test is wrong)
+- Implementation already exists (task may be duplicate)
+- Tests are not correctly written (assertions never fire)
+
+**Resolution**: Investigate and fix the test before proceeding. A passing test before implementation means the test cannot verify the code you're about to write.
+
 #### 4.3 Implement Code
 
 Based on `IntegrationPoint.changeType`:
@@ -339,6 +363,18 @@ All acceptance criteria met:
 ✅ {criterion 1}
 ✅ {criterion 2}
 ```
+
+**GREEN Gate Check**:
+```
+Implementation complete for {task.description}:
+[ ] Tests executed: bun test {testFilePath}
+[ ] Status: GREEN (all tests passing)
+[ ] No regressions: bun test (full suite)
+
+Task complete.
+```
+
+Do NOT mark task complete until GREEN is confirmed via actual test execution.
 
 Update execution:
 ```javascript
@@ -409,6 +445,37 @@ Remaining: {remaining tasks}
 
 Continuing to next task...
 ```
+
+### TDD Cycle Enforcement Summary
+
+For EVERY task with TestSpecifications, the cycle MUST be:
+
+| Step | Action | Validation | Cannot Skip |
+|------|--------|------------|-------------|
+| 1 | **WRITE** test file from specs | File exists | ❌ |
+| 2 | **RUN** tests | `bun test {file}` executes | ❌ |
+| 3 | **VERIFY** RED | Tests fail as expected | ❌ |
+| 4 | **IMPLEMENT** code | Code written to files | ❌ |
+| 5 | **RUN** tests again | `bun test {file}` executes | ❌ |
+| 6 | **VERIFY** GREEN | All tests pass | ❌ |
+| 7 | **MARK** complete | Task status updated | ❌ |
+
+**Exception**: Tasks with no TestSpecifications (e.g., dependency-only tasks like "add packages") can skip steps 1-3, 5-6.
+
+**Anti-pattern: Writing all tests then all implementations**
+```
+❌ WRONG:
+  Write test-001, test-002, test-003
+  Implement task-001, task-002, task-003
+  Run all tests at end
+
+✅ CORRECT (per task):
+  Write test-001 → Run (RED) → Implement → Run (GREEN) → Complete
+  Write test-002 → Run (RED) → Implement → Run (GREEN) → Complete
+  Write test-003 → Run (RED) → Implement → Run (GREEN) → Complete
+```
+
+The TDD cycle provides immediate feedback and catches issues early. Batching defeats the purpose.
 
 ### Phase 5: Integration Verification
 

@@ -151,6 +151,35 @@ This doesn't duplicate the weather API's data - it tracks LOCAL cached state tha
 **Don't ask:** "Do you need a schema for this?"
 **Do ask:** "What local state does this feature need to track?"
 
+#### Domain Purity Principle
+
+Domain schemas contain **business state only**. UI concerns belong in React components.
+
+**Belongs in schema:**
+- Entity identifiers and relationships
+- Business data (name, email, amount, status enums)
+- Timestamps for domain events (createdAt, expiresAt)
+- Computed relationships (inverse arrays)
+
+**Does NOT belong in schema:**
+- Loading states (`isLoading: boolean`)
+- Error messages (`error: string | null`)
+- UI selection state (`isSelected`, `isExpanded`)
+- Form draft state (`draftValue`)
+- Pagination cursors (`currentPage`, `hasNextPage`)
+
+**Where UI state goes:**
+- React `useState` for component-local UI state
+- React `useRef` for values that don't trigger re-render
+- Volatile MST state (via `volatile()`) only for cross-component UI coordination
+
+**Schema Audit**: Before finalizing, check each field:
+- Is this domain state or UI state?
+- Will this be persisted or is it transient?
+- Would MCP need to read/write this?
+
+If the answer to all three is "no", it's UI state and belongs in React, not the schema.
+
 #### Extract Entities from Requirements
 
 **Extract entities from requirements** - Look for nouns with independent lifecycle:

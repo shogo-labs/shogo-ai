@@ -110,6 +110,24 @@ Domain logic belongs in state-api for isomorphic reuse across consumers (web, mc
 3. Does feature need to be used from MCP? → state-api
 4. Is it only React UI with no business logic? → apps/web
 
+### Package Placement Enforcement
+
+When creating IntegrationPoints, **enforce isomorphism** regardless of analysis findings:
+
+**MUST be in `packages/state-api/src/{domain}/`:**
+- `types.ts` (IService interface)
+- `{provider}.ts` (service implementations)
+- `mock.ts` (mock service)
+- `domain.ts` (ArkType scope + store factory)
+
+**MUST be in `apps/web/src/`:**
+- `contexts/{Domain}Context.tsx`
+- `hooks/use{Domain}.ts`
+- `components/{Domain}/*.tsx`
+- `pages/{Domain}Page.tsx`
+
+**Override analysis findings** if they recommend placing domain logic in apps/web. The analysis skill may incorrectly suggest "keep at React layer" — this violates isomorphism and must be corrected at spec phase.
+
 ### Phase 3: Create Tasks (Review Gate)
 
 For each task group, create ImplementationTask:
@@ -226,11 +244,18 @@ store.create("ImplementationTask", "platform-feature-spec", {
   integrationPoint: "ip-domain",
   description: "Create {domain} domain store with enhancement hooks",
   acceptanceCriteria: [
-    "domain.ts exports {Domain}Domain ArkType scope",
+    // Schema structure
+    "domain.ts exports {Domain}Domain ArkType scope with entities using MST reference syntax (e.g., order: 'Order' not orderId: 'string')",
+    "Entity relationships use entity name directly—system auto-detects references",
+    "Domain schema contains only business state—no UI state (loading, error, selectedIds)",
+
+    // Factory and hooks
     "domain.ts exports create{Domain}Store() factory using createStoreFromScope",
     "enhanceModels adds computed views: {list from DesignDecision}",
-    "enhanceCollections adds query methods: {list from DesignDecision}",
+    "enhanceCollections adds query methods (required even for simple domains)",
     "enhanceRootStore adds initialize() and domain actions",
+
+    // Integration
     "Store integrates with I{Domain}Service via getEnv()"
   ],
   dependencies: ["task-service-interface", "task-environment-extension"],

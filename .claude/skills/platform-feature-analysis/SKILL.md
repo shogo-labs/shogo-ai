@@ -40,6 +40,34 @@ This skill operates in two modes based on session status:
 
 ---
 
+## Isomorphism Principle
+
+Domain logic is NEVER "web-app specific". This is a **core architectural principle** that must inform all findings and recommendations.
+
+**Always goes to `packages/state-api/src/{domain}/`:**
+- Service interfaces (`I{Domain}Service`)
+- Service implementations (`{provider}.ts`, `mock.ts`)
+- Domain store (`domain.ts` with `createStoreFromScope`)
+- Domain types and entities
+
+**Always goes to `apps/web/src/`:**
+- React contexts and providers (`{Domain}Context.tsx`)
+- React hooks (`use{Domain}.ts`)
+- UI components (pages, forms, modals)
+- Route protection components
+
+**Decision Rule**: Can this code be tested/used outside a web browser? Can MCP use it? → `packages/state-api`
+
+**Anti-pattern to NEVER recommend:**
+❌ "Keep at React layer since it's web-app specific" - domain SERVICES are platform-agnostic
+❌ "For simplicity, put everything in apps/web" - breaks reuse across consumers
+
+✅ "Service interface and domain store go to state-api; React provider goes to apps/web"
+
+See [patterns/01-isomorphism.md](references/patterns/01-isomorphism.md) for full decision framework.
+
+---
+
 ## Workflow: Explore Mode
 
 Use when session status = `discovery`
@@ -319,6 +347,7 @@ Ready for platform-feature-implementation to execute TDD.
 ## References
 
 - [exploration-patterns.md](references/exploration-patterns.md) - Package-specific exploration guidance
+- [patterns/01-isomorphism.md](references/patterns/01-isomorphism.md) - **Package placement decision framework (CRITICAL)**
 - [patterns/02-service-interface.md](references/patterns/02-service-interface.md) - IService abstraction pattern
 - [patterns/03-environment-extension.md](references/patterns/03-environment-extension.md) - MST environment DI pattern
 - [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.md) - Enhancement hooks pattern
