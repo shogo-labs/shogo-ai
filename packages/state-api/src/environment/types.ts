@@ -13,7 +13,6 @@
  */
 
 import type { IPersistenceService } from '../persistence/types'
-import type { IAuthService } from '../auth/types'
 
 /**
  * Environment structure for runtime MST stores.
@@ -64,17 +63,6 @@ export interface IEnvironment {
      * Required - all runtime stores need persistence capability.
      */
     persistence: IPersistenceService
-
-    /**
-     * Authentication service for user auth operations.
-     *
-     * Implementation can be:
-     * - SupabaseAuthService (real Supabase client)
-     * - MockAuthService (in-memory, for testing)
-     *
-     * Optional - only needed for apps with authentication.
-     */
-    auth?: IAuthService
 
     // Future services:
     // validator?: IValidatorService
