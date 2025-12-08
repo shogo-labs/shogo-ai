@@ -108,3 +108,66 @@ export function buildDisplayFilename(entity: any, displayKey: string | undefined
 
   return sanitizeFilename(String(displayValue))
 }
+
+/**
+ * Check if a filter can be pushed down to partition level.
+ *
+ * Returns the partition value if filter contains the partitionKey,
+ * otherwise returns undefined (meaning full scan is needed).
+ *
+ * @param filter - The filter object
+ * @param partitionKey - The partition key field name
+ * @returns The partition value to target, or undefined for full scan
+ */
+export function getPartitionValueFromFilter(
+  filter: Record<string, any> | undefined,
+  partitionKey: string | undefined
+): string | undefined {
+  if (!filter || !partitionKey) {
+    return undefined
+  }
+
+  const partitionValue = filter[partitionKey]
+
+  // Only support simple string equality for now
+  if (typeof partitionValue === 'string') {
+    return partitionValue
+  }
+
+  return undefined
+}
+
+/**
+ * Apply a simple equality filter to a collection of items.
+ *
+ * @param items - Object mapping entity IDs to entities
+ * @param filter - Simple key-value equality filter
+ * @returns Filtered items object
+ */
+export function applyFilter(
+  items: Record<string, any>,
+  filter: Record<string, any> | undefined
+): Record<string, any> {
+  if (!filter || Object.keys(filter).length === 0) {
+    return items
+  }
+
+  const result: Record<string, any> = {}
+
+  for (const [id, entity] of Object.entries(items)) {
+    let matches = true
+
+    for (const [key, value] of Object.entries(filter)) {
+      if (entity[key] !== value) {
+        matches = false
+        break
+      }
+    }
+
+    if (matches) {
+      result[id] = entity
+    }
+  }
+
+  return result
+}

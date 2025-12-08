@@ -810,4 +810,224 @@ describe('Partitioned Persistence', () => {
       expect(result.content).toBe('Updated')
     })
   })
+
+  // ============================================================================
+  // Phase 4: Filter Optimization (opportunistic pushdown)
+  // ============================================================================
+
+  describe('filter optimization (array-per-partition)', () => {
+    test('loadCollection with filter on partitionKey loads only matching partition', async () => {
+      // Setup: Create partition files
+      await ensureDir(`${tempDir}/test-schema/data/Task`)
+      await writeJson(`${tempDir}/test-schema/data/Task/p1.json`, {
+        items: {
+          't1': { id: 't1', projectId: 'p1', title: 'Task A' },
+          't2': { id: 't2', projectId: 'p1', title: 'Task B' }
+        }
+      })
+      await writeJson(`${tempDir}/test-schema/data/Task/p2.json`, {
+        items: {
+          't3': { id: 't3', projectId: 'p2', title: 'Task C' },
+          't4': { id: 't4', projectId: 'p2', title: 'Task D' }
+        }
+      })
+      await writeJson(`${tempDir}/test-schema/data/Task/p3.json`, {
+        items: {
+          't5': { id: 't5', projectId: 'p3', title: 'Task E' }
+        }
+      })
+
+      const ctx: PartitionedContext & { filter?: Record<string, any> } = {
+        schemaName: 'test-schema',
+        modelName: 'Task',
+        location: tempDir, // REQUIRED - never omit this
+        persistenceConfig: {
+          strategy: 'array-per-partition',
+          partitionKey: 'projectId'
+        },
+        filter: { projectId: 'p2' } // Filter matches partitionKey
+      }
+
+      const result = await persistence.loadCollection(ctx)
+
+      // Should only return entities from p2 partition
+      expect(Object.keys(result.items).sort()).toEqual(['t3', 't4'])
+      expect(result.items.t3.title).toBe('Task C')
+      expect(result.items.t4.title).toBe('Task D')
+    })
+
+    test('loadCollection with filter on non-partition field loads all then filters', async () => {
+      // Setup: Create partition files
+      await ensureDir(`${tempDir}/test-schema/data/Task`)
+      await writeJson(`${tempDir}/test-schema/data/Task/p1.json`, {
+        items: {
+          't1': { id: 't1', projectId: 'p1', title: 'Important', priority: 'high' },
+          't2': { id: 't2', projectId: 'p1', title: 'Normal', priority: 'low' }
+        }
+      })
+      await writeJson(`${tempDir}/test-schema/data/Task/p2.json`, {
+        items: {
+          't3': { id: 't3', projectId: 'p2', title: 'Also Important', priority: 'high' },
+          't4': { id: 't4', projectId: 'p2', title: 'Background', priority: 'low' }
+        }
+      })
+
+      const ctx: PartitionedContext & { filter?: Record<string, any> } = {
+        schemaName: 'test-schema',
+        modelName: 'Task',
+        location: tempDir, // REQUIRED - never omit this
+        persistenceConfig: {
+          strategy: 'array-per-partition',
+          partitionKey: 'projectId'
+        },
+        filter: { priority: 'high' } // Filter is NOT on partitionKey - loads all, filters in memory
+      }
+
+      const result = await persistence.loadCollection(ctx)
+
+      // Should load all partitions and filter in memory
+      expect(Object.keys(result.items).sort()).toEqual(['t1', 't3'])
+      expect(result.items.t1.priority).toBe('high')
+      expect(result.items.t3.priority).toBe('high')
+    })
+
+    test('loadCollection with combined partition and non-partition filter', async () => {
+      // Setup: Create partition files
+      await ensureDir(`${tempDir}/test-schema/data/Task`)
+      await writeJson(`${tempDir}/test-schema/data/Task/p1.json`, {
+        items: {
+          't1': { id: 't1', projectId: 'p1', status: 'active' },
+          't2': { id: 't2', projectId: 'p1', status: 'done' }
+        }
+      })
+      await writeJson(`${tempDir}/test-schema/data/Task/p2.json`, {
+        items: {
+          't3': { id: 't3', projectId: 'p2', status: 'active' },
+          't4': { id: 't4', projectId: 'p2', status: 'done' }
+        }
+      })
+
+      const ctx: PartitionedContext & { filter?: Record<string, any> } = {
+        schemaName: 'test-schema',
+        modelName: 'Task',
+        location: tempDir, // REQUIRED - never omit this
+        persistenceConfig: {
+          strategy: 'array-per-partition',
+          partitionKey: 'projectId'
+        },
+        filter: { projectId: 'p1', status: 'active' } // Both partition and non-partition
+      }
+
+      const result = await persistence.loadCollection(ctx)
+
+      // Should load only p1 partition, then filter by status
+      expect(Object.keys(result.items)).toEqual(['t1'])
+      expect(result.items.t1.status).toBe('active')
+    })
+
+    test('loadCollection without filter returns all (backward compatible)', async () => {
+      // Setup: Create partition files
+      await ensureDir(`${tempDir}/test-schema/data/Task`)
+      await writeJson(`${tempDir}/test-schema/data/Task/p1.json`, {
+        items: {
+          't1': { id: 't1', projectId: 'p1', title: 'Task A' }
+        }
+      })
+      await writeJson(`${tempDir}/test-schema/data/Task/p2.json`, {
+        items: {
+          't2': { id: 't2', projectId: 'p2', title: 'Task B' }
+        }
+      })
+
+      const ctx: PartitionedContext = {
+        schemaName: 'test-schema',
+        modelName: 'Task',
+        location: tempDir, // REQUIRED - never omit this
+        persistenceConfig: {
+          strategy: 'array-per-partition',
+          partitionKey: 'projectId'
+        }
+        // No filter - should return all
+      }
+
+      const result = await persistence.loadCollection(ctx)
+
+      expect(Object.keys(result.items).sort()).toEqual(['t1', 't2'])
+    })
+
+    test('filter with non-existent partition value returns empty', async () => {
+      // Setup: Create partition files
+      await ensureDir(`${tempDir}/test-schema/data/Task`)
+      await writeJson(`${tempDir}/test-schema/data/Task/p1.json`, {
+        items: {
+          't1': { id: 't1', projectId: 'p1', title: 'Task A' }
+        }
+      })
+
+      const ctx: PartitionedContext & { filter?: Record<string, any> } = {
+        schemaName: 'test-schema',
+        modelName: 'Task',
+        location: tempDir, // REQUIRED - never omit this
+        persistenceConfig: {
+          strategy: 'array-per-partition',
+          partitionKey: 'projectId'
+        },
+        filter: { projectId: 'nonexistent' }
+      }
+
+      const result = await persistence.loadCollection(ctx)
+
+      expect(result).toEqual({ items: {} })
+    })
+
+    test('filter works with flat strategy (no optimization, just filters)', async () => {
+      // Setup: Create flat collection file
+      await ensureDir(`${tempDir}/test-schema/data`)
+      await writeJson(`${tempDir}/test-schema/data/Task.json`, {
+        items: {
+          't1': { id: 't1', status: 'active' },
+          't2': { id: 't2', status: 'done' },
+          't3': { id: 't3', status: 'active' }
+        }
+      })
+
+      const ctx: PartitionedContext & { filter?: Record<string, any> } = {
+        schemaName: 'test-schema',
+        modelName: 'Task',
+        location: tempDir, // REQUIRED - never omit this
+        persistenceConfig: { strategy: 'flat' },
+        filter: { status: 'active' }
+      }
+
+      const result = await persistence.loadCollection(ctx)
+
+      expect(Object.keys(result.items).sort()).toEqual(['t1', 't3'])
+    })
+
+    test('filter works with entity-per-file strategy', async () => {
+      // Setup: Create entity files
+      await ensureDir(`${tempDir}/test-schema/data/Task`)
+      await writeJson(`${tempDir}/test-schema/data/Task/t1.json`, {
+        id: 't1', status: 'active'
+      })
+      await writeJson(`${tempDir}/test-schema/data/Task/t2.json`, {
+        id: 't2', status: 'done'
+      })
+      await writeJson(`${tempDir}/test-schema/data/Task/t3.json`, {
+        id: 't3', status: 'active'
+      })
+
+      const ctx: PartitionedContext & { filter?: Record<string, any> } = {
+        schemaName: 'test-schema',
+        modelName: 'Task',
+        location: tempDir, // REQUIRED - never omit this
+        persistenceConfig: { strategy: 'entity-per-file' },
+        filter: { status: 'active' }
+      }
+
+      const result = await persistence.loadCollection(ctx)
+
+      expect(Object.keys(result.items).sort()).toEqual(['t1', 't3'])
+    })
+  })
 })

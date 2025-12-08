@@ -106,7 +106,12 @@ describe('Unit 5: Collection Enhancement Integration', () => {
     expect(store.taskCollection.persistenceContext).toEqual({
       schemaName: 'project-schema',
       modelName: 'Task',
-      location: '/workspace/test'
+      location: '/workspace/test',
+      persistenceConfig: {
+        strategy: 'flat',
+        partitionKey: undefined,
+        displayKey: undefined
+      }
     })
   })
 

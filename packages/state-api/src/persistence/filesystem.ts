@@ -16,7 +16,7 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import { ensureDir, readJson, writeJson, exists, listFiles } from './io'
 import { loadSchema as loadSchemaFromDisk, listSchemas as listSchemasFromDisk } from './schema-io'
-import { getEffectiveStrategy, buildDisplayFilename } from './helpers'
+import { getEffectiveStrategy, buildDisplayFilename, getPartitionValueFromFilter, applyFilter } from './helpers'
 import type { IPersistenceService, PersistenceContext, EntityContext } from './types'
 
 export class FileSystemPersistence implements IPersistenceService {
@@ -111,6 +111,7 @@ export class FileSystemPersistence implements IPersistenceService {
 
   /**
    * Load collection from single JSON file.
+   * Applies filter in memory after loading.
    */
   private async loadCollectionFlat(ctx: PersistenceContext): Promise<any | null> {
     const filePath = this.buildFlatCollectionPath(ctx)
@@ -120,7 +121,14 @@ export class FileSystemPersistence implements IPersistenceService {
     }
 
     try {
-      return await readJson(filePath)
+      const collection = await readJson(filePath)
+
+      // Apply filter if provided
+      if (ctx.filter && collection?.items) {
+        return { items: applyFilter(collection.items, ctx.filter) }
+      }
+
+      return collection
     } catch (error: any) {
       throw error
     }
@@ -186,6 +194,7 @@ export class FileSystemPersistence implements IPersistenceService {
 
   /**
    * Load collection by assembling entities from directory.
+   * Applies filter in memory after assembling.
    */
   private async loadCollectionEntityPerFile(ctx: PersistenceContext): Promise<any | null> {
     const modelDir = this.buildModelDir(ctx)
@@ -210,6 +219,11 @@ export class FileSystemPersistence implements IPersistenceService {
       // Use entity's id field, falling back to filename without extension
       const entityId = entity?.id || file.replace(/\.json$/, '')
       items[entityId] = entity
+    }
+
+    // Apply filter if provided
+    if (ctx.filter) {
+      return { items: applyFilter(items, ctx.filter) }
     }
 
     return { items }
@@ -318,33 +332,53 @@ export class FileSystemPersistence implements IPersistenceService {
   }
 
   /**
-   * Load collection by merging all partition files.
+   * Load collection by merging partition files.
+   * Supports filter pushdown: if filter includes partitionKey, loads only matching partition.
    * Returns empty { items: {} } if no partitions exist.
    */
   private async loadCollectionArrayPerPartition(ctx: PersistenceContext): Promise<any> {
     const modelDir = this.buildModelDir(ctx)
+    const partitionKey = ctx.persistenceConfig?.partitionKey
 
     if (!await exists(modelDir)) {
       return { items: {} }
     }
 
-    const files = await listFiles(modelDir)
-    const jsonFiles = files.filter(f => f.endsWith('.json'))
+    // Check if we can push down filter to partition level
+    const targetPartition = getPartitionValueFromFilter(ctx.filter, partitionKey)
 
-    if (jsonFiles.length === 0) {
-      return { items: {} }
+    let items: Record<string, any> = {}
+
+    if (targetPartition) {
+      // Optimized: load only the target partition
+      const partitionPath = path.join(modelDir, `${targetPartition}.json`)
+
+      if (await exists(partitionPath)) {
+        const partition = await readJson(partitionPath)
+        if (partition?.items) {
+          items = partition.items
+        }
+      }
+      // If partition file doesn't exist, items remains empty
+    } else {
+      // Full scan: load all partition files
+      const files = await listFiles(modelDir)
+      const jsonFiles = files.filter(f => f.endsWith('.json'))
+
+      for (const file of jsonFiles) {
+        const filePath = path.join(modelDir, file)
+        const partition = await readJson(filePath)
+
+        // Merge partition items into main collection
+        if (partition?.items) {
+          Object.assign(items, partition.items)
+        }
+      }
     }
 
-    const items: Record<string, any> = {}
-
-    for (const file of jsonFiles) {
-      const filePath = path.join(modelDir, file)
-      const partition = await readJson(filePath)
-
-      // Merge partition items into main collection
-      if (partition?.items) {
-        Object.assign(items, partition.items)
-      }
+    // Apply any remaining filter conditions in memory
+    if (ctx.filter) {
+      items = applyFilter(items, ctx.filter)
     }
 
     return { items }

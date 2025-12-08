@@ -148,6 +148,14 @@ export type PersistenceContext = {
    * If not provided, implementation should default to 'flat' strategy.
    */
   persistenceConfig?: PersistenceConfig
+
+  /**
+   * Optional filter to apply when loading collection.
+   * Simple key-value equality filter (e.g., { status: 'active', projectId: 'p1' }).
+   * When filter includes partitionKey, implementation may optimize by loading
+   * only the matching partition(s).
+   */
+  filter?: Record<string, any>
 }
 
 /**

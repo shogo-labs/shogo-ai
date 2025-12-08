@@ -68,7 +68,7 @@ export function enhancedJsonSchemaToMST(
     models = options.enhanceModels(models)
   }
 
-  let collectionModels = createCollectionModels(models)
+  let collectionModels = createCollectionModels(models, defs)
 
   if (options.enhanceCollections) {
     collectionModels = options.enhanceCollections(collectionModels)
