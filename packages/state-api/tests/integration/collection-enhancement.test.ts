@@ -43,7 +43,7 @@ describe('Unit 5: Collection Enhancement Integration', () => {
     // When: Creating store with environment
     const env: IEnvironment = {
       services: { persistence: new NullPersistence() },
-      context: { schema: { name: 'test-schema' } as any }
+      context: { schemaName: 'test-schema' }
     }
     const store = result.createStore(env)
 
@@ -67,7 +67,7 @@ describe('Unit 5: Collection Enhancement Integration', () => {
 
     const env: IEnvironment = {
       services: { persistence: new NullPersistence() },
-      context: { schema: { name: 'test-schema' } as any }
+      context: { schemaName: 'test-schema' }
     }
     const store = result.createStore(env)
 
@@ -96,7 +96,7 @@ describe('Unit 5: Collection Enhancement Integration', () => {
     const env: IEnvironment = {
       services: { persistence: new NullPersistence() },
       context: {
-        schema: { name: 'project-schema' } as any,
+        schemaName: 'project-schema',
         location: '/workspace/test'
       }
     }
@@ -128,7 +128,7 @@ describe('Unit 5: Collection Enhancement Integration', () => {
     const persistence = new NullPersistence()
     const env: IEnvironment = {
       services: { persistence },
-      context: { schema: { name: 'test' } as any }
+      context: { schemaName: 'test' }
     }
 
     // When: Create, add data, save
@@ -168,7 +168,7 @@ describe('Unit 5: Collection Enhancement Integration', () => {
 
     const env: IEnvironment = {
       services: { persistence: new NullPersistence() },
-      context: { schema: { name: 'test' } as any }
+      context: { schemaName: 'test' }
     }
 
     // When: Save different data to each collection
@@ -208,14 +208,14 @@ describe('Unit 5: Collection Enhancement Integration', () => {
     const envA: IEnvironment = {
       services: { persistence },
       context: {
-        schema: { name: 'test' } as any,
+        schemaName: 'test',
         location: '/workspace/A'
       }
     }
     const envB: IEnvironment = {
       services: { persistence },
       context: {
-        schema: { name: 'test' } as any,
+        schemaName: 'test',
         location: '/workspace/B'
       }
     }

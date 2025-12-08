@@ -13,6 +13,34 @@
  */
 
 /**
+ * Configuration for how a model's data should be persisted.
+ * Specified via `x-persistence` extension in schema definitions.
+ *
+ * Strategies:
+ * - "flat": Single JSON file per model (current default, backward compatible)
+ * - "entity-per-file": One JSON file per entity, named by id
+ * - "array-per-partition": One JSON file per partition key value, containing grouped entities
+ */
+export type PersistenceStrategy = 'flat' | 'entity-per-file' | 'array-per-partition'
+
+export type PersistenceConfig = {
+  /** How to organize files on disk */
+  strategy: PersistenceStrategy
+
+  /**
+   * Field to partition by (for array-per-partition strategy).
+   * Entities with the same partition key value are stored together.
+   */
+  partitionKey?: string
+
+  /**
+   * Field to use for human-readable filenames instead of entity id.
+   * Value will be sanitized for filesystem safety.
+   */
+  displayKey?: string
+}
+
+/**
  * Generic persistence interface for runtime store data.
  *
  * This interface abstracts persistence operations, allowing pluggable backends
@@ -114,6 +142,12 @@ export type PersistenceContext = {
    * If not provided, implementation should use a sensible default.
    */
   location?: string
+
+  /**
+   * Optional persistence configuration from schema's x-persistence extension.
+   * If not provided, implementation should default to 'flat' strategy.
+   */
+  persistenceConfig?: PersistenceConfig
 }
 
 /**
