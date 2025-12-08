@@ -1,0 +1,8 @@
+{
+  "id": "item-jwt",
+  "title": "Implement JWT Validation",
+  "description": "Add JWT token validation middleware",
+  "status": "todo",
+  "priority": "high",
+  "initiative": "init-auth"
+}

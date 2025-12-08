@@ -16,8 +16,18 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import { ensureDir, readJson, writeJson, exists, listFiles } from './io'
 import { loadSchema as loadSchemaFromDisk, listSchemas as listSchemasFromDisk } from './schema-io'
-import { getEffectiveStrategy, buildDisplayFilename, getPartitionValueFromFilter, applyFilter } from './helpers'
-import type { IPersistenceService, PersistenceContext, EntityContext } from './types'
+import {
+  getEffectiveStrategy,
+  buildDisplayFilename,
+  getPartitionValueFromFilter,
+  applyFilter,
+  findParentReference,
+  buildNestedCollectionPath,
+  buildParentEntityPath,
+  hasNestedChildren,
+  sanitizeFilename
+} from './helpers'
+import type { IPersistenceService, PersistenceContext, EntityContext, NestedParentContext } from './types'
 
 export class FileSystemPersistence implements IPersistenceService {
   /**
@@ -25,6 +35,12 @@ export class FileSystemPersistence implements IPersistenceService {
    * Dispatches to strategy-specific implementation based on persistenceConfig.
    */
   async saveCollection(ctx: PersistenceContext, snapshot: any): Promise<void> {
+    // Phase 8: Check for nested persistence first
+    if (ctx.persistenceConfig?.nested && ctx.schemaDefs) {
+      await this.saveCollectionNested(ctx, snapshot)
+      return
+    }
+
     const strategy = getEffectiveStrategy(ctx.persistenceConfig)
 
     switch (strategy) {
@@ -46,6 +62,11 @@ export class FileSystemPersistence implements IPersistenceService {
    * Dispatches to strategy-specific implementation based on persistenceConfig.
    */
   async loadCollection(ctx: PersistenceContext): Promise<any | null> {
+    // Phase 8: Check for nested persistence first
+    if (ctx.persistenceConfig?.nested && ctx.schemaDefs) {
+      return this.loadCollectionNested(ctx)
+    }
+
     const strategy = getEffectiveStrategy(ctx.persistenceConfig)
 
     switch (strategy) {
@@ -233,14 +254,29 @@ export class FileSystemPersistence implements IPersistenceService {
    * Save single entity directly to its own file.
    * Supports displayKey for human-readable filenames.
    * Checks for conflicts when displayKey is used.
+   *
+   * Phase 8: If this model has nested children, stores the entity in a folder
+   * with lowercase model name (e.g., Initiative/Auth Layer/initiative.json).
    */
   private async saveEntityPerFile(ctx: EntityContext, snapshot: any): Promise<void> {
-    const modelDir = this.buildModelDir(ctx)
-    await ensureDir(modelDir)
-
     const displayKey = ctx.persistenceConfig?.displayKey
     const filename = buildDisplayFilename(snapshot, displayKey, ctx.entityId)
-    const entityPath = path.join(modelDir, `${filename}.json`)
+
+    // Phase 8: Check if this model has nested children
+    const hasChildren = ctx.schemaDefs && hasNestedChildren(ctx.modelName, ctx.schemaDefs)
+
+    let entityPath: string
+
+    if (hasChildren && displayKey) {
+      // Parent with nested children: store in folder structure
+      // e.g., Initiative/Auth Layer/initiative.json
+      entityPath = buildParentEntityPath(ctx, filename)
+    } else {
+      // Standard entity-per-file: store in model directory
+      entityPath = path.join(this.buildModelDir(ctx), `${filename}.json`)
+    }
+
+    await ensureDir(path.dirname(entityPath))
 
     // Check for displayKey conflict with different entity
     if (displayKey && await exists(entityPath)) {
@@ -258,10 +294,36 @@ export class FileSystemPersistence implements IPersistenceService {
   /**
    * Load single entity from its file.
    * When displayKey is used, scans directory to find entity by id in file content.
+   *
+   * Phase 8: If this model has nested children, looks in folder structure.
    */
   private async loadEntityPerFile(ctx: EntityContext): Promise<any | null> {
     const modelDir = this.buildModelDir(ctx)
     const displayKey = ctx.persistenceConfig?.displayKey
+
+    // Phase 8: Check if this model has nested children
+    const hasChildren = ctx.schemaDefs && hasNestedChildren(ctx.modelName, ctx.schemaDefs)
+
+    if (hasChildren && displayKey) {
+      // Parent with nested children: scan subdirectories for entity
+      if (!await exists(modelDir)) {
+        return null
+      }
+
+      const subDirs = await this.listDirs(modelDir)
+      for (const subDir of subDirs) {
+        const lowercaseModel = ctx.modelName.toLowerCase()
+        const entityPath = path.join(modelDir, subDir, `${lowercaseModel}.json`)
+
+        if (await exists(entityPath)) {
+          const entity = await readJson(entityPath)
+          if (entity?.id === ctx.entityId) {
+            return entity
+          }
+        }
+      }
+      return null
+    }
 
     // If no displayKey, try direct file access by entityId
     if (!displayKey) {
@@ -439,6 +501,260 @@ export class FileSystemPersistence implements IPersistenceService {
     }
 
     return undefined
+  }
+
+  // === Nested Strategy (Phase 8) ===
+
+  /**
+   * Save nested collection - entities stored under parent folders.
+   *
+   * Groups entities by parent reference, then saves each group
+   * under the parent's display key folder.
+   */
+  private async saveCollectionNested(ctx: PersistenceContext, snapshot: any): Promise<void> {
+    const items = snapshot?.items || {}
+
+    if (Object.keys(items).length === 0) {
+      return // Nothing to save
+    }
+
+    // Find parent reference info from schema
+    const modelDef = ctx.schemaDefs?.[ctx.modelName]
+    const parentInfo = findParentReference(modelDef, ctx.schemaDefs!)
+
+    if (!parentInfo) {
+      throw new Error(`Cannot save nested collection: no parent info for ${ctx.modelName}`)
+    }
+
+    // Group entities by parent ID
+    const byParent: Record<string, Record<string, any>> = {}
+
+    for (const [entityId, entity] of Object.entries(items)) {
+      const parentId = (entity as any)[parentInfo.field]
+      if (!parentId) {
+        throw new Error(
+          `Entity ${entityId} missing parent reference field "${parentInfo.field}"`
+        )
+      }
+
+      if (!byParent[parentId]) {
+        byParent[parentId] = {}
+      }
+      byParent[parentId][entityId] = entity
+    }
+
+    const strategy = ctx.persistenceConfig?.strategy || 'entity-per-file'
+    const displayKey = ctx.persistenceConfig?.displayKey
+
+    // For each parent, resolve displayKey value and save children
+    for (const [parentId, parentItems] of Object.entries(byParent)) {
+      // Resolve parent's display key value
+      const parentDisplayValue = await this.resolveParentDisplayValue(
+        ctx, parentInfo, parentId
+      )
+
+      const nestedCtx: PersistenceContext = {
+        ...ctx,
+        parentContext: {
+          modelName: parentInfo.targetModel,
+          displayKeyValue: sanitizeFilename(parentDisplayValue)
+        }
+      }
+
+      if (strategy === 'array-per-partition') {
+        // Nested + array-per-partition: single _items.json per parent
+        await this.saveNestedArrayPartition(nestedCtx, { items: parentItems })
+      } else {
+        // Nested + entity-per-file: individual files per entity
+        await this.saveNestedEntityPerFile(nestedCtx, { items: parentItems })
+      }
+    }
+  }
+
+  /**
+   * Save nested entities as individual files under parent folder.
+   */
+  private async saveNestedEntityPerFile(ctx: PersistenceContext, snapshot: any): Promise<void> {
+    const nestedDir = buildNestedCollectionPath(ctx)
+    await ensureDir(nestedDir)
+
+    const items = snapshot?.items || {}
+    const displayKey = ctx.persistenceConfig?.displayKey
+
+    for (const [entityId, entity] of Object.entries(items)) {
+      const filename = buildDisplayFilename(entity, displayKey, entityId)
+      const entityPath = path.join(nestedDir, `${filename}.json`)
+      await writeJson(entityPath, entity)
+    }
+  }
+
+  /**
+   * Save nested entities as array in _items.json under parent folder.
+   */
+  private async saveNestedArrayPartition(ctx: PersistenceContext, snapshot: any): Promise<void> {
+    const nestedDir = buildNestedCollectionPath(ctx)
+    await ensureDir(nestedDir)
+
+    const itemsPath = path.join(nestedDir, '_items.json')
+    await writeJson(itemsPath, snapshot)
+  }
+
+  /**
+   * Load nested collection - scan parent folders for child entities.
+   *
+   * With filter pushdown: if filter includes parent ID, only scan
+   * that parent's folder.
+   */
+  private async loadCollectionNested(ctx: PersistenceContext): Promise<any> {
+    const modelDef = ctx.schemaDefs?.[ctx.modelName]
+    const parentInfo = findParentReference(modelDef, ctx.schemaDefs!)
+
+    if (!parentInfo) {
+      return { items: {} }
+    }
+
+    const baseDir = ctx.location || '.schemas'
+    const parentModelDir = path.join(baseDir, ctx.schemaName, 'data', parentInfo.targetModel)
+
+    if (!await exists(parentModelDir)) {
+      return { items: {} }
+    }
+
+    let items: Record<string, any> = {}
+    const strategy = ctx.persistenceConfig?.strategy || 'entity-per-file'
+
+    // Filter pushdown: if filter has parent ID, only scan that folder
+    const targetParentId = ctx.filter?.[parentInfo.field]
+
+    if (targetParentId) {
+      // Need to resolve parent ID -> displayKey folder name
+      const parentDisplayValue = await this.resolveParentDisplayValue(
+        ctx, parentInfo, targetParentId
+      )
+      const sanitized = sanitizeFilename(parentDisplayValue)
+      const childDir = path.join(parentModelDir, sanitized, ctx.modelName)
+
+      if (await exists(childDir)) {
+        items = await this.loadNestedFromDir(childDir, ctx, strategy)
+      }
+    } else {
+      // Full scan: iterate all parent folders
+      const parentFolders = await this.listDirs(parentModelDir)
+
+      for (const parentFolder of parentFolders) {
+        const childDir = path.join(parentModelDir, parentFolder, ctx.modelName)
+
+        if (await exists(childDir)) {
+          const folderItems = await this.loadNestedFromDir(childDir, ctx, strategy)
+          Object.assign(items, folderItems)
+        }
+      }
+    }
+
+    // Apply any remaining filter conditions in memory
+    if (ctx.filter) {
+      items = applyFilter(items, ctx.filter)
+    }
+
+    return { items }
+  }
+
+  /**
+   * Load entities from a nested child directory.
+   */
+  private async loadNestedFromDir(
+    dir: string,
+    ctx: PersistenceContext,
+    strategy: string
+  ): Promise<Record<string, any>> {
+    const items: Record<string, any> = {}
+
+    if (strategy === 'array-per-partition') {
+      // Load from _items.json
+      const itemsPath = path.join(dir, '_items.json')
+      if (await exists(itemsPath)) {
+        const data = await readJson(itemsPath)
+        if (data?.items) {
+          Object.assign(items, data.items)
+        }
+      }
+    } else {
+      // Load individual entity files
+      const files = await listFiles(dir)
+      const jsonFiles = files.filter(f => f.endsWith('.json') && f !== '_items.json')
+
+      for (const file of jsonFiles) {
+        const filePath = path.join(dir, file)
+        const entity = await readJson(filePath)
+        const entityId = entity?.id || file.replace(/\.json$/, '')
+        items[entityId] = entity
+      }
+    }
+
+    return items
+  }
+
+  /**
+   * Resolve a parent entity's display key value from its ID.
+   *
+   * Tries both folder structure (for parents with nested children) and
+   * flat structure (for backward compatibility).
+   */
+  private async resolveParentDisplayValue(
+    ctx: PersistenceContext,
+    parentInfo: { field: string; targetModel: string; parentDisplayKey: string },
+    parentId: string
+  ): Promise<string> {
+    // Load parent entity to get its displayKey value
+    // First try with schemaDefs (which enables folder structure lookup)
+    let parentCtx: EntityContext = {
+      schemaName: ctx.schemaName,
+      modelName: parentInfo.targetModel,
+      location: ctx.location,
+      entityId: parentId,
+      persistenceConfig: ctx.schemaDefs?.[parentInfo.targetModel]?.['x-persistence'],
+      schemaDefs: ctx.schemaDefs
+    }
+
+    let parent = await this.loadEntity(parentCtx)
+
+    // If not found and we had schemaDefs, try without (flat structure fallback)
+    if (!parent && ctx.schemaDefs) {
+      parentCtx = {
+        schemaName: ctx.schemaName,
+        modelName: parentInfo.targetModel,
+        location: ctx.location,
+        entityId: parentId,
+        persistenceConfig: ctx.schemaDefs?.[parentInfo.targetModel]?.['x-persistence']
+        // No schemaDefs - forces flat file lookup
+      }
+      parent = await this.loadEntity(parentCtx)
+    }
+
+    if (!parent) {
+      throw new Error(
+        `Parent ${parentInfo.targetModel} with ID ${parentId} not found`
+      )
+    }
+
+    const displayValue = parent[parentInfo.parentDisplayKey]
+    if (!displayValue) {
+      throw new Error(
+        `Parent ${parentId} missing displayKey field "${parentInfo.parentDisplayKey}"`
+      )
+    }
+
+    return String(displayValue)
+  }
+
+  /**
+   * List subdirectories in a directory (excluding files).
+   */
+  private async listDirs(dirPath: string): Promise<string[]> {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true })
+    return entries
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name)
   }
 
   // === Path Building Helpers ===

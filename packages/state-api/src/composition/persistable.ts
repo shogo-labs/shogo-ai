@@ -37,7 +37,8 @@ export const CollectionPersistable = types.model()
         schemaName: env.context.schemaName,   // Stable string from environment
         modelName: (self as any).modelName,   // From collection's view (closure-based)
         location: env.context.location,
-        persistenceConfig: (self as any).persistenceConfigMetadata  // From collection's view (closure-based)
+        persistenceConfig: (self as any).persistenceConfigMetadata,  // From collection's view (closure-based)
+        schemaDefs: (self as any).schemaDefsMetadata  // For nested persistence parent lookup
       }
     }
   }))

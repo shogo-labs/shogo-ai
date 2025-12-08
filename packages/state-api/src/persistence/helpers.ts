@@ -4,7 +4,21 @@
  * Utilities for working with partitioned persistence, including
  * extracting configuration from schema definitions and building file paths.
  */
-import type { PersistenceConfig } from './types'
+import path from 'path'
+import type { PersistenceConfig, PersistenceContext } from './types'
+
+/**
+ * Information about a parent reference discovered from schema.
+ * Used for nested persistence to determine parent-child relationships.
+ */
+export type NestedParentInfo = {
+  /** Field name on child that references parent (e.g., "initiativeId") */
+  field: string
+  /** Target model name (e.g., "Initiative") */
+  targetModel: string
+  /** DisplayKey field name on parent (e.g., "name") */
+  parentDisplayKey: string
+}
 
 /**
  * Default persistence configuration (flat strategy, backward compatible).
@@ -54,7 +68,8 @@ export function extractPersistenceConfig(modelDef: any): PersistenceConfig {
   return {
     strategy,
     partitionKey: xPersistence.partitionKey,
-    displayKey: xPersistence.displayKey
+    displayKey: xPersistence.displayKey,
+    nested: xPersistence.nested
   }
 }
 
@@ -170,4 +185,189 @@ export function applyFilter(
   }
 
   return result
+}
+
+// ============================================================================
+// Nested Persistence Helpers (Phase 8)
+// ============================================================================
+
+/**
+ * Find the parent reference field in a model's schema definition.
+ *
+ * Looks for a single reference field marked with:
+ * - x-reference-type: "single"
+ * - x-mst-type: "reference"
+ *
+ * Only searches when the model has `nested: true` in its x-persistence config.
+ *
+ * @param modelDef - Schema definition from $defs[ModelName]
+ * @param allDefs - All model definitions (to look up parent's displayKey)
+ * @returns Parent info or null if not a nested model
+ * @throws Error if model has nested:true but no valid parent reference
+ *
+ * @example
+ * const parentInfo = findParentReference(schema.$defs.BacklogItem, schema.$defs)
+ * // Returns: { field: 'initiativeId', targetModel: 'Initiative', parentDisplayKey: 'name' }
+ */
+export function findParentReference(
+  modelDef: any,
+  allDefs: Record<string, any>
+): NestedParentInfo | null {
+  const xPersistence = modelDef?.['x-persistence']
+
+  // Only look for parent if nested: true
+  if (!xPersistence?.nested) {
+    return null
+  }
+
+  const properties = modelDef?.properties || {}
+  let parentField: string | null = null
+  let parentRef: string | null = null
+
+  for (const [propName, propSchema] of Object.entries(properties)) {
+    const schema = propSchema as any
+    if (schema['x-reference-type'] === 'single' &&
+        schema['x-mst-type'] === 'reference') {
+      if (parentField !== null) {
+        throw new Error(
+          `Model with nested:true has multiple single references: ${parentField}, ${propName}. ` +
+          `Cannot determine parent automatically.`
+        )
+      }
+      parentField = propName
+      // Extract target from $ref or x-arktype
+      parentRef = schema.$ref?.replace('#/$defs/', '') ||
+                  schema['x-arktype']?.replace('[]', '').split('.').pop()
+    }
+  }
+
+  if (!parentField || !parentRef) {
+    throw new Error(
+      `Model with nested:true has no single reference field. ` +
+      `Add a reference field with x-reference-type: "single" to establish parent relationship.`
+    )
+  }
+
+  // Lookup parent's displayKey
+  const parentDef = allDefs[parentRef]
+  if (!parentDef) {
+    throw new Error(`Parent model "${parentRef}" not found in schema $defs`)
+  }
+
+  const parentDisplayKey = parentDef['x-persistence']?.displayKey
+  if (!parentDisplayKey) {
+    throw new Error(
+      `Parent model "${parentRef}" must have x-persistence.displayKey for nested children`
+    )
+  }
+
+  return {
+    field: parentField,
+    targetModel: parentRef,
+    parentDisplayKey: parentDisplayKey
+  }
+}
+
+/**
+ * Build the directory path for a nested collection.
+ *
+ * Creates path: {location}/{schemaName}/data/{ParentModel}/{parentDisplayKey}/{ChildModel}/
+ *
+ * @param ctx - Persistence context with parentContext populated
+ * @returns Directory path for nested entities
+ * @throws Error if parentContext is not provided
+ *
+ * @example
+ * buildNestedCollectionPath({
+ *   schemaName: 'roadmap',
+ *   modelName: 'BacklogItem',
+ *   location: '.schemas',
+ *   parentContext: { modelName: 'Initiative', displayKeyValue: 'auth-layer-v2' }
+ * })
+ * // Returns: '.schemas/roadmap/data/Initiative/auth-layer-v2/BacklogItem'
+ */
+export function buildNestedCollectionPath(ctx: PersistenceContext): string {
+  if (!ctx.parentContext) {
+    throw new Error('buildNestedCollectionPath requires parentContext')
+  }
+
+  const baseDir = ctx.location || '.schemas'
+  return path.join(
+    baseDir,
+    ctx.schemaName,
+    'data',
+    ctx.parentContext.modelName,
+    ctx.parentContext.displayKeyValue,
+    ctx.modelName
+  )
+}
+
+/**
+ * Build the file path for a parent entity in nested structure.
+ *
+ * Creates path: {location}/{schemaName}/data/{ParentModel}/{displayKeyValue}/{lowercase-model}.json
+ *
+ * The parent entity file is stored inside its own folder (alongside child subfolders).
+ *
+ * @param ctx - Persistence context for the parent model
+ * @param displayKeyValue - The sanitized display key value for folder name
+ * @returns File path for the parent entity
+ *
+ * @example
+ * buildParentEntityPath(
+ *   { schemaName: 'roadmap', modelName: 'Initiative', location: '.schemas' },
+ *   'auth-layer-v2'
+ * )
+ * // Returns: '.schemas/roadmap/data/Initiative/auth-layer-v2/initiative.json'
+ */
+export function buildParentEntityPath(
+  ctx: PersistenceContext,
+  displayKeyValue: string
+): string {
+  const baseDir = ctx.location || '.schemas'
+  const lowercaseModel = ctx.modelName.toLowerCase()
+  return path.join(
+    baseDir,
+    ctx.schemaName,
+    'data',
+    ctx.modelName,
+    displayKeyValue,
+    `${lowercaseModel}.json`
+  )
+}
+
+/**
+ * Check if a model has nested children based on schema definitions.
+ *
+ * Scans all model definitions to find any that have:
+ * - nested: true in x-persistence
+ * - A single reference pointing to the given model
+ *
+ * @param modelName - The model name to check for nested children
+ * @param allDefs - All model definitions from schema.$defs
+ * @returns True if any model is nested under this one
+ */
+export function hasNestedChildren(
+  modelName: string,
+  allDefs: Record<string, any>
+): boolean {
+  for (const [, modelDef] of Object.entries(allDefs)) {
+    const xPersistence = modelDef?.['x-persistence']
+    if (!xPersistence?.nested) continue
+
+    // Check if this model's parent is the target
+    const properties = modelDef?.properties || {}
+    for (const [, propSchema] of Object.entries(properties)) {
+      const schema = propSchema as any
+      if (schema['x-reference-type'] === 'single' &&
+          schema['x-mst-type'] === 'reference') {
+        const targetRef = schema.$ref?.replace('#/$defs/', '') ||
+                          schema['x-arktype']?.replace('[]', '').split('.').pop()
+        if (targetRef === modelName) {
+          return true
+        }
+      }
+    }
+  }
+  return false
 }

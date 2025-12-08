@@ -49,6 +49,7 @@ export const MetaRegistry = scope({
       strategy: "'flat' | 'entity-per-file' | 'array-per-partition'",
       "partitionKey?": "string",
       "displayKey?": "string",
+      "nested?": "boolean",  // Store children under parent folder
     },
   },
 

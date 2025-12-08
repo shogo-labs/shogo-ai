@@ -32,6 +32,9 @@ export function createCollectionModels(
       ? extractPersistenceConfig(modelDefs[modelName])
       : { strategy: 'flat' }
 
+    // Capture all schema defs for nested persistence (needs to find parent references)
+    const allDefs = modelDefs
+
     collections[collectionName] = types
       .model(collectionName, {
         items: types.map(model)
@@ -42,6 +45,9 @@ export function createCollectionModels(
         },
         get persistenceConfigMetadata(): PersistenceConfig {
           return persistenceConfig
+        },
+        get schemaDefsMetadata(): Record<string, any> | undefined {
+          return allDefs
         },
         get(id: string) {
           return self.items.get(id)
