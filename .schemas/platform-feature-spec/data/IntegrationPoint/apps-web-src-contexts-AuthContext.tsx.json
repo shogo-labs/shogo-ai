@@ -1,0 +1,10 @@
+{
+  "id": "ip-auth-007",
+  "sessionId": "auth-001",
+  "package": "apps/web",
+  "filePath": "apps/web/src/contexts/AuthContext.tsx",
+  "changeType": "add",
+  "description": "AuthProvider and useAuth hook for React integration",
+  "rationale": "React context pattern - provides auth store to component tree",
+  "createdAt": 1733616400000
+}

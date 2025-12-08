@@ -44,6 +44,13 @@ export const MetaRegistry = scope({
     name: "string",
     "domain?": "string",
     "description?": "string",
+    // Persistence configuration (x-persistence extension)
+    "xPersistence?": {
+      strategy: "'flat' | 'entity-per-file' | 'array-per-partition'",
+      "partitionKey?": "string",
+      "displayKey?": "string",
+      "nested?": "boolean",  // Store children under parent folder
+    },
   },
 
   Property: {

@@ -105,6 +105,11 @@ export function createRootStoreEnhancements(RootModel: any) {
           if (possibleDomain) modelData.domain = possibleDomain
           if (defSchema.description) modelData.description = defSchema.description
 
+          // Capture x-persistence extension for partitioned storage
+          if (defSchema['x-persistence']) {
+            modelData.xPersistence = defSchema['x-persistence']
+          }
+
           self.modelCollection.add(modelData)
 
           // Ingest properties using helper (for recursion)

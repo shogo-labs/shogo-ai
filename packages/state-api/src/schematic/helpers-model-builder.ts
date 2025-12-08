@@ -14,6 +14,25 @@ import { extractTargetModel, resolvePropertyType } from "./helpers-type-resoluti
 import type { MSTConversionOptions } from "./types"
 
 // ============================================================================
+// Collection Name Helper
+// ============================================================================
+
+/**
+ * Converts an entity name to a collection property name.
+ *
+ * Preserves camelCase for multi-word entity names:
+ * - "User" → "userCollection"
+ * - "AuthUser" → "authUserCollection"
+ * - "ProductCategory" → "productCategoryCollection"
+ *
+ * This matches the naming pattern in helpers-store.ts.
+ */
+function toCollectionPropName(entityName: string): string {
+  const collectionName = `${entityName}Collection`
+  return collectionName.charAt(0).toLowerCase() + collectionName.slice(1)
+}
+
+// ============================================================================
 // Reference Creation Helper
 // ============================================================================
 
@@ -44,16 +63,14 @@ function createMSTReference(
       get(identifier, parent) {
         const root = getRoot(parent) as any
 
-        // Domain-aware lookup: "auth.User" → root.auth.userCollection
+        // Domain-aware lookup: "auth.User" → root.auth.authUserCollection
         if (targetRef.includes('.')) {
           const [domain, name] = targetRef.split('.')
-          const collectionName = `${name.toLowerCase()}Collection`
-          return root[domain]?.[collectionName]?.get(identifier)
+          return root[domain]?.[toCollectionPropName(name)]?.get(identifier)
         }
 
         // Simple lookup: "User" → root.userCollection
-        const collectionName = `${modelName.toLowerCase()}Collection`
-        return root[collectionName]?.get(identifier)
+        return root[toCollectionPropName(modelName)]?.get(identifier)
       },
 
       set(value, parent) {
@@ -65,14 +82,12 @@ function createMSTReference(
 
           if (targetRef.includes('.')) {
             const [domain, name] = targetRef.split('.')
-            const collectionName = `${name.toLowerCase()}Collection`
-            const collection = root[domain]?.[collectionName]
+            const collection = root[domain]?.[toCollectionPropName(name)]
             if (collection && !collection.has(id)) {
               throw new Error(`Reference to ${targetRef} with id "${id}" not found`)
             }
           } else {
-            const collectionName = `${modelName.toLowerCase()}Collection`
-            const collection = root[collectionName]
+            const collection = root[toCollectionPropName(modelName)]
             if (collection && !collection.has(id)) {
               throw new Error(`Reference to ${targetRef} with id "${id}" not found`)
             }
@@ -213,11 +228,33 @@ export function buildModel(
         }
       }
       if (fieldsToValidate.length > 0) {
-        const dataValidator = arkTypeValidator.pick(...fieldsToValidate)
-        const result = dataValidator(snapshot)
-        if ((result as any)[" arkKind"] === "errors") {
-          const firstError = (result as any)[0]
-          throw new Error(`Validation failed: ${firstError.message}`)
+        // Separate required from optional fields
+        const requiredFields = fieldsToValidate.filter(f => required.has(f))
+        const optionalFields = fieldsToValidate.filter(f => !required.has(f))
+
+        // Always validate required fields (missing/undefined will correctly fail)
+        if (requiredFields.length > 0) {
+          const requiredValidator = arkTypeValidator.pick(...requiredFields)
+          const result = requiredValidator(snapshot)
+          if ((result as any)[" arkKind"] === "errors") {
+            const firstError = (result as any)[0]
+            throw new Error(`Validation failed: ${firstError.message}`)
+          }
+        }
+
+        // Only validate optional fields that are actually present in snapshot
+        // (undefined optional fields are valid - MST's types.maybe() handles them)
+        const presentOptionalFields = optionalFields.filter(f => snapshot[f] !== undefined)
+        if (presentOptionalFields.length > 0) {
+          const optionalValidator = arkTypeValidator.pick(...presentOptionalFields)
+          const optionalData = Object.fromEntries(
+            presentOptionalFields.map(f => [f, snapshot[f]])
+          )
+          const result = optionalValidator(optionalData)
+          if ((result as any)[" arkKind"] === "errors") {
+            const firstError = (result as any)[0]
+            throw new Error(`Validation failed: ${firstError.message}`)
+          }
         }
       }
       return snapshot
@@ -240,11 +277,9 @@ export function buildModel(
           let collection
           if (viewConfig.modelName.includes('.')) {
             const [domain, modelName] = viewConfig.modelName.split('.')
-            const collectionName = `${modelName.toLowerCase()}Collection`
-            collection = root[domain]?.[collectionName]
+            collection = root[domain]?.[toCollectionPropName(modelName)]
           } else {
-            const collectionName = `${viewConfig.modelName.toLowerCase()}Collection`
-            collection = root[collectionName]
+            collection = root[toCollectionPropName(viewConfig.modelName)]
           }
           if (!collection) return []
           return collection.all().filter((item: any) => {

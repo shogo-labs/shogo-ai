@@ -1,0 +1,10 @@
+{
+  "id": "ip-auth-008",
+  "sessionId": "auth-001",
+  "package": "apps/web",
+  "filePath": "apps/web/src/pages/AuthDemoPage.tsx",
+  "changeType": "add",
+  "description": "Proof-of-work page demonstrating auth flows with real Supabase",
+  "rationale": "Demo page showing signup, login, logout with real credentials",
+  "createdAt": 1733616400000
+}

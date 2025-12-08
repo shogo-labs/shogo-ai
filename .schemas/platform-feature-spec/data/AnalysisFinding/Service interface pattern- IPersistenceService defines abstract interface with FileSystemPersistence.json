@@ -1,0 +1,10 @@
+{
+  "id": "finding-auth-001",
+  "sessionId": "auth-001",
+  "type": "pattern",
+  "description": "Service interface pattern: IPersistenceService defines abstract interface with FileSystemPersistence and NullPersistence implementations. IAuthService should follow same pattern.",
+  "location": "packages/state-api/src/persistence/types.ts",
+  "relevantCode": "export interface IPersistenceService { saveCollection, loadCollection, saveEntity, loadEntity }",
+  "recommendation": "Create IAuthService interface with signUp, signIn, signOut, getSession, onAuthStateChange methods. Implement SupabaseAuthService and MockAuthService.",
+  "createdAt": 1733616120000
+}

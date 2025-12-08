@@ -1,0 +1,20 @@
+{
+  "id": "test-auth-034",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-007",
+  "scenario": "AuthDemoPage displays error messages",
+  "given": [
+    "AuthDemoPage is rendered",
+    "MockAuthService configured to reject credentials"
+  ],
+  "when": "User submits login with invalid credentials",
+  "then": [
+    "Error message is displayed",
+    "Form remains visible for retry",
+    "Error clears on next attempt"
+  ],
+  "testType": "acceptance",
+  "targetFile": "apps/web/src/pages/__tests__/AuthDemoPage.test.tsx",
+  "createdAt": 1733616700000,
+  "task": "task-auth-008"
+}

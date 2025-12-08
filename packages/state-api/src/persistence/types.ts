@@ -13,6 +13,46 @@
  */
 
 /**
+ * Configuration for how a model's data should be persisted.
+ * Specified via `x-persistence` extension in schema definitions.
+ *
+ * Strategies:
+ * - "flat": Single JSON file per model (current default, backward compatible)
+ * - "entity-per-file": One JSON file per entity, named by id
+ * - "array-per-partition": One JSON file per partition key value, containing grouped entities
+ */
+export type PersistenceStrategy = 'flat' | 'entity-per-file' | 'array-per-partition'
+
+export type PersistenceConfig = {
+  /** How to organize files on disk */
+  strategy: PersistenceStrategy
+
+  /**
+   * Field to partition by (for array-per-partition strategy).
+   * Entities with the same partition key value are stored together.
+   */
+  partitionKey?: string
+
+  /**
+   * Field to use for human-readable filenames instead of entity id.
+   * Value will be sanitized for filesystem safety.
+   */
+  displayKey?: string
+
+  /**
+   * When true, entities are nested under their parent's folder.
+   * Parent relationship is inferred from the first x-reference-type: "single" field.
+   *
+   * Requires:
+   * - Model must have exactly one single reference field (x-reference-type: "single")
+   * - Parent model must use entity-per-file strategy with displayKey
+   *
+   * Creates structure: {Parent}/{parentDisplayKey}/{ChildModel}/{childFile}.json
+   */
+  nested?: boolean
+}
+
+/**
  * Generic persistence interface for runtime store data.
  *
  * This interface abstracts persistence operations, allowing pluggable backends
@@ -99,6 +139,16 @@ export interface IPersistenceService {
  * - Bucket prefix (S3Persistence): "s3://bucket/prefix"
  * - Etc.
  */
+/**
+ * Context for nested persistence - provides parent information for path building.
+ */
+export type NestedParentContext = {
+  /** Parent model name (e.g., "Initiative") */
+  modelName: string
+  /** Parent's displayKey value, sanitized for filesystem (e.g., "auth-layer-v2") */
+  displayKeyValue: string
+}
+
 export type PersistenceContext = {
   /** Schema name (folder name in filesystem, table prefix in database, etc.) */
   schemaName: string
@@ -114,6 +164,33 @@ export type PersistenceContext = {
    * If not provided, implementation should use a sensible default.
    */
   location?: string
+
+  /**
+   * Optional persistence configuration from schema's x-persistence extension.
+   * If not provided, implementation should default to 'flat' strategy.
+   */
+  persistenceConfig?: PersistenceConfig
+
+  /**
+   * Optional filter to apply when loading collection.
+   * Simple key-value equality filter (e.g., { status: 'active', projectId: 'p1' }).
+   * When filter includes partitionKey, implementation may optimize by loading
+   * only the matching partition(s).
+   */
+  filter?: Record<string, any>
+
+  /**
+   * Parent context for nested persistence.
+   * When saving nested entities, this provides parent information for path building.
+   * Populated at save time by looking up the parent entity.
+   */
+  parentContext?: NestedParentContext
+
+  /**
+   * Schema definitions ($defs) for reference introspection.
+   * Used by nested persistence to discover parent relationship from schema.
+   */
+  schemaDefs?: Record<string, any>
 }
 
 /**

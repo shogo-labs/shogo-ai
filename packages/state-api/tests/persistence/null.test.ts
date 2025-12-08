@@ -178,4 +178,94 @@ describe('NullPersistence', () => {
     const loaded = await persistence.loadCollection(ctxWithoutLocation)
     expect(loaded).toEqual({ items: { '1': { data: 'A' } } })
   })
+
+  describe('Filter support (Phase 7)', () => {
+    test('loadCollection applies filter when provided', async () => {
+      // Given: Collection with mixed data
+      await persistence.saveCollection(ctx, {
+        items: {
+          '1': { id: '1', title: 'Task 1', status: 'open' },
+          '2': { id: '2', title: 'Task 2', status: 'closed' },
+          '3': { id: '3', title: 'Task 3', status: 'open' }
+        }
+      })
+
+      // When: Loading with filter
+      const ctxWithFilter = { ...ctx, filter: { status: 'open' } }
+      const loaded = await persistence.loadCollection(ctxWithFilter)
+
+      // Then: Only matching items returned
+      expect(loaded).toEqual({
+        items: {
+          '1': { id: '1', title: 'Task 1', status: 'open' },
+          '3': { id: '3', title: 'Task 3', status: 'open' }
+        }
+      })
+    })
+
+    test('loadCollection without filter returns all items (backward compat)', async () => {
+      // Given: Collection with data
+      const snapshot = {
+        items: {
+          '1': { id: '1', status: 'open' },
+          '2': { id: '2', status: 'closed' }
+        }
+      }
+      await persistence.saveCollection(ctx, snapshot)
+
+      // When: Loading without filter
+      const loaded = await persistence.loadCollection(ctx)
+
+      // Then: All items returned
+      expect(loaded).toEqual(snapshot)
+    })
+
+    test('loadCollection with multi-field filter matches all conditions', async () => {
+      // Given: Collection with data
+      await persistence.saveCollection(ctx, {
+        items: {
+          '1': { id: '1', status: 'open', priority: 'high' },
+          '2': { id: '2', status: 'open', priority: 'low' },
+          '3': { id: '3', status: 'closed', priority: 'high' }
+        }
+      })
+
+      // When: Loading with multi-field filter
+      const ctxWithFilter = { ...ctx, filter: { status: 'open', priority: 'high' } }
+      const loaded = await persistence.loadCollection(ctxWithFilter)
+
+      // Then: Only items matching ALL conditions returned
+      expect(loaded).toEqual({
+        items: {
+          '1': { id: '1', status: 'open', priority: 'high' }
+        }
+      })
+    })
+
+    test('loadCollection with filter returns null when collection does not exist', async () => {
+      // When: Loading from non-existent collection with filter
+      const ctxWithFilter = { ...ctx, filter: { status: 'open' } }
+      const loaded = await persistence.loadCollection(ctxWithFilter)
+
+      // Then: Returns null (not empty object)
+      expect(loaded).toBeNull()
+    })
+
+    test('loadCollection with filter returns empty items when no matches', async () => {
+      // Given: Collection with no matching data
+      await persistence.saveCollection(ctx, {
+        items: {
+          '1': { id: '1', status: 'closed' },
+          '2': { id: '2', status: 'closed' }
+        }
+      })
+
+      // When: Loading with filter that matches nothing
+      const ctxWithFilter = { ...ctx, filter: { status: 'open' } }
+      const loaded = await persistence.loadCollection(ctxWithFilter)
+
+      // Then: Returns empty items
+      expect(loaded).toEqual({ items: {} })
+    })
+  })
 })

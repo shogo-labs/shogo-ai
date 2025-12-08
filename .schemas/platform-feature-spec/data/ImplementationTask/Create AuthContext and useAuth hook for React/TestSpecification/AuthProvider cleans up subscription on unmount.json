@@ -1,0 +1,19 @@
+{
+  "id": "test-auth-028",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-006",
+  "scenario": "AuthProvider cleans up subscription on unmount",
+  "given": [
+    "AuthProvider component with MockAuthService",
+    "Component is mounted"
+  ],
+  "when": "Component is unmounted",
+  "then": [
+    "Unsubscribe function is called",
+    "No memory leaks from dangling subscriptions"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/contexts/__tests__/AuthContext.test.tsx",
+  "createdAt": 1733616700000,
+  "task": "task-auth-007"
+}

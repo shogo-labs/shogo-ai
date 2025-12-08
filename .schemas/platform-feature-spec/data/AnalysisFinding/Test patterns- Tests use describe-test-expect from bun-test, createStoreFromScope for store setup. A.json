@@ -1,0 +1,10 @@
+{
+  "id": "finding-auth-005",
+  "sessionId": "auth-001",
+  "type": "pattern",
+  "description": "Test patterns: Tests use describe/test/expect from bun:test, createStoreFromScope for store setup. Auth tests should use MockAuthService.",
+  "location": "packages/state-api/src/schematic/tests/05-real-world-patterns.test.ts",
+  "relevantCode": "import { describe, test, expect } from 'bun:test'; const result = createStoreFromScope(Domain); const store = result.createStore();",
+  "recommendation": "Auth tests should use MockAuthService injected via environment, test signUp/signIn/signOut flows, error handling, and state synchronization.",
+  "createdAt": 1733616120000
+}

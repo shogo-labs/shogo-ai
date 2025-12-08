@@ -1,0 +1,85 @@
+{
+  "id": "df24138d-f951-4a65-bf74-8083b7aeade6",
+  "name": "supabase-auth",
+  "format": "enhanced-json-schema",
+  "createdAt": 1765135764663,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "AuthUser": {
+      "type": "object",
+      "description": "Cached user entity from Supabase Auth. Synced on auth state changes.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Supabase user UUID",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User's email address",
+          "enum": []
+        },
+        "emailVerified": {
+          "type": "boolean",
+          "description": "Whether email has been verified",
+          "enum": []
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When user was created in Supabase",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "email"
+      ],
+      "x-original-name": "AuthUser"
+    },
+    "AuthSession": {
+      "type": "object",
+      "description": "Current auth session. One active session at a time, cleared on logout.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Session identifier",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Reference to authenticated user",
+          "enum": [],
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "accessToken": {
+          "type": "string",
+          "description": "JWT access token from Supabase",
+          "enum": []
+        },
+        "refreshToken": {
+          "type": "string",
+          "description": "Refresh token for session renewal",
+          "enum": []
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When access token expires",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "accessToken",
+        "expiresAt"
+      ],
+      "x-original-name": "AuthSession"
+    }
+  }
+}

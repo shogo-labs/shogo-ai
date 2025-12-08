@@ -1,0 +1,277 @@
+{
+  "id": "6d0df197-a84e-4ec0-aab1-3d7d825d4e6e",
+  "name": "platform-features",
+  "format": "enhanced-json-schema",
+  "createdAt": 1765197911179,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "PlatformFeatureSession": {
+      "type": "object",
+      "description": "Container for a platform feature development session",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name"
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "description": "Short name for the feature",
+          "enum": []
+        },
+        "intent": {
+          "type": "string",
+          "description": "Original ask in natural language",
+          "enum": []
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "discovery",
+            "design",
+            "integration",
+            "testing",
+            "complete"
+          ]
+        },
+        "affectedPackages": {
+          "type": "array",
+          "description": "Which packages this feature touches",
+          "enum": []
+        },
+        "schemaName": {
+          "type": "string",
+          "description": "If this feature produces a schema, its name",
+          "enum": []
+        },
+        "createdAt": {
+          "type": "number",
+          "enum": []
+        },
+        "updatedAt": {
+          "type": "number",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "intent",
+        "status",
+        "createdAt"
+      ],
+      "x-original-name": "PlatformFeatureSession"
+    },
+    "Requirement": {
+      "type": "object",
+      "description": "A requirement derived from the feature intent",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "description",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "enum": [],
+          "x-arktype": "PlatformFeatureSession",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "description": {
+          "type": "string",
+          "enum": []
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "must",
+            "should",
+            "could"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "proposed",
+            "accepted",
+            "implemented"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "description",
+        "priority",
+        "status"
+      ],
+      "x-original-name": "Requirement"
+    },
+    "DesignDecision": {
+      "type": "object",
+      "description": "A design decision made during feature development",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "question",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "enum": [],
+          "x-arktype": "PlatformFeatureSession",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "question": {
+          "type": "string",
+          "description": "What needed deciding",
+          "enum": []
+        },
+        "decision": {
+          "type": "string",
+          "description": "What we chose",
+          "enum": []
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Why we chose it",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "question",
+        "decision",
+        "rationale"
+      ],
+      "x-original-name": "DesignDecision"
+    },
+    "IntegrationPoint": {
+      "type": "object",
+      "description": "Where the feature integrates with existing code",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "targetPackage",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "enum": [],
+          "x-arktype": "PlatformFeatureSession",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "targetPackage": {
+          "type": "string",
+          "description": "Which package this integrates with",
+          "enum": []
+        },
+        "description": {
+          "type": "string",
+          "description": "What the integration does",
+          "enum": []
+        },
+        "isGenerated": {
+          "type": "boolean",
+          "description": "Whether this is template-generated vs manual",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "targetPackage",
+        "description"
+      ],
+      "x-original-name": "IntegrationPoint"
+    },
+    "TestCase": {
+      "type": "object",
+      "description": "A test case for the feature",
+      "x-persistence": {
+        "strategy": "array-per-partition",
+        "nested": true,
+        "partitionKey": "session"
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "enum": [],
+          "x-arktype": "PlatformFeatureSession",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "requirement": {
+          "type": "string",
+          "description": "Optional link to requirement for traceability",
+          "enum": [],
+          "x-arktype": "Requirement",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single"
+        },
+        "description": {
+          "type": "string",
+          "enum": []
+        },
+        "given": {
+          "type": "string",
+          "enum": []
+        },
+        "when": {
+          "type": "string",
+          "enum": []
+        },
+        "then": {
+          "type": "string",
+          "enum": []
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "specified",
+            "implemented",
+            "passing"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "description",
+        "given",
+        "when",
+        "then",
+        "status"
+      ],
+      "x-original-name": "TestCase"
+    }
+  }
+}

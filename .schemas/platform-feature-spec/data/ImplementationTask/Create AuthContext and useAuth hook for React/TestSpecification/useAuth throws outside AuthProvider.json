@@ -1,0 +1,18 @@
+{
+  "id": "test-auth-029",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-006",
+  "scenario": "useAuth throws outside AuthProvider",
+  "given": [
+    "Component using useAuth",
+    "Component is NOT wrapped in AuthProvider"
+  ],
+  "when": "Component renders",
+  "then": [
+    "Throws error with message about missing AuthProvider"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/contexts/__tests__/AuthContext.test.tsx",
+  "createdAt": 1733616700000,
+  "task": "task-auth-007"
+}

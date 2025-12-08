@@ -271,4 +271,81 @@ describe("Reference transformation", () => {
     expect(manager.reports[0]).toBe(employee)
     expect(employee.reports).toHaveLength(0)
   })
+
+  test("handles multi-word entity names with proper camelCase collection naming", () => {
+    // Given: Domain with multi-word entity names (camelCase)
+    // This tests that "AuthUser" → "authUserCollection" (not "authuserCollection")
+    const AuthDomain = scope({
+      AuthUser: {
+        id: "string.uuid",
+        email: "string",
+      },
+      AuthSession: {
+        id: "string.uuid",
+        user: "AuthUser",  // Reference to multi-word entity
+        expiresAt: "number",
+      }
+    })
+
+    // When: we create a store
+    const result = createStoreFromScope(AuthDomain)
+    const store = result.createStore({})
+
+    // Then: collections use proper camelCase naming
+    expect(store.authUserCollection).toBeDefined()
+    expect(store.authSessionCollection).toBeDefined()
+
+    // And: we can add entities and resolve references
+    const user = store.authUserCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440020",
+      email: "test@example.com"
+    })
+
+    const session = store.authSessionCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440021",
+      user: "550e8400-e29b-41d4-a716-446655440020",
+      expiresAt: Date.now() + 3600000
+    })
+
+    // Then: reference resolves correctly through camelCase collection
+    expect(session.user).toBe(user)
+    expect(session.user.email).toBe("test@example.com")
+  })
+
+  test("handles three-word entity names", () => {
+    // Given: Domain with three-word entity name
+    const InventoryDomain = scope({
+      ProductCategory: {
+        id: "string.uuid",
+        name: "string",
+      },
+      ProductCategoryItem: {
+        id: "string.uuid",
+        category: "ProductCategory",  // Reference to three-word entity
+        sku: "string",
+      }
+    })
+
+    const result = createStoreFromScope(InventoryDomain)
+    const store = result.createStore({})
+
+    // Then: collections use proper camelCase naming
+    expect(store.productCategoryCollection).toBeDefined()
+    expect(store.productCategoryItemCollection).toBeDefined()
+
+    // And: references work correctly
+    const category = store.productCategoryCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440030",
+      name: "Electronics"
+    })
+
+    const item = store.productCategoryItemCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440031",
+      category: "550e8400-e29b-41d4-a716-446655440030",
+      sku: "ELEC-001"
+    })
+
+    expect(item.category).toBe(category)
+    expect(item.category.name).toBe("Electronics")
+  })
 })

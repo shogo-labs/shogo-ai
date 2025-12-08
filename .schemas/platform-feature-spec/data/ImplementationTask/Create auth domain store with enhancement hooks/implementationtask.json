@@ -1,0 +1,29 @@
+{
+  "id": "task-auth-005",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-002",
+  "description": "Create auth domain store with enhancement hooks",
+  "acceptanceCriteria": [
+    "domain.ts exports AuthDomain ArkType scope with AuthUser and AuthSession entities",
+    "AuthUser entity: id (string.uuid), email (string), emailVerified (boolean?), createdAt (string?)",
+    "AuthSession entity: id (string.uuid), userId (AuthUser reference), accessToken (string), refreshToken (string?), expiresAt (string)",
+    "domain.ts exports createAuthStore() factory using createStoreFromScope",
+    "enhanceModels adds AuthSession.isExpired computed view (compares expiresAt to now)",
+    "enhanceCollections adds basic collection access (required even if minimal)",
+    "enhanceRootStore adds volatile state: authStatus (idle|loading|error), authError (string|null)",
+    "enhanceRootStore adds views: currentUser, currentSession, isAuthenticated",
+    "enhanceRootStore adds actions: signUp, signIn, signOut that coordinate with IAuthService via getEnv()",
+    "enhanceRootStore adds initialize action to restore session on startup",
+    "Actions update volatile authStatus during operations",
+    "Actions sync IAuthService results to AuthUser/AuthSession collections",
+    "signOut clears both collections and resets volatile state"
+  ],
+  "status": "complete",
+  "createdAt": 1733616500000,
+  "updatedAt": 1733580500000,
+  "integrationPoint": "ip-auth-005",
+  "dependencies": [
+    "task-auth-001",
+    "task-auth-002"
+  ]
+}
