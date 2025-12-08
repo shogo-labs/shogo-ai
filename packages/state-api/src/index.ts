@@ -23,5 +23,8 @@ export * from './meta'
 // Persistence layer
 export * from './persistence'
 
+// Auth layer
+export * from './auth'
+
 // Utilities
 export * from './utils'

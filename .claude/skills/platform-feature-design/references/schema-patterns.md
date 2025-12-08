@@ -21,7 +21,7 @@
   "type": "object",
   "description": "A platform user",
   "properties": {
-    "id": { "type": "string", "x-mst-type": "identifier" },
+    "id": { "type": "string", "format": "uuid", "x-mst-type": "identifier" },
     "email": { "type": "string", "format": "email" },
     "createdAt": { "type": "number" }
   },
@@ -141,18 +141,12 @@ When relating entities, always prefer MST references over string IDs within the 
 
 **Key insight**: The schematic system auto-detects references by checking if the type name exists in the scope. Use entity names directly—no `.id` suffix needed.
 
-**Anti-pattern to avoid:**
+**Correct pattern:**
 ```typescript
-// ❌ WRONG: String IDs lose MST's automatic resolution
+// ✅ MST references with auto-resolution
 const OrderDomain = scope({
-  Order: { id: 'string', customerId: 'string' },  // customerId is just a string
-  Customer: { id: 'string', name: 'string' }
-})
-
-// ✅ CORRECT: MST references with auto-resolution
-const OrderDomain = scope({
-  Order: { id: 'string', customer: 'Customer' },  // customer auto-resolves to instance
-  Customer: { id: 'string', name: 'string' }
+  Order: { id: 'string.uuid', customer: 'Customer' },  // customer auto-resolves to instance
+  Customer: { id: 'string.uuid', name: 'string' }
 })
 ```
 
@@ -194,3 +188,20 @@ Before finalizing schema, verify each field passes these tests:
 - **Fields**: camelCase (`createdAt`, `passwordHash`)
 - **Enums**: lowercase with underscores or camelCase
 - **Schema names**: kebab-case (`auth-layer`, `platform-features`)
+
+## Identifier Format Standard
+
+**All entity identifiers MUST use UUID format:**
+
+```json
+"id": {
+  "type": "string",
+  "format": "uuid",
+  "x-mst-type": "identifier"
+}
+```
+
+This ensures:
+- Proper MST reference resolution
+- UUID validation at runtime
+- Consistency with ArkType `string.uuid` type

@@ -1,0 +1,74 @@
+{
+  "items": {
+    "finding-auth-001": {
+      "id": "finding-auth-001",
+      "sessionId": "auth-001",
+      "type": "pattern",
+      "description": "Service interface pattern: IPersistenceService defines abstract interface with FileSystemPersistence and NullPersistence implementations. IAuthService should follow same pattern.",
+      "location": "packages/state-api/src/persistence/types.ts",
+      "relevantCode": "export interface IPersistenceService { saveCollection, loadCollection, saveEntity, loadEntity }",
+      "recommendation": "Create IAuthService interface with signUp, signIn, signOut, getSession, onAuthStateChange methods. Implement SupabaseAuthService and MockAuthService.",
+      "createdAt": 1733616120000
+    },
+    "finding-auth-002": {
+      "id": "finding-auth-002",
+      "sessionId": "auth-001",
+      "type": "pattern",
+      "description": "Environment extension pattern: IEnvironment has services.persistence slot. Auth service should be added as services.auth following same structure.",
+      "location": "packages/state-api/src/environment/types.ts",
+      "relevantCode": "export interface IEnvironment { services: { persistence: IPersistenceService }, context: { schemaName: string, location?: string } }",
+      "recommendation": "Extend IEnvironment with optional services.auth: IAuthService slot. Auth is optional since not all stores need auth.",
+      "createdAt": 1733616120000
+    },
+    "finding-auth-003": {
+      "id": "finding-auth-003",
+      "sessionId": "auth-001",
+      "type": "pattern",
+      "description": "React context pattern: WavesmithMetaStoreContext provides metaStore + persistence via createContext/useContext. AuthContext should follow same pattern.",
+      "location": "apps/web/src/contexts/WavesmithMetaStoreContext.tsx",
+      "relevantCode": "const MetaStoreContext = createContext<MetaStoreContextValue | null>(null); export function useWavesmithMetaStore() { ... }",
+      "recommendation": "Create AuthContext.tsx with AuthProvider component and useAuth hook. Provider initializes auth service and AuthStore, subscribes to auth state changes.",
+      "createdAt": 1733616120000
+    },
+    "finding-auth-004": {
+      "id": "finding-auth-004",
+      "sessionId": "auth-001",
+      "type": "pattern",
+      "description": "Mock implementation pattern: NullPersistence is in-memory mock for testing with clear() method. MockAuthService should follow same approach.",
+      "location": "packages/state-api/src/persistence/null.ts",
+      "relevantCode": "export class NullPersistence implements IPersistenceService { private store = new Map<string, any>(); clear(): void { this.store.clear() } }",
+      "recommendation": "Create MockAuthService with in-memory user store, configurable delays, and clear() for test isolation.",
+      "createdAt": 1733616120000
+    },
+    "finding-auth-005": {
+      "id": "finding-auth-005",
+      "sessionId": "auth-001",
+      "type": "pattern",
+      "description": "Test patterns: Tests use describe/test/expect from bun:test, createStoreFromScope for store setup. Auth tests should use MockAuthService.",
+      "location": "packages/state-api/src/schematic/tests/05-real-world-patterns.test.ts",
+      "relevantCode": "import { describe, test, expect } from 'bun:test'; const result = createStoreFromScope(Domain); const store = result.createStore();",
+      "recommendation": "Auth tests should use MockAuthService injected via environment, test signUp/signIn/signOut flows, error handling, and state synchronization.",
+      "createdAt": 1733616120000
+    },
+    "finding-auth-006": {
+      "id": "finding-auth-006",
+      "sessionId": "auth-001",
+      "type": "gap",
+      "description": "No existing auth domain in state-api. New auth/ directory needed for types, services, and domain store.",
+      "location": "packages/state-api/src/",
+      "relevantCode": "Current structure: core/, environment/, meta/, persistence/, schematic/, utils/",
+      "recommendation": "Create packages/state-api/src/auth/ with: types.ts (IAuthService, AuthUser, AuthSession), supabase.ts, mock.ts, domain.ts (AuthStore MST model)",
+      "createdAt": 1733616120000
+    },
+    "finding-auth-007": {
+      "id": "finding-auth-007",
+      "sessionId": "auth-001",
+      "type": "existing_test",
+      "description": "Existing persistence tests validate interface contracts. Auth tests should follow same contract testing pattern.",
+      "location": "packages/state-api/src/",
+      "relevantCode": "Tests verify: 1) interface methods work, 2) null/mock behaves like real impl, 3) state consistency",
+      "recommendation": "Create auth service contract tests that verify both SupabaseAuthService and MockAuthService satisfy IAuthService interface identically.",
+      "createdAt": 1733616120000
+    }
+  }
+}

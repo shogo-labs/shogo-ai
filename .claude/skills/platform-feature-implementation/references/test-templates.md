@@ -104,6 +104,60 @@ describe("{scenario}", () => {
 })
 ```
 
+### Unit Test (Reference Resolution) - REQUIRED for Domain Stores
+
+```typescript
+/**
+ * Reference resolution test for {Domain}Store
+ * Verifies MST references resolve to entity instances
+ */
+
+import { describe, test, expect, beforeEach } from "bun:test"
+import { create{Domain}Store } from "../domain"
+import { Mock{Domain}Service } from "../mock"
+import { NullPersistence } from "../../persistence/null"
+
+describe("{Domain}Store reference resolution", () => {
+  let store: ReturnType<typeof create{Domain}Store>
+
+  beforeEach(() => {
+    const env = {
+      services: {
+        persistence: new NullPersistence(),
+        {domain}: new Mock{Domain}Service(),
+      },
+      context: { schemaName: "test-{domain}" },
+    }
+    store = create{Domain}Store(env)
+  })
+
+  test("{parent}.{reference} resolves to {Target} instance", () => {
+    const target = store.{targetCollection}.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      // ... required fields
+    })
+
+    const parent = store.{parentCollection}.add({
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      {reference}: target.id,
+    })
+
+    // CRITICAL: Instance equality - NOT just ID comparison
+    expect(parent.{reference}).toBe(target)
+    expect(parent.{reference}?.{property}).toBe(target.{property})
+  })
+
+  test("optional reference is undefined when not set", () => {
+    const parent = store.{parentCollection}.add({
+      id: "550e8400-e29b-41d4-a716-446655440003",
+      // {reference} not provided
+    })
+
+    expect(parent.{reference}).toBeUndefined()
+  })
+})
+```
+
 ### Integration Test
 
 ```typescript

@@ -115,3 +115,47 @@ Dependencies flow: **infrastructure → utilities → core logic → integration
 3. Core implementations (depend on utilities)
 4. Registration/wiring (depend on implementations)
 5. UI components (depend on context/services)
+
+---
+
+## Pattern: Proof-of-Work Demo Page
+
+### Purpose
+
+Visual UAT page demonstrating real service integration works end-to-end.
+
+### When Required
+
+- External service integration (any provider: auth, payment, storage, etc.)
+- Multi-step user flows needing E2E validation
+- Features needing visual validation beyond unit tests
+
+### Task structure
+
+```
+Description: Create proof-of-work page demonstrating {feature} end-to-end with real {service}
+Acceptance Criteria:
+- Page demonstrates complete flow with real service credentials (not mocks)
+- Shows all major feature scenarios end-to-end
+- Displays real data returned from service
+- Includes loading states and error handling
+- Accessible at /{feature}-demo route
+Dependencies: [react-context task, domain-store task]
+```
+
+### Structure
+
+- Overview with implemented feature checklist
+- Navigation between major scenarios
+- Real data display from service
+- Loading/error state indicators
+
+### File Location
+
+`apps/web/src/pages/{Feature}DemoPage.tsx`
+
+### Dependencies
+
+- React context task
+- Domain store task
+- Service implementation task

@@ -1,9 +1,22 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
+import { createClient } from '@supabase/supabase-js'
 import { HomePage } from './pages/HomePage'
 import { Unit1Page } from './pages/Unit1Page'
 import { Unit2Page } from './pages/Unit2Page'
 import { Unit3Page } from './pages/Unit3Page'
 import { LegacyTestsPage } from './pages/LegacyTestsPage'
+import { AuthDemoPage } from './pages/AuthDemoPage'
+import { AuthProvider } from './contexts/AuthContext'
+import { SupabaseAuthService } from '@shogo/state-api'
+
+// Initialize Supabase client
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+)
+
+// Use real Supabase auth
+const authService = new SupabaseAuthService(supabase)
 
 function Navigation() {
   const location = useLocation()
@@ -45,6 +58,9 @@ function Navigation() {
       <Link to="/legacy-tests" style={linkStyle('/legacy-tests')}>
         Legacy Tests
       </Link>
+      <Link to="/auth-demo" style={linkStyle('/auth-demo')}>
+        Auth Demo
+      </Link>
     </nav>
   )
 }
@@ -52,14 +68,17 @@ function Navigation() {
 function App() {
   return (
     <BrowserRouter>
-      <Navigation />
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/unit1" element={<Unit1Page />} />
-        <Route path="/unit2" element={<Unit2Page />} />
-        <Route path="/unit3" element={<Unit3Page />} />
-        <Route path="/legacy-tests" element={<LegacyTestsPage />} />
-      </Routes>
+      <AuthProvider authService={authService}>
+        <Navigation />
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/unit1" element={<Unit1Page />} />
+          <Route path="/unit2" element={<Unit2Page />} />
+          <Route path="/unit3" element={<Unit3Page />} />
+          <Route path="/legacy-tests" element={<LegacyTestsPage />} />
+          <Route path="/auth-demo" element={<AuthDemoPage />} />
+        </Routes>
+      </AuthProvider>
     </BrowserRouter>
   )
 }

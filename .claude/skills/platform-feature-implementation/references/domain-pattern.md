@@ -223,7 +223,7 @@ The design phase creates Enhanced JSON Schema. Translate to ArkType:
 | `"type": "string"` | `'string'` |
 | `"type": "number"` | `'number'` |
 | `"type": "boolean"` | `'boolean'` |
-| `"x-mst-type": "identifier"` | `id: 'string'` (first field) |
+| `"x-mst-type": "identifier"` | `id: 'string.uuid'` (first field, validates UUID) |
 | `"x-reference-type": "single"` | `product: 'Product'` (entity name only) |
 | `"x-reference-type": "array"` | `tags: 'Tag[]'` (entity name with `[]`) |
 | `"default": value` | `'type = value'` (e.g., `'boolean = true'`) |
@@ -385,6 +385,32 @@ describe('InventoryStore', () => {
   })
 })
 ```
+
+### Reference Resolution Tests (Required)
+
+Every domain store with entity references MUST include tests verifying reference resolution:
+
+```typescript
+test("session.user resolves to AuthUser instance", () => {
+  const user = store.authUserCollection.add({
+    id: "550e8400-e29b-41d4-a716-446655440001",
+    email: "test@example.com",
+    createdAt: new Date().toISOString()
+  })
+
+  const session = store.authSessionCollection.add({
+    id: "550e8400-e29b-41d4-a716-446655440002",
+    user: user.id,
+    lastRefreshedAt: new Date().toISOString()
+  })
+
+  // CRITICAL: Instance equality proves MST reference works
+  expect(session.user).toBe(user)
+  expect(session.user?.email).toBe("test@example.com")
+})
+```
+
+**Why this matters:** Without this test, broken references may appear to work (returning undefined silently) while hiding bugs.
 
 ## React Integration
 

@@ -98,6 +98,77 @@ Then: {Success behavior}
 
 ---
 
+## Domain Store / MST Reference Tests
+
+Domain stores with entity references require specific test patterns beyond basic CRUD.
+
+### Pattern: Reference Resolution
+```typescript
+test("Reference resolves to correct entity instance", () => {
+  const user = store.authUserCollection.add({
+    id: "550e8400-e29b-41d4-a716-446655440001",
+    email: "test@example.com",
+    createdAt: new Date().toISOString()
+  })
+
+  const session = store.authSessionCollection.add({
+    id: "550e8400-e29b-41d4-a716-446655440002",
+    user: user.id,  // Reference by ID
+    lastRefreshedAt: new Date().toISOString()
+  })
+
+  // CRITICAL: Verify instance equality, not just ID match
+  expect(session.user).toBe(user)
+  expect(session.user?.email).toBe("test@example.com")
+})
+```
+
+### Pattern: Optional Reference Undefined
+```typescript
+test("Optional reference is undefined when not set", () => {
+  const session = store.authSessionCollection.add({
+    id: "550e8400-e29b-41d4-a716-446655440003",
+    lastRefreshedAt: new Date().toISOString()
+  })
+
+  expect(session.user).toBeUndefined()
+})
+```
+
+### Pattern: Reference Update Cascading
+```typescript
+test("Computed views update when reference changes", () => {
+  const company1 = store.companyCollection.add({
+    id: "550e8400-e29b-41d4-a716-446655440010",
+    name: "Corp A"
+  })
+  const company2 = store.companyCollection.add({
+    id: "550e8400-e29b-41d4-a716-446655440011",
+    name: "Corp B"
+  })
+  const user = store.userCollection.add({
+    id: "550e8400-e29b-41d4-a716-446655440012",
+    company: company1.id
+  })
+
+  expect(company1.employees).toContain(user)
+  expect(company2.employees).not.toContain(user)
+
+  user.setCompany(company2.id)
+
+  expect(company1.employees).not.toContain(user)
+  expect(company2.employees).toContain(user)
+})
+```
+
+### Checklist for Domain Store Tests
+- [ ] All references resolve to correct instances (not just IDs)
+- [ ] Optional references return undefined when not set
+- [ ] Computed inverse views update on reference changes
+- [ ] Missing reference targets handled gracefully (returns undefined)
+
+---
+
 ## Integration Test Patterns
 
 **API → Store flow**:

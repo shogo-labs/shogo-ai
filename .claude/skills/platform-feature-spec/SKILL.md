@@ -245,6 +245,7 @@ store.create("ImplementationTask", "platform-feature-spec", {
   description: "Create {domain} domain store with enhancement hooks",
   acceptanceCriteria: [
     // Schema structure
+    "All entity identifier fields use 'string.uuid' type for proper MST reference resolution",
     "domain.ts exports {Domain}Domain ArkType scope with entities using MST reference syntax (e.g., order: 'Order' not orderId: 'string')",
     "Entity relationships use entity name directly—system auto-detects references",
     "Domain schema contains only business state—no UI state (loading, error, selectedIds)",
@@ -256,7 +257,11 @@ store.create("ImplementationTask", "platform-feature-spec", {
     "enhanceRootStore adds initialize() and domain actions",
 
     // Integration
-    "Store integrates with I{Domain}Service via getEnv()"
+    "Store integrates with I{Domain}Service via getEnv()",
+
+    // Reference integrity (REQUIRED)
+    "Tests verify reference fields resolve to entity instances (not just ID strings)",
+    "Tests verify optional references return undefined when not set"
   ],
   dependencies: ["task-service-interface", "task-environment-extension"],
   status: "planned",
@@ -275,6 +280,29 @@ store.create("ImplementationTask", "platform-feature-spec", {
 - All domain logic in one cohesive, testable unit
 
 See [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.md) for the complete hook API and examples.
+
+### Proof-of-Work Page Task
+
+For features with external service integration, create a demo page task:
+
+```javascript
+store.create("ImplementationTask", "platform-feature-spec", {
+  id: "task-proof-of-work-page",
+  sessionId: session.id,
+  description: "Create proof-of-work page demonstrating {feature} end-to-end with real {service}",
+  acceptanceCriteria: [
+    "Page demonstrates complete flow with real service credentials (not mocks)",
+    "Shows all major feature scenarios end-to-end",
+    "Displays real data returned from service",
+    "Includes loading states and error handling",
+    "Accessible at /{feature}-demo route"
+  ],
+  dependencies: ["task-react-context", "task-domain-store"],
+  status: "planned"
+})
+```
+
+**When required**: Any feature integrating with external services (auth providers, payment processors, storage backends, etc.) should include this task.
 
 ## References
 

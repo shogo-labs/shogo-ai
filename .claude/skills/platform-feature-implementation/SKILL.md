@@ -512,6 +512,17 @@ Issues:
 
 If issues found, analyze and fix before proceeding.
 
+**Proof-of-Work Verification** (for service-backed features):
+
+If a proof-of-work page task exists in the implementation plan:
+1. Ensure page renders without errors
+2. Verify real service credentials are used (from env vars, not mocks)
+3. Walk through complete feature flow visually
+4. Confirm real data displays from service
+5. Test error states (invalid input, network errors)
+
+This page validates all components integrate correctly with the actual external service.
+
 ### Phase 6: Handoff
 
 1. Update run record:
