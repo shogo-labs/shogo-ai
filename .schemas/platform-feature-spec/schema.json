@@ -8,6 +8,10 @@
     "AnalysisFinding": {
       "type": "object",
       "description": "A finding from codebase analysis relevant to implementing a platform feature",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "description"
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -71,6 +75,10 @@
     "IntegrationPoint": {
       "type": "object",
       "description": "A specific location in the codebase where changes will be made",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "package"
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -88,7 +96,8 @@
           "description": "The analysis finding that identified this point",
           "enum": [],
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-arktype": "AnalysisFinding"
         },
         "package": {
           "type": "string",
@@ -145,6 +154,10 @@
     "ImplementationTask": {
       "type": "object",
       "description": "A discrete unit of work to implement part of a platform feature",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "description"
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -162,7 +175,8 @@
           "description": "The integration point this task addresses",
           "enum": [],
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-arktype": "IntegrationPoint"
         },
         "requirementId": {
           "type": "string",
@@ -184,7 +198,8 @@
           "description": "Tasks that must complete before this one",
           "enum": [],
           "x-mst-type": "reference",
-          "x-reference-type": "array"
+          "x-reference-type": "array",
+          "x-arktype": "ImplementationTask"
         },
         "status": {
           "type": "string",
@@ -221,6 +236,11 @@
     "TestSpecification": {
       "type": "object",
       "description": "A test case specification in Given/When/Then format",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "scenario",
+        "nested": true
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -238,7 +258,8 @@
           "description": "The implementation task this test validates",
           "enum": [],
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-arktype": "ImplementationTask"
         },
         "requirementId": {
           "type": "string",
@@ -301,6 +322,10 @@
     "ImplementationRun": {
       "type": "object",
       "description": "A single execution run of the implementation skill",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "id"
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -365,6 +390,10 @@
     "TaskExecution": {
       "type": "object",
       "description": "Execution record for a single task attempt",
+      "x-persistence": {
+        "strategy": "array-per-partition",
+        "partitionKey": "runId"
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -377,14 +406,16 @@
           "description": "Reference to ImplementationRun",
           "enum": [],
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-arktype": "ImplementationRun"
         },
         "taskId": {
           "type": "string",
           "description": "Reference to ImplementationTask",
           "enum": [],
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-arktype": "ImplementationTask"
         },
         "status": {
           "type": "string",

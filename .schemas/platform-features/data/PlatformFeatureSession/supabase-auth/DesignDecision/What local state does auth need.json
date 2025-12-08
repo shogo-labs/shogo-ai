@@ -1,0 +1,7 @@
+{
+  "id": "dd-auth-001",
+  "question": "What local state does auth need?",
+  "decision": "AuthUser (cached user) and AuthSession (current session) entities. External Supabase owns data; local state enables reactive UI.",
+  "rationale": "Following local state pattern - we cache what we need for reactive UI without duplicating Supabase's user database. Session entity tracks tokens for refresh awareness.",
+  "session": "auth-001"
+}

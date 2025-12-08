@@ -1,0 +1,21 @@
+{
+  "id": "test-auth-001",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-001",
+  "scenario": "IAuthService interface exports all required methods",
+  "given": [
+    "types.ts file exists"
+  ],
+  "when": "IAuthService interface is imported",
+  "then": [
+    "Interface includes signUp method",
+    "Interface includes signIn method",
+    "Interface includes signOut method",
+    "Interface includes getSession method",
+    "Interface includes onAuthStateChange method"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/types.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-001"
+}

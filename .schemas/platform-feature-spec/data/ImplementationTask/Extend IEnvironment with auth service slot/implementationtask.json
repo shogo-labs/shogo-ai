@@ -1,0 +1,19 @@
+{
+  "id": "task-auth-002",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-003",
+  "description": "Extend IEnvironment with auth service slot",
+  "acceptanceCriteria": [
+    "IEnvironment.services includes optional auth?: IAuthService property",
+    "Import uses 'import type' to avoid runtime dependency",
+    "Existing persistence service remains required",
+    "JSDoc documents auth service purpose and optional nature"
+  ],
+  "status": "complete",
+  "createdAt": 1733616500000,
+  "updatedAt": 1733580200000,
+  "integrationPoint": "ip-auth-004",
+  "dependencies": [
+    "task-auth-001"
+  ]
+}

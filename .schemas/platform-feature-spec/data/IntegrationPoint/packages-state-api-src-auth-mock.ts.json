@@ -1,0 +1,10 @@
+{
+  "id": "ip-auth-003",
+  "sessionId": "auth-001",
+  "package": "packages/state-api",
+  "filePath": "packages/state-api/src/auth/mock.ts",
+  "changeType": "add",
+  "description": "MockAuthService for testing without network calls",
+  "rationale": "Mock pattern - enables unit testing without Supabase",
+  "createdAt": 1733616400000
+}

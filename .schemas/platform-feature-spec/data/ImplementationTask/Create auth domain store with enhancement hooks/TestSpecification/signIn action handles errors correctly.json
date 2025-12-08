@@ -1,0 +1,21 @@
+{
+  "id": "test-auth-023",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-002",
+  "scenario": "signIn action handles errors correctly",
+  "given": [
+    "Auth store with MockAuthService",
+    "MockAuthService configured to reject credentials"
+  ],
+  "when": "store.signIn({ email, password }) is called with invalid credentials",
+  "then": [
+    "authStatus changes to 'error'",
+    "authError contains error message",
+    "No user or session entities are created",
+    "isAuthenticated remains false"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-005"
+}

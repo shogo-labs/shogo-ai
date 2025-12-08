@@ -1,0 +1,10 @@
+{
+  "id": "finding-auth-006",
+  "sessionId": "auth-001",
+  "type": "gap",
+  "description": "No existing auth domain in state-api. New auth/ directory needed for types, services, and domain store.",
+  "location": "packages/state-api/src/",
+  "relevantCode": "Current structure: core/, environment/, meta/, persistence/, schematic/, utils/",
+  "recommendation": "Create packages/state-api/src/auth/ with: types.ts (IAuthService, AuthUser, AuthSession), supabase.ts, mock.ts, domain.ts (AuthStore MST model)",
+  "createdAt": 1733616120000
+}

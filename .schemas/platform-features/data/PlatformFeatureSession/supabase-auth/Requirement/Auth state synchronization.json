@@ -1,0 +1,7 @@
+{
+  "id": "req-auth-006",
+  "description": "Auth state synchronization - subscribe to Supabase auth state changes and sync to local MST store automatically",
+  "priority": "must",
+  "status": "proposed",
+  "session": "auth-001"
+}

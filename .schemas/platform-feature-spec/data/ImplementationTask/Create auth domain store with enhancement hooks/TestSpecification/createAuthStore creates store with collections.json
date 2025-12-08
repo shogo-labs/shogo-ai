@@ -1,0 +1,20 @@
+{
+  "id": "test-auth-018",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-002",
+  "scenario": "createAuthStore creates store with collections",
+  "given": [
+    "MockAuthService instance",
+    "Environment with auth service"
+  ],
+  "when": "createAuthStore is called with environment",
+  "then": [
+    "Store has authUserCollection",
+    "Store has authSessionCollection",
+    "Collections are initially empty"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-005"
+}

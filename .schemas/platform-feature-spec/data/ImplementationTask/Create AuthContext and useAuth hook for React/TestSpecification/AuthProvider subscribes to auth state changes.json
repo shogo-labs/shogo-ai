@@ -1,0 +1,19 @@
+{
+  "id": "test-auth-027",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-006",
+  "scenario": "AuthProvider subscribes to auth state changes",
+  "given": [
+    "AuthProvider component with MockAuthService",
+    "Child component using useAuth"
+  ],
+  "when": "Auth state changes in MockAuthService",
+  "then": [
+    "Store is updated with new auth state",
+    "Child component re-renders with updated state"
+  ],
+  "testType": "integration",
+  "targetFile": "apps/web/src/contexts/__tests__/AuthContext.test.tsx",
+  "createdAt": 1733616700000,
+  "task": "task-auth-007"
+}

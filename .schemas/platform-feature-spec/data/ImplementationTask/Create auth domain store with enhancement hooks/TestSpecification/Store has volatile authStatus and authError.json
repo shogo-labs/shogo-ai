@@ -1,0 +1,19 @@
+{
+  "id": "test-auth-020",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-002",
+  "scenario": "Store has volatile authStatus and authError",
+  "given": [
+    "Auth store is created"
+  ],
+  "when": "Store is accessed",
+  "then": [
+    "authStatus is initially 'idle'",
+    "authError is initially null",
+    "authStatus can be observed for changes"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-005"
+}

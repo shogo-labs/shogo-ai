@@ -216,6 +216,9 @@ export class FileSystemPersistence implements IPersistenceService {
   /**
    * Load collection by assembling entities from directory.
    * Applies filter in memory after assembling.
+   *
+   * Phase 8: If this model has nested children, looks in subdirectories
+   * for parent entity files (e.g., PlatformFeatureSession/supabase-auth/platformfeaturesession.json).
    */
   private async loadCollectionEntityPerFile(ctx: PersistenceContext): Promise<any | null> {
     const modelDir = this.buildModelDir(ctx)
@@ -224,22 +227,43 @@ export class FileSystemPersistence implements IPersistenceService {
       return null
     }
 
-    const files = await listFiles(modelDir)
-    const jsonFiles = files.filter(f => f.endsWith('.json'))
+    const items: Record<string, any> = {}
+    const displayKey = ctx.persistenceConfig?.displayKey
 
-    if (jsonFiles.length === 0) {
-      return null
+    // Phase 8: Check if this model has nested children
+    const hasChildren = ctx.schemaDefs && hasNestedChildren(ctx.modelName, ctx.schemaDefs)
+
+    if (hasChildren && displayKey) {
+      // Parent with nested children: scan subdirectories for entity files
+      const subDirs = await this.listDirs(modelDir)
+      const lowercaseModel = ctx.modelName.toLowerCase()
+
+      for (const subDir of subDirs) {
+        const entityPath = path.join(modelDir, subDir, `${lowercaseModel}.json`)
+
+        if (await exists(entityPath)) {
+          const entity = await readJson(entityPath)
+          const entityId = entity?.id || subDir
+          items[entityId] = entity
+        }
+      }
+    } else {
+      // Standard entity-per-file: scan JSON files in model directory
+      const files = await listFiles(modelDir)
+      const jsonFiles = files.filter(f => f.endsWith('.json'))
+
+      for (const file of jsonFiles) {
+        const filePath = path.join(modelDir, file)
+        const entity = await readJson(filePath)
+
+        // Use entity's id field, falling back to filename without extension
+        const entityId = entity?.id || file.replace(/\.json$/, '')
+        items[entityId] = entity
+      }
     }
 
-    const items: Record<string, any> = {}
-
-    for (const file of jsonFiles) {
-      const filePath = path.join(modelDir, file)
-      const entity = await readJson(filePath)
-
-      // Use entity's id field, falling back to filename without extension
-      const entityId = entity?.id || file.replace(/\.json$/, '')
-      items[entityId] = entity
+    if (Object.keys(items).length === 0) {
+      return null
     }
 
     // Apply filter if provided

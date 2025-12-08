@@ -1,13 +1,17 @@
 {
-  "id": "7d8425b4-fe89-4c3c-8ccb-b5d7b8e6ffcd",
+  "id": "6d0df197-a84e-4ec0-aab1-3d7d825d4e6e",
   "name": "platform-features",
   "format": "enhanced-json-schema",
-  "createdAt": 1764793352349,
+  "createdAt": 1765197911179,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "PlatformFeatureSession": {
       "type": "object",
       "description": "Container for a platform feature development session",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name"
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -65,6 +69,11 @@
     "Requirement": {
       "type": "object",
       "description": "A requirement derived from the feature intent",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "description",
+        "nested": true
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -74,6 +83,7 @@
         "session": {
           "type": "string",
           "enum": [],
+          "x-arktype": "PlatformFeatureSession",
           "x-mst-type": "reference",
           "x-reference-type": "single"
         },
@@ -110,6 +120,11 @@
     "DesignDecision": {
       "type": "object",
       "description": "A design decision made during feature development",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "question",
+        "nested": true
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -119,6 +134,7 @@
         "session": {
           "type": "string",
           "enum": [],
+          "x-arktype": "PlatformFeatureSession",
           "x-mst-type": "reference",
           "x-reference-type": "single"
         },
@@ -150,6 +166,11 @@
     "IntegrationPoint": {
       "type": "object",
       "description": "Where the feature integrates with existing code",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "targetPackage",
+        "nested": true
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -159,6 +180,7 @@
         "session": {
           "type": "string",
           "enum": [],
+          "x-arktype": "PlatformFeatureSession",
           "x-mst-type": "reference",
           "x-reference-type": "single"
         },
@@ -189,6 +211,11 @@
     "TestCase": {
       "type": "object",
       "description": "A test case for the feature",
+      "x-persistence": {
+        "strategy": "array-per-partition",
+        "nested": true,
+        "partitionKey": "session"
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -198,6 +225,7 @@
         "session": {
           "type": "string",
           "enum": [],
+          "x-arktype": "PlatformFeatureSession",
           "x-mst-type": "reference",
           "x-reference-type": "single"
         },
@@ -205,6 +233,7 @@
           "type": "string",
           "description": "Optional link to requirement for traceability",
           "enum": [],
+          "x-arktype": "Requirement",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single"
         },
