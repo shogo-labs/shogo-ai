@@ -1,0 +1,8 @@
+{
+  "id": "init-realtime",
+  "name": "real-time-collab",
+  "description": "WebSocket-based collaborative editing for shared documents and code",
+  "status": "ideation",
+  "priority": "medium",
+  "createdAt": "2025-12-08T10:05:00Z"
+}

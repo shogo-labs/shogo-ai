@@ -1,0 +1,16 @@
+{
+  "items": {
+    "note-1": {
+      "id": "note-1",
+      "initiativeId": "init-auth-v2",
+      "content": "Consider using jose library for JWT handling - it's well maintained and has good TypeScript support",
+      "createdAt": "2025-12-08T11:00:00Z"
+    },
+    "note-2": {
+      "id": "note-2",
+      "initiativeId": "init-auth-v2",
+      "content": "Risk: token storage in browser localStorage is vulnerable to XSS. Consider httpOnly cookies instead.",
+      "createdAt": "2025-12-08T11:05:00Z"
+    }
+  }
+}

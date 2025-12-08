@@ -1,0 +1,154 @@
+{
+  "id": "cd1aa84f-2cf9-4cd5-ac83-91e7eb503002",
+  "name": "roadmap",
+  "format": "enhanced-json-schema",
+  "createdAt": 1765193070543,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Initiative": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name"
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "enum": []
+        },
+        "description": {
+          "type": "string",
+          "enum": []
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ideation",
+            "proposal",
+            "approved",
+            "in_flight",
+            "shipped",
+            "archived"
+          ]
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "enum": []
+        },
+        "targetSession": {
+          "type": "string",
+          "description": "Cross-ref to PlatformFeatureSession when promoted",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "status",
+        "priority",
+        "createdAt"
+      ],
+      "x-original-name": "Initiative"
+    },
+    "BacklogItem": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "title"
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "title": {
+          "type": "string",
+          "enum": []
+        },
+        "description": {
+          "type": "string",
+          "enum": []
+        },
+        "initiativeId": {
+          "type": "string",
+          "description": "Reference to parent Initiative",
+          "enum": []
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "backlog",
+            "ready",
+            "in_progress",
+            "done"
+          ]
+        },
+        "acceptanceCriteria": {
+          "type": "array",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "description",
+        "initiativeId",
+        "status"
+      ],
+      "x-original-name": "BacklogItem"
+    },
+    "IdeaNote": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "array-per-partition",
+        "partitionKey": "initiativeId"
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "initiativeId": {
+          "type": "string",
+          "description": "Reference to parent Initiative",
+          "enum": []
+        },
+        "content": {
+          "type": "string",
+          "description": "Markdown content",
+          "enum": []
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "initiativeId",
+        "content",
+        "createdAt"
+      ],
+      "x-original-name": "IdeaNote"
+    }
+  }
+}

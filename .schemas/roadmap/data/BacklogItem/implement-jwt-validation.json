@@ -1,0 +1,12 @@
+{
+  "id": "task-jwt",
+  "title": "implement-jwt-validation",
+  "description": "Add JWT token validation with signature verification",
+  "initiativeId": "init-auth-v2",
+  "status": "ready",
+  "acceptanceCriteria": [
+    "Validates JWT signatures",
+    "Checks expiration",
+    "Extracts claims"
+  ]
+}

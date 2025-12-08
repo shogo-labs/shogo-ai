@@ -1,0 +1,11 @@
+{
+  "id": "task-oauth",
+  "title": "setup-oauth-provider-interface",
+  "description": "Create abstraction for OAuth providers (Google, GitHub, etc)",
+  "initiativeId": "init-auth-v2",
+  "status": "backlog",
+  "acceptanceCriteria": [
+    "Provider interface defined",
+    "Google provider implemented"
+  ]
+}

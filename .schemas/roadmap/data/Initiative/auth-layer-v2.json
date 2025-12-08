@@ -1,0 +1,8 @@
+{
+  "id": "init-auth-v2",
+  "name": "auth-layer-v2",
+  "description": "Next-gen authentication with OAuth2/OIDC support, JWT validation, and refresh token rotation",
+  "status": "proposal",
+  "priority": "high",
+  "createdAt": "2025-12-08T10:00:00Z"
+}
