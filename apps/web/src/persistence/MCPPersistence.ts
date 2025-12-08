@@ -88,6 +88,7 @@ export class MCPPersistence implements IPersistenceService {
   /**
    * Load a collection via MCP store.list tool.
    * Transforms the array response into MST collection format { items: { [id]: entity } }.
+   * Passes filter through for partition pushdown optimization.
    */
   async loadCollection(ctx: PersistenceContext): Promise<any | null> {
     try {
@@ -98,7 +99,8 @@ export class MCPPersistence implements IPersistenceService {
       }>('store.list', {
         schema: ctx.schemaName,
         model: ctx.modelName,
-        workspace: ctx.location
+        workspace: ctx.location,
+        filter: ctx.filter  // Enable partition pushdown from browser
       })
 
       if (!result?.ok || !result.items) {
