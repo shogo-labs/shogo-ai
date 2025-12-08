@@ -1,0 +1,20 @@
+{
+  "id": "test-auth-011",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-005",
+  "scenario": "MockAuthService clear resets all state",
+  "given": [
+    "MockAuthService instance is created",
+    "User is signed up and signed in"
+  ],
+  "when": "clear() is called",
+  "then": [
+    "getSession returns null",
+    "Previous user credentials no longer work for signIn",
+    "signUp with same email succeeds"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/mock.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-003"
+}

@@ -3,7 +3,7 @@
  * Extracted from meta-store.ts to reduce file size for esbuild wasm
  */
 
-import { getRoot } from "mobx-state-tree"
+import { getRoot, getSnapshot } from "mobx-state-tree"
 import type { ModelDescriptor } from "../mcp/state"
 import { camelCase } from "../utils/string"
 
@@ -41,6 +41,12 @@ export function createModelEnhancements(baseModels: any) {
 
       if (self.description !== undefined) def.description = self.description
       if (self.domain !== undefined) def["x-domain"] = self.domain
+
+      // Output x-persistence if present (partitioned storage config)
+      // Use getSnapshot() to convert MST observable to plain JSON-serializable object
+      if (self.xPersistence !== undefined) {
+        def["x-persistence"] = getSnapshot(self.xPersistence)
+      }
 
       if (self.properties.length > 0) {
         def.properties = {}

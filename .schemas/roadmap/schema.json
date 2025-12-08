@@ -1,0 +1,146 @@
+{
+  "id": "2cdf2dfa-591d-470d-b8c8-55827939601e",
+  "name": "roadmap",
+  "format": "enhanced-json-schema",
+  "createdAt": 1765196219376,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Initiative": {
+      "type": "object",
+      "description": "A strategic initiative grouping related work",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name"
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name for the initiative",
+          "enum": []
+        },
+        "description": {
+          "type": "string",
+          "description": "What this initiative aims to achieve",
+          "enum": []
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "planned",
+            "active",
+            "completed",
+            "on-hold"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "status"
+      ],
+      "x-original-name": "Initiative"
+    },
+    "BacklogItem": {
+      "type": "object",
+      "description": "A work item in the backlog",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "title",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "title": {
+          "type": "string",
+          "description": "Short title for the work item",
+          "enum": []
+        },
+        "description": {
+          "type": "string",
+          "description": "Detailed description of the work",
+          "enum": []
+        },
+        "initiative": {
+          "type": "string",
+          "description": "Parent initiative this item belongs to",
+          "enum": [],
+          "x-arktype": "Initiative",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "todo",
+            "in-progress",
+            "done"
+          ]
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "initiative",
+        "status"
+      ],
+      "x-original-name": "BacklogItem"
+    },
+    "IdeaNote": {
+      "type": "object",
+      "description": "A quick note or idea related to an initiative",
+      "x-persistence": {
+        "strategy": "array-per-partition",
+        "nested": true,
+        "partitionKey": "initiative"
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [],
+          "x-mst-type": "identifier"
+        },
+        "content": {
+          "type": "string",
+          "description": "The note content",
+          "enum": []
+        },
+        "initiative": {
+          "type": "string",
+          "description": "Parent initiative this note belongs to",
+          "enum": [],
+          "x-arktype": "Initiative",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Timestamp when created",
+          "enum": []
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "initiative"
+      ],
+      "x-original-name": "IdeaNote"
+    }
+  }
+}

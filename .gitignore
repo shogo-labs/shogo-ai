@@ -54,5 +54,5 @@ _tmp/
 *.code-workspace
 
 # Schema session data (user-specific, generated at runtime)
-.schemas/*/data/
+# .schemas/*/data/
 .schemas/*/workspaces/

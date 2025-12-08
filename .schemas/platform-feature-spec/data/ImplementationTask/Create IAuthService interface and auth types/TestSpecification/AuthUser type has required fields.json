@@ -1,0 +1,20 @@
+{
+  "id": "test-auth-002",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-001",
+  "scenario": "AuthUser type has required fields",
+  "given": [
+    "types.ts file exists"
+  ],
+  "when": "AuthUser type is used",
+  "then": [
+    "Type includes id field",
+    "Type includes email field",
+    "Type includes emailVerified field",
+    "Type includes createdAt field"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/types.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-001"
+}

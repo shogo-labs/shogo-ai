@@ -1,0 +1,7 @@
+{
+  "id": "req-auth-002",
+  "description": "Local MST AuthStore for reactive auth state - tracks currentUser, isAuthenticated, isLoading, error states for UI binding",
+  "priority": "must",
+  "status": "proposed",
+  "session": "auth-001"
+}

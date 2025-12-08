@@ -1,0 +1,21 @@
+{
+  "id": "test-auth-005",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-005",
+  "scenario": "MockAuthService signUp creates user and returns session",
+  "given": [
+    "MockAuthService instance is created",
+    "No users exist"
+  ],
+  "when": "signUp is called with email and password",
+  "then": [
+    "Returns AuthSession with accessToken",
+    "Returns AuthSession with user containing provided email",
+    "User is stored in internal Map",
+    "Subsequent getSession returns the session"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/mock.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-003"
+}

@@ -30,10 +30,31 @@ export class NullPersistence implements IPersistenceService {
   /**
    * Load collection snapshot from memory.
    * Returns null if not found.
+   * Applies filter if provided (simulates partition pushdown behavior).
    */
   async loadCollection(ctx: PersistenceContext): Promise<any | null> {
     const key = this.buildKey(ctx)
-    return this.store.get(key) || null
+    const collection = this.store.get(key)
+
+    if (!collection) {
+      return null
+    }
+
+    // Apply filter if provided (consistent with FileSystemPersistence)
+    if (ctx.filter && collection.items) {
+      const filteredItems: Record<string, any> = {}
+      for (const [id, entity] of Object.entries(collection.items)) {
+        const matches = Object.entries(ctx.filter).every(
+          ([filterKey, value]) => (entity as any)[filterKey] === value
+        )
+        if (matches) {
+          filteredItems[id] = entity
+        }
+      }
+      return { items: filteredItems }
+    }
+
+    return collection
   }
 
   /**

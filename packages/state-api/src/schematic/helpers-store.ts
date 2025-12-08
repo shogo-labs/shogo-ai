@@ -7,18 +7,33 @@
 
 import { types, type IAnyModelType } from "mobx-state-tree"
 import { buildModel } from "./helpers-model-builder"
+import { extractPersistenceConfig } from "../persistence/helpers"
 import type { MSTConversionOptions, MSTConversionResult } from "./types"
+import type { PersistenceConfig } from "../persistence/types"
 
 /**
- * Creates collection models with xCollection naming
+ * Creates collection models with xCollection naming.
+ * Captures persistenceConfig from schema definitions in closure.
+ *
+ * @param models - Map of model names to MST models
+ * @param modelDefs - Optional schema $defs for extracting x-persistence config
  */
 export function createCollectionModels(
-  models: Record<string, IAnyModelType>
+  models: Record<string, IAnyModelType>,
+  modelDefs?: Record<string, any>
 ): Record<string, IAnyModelType> {
   const collections: Record<string, IAnyModelType> = {}
 
   for (const [modelName, model] of Object.entries(models)) {
     const collectionName = `${modelName}Collection`
+
+    // Extract persistence config from schema definition (closure captures it)
+    const persistenceConfig: PersistenceConfig = modelDefs?.[modelName]
+      ? extractPersistenceConfig(modelDefs[modelName])
+      : { strategy: 'flat' }
+
+    // Capture all schema defs for nested persistence (needs to find parent references)
+    const allDefs = modelDefs
 
     collections[collectionName] = types
       .model(collectionName, {
@@ -27,6 +42,12 @@ export function createCollectionModels(
       .views(self => ({
         get modelName() {
           return modelName
+        },
+        get persistenceConfigMetadata(): PersistenceConfig {
+          return persistenceConfig
+        },
+        get schemaDefsMetadata(): Record<string, any> | undefined {
+          return allDefs
         },
         get(id: string) {
           return self.items.get(id)

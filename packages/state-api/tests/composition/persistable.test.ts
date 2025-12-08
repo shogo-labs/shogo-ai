@@ -72,7 +72,7 @@ describe('CollectionPersistable Mixin (Unit 4)', () => {
         persistence: new NullPersistence()
       },
       context: {
-        schema: { name: 'test-schema' } as any,  // Mock schema entity
+        schemaName: 'test-schema',  // Stable string reference (not entity)
         location
       }
     }

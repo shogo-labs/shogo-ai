@@ -7,6 +7,7 @@ import { getEffectiveWorkspace } from "../state"
 const Params = t({
   schema: "string",
   model: "string",
+  "filter?": "object",
   "workspace?": "string"
 })
 
@@ -37,7 +38,7 @@ export function registerDataLoad(server: FastMCP) {
     description: "Load a single collection's data from disk into the runtime store",
     parameters: Params,
     execute: async (args: any) => {
-      const { schema, model, workspace } = args as { schema: string; model: string; workspace?: string }
+      const { schema, model, filter, workspace } = args as { schema: string; model: string; filter?: Record<string, any>; workspace?: string }
 
       // If no workspace provided, use monorepo's .schemas directory
       const effectiveWorkspace = getEffectiveWorkspace(workspace)
@@ -107,7 +108,8 @@ export function registerDataLoad(server: FastMCP) {
         }
 
         // 6. Load data using CollectionPersistable mixin
-        await collection.loadAll()
+        // Pass filter for partition pushdown optimization
+        await collection.loadAll(filter)
 
         // 7. Get loaded count
         const count = collection.all().length

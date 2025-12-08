@@ -1,0 +1,10 @@
+{
+  "id": "finding-auth-003",
+  "sessionId": "auth-001",
+  "type": "pattern",
+  "description": "React context pattern: WavesmithMetaStoreContext provides metaStore + persistence via createContext/useContext. AuthContext should follow same pattern.",
+  "location": "apps/web/src/contexts/WavesmithMetaStoreContext.tsx",
+  "relevantCode": "const MetaStoreContext = createContext<MetaStoreContextValue | null>(null); export function useWavesmithMetaStore() { ... }",
+  "recommendation": "Create AuthContext.tsx with AuthProvider component and useAuth hook. Provider initializes auth service and AuthStore, subscribes to auth state changes.",
+  "createdAt": 1733616120000
+}

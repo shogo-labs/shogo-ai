@@ -1,0 +1,24 @@
+{
+  "id": "task-auth-008",
+  "sessionId": "auth-001",
+  "requirementId": "req-auth-007",
+  "description": "Create proof-of-work AuthDemoPage",
+  "acceptanceCriteria": [
+    "AuthDemoPage demonstrates complete auth flow with real Supabase",
+    "Page shows signup form with email/password fields",
+    "Page shows login form with email/password fields",
+    "Page shows logout button when authenticated",
+    "Page displays current user info when authenticated",
+    "Page shows loading state during auth operations",
+    "Page displays error messages on auth failures",
+    "Page uses real SupabaseAuthService (not mock)",
+    "Accessible at /auth-demo route",
+    "App.tsx updated with route"
+  ],
+  "status": "planned",
+  "createdAt": 1733616500000,
+  "integrationPoint": "ip-auth-008",
+  "dependencies": [
+    "task-auth-007"
+  ]
+}

@@ -29,14 +29,16 @@ export const CollectionPersistable = types.model()
      * Derive persistence context from environment + collection's modelName view.
      * No string manipulation, no meta-store queries, just simple derivation.
      *
-     * @returns PersistenceContext with schemaName, modelName, and optional location
+     * @returns PersistenceContext with schemaName, modelName, location, and persistenceConfig
      */
     get persistenceContext(): PersistenceContext {
       const env = getEnv<IEnvironment>(self)
       return {
         schemaName: env.context.schemaName,   // Stable string from environment
         modelName: (self as any).modelName,   // From collection's view (closure-based)
-        location: env.context.location
+        location: env.context.location,
+        persistenceConfig: (self as any).persistenceConfigMetadata,  // From collection's view (closure-based)
+        schemaDefs: (self as any).schemaDefsMetadata  // For nested persistence parent lookup
       }
     }
   }))
@@ -45,14 +47,22 @@ export const CollectionPersistable = types.model()
      * Load all entities in this collection from persistence.
      * If no data exists, collection remains empty (no error thrown).
      *
+     * @param filter - Optional filter to apply during load. When filter matches
+     *                 the partitionKey (for array-per-partition strategy), only
+     *                 the matching partition file is read (partition pushdown).
+     *                 Otherwise, all data is loaded and filtered in memory.
+     *
      * @example
      * await collection.loadAll()
+     * await collection.loadAll({ projectId: 'proj-A' })  // Partition pushdown
+     * await collection.loadAll({ status: 'open' })       // In-memory filter
      */
-    async loadAll() {
+    async loadAll(filter?: Record<string, any>) {
       const env = getEnv<IEnvironment>(self)
-      const snapshot = await env.services.persistence.loadCollection(
-        self.persistenceContext
-      )
+      const ctx = filter
+        ? { ...self.persistenceContext, filter }
+        : self.persistenceContext
+      const snapshot = await env.services.persistence.loadCollection(ctx)
       if (snapshot) {
         applySnapshot(self, snapshot)
       }

@@ -77,8 +77,9 @@ export function registerStoreList(server: FastMCP) {
         // 5. List all instances (pure read from cached runtime store)
         // Auto-load data from disk if collection is empty
         // This ensures store.list works correctly even if data.load wasn't called
+        // Pass filter to loadAll for partition pushdown optimization
         if (collection.all().length === 0 && typeof collection.loadAll === 'function') {
-          await collection.loadAll()
+          await collection.loadAll(filter as Record<string, any> | undefined)
         }
         let instances = collection.all()
 
