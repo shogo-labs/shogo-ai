@@ -3,8 +3,8 @@ name: platform-feature-design
 description: >
   Domain modeling and schema design for platform features. Use after
   platform-feature-analysis (explore mode) to create Enhanced JSON Schema
-  informed by codebase patterns. Takes a PlatformFeatureSession with
-  requirements and analysis findings, produces schema in .schemas/{feature}/.
+  informed by codebase patterns. Takes a FeatureSession with
+  requirements and analysis findings, produces a schema via Wavesmith.
   Invoke when ready to "design the schema", "create the domain model",
   or when session status=design.
 ---
@@ -15,7 +15,7 @@ Transform discovery requirements into Enhanced JSON Schema for Wavesmith, inform
 
 ## Output
 
-- **Schema** in `.schemas/{session.name}/` via `schema.set`
+- **Schema** via `schema.set`
 - **DesignDecision entities** recording key choices
 - **Updated session** with schemaName and status="integration"
 
@@ -28,9 +28,7 @@ Transform discovery requirements into Enhanced JSON Schema for Wavesmith, inform
 3. Load associated Requirements
 4. **Check for Analysis Findings**:
    ```javascript
-   schema.load("platform-feature-spec")
-   data.loadAll("platform-feature-spec")
-   findings = store.list("AnalysisFinding", "platform-feature-spec", { sessionId: session.id })
+   findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
    ```
 5. Present summary:
    ```
@@ -258,7 +256,8 @@ When designing entities, consider how they'll flow through the schematic pipelin
    ```
    store.create("DesignDecision", "platform-features", {
      id: uuid(),
-     session: sessionId,
+     name: "stock-level-modeling",
+     session: session.id,
      question: "How to model stock levels?",
      decision: "Separate StockLevel entity referencing Product and Warehouse",
      rationale: "Supports tracking quantity at multiple locations per product"
@@ -268,7 +267,8 @@ When designing entities, consider how they'll flow through the schematic pipelin
    ```
    store.create("DesignDecision", "platform-features", {
      id: uuid(),
-     session: sessionId,
+     name: "enhancement-hooks-plan",
+     session: session.id,
      question: "What enhancement hooks will the domain need?",
      decision: "enhanceModels: {Entity}.{view}; enhanceCollections: {Collection}.{method}; enhanceRootStore: {actions}",
      rationale: "All hooks will be implemented in a single domain.ts using createStoreFromScope(). The spec skill will create ONE 'Domain Store' task for this - never separate mixin.ts or hooks.ts files."
@@ -284,7 +284,7 @@ When designing entities, consider how they'll flow through the schematic pipelin
 
 4. Update session:
    ```
-   store.update(sessionId, "PlatformFeatureSession", "platform-features", {
+   store.update(session.id, "FeatureSession", "platform-features", {
      schemaName: session.name,
      status: "integration",
      updatedAt: Date.now()
@@ -297,8 +297,10 @@ When designing entities, consider how they'll flow through the schematic pipelin
 ```javascript
 // Phase 1: Load context
 schema.load("platform-features")
-session = store.list("PlatformFeatureSession", "platform-features", { name: "auth-layer" })[0]
+data.loadAll("platform-features")
+session = store.list("FeatureSession", "platform-features", { name: "auth-layer" })[0]
 requirements = store.list("Requirement", "platform-features", { session: session.id })
+findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
 
 // Phase 3: Register schema
 schema.set({
@@ -311,7 +313,7 @@ schema.set({
 schema.load(session.name)  // Should succeed if schema is valid
 
 // Update session
-store.update(session.id, "PlatformFeatureSession", "platform-features", {
+store.update(session.id, "FeatureSession", "platform-features", {
   schemaName: session.name,
   status: "integration"
 })

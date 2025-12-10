@@ -39,8 +39,10 @@ Do NOT apply when:
 When creating tasks for domain stores, use a **single task** that covers all enhancement hooks:
 
 ```javascript
-store.create("ImplementationTask", "platform-feature-spec", {
+store.create("ImplementationTask", "platform-features", {
   id: "task-domain-store",
+  name: "domain-store",
+  session: session.id,
   description: "Create {domain} domain store with enhancement hooks",
   acceptanceCriteria: [
     "domain.ts exports {Domain}Domain ArkType scope",
@@ -50,7 +52,9 @@ store.create("ImplementationTask", "platform-feature-spec", {
     "enhanceRootStore adds initialize() and domain actions",
     "Store integrates with I{Domain}Service via getEnv()"
   ],
-  dependencies: ["task-service-interface", "task-environment-extension"]
+  dependencies: ["task-service-interface", "task-environment-extension"],
+  status: "planned",
+  createdAt: Date.now()
 })
 ```
 

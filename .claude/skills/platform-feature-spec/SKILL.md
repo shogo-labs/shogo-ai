@@ -15,7 +15,7 @@ Transform integration points into implementation tasks with acceptance criteria.
 
 ## Input
 
-- `PlatformFeatureSession` with status="spec"
+- `FeatureSession` with status="spec"
 - `Requirement` entities from discovery (platform-features schema)
 - `AnalysisFinding` entities from analysis
 - `IntegrationPoint` entities from analysis
@@ -32,13 +32,10 @@ Transform integration points into implementation tasks with acceptance criteria.
 ```javascript
 schema.load("platform-features")
 data.loadAll("platform-features")
-session = store.list("PlatformFeatureSession", "platform-features", { name: "..." })[0]
-requirements = store.list("Requirement", "platform-features")
-
-schema.load("platform-feature-spec")
-data.loadAll("platform-feature-spec")
-findings = store.list("AnalysisFinding", "platform-feature-spec")
-integrationPoints = store.list("IntegrationPoint", "platform-feature-spec")
+session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
+requirements = store.list("Requirement", "platform-features", { session: session.id })
+findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
+integrationPoints = store.list("IntegrationPoint", "platform-features", { session: session.id })
 ```
 
 Present summary:
@@ -133,11 +130,12 @@ When creating IntegrationPoints, **enforce isomorphism** regardless of analysis 
 For each task group, create ImplementationTask:
 
 ```javascript
-store.create("ImplementationTask", "platform-feature-spec", {
+store.create("ImplementationTask", "platform-features", {
   id: "task-xxx",
-  sessionId: session.id,
+  name: "task-slug",
+  session: session.id,
   integrationPoint: "ip-xxx",  // primary integration point
-  requirementId: "req-xxx",    // traceability to requirement
+  requirement: "req-xxx",    // traceability to requirement
   description: "What this task accomplishes",
   acceptanceCriteria: [
     "Criterion 1 (testable statement)",
@@ -176,7 +174,7 @@ Does this task breakdown look correct?
 
 1. Update session:
 ```javascript
-store.update(session.id, "PlatformFeatureSession", "platform-features", {
+store.update(session.id, "FeatureSession", "platform-features", {
   status: "testing",
   updatedAt: Date.now()
 })
@@ -238,9 +236,10 @@ When a feature needs domain logic with MST state, create a **single task** for t
 
 **Task structure:**
 ```javascript
-store.create("ImplementationTask", "platform-feature-spec", {
+store.create("ImplementationTask", "platform-features", {
   id: "task-domain-store",
-  sessionId: session.id,
+  name: "domain-store",
+  session: session.id,
   integrationPoint: "ip-domain",
   description: "Create {domain} domain store with enhancement hooks",
   acceptanceCriteria: [
@@ -286,9 +285,10 @@ See [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.
 For features with external service integration, create a demo page task:
 
 ```javascript
-store.create("ImplementationTask", "platform-feature-spec", {
+store.create("ImplementationTask", "platform-features", {
   id: "task-proof-of-work-page",
-  sessionId: session.id,
+  name: "proof-of-work-page",
+  session: session.id,
   description: "Create proof-of-work page demonstrating {feature} end-to-end with real {service}",
   acceptanceCriteria: [
     "Page demonstrates complete flow with real service credentials (not mocks)",
@@ -298,7 +298,8 @@ store.create("ImplementationTask", "platform-feature-spec", {
     "Accessible at /{feature}-demo route"
   ],
   dependencies: ["task-react-context", "task-domain-store"],
-  status: "planned"
+  status: "planned",
+  createdAt: Date.now()
 })
 ```
 
