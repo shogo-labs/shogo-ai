@@ -1,7 +1,0 @@
-{
-  "id": "dd-auth-004",
-  "question": "How does auth service integrate with MST environment?",
-  "decision": "Add optional services.auth: IAuthService to IEnvironment. Auth actions in enhanceRootStore access via getEnv(self).services.auth.",
-  "rationale": "Follows existing environment pattern from IPersistenceService. Optional because not all stores need auth. Enables swapping Supabase/Mock implementations.",
-  "session": "auth-001"
-}

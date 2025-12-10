@@ -1,0 +1,12 @@
+{
+  "id": "test-teams-002-02",
+  "task": "task-teams-002",
+  "requirement": "tw-req-001",
+  "scenario": "MockTeamsService enforces org membership before team membership",
+  "given": ["MockTeamsService instance", "Organization exists", "User is NOT an org member"],
+  "when": "addTeamMember is called for that user",
+  "then": ["Throws error with message indicating user must be org member first"],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/mock.test.ts",
+  "createdAt": 1733701400000
+}

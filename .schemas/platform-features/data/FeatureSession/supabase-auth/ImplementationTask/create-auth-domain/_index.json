@@ -1,0 +1,23 @@
+{
+  "id": "task-auth-005",
+  "name": "create-auth-domain",
+  "description": "Create auth domain store with enhancement hooks",
+  "acceptanceCriteria": [
+    "domain.ts exports AuthDomain ArkType scope with AuthUser and AuthSession entities",
+    "createAuthStore creates store with collections",
+    "AuthSession.isExpired computed view works correctly",
+    "Store has volatile authStatus and authError",
+    "isAuthenticated view reflects current state",
+    "signUp action coordinates with auth service and syncs state",
+    "signIn action handles errors correctly",
+    "signOut action clears all auth state",
+    "initialize action restores session on startup"
+  ],
+  "status": "complete",
+  "createdAt": 1733616500000,
+  "updatedAt": 1733580500000,
+  "session": "auth-001",
+  "integrationPoint": "ip-auth-005",
+  "requirement": "req-auth-002",
+  "dependencies": ["task-auth-001", "task-auth-002"]
+}

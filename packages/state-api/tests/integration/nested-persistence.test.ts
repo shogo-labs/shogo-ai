@@ -307,7 +307,8 @@ describe('Phase 8: Nested FileSystemPersistence', () => {
         persistenceConfig: {
           strategy: 'entity-per-file',
           displayKey: 'name'
-        }
+        },
+        schemaDefs: testSchema.$defs
       }, { id: 'init-1', name: 'Auth Layer' })
 
       // Save nested children
@@ -345,7 +346,8 @@ describe('Phase 8: Nested FileSystemPersistence', () => {
         modelName: 'Initiative',
         location: tempDir,
         entityId: 'init-1',
-        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' }
+        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' },
+        schemaDefs: testSchema.$defs
       }, { id: 'init-1', name: 'Auth Layer' })
 
       await persistence.saveEntity({
@@ -353,7 +355,8 @@ describe('Phase 8: Nested FileSystemPersistence', () => {
         modelName: 'Initiative',
         location: tempDir,
         entityId: 'init-2',
-        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' }
+        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' },
+        schemaDefs: testSchema.$defs
       }, { id: 'init-2', name: 'Cache Layer' })
 
       // Save children referencing different parents
@@ -398,7 +401,8 @@ describe('Phase 8: Nested FileSystemPersistence', () => {
         modelName: 'Initiative',
         location: tempDir,
         entityId: 'init-1',
-        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' }
+        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' },
+        schemaDefs: testSchema.$defs
       }, { id: 'init-1', name: 'Auth Layer' })
 
       await persistence.saveEntity({
@@ -406,7 +410,8 @@ describe('Phase 8: Nested FileSystemPersistence', () => {
         modelName: 'Initiative',
         location: tempDir,
         entityId: 'init-2',
-        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' }
+        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' },
+        schemaDefs: testSchema.$defs
       }, { id: 'init-2', name: 'Cache Layer' })
 
       await persistence.saveCollection({
@@ -451,7 +456,8 @@ describe('Phase 8: Nested FileSystemPersistence', () => {
         modelName: 'Initiative',
         location: tempDir,
         entityId: 'init-1',
-        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' }
+        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' },
+        schemaDefs: testSchema.$defs
       }, { id: 'init-1', name: 'Auth Layer' })
 
       await persistence.saveEntity({
@@ -459,7 +465,8 @@ describe('Phase 8: Nested FileSystemPersistence', () => {
         modelName: 'Initiative',
         location: tempDir,
         entityId: 'init-2',
-        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' }
+        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' },
+        schemaDefs: testSchema.$defs
       }, { id: 'init-2', name: 'Cache Layer' })
 
       await persistence.saveCollection({
@@ -514,9 +521,9 @@ describe('Phase 8: Nested FileSystemPersistence', () => {
         schemaDefs: testSchema.$defs // Allows checking for nested children
       }, { id: 'init-1', name: 'Auth Layer' })
 
-      // Should create folder structure with lowercase model name
+      // Should create folder structure with _index.json (Phase 9 convention)
       const parentFile = path.join(
-        tempDir, 'test', 'data', 'Initiative', 'Auth Layer', 'initiative.json'
+        tempDir, 'test', 'data', 'Initiative', 'Auth Layer', '_index.json'
       )
 
       const content = JSON.parse(await readFile(parentFile, 'utf-8'))
@@ -533,7 +540,8 @@ describe('Phase 8: Nested FileSystemPersistence', () => {
         modelName: 'Initiative',
         location: tempDir,
         entityId: 'init-1',
-        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' }
+        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' },
+        schemaDefs: testSchema.$defs
       }, { id: 'init-1', name: 'Auth Layer' })
 
       // Save nested array-per-partition items
@@ -592,7 +600,8 @@ describe('Phase 8: Nested FileSystemPersistence', () => {
         modelName: 'Initiative',
         location: tempDir,
         entityId: 'init-1',
-        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' }
+        persistenceConfig: { strategy: 'entity-per-file', displayKey: 'name' },
+        schemaDefs: testSchema.$defs
       }, { id: 'init-1', name: 'Auth Layer' })
 
       // Save children

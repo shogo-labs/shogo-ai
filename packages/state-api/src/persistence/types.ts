@@ -149,6 +149,29 @@ export type NestedParentContext = {
   displayKeyValue: string
 }
 
+/**
+ * Extended parent context for multi-level nesting.
+ * Includes the reference field name for tracing the relationship chain.
+ */
+export type NestedParentChainItem = NestedParentContext & {
+  /** Reference field name on child pointing to this parent (e.g., "organization") */
+  referenceField: string
+}
+
+/**
+ * Full parent chain for multi-level nested persistence.
+ * Ordered from immediate parent to root ancestor.
+ *
+ * @example
+ * // For Employee nested under Team → Department → Organization:
+ * [
+ *   { modelName: 'Team', displayKeyValue: 'platform', referenceField: 'team' },
+ *   { modelName: 'Department', displayKeyValue: 'engineering', referenceField: 'department' },
+ *   { modelName: 'Organization', displayKeyValue: 'acme-corp', referenceField: 'organization' }
+ * ]
+ */
+export type NestedParentChain = NestedParentChainItem[]
+
 export type PersistenceContext = {
   /** Schema name (folder name in filesystem, table prefix in database, etc.) */
   schemaName: string
@@ -191,6 +214,13 @@ export type PersistenceContext = {
    * Used by nested persistence to discover parent relationship from schema.
    */
   schemaDefs?: Record<string, any>
+
+  /**
+   * Full parent chain for multi-level nested persistence.
+   * When provided, takes precedence over parentContext.
+   * Ordered from immediate parent to root ancestor.
+   */
+  parentChain?: NestedParentChain
 }
 
 /**

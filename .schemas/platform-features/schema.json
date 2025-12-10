@@ -5,7 +5,7 @@
   "createdAt": 1765197911179,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
-    "PlatformFeatureSession": {
+    "FeatureSession": {
       "type": "object",
       "description": "Container for a platform feature development session",
       "x-persistence": {
@@ -15,263 +15,549 @@
       "properties": {
         "id": {
           "type": "string",
-          "enum": [],
           "x-mst-type": "identifier"
         },
         "name": {
           "type": "string",
-          "description": "Short name for the feature",
-          "enum": []
+          "description": "Short name for the feature (used as folder name)"
         },
         "intent": {
           "type": "string",
-          "description": "Original ask in natural language",
-          "enum": []
+          "description": "Original ask in natural language"
         },
         "status": {
           "type": "string",
-          "enum": [
-            "discovery",
-            "design",
-            "integration",
-            "testing",
-            "complete"
-          ]
+          "enum": ["discovery", "analysis", "design", "spec", "implementation", "testing", "complete"]
         },
         "affectedPackages": {
           "type": "array",
           "description": "Which packages this feature touches",
-          "enum": []
+          "items": { "type": "string" }
         },
         "schemaName": {
           "type": "string",
-          "description": "If this feature produces a schema, its name",
-          "enum": []
+          "description": "If this feature produces a schema, its name"
         },
         "createdAt": {
-          "type": "number",
-          "enum": []
+          "type": "number"
         },
         "updatedAt": {
-          "type": "number",
-          "enum": []
+          "type": "number"
         }
       },
-      "required": [
-        "id",
-        "name",
-        "intent",
-        "status",
-        "createdAt"
-      ],
-      "x-original-name": "PlatformFeatureSession"
+      "required": ["id", "name", "intent", "status", "createdAt"],
+      "x-original-name": "FeatureSession"
     },
+
     "Requirement": {
       "type": "object",
       "description": "A requirement derived from the feature intent",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "description",
+        "displayKey": "name",
         "nested": true
       },
       "properties": {
         "id": {
           "type": "string",
-          "enum": [],
           "x-mst-type": "identifier"
         },
         "session": {
           "type": "string",
-          "enum": [],
-          "x-arktype": "PlatformFeatureSession",
+          "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
           "x-reference-type": "single"
         },
+        "name": {
+          "type": "string",
+          "description": "Short slug-like identifier (e.g., 'auth-service-interface')"
+        },
         "description": {
           "type": "string",
-          "enum": []
+          "description": "Full requirement description"
         },
         "priority": {
           "type": "string",
-          "enum": [
-            "must",
-            "should",
-            "could"
-          ]
+          "enum": ["must", "should", "could"]
         },
         "status": {
           "type": "string",
-          "enum": [
-            "proposed",
-            "accepted",
-            "implemented"
-          ]
+          "enum": ["proposed", "accepted", "implemented"]
+        },
+        "createdAt": {
+          "type": "number"
         }
       },
-      "required": [
-        "id",
-        "session",
-        "description",
-        "priority",
-        "status"
-      ],
+      "required": ["id", "session", "name", "description", "priority", "status"],
       "x-original-name": "Requirement"
     },
+
     "DesignDecision": {
       "type": "object",
       "description": "A design decision made during feature development",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "question",
+        "displayKey": "name",
         "nested": true
       },
       "properties": {
         "id": {
           "type": "string",
-          "enum": [],
           "x-mst-type": "identifier"
         },
         "session": {
           "type": "string",
-          "enum": [],
-          "x-arktype": "PlatformFeatureSession",
+          "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
           "x-reference-type": "single"
+        },
+        "name": {
+          "type": "string",
+          "description": "Short slug-like identifier (e.g., 'auth-state-location')"
         },
         "question": {
           "type": "string",
-          "description": "What needed deciding",
-          "enum": []
+          "description": "What needed deciding"
         },
         "decision": {
           "type": "string",
-          "description": "What we chose",
-          "enum": []
+          "description": "What we chose"
         },
         "rationale": {
           "type": "string",
-          "description": "Why we chose it",
-          "enum": []
+          "description": "Why we chose it"
+        },
+        "createdAt": {
+          "type": "number"
         }
       },
-      "required": [
-        "id",
-        "session",
-        "question",
-        "decision",
-        "rationale"
-      ],
+      "required": ["id", "session", "name", "question", "decision", "rationale"],
       "x-original-name": "DesignDecision"
     },
-    "IntegrationPoint": {
+
+    "AnalysisFinding": {
       "type": "object",
-      "description": "Where the feature integrates with existing code",
+      "description": "A finding from codebase analysis relevant to implementing a platform feature",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "targetPackage",
+        "displayKey": "name",
         "nested": true
       },
       "properties": {
         "id": {
           "type": "string",
-          "enum": [],
           "x-mst-type": "identifier"
         },
         "session": {
           "type": "string",
-          "enum": [],
-          "x-arktype": "PlatformFeatureSession",
+          "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
           "x-reference-type": "single"
         },
-        "targetPackage": {
+        "name": {
           "type": "string",
-          "description": "Which package this integrates with",
-          "enum": []
+          "description": "Short slug-like identifier (e.g., 'domain-store-pattern')"
+        },
+        "type": {
+          "type": "string",
+          "description": "Category of finding",
+          "enum": ["pattern", "integration_point", "risk", "gap", "existing_test", "verification"]
         },
         "description": {
           "type": "string",
-          "description": "What the integration does",
-          "enum": []
+          "description": "What was found"
         },
-        "isGenerated": {
-          "type": "boolean",
-          "description": "Whether this is template-generated vs manual",
-          "enum": []
+        "location": {
+          "type": "string",
+          "description": "File path, package, or module where this applies"
+        },
+        "relevantCode": {
+          "type": "string",
+          "description": "Code snippet or reference illustrating the finding"
+        },
+        "recommendation": {
+          "type": "string",
+          "description": "Suggested action based on this finding"
+        },
+        "createdAt": {
+          "type": "number"
         }
       },
-      "required": [
-        "id",
-        "session",
-        "targetPackage",
-        "description"
-      ],
-      "x-original-name": "IntegrationPoint"
+      "required": ["id", "session", "name", "type", "description", "location", "createdAt"],
+      "x-original-name": "AnalysisFinding"
     },
-    "TestCase": {
+
+    "IntegrationPoint": {
       "type": "object",
-      "description": "A test case for the feature",
+      "description": "A specific location in the codebase where changes will be made",
       "x-persistence": {
-        "strategy": "array-per-partition",
-        "nested": true,
-        "partitionKey": "session"
+        "strategy": "entity-per-file",
+        "displayKey": "name",
+        "nested": true
       },
       "properties": {
         "id": {
           "type": "string",
-          "enum": [],
           "x-mst-type": "identifier"
         },
         "session": {
           "type": "string",
-          "enum": [],
-          "x-arktype": "PlatformFeatureSession",
+          "x-arktype": "FeatureSession",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "name": {
+          "type": "string",
+          "description": "Short semantic identifier (e.g., 'auth-types-definition')"
+        },
+        "filePath": {
+          "type": "string",
+          "description": "Relative file path within the package"
+        },
+        "package": {
+          "type": "string",
+          "description": "Package name (e.g., packages/mcp, apps/web)"
+        },
+        "targetFunction": {
+          "type": "string",
+          "description": "Specific function or class to modify (optional)"
+        },
+        "changeType": {
+          "type": "string",
+          "description": "Type of change required",
+          "enum": ["add", "modify", "extend", "remove"]
+        },
+        "description": {
+          "type": "string",
+          "description": "What needs to happen at this location"
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Why this is the right place for this change"
+        },
+        "finding": {
+          "type": "string",
+          "description": "The analysis finding that identified this point",
+          "x-arktype": "AnalysisFinding",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single"
+        },
+        "isGenerated": {
+          "type": "boolean",
+          "description": "Whether this is template-generated vs manual"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": ["id", "session", "name", "filePath", "description", "createdAt"],
+      "x-original-name": "IntegrationPoint"
+    },
+
+    "TestCase": {
+      "type": "object",
+      "description": "A requirement-scoped acceptance test case",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
           "x-reference-type": "single"
         },
         "requirement": {
           "type": "string",
           "description": "Optional link to requirement for traceability",
-          "enum": [],
+          "x-arktype": "Requirement",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single"
+        },
+        "name": {
+          "type": "string",
+          "description": "Short slug-like identifier (e.g., 'valid-credentials-login')"
+        },
+        "description": {
+          "type": "string",
+          "description": "What this test verifies"
+        },
+        "given": {
+          "type": "string",
+          "description": "Preconditions"
+        },
+        "when": {
+          "type": "string",
+          "description": "Action being tested"
+        },
+        "then": {
+          "type": "string",
+          "description": "Expected outcome"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["specified", "implemented", "passing"]
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": ["id", "session", "name", "description", "given", "when", "then", "status"],
+      "x-original-name": "TestCase"
+    },
+
+    "ImplementationTask": {
+      "type": "object",
+      "description": "A discrete unit of work to implement part of a platform feature",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "x-arktype": "FeatureSession",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "name": {
+          "type": "string",
+          "description": "Short slug-like identifier (e.g., 'create-auth-service')"
+        },
+        "integrationPoint": {
+          "type": "string",
+          "description": "The integration point this task addresses",
+          "x-arktype": "IntegrationPoint",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single"
+        },
+        "requirement": {
+          "type": "string",
+          "description": "Reference to Requirement for traceability",
           "x-arktype": "Requirement",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single"
         },
         "description": {
           "type": "string",
-          "enum": []
+          "description": "What this task accomplishes"
         },
-        "given": {
-          "type": "string",
-          "enum": []
+        "acceptanceCriteria": {
+          "type": "array",
+          "description": "Conditions that must be met for task completion",
+          "items": { "type": "string" }
         },
-        "when": {
-          "type": "string",
-          "enum": []
-        },
-        "then": {
-          "type": "string",
-          "enum": []
+        "dependencies": {
+          "type": "array",
+          "description": "Tasks that must complete before this one",
+          "items": { "type": "string" },
+          "x-mst-type": "reference",
+          "x-reference-type": "array",
+          "x-arktype": "ImplementationTask"
         },
         "status": {
           "type": "string",
-          "enum": [
-            "specified",
-            "implemented",
-            "passing"
-          ]
+          "description": "Current task status",
+          "enum": ["planned", "in_progress", "complete", "blocked"]
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
         }
       },
-      "required": [
-        "id",
-        "session",
-        "description",
-        "given",
-        "when",
-        "then",
-        "status"
-      ],
-      "x-original-name": "TestCase"
+      "required": ["id", "session", "name", "description", "acceptanceCriteria", "status", "createdAt"],
+      "x-original-name": "ImplementationTask"
+    },
+
+    "TestSpecification": {
+      "type": "object",
+      "description": "A task-scoped test specification in Given/When/Then format",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "scenario",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-mst-type": "identifier"
+        },
+        "task": {
+          "type": "string",
+          "description": "The implementation task this test validates",
+          "x-arktype": "ImplementationTask",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "requirement": {
+          "type": "string",
+          "description": "Reference to Requirement for traceability",
+          "x-arktype": "Requirement",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single"
+        },
+        "scenario": {
+          "type": "string",
+          "description": "Brief description of what this test verifies (used as filename)"
+        },
+        "given": {
+          "type": "array",
+          "description": "Preconditions for the test",
+          "items": { "type": "string" }
+        },
+        "when": {
+          "type": "string",
+          "description": "Action being tested"
+        },
+        "then": {
+          "type": "array",
+          "description": "Expected outcomes",
+          "items": { "type": "string" }
+        },
+        "testType": {
+          "type": "string",
+          "description": "Level of testing",
+          "enum": ["unit", "integration", "acceptance"]
+        },
+        "targetFile": {
+          "type": "string",
+          "description": "File path where this test should be implemented"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": ["id", "task", "scenario", "given", "when", "then", "testType", "createdAt"],
+      "x-original-name": "TestSpecification"
+    },
+
+    "ImplementationRun": {
+      "type": "object",
+      "description": "A single execution run of the implementation skill",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "id",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "x-arktype": "FeatureSession",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "status": {
+          "type": "string",
+          "description": "Current run status",
+          "enum": ["in_progress", "blocked", "complete", "failed"]
+        },
+        "currentTaskId": {
+          "type": "string",
+          "description": "Task currently being executed"
+        },
+        "completedTasks": {
+          "type": "array",
+          "description": "IDs of successfully completed tasks",
+          "items": { "type": "string" }
+        },
+        "failedTasks": {
+          "type": "array",
+          "description": "IDs of tasks that failed/blocked",
+          "items": { "type": "string" }
+        },
+        "startedAt": {
+          "type": "number"
+        },
+        "completedAt": {
+          "type": "number"
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Most recent error message if any"
+        }
+      },
+      "required": ["id", "session", "status", "startedAt"],
+      "x-original-name": "ImplementationRun"
+    },
+
+    "TaskExecution": {
+      "type": "object",
+      "description": "Execution record for a single task attempt",
+      "x-persistence": {
+        "strategy": "array-per-partition",
+        "partitionKey": "run",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-mst-type": "identifier"
+        },
+        "run": {
+          "type": "string",
+          "description": "Reference to ImplementationRun",
+          "x-arktype": "ImplementationRun",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "task": {
+          "type": "string",
+          "description": "Reference to ImplementationTask",
+          "x-arktype": "ImplementationTask",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "status": {
+          "type": "string",
+          "description": "Current execution status",
+          "enum": ["pending", "test_written", "test_failing", "implementing", "test_passing", "failed"]
+        },
+        "testFilePath": {
+          "type": "string",
+          "description": "Path to generated test file"
+        },
+        "implementationFilePath": {
+          "type": "string",
+          "description": "Path to implementation file"
+        },
+        "testOutput": {
+          "type": "string",
+          "description": "Output from test runner"
+        },
+        "retryCount": {
+          "type": "number",
+          "description": "Number of retry attempts"
+        },
+        "errorMessage": {
+          "type": "string",
+          "description": "Error message if failed"
+        },
+        "startedAt": {
+          "type": "number"
+        },
+        "completedAt": {
+          "type": "number"
+        }
+      },
+      "required": ["id", "run", "task", "status", "startedAt"],
+      "x-original-name": "TaskExecution"
     }
   }
 }

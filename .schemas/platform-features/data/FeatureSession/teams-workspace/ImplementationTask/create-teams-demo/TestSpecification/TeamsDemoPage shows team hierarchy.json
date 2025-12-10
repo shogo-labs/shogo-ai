@@ -1,0 +1,11 @@
+{
+  "id": "test-teams-008-03",
+  "task": "task-teams-008",
+  "scenario": "TeamsDemoPage shows team hierarchy",
+  "given": ["Organization exists with parent and child teams"],
+  "when": "Teams section is viewed",
+  "then": ["Parent team is displayed", "Child teams are indented/nested under parent", "Hierarchy is visually clear"],
+  "testType": "acceptance",
+  "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
+  "createdAt": 1733701400000
+}

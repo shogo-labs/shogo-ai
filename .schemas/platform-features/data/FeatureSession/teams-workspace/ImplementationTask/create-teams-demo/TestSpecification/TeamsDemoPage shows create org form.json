@@ -1,0 +1,11 @@
+{
+  "id": "test-teams-008-01",
+  "task": "task-teams-008",
+  "scenario": "TeamsDemoPage shows create org form",
+  "given": ["User on /teams-demo route", "User is authenticated"],
+  "when": "Page loads",
+  "then": ["Create organization form is visible", "Name and slug input fields present", "Submit button available"],
+  "testType": "acceptance",
+  "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
+  "createdAt": 1733701400000
+}

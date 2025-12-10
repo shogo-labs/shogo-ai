@@ -1,7 +1,0 @@
-{
-  "id": "dd-auth-002",
-  "question": "Where do isLoading and error states live?",
-  "decision": "NOT in schema. Use volatile MST state in enhanceRootStore for cross-component coordination.",
-  "rationale": "Domain purity principle - loading/error are UI concerns. Volatile state avoids persistence while enabling reactive observation.",
-  "session": "auth-001"
-}

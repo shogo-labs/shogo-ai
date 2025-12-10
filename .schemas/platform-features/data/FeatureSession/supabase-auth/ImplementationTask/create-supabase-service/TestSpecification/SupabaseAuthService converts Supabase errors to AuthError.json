@@ -1,0 +1,17 @@
+{
+  "id": "test-auth-014",
+  "scenario": "SupabaseAuthService converts Supabase errors to AuthError",
+  "given": [
+    "SupabaseAuthService with mocked Supabase client that throws"
+  ],
+  "when": "signIn fails with Supabase error",
+  "then": [
+    "Throws AuthError with mapped code",
+    "Original message preserved"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/supabase.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-004",
+  "requirement": "req-auth-004"
+}

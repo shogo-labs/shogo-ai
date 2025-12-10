@@ -1,0 +1,12 @@
+{
+  "id": "test-teams-001-04",
+  "task": "task-teams-001",
+  "requirement": "tw-req-003",
+  "scenario": "Role enums define valid values",
+  "given": ["OrgRole and TeamRole enums are defined"],
+  "when": "Enum values are checked",
+  "then": ["OrgRole includes owner, admin, member, billing_manager, security_manager", "TeamRole includes maintainer, member"],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/types.test.ts",
+  "createdAt": 1733701400000
+}

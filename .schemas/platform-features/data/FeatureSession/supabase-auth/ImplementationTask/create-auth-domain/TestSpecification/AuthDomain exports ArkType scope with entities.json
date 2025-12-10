@@ -1,0 +1,17 @@
+{
+  "id": "test-auth-017",
+  "scenario": "AuthDomain exports ArkType scope with entities",
+  "given": [
+    "AuthDomain module exists"
+  ],
+  "when": "AuthDomain is imported",
+  "then": [
+    "Exports AuthUser type",
+    "Exports AuthSession type"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-005",
+  "requirement": "req-auth-002"
+}

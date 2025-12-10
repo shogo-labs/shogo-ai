@@ -1,0 +1,12 @@
+{
+  "id": "test-teams-003-02",
+  "task": "task-teams-003",
+  "requirement": "tw-req-001",
+  "scenario": "SupabaseTeamsService maps Supabase errors",
+  "given": ["SupabaseTeamsService instance", "Supabase returns error"],
+  "when": "Any service method fails",
+  "then": ["Error is mapped to TeamsError type", "Error code and message are preserved"],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/supabase.test.ts",
+  "createdAt": 1733701400000
+}

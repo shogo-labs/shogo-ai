@@ -1,0 +1,18 @@
+{
+  "id": "test-auth-011",
+  "scenario": "MockAuthService onAuthStateChange notifies on sign in and out",
+  "given": [
+    "MockAuthService instance",
+    "Subscriber registered via onAuthStateChange"
+  ],
+  "when": "User signs in then signs out",
+  "then": [
+    "Subscriber called with session on sign in",
+    "Subscriber called with null on sign out"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/mock.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-003",
+  "requirement": "req-auth-005"
+}

@@ -1,0 +1,9 @@
+{
+  "id": "tw-req-003",
+  "name": "membership-model",
+  "description": "Membership model linking users to orgs and teams with roles (owner, admin, member, billing_manager, security_manager)",
+  "priority": "must",
+  "status": "proposed",
+  "session": "teams-001",
+  "createdAt": 1733700700000
+}

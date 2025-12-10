@@ -1,0 +1,9 @@
+{
+  "id": "tw-req-010",
+  "name": "billing-subscription",
+  "description": "Billing/subscription scoped to organization level (integration point for Stripe)",
+  "priority": "could",
+  "status": "proposed",
+  "session": "teams-001",
+  "createdAt": 1733700700000
+}

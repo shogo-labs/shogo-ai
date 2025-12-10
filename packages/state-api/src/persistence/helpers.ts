@@ -269,6 +269,57 @@ export function findParentReference(
 }
 
 /**
+ * Find the complete parent chain for a nested model.
+ *
+ * Walks up the reference chain from child to root, returning an array
+ * ordered from immediate parent to ultimate root ancestor.
+ *
+ * @param modelName - Name of the model to find parents for
+ * @param allDefs - All model definitions from schema.$defs
+ * @returns Array of parent info, empty if not nested or is root
+ *
+ * @example
+ * // For Employee nested under Team → Department → Organization:
+ * findParentChain('Employee', schema.$defs)
+ * // Returns: [
+ * //   { field: 'team', targetModel: 'Team', parentDisplayKey: 'name' },
+ * //   { field: 'department', targetModel: 'Department', parentDisplayKey: 'name' },
+ * //   { field: 'organization', targetModel: 'Organization', parentDisplayKey: 'name' }
+ * // ]
+ */
+export function findParentChain(
+  modelName: string,
+  allDefs: Record<string, any>
+): NestedParentInfo[] {
+  const chain: NestedParentInfo[] = []
+  let currentModel = modelName
+  const visited = new Set<string>() // Circular reference protection
+
+  while (true) {
+    // Prevent infinite loops from circular references
+    if (visited.has(currentModel)) {
+      break
+    }
+    visited.add(currentModel)
+
+    const modelDef = allDefs[currentModel]
+    if (!modelDef) {
+      break
+    }
+
+    const parentInfo = findParentReference(modelDef, allDefs)
+    if (!parentInfo) {
+      break // Reached a non-nested model (root)
+    }
+
+    chain.push(parentInfo)
+    currentModel = parentInfo.targetModel
+  }
+
+  return chain
+}
+
+/**
  * Build the directory path for a nested collection.
  *
  * Creates path: {location}/{schemaName}/data/{ParentModel}/{parentDisplayKey}/{ChildModel}/
@@ -303,17 +354,70 @@ export function buildNestedCollectionPath(ctx: PersistenceContext): string {
 }
 
 /**
+ * Build directory path for multi-level nested collection.
+ *
+ * Constructs a path that reflects the full parent chain hierarchy,
+ * walking from root ancestor down to the immediate parent.
+ *
+ * @param ctx - Persistence context with parentChain populated
+ * @returns Directory path for multi-level nested entities
+ * @throws Error if parentChain is not provided or empty
+ *
+ * @example
+ * // For Employee nested under Team → Department → Organization:
+ * buildMultiLevelNestedPath({
+ *   schemaName: 'test',
+ *   modelName: 'Employee',
+ *   location: '.schemas',
+ *   parentChain: [
+ *     { modelName: 'Team', displayKeyValue: 'platform', referenceField: 'team' },
+ *     { modelName: 'Department', displayKeyValue: 'engineering', referenceField: 'department' },
+ *     { modelName: 'Organization', displayKeyValue: 'acme-corp', referenceField: 'organization' }
+ *   ]
+ * })
+ * // Returns: '.schemas/test/data/Organization/acme-corp/Department/engineering/Team/platform/Employee'
+ */
+export function buildMultiLevelNestedPath(ctx: PersistenceContext): string {
+  if (!ctx.parentChain?.length) {
+    throw new Error('buildMultiLevelNestedPath requires parentChain')
+  }
+
+  const baseDir = ctx.location || '.schemas'
+  const parts = [baseDir, ctx.schemaName, 'data']
+
+  // Walk chain in reverse (root → immediate parent)
+  for (let i = ctx.parentChain.length - 1; i >= 0; i--) {
+    parts.push(ctx.parentChain[i].modelName)
+    parts.push(ctx.parentChain[i].displayKeyValue)
+  }
+
+  parts.push(ctx.modelName)
+  return path.join(...parts)
+}
+
+/**
  * Build the file path for a parent entity in nested structure.
  *
- * Creates path: {location}/{schemaName}/data/{ParentModel}/{displayKeyValue}/{lowercase-model}.json
+ * When the entity has nested children (detected via schemaDefs), uses `_index.json`
+ * convention. Otherwise uses `{lowercase-model}.json`.
  *
- * The parent entity file is stored inside its own folder (alongside child subfolders).
+ * Creates path:
+ * - With children: {location}/{schemaName}/data/{Model}/{displayKeyValue}/_index.json
+ * - Without children: {location}/{schemaName}/data/{Model}/{displayKeyValue}/{model}.json
  *
- * @param ctx - Persistence context for the parent model
+ * @param ctx - Persistence context for the parent model (schemaDefs enables auto-detection)
  * @param displayKeyValue - The sanitized display key value for folder name
  * @returns File path for the parent entity
  *
  * @example
+ * // Parent with nested children (auto-detected via schemaDefs):
+ * buildParentEntityPath(
+ *   { schemaName: 'test', modelName: 'Organization', location: '.schemas', schemaDefs: {...} },
+ *   'acme-corp'
+ * )
+ * // Returns: '.schemas/test/data/Organization/acme-corp/_index.json'
+ *
+ * // Leaf entity without children:
  * buildParentEntityPath(
  *   { schemaName: 'roadmap', modelName: 'Initiative', location: '.schemas' },
  *   'auth-layer-v2'
@@ -325,14 +429,23 @@ export function buildParentEntityPath(
   displayKeyValue: string
 ): string {
   const baseDir = ctx.location || '.schemas'
-  const lowercaseModel = ctx.modelName.toLowerCase()
+
+  // Auto-detect if this entity has nested children
+  const entityHasChildren = ctx.schemaDefs
+    ? hasNestedChildren(ctx.modelName, ctx.schemaDefs)
+    : false
+
+  const filename = entityHasChildren
+    ? '_index.json'
+    : `${ctx.modelName.toLowerCase()}.json`
+
   return path.join(
     baseDir,
     ctx.schemaName,
     'data',
     ctx.modelName,
     displayKeyValue,
-    `${lowercaseModel}.json`
+    filename
   )
 }
 

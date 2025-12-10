@@ -1,0 +1,17 @@
+{
+  "id": "test-auth-004",
+  "scenario": "IEnvironment includes optional auth service slot",
+  "given": [
+    "IEnvironment interface exists"
+  ],
+  "when": "IEnvironment is imported",
+  "then": [
+    "services.auth is optional property",
+    "auth is typed as IAuthService"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/environment/__tests__/types.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-002",
+  "requirement": "req-auth-003"
+}

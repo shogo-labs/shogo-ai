@@ -1,0 +1,11 @@
+{
+  "id": "tw-find-010",
+  "name": "circular-dependency-risk",
+  "session": "teams-001",
+  "type": "risk",
+  "description": "Circular dependency risk: Teams depends on Auth (membership links to user), and Auth may need Teams context (current org). Need careful interface design.",
+  "location": "packages/state-api/src/",
+  "relevantCode": "AuthUser.id referenced by Membership.userId",
+  "recommendation": "Keep auth and teams as sibling domains. Create composite TeamsAuthContext at app level that coordinates both.",
+  "createdAt": 1733700800000
+}

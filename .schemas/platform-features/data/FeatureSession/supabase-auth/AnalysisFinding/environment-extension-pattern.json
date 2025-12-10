@@ -1,0 +1,11 @@
+{
+  "id": "finding-auth-002",
+  "name": "environment-extension-pattern",
+  "type": "pattern",
+  "description": "Environment extension pattern: IEnvironment has services.persistence slot. Auth service should be added as services.auth following same structure.",
+  "location": "packages/state-api/src/environment/types.ts",
+  "relevantCode": "export interface IEnvironment { services: { persistence: IPersistenceService }, context: { schemaName: string, location?: string } }",
+  "recommendation": "Extend IEnvironment with optional services.auth: IAuthService slot. Auth is optional since not all stores need auth.",
+  "createdAt": 1733616120000,
+  "session": "auth-001"
+}

@@ -1,7 +1,0 @@
-{
-  "id": "req-auth-003",
-  "description": "Environment extension to inject auth service into MST stores - follows existing environment pattern for dependency injection",
-  "priority": "must",
-  "status": "proposed",
-  "session": "auth-001"
-}

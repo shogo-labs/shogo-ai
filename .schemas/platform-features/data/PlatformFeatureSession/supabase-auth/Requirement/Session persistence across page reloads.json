@@ -1,7 +1,0 @@
-{
-  "id": "req-auth-007",
-  "description": "Session persistence across page reloads - restore auth state from Supabase session on app initialization",
-  "priority": "should",
-  "status": "proposed",
-  "session": "auth-001"
-}

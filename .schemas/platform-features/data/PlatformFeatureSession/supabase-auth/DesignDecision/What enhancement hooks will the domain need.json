@@ -1,7 +1,0 @@
-{
-  "id": "dd-auth-003",
-  "question": "What enhancement hooks will the domain need?",
-  "decision": "enhanceModels: AuthSession.isExpired (computed from expiresAt); enhanceCollections: none needed; enhanceRootStore: currentUser (view), currentSession (view), isAuthenticated (view), authStatus (volatile: idle|loading|error), authError (volatile), signUp/signIn/signOut (actions that call IAuthService and sync state), initialize (action to restore session on app start)",
-  "rationale": "All hooks implemented in single domain.ts using createStoreFromScope(). Views derive from cached entities. Actions coordinate with IAuthService from environment and sync results to local state. Volatile state tracks operation status without persistence.",
-  "session": "auth-001"
-}

@@ -1,0 +1,11 @@
+{
+  "id": "ip-teams-008",
+  "name": "teams-demo-page",
+  "filePath": "apps/web/src/pages/TeamsDemoPage.tsx",
+  "package": "apps/web",
+  "changeType": "add",
+  "description": "Proof-of-work TeamsDemoPage demonstrating org/team flows",
+  "rationale": "Demo pattern - validates end-to-end teams functionality",
+  "createdAt": 1733700700000,
+  "session": "teams-001"
+}

@@ -1,0 +1,24 @@
+{
+  "id": "task-auth-003",
+  "name": "create-mock-service",
+  "description": "Create MockAuthService for testing",
+  "acceptanceCriteria": [
+    "MockAuthService implements full IAuthService interface",
+    "Uses in-memory Map for user storage",
+    "signUp creates user, returns session with generated tokens",
+    "signIn validates credentials against stored users, returns session",
+    "signOut clears current session",
+    "getSession returns current session or null",
+    "onAuthStateChange notifies subscribers on auth state changes",
+    "clear() method resets all state for test isolation",
+    "Configurable delays via constructor options for async testing",
+    "Throws appropriate AuthError for invalid credentials"
+  ],
+  "status": "complete",
+  "createdAt": 1733616500000,
+  "updatedAt": 1733580300000,
+  "session": "auth-001",
+  "integrationPoint": "ip-auth-003",
+  "requirement": "req-auth-005",
+  "dependencies": ["task-auth-001"]
+}

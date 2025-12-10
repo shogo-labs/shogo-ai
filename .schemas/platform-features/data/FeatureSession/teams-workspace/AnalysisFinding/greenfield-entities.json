@@ -1,0 +1,11 @@
+{
+  "id": "tw-find-008",
+  "name": "greenfield-entities",
+  "session": "teams-001",
+  "type": "gap",
+  "description": "No Organization/Team/Membership entities exist anywhere in codebase. This is greenfield within the established patterns.",
+  "location": "packages/state-api/src/",
+  "relevantCode": "N/A - entities do not exist",
+  "recommendation": "Create teams/ directory parallel to auth/ with types.ts, domain.ts, mock.ts, supabase.ts",
+  "createdAt": 1733700800000
+}
