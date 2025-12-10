@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && bun run build && echo '✓ Build complete - MCP servers ready'"
+          }
+        ]
+      }
+    ]
+  }
+}
