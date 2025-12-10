@@ -1,0 +1,19 @@
+{
+  "id": "test-auth-031",
+  "scenario": "AuthDemoPage shows login form when not authenticated",
+  "given": [
+    "AuthDemoPage rendered",
+    "User not authenticated"
+  ],
+  "when": "Page loads",
+  "then": [
+    "Email input visible",
+    "Password input visible",
+    "Login button visible"
+  ],
+  "testType": "integration",
+  "targetFile": "apps/web/src/pages/__tests__/AuthDemoPage.test.tsx",
+  "createdAt": 1733616700000,
+  "task": "task-auth-008",
+  "requirement": "req-auth-007"
+}

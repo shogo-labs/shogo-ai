@@ -1,0 +1,19 @@
+{
+  "id": "test-mock-membership-org-first",
+  "scenario": "addMembership enforces org membership before team membership",
+  "given": [
+    "Organization and team exist",
+    "User has no org membership"
+  ],
+  "when": "addMembership({ userId: 'user-1', teamId: 'team-1', role: Role.member }) is called",
+  "then": [
+    "Returns error result",
+    "Error indicates org membership required first",
+    "No membership is created"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/mock.test.ts",
+  "createdAt": 1733876400006,
+  "task": "task-teams-mock",
+  "requirement": "membership-model"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "task-teams-006",
+  "name": "create-teams-exports",
+  "session": "teams-001",
+  "description": "Create teams module exports",
+  "acceptanceCriteria": [
+    "index.ts exports ITeamsService, all types, MockTeamsService, SupabaseTeamsService, createTeamsStore",
+    "Exports are properly typed",
+    "Package index.ts updated to re-export from teams/"
+  ],
+  "status": "planned",
+  "createdAt": 1733701200000,
+  "integrationPoint": "ip-teams-006",
+  "dependencies": ["task-teams-001", "task-teams-002", "task-teams-003", "task-teams-005"]
+}

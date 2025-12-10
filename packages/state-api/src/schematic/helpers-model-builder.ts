@@ -270,24 +270,29 @@ export function buildModel(
   // Add views if any
   if (Object.keys(computedViews).length > 0) {
     model = model.views(self => {
-      return Object.entries(computedViews).reduce((acc, [viewName, viewConfig]) => ({
-        ...acc,
-        get [viewName]() {
-          const root = getRoot(self) as any
-          let collection
-          if (viewConfig.modelName.includes('.')) {
-            const [domain, modelName] = viewConfig.modelName.split('.')
-            collection = root[domain]?.[toCollectionPropName(modelName)]
-          } else {
-            collection = root[toCollectionPropName(viewConfig.modelName)]
-          }
-          if (!collection) return []
-          return collection.all().filter((item: any) => {
-            const ref = item[viewConfig.inverse]
-            return ref === self || (ref && ref.id === self.id)
-          })
-        }
-      }), {})
+      const views: Record<string, any> = {}
+      for (const [viewName, viewConfig] of Object.entries(computedViews)) {
+        Object.defineProperty(views, viewName, {
+          get() {
+            const root = getRoot(self) as any
+            let collection
+            if (viewConfig.modelName.includes('.')) {
+              const [domain, modelName] = viewConfig.modelName.split('.')
+              collection = root[domain]?.[toCollectionPropName(modelName)]
+            } else {
+              collection = root[toCollectionPropName(viewConfig.modelName)]
+            }
+            if (!collection) return []
+            return collection.all().filter((item: any) => {
+              const ref = item[viewConfig.inverse]
+              return ref === self || (ref && ref.id === self.id)
+            })
+          },
+          enumerable: true,
+          configurable: true
+        })
+      }
+      return views
     })
   }
 

@@ -16,7 +16,7 @@ Capture developer intent and requirements for internal platform features.
 
 ## Output
 
-- **PlatformFeatureSession** - Container with intent, status, affected packages
+- **FeatureSession** - Container with intent, status, affected packages
 - **Requirement entities** - 3-7 requirements derived from intent (must/should/could)
 
 Stored in `platform-features` schema via Wavesmith.
@@ -35,15 +35,20 @@ Stored in `platform-features` schema via Wavesmith.
    | Archetype | Indicators | Applicable Patterns |
    |-----------|------------|---------------------|
    | **Service** | External API, credentials, multiple providers | Service Interface, Environment, Mock Testing, Provider Sync |
-   | **Domain** | New entities, business rules, relationships | Enhancement Hooks, relationship patterns |
+   | **Domain** | New entities, business rules, relationships, LOCAL data | Enhancement Hooks, CollectionPersistable |
    | **Infrastructure** | Cross-cutting, used by multiple features | Service Interface, Environment, Mixin Composition |
-   | **Hybrid** | External provider + local domain modeling | All of the above |
+   | **Hybrid** | External provider + local domain modeling (sync/mirror) | All of the above |
+
+   **Critical**: Ask "Does this feature's CORE DATA live in an external system?" NOT "Does it reference external entities?"
+   - If data is managed locally (even with foreign key refs to users/auth) → **Domain**
+   - If data lives in external system (Supabase tables, Stripe, etc.) → **Service**
+   - Referencing user IDs from auth does NOT make a feature "Service" or "Hybrid"
 
    See [patterns/01-feature-classification.md](references/patterns/01-feature-classification.md) for the full decision tree and worked examples.
 
-4. Create PlatformFeatureSession with archetype:
+4. Create FeatureSession with archetype:
    ```
-   store.create("PlatformFeatureSession", "platform-features", {
+   store.create("FeatureSession", "platform-features", {
      id: uuid(),
      name: "<short-name>",
      intent: "<original ask>",
@@ -68,7 +73,7 @@ Determine which packages this feature touches:
 
 Update session with affected packages:
 ```
-store.update(sessionId, "PlatformFeatureSession", "platform-features", {
+store.update(sessionId, "FeatureSession", "platform-features", {
   affectedPackages: ["packages/mcp", ...],
   updatedAt: Date.now()
 })
@@ -117,16 +122,16 @@ Typical count: 3-5 for simple features, 5-7 for complex ones.
 schema.load("platform-features")
 
 // Create session
-store.create("PlatformFeatureSession", "platform-features", {...})
+store.create("FeatureSession", "platform-features", {...})
 
 // Create requirements
 store.create("Requirement", "platform-features", {...})
 
 // Update session
-store.update(sessionId, "PlatformFeatureSession", "platform-features", {...})
+store.update(sessionId, "FeatureSession", "platform-features", {...})
 
 // Query existing (if resuming)
-store.list("PlatformFeatureSession", "platform-features", { name: "auth" })
+store.list("FeatureSession", "platform-features", { name: "auth" })
 ```
 
 ## References

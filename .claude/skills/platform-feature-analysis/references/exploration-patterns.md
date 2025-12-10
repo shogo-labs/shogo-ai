@@ -148,7 +148,7 @@ skill-name/
 
 **Patterns to look for**:
 - Entity definitions in `$defs`
-- Reference patterns (`x-mst-type`, `x-reference-target`)
+- Reference patterns (`x-mst-type`, `x-reference-type`, `x-arktype`)
 - Collection naming conventions
 
 ---

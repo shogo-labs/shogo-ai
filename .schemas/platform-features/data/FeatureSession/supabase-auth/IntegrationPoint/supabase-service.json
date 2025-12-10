@@ -1,0 +1,11 @@
+{
+  "id": "ip-auth-002",
+  "name": "supabase-service",
+  "filePath": "packages/state-api/src/auth/supabase.ts",
+  "package": "packages/state-api",
+  "changeType": "add",
+  "description": "SupabaseAuthService implementing IAuthService with @supabase/supabase-js",
+  "rationale": "Concrete provider for Supabase email/password auth",
+  "createdAt": 1733616400000,
+  "session": "auth-001"
+}

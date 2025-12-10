@@ -1,0 +1,9 @@
+{
+  "id": "hierarchy-inheritance",
+  "name": "Team Hierarchy Inheritance",
+  "description": "Permissions cascade down the full hierarchy: Org → Team (nested) → App → User. A user's effective permission at any level is the maximum of all inherited roles from ancestor levels plus any direct assignment. The chain resolves as: orgRole → teamRole → ancestorTeamRoles → appRole → userOverride.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1733875200004,
+  "session": "teams-workspace"
+}

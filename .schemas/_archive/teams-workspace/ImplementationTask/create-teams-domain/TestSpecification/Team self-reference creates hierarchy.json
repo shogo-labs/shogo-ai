@@ -1,0 +1,12 @@
+{
+  "id": "test-teams-005-02",
+  "task": "task-teams-005",
+  "requirement": "tw-req-002",
+  "scenario": "Team self-reference creates hierarchy",
+  "given": ["Teams store created", "Parent team exists in store"],
+  "when": "Child team is added with parentTeam reference",
+  "then": ["childTeam.parentTeam resolves to parent team entity", "parentTeam.childTeams includes child team", "Hierarchy is navigable bidirectionally"],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
+  "createdAt": 1733701400000
+}

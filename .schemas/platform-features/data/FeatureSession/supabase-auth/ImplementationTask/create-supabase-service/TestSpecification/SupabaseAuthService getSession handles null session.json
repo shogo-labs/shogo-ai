@@ -1,0 +1,16 @@
+{
+  "id": "test-auth-015",
+  "scenario": "SupabaseAuthService getSession handles null session",
+  "given": [
+    "SupabaseAuthService with no active session"
+  ],
+  "when": "getSession is called",
+  "then": [
+    "Returns null without throwing"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/supabase.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-004",
+  "requirement": "req-auth-004"
+}

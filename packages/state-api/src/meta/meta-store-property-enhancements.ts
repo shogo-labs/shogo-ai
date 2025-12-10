@@ -82,7 +82,7 @@ export function createPropertyEnhancements(baseModels: any) {
       if (self.minimum !== undefined) prop.minimum = self.minimum
       if (self.maximum !== undefined) prop.maximum = self.maximum
       if (self.pattern !== undefined) prop.pattern = self.pattern
-      if (self.enum !== undefined) prop.enum = self.enum
+      if (self.enum !== undefined && self.enum.length > 0) prop.enum = self.enum
       if (self.const !== undefined) prop.const = self.const
 
       // x-* extensions (camelCase → kebab-case)

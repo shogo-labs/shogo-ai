@@ -1,0 +1,17 @@
+{
+  "id": "test-auth-021",
+  "scenario": "isAuthenticated view reflects current state",
+  "given": [
+    "Auth store with session"
+  ],
+  "when": "isAuthenticated view accessed",
+  "then": [
+    "Returns true when session exists",
+    "Returns false when no session"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-005",
+  "requirement": "req-auth-002"
+}

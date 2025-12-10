@@ -1,0 +1,9 @@
+{
+  "id": "additive-permissions",
+  "name": "Additive Permissions Model",
+  "description": "Permissions are additive across the 4-level chain (Org → Team → App → User). A user's effective permissions are the union/max of all their roles at each level. User-level overrides on apps can grant additional access but cannot revoke permissions inherited from higher levels.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1733875200006,
+  "session": "teams-workspace"
+}

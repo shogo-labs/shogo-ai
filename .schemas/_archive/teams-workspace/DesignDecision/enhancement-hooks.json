@@ -1,0 +1,9 @@
+{
+  "id": "tw-dd-005",
+  "name": "enhancement-hooks",
+  "question": "What enhancement hooks will the domain need?",
+  "decision": "enhanceModels: Organization.ownerCount, Team.memberCount, Invitation.isExpired; enhanceCollections: OrganizationMember.findByUserId, TeamMember.findByUserId, Permission.findForUser; enhanceRootStore: currentOrganization (volatile), switchOrganization, resolvePermission, initialize",
+  "rationale": "All hooks implemented in single teams/domain.ts using createStoreFromScope(). Spec skill creates ONE 'Domain Store' task. resolvePermission implements additive inheritance chain.",
+  "session": "teams-001",
+  "createdAt": 1733700700000
+}

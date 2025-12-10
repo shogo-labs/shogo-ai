@@ -103,16 +103,18 @@ describe('Unit 5: Collection Enhancement Integration', () => {
     const store = result.createStore(env)
 
     // Then: Persistence context is derived correctly
-    expect(store.taskCollection.persistenceContext).toEqual({
-      schemaName: 'project-schema',
-      modelName: 'Task',
-      location: '/workspace/test',
-      persistenceConfig: {
-        strategy: 'flat',
-        partitionKey: undefined,
-        displayKey: undefined
-      }
+    const ctx = store.taskCollection.persistenceContext
+    expect(ctx.schemaName).toBe('project-schema')
+    expect(ctx.modelName).toBe('Task')
+    expect(ctx.location).toBe('/workspace/test')
+    expect(ctx.persistenceConfig).toEqual({
+      strategy: 'flat',
+      partitionKey: undefined,
+      displayKey: undefined
     })
+    // schemaDefs is included for nested persistence parent lookup
+    expect(ctx.schemaDefs).toBeDefined()
+    expect(ctx.schemaDefs?.Task).toBeDefined()
   })
 
   test('round-trip save and load works with generated collections', async () => {

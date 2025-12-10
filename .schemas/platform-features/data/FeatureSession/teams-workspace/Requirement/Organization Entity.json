@@ -1,0 +1,9 @@
+{
+  "id": "org-entity",
+  "name": "Organization Entity",
+  "description": "System must support Organization as the top-level container entity. Organizations have a name, slug, owner, and settings. All teams and memberships exist within an organization context.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1733875200000,
+  "session": "teams-workspace"
+}

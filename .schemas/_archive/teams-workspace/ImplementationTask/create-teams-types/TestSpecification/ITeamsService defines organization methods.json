@@ -1,0 +1,12 @@
+{
+  "id": "test-teams-001-03",
+  "task": "task-teams-001",
+  "requirement": "tw-req-003",
+  "scenario": "ITeamsService defines organization methods",
+  "given": ["ITeamsService interface is defined"],
+  "when": "Interface methods are checked",
+  "then": ["createOrg method exists", "getOrg method exists", "updateOrg method exists", "listUserOrgs method exists"],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/types.test.ts",
+  "createdAt": 1733701400000
+}

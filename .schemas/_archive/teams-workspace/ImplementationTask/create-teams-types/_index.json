@@ -1,0 +1,18 @@
+{
+  "id": "task-teams-001",
+  "name": "create-teams-types",
+  "session": "teams-001",
+  "requirement": "tw-req-003",
+  "description": "Create ITeamsService interface with types",
+  "acceptanceCriteria": [
+    "types.ts exports ITeamsService interface with no runtime imports",
+    "Defines Organization, Team, OrganizationMember, TeamMember, Invitation, Permission types",
+    "Defines OrgRole and TeamRole enums",
+    "Defines ITeamsService methods: createOrg, getOrg, updateOrg, listUserOrgs, createTeam, getTeam, updateTeam, listOrgTeams, addOrgMember, removeOrgMember, updateMemberRole, addTeamMember, removeTeamMember, createInvitation, acceptInvitation, revokeInvitation, getPermission, setPermission"
+  ],
+  "status": "complete",
+  "createdAt": 1733701200000,
+  "updatedAt": 1733679900000,
+  "integrationPoint": "ip-teams-001",
+  "dependencies": []
+}

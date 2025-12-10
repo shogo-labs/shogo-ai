@@ -1,0 +1,11 @@
+{
+  "id": "teams-invitation-gap",
+  "name": "invitation-system-gap",
+  "type": "gap",
+  "description": "No existing invitation or pending membership infrastructure. Feature needs: Invitation entity with email, inviter, target (org/team/app), role, expiration, status; flow to convert accepted invitation to Membership; expiration handling.",
+  "location": "packages/state-api/src/",
+  "relevantCode": "N/A - greenfield",
+  "recommendation": "Create Invitation entity in TeamsDomain scope. Add isExpired computed view. Implement acceptInvitation action that creates Membership and marks invitation accepted.",
+  "createdAt": 1733875300007,
+  "session": "teams-workspace"
+}

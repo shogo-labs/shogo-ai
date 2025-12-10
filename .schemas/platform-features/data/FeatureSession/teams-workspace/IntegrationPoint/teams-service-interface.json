@@ -1,0 +1,13 @@
+{
+  "id": "ip-teams-types",
+  "name": "teams-service-interface",
+  "filePath": "packages/state-api/src/teams/types.ts",
+  "package": "packages/state-api",
+  "changeType": "new-file",
+  "description": "Create ITeamsService interface with methods for organization, team, app, and membership CRUD. Define Role enum, entity types (Organization, Team, App, Membership, Invitation), and service method signatures. Pure TypeScript with NO runtime imports.",
+  "rationale": "Service interface pattern from auth domain. Enables mock and real implementations.",
+  "isGenerated": true,
+  "createdAt": 1733876000000,
+  "session": "teams-workspace",
+  "finding": "teams-service-interface-pattern"
+}

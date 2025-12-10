@@ -1,0 +1,19 @@
+{
+  "id": "test-types-service-org-methods",
+  "scenario": "ITeamsService defines organization CRUD methods",
+  "given": [
+    "ITeamsService interface is imported"
+  ],
+  "when": "Interface methods are examined",
+  "then": [
+    "createOrganization method exists",
+    "getOrganization method exists",
+    "updateOrganization method exists",
+    "deleteOrganization method exists"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/types.test.ts",
+  "createdAt": 1733876300006,
+  "task": "task-teams-types",
+  "requirement": "org-entity"
+}

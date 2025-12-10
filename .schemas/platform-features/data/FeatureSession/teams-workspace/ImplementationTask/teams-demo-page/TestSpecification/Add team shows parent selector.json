@@ -1,0 +1,18 @@
+{
+  "id": "test-demo-team-parent-selector",
+  "scenario": "Add team shows parent selector",
+  "given": [
+    "Organization with existing teams"
+  ],
+  "when": "Add Team form is opened",
+  "then": [
+    "Parent team dropdown present",
+    "Option for no parent (root team)",
+    "Existing teams listed as parent options"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
+  "createdAt": 1733876600015,
+  "task": "task-teams-demo",
+  "requirement": "hierarchy-inheritance"
+}

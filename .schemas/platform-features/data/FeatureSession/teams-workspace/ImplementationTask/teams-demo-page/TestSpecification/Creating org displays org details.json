@@ -1,0 +1,18 @@
+{
+  "id": "test-demo-create-org",
+  "scenario": "Creating org displays org details",
+  "given": [
+    "Create org form is shown"
+  ],
+  "when": "User fills form and submits",
+  "then": [
+    "Organization appears in list",
+    "Org details (name, slug) displayed",
+    "Add Team option becomes visible"
+  ],
+  "testType": "acceptance",
+  "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
+  "createdAt": 1733876600013,
+  "task": "task-teams-demo",
+  "requirement": "org-entity"
+}

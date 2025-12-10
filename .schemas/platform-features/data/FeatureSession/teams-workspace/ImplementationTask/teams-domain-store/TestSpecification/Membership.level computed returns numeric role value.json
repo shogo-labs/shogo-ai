@@ -1,0 +1,19 @@
+{
+  "id": "test-domain-membership-level",
+  "scenario": "Membership.level computed returns numeric role value",
+  "given": [
+    "Memberships with different roles exist"
+  ],
+  "when": "membership.level is accessed",
+  "then": [
+    "owner role returns 4",
+    "admin role returns 3",
+    "member role returns 2",
+    "viewer role returns 1"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
+  "createdAt": 1733876500009,
+  "task": "task-teams-domain",
+  "requirement": "rbac-roles"
+}

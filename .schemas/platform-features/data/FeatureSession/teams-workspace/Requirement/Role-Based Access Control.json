@@ -1,0 +1,9 @@
+{
+  "id": "rbac-roles",
+  "name": "Role-Based Access Control",
+  "description": "System must support predefined roles with distinct permission sets. Minimum roles: owner (full control), admin (manage members/settings), member (standard access), viewer (read-only). Roles are assigned per membership context (org-level or team-level).",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1733875200003,
+  "session": "teams-workspace"
+}

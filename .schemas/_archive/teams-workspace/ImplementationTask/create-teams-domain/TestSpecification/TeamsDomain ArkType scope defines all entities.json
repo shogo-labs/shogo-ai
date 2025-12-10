@@ -1,0 +1,12 @@
+{
+  "id": "test-teams-005-01",
+  "task": "task-teams-005",
+  "requirement": "tw-req-002",
+  "scenario": "TeamsDomain ArkType scope defines all entities",
+  "given": ["TeamsDomain scope"],
+  "when": "Scope entities are checked",
+  "then": ["Organization entity is defined", "Team entity is defined", "OrganizationMember entity is defined", "TeamMember entity is defined", "Invitation entity is defined", "Permission entity is defined"],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
+  "createdAt": 1733701400000
+}

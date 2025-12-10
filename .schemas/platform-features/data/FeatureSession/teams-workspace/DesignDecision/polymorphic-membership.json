@@ -1,0 +1,9 @@
+{
+  "id": "teams-polymorphic-membership",
+  "name": "polymorphic-membership",
+  "question": "How to model membership across org/team/app levels?",
+  "decision": "Single Membership entity with optional org/team/app references. Exactly one must be set per membership instance.",
+  "rationale": "Enables unified membership queries (findByUserId) across all levels. Avoids separate OrgMembership, TeamMembership, AppMembership entities which would complicate permission resolution.",
+  "createdAt": 1733875500000,
+  "session": "teams-workspace"
+}

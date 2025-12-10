@@ -1,0 +1,11 @@
+{
+  "id": "teams-self-reference-pattern",
+  "name": "self-reference-pattern",
+  "type": "pattern",
+  "description": "Catalog domain test demonstrates self-reference pattern for hierarchies. Category has 'parent: Category?' (optional self-reference) and 'children: Category[]' (computed inverse). System auto-detects inverse relationship and generates computed view that filters collection by parent reference.",
+  "location": "packages/state-api/src/schematic/tests/05-real-world-patterns.test.ts:456-529",
+  "relevantCode": "Category: { id: 'string.uuid', name: 'string', parent: 'Category?', children: 'Category[]' }",
+  "recommendation": "Use same pattern for Team hierarchy: parent: 'Team?' for nullable parent reference, children: 'Team[]' for computed inverse. Root teams have null parent.",
+  "createdAt": 1733875300002,
+  "session": "teams-workspace"
+}

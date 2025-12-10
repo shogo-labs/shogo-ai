@@ -1,0 +1,18 @@
+{
+  "id": "test-domain-membership-polymorphic",
+  "scenario": "Membership references are polymorphic and optional",
+  "given": [
+    "Store with org, team, and app exists"
+  ],
+  "when": "Memberships at different levels are created",
+  "then": [
+    "Org membership has organization reference, team/app undefined",
+    "Team membership has team reference, org/app undefined",
+    "App membership has app reference, org/team undefined"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
+  "createdAt": 1733876500006,
+  "task": "task-teams-domain",
+  "requirement": "membership-model"
+}

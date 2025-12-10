@@ -1,0 +1,11 @@
+{
+  "id": "finding-auth-007",
+  "name": "contract-testing-pattern",
+  "type": "existing_test",
+  "description": "Existing persistence tests validate interface contracts. Auth tests should follow same contract testing pattern.",
+  "location": "packages/state-api/src/",
+  "relevantCode": "Tests verify: 1) interface methods work, 2) null/mock behaves like real impl, 3) state consistency",
+  "recommendation": "Create auth service contract tests that verify both SupabaseAuthService and MockAuthService satisfy IAuthService interface identically.",
+  "createdAt": 1733616120000,
+  "session": "auth-001"
+}

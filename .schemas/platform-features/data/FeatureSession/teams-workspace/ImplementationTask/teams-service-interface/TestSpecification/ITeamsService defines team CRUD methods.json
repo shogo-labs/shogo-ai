@@ -1,0 +1,20 @@
+{
+  "id": "test-types-service-team-methods",
+  "scenario": "ITeamsService defines team CRUD methods",
+  "given": [
+    "ITeamsService interface is imported"
+  ],
+  "when": "Interface methods are examined",
+  "then": [
+    "createTeam method exists",
+    "getTeam method exists",
+    "updateTeam method exists",
+    "deleteTeam method exists",
+    "getTeamsForOrg method exists"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/types.test.ts",
+  "createdAt": 1733876300007,
+  "task": "task-teams-types",
+  "requirement": "team-entity"
+}

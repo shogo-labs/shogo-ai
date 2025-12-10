@@ -1,0 +1,18 @@
+{
+  "id": "test-domain-find-for-resource",
+  "scenario": "membershipCollection.findForResource query works",
+  "given": [
+    "Multiple memberships for different resources exist"
+  ],
+  "when": "membershipCollection.findForResource('team', 'team-1') is called",
+  "then": [
+    "Returns only memberships for that team",
+    "Filters by resource type correctly",
+    "Returns empty array for non-existent resource"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
+  "createdAt": 1733876500011,
+  "task": "task-teams-domain",
+  "requirement": "membership-model"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "test-demo-create-app",
+  "scenario": "Creating app shows in team's app list",
+  "given": [
+    "Team exists"
+  ],
+  "when": "User creates app within team",
+  "then": [
+    "App appears in team's app list",
+    "App name and slug displayed",
+    "App linked to correct team"
+  ],
+  "testType": "acceptance",
+  "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
+  "createdAt": 1733876600016,
+  "task": "task-teams-demo",
+  "requirement": "app-entity"
+}

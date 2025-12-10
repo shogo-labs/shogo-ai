@@ -1,0 +1,18 @@
+{
+  "id": "test-mock-create-app-validates-team",
+  "scenario": "createApp validates team exists",
+  "given": [
+    "MockTeamsService with organization but no teams"
+  ],
+  "when": "createApp({ name: 'My App', teamId: 'non-existent' }) is called",
+  "then": [
+    "Returns error result",
+    "Error message indicates team not found",
+    "No app is created"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/mock.test.ts",
+  "createdAt": 1733876400005,
+  "task": "task-teams-mock",
+  "requirement": "app-entity"
+}

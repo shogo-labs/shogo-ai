@@ -1,0 +1,19 @@
+{
+  "id": "test-domain-resolve-permissions",
+  "scenario": "resolvePermissions returns max role across hierarchy",
+  "given": [
+    "User has viewer role at org level",
+    "User has admin role at team level"
+  ],
+  "when": "store.resolvePermissions(userId, 'team', teamId) is called",
+  "then": [
+    "Returns admin (higher of the two)",
+    "Walks org→team chain correctly",
+    "Returns numeric level for comparison"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
+  "createdAt": 1733876500014,
+  "task": "task-teams-domain",
+  "requirement": "additive-permissions"
+}

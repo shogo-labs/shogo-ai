@@ -1,0 +1,9 @@
+{
+  "id": "req-auth-007",
+  "name": "demo-page",
+  "description": "Proof-of-work demo page showing complete auth flow with real Supabase",
+  "priority": "should",
+  "status": "proposed",
+  "createdAt": 1733616000000,
+  "session": "auth-001"
+}

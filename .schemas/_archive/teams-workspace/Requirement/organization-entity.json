@@ -1,0 +1,9 @@
+{
+  "id": "tw-req-001",
+  "name": "organization-entity",
+  "description": "Organization entity as top-level tenant container with settings, billing info, and security policies",
+  "priority": "must",
+  "status": "proposed",
+  "session": "teams-001",
+  "createdAt": 1733700700000
+}

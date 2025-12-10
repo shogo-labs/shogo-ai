@@ -14,7 +14,7 @@ Transform implementation tasks into test specifications.
 
 ## Input
 
-- `PlatformFeatureSession` with status="testing"
+- `FeatureSession` with status="testing"
 - `ImplementationTask` entities with acceptance criteria
 - `Requirement` entities for traceability
 
@@ -30,12 +30,9 @@ Transform implementation tasks into test specifications.
 ```javascript
 schema.load("platform-features")
 data.loadAll("platform-features")
-session = store.list("PlatformFeatureSession", "platform-features", { name: "..." })[0]
-requirements = store.list("Requirement", "platform-features")
-
-schema.load("platform-feature-spec")
-data.loadAll("platform-feature-spec")
-tasks = store.list("ImplementationTask", "platform-feature-spec")
+session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
+requirements = store.list("Requirement", "platform-features", { session: session.id })
+tasks = store.list("ImplementationTask", "platform-features", { session: session.id })
 ```
 
 Present summary:
@@ -80,11 +77,10 @@ See [patterns/07-react-context-integration.md](references/patterns/07-react-cont
 - User flows → acceptance tests
 
 ```javascript
-store.create("TestSpecification", "platform-feature-spec", {
+store.create("TestSpecification", "platform-features", {
   id: "test-xxx",
-  sessionId: session.id,
   task: "task-xxx",
-  requirementId: "req-xxx",  // from task.requirementId
+  requirement: "req-xxx",  // from task.requirement
   scenario: "Brief description of what's being tested",
   given: ["Precondition 1", "Precondition 2"],
   when: "Action being tested",
@@ -120,7 +116,7 @@ Any gaps or additional tests needed?
 
 1. Update session:
 ```javascript
-store.update(session.id, "PlatformFeatureSession", "platform-features", {
+store.update(session.id, "FeatureSession", "platform-features", {
   status: "complete",
   updatedAt: Date.now()
 })

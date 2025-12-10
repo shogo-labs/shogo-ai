@@ -1,0 +1,18 @@
+{
+  "id": "test-demo-error-handling",
+  "scenario": "Error states handled gracefully",
+  "given": [
+    "MockTeamsService configured to fail"
+  ],
+  "when": "Operation fails",
+  "then": [
+    "Error message displayed to user",
+    "UI remains functional",
+    "User can retry operation"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
+  "createdAt": 1733876600020,
+  "task": "task-teams-demo",
+  "requirement": "org-entity"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "test-auth-019",
+  "scenario": "AuthSession.isExpired computed view works correctly",
+  "given": [
+    "Auth store with session",
+    "Session has expiresAt in the past"
+  ],
+  "when": "isExpired view is accessed",
+  "then": [
+    "Returns true for expired session",
+    "Returns false for valid session"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-005",
+  "requirement": "req-auth-002"
+}

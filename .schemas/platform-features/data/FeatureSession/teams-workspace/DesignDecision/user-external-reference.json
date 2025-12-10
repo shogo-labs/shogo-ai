@@ -1,0 +1,9 @@
+{
+  "id": "teams-user-external-reference",
+  "name": "user-external-reference",
+  "question": "How to reference users in the teams domain?",
+  "decision": "Use userId: string as external reference to auth system. Do not embed User entity in teams schema.",
+  "rationale": "Auth domain owns User entity. Teams domain references via userId string. Avoids circular dependencies and keeps domains decoupled. Permission resolution accepts userId as input parameter.",
+  "createdAt": 1733875500002,
+  "session": "teams-workspace"
+}

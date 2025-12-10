@@ -1,0 +1,11 @@
+{
+  "id": "test-teams-005-06",
+  "task": "task-teams-005",
+  "scenario": "Invitation.isExpired computed view",
+  "given": ["Teams store with invitation", "Invitation expiresAt is in the past"],
+  "when": "invitation.isExpired is accessed",
+  "then": ["Returns true for past expiresAt", "Returns false for future expiresAt"],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
+  "createdAt": 1733701400000
+}

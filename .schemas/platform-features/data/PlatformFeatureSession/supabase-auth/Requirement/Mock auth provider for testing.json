@@ -1,7 +1,0 @@
-{
-  "id": "req-auth-005",
-  "description": "Mock auth provider for testing - in-memory implementation of IAuthService that doesn't require network calls",
-  "priority": "should",
-  "status": "proposed",
-  "session": "auth-001"
-}

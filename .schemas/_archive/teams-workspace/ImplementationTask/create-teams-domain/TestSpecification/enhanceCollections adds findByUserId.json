@@ -1,0 +1,12 @@
+{
+  "id": "test-teams-005-05",
+  "task": "task-teams-005",
+  "requirement": "tw-req-002",
+  "scenario": "enhanceCollections adds findByUserId",
+  "given": ["Teams store with multiple org memberships"],
+  "when": "organizationMemberCollection.findByUserId(userId) is called",
+  "then": ["Returns array of OrganizationMember entities for that user", "Empty array if user has no memberships"],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
+  "createdAt": 1733701400000
+}

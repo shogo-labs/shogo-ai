@@ -1,0 +1,12 @@
+{
+  "id": "teams-workspace",
+  "name": "teams-workspace",
+  "intent": "Add teams and workspace management feature with 4-level permission chain: Org → Team → App → User. Users create organizations, add teams within orgs (with nested team hierarchies), create apps within teams, and manage membership with different roles at each level. Permissions cascade down the chain with additive model. Includes RBAC, team hierarchy with inheritance, invitation system, and user-level overrides for app access.",
+  "status": "implementation",
+  "affectedPackages": [
+    "packages/state-api"
+  ],
+  "schemaName": "teams-workspace",
+  "createdAt": 1733875200000,
+  "updatedAt": 1733877000000
+}

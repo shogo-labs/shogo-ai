@@ -1,0 +1,17 @@
+{
+  "id": "test-mock-delay-config",
+  "scenario": "MockTeamsService supports configurable delays",
+  "given": [
+    "MockTeamsService with { latencyMs: 100 } config"
+  ],
+  "when": "createOrganization is called",
+  "then": [
+    "Method takes approximately 100ms to resolve",
+    "Result is still correct after delay"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/mock.test.ts",
+  "createdAt": 1733876400002,
+  "task": "task-teams-mock",
+  "requirement": "org-entity"
+}

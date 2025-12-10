@@ -1,0 +1,17 @@
+{
+  "id": "test-auth-018",
+  "scenario": "createAuthStore creates store with collections",
+  "given": [
+    "createAuthStore function exists"
+  ],
+  "when": "createAuthStore is called with environment",
+  "then": [
+    "Returns store with userCollection",
+    "Returns store with sessionCollection"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-005",
+  "requirement": "req-auth-002"
+}
