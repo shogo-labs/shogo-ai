@@ -1,0 +1,16 @@
+{
+  "id": "task-teams-004",
+  "name": "extend-environment",
+  "session": "teams-001",
+  "description": "Extend IEnvironment with teams service",
+  "acceptanceCriteria": [
+    "IEnvironment.services includes optional teams?: ITeamsService",
+    "Import added for ITeamsService type",
+    "JSDoc comments document teams service purpose"
+  ],
+  "status": "complete",
+  "createdAt": 1733701200000,
+  "updatedAt": 1733680200000,
+  "integrationPoint": "ip-teams-004",
+  "dependencies": ["task-teams-001"]
+}

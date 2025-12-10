@@ -1,0 +1,26 @@
+{
+  "id": "task-auth-007",
+  "name": "create-auth-context",
+  "description": "Create AuthContext and useAuth hook for React",
+  "acceptanceCriteria": [
+    "AuthContext.tsx exports AuthProvider component",
+    "AuthProvider accepts authService prop (IAuthService)",
+    "AuthProvider creates auth store with useRef for stability",
+    "AuthProvider subscribes to authService.onAuthStateChange in useEffect",
+    "AuthProvider cleans up subscription on unmount",
+    "useAuth hook returns auth store instance",
+    "useAuth throws if used outside AuthProvider",
+    "Store actions (signUp, signIn, signOut) are callable from hook",
+    "Store views (currentUser, isAuthenticated, authStatus) are observable"
+  ],
+  "status": "complete",
+  "createdAt": 1733616500000,
+  "updatedAt": 1733580700000,
+  "session": "auth-001",
+  "integrationPoint": "ip-auth-007",
+  "requirement": "req-auth-006",
+  "dependencies": [
+    "task-auth-005",
+    "task-auth-006"
+  ]
+}

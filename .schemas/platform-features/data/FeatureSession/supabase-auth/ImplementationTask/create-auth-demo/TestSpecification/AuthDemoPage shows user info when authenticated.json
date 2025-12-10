@@ -1,0 +1,18 @@
+{
+  "id": "test-auth-032",
+  "scenario": "AuthDemoPage shows user info when authenticated",
+  "given": [
+    "AuthDemoPage rendered",
+    "User authenticated"
+  ],
+  "when": "Page loads",
+  "then": [
+    "User email displayed",
+    "Logout button visible"
+  ],
+  "testType": "integration",
+  "targetFile": "apps/web/src/pages/__tests__/AuthDemoPage.test.tsx",
+  "createdAt": 1733616700000,
+  "task": "task-auth-008",
+  "requirement": "req-auth-007"
+}

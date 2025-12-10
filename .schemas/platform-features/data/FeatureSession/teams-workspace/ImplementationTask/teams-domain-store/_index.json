@@ -1,0 +1,34 @@
+{
+  "id": "task-teams-domain",
+  "name": "teams-domain-store",
+  "description": "Create TeamsDomain ArkType scope and createTeamsStore factory with enhancement hooks",
+  "acceptanceCriteria": [
+    "All entity identifier fields use 'string.uuid' type for proper MST reference resolution",
+    "domain.ts exports TeamsDomain ArkType scope with Organization, Team, App, Membership, Invitation entities",
+    "Organization has: id, name, slug, ownerId, settings (object), createdAt, updatedAt",
+    "Team has: id, name, description, organization: 'Organization', parent: 'Team?', createdAt - uses entity reference not ID string",
+    "App has: id, name, slug, team: 'Team', settings (object), createdAt, updatedAt",
+    "Membership has: id, userId, organization: 'Organization?', team: 'Team?', app: 'App?', role, createdAt",
+    "Invitation has: id, email, inviterId, organization: 'Organization?', team: 'Team?', role, expiresAt, status, createdAt",
+    "domain.ts exports createTeamsStore() factory using createStoreFromScope",
+    "enhanceModels adds Invitation.isExpired computed (expiresAt < Date.now())",
+    "enhanceModels adds Membership.level computed (numeric role value for comparison)",
+    "enhanceCollections adds membershipCollection.findByUserId(userId) query",
+    "enhanceCollections adds membershipCollection.findForResource(type, id) query",
+    "enhanceRootStore adds initialize() that syncs from ITeamsService if available",
+    "enhanceRootStore adds resolvePermissions(userId, resourceType, resourceId) returning max role",
+    "resolvePermissions walks Org→Team→App chain collecting memberships with additive union",
+    "Store integrates with ITeamsService via getEnv<IEnvironment>(self).services.teams",
+    "Tests verify reference fields resolve to entity instances (not just ID strings)",
+    "Tests verify optional references return undefined when not set"
+  ],
+  "status": "planned",
+  "createdAt": 1733876100003,
+  "session": "teams-workspace",
+  "integrationPoint": "ip-teams-domain",
+  "requirement": "membership-model",
+  "dependencies": [
+    "task-teams-types",
+    "task-teams-environment"
+  ]
+}

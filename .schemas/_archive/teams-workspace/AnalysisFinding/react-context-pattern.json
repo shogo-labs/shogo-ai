@@ -1,0 +1,11 @@
+{
+  "id": "tw-find-004",
+  "name": "react-context-pattern",
+  "session": "teams-001",
+  "type": "pattern",
+  "description": "React Context pattern: AuthProvider creates store, subscribes to service changes, provides useAuth hook. Teams will follow same pattern.",
+  "location": "apps/web/src/contexts/AuthContext.tsx",
+  "relevantCode": "AuthProvider({ authService }) → useRef store, useEffect subscribe, AuthContext.Provider",
+  "recommendation": "Create TeamsContext.tsx with TeamsProvider and useTeams hook following same structure",
+  "createdAt": 1733700800000
+}

@@ -1,0 +1,11 @@
+{
+  "id": "teams-service-interface-pattern",
+  "name": "service-interface-pattern",
+  "type": "pattern",
+  "description": "IAuthService demonstrates service interface pattern - pure TypeScript interface with NO runtime imports. Defines contract for signUp, signIn, signOut, getSession, onAuthStateChange. Implementations exist for Supabase and Mock providers.",
+  "location": "packages/state-api/src/auth/types.ts",
+  "relevantCode": "export interface IAuthService { signUp(credentials): Promise<AuthSession>; signIn(credentials): Promise<AuthSession>; ... }",
+  "recommendation": "Create ITeamsService with methods: createOrganization, createTeam, createApp, addMembership, removeMembership, resolvePermissions, getOrganizationsForUser, getTeamsForOrg.",
+  "createdAt": 1733875300001,
+  "session": "teams-workspace"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "ip-teams-domain",
+  "name": "teams-domain-store",
+  "filePath": "packages/state-api/src/teams/domain.ts",
+  "package": "packages/state-api",
+  "changeType": "new-file",
+  "description": "Create TeamsDomain ArkType scope with Organization, Team, App, Membership, Invitation entities. Implement createTeamsStore() factory using createStoreFromScope with three enhancement hooks: enhanceModels (Invitation.isExpired, Membership.level), enhanceCollections (findByUserId, findForResource), enhanceRootStore (resolvePermissions, createInvitation, acceptInvitation).",
+  "rationale": "Domain store pattern from auth. Enhancement hooks provide computed views and domain actions.",
+  "isGenerated": true,
+  "createdAt": 1733876000003,
+  "session": "teams-workspace",
+  "finding": "teams-domain-store-pattern"
+}

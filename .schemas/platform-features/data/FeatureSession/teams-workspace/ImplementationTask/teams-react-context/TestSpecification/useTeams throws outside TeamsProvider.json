@@ -1,0 +1,18 @@
+{
+  "id": "test-context-hook-outside-provider",
+  "scenario": "useTeams throws outside TeamsProvider",
+  "given": [
+    "Component using useTeams without provider"
+  ],
+  "when": "Component renders",
+  "then": [
+    "Throws descriptive error",
+    "Error message mentions TeamsProvider",
+    "Component does not render"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/contexts/__tests__/TeamsContext.test.tsx",
+  "createdAt": 1733876600009,
+  "task": "task-teams-context",
+  "requirement": "org-entity"
+}

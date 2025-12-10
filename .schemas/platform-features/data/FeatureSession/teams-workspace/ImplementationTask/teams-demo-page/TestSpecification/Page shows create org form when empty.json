@@ -1,0 +1,18 @@
+{
+  "id": "test-demo-empty-state",
+  "scenario": "Page shows create org form when empty",
+  "given": [
+    "No organizations exist"
+  ],
+  "when": "TeamsDemoPage renders",
+  "then": [
+    "Create Organization form is visible",
+    "Name and slug input fields present",
+    "Submit button enabled"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
+  "createdAt": 1733876600012,
+  "task": "task-teams-demo",
+  "requirement": "org-entity"
+}

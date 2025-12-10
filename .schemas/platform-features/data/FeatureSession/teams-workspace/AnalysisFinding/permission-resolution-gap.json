@@ -1,0 +1,11 @@
+{
+  "id": "teams-permission-resolution-gap",
+  "name": "permission-resolution-gap",
+  "type": "gap",
+  "description": "No existing permission resolution infrastructure. Auth domain handles authentication but not authorization. Teams feature needs to implement: role hierarchy (owner > admin > member > viewer), additive permission union across hierarchy levels, and permission caching for performance.",
+  "location": "packages/state-api/src/auth/",
+  "relevantCode": "N/A - no existing permission system",
+  "recommendation": "Implement resolvePermissions(userId, resourceId) that walks Org→Team→App chain, collects all Membership roles for user, returns max permission level. Consider MST computed view for caching.",
+  "createdAt": 1733875300006,
+  "session": "teams-workspace"
+}

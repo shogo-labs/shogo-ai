@@ -15,7 +15,7 @@ Execute TDD implementation from tasks and test specifications.
 
 ## Input
 
-- `PlatformFeatureSession` with status=`testing` or `implementation`
+- `FeatureSession` with status=`testing` or `implementation`
 - `ImplementationTask` entities with dependencies and acceptance criteria
 - `TestSpecification` entities with Given/When/Then format
 - `IntegrationPoint` entities with file paths
@@ -37,19 +37,15 @@ Execute TDD implementation from tasks and test specifications.
 ### Phase 1: Load Context
 
 ```javascript
-// Load session context
+// Load session context and all implementation artifacts
 schema.load("platform-features")
 data.loadAll("platform-features")
-session = store.list("PlatformFeatureSession", "platform-features", { name: "..." })[0]
+session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
 requirements = store.list("Requirement", "platform-features", { session: session.id })
-
-// Load implementation artifacts
-schema.load("platform-feature-spec")
-data.loadAll("platform-feature-spec")
-tasks = store.list("ImplementationTask", "platform-feature-spec", { sessionId: session.id })
-testSpecs = store.list("TestSpecification", "platform-feature-spec", { sessionId: session.id })
-integrationPoints = store.list("IntegrationPoint", "platform-feature-spec", { sessionId: session.id })
-findings = store.list("AnalysisFinding", "platform-feature-spec", { sessionId: session.id })
+tasks = store.list("ImplementationTask", "platform-features", { session: session.id })
+testSpecs = store.list("TestSpecification", "platform-features", { task: tasks.map(t => t.id) })
+integrationPoints = store.list("IntegrationPoint", "platform-features", { session: session.id })
+findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
 
 // Load domain schema if exists
 if (session.schemaName) {
@@ -82,8 +78,8 @@ Ready to begin implementation?
 
 **Check for existing run:**
 ```javascript
-const existingRun = store.list("ImplementationRun", "platform-feature-spec", {
-  sessionId: session.id,
+const existingRun = store.list("ImplementationRun", "platform-features", {
+  session: session.id,
   status: "in_progress"
 })[0]
 
@@ -191,9 +187,9 @@ See [domain-pattern.md](references/domain-pattern.md) for the full template and 
 
 Create implementation run record:
 ```javascript
-store.create("ImplementationRun", "platform-feature-spec", {
+store.create("ImplementationRun", "platform-features", {
   id: `run-${Date.now()}`,
-  sessionId: session.id,
+  session: session.id,
   status: "in_progress",
   completedTasks: [],
   failedTasks: [],
@@ -206,15 +202,15 @@ store.create("ImplementationRun", "platform-feature-spec", {
 #### 4.1 Task Setup
 
 ```javascript
-store.create("TaskExecution", "platform-feature-spec", {
+store.create("TaskExecution", "platform-features", {
   id: `exec-${task.id}-${Date.now()}`,
-  runId: currentRun.id,
-  taskId: task.id,
+  run: currentRun.id,
+  task: task.id,
   status: "pending",
   startedAt: Date.now()
 })
 
-store.update(task.id, "ImplementationTask", "platform-feature-spec", {
+store.update(task.id, "ImplementationTask", "platform-features", {
   status: "in_progress",
   updatedAt: Date.now()
 })
@@ -248,7 +244,7 @@ For each `TestSpecification` associated with this task:
 /**
  * Generated from TestSpecification: {testSpec.id}
  * Task: {task.id}
- * Requirement: {requirementId}
+ * Requirement: {requirement}
  */
 
 import { describe, test, expect, beforeEach } from "bun:test"
@@ -287,7 +283,7 @@ Proceeding to implementation...
 
 Update execution:
 ```javascript
-store.update(execId, "TaskExecution", "platform-feature-spec", {
+store.update(execId, "TaskExecution", "platform-features", {
   status: "test_failing",
   testFilePath: targetFile,
   testOutput: testOutput
@@ -378,7 +374,7 @@ Do NOT mark task complete until GREEN is confirmed via actual test execution.
 
 Update execution:
 ```javascript
-store.update(execId, "TaskExecution", "platform-feature-spec", {
+store.update(execId, "TaskExecution", "platform-features", {
   status: "test_passing",
   implementationFilePath: implFile,
   testOutput: testOutput
@@ -396,13 +392,13 @@ Analyzing failure... (attempt {n}/3)
 
 On persistent failure (3+ attempts):
 ```javascript
-store.update(execId, "TaskExecution", "platform-feature-spec", {
+store.update(execId, "TaskExecution", "platform-features", {
   status: "failed",
   errorMessage: lastError,
   retryCount: attempts
 })
 
-store.update(task.id, "ImplementationTask", "platform-feature-spec", {
+store.update(task.id, "ImplementationTask", "platform-features", {
   status: "blocked",
   updatedAt: Date.now()
 })
@@ -425,12 +421,12 @@ Which approach?
 
 After GREEN, update records:
 ```javascript
-store.update(execId, "TaskExecution", "platform-feature-spec", {
+store.update(execId, "TaskExecution", "platform-features", {
   status: "test_passing",
   completedAt: Date.now()
 })
 
-store.update(task.id, "ImplementationTask", "platform-feature-spec", {
+store.update(task.id, "ImplementationTask", "platform-features", {
   status: "complete",
   updatedAt: Date.now()
 })
@@ -512,22 +508,43 @@ Issues:
 
 If issues found, analyze and fix before proceeding.
 
-**Proof-of-Work Verification** (for service-backed features):
+**Proof-of-Work Verification**
 
-If a proof-of-work page task exists in the implementation plan:
-1. Ensure page renders without errors
-2. Verify real service credentials are used (from env vars, not mocks)
-3. Walk through complete feature flow visually
-4. Confirm real data displays from service
-5. Test error states (invalid input, network errors)
+The proof-of-work page validates the complete feature integration. Requirements differ by feature type:
 
-This page validates all components integrate correctly with the actual external service.
+**External Service Features** (auth, payments, analytics, etc.):
+1. Page renders without errors
+2. Real provider service injected (not MockService)
+3. Real credentials from env vars (`VITE_*`, etc.)
+4. Real data displays from external service
+5. Error states tested with real service responses
+
+**Internal Domain Features** (workspace management, project tracking, etc.):
+1. Page renders without errors
+2. Real persistence service (`MCPPersistence` for browser-side demos)
+3. **NOT** `NullPersistence` (mocks are for unit tests only)
+4. Data round-trips through save/load cycle
+5. CRUD operations persist to disk and reload correctly
+
+**What NullPersistence is for:**
+- Unit tests only (fast, isolated, no file I/O)
+- **Never** in proof-of-work pages
+- **Never** for validating feature integration
+
+**Test vs Proof-of-Work distinction:**
+
+| Context | Persistence | Service Layer |
+|---------|-------------|---------------|
+| Unit tests | `NullPersistence` | `MockService` |
+| Proof-of-work | `MCPPersistence` (browser) | Real provider |
+
+This page validates all components integrate correctly with real persistence and/or external services.
 
 ### Phase 6: Handoff
 
 1. Update run record:
 ```javascript
-store.update(currentRun.id, "ImplementationRun", "platform-feature-spec", {
+store.update(currentRun.id, "ImplementationRun", "platform-features", {
   status: "complete",
   completedAt: Date.now()
 })
@@ -535,7 +552,7 @@ store.update(currentRun.id, "ImplementationRun", "platform-feature-spec", {
 
 2. Update session:
 ```javascript
-store.update(session.id, "PlatformFeatureSession", "platform-features", {
+store.update(session.id, "FeatureSession", "platform-features", {
   status: "complete",
   updatedAt: Date.now()
 })
@@ -583,8 +600,8 @@ Feature is ready for review.
 The skill can resume from any point using `ImplementationRun` state:
 
 ```javascript
-const existingRun = store.list("ImplementationRun", "platform-feature-spec", {
-  sessionId: session.id,
+const existingRun = store.list("ImplementationRun", "platform-features", {
+  session: session.id,
   status: "in_progress"
 })[0]
 

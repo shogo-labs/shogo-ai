@@ -1,0 +1,20 @@
+{
+  "id": "test-types-role-enum",
+  "scenario": "Role enum has correct numeric values",
+  "given": [
+    "Role enum is imported from types"
+  ],
+  "when": "Role values are accessed",
+  "then": [
+    "Role.owner equals 4",
+    "Role.admin equals 3",
+    "Role.member equals 2",
+    "Role.viewer equals 1",
+    "Role.owner > Role.admin > Role.member > Role.viewer"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/types.test.ts",
+  "createdAt": 1733876300001,
+  "task": "task-teams-types",
+  "requirement": "rbac-roles"
+}

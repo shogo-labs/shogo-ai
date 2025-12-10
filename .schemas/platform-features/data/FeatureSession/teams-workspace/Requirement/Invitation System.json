@@ -1,0 +1,9 @@
+{
+  "id": "invitation-system",
+  "name": "Invitation System",
+  "description": "System should support inviting users to organizations and teams. Invitations have a target email/user, inviting user, target org/team, proposed role, expiration, and status (pending/accepted/declined/expired). Users accept invitations to create memberships.",
+  "priority": "should",
+  "status": "proposed",
+  "createdAt": 1733875200005,
+  "session": "teams-workspace"
+}

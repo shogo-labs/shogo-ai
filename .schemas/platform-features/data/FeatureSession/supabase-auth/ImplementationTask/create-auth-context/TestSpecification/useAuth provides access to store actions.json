@@ -1,0 +1,18 @@
+{
+  "id": "test-auth-030",
+  "scenario": "useAuth provides access to store actions",
+  "given": [
+    "Component wrapped in AuthProvider"
+  ],
+  "when": "useAuth hook called",
+  "then": [
+    "Returns store with signUp action",
+    "Returns store with signIn action",
+    "Returns store with signOut action"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/contexts/__tests__/AuthContext.test.tsx",
+  "createdAt": 1733616700000,
+  "task": "task-auth-007",
+  "requirement": "req-auth-006"
+}

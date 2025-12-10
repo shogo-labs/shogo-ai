@@ -1,0 +1,12 @@
+{
+  "id": "test-teams-007-01",
+  "task": "task-teams-007",
+  "requirement": "tw-req-008",
+  "scenario": "TeamsProvider creates stable store",
+  "given": ["TeamsProvider with MockTeamsService"],
+  "when": "Component re-renders",
+  "then": ["Store instance remains the same (useRef)", "No store recreation on re-render"],
+  "testType": "unit",
+  "targetFile": "apps/web/src/contexts/__tests__/TeamsContext.test.tsx",
+  "createdAt": 1733701400000
+}

@@ -1,0 +1,24 @@
+{
+  "id": "task-auth-006",
+  "name": "create-auth-exports",
+  "description": "Create auth module index with exports",
+  "acceptanceCriteria": [
+    "index.ts re-exports all types from types.ts",
+    "index.ts re-exports MockAuthService from mock.ts",
+    "index.ts re-exports SupabaseAuthService from supabase.ts",
+    "index.ts re-exports AuthDomain and createAuthStore from domain.ts",
+    "Exports are organized: types first, then services, then domain"
+  ],
+  "status": "complete",
+  "createdAt": 1733616500000,
+  "updatedAt": 1733580600000,
+  "session": "auth-001",
+  "integrationPoint": "ip-auth-006",
+  "requirement": "req-auth-001",
+  "dependencies": [
+    "task-auth-001",
+    "task-auth-003",
+    "task-auth-004",
+    "task-auth-005"
+  ]
+}

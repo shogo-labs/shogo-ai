@@ -1,0 +1,19 @@
+{
+  "id": "task-teams-008",
+  "name": "create-teams-demo",
+  "session": "teams-001",
+  "description": "Create proof-of-work TeamsDemoPage",
+  "acceptanceCriteria": [
+    "Page demonstrates complete org/team flow with real Supabase credentials",
+    "Shows: create org, create team, add members, create invitation, accept invitation",
+    "Demonstrates team hierarchy (create child team, navigate)",
+    "Shows permission resolution (set permission, check access)",
+    "Displays real data returned from service",
+    "Includes loading states and error handling",
+    "Accessible at /teams-demo route"
+  ],
+  "status": "planned",
+  "createdAt": 1733701200000,
+  "integrationPoint": "ip-teams-008",
+  "dependencies": ["task-teams-007"]
+}

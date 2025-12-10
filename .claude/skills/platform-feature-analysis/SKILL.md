@@ -23,7 +23,7 @@ This skill operates in two modes based on session status:
 
 ## Input
 
-- `PlatformFeatureSession` with status=`discovery` OR `testing`
+- `FeatureSession` with status=`discovery` OR `testing`
 - `Requirement` entities from discovery
 - For verify mode: existing `IntegrationPoint` and `AnalysisFinding` entities
 
@@ -77,11 +77,8 @@ Use when session status = `discovery`
 ```javascript
 schema.load("platform-features")
 data.loadAll("platform-features")
-session = store.list("PlatformFeatureSession", "platform-features", { name: "..." })[0]
+session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
 requirements = store.list("Requirement", "platform-features", { session: session.id })
-
-// Load spec schema for storing findings
-schema.load("platform-feature-spec")
 ```
 
 Present summary:
@@ -141,9 +138,10 @@ Record findings as you explore - don't wait until the end.
 For each significant discovery:
 
 ```javascript
-store.create("AnalysisFinding", "platform-feature-spec", {
+store.create("AnalysisFinding", "platform-features", {
   id: "finding-xxx",
-  sessionId: session.id,
+  name: "finding-slug",
+  session: session.id,
   type: "pattern|gap|existing_test|risk",
   description: "What was found",
   location: "packages/state-api/src/environment/types.ts",
@@ -165,7 +163,7 @@ Typical finding counts: 5-10 for focused features, 10-20 for cross-cutting featu
 
 1. Update session:
 ```javascript
-store.update(session.id, "PlatformFeatureSession", "platform-features", {
+store.update(session.id, "FeatureSession", "platform-features", {
   status: "design",
   updatedAt: Date.now()
 })
@@ -202,12 +200,9 @@ Use when session status = `testing`
 ```javascript
 schema.load("platform-features")
 data.loadAll("platform-features")
-session = store.list("PlatformFeatureSession", "platform-features", { name: "..." })[0]
-
-schema.load("platform-feature-spec")
-data.loadAll("platform-feature-spec")
-findings = store.list("AnalysisFinding", "platform-feature-spec", { sessionId: session.id })
-integrationPoints = store.list("IntegrationPoint", "platform-feature-spec", { sessionId: session.id })
+session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
+findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
+integrationPoints = store.list("IntegrationPoint", "platform-features", { session: session.id })
 ```
 
 Present summary:
@@ -245,9 +240,10 @@ For each `IntegrationPoint`:
 
 Record validation results:
 ```javascript
-store.create("AnalysisFinding", "platform-feature-spec", {
+store.create("AnalysisFinding", "platform-features", {
   id: "verify-xxx",
-  sessionId: session.id,
+  name: "verify-slug",
+  session: session.id,
   type: "verification",
   description: "Validation result for ip-xxx",
   location: integrationPoint.filePath,
@@ -293,7 +289,7 @@ Which approach?
 
 1. Update session (only if proceeding):
 ```javascript
-store.update(session.id, "PlatformFeatureSession", "platform-features", {
+store.update(session.id, "FeatureSession", "platform-features", {
   status: "implementation",
   updatedAt: Date.now()
 })

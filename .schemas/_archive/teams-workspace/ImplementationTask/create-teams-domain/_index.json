@@ -1,0 +1,23 @@
+{
+  "id": "task-teams-005",
+  "name": "create-teams-domain",
+  "session": "teams-001",
+  "requirement": "tw-req-002",
+  "description": "Create Teams domain store with enhancement hooks",
+  "acceptanceCriteria": [
+    "All entity identifier fields use 'string.uuid' type for proper MST reference resolution",
+    "domain.ts exports TeamsDomain ArkType scope with Organization, Team, OrganizationMember, TeamMember, Invitation, Permission entities",
+    "Team.parentTeam uses self-reference pattern, childTeams is computed inverse",
+    "domain.ts exports createTeamsStore() factory using createStoreFromScope",
+    "enhanceModels adds: Organization.ownerCount, Team.memberCount, Invitation.isExpired",
+    "enhanceCollections adds: organizationMemberCollection.findByUserId, teamMemberCollection.findByUserId, permissionCollection.findForUser",
+    "enhanceRootStore adds volatile currentOrganization, volatile teamsStatus/teamsError, switchOrganization action, resolvePermission action implementing additive inheritance, initialize action",
+    "Store integrates with ITeamsService via getEnv()",
+    "Tests verify reference fields resolve to entity instances (not just ID strings)",
+    "Tests verify team hierarchy navigation (parentTeam, childTeams)"
+  ],
+  "status": "planned",
+  "createdAt": 1733701200000,
+  "integrationPoint": "ip-teams-005",
+  "dependencies": ["task-teams-001", "task-teams-004"]
+}

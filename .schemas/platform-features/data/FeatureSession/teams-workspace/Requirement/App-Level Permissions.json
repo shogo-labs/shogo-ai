@@ -1,0 +1,9 @@
+{
+  "id": "app-level-permissions",
+  "name": "App-Level Permissions",
+  "description": "System must support app-specific membership and roles. Users can be granted access to individual apps with roles independent of their team membership. This enables collaboration with external users on specific apps without broader team access.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1733875200008,
+  "session": "teams-workspace"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "test-teams-002-05",
+  "task": "task-teams-002",
+  "requirement": "tw-req-001",
+  "scenario": "MockTeamsService supports configurable delays",
+  "given": ["MockTeamsService with delay: 100 option"],
+  "when": "createOrg is called",
+  "then": ["Promise resolves after approximately 100ms", "Result is valid Organization"],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/mock.test.ts",
+  "createdAt": 1733701400000
+}

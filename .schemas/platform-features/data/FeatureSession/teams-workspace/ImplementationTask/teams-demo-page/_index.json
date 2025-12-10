@@ -1,0 +1,26 @@
+{
+  "id": "task-teams-demo",
+  "name": "teams-demo-page",
+  "description": "Create proof-of-work demo page demonstrating teams feature end-to-end",
+  "acceptanceCriteria": [
+    "TeamsDemoPage accessible at /teams-demo route",
+    "Page shows 'Create Organization' form when no orgs exist",
+    "Creating org displays org details and 'Add Team' option",
+    "Teams display with hierarchy visualization (nested teams indented)",
+    "Adding team shows parent team selector for hierarchy",
+    "Creating app within team shows app in team's app list",
+    "Membership management UI shows add/remove member with role selector",
+    "Permission resolution demo shows effective permissions at each level",
+    "All CRUD operations work end-to-end with MockTeamsService",
+    "Loading states shown during async operations",
+    "Error states handled gracefully with user feedback"
+  ],
+  "status": "planned",
+  "createdAt": 1733876100006,
+  "session": "teams-workspace",
+  "integrationPoint": "ip-teams-demo",
+  "requirement": "org-entity",
+  "dependencies": [
+    "task-teams-context"
+  ]
+}

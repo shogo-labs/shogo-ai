@@ -1,0 +1,18 @@
+{
+  "id": "test-auth-010",
+  "scenario": "MockAuthService clear resets all state",
+  "given": [
+    "MockAuthService instance with users and session"
+  ],
+  "when": "clear() is called",
+  "then": [
+    "All users removed",
+    "Session cleared",
+    "Ready for fresh test"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/auth/__tests__/mock.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-003",
+  "requirement": "req-auth-005"
+}

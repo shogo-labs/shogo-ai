@@ -1,0 +1,9 @@
+{
+  "id": "req-auth-001",
+  "name": "auth-service-interface",
+  "description": "Service interface abstraction for auth provider - IAuthService with sign-in, sign-out, getSession, onAuthStateChange methods that can be implemented by Supabase or mock provider",
+  "priority": "must",
+  "status": "implemented",
+  "createdAt": 1733616000000,
+  "session": "auth-001"
+}

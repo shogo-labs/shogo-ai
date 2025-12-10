@@ -1,0 +1,19 @@
+{
+  "id": "test-auth-025",
+  "scenario": "initialize action restores session on startup",
+  "given": [
+    "Auth store with MockAuthService",
+    "Service has existing session"
+  ],
+  "when": "initialize action called",
+  "then": [
+    "Calls getSession on service",
+    "Populates store with session",
+    "Sets authStatus to authenticated"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-005",
+  "requirement": "req-auth-006"
+}

@@ -1,0 +1,17 @@
+{
+  "id": "test-types-no-runtime",
+  "scenario": "types.ts has no runtime imports",
+  "given": [
+    "types.ts file exists"
+  ],
+  "when": "File is analyzed for import statements",
+  "then": [
+    "No imports from runtime modules (only 'type' imports allowed)",
+    "File compiles with isolatedModules: true"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/types.test.ts",
+  "createdAt": 1733876300000,
+  "task": "task-teams-types",
+  "requirement": "org-entity"
+}

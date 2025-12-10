@@ -27,7 +27,7 @@ Write a failing test that defines the expected behavior.
 
 1. **Read TestSpecification** from Wavesmith:
    ```javascript
-   testSpec = store.get(testSpecId, "TestSpecification", "platform-feature-spec")
+   testSpec = store.get(testSpecId, "TestSpecification", "platform-features")
    ```
 
 2. **Generate test file** at `targetFile` location:
@@ -105,7 +105,7 @@ Tests:      1 passed
 
 1. Update TaskExecution:
    ```javascript
-   store.update(execId, "TaskExecution", "platform-feature-spec", {
+   store.update(execId, "TaskExecution", "platform-features", {
      status: "failed",
      errorMessage: "Test failed after 3 attempts: {error}",
      retryCount: 3
@@ -114,7 +114,7 @@ Tests:      1 passed
 
 2. Mark task blocked:
    ```javascript
-   store.update(taskId, "ImplementationTask", "platform-feature-spec", {
+   store.update(taskId, "ImplementationTask", "platform-features", {
      status: "blocked"
    })
    ```
@@ -154,12 +154,12 @@ After GREEN but before COMMIT:
 
 After GREEN, update records:
 ```javascript
-store.update(execId, "TaskExecution", "platform-feature-spec", {
+store.update(execId, "TaskExecution", "platform-features", {
   status: "test_passing",
   completedAt: Date.now()
 })
 
-store.update(task.id, "ImplementationTask", "platform-feature-spec", {
+store.update(task.id, "ImplementationTask", "platform-features", {
   status: "complete",
   updatedAt: Date.now()
 })

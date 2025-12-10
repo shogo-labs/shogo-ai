@@ -1,0 +1,9 @@
+{
+  "id": "tw-dd-001",
+  "name": "permission-inheritance-style",
+  "question": "Should permission inheritance be additive (highest wins) or restrictive (child can only narrow)?",
+  "decision": "Additive - permissions stack and highest level wins",
+  "rationale": "Matches GitHub model, simpler mental model for users, allows flexible delegation where teams/individuals can be granted elevated access without restructuring hierarchy",
+  "session": "teams-001",
+  "createdAt": 1733700700000
+}

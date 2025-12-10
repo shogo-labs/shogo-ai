@@ -1,0 +1,19 @@
+{
+  "id": "task-teams-environment",
+  "name": "teams-environment-extension",
+  "description": "Extend IEnvironment to include teams service slot",
+  "acceptanceCriteria": [
+    "IEnvironment.services includes optional teams?: ITeamsService",
+    "Import ITeamsService from '../teams/types'",
+    "Existing environment consumers unaffected (teams is optional)",
+    "Type exports updated in environment/index.ts if needed"
+  ],
+  "status": "planned",
+  "createdAt": 1733876100002,
+  "session": "teams-workspace",
+  "integrationPoint": "ip-teams-environment",
+  "requirement": "org-entity",
+  "dependencies": [
+    "task-teams-types"
+  ]
+}

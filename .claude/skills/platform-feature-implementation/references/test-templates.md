@@ -8,7 +8,7 @@ Templates for generating tests from TestSpecification entities.
 /**
  * Generated from TestSpecification: {testSpec.id}
  * Task: {task.id}
- * Requirement: {requirementId}
+ * Requirement: {requirement}
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"

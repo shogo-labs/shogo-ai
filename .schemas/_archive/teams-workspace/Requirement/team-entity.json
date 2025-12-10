@@ -1,0 +1,9 @@
+{
+  "id": "tw-req-002",
+  "name": "team-entity",
+  "description": "Team entity with hierarchy support (parent_team_id) for nested teams within an organization",
+  "priority": "must",
+  "status": "proposed",
+  "session": "teams-001",
+  "createdAt": 1733700700000
+}

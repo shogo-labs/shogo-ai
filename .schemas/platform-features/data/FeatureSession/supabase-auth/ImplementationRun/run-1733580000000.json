@@ -1,0 +1,16 @@
+{
+  "id": "run-1733580000000",
+  "status": "in_progress",
+  "completedTasks": [
+    "task-auth-001",
+    "task-auth-002",
+    "task-auth-003",
+    "task-auth-004",
+    "task-auth-005",
+    "task-auth-006",
+    "task-auth-007"
+  ],
+  "failedTasks": [],
+  "startedAt": 1733580000000,
+  "session": "auth-001"
+}

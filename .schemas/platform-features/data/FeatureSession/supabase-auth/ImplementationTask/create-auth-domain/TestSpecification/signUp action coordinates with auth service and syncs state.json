@@ -1,0 +1,18 @@
+{
+  "id": "test-auth-022",
+  "scenario": "signUp action coordinates with auth service and syncs state",
+  "given": [
+    "Auth store with MockAuthService"
+  ],
+  "when": "signUp action called",
+  "then": [
+    "Calls auth service signUp",
+    "Updates session in store",
+    "Sets authStatus to authenticated"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/auth/__tests__/domain.test.ts",
+  "createdAt": 1733616700000,
+  "task": "task-auth-005",
+  "requirement": "req-auth-002"
+}

@@ -1,0 +1,9 @@
+{
+  "id": "tw-req-004b",
+  "name": "permission-inheritance-resource",
+  "description": "Permission inheritance chain: org base permissions → team permissions → resource permissions → individual overrides",
+  "priority": "must",
+  "status": "proposed",
+  "session": "teams-001",
+  "createdAt": 1733700700000
+}

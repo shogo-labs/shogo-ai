@@ -1,0 +1,12 @@
+{
+  "id": "ip-teams-demo",
+  "name": "teams-demo-page",
+  "filePath": "apps/web/src/pages/TeamsDemoPage.tsx",
+  "package": "apps/web",
+  "changeType": "new-file",
+  "description": "Create proof-of-work demo page showing complete teams flow: create org, add team (with nested hierarchy), create app, manage memberships, demonstrate permission resolution across 4-level chain. Uses mock service initially.",
+  "rationale": "Proof-of-work validates integration end-to-end before production service implementation.",
+  "isGenerated": true,
+  "createdAt": 1733876000006,
+  "session": "teams-workspace"
+}

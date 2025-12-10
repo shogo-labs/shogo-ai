@@ -1,0 +1,18 @@
+{
+  "id": "test-context-hook-returns-store",
+  "scenario": "useTeams hook returns typed store instance",
+  "given": [
+    "Component using useTeams inside TeamsProvider"
+  ],
+  "when": "useTeams() is called",
+  "then": [
+    "Returns store with organizationCollection",
+    "Returns store with teamCollection",
+    "Store has resolvePermissions action"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/contexts/__tests__/TeamsContext.test.tsx",
+  "createdAt": 1733876600008,
+  "task": "task-teams-context",
+  "requirement": "org-entity"
+}

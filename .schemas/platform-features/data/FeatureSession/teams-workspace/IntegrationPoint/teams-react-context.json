@@ -1,0 +1,13 @@
+{
+  "id": "ip-teams-context",
+  "name": "teams-react-context",
+  "filePath": "apps/web/src/contexts/TeamsContext.tsx",
+  "package": "apps/web",
+  "changeType": "new-file",
+  "description": "Create TeamsProvider and useTeams hook. Provider creates store with useRef, initializes from service, cleans up on unmount. Hook provides typed access to store with actions. Uses observer pattern for reactive updates.",
+  "rationale": "React context pattern from auth. Enables component access to teams store.",
+  "isGenerated": true,
+  "createdAt": 1733876000005,
+  "session": "teams-workspace",
+  "finding": "teams-domain-store-pattern"
+}

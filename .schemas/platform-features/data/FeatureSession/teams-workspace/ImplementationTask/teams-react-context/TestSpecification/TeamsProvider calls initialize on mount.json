@@ -1,0 +1,18 @@
+{
+  "id": "test-context-initialize",
+  "scenario": "TeamsProvider calls initialize on mount",
+  "given": [
+    "TeamsProvider with mock service"
+  ],
+  "when": "Provider is mounted",
+  "then": [
+    "store.initialize() is called once",
+    "Initialize called after first render",
+    "Data from service is loaded"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/contexts/__tests__/TeamsContext.test.tsx",
+  "createdAt": 1733876600006,
+  "task": "task-teams-context",
+  "requirement": "org-entity"
+}

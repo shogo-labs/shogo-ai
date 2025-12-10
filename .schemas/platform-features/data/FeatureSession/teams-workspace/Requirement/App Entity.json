@@ -1,0 +1,9 @@
+{
+  "id": "app-entity",
+  "name": "App Entity",
+  "description": "System must support App as a first-class entity in the permission chain. Apps belong to exactly one team, have a name, slug, settings, and creation metadata. Apps are the primary artifact users build and collaborate on.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1733875200007,
+  "session": "teams-workspace"
+}

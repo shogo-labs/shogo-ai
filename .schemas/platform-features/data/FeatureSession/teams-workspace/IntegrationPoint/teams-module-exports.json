@@ -1,0 +1,12 @@
+{
+  "id": "ip-teams-exports",
+  "name": "teams-module-exports",
+  "filePath": "packages/state-api/src/teams/index.ts",
+  "package": "packages/state-api",
+  "changeType": "new-file",
+  "description": "Create module barrel export. Re-export types from types.ts, MockTeamsService from mock.ts, TeamsDomain and createTeamsStore from domain.ts.",
+  "rationale": "Standard module organization pattern.",
+  "isGenerated": true,
+  "createdAt": 1733876000004,
+  "session": "teams-workspace"
+}

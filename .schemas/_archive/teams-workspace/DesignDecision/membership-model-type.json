@@ -1,0 +1,9 @@
+{
+  "id": "tw-dd-004",
+  "name": "membership-model-type",
+  "question": "Separate OrganizationMember vs TeamMember or unified Membership?",
+  "decision": "Separate entities: OrganizationMember and TeamMember",
+  "rationale": "Different role enums (org has owner/billing_manager/security_manager, team has maintainer/member). Clearer queries. A user must be org member before team member - enforced at service layer.",
+  "session": "teams-001",
+  "createdAt": 1733700700000
+}
