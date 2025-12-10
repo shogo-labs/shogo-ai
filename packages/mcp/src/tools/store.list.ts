@@ -81,16 +81,11 @@ export function registerStoreList(server: FastMCP) {
         if (collection.all().length === 0 && typeof collection.loadAll === 'function') {
           await collection.loadAll(filter as Record<string, any> | undefined)
         }
-        let instances = collection.all()
 
-        // 6. Apply filter if provided (simple field matching)
-        if (filter && typeof filter === "object") {
-          instances = instances.filter((instance: any) => {
-            return Object.entries(filter).every(([key, value]) => {
-              return instance[key] === value
-            })
-          })
-        }
+        // 6. Get instances, using collection.where() for filtering (handles references)
+        const instances = (filter && typeof filter === "object")
+          ? collection.where(filter)
+          : collection.all()
 
         return JSON.stringify({
           ok: true,

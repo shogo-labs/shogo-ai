@@ -349,3 +349,132 @@ describe("Reference transformation", () => {
     expect(item.category.name).toBe("Electronics")
   })
 })
+
+describe("Collection filtering with references", () => {
+  test("where() filters by reference field using ID string", () => {
+    // Given: Domain with references
+    const BusinessDomain = scope({
+      User: {
+        id: "string.uuid",
+        name: "string",
+        company: "Company"
+      },
+      Company: {
+        id: "string.uuid",
+        name: "string"
+      }
+    })
+
+    const result = createStoreFromScope(BusinessDomain)
+    const store = result.createStore({})
+
+    // Create companies
+    store.companyCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440100",
+      name: "ACME Corp"
+    })
+    store.companyCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440101",
+      name: "NewCorp"
+    })
+
+    // Create users at different companies
+    store.userCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440102",
+      name: "Alice",
+      company: "550e8400-e29b-41d4-a716-446655440100"
+    })
+    store.userCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440103",
+      name: "Bob",
+      company: "550e8400-e29b-41d4-a716-446655440100"
+    })
+    store.userCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440104",
+      name: "Charlie",
+      company: "550e8400-e29b-41d4-a716-446655440101"
+    })
+
+    // When: filtering by reference field with ID string
+    const acmeUsers = store.userCollection.where({ company: "550e8400-e29b-41d4-a716-446655440100" })
+
+    // Then: returns users with matching reference
+    expect(acmeUsers).toHaveLength(2)
+    expect(acmeUsers.map((u: any) => u.name).sort()).toEqual(["Alice", "Bob"])
+  })
+
+  test("findBy() filters by reference field using ID string", () => {
+    // Given: Domain with references
+    const BusinessDomain = scope({
+      User: {
+        id: "string.uuid",
+        name: "string",
+        company: "Company"
+      },
+      Company: {
+        id: "string.uuid",
+        name: "string"
+      }
+    })
+
+    const result = createStoreFromScope(BusinessDomain)
+    const store = result.createStore({})
+
+    store.companyCollection.add({ id: "550e8400-e29b-41d4-a716-446655440110", name: "ACME" })
+    store.userCollection.add({ id: "550e8400-e29b-41d4-a716-446655440111", name: "Alice", company: "550e8400-e29b-41d4-a716-446655440110" })
+    store.userCollection.add({ id: "550e8400-e29b-41d4-a716-446655440112", name: "Bob", company: "550e8400-e29b-41d4-a716-446655440110" })
+
+    // When: using findBy with reference field
+    const acmeUsers = store.userCollection.findBy("company", "550e8400-e29b-41d4-a716-446655440110")
+
+    // Then: returns matching users
+    expect(acmeUsers).toHaveLength(2)
+  })
+
+  test("where() still works with scalar fields", () => {
+    // Ensure we don't break existing scalar filtering
+    const BusinessDomain = scope({
+      User: {
+        id: "string.uuid",
+        name: "string",
+        role: "string"
+      }
+    })
+
+    const result = createStoreFromScope(BusinessDomain)
+    const store = result.createStore({})
+
+    store.userCollection.add({ id: "550e8400-e29b-41d4-a716-446655440120", name: "Alice", role: "admin" })
+    store.userCollection.add({ id: "550e8400-e29b-41d4-a716-446655440121", name: "Bob", role: "user" })
+    store.userCollection.add({ id: "550e8400-e29b-41d4-a716-446655440122", name: "Charlie", role: "admin" })
+
+    const admins = store.userCollection.where({ role: "admin" })
+    expect(admins).toHaveLength(2)
+  })
+
+  test("where() handles optional reference fields", () => {
+    const BusinessDomain = scope({
+      User: {
+        id: "string.uuid",
+        name: "string",
+        "company?": "Company"
+      },
+      Company: {
+        id: "string.uuid",
+        name: "string"
+      }
+    })
+
+    const result = createStoreFromScope(BusinessDomain)
+    const store = result.createStore({})
+
+    store.companyCollection.add({ id: "550e8400-e29b-41d4-a716-446655440130", name: "ACME" })
+    store.userCollection.add({ id: "550e8400-e29b-41d4-a716-446655440131", name: "Alice", company: "550e8400-e29b-41d4-a716-446655440130" })
+    store.userCollection.add({ id: "550e8400-e29b-41d4-a716-446655440132", name: "Freelancer" }) // No company
+
+    // Filter for users with specific company
+    const acmeUsers = store.userCollection.where({ company: "550e8400-e29b-41d4-a716-446655440130" })
+    expect(acmeUsers).toHaveLength(1)
+    expect(acmeUsers[0].name).toBe("Alice")
+  })
+})

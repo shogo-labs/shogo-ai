@@ -62,11 +62,29 @@ export function createCollectionModels(
           return self.items.get(id)
         },
         findBy(field: string, value: any) {
-          return Array.from(self.items.values()).filter(item => item[field] === value)
+          return Array.from(self.items.values()).filter(item => {
+            const itemVal = item[field]
+            // Direct equality (scalars)
+            if (itemVal === value) return true
+            // Reference comparison: resolved ref has .id property
+            if (itemVal && typeof itemVal === 'object' && 'id' in itemVal) {
+              return itemVal.id === value
+            }
+            return false
+          })
         },
         where(filter: Record<string, any>) {
           return Array.from(self.items.values()).filter(item =>
-            Object.entries(filter).every(([key, val]) => item[key] === val)
+            Object.entries(filter).every(([key, val]) => {
+              const itemVal = item[key]
+              // Direct equality (scalars)
+              if (itemVal === val) return true
+              // Reference comparison: resolved ref has .id property
+              if (itemVal && typeof itemVal === 'object' && 'id' in itemVal) {
+                return itemVal.id === val
+              }
+              return false
+            })
           )
         }
       }))
