@@ -1,18 +1,19 @@
 {
-  "id": "test-domain-membership-polymorphic",
+  "id": "test-membership-polymorphic",
   "scenario": "Membership references are polymorphic and optional",
   "given": [
-    "Store with org, team, and app exists"
+    "Store contains Organization 'org-1'",
+    "Store contains Team 'team-1'"
   ],
-  "when": "Memberships at different levels are created",
+  "when": "Memberships are created with different reference patterns",
   "then": [
-    "Org membership has organization reference, team/app undefined",
-    "Team membership has team reference, org/app undefined",
-    "App membership has app reference, org/team undefined"
+    "Membership with only organizationId resolves org correctly",
+    "Membership with only teamId resolves team correctly",
+    "Organization reference returns undefined when teamId is set",
+    "Team reference returns undefined when organizationId is set"
   ],
   "testType": "unit",
   "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
-  "createdAt": 1733876500006,
-  "task": "task-teams-domain",
-  "requirement": "membership-model"
+  "createdAt": 1733868850005,
+  "task": "task-teams-domain-store"
 }

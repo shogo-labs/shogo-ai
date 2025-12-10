@@ -1,11 +1,11 @@
 {
-  "id": "teams-computed-inverse-pattern",
+  "id": "finding-computed-inverse-pattern",
   "name": "computed-inverse-pattern",
   "type": "pattern",
-  "description": "System auto-generates computed arrays from inverse relationships. Declaring 'organization: Organization' (single ref) on Team automatically creates 'teams: Team[]' view on Organization. Marked with x-computed: true and x-inverse in JSON Schema. Filter logic in helpers-model-builder.ts:271-289.",
-  "location": "packages/state-api/src/schematic/helpers-model-builder.ts:271-289",
-  "relevantCode": "collection.all().filter((item) => { const ref = item[viewConfig.inverse]; return ref === self || (ref && ref.id === self.id) })",
-  "recommendation": "Leverage for 4-level chain: Org.teams, Team.children, Team.apps, App.memberships are all computed from inverse single references.",
-  "createdAt": 1733875300005,
+  "description": "Collections support where() queries for filtering. Inverse relationships (org.teams, team.members) can be computed views that query the relevant collection.",
+  "location": "packages/state-api/src/schematic/helpers-store.ts",
+  "relevantCode": "where(filter: Record<string, any>) { return self.items.values().filter(...) }",
+  "recommendation": "Use computed views on entities: org.teams queries teamCollection.where({organizationId: self.id})",
+  "createdAt": 1733868300008,
   "session": "teams-workspace"
 }

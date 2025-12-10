@@ -41,12 +41,46 @@ integrationPoints = store.list("IntegrationPoint", "platform-features", { sessio
 Present summary:
 ```
 Session: {name}
+Archetype: {session.featureArchetype}
+Applicable Patterns: {session.applicablePatterns}
 Requirements: {count}
 Findings: {count}
 Integration Points: {count}
 
 Ready to create implementation tasks?
 ```
+
+### Phase 1a: Validate Pattern Assignment
+
+**Before creating tasks, validate that patterns match the archetype:**
+
+| Archetype | MUST have | MUST NOT have |
+|-----------|-----------|---------------|
+| Domain | enhancement-hooks, collection-persistable | service-interface |
+| Service | service-interface, mock-testing, environment-extension | (none) |
+| Hybrid | All of above | (none) |
+| Infrastructure | service-interface, mixin-composition | enhancement-hooks |
+
+**If pattern mismatch detected:**
+```
+Pattern Mismatch Warning
+
+Archetype: {featureArchetype}
+Patterns: {applicablePatterns}
+
+Issue: {description of mismatch}
+
+This typically indicates misclassification during discovery/classification.
+
+Options:
+1. Proceed with corrected patterns (recommended)
+2. Re-run classification to validate archetype
+3. Override patterns manually (explain why)
+
+Which approach?
+```
+
+**Domain archetype MUST NOT have service-interface pattern.** This is the key anti-pattern to prevent.
 
 ### Phase 2: Group Integration Points
 
@@ -125,6 +159,43 @@ When creating IntegrationPoints, **enforce isomorphism** regardless of analysis 
 
 **Override analysis findings** if they recommend placing domain logic in apps/web. The analysis skill may incorrectly suggest "keep at React layer" — this violates isomorphism and must be corrected at spec phase.
 
+### Phase 2a: Ambiguity Detection (Lightweight)
+
+Before finalizing tasks, check for implementation ambiguity:
+
+**For each task, verify:**
+1. Implementation strategy is clear (not multiple valid approaches)
+2. Acceptance criteria don't conflict with each other
+3. Pattern references are specific (not "follow existing pattern")
+
+**Ambiguity triggers:**
+- Criteria mentions both "service" and "direct MST" approaches
+- Multiple implementation strategies mentioned without resolution
+- "How should we implement X?" remains unanswered
+
+**If ambiguity detected:**
+```
+Implementation Ambiguity Detected
+
+Task: {task name}
+Criterion: "{ambiguous criterion}"
+
+Ambiguity: {description}
+
+Options:
+1. {option A} - {trade-offs}
+2. {option B} - {trade-offs}
+
+Which approach?
+```
+
+**Common ambiguities to catch:**
+- Domain archetype with service integration criteria → pattern mismatch
+- External API mentioned but no service-interface pattern → classify as Service?
+- "Could be done either way" criteria → need decision
+
+Resolve ambiguities before creating tasks.
+
 ### Phase 3: Create Tasks (Review Gate)
 
 For each task group, create ImplementationTask:
@@ -193,6 +264,60 @@ Coverage:
 
 Ready for platform-feature-tests to create test specifications.
 ```
+
+## Archetype-Specific Task Templates
+
+Use the archetype to determine task structure. Do NOT mix templates.
+
+### Domain Archetype (~4 tasks)
+
+Domain features have NO service layer. All logic lives in MST store.
+
+| Task | File | Purpose |
+|------|------|---------|
+| task-{domain}-domain | `state-api/src/{domain}/domain.ts` | ArkType scope + createStoreFromScope + enhancement hooks |
+| task-{domain}-exports | `state-api/src/{domain}/index.ts` | Barrel exports |
+| task-{domain}-context | `apps/web/src/contexts/{Domain}Context.tsx` | React Provider + hook (optional) |
+| task-{domain}-demo | `apps/web/src/pages/{Domain}DemoPage.tsx` | Proof-of-work demo (optional) |
+
+**NO types.ts, NO mock.ts, NO environment extension** — these are service layer patterns.
+
+### Service Archetype (~7 tasks)
+
+Service features have full abstraction layer for external API.
+
+| Task | File | Purpose |
+|------|------|---------|
+| task-{domain}-types | `state-api/src/{domain}/types.ts` | IService interface + domain types |
+| task-{domain}-mock | `state-api/src/{domain}/mock.ts` | MockService implementation |
+| task-{domain}-provider | `state-api/src/{domain}/{provider}.ts` | Real provider implementation |
+| task-{domain}-environment | `state-api/src/environment/types.ts` | Extend IEnvironment |
+| task-{domain}-domain | `state-api/src/{domain}/domain.ts` | Domain store consuming service |
+| task-{domain}-context | `apps/web/src/contexts/{Domain}Context.tsx` | React Provider |
+| task-{domain}-demo | `apps/web/src/pages/{Domain}DemoPage.tsx` | Proof-of-work with real credentials |
+
+### Hybrid Archetype (~7+ tasks)
+
+Hybrid = Service + Domain + sync patterns.
+
+All service tasks PLUS:
+| Task | File | Purpose |
+|------|------|---------|
+| task-{domain}-sync | `state-api/src/{domain}/sync.ts` | Provider sync patterns |
+
+### Infrastructure Archetype (~5-6 tasks)
+
+Cross-cutting concerns without domain entities.
+
+| Task | File | Purpose |
+|------|------|---------|
+| task-{domain}-types | `state-api/src/{domain}/types.ts` | Interface |
+| task-{domain}-mixin | `state-api/src/{domain}/mixin.ts` | Mixin composition |
+| task-{domain}-mock | `state-api/src/{domain}/mock.ts` | Mock implementation |
+| task-{domain}-environment | `state-api/src/environment/types.ts` | Extend IEnvironment |
+| task-{domain}-context | `apps/web/src/contexts/{Domain}Context.tsx` | React Provider |
+
+---
 
 ## Task Granularity Guidelines
 

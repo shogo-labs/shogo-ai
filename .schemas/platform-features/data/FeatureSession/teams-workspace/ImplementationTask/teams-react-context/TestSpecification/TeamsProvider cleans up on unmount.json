@@ -2,17 +2,15 @@
   "id": "test-context-cleanup",
   "scenario": "TeamsProvider cleans up on unmount",
   "given": [
-    "TeamsProvider mounted with subscriptions"
+    "TeamsProvider with active subscriptions"
   ],
-  "when": "Provider is unmounted",
+  "when": "Component unmounts",
   "then": [
-    "useEffect cleanup function runs",
-    "No memory leaks from subscriptions",
-    "No errors after unmount"
+    "Subscriptions are cleaned up",
+    "No memory leaks from event listeners"
   ],
   "testType": "unit",
   "targetFile": "apps/web/src/contexts/__tests__/TeamsContext.test.tsx",
-  "createdAt": 1733876600007,
-  "task": "task-teams-context",
-  "requirement": "org-entity"
+  "createdAt": 1733868860006,
+  "task": "task-teams-react-context"
 }

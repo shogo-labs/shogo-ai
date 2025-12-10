@@ -18,7 +18,7 @@ This skill operates in two modes based on session status:
 
 | Session Status | Mode | Purpose | Output Status |
 |----------------|------|---------|---------------|
-| `discovery` | **Explore** | Find existing patterns to inform design | `design` |
+| `discovery` | **Explore** | Find existing patterns + classification evidence | `classification` |
 | `testing` | **Verify** | Validate spec still aligns with code | `implementation` |
 
 ## Input
@@ -30,8 +30,9 @@ This skill operates in two modes based on session status:
 ## Output
 
 **Explore mode:**
-- `AnalysisFinding` entities (type: pattern, gap, existing_test, risk)
-- Session status → `design`
+- `AnalysisFinding` entities (type: pattern, gap, existing_test, risk, classification_evidence)
+- Classification evidence for archetype validation
+- Session status → `classification`
 
 **Verify mode:**
 - Validation report (findings still valid or drift detected)
@@ -84,11 +85,13 @@ requirements = store.list("Requirement", "platform-features", { session: session
 Present summary:
 ```
 Session: {name}
-Status: discovery → will transition to design
+Status: discovery → will transition to classification
+Initial Assessment: {session.initialAssessment.likelyArchetype}
+Uncertainties: {session.initialAssessment.uncertainties}
 Requirements: {count}
 Affected packages: {list}
 
-Mode: EXPLORE - Finding existing patterns to inform design
+Mode: EXPLORE - Finding patterns + classification evidence
 
 Ready to explore the codebase?
 ```
@@ -130,6 +133,32 @@ See pattern references for full structure details:
 2. **Gaps** - Missing infrastructure the feature needs
 3. **Existing tests** - Test patterns and coverage expectations
 4. **Risks** - Complexity, dependencies, potential conflicts
+5. **Classification evidence** - Facts that validate or challenge the initial archetype assessment
+
+**Classification Evidence Gathering** (IMPORTANT):
+
+During exploration, actively look for evidence that confirms or contradicts the initial archetype:
+
+| Evidence Type | What to Look For | Classification Impact |
+|---------------|------------------|----------------------|
+| External API calls | HTTP clients, SDK imports, API endpoints | Supports Service/Hybrid |
+| Local-only data | CollectionPersistable usage, no external calls | Supports Domain |
+| Provider abstractions | IService interfaces for this domain | Supports Service pattern |
+| Foreign key only | References external IDs but no API calls | Supports Domain |
+
+Create `classification_evidence` findings for key observations:
+```javascript
+store.create("AnalysisFinding", "platform-features", {
+  id: "class-evidence-xxx",
+  name: "no-external-api-calls",
+  session: session.id,
+  type: "classification_evidence",
+  description: "No external API calls found in requirements or similar features",
+  location: "packages/state-api/src/",
+  recommendation: "Suggests Domain archetype, not Service or Hybrid",
+  createdAt: Date.now()
+})
+```
 
 Record findings as you explore - don't wait until the end.
 
@@ -159,12 +188,12 @@ Typical finding counts: 5-10 for focused features, 10-20 for cross-cutting featu
 - Schema conventions used
 - Test patterns to replicate
 
-### Phase 4: Handoff to Design
+### Phase 4: Handoff to Classification
 
 1. Update session:
 ```javascript
 store.update(session.id, "FeatureSession", "platform-features", {
-  status: "design",
+  status: "classification",
   updatedAt: Date.now()
 })
 ```
@@ -174,10 +203,15 @@ store.update(session.id, "FeatureSession", "platform-features", {
 Exploration Complete
 
 Findings: {count} ({breakdown by type})
+Classification Evidence: {classification_evidence count}
 
 Key patterns discovered:
 - {pattern 1}: {location}
 - {pattern 2}: {location}
+
+Classification evidence summary:
+- {evidence 1}: suggests {archetype}
+- {evidence 2}: suggests {archetype}
 
 Gaps identified:
 - {gap 1}
@@ -185,8 +219,8 @@ Gaps identified:
 Risks:
 - {risk 1}
 
-Session status: discovery → design
-Ready for platform-feature-design to create schema informed by these findings.
+Session status: discovery → classification
+Ready for platform-feature-classification to validate archetype with evidence.
 ```
 
 ---
@@ -316,6 +350,7 @@ Ready for platform-feature-implementation to execute TDD.
 | `gap` | Explore | Missing infrastructure | "No user session management exists" |
 | `existing_test` | Explore | Found test patterns | "Tool tests use MockMCPServer helper" |
 | `risk` | Both | Potential problem | "Circular dependency if auth imports store" |
+| `classification_evidence` | Explore | Evidence for archetype validation | "No external API calls, data is local-only" |
 | `verification` | Verify | Validation result | "ip-001 validated: file exists, pattern matches" |
 
 ---
@@ -326,9 +361,11 @@ Ready for platform-feature-implementation to execute TDD.
 [Discovery]
      ↓
 [Analysis: Explore] ← This skill (explore mode)
+     ↓ status=classification
+[Classification] ← Validates archetype with evidence
      ↓ status=design
 [Design]
-     ↓ status=integration
+     ↓ status=spec
 [Spec]
      ↓ status=testing
 [Tests]

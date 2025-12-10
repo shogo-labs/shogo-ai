@@ -1,19 +1,18 @@
 {
-  "id": "test-domain-team-parent-optional",
+  "id": "test-team-parent-optional",
   "scenario": "Team.parent is optional and resolves correctly",
   "given": [
-    "Store with parent team 'team-parent' exists",
-    "Child team referencing parent is added"
+    "Store contains parent Team with id 'team-parent'",
+    "Store contains child Team with parentId 'team-parent'",
+    "Store contains root Team with no parentId"
   ],
-  "when": "childTeam.parent is accessed",
+  "when": "Team parent references are accessed",
   "then": [
-    "Returns parent Team instance",
-    "Root team has parent undefined",
-    "Nested hierarchy resolves correctly"
+    "Child team's parent resolves to parent Team instance",
+    "Root team's parent returns undefined"
   ],
   "testType": "unit",
   "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
-  "createdAt": 1733876500005,
-  "task": "task-teams-domain",
-  "requirement": "hierarchy-inheritance"
+  "createdAt": 1733868850004,
+  "task": "task-teams-domain-store"
 }

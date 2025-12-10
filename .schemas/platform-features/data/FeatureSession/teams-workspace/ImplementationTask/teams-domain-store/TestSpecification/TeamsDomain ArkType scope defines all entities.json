@@ -2,19 +2,19 @@
   "id": "test-domain-scope-entities",
   "scenario": "TeamsDomain ArkType scope defines all entities",
   "given": [
-    "TeamsDomain scope is imported"
+    "TeamsDomain scope is exported from domain.ts"
   ],
-  "when": "Scope entities are accessed",
+  "when": "Scope is introspected via .export()",
   "then": [
-    "Organization entity exists in scope",
-    "Team entity exists in scope",
-    "App entity exists in scope",
-    "Membership entity exists in scope",
-    "Invitation entity exists in scope"
+    "Scope includes Organization entity with id, name, slug, description, createdAt",
+    "Scope includes Team entity with id, name, organizationId, parentId, createdAt",
+    "Scope includes Membership entity with id, userId, role, organizationId, teamId, createdAt",
+    "Scope includes App entity with id, name, teamId, createdAt",
+    "Scope includes Invitation entity with id, email, role, status, expiresAt, createdAt"
   ],
   "testType": "unit",
   "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
-  "createdAt": 1733876500002,
-  "task": "task-teams-domain",
-  "requirement": "org-entity"
+  "createdAt": 1733868850000,
+  "task": "task-teams-domain-store",
+  "requirement": "req-org-entity"
 }

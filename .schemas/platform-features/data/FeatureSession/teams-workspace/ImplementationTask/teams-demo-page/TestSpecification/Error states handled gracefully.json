@@ -2,17 +2,16 @@
   "id": "test-demo-error-handling",
   "scenario": "Error states handled gracefully",
   "given": [
-    "MockTeamsService configured to fail"
+    "An operation fails (e.g., validation error)"
   ],
-  "when": "Operation fails",
+  "when": "Error occurs during operation",
   "then": [
-    "Error message displayed to user",
-    "UI remains functional",
-    "User can retry operation"
+    "Error message is displayed to user",
+    "UI remains usable",
+    "Retry option is available where appropriate"
   ],
-  "testType": "unit",
+  "testType": "acceptance",
   "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
-  "createdAt": 1733876600020,
-  "task": "task-teams-demo",
-  "requirement": "org-entity"
+  "createdAt": 1733868870009,
+  "task": "task-teams-demo-page"
 }

@@ -1,16 +1,17 @@
 {
-  "id": "test-exports-package",
+  "id": "test-exports-public-api",
   "scenario": "Public API accessible via @shogo/state-api",
   "given": [
     "@shogo/state-api package is built"
   ],
-  "when": "Teams module is imported from package",
+  "when": "Teams exports are imported from package entry point",
   "then": [
-    "All public exports accessible",
-    "No internal implementation details exposed"
+    "TeamsDomain is accessible",
+    "createTeamsStore is accessible",
+    "No internal modules exposed"
   ],
   "testType": "integration",
-  "targetFile": "packages/state-api/src/teams/__tests__/index.test.ts",
-  "createdAt": 1733876600003,
-  "task": "task-teams-exports"
+  "targetFile": "packages/state-api/src/teams/__tests__/exports.test.ts",
+  "createdAt": 1733868860002,
+  "task": "task-teams-module-exports"
 }

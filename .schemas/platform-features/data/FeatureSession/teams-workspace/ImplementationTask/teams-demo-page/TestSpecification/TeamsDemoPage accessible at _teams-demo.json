@@ -2,17 +2,16 @@
   "id": "test-demo-route",
   "scenario": "TeamsDemoPage accessible at /teams-demo",
   "given": [
-    "Web app router configured"
+    "App router is configured",
+    "TeamsDemoPage component exists"
   ],
   "when": "User navigates to /teams-demo",
   "then": [
-    "TeamsDemoPage component renders",
-    "No 404 error",
-    "Page title indicates teams demo"
+    "Page renders without errors",
+    "Teams demo content is visible"
   ],
   "testType": "acceptance",
   "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
-  "createdAt": 1733876600011,
-  "task": "task-teams-demo",
-  "requirement": "org-entity"
+  "createdAt": 1733868870000,
+  "task": "task-teams-demo-page"
 }

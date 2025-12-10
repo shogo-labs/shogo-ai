@@ -1,20 +1,19 @@
 {
-  "id": "task-teams-exports",
+  "id": "task-teams-module-exports",
   "name": "teams-module-exports",
-  "description": "Create teams module barrel exports",
+  "description": "Create barrel exports for teams domain module",
   "acceptanceCriteria": [
-    "index.ts re-exports all types from './types'",
-    "index.ts re-exports MockTeamsService from './mock'",
-    "index.ts re-exports TeamsDomain and createTeamsStore from './domain'",
-    "All public API accessible via '@shogo/state-api' or relative import"
+    "index.ts exports TeamsDomain ArkType scope",
+    "index.ts exports createTeamsStore factory function",
+    "index.ts exports CreateTeamsStoreOptions type",
+    "Public API accessible via @shogo/state-api import"
   ],
-  "status": "planned",
-  "createdAt": 1733876100004,
+  "status": "complete",
+  "createdAt": 1733868750001,
+  "updatedAt": 1733869500000,
   "session": "teams-workspace",
   "integrationPoint": "ip-teams-exports",
   "dependencies": [
-    "task-teams-types",
-    "task-teams-mock",
-    "task-teams-domain"
+    "task-teams-domain-store"
   ]
 }

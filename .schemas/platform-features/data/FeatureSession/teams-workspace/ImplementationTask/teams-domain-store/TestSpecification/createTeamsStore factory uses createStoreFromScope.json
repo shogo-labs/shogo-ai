@@ -1,18 +1,17 @@
 {
-  "id": "test-domain-factory-export",
+  "id": "test-store-factory",
   "scenario": "createTeamsStore factory uses createStoreFromScope",
   "given": [
-    "createTeamsStore is imported from domain"
+    "createTeamsStore function is available"
   ],
-  "when": "createTeamsStore() is called with environment",
+  "when": "createTeamsStore() is called",
   "then": [
     "Returns object with createStore function",
-    "createStore produces functional MST store",
-    "Store has all entity collections"
+    "Returns object with RootStoreModel",
+    "createStore() returns MST store instance"
   ],
   "testType": "unit",
   "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
-  "createdAt": 1733876500007,
-  "task": "task-teams-domain",
-  "requirement": "org-entity"
+  "createdAt": 1733868850001,
+  "task": "task-teams-domain-store"
 }

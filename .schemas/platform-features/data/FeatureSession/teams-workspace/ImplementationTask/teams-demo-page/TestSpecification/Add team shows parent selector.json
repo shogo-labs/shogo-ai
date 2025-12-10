@@ -1,18 +1,19 @@
 {
-  "id": "test-demo-team-parent-selector",
+  "id": "test-demo-add-team-parent",
   "scenario": "Add team shows parent selector",
   "given": [
-    "Organization with existing teams"
+    "Organization exists",
+    "One team already exists"
   ],
-  "when": "Add Team form is opened",
+  "when": "User opens add team form",
   "then": [
-    "Parent team dropdown present",
-    "Option for no parent (root team)",
-    "Existing teams listed as parent options"
+    "Parent selector dropdown is visible",
+    "Dropdown includes 'None (root team)' option",
+    "Dropdown includes existing team as parent option"
   ],
-  "testType": "unit",
+  "testType": "acceptance",
   "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
-  "createdAt": 1733876600015,
-  "task": "task-teams-demo",
-  "requirement": "hierarchy-inheritance"
+  "createdAt": 1733868870003,
+  "task": "task-teams-demo-page",
+  "requirement": "req-team-entity"
 }
