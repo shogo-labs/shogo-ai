@@ -508,16 +508,37 @@ Issues:
 
 If issues found, analyze and fix before proceeding.
 
-**Proof-of-Work Verification** (for service-backed features):
+**Proof-of-Work Verification**
 
-If a proof-of-work page task exists in the implementation plan:
-1. Ensure page renders without errors
-2. Verify real service credentials are used (from env vars, not mocks)
-3. Walk through complete feature flow visually
-4. Confirm real data displays from service
-5. Test error states (invalid input, network errors)
+The proof-of-work page validates the complete feature integration. Requirements differ by feature type:
 
-This page validates all components integrate correctly with the actual external service.
+**External Service Features** (auth, payments, analytics, etc.):
+1. Page renders without errors
+2. Real provider service injected (not MockService)
+3. Real credentials from env vars (`VITE_*`, etc.)
+4. Real data displays from external service
+5. Error states tested with real service responses
+
+**Internal Domain Features** (workspace management, project tracking, etc.):
+1. Page renders without errors
+2. Real persistence service (`MCPPersistence` for browser-side demos)
+3. **NOT** `NullPersistence` (mocks are for unit tests only)
+4. Data round-trips through save/load cycle
+5. CRUD operations persist to disk and reload correctly
+
+**What NullPersistence is for:**
+- Unit tests only (fast, isolated, no file I/O)
+- **Never** in proof-of-work pages
+- **Never** for validating feature integration
+
+**Test vs Proof-of-Work distinction:**
+
+| Context | Persistence | Service Layer |
+|---------|-------------|---------------|
+| Unit tests | `NullPersistence` | `MockService` |
+| Proof-of-work | `MCPPersistence` (browser) | Real provider |
+
+This page validates all components integrate correctly with real persistence and/or external services.
 
 ### Phase 6: Handoff
 

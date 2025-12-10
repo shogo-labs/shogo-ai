@@ -1,0 +1,19 @@
+{
+  "id": "test-mock-invitation-expiry",
+  "scenario": "createInvitation sets default 7-day expiration",
+  "given": [
+    "Organization exists",
+    "Current time is known"
+  ],
+  "when": "createInvitation({ email: 'new@example.com', organizationId: 'org-1', role: Role.member }) is called",
+  "then": [
+    "Returns invitation with expiresAt set",
+    "expiresAt is approximately 7 days from now",
+    "status is 'pending'"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/mock.test.ts",
+  "createdAt": 1733876400008,
+  "task": "task-teams-mock",
+  "requirement": "invitation-system"
+}

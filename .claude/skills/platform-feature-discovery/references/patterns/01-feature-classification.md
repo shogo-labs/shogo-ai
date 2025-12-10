@@ -228,6 +228,49 @@ When classifying a feature request, ask:
 
 ---
 
+## Service vs Internal Decision
+
+The most critical distinction is whether a feature calls **external APIs** or operates purely on **local data**.
+
+### External Service Feature (requires IService interface)
+
+- Calls external APIs (Supabase, Stripe, external REST/GraphQL)
+- Needs provider abstraction (multiple implementations possible)
+- Source of truth is external system
+- Examples: auth, payments, email, analytics
+
+**Pattern**: Create `IService` interface + provider implementations + store syncs from service.
+
+### Internal Domain Feature (pure MST, NO service layer)
+
+- All data is local to the application
+- Source of truth is MST store + persistence
+- Operations are direct MST mutations
+- `CollectionPersistable` mixin handles save/load
+- Examples: workspace/team management, project tracking, content management
+
+**Pattern**: Create domain store with enhancement hooks only. NO `IService` interface needed—actions mutate MST directly and use `CollectionPersistable` for persistence.
+
+### Decision Rule
+
+```
+Does this feature's CORE DATA live in an external system?
+├── Yes → External Service pattern (IService + provider implementations)
+└── No  → Internal Domain pattern (MST store + CollectionPersistable only)
+```
+
+**Critical distinction**: The question is about where the feature's *own data* lives, NOT whether it references other entities.
+
+| Scenario | Classification | Why |
+|----------|----------------|-----|
+| Feature data stored externally (Supabase, Stripe) | External Service | Core data lives outside app |
+| Feature data local, but *references* external IDs (user IDs from auth) | **Internal Domain** | Core data is local; references are just foreign keys |
+| Feature syncs/mirrors external data locally | Hybrid | Both local modeling AND external sync |
+
+**Key insight**: Referencing an external entity (like a user ID from auth) does NOT make a feature "external service." If the feature's own entities are created, stored, and managed locally, it's an Internal Domain feature—even if those entities contain foreign key references to users managed by a separate auth service.
+
+---
+
 ## Anti-Patterns
 
 ### Over-Classification
@@ -238,6 +281,15 @@ Don't embed provider-specific code directly in domain models. If touching an ext
 
 ### Hybrid Confusion
 Don't treat a service feature as hybrid just because it returns data. Hybrid requires *domain modeling* of that data, not just passing it through.
+
+### Reference Confusion
+Don't classify a feature as "Hybrid" or "Service" just because it *references* entities from another domain (like user IDs from auth). Foreign key references to external entities are normal in Internal Domain features. The question is: where does THIS feature's data live and get managed?
+
+- Records that reference user IDs → Internal Domain (the records are local)
+- User sessions managed by Supabase Auth → External Service (sessions live externally)
+
+### Unnecessary Service Layer
+Don't create service interfaces (e.g., `I{Domain}Service`) for features that are purely local. If all data lives in MST and persists via `CollectionPersistable`, a service interface adds complexity without benefit.
 
 ---
 

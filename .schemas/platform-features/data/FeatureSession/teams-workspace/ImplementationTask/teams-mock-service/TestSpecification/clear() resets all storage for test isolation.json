@@ -1,0 +1,18 @@
+{
+  "id": "test-mock-clear",
+  "scenario": "clear() resets all storage for test isolation",
+  "given": [
+    "MockTeamsService with organizations, teams, memberships"
+  ],
+  "when": "clear() is called",
+  "then": [
+    "getOrganization returns not found for previous org",
+    "getMembershipsForUser returns empty array",
+    "All internal storage is reset"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/mock.test.ts",
+  "createdAt": 1733876400011,
+  "task": "task-teams-mock",
+  "requirement": "org-entity"
+}

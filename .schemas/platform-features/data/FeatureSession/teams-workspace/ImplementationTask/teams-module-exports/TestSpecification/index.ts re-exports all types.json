@@ -1,0 +1,18 @@
+{
+  "id": "test-exports-types",
+  "scenario": "index.ts re-exports all types",
+  "given": [
+    "teams/index.ts exists"
+  ],
+  "when": "Types are imported from './teams'",
+  "then": [
+    "Organization type is accessible",
+    "Team type is accessible",
+    "ITeamsService interface is accessible",
+    "Role enum is accessible"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/index.test.ts",
+  "createdAt": 1733876600000,
+  "task": "task-teams-exports"
+}

@@ -308,3 +308,100 @@ Before considering this pattern complete:
 - [ ] create{Domain}Store exports the factory function
 - [ ] `initialize()` returns `{ success, error? }` structure
 - [ ] No separate mixin.ts or hooks.ts files
+
+---
+
+## When Service Layer is NOT Needed
+
+For **internal domain features** where all data is local, skip the service layer entirely.
+
+### Skip IService interface when:
+
+- No external API calls required
+- All operations are MST mutations
+- Persistence handled by `CollectionPersistable` mixin
+- Single canonical implementation (no provider swapping)
+
+### What to create instead:
+
+1. ArkType domain scope defining entities
+2. `create{Domain}Store()` factory with enhancement hooks
+3. Enhancement hooks for:
+   - `enhanceModels`: Computed views (isExpired, memberCount, etc.)
+   - `enhanceCollections`: Query methods + `CollectionPersistable` composition
+   - `enhanceRootStore`: Domain actions (create, add, remove, etc.)
+
+### Internal Feature File Structure
+
+For internal-only features, the file structure is simpler:
+
+```
+packages/state-api/src/{domain}/
+├── domain.ts     # ArkType scope + createStore factory (ALL logic here)
+├── index.ts      # Barrel exports
+└── __tests__/
+    └── store.test.ts  # Domain logic tests
+```
+
+**Note**: No `types.ts` (no IService), no `mock.ts` (no MockService), no `{provider}.ts`.
+
+### Actions Call Persistence Directly
+
+For internal features, root store actions use `CollectionPersistable` methods:
+
+```typescript
+enhanceRootStore: (RootModel) => RootModel
+  .actions((self: any) => ({
+    async createWorkspace(name: string) {
+      const workspace = self.workspaceCollection.add({
+        id: crypto.randomUUID(),
+        name,
+        createdAt: Date.now()
+      })
+      // Persist via CollectionPersistable mixin
+      await self.workspaceCollection.saveOne(workspace.id)
+      return workspace
+    },
+
+    async loadAllWorkspaces() {
+      await self.workspaceCollection.loadAll()
+    },
+
+    async deleteWorkspace(id: string) {
+      self.workspaceCollection.remove(id)
+      await self.workspaceCollection.saveAll()
+    }
+  }))
+```
+
+### No sync-from-service Pattern
+
+For internal features, the MST store IS the source of truth:
+
+- ❌ No `syncFromServiceSession()` or similar methods
+- ❌ No polling or subscription to external state
+- ✅ Direct MST mutations with persistence via mixin
+- ✅ `initialize()` loads from persistence, not external service
+
+### Task Structure for Internal Features
+
+When creating tasks for internal domain stores:
+
+```javascript
+store.create("ImplementationTask", "platform-features", {
+  id: "task-domain-store",
+  name: "domain-store",
+  session: session.id,
+  description: "Create {domain} domain store with enhancement hooks",
+  acceptanceCriteria: [
+    "domain.ts exports {Domain}Domain ArkType scope",
+    "domain.ts exports create{Domain}Store() factory using createStoreFromScope",
+    "enhanceModels adds computed views: {list}",
+    "enhanceCollections composes CollectionPersistable for persistence",
+    "enhanceRootStore adds CRUD actions using collection persistence methods",
+    "NO IService interface - all logic in MST store"
+  ],
+  dependencies: [],  // No service-interface or environment dependencies
+  status: "planned",
+  createdAt: Date.now()
+})

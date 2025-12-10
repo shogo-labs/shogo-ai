@@ -1,11 +1,11 @@
 {
-  "id": "tw-find-006",
+  "id": "teams-self-reference-pattern",
   "name": "self-reference-pattern",
-  "session": "teams-001",
   "type": "pattern",
-  "description": "Self-reference pattern for hierarchies: Employee with manager?: Employee and reports: Employee[] computed view. Perfect for nested teams.",
-  "location": "packages/state-api/src/schematic/tests/02-reference-transformation.test.ts:229-273",
-  "relevantCode": "Employee: { manager?: 'Employee', reports: 'Employee[]' } - computed inverse relationships",
-  "recommendation": "Use same pattern for Team: { parentTeam?: 'Team', childTeams: 'Team[]' }",
-  "createdAt": 1733700800000
+  "description": "Catalog domain test demonstrates self-reference pattern for hierarchies. Category has 'parent: Category?' (optional self-reference) and 'children: Category[]' (computed inverse). System auto-detects inverse relationship and generates computed view that filters collection by parent reference.",
+  "location": "packages/state-api/src/schematic/tests/05-real-world-patterns.test.ts:456-529",
+  "relevantCode": "Category: { id: 'string.uuid', name: 'string', parent: 'Category?', children: 'Category[]' }",
+  "recommendation": "Use same pattern for Team hierarchy: parent: 'Team?' for nullable parent reference, children: 'Team[]' for computed inverse. Root teams have null parent.",
+  "createdAt": 1733875300002,
+  "session": "teams-workspace"
 }

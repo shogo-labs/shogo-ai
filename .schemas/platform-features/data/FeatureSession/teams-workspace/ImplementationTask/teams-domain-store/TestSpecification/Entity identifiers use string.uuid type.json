@@ -1,0 +1,18 @@
+{
+  "id": "test-domain-uuid-identifiers",
+  "scenario": "Entity identifiers use string.uuid type",
+  "given": [
+    "TeamsDomain scope is used to create store"
+  ],
+  "when": "Entity with invalid UUID id is added",
+  "then": [
+    "Validation fails for non-UUID id",
+    "Valid UUID id is accepted",
+    "MST reference resolution works correctly"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
+  "createdAt": 1733876500003,
+  "task": "task-teams-domain",
+  "requirement": "org-entity"
+}

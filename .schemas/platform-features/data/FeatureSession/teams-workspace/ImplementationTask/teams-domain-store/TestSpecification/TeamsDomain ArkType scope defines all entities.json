@@ -1,0 +1,20 @@
+{
+  "id": "test-domain-scope-entities",
+  "scenario": "TeamsDomain ArkType scope defines all entities",
+  "given": [
+    "TeamsDomain scope is imported"
+  ],
+  "when": "Scope entities are accessed",
+  "then": [
+    "Organization entity exists in scope",
+    "Team entity exists in scope",
+    "App entity exists in scope",
+    "Membership entity exists in scope",
+    "Invitation entity exists in scope"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
+  "createdAt": 1733876500002,
+  "task": "task-teams-domain",
+  "requirement": "org-entity"
+}

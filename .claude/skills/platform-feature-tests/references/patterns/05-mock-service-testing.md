@@ -205,3 +205,66 @@ expect(mockPayment.getChargeCalls()).toHaveLength(1)
 - [ ] clear() method for test isolation
 - [ ] Tests use beforeEach to reset state
 - [ ] Both success and failure paths tested
+
+---
+
+## Mock and NullPersistence Scope
+
+Understanding when to use mocks vs real implementations is critical for proper testing and validation.
+
+### MockService is for:
+
+- Unit tests requiring deterministic behavior
+- Integration tests needing controlled responses
+- Component tests with predictable state
+- Testing error handling paths
+
+### MockService is NOT for:
+
+- Proof-of-work pages (use real provider)
+- Production builds
+- Validating real service integration
+- Demo pages showing feature functionality
+
+### NullPersistence is for:
+
+- Unit tests (fast, isolated, no file I/O)
+- In-memory store testing
+- Testing business logic independent of persistence
+- Fast test execution without disk access
+
+### NullPersistence is NOT for:
+
+- Proof-of-work pages (use real persistence)
+- Validating persistence round-trips
+- Integration tests requiring actual file I/O
+- Demo pages showing save/load functionality
+
+### Feature Type Determines Test Setup
+
+| Feature Type | Unit Test Setup | Proof-of-Work Setup |
+|--------------|-----------------|---------------------|
+| External Service | `MockService` + `NullPersistence` | Real provider + `MCPPersistence` |
+| Internal Domain | `NullPersistence` only | `MCPPersistence` (browser demos) |
+
+### Key Principle
+
+**Tests verify logic in isolation. Proof-of-work validates real integration.**
+
+```typescript
+// UNIT TEST: Fast, isolated, deterministic
+const env = {
+  services: {
+    persistence: new NullPersistence(),
+    auth: new MockAuthService()
+  }
+}
+
+// PROOF-OF-WORK: Real services, real persistence (browser-side)
+const env = {
+  services: {
+    persistence: new MCPPersistence(mcpService),
+    auth: new SupabaseAuthService(supabaseClient)
+  }
+}
+```

@@ -1,0 +1,17 @@
+{
+  "id": "test-context-provider-export",
+  "scenario": "TeamsContext exports TeamsProvider component",
+  "given": [
+    "TeamsContext.tsx exists"
+  ],
+  "when": "TeamsProvider is imported",
+  "then": [
+    "TeamsProvider is a valid React component",
+    "Can render TeamsProvider with children"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/contexts/__tests__/TeamsContext.test.tsx",
+  "createdAt": 1733876600004,
+  "task": "task-teams-context",
+  "requirement": "org-entity"
+}

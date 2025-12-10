@@ -1,0 +1,18 @@
+{
+  "id": "test-context-observer-rerenders",
+  "scenario": "Components re-render on store changes via observer",
+  "given": [
+    "Observer-wrapped component displaying org count"
+  ],
+  "when": "New organization is added to store",
+  "then": [
+    "Component re-renders with updated count",
+    "Only relevant components re-render",
+    "MobX reactivity works correctly"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/contexts/__tests__/TeamsContext.test.tsx",
+  "createdAt": 1733876600010,
+  "task": "task-teams-context",
+  "requirement": "org-entity"
+}

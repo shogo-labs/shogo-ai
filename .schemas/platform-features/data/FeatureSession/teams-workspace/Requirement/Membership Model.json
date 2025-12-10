@@ -1,0 +1,9 @@
+{
+  "id": "membership-model",
+  "name": "Membership Model",
+  "description": "System must track user membership at both organization and team levels. Users join organizations first, then can be added to teams within that org. Membership records the user reference, the org/team, role, and join timestamp.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1733875200002,
+  "session": "teams-workspace"
+}

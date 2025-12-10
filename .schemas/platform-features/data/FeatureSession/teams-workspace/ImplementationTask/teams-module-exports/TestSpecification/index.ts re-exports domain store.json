@@ -1,0 +1,16 @@
+{
+  "id": "test-exports-domain",
+  "scenario": "index.ts re-exports domain store",
+  "given": [
+    "teams/index.ts exists"
+  ],
+  "when": "Domain exports are imported from './teams'",
+  "then": [
+    "TeamsDomain scope is accessible",
+    "createTeamsStore factory is accessible"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/index.test.ts",
+  "createdAt": 1733876600002,
+  "task": "task-teams-exports"
+}

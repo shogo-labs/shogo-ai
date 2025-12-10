@@ -35,9 +35,14 @@ Stored in `platform-features` schema via Wavesmith.
    | Archetype | Indicators | Applicable Patterns |
    |-----------|------------|---------------------|
    | **Service** | External API, credentials, multiple providers | Service Interface, Environment, Mock Testing, Provider Sync |
-   | **Domain** | New entities, business rules, relationships | Enhancement Hooks, relationship patterns |
+   | **Domain** | New entities, business rules, relationships, LOCAL data | Enhancement Hooks, CollectionPersistable |
    | **Infrastructure** | Cross-cutting, used by multiple features | Service Interface, Environment, Mixin Composition |
-   | **Hybrid** | External provider + local domain modeling | All of the above |
+   | **Hybrid** | External provider + local domain modeling (sync/mirror) | All of the above |
+
+   **Critical**: Ask "Does this feature's CORE DATA live in an external system?" NOT "Does it reference external entities?"
+   - If data is managed locally (even with foreign key refs to users/auth) → **Domain**
+   - If data lives in external system (Supabase tables, Stripe, etc.) → **Service**
+   - Referencing user IDs from auth does NOT make a feature "Service" or "Hybrid"
 
    See [patterns/01-feature-classification.md](references/patterns/01-feature-classification.md) for the full decision tree and worked examples.
 

@@ -1,0 +1,9 @@
+{
+  "id": "teams-self-reference-hierarchy",
+  "name": "self-reference-hierarchy",
+  "question": "How to model nested team hierarchies?",
+  "decision": "Team.parent: Team? (optional self-reference) with Team.children: Team[] as computed inverse.",
+  "rationale": "Follows established self-reference pattern from catalog domain tests. System auto-generates children[] view. Supports arbitrary nesting depth with maxTeamDepth setting for limits.",
+  "createdAt": 1733875500001,
+  "session": "teams-workspace"
+}

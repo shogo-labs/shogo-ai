@@ -1,0 +1,19 @@
+{
+  "id": "test-demo-membership-ui",
+  "scenario": "Membership management UI works",
+  "given": [
+    "Organization with members"
+  ],
+  "when": "Membership section is viewed",
+  "then": [
+    "Current members listed with roles",
+    "Add member button present",
+    "Role selector dropdown works",
+    "Remove member option available"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
+  "createdAt": 1733876600017,
+  "task": "task-teams-demo",
+  "requirement": "membership-model"
+}

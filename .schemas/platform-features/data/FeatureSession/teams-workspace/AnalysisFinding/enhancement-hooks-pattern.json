@@ -1,0 +1,11 @@
+{
+  "id": "teams-enhancement-hooks-pattern",
+  "name": "enhancement-hooks-pattern",
+  "type": "pattern",
+  "description": "Three enhancement hooks provide extension points: enhanceModels adds computed views to entities (e.g., AuthSession.isExpired), enhanceCollections adds custom queries to collections, enhanceRootStore adds domain actions with environment access via getEnv<IEnvironment>(self).",
+  "location": "packages/state-api/src/auth/domain.ts:54-250",
+  "relevantCode": "enhanceModels: (models) => ({ ...models, AuthSession: models.AuthSession.views((self) => ({ get isExpired() { ... } })) })",
+  "recommendation": "Use enhanceModels for Team.effectivePermissions, Membership.isActive computed views. Use enhanceRootStore for resolvePermissions action that walks hierarchy.",
+  "createdAt": 1733875300003,
+  "session": "teams-workspace"
+}

@@ -34,40 +34,100 @@
 | Extension | Values | Purpose |
 |-----------|--------|---------|
 | `x-mst-type` | `"identifier"`, `"reference"`, `"maybe-reference"` | MST type mapping |
-| `x-reference-type` | `"single"`, `"array"` | Reference cardinality |
-| `x-reference-target` | Entity name | Target of reference |
-| `x-computed` | `true` | Marks computed/inverse fields |
+| `x-reference-type` | `"single"`, `"array"` | Reference cardinality - activates reference detection |
+| `x-arktype` | Entity name (e.g., `"User"`, `"User[]"`) | Target model for reference resolution |
+| `x-computed` | `true` | Marks computed/inverse fields (not persisted) |
+| `x-inverse` | Property name | Source field for computed inverse arrays |
 
 ## Reference Patterns
 
-**Single reference (N:1)**:
+**CRITICAL**: Every reference field MUST have these extensions for MST transformation to work.
+
+### Required X-Extensions for References
+
+| Extension | Required? | Purpose |
+|-----------|-----------|---------|
+| `type: "string"` | YES | MST stores references as string IDs |
+| `x-arktype` | YES | Target entity name - used by schematic pipeline |
+| `x-reference-type` | YES | `"single"` or `"array"` - activates reference detection |
+| `x-mst-type` | YES | `"reference"` or `"maybe-reference"` for optional refs |
+
+### Single Reference (N:1) - All Required Fields
+
 ```json
 "user": {
   "type": "string",
+  "x-arktype": "User",
   "x-mst-type": "reference",
-  "x-reference-type": "single",
-  "x-reference-target": "User"
+  "x-reference-type": "single"
 }
 ```
 
-**Optional reference**:
+### Optional Reference - All Required Fields
+
 ```json
 "reviewer": {
   "type": "string",
+  "x-arktype": "User",
   "x-mst-type": "maybe-reference",
-  "x-reference-type": "single",
-  "x-reference-target": "User"
+  "x-reference-type": "single"
 }
 ```
 
-**Array reference (1:N)**:
+### Array Reference (1:N) - All Required Fields
+
 ```json
-"apiKeys": {
+"tags": {
   "type": "array",
   "items": { "type": "string" },
+  "x-arktype": "Tag[]",
   "x-mst-type": "reference",
+  "x-reference-type": "array"
+}
+```
+
+### Computed Inverse Array (Auto-Populated)
+
+Computed arrays are populated automatically from the inverse side of a relationship. They are NOT persisted.
+
+```json
+"orders": {
+  "type": "array",
+  "items": { "$ref": "#/$defs/Order" },
+  "x-arktype": "Order[]",
   "x-reference-type": "array",
-  "x-reference-target": "ApiKey"
+  "x-computed": true,
+  "x-inverse": "customer"
+}
+```
+
+**Note**: Computed arrays use `items.$ref` for type documentation but `x-arktype` for runtime resolution.
+
+### Reference Field Checklist
+
+Before finalizing schema, verify EVERY reference field has:
+
+- [ ] `"type": "string"` (or `"type": "array"` with `"items": { "type": "string" }` for arrays)
+- [ ] `"x-arktype": "EntityName"` (or `"EntityName[]"` for arrays)
+- [ ] `"x-reference-type": "single"` or `"array"`
+- [ ] `"x-mst-type": "reference"` or `"maybe-reference"` (for optional refs)
+- [ ] NO spurious `"enum": []` - remove if present
+- [ ] NO `"$ref"` as primary target - `x-arktype` is used for resolution
+
+**Anti-patterns to avoid:**
+```json
+// ❌ WRONG - missing required extensions
+"organization": {
+  "$ref": "#/$defs/Organization",
+  "x-reference-type": "single"
+}
+
+// ✅ CORRECT - all required extensions present
+"organization": {
+  "type": "string",
+  "x-arktype": "Organization",
+  "x-mst-type": "reference",
+  "x-reference-type": "single"
 }
 ```
 
@@ -205,3 +265,236 @@ This ensures:
 - Proper MST reference resolution
 - UUID validation at runtime
 - Consistency with ArkType `string.uuid` type
+
+---
+
+## Persistence Configuration (x-persistence)
+
+The `x-persistence` extension controls how entities are stored on disk.
+
+### Sensible Defaults
+
+**For most features, use:**
+- Single domain root entity (e.g., `Workspace`, `Project`, `Organization`)
+- `strategy: "entity-per-file"` with `displayKey` set to a sluggable field
+- `nested: true` for child entities
+- `partitionKey` as discriminator when entity has multiple parent references
+
+### Configuration Options
+
+| Option | Purpose | Default Recommendation |
+|--------|---------|------------------------|
+| `strategy` | File organization | `"entity-per-file"` |
+| `displayKey` | Human-readable filenames | Name/title field |
+| `nested` | Folder hierarchy under parent | `true` for children with REQUIRED parent ref |
+| `partitionKey` | Disambiguate multiple refs | First single reference |
+
+### Nested Persistence Rules (CRITICAL)
+
+**`nested: true` requires at least one REQUIRED reference** to determine the parent path.
+
+| Entity Type | Can Use `nested: true`? | Why |
+|-------------|-------------------------|-----|
+| Child with required parent ref | ✅ YES | Parent path is deterministic |
+| Polymorphic with all optional refs | ❌ NO | Cannot determine which parent to nest under |
+| Entity with multiple required refs | ✅ YES with `partitionKey` | partitionKey picks which ref is the parent |
+
+**Polymorphic entities** (e.g., Membership that can belong to Org OR Team OR App):
+```json
+// ❌ WRONG - all refs are maybe-reference, no deterministic parent
+"Membership": {
+  "x-persistence": {
+    "strategy": "entity-per-file",
+    "nested": true,
+    "partitionKey": "organization"
+  },
+  "properties": {
+    "organization": { "x-mst-type": "maybe-reference", ... },
+    "team": { "x-mst-type": "maybe-reference", ... },
+    "app": { "x-mst-type": "maybe-reference", ... }
+  }
+}
+
+// ✅ CORRECT - flat storage for polymorphic entities
+"Membership": {
+  "x-persistence": {
+    "strategy": "entity-per-file",
+    "displayKey": "id"
+  },
+  "properties": {
+    "organization": { "x-mst-type": "maybe-reference", ... },
+    "team": { "x-mst-type": "maybe-reference", ... },
+    "app": { "x-mst-type": "maybe-reference", ... }
+  }
+}
+```
+
+### displayKey Selection
+
+Choose a field that is:
+- **Unique** within scope (or mostly unique)
+- **Human-readable** (not UUID)
+- **Slug-safe** (auto-sanitized, but cleaner is better)
+
+Common choices: `name`, `title`, `slug`, `identifier`
+
+**Why displayKey matters**: Creates navigable folder structures and git-friendly file names instead of UUID-based paths.
+
+### Standard Patterns
+
+**Root entity** (top-level container):
+```json
+"Workspace": {
+  "type": "object",
+  "x-persistence": {
+    "strategy": "entity-per-file",
+    "displayKey": "name"
+  },
+  "properties": {
+    "id": { "type": "string", "format": "uuid", "x-mst-type": "identifier" },
+    "name": { "type": "string" }
+  }
+}
+```
+
+**Nested child** (belongs to parent):
+```json
+"Project": {
+  "type": "object",
+  "x-persistence": {
+    "strategy": "entity-per-file",
+    "displayKey": "name",
+    "nested": true
+  },
+  "properties": {
+    "id": { "type": "string", "format": "uuid", "x-mst-type": "identifier" },
+    "name": { "type": "string" },
+    "workspace": {
+      "type": "string",
+      "x-arktype": "Workspace",
+      "x-mst-type": "reference",
+      "x-reference-type": "single"
+    }
+  }
+}
+```
+
+**Multi-ref entity** (needs partitionKey to disambiguate):
+```json
+"TaskExecution": {
+  "type": "object",
+  "x-persistence": {
+    "strategy": "entity-per-file",
+    "partitionKey": "run",
+    "nested": true
+  },
+  "properties": {
+    "run": {
+      "type": "string",
+      "x-arktype": "ImplementationRun",
+      "x-mst-type": "reference",
+      "x-reference-type": "single"
+    },
+    "task": {
+      "type": "string",
+      "x-arktype": "ImplementationTask",
+      "x-mst-type": "reference",
+      "x-reference-type": "single"
+    }
+  }
+}
+```
+
+### Resulting Disk Layout
+
+With nested persistence and displayKey, you get human-navigable structures:
+
+```
+.schemas/{schema}/data/
+├── Workspace/
+│   └── my-project/
+│       ├── _index.json           # Workspace entity (has nested children)
+│       └── Project/
+│           ├── backend-api.json  # Project entity
+│           └── frontend-app.json
+```
+
+**`_index.json` convention**: When a parent entity has nested children, the parent uses `_index.json` instead of `{name}.json` to allow the child folder to exist alongside.
+
+### Strategy Comparison
+
+| Strategy | When to Use |
+|----------|-------------|
+| `entity-per-file` | Most features - one file per entity, git-friendly |
+| `array-per-partition` | High-volume entities always queried by same key |
+| `flat` | Legacy/simple schemas with few entities |
+
+**Default**: Always start with `entity-per-file` + `displayKey` + `nested: true`.
+
+---
+
+## Complete Entity Example
+
+This example demonstrates ALL required patterns correctly applied:
+
+```json
+"Order": {
+  "type": "object",
+  "description": "A customer order",
+  "x-persistence": {
+    "strategy": "entity-per-file",
+    "displayKey": "orderNumber",
+    "nested": true
+  },
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "x-mst-type": "identifier"
+    },
+    "orderNumber": {
+      "type": "string",
+      "description": "Human-readable order number"
+    },
+    "customer": {
+      "type": "string",
+      "x-arktype": "Customer",
+      "x-mst-type": "reference",
+      "x-reference-type": "single"
+    },
+    "assignee": {
+      "type": "string",
+      "description": "Optional staff member handling this order",
+      "x-arktype": "User",
+      "x-mst-type": "maybe-reference",
+      "x-reference-type": "single"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "processing", "shipped", "delivered"]
+    },
+    "createdAt": {
+      "type": "number"
+    },
+    "lineItems": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/LineItem" },
+      "x-arktype": "LineItem[]",
+      "x-reference-type": "array",
+      "x-computed": true,
+      "x-inverse": "order"
+    }
+  },
+  "required": ["id", "orderNumber", "customer", "status", "createdAt"],
+  "x-original-name": "Order"
+}
+```
+
+**Key patterns demonstrated:**
+- `id` with `x-mst-type: "identifier"` and `format: "uuid"`
+- Required reference (`customer`) with all 4 required extensions
+- Optional reference (`assignee`) with `x-mst-type: "maybe-reference"`
+- Enum field (`status`) with actual values, NOT empty `enum: []`
+- Computed inverse array (`lineItems`) with `x-arktype`, `x-computed`, and `x-inverse`
+- `x-persistence` with `strategy`, `displayKey`, and `nested`
+- No spurious `enum: []` on any property

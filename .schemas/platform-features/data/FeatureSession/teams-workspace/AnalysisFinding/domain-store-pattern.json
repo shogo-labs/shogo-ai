@@ -1,11 +1,11 @@
 {
-  "id": "tw-find-002",
+  "id": "teams-domain-store-pattern",
   "name": "domain-store-pattern",
-  "session": "teams-001",
   "type": "pattern",
-  "description": "Domain Store pattern: createStoreFromScope with enhanceModels, enhanceCollections, enhanceRootStore hooks. Teams domain will use same structure.",
+  "description": "Auth domain provides complete reference implementation for domain stores. Uses createStoreFromScope with ArkType scope, three enhancement hooks (models, collections, rootStore), volatile state for loading/error, and environment service injection.",
   "location": "packages/state-api/src/auth/domain.ts",
-  "relevantCode": "createStoreFromScope(AuthDomain, { enhanceModels, enhanceCollections, enhanceRootStore })",
-  "recommendation": "Create teams/domain.ts with TeamsDomain scope containing Organization, Team, Membership entities",
-  "createdAt": 1733700800000
+  "relevantCode": "export function createAuthStore(options) { return createStoreFromScope(AuthDomain, { enhanceModels, enhanceCollections, enhanceRootStore }) }",
+  "recommendation": "Follow same structure for createTeamsStore: define TeamsDomain scope, use enhancement hooks for computed permissions, add domain actions for CRUD operations.",
+  "createdAt": 1733875300000,
+  "session": "teams-workspace"
 }

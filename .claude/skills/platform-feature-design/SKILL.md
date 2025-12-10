@@ -219,9 +219,9 @@ Relationships:
 Does this capture the domain correctly?
 ```
 
-### Phase 3: Schema Generation + Coverage
+### Phase 3: Schema Generation + Coverage + Validation
 
-**Autonomous phase** - Generate schema and verify coverage.
+**Autonomous phase** - Generate schema, verify coverage, validate structure.
 
 The schema you create will be used in TWO ways:
 1. **Wavesmith** - Stored via `schema.set` for session tracking
@@ -239,7 +239,15 @@ When designing entities, consider how they'll flow through the schematic pipelin
 2. For each requirement, verify schema element supports it
 3. If gaps found, extend schema (add fields, entities, or relationships)
 4. Add status/error fields to primary entities if processing workflows exist
-5. Register via `schema.set`
+5. **Validate all reference fields** against checklist (CRITICAL - see [schema-patterns.md](references/schema-patterns.md)):
+   - [ ] Every reference has `type: "string"` + `x-arktype` + `x-reference-type` + `x-mst-type`
+   - [ ] Every computed array has `items.$ref` + `x-arktype` + `x-computed` + `x-inverse`
+   - [ ] NO fields have spurious `enum: []`
+6. **Validate all entities** have `x-persistence` config:
+   - [ ] Root entities: `strategy: "entity-per-file"` + `displayKey`
+   - [ ] Child entities: add `nested: true`
+   - [ ] Multi-ref entities: add `partitionKey`
+7. Register via `schema.set`
 
 **Coverage check format**:
 ```
@@ -249,10 +257,66 @@ When designing entities, consider how they'll flow through the schematic pipelin
 ⚠️ req-005: Low stock alerts → Added StockLevel.reorderPoint field
 ```
 
-### Phase 4: Validate & Handoff
+**Validation check format**:
+```
+Reference Field Validation:
+✅ Product.category: type + x-arktype + x-reference-type + x-mst-type
+✅ StockLevel.product: type + x-arktype + x-reference-type + x-mst-type
+✅ StockLevel.warehouse: type + x-arktype + x-reference-type + x-mst-type
 
-1. Load schema via `schema.load` to verify MST generation
-2. Create DesignDecision entities for key choices:
+Persistence Validation:
+✅ Product: x-persistence with displayKey="sku"
+✅ Warehouse: x-persistence with displayKey="name"
+✅ StockLevel: x-persistence with nested=true, partitionKey="product"
+```
+
+### Phase 4: Runtime Testing (CRITICAL)
+
+**Validation checklists are NOT testing.** You MUST verify the schema actually works by executing operations.
+
+1. **Register schema** via `schema.set`
+2. **Load and test** via `schema.load` - verify MST generation succeeds
+3. **Create test entities** for EACH entity type:
+   ```javascript
+   // Test each entity type - failures here reveal schema issues
+   schema.load(session.name)
+
+   // Test root entity
+   store.create("RootEntity", session.name, {
+     id: crypto.randomUUID(),
+     name: "test-root",
+     // ... required fields
+   })
+
+   // Test child entities with references
+   store.create("ChildEntity", session.name, {
+     id: crypto.randomUUID(),
+     parentRef: rootEntityId,  // Test reference resolution
+     // ... required fields
+   })
+
+   // Test list + filter
+   store.list("ChildEntity", session.name, { parentRef: rootEntityId })
+   ```
+
+4. **Verify operations succeed** - If any fail:
+   - Check error message for clues
+   - Common issues: missing x-extensions, invalid nested persistence config
+   - Fix schema and re-test until ALL operations pass
+
+5. **Clean up test data** or leave for inspection
+
+**Common Runtime Errors and Fixes:**
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `A view member should either be a function or getter` | Schematic layer issue with computed views | Check x-computed arrays have correct structure |
+| `Cannot determine parent path for nested entity` | Nested persistence with all optional references | Remove `nested: true` from polymorphic entities |
+| `Reference target not found` | Missing or incorrect x-arktype | Verify x-arktype matches exact entity name |
+
+### Phase 5: Validate & Handoff
+
+1. Create DesignDecision entities for key choices:
    ```
    store.create("DesignDecision", "platform-features", {
      id: uuid(),
@@ -309,10 +373,27 @@ schema.set({
   payload: schemaPayload
 })
 
-// Phase 4: Validate
+// Phase 4: Runtime Testing (MUST DO)
 schema.load(session.name)  // Should succeed if schema is valid
 
-// Update session
+// Test each entity type - discover issues BEFORE handoff
+const testRootId = crypto.randomUUID()
+store.create("RootEntity", session.name, {
+  id: testRootId,
+  name: "test-root",
+  createdAt: Date.now()
+})
+
+store.create("ChildEntity", session.name, {
+  id: crypto.randomUUID(),
+  parentRef: testRootId,  // Test reference works
+  createdAt: Date.now()
+})
+
+// Test list + filter
+store.list("ChildEntity", session.name, { parentRef: testRootId })
+
+// Phase 5: Update session (only after tests pass)
 store.update(session.id, "FeatureSession", "platform-features", {
   schemaName: session.name,
   status: "integration"

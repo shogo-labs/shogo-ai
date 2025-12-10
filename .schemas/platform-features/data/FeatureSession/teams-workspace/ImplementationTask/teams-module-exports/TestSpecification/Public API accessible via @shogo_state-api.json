@@ -1,0 +1,16 @@
+{
+  "id": "test-exports-package",
+  "scenario": "Public API accessible via @shogo/state-api",
+  "given": [
+    "@shogo/state-api package is built"
+  ],
+  "when": "Teams module is imported from package",
+  "then": [
+    "All public exports accessible",
+    "No internal implementation details exposed"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/teams/__tests__/index.test.ts",
+  "createdAt": 1733876600003,
+  "task": "task-teams-exports"
+}

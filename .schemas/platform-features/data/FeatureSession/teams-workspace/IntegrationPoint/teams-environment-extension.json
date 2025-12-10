@@ -1,0 +1,14 @@
+{
+  "id": "ip-teams-environment",
+  "name": "teams-environment-extension",
+  "filePath": "packages/state-api/src/environment/types.ts",
+  "package": "packages/state-api",
+  "targetFunction": "IEnvironment",
+  "changeType": "modify",
+  "description": "Extend IEnvironment.services to include optional teams: ITeamsService slot. Enables domain store to access teams service via getEnv<IEnvironment>(self).services.teams.",
+  "rationale": "Environment injection pattern from auth domain. Keeps service access consistent.",
+  "isGenerated": true,
+  "createdAt": 1733876000002,
+  "session": "teams-workspace",
+  "finding": "teams-environment-extension-pattern"
+}

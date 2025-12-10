@@ -1,0 +1,18 @@
+{
+  "id": "test-domain-reference-integrity",
+  "scenario": "Reference fields resolve to entity instances",
+  "given": [
+    "Store with organization and team"
+  ],
+  "when": "team.organization is accessed",
+  "then": [
+    "Returns Organization MST node (not string)",
+    "Can access organization.name",
+    "Reference is reactive to changes"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
+  "createdAt": 1733876500017,
+  "task": "task-teams-domain",
+  "requirement": "team-entity"
+}

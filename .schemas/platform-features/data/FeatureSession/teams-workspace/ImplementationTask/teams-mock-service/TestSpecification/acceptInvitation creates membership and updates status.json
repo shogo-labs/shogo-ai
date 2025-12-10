@@ -1,0 +1,19 @@
+{
+  "id": "test-mock-accept-invitation",
+  "scenario": "acceptInvitation creates membership and updates status",
+  "given": [
+    "Pending invitation exists for org"
+  ],
+  "when": "acceptInvitation(invitationId, userId) is called",
+  "then": [
+    "Returns success result",
+    "New membership is created with invitation's role",
+    "Invitation status is 'accepted'",
+    "getMembershipsForUser includes new membership"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/__tests__/mock.test.ts",
+  "createdAt": 1733876400009,
+  "task": "task-teams-mock",
+  "requirement": "invitation-system"
+}

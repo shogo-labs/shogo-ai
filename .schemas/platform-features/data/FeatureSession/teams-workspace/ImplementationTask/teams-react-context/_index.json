@@ -1,0 +1,22 @@
+{
+  "id": "task-teams-context",
+  "name": "teams-react-context",
+  "description": "Create TeamsProvider and useTeams hook for React integration",
+  "acceptanceCriteria": [
+    "TeamsContext.tsx exports TeamsProvider component",
+    "TeamsProvider creates store with useRef (stable across renders)",
+    "TeamsProvider calls store.initialize() on mount",
+    "TeamsProvider cleans up subscriptions on unmount via useEffect cleanup",
+    "useTeams hook returns typed store instance",
+    "useTeams throws descriptive error if used outside TeamsProvider",
+    "Components using useTeams re-render on relevant store changes via observer"
+  ],
+  "status": "planned",
+  "createdAt": 1733876100005,
+  "session": "teams-workspace",
+  "integrationPoint": "ip-teams-context",
+  "requirement": "org-entity",
+  "dependencies": [
+    "task-teams-exports"
+  ]
+}

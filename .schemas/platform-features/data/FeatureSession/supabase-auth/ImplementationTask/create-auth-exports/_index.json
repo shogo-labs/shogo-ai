@@ -15,5 +15,10 @@
   "session": "auth-001",
   "integrationPoint": "ip-auth-006",
   "requirement": "req-auth-001",
-  "dependencies": ["task-auth-001", "task-auth-003", "task-auth-004", "task-auth-005"]
+  "dependencies": [
+    "task-auth-001",
+    "task-auth-003",
+    "task-auth-004",
+    "task-auth-005"
+  ]
 }

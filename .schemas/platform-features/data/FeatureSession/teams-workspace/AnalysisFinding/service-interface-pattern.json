@@ -1,11 +1,11 @@
 {
-  "id": "tw-find-001",
+  "id": "teams-service-interface-pattern",
   "name": "service-interface-pattern",
-  "session": "teams-001",
   "type": "pattern",
-  "description": "Service Interface pattern: IAuthService in auth/types.ts defines contract, SupabaseAuthService and MockAuthService implement. Teams will need ITeamsService, IPermissionService.",
+  "description": "IAuthService demonstrates service interface pattern - pure TypeScript interface with NO runtime imports. Defines contract for signUp, signIn, signOut, getSession, onAuthStateChange. Implementations exist for Supabase and Mock providers.",
   "location": "packages/state-api/src/auth/types.ts",
-  "relevantCode": "export interface IAuthService { signUp, signIn, signOut, getSession, onAuthStateChange }",
-  "recommendation": "Create ITeamsService interface for org/team/membership CRUD, IPermissionService for permission resolution",
-  "createdAt": 1733700800000
+  "relevantCode": "export interface IAuthService { signUp(credentials): Promise<AuthSession>; signIn(credentials): Promise<AuthSession>; ... }",
+  "recommendation": "Create ITeamsService with methods: createOrganization, createTeam, createApp, addMembership, removeMembership, resolvePermissions, getOrganizationsForUser, getTeamsForOrg.",
+  "createdAt": 1733875300001,
+  "session": "teams-workspace"
 }

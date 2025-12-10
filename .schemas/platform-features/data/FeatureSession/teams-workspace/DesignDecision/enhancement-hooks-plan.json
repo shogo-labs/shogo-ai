@@ -1,0 +1,9 @@
+{
+  "id": "teams-enhancement-hooks-plan",
+  "name": "enhancement-hooks-plan",
+  "question": "What enhancement hooks will the domain need?",
+  "decision": "enhanceModels: Invitation.isExpired (computed from expiresAt), Membership.level (numeric role value); enhanceCollections: membershipCollection.findByUserId(userId), membershipCollection.findForResource(resourceType, resourceId); enhanceRootStore: resolvePermissions(userId, resourceType, resourceId) walking hierarchy with additive union, getAncestorTeams(teamId), createInvitation/acceptInvitation actions",
+  "rationale": "All hooks implemented in single domain.ts using createStoreFromScope(). resolvePermissions walks Org→Team→App chain collecting Membership roles and returns max. Invitation.isExpired enables expiration checking without manual date comparison.",
+  "createdAt": 1733875500004,
+  "session": "teams-workspace"
+}
