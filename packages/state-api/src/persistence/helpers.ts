@@ -224,20 +224,35 @@ export function findParentReference(
   let parentField: string | null = null
   let parentRef: string | null = null
 
+  // Collect all single references first
+  const partitionKey = xPersistence?.partitionKey
+  const singleRefs: Array<{ field: string; target: string }> = []
+
   for (const [propName, propSchema] of Object.entries(properties)) {
     const schema = propSchema as any
     if (schema['x-reference-type'] === 'single' &&
         schema['x-mst-type'] === 'reference') {
-      if (parentField !== null) {
-        throw new Error(
-          `Model with nested:true has multiple single references: ${parentField}, ${propName}. ` +
-          `Cannot determine parent automatically.`
-        )
-      }
-      parentField = propName
-      // Extract target from $ref or x-arktype
-      parentRef = schema.$ref?.replace('#/$defs/', '') ||
-                  schema['x-arktype']?.replace('[]', '').split('.').pop()
+      const target = schema.$ref?.replace('#/$defs/', '') ||
+                     schema['x-arktype']?.replace('[]', '').split('.').pop()
+      singleRefs.push({ field: propName, target })
+    }
+  }
+
+  // Determine parent field
+  if (singleRefs.length === 1) {
+    parentField = singleRefs[0].field
+    parentRef = singleRefs[0].target
+  } else if (singleRefs.length > 1) {
+    // Multiple refs - use partitionKey as discriminator if available
+    const match = singleRefs.find(r => r.field === partitionKey)
+    if (match) {
+      parentField = match.field
+      parentRef = match.target
+    } else {
+      throw new Error(
+        `Model with nested:true has multiple single references: ${singleRefs.map(r => r.field).join(', ')}. ` +
+        `Cannot determine parent automatically. Set partitionKey to one of these fields to disambiguate.`
+      )
     }
   }
 

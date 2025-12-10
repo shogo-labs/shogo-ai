@@ -501,7 +501,7 @@
       "type": "object",
       "description": "Execution record for a single task attempt",
       "x-persistence": {
-        "strategy": "array-per-partition",
+        "strategy": "entity-per-file",
         "partitionKey": "run",
         "nested": true
       },

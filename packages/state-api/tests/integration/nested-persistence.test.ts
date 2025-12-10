@@ -152,6 +152,109 @@ describe('Phase 8: Nested Persistence Helpers', () => {
       })).toThrow(/multiple single references/)
     })
 
+    test('uses partitionKey to disambiguate multiple single references', () => {
+      const multiRefModel = {
+        type: 'object',
+        'x-persistence': {
+          strategy: 'array-per-partition',
+          partitionKey: 'run',  // ← Disambiguator
+          nested: true
+        },
+        properties: {
+          id: { type: 'string', 'x-mst-type': 'identifier' },
+          run: {
+            type: 'string',
+            'x-mst-type': 'reference',
+            'x-reference-type': 'single',
+            'x-arktype': 'ImplementationRun'
+          },
+          task: {
+            type: 'string',
+            'x-mst-type': 'reference',
+            'x-reference-type': 'single',
+            'x-arktype': 'ImplementationTask'
+          }
+        }
+      }
+
+      const result = findParentReference(multiRefModel, {
+        ImplementationRun: { 'x-persistence': { displayKey: 'id' } },
+        ImplementationTask: { 'x-persistence': { displayKey: 'name' } }
+      })
+
+      expect(result).not.toBeNull()
+      expect(result!.field).toBe('run')
+      expect(result!.targetModel).toBe('ImplementationRun')
+    })
+
+    test('still throws for multiple refs when partitionKey does not match any', () => {
+      const ambiguousModel = {
+        type: 'object',
+        'x-persistence': {
+          strategy: 'array-per-partition',
+          partitionKey: 'someOtherField',  // ← Doesn't match either ref
+          nested: true
+        },
+        properties: {
+          id: { type: 'string' },
+          parentA: {
+            type: 'string',
+            'x-mst-type': 'reference',
+            'x-reference-type': 'single',
+            'x-arktype': 'ParentA'
+          },
+          parentB: {
+            type: 'string',
+            'x-mst-type': 'reference',
+            'x-reference-type': 'single',
+            'x-arktype': 'ParentB'
+          }
+        }
+      }
+
+      expect(() => findParentReference(ambiguousModel, {
+        ParentA: { 'x-persistence': { displayKey: 'name' } },
+        ParentB: { 'x-persistence': { displayKey: 'name' } }
+      })).toThrow(/multiple single references/)
+    })
+
+    test('uses partitionKey to disambiguate multiple refs for entity-per-file strategy', () => {
+      // entity-per-file can use partitionKey as parent hint even though it doesn't partition
+      const entityPerFileMultiRef = {
+        type: 'object',
+        'x-persistence': {
+          strategy: 'entity-per-file',
+          partitionKey: 'run',  // Used as parent hint, not for partitioning
+          nested: true
+        },
+        properties: {
+          id: { type: 'string', 'x-mst-type': 'identifier' },
+          run: {
+            type: 'string',
+            'x-mst-type': 'reference',
+            'x-reference-type': 'single',
+            'x-arktype': 'ImplementationRun'
+          },
+          task: {
+            type: 'string',
+            'x-mst-type': 'reference',
+            'x-reference-type': 'single',
+            'x-arktype': 'ImplementationTask'
+          }
+        }
+      }
+
+      const result = findParentReference(entityPerFileMultiRef, {
+        ImplementationRun: { 'x-persistence': { displayKey: 'id' } },
+        ImplementationTask: { 'x-persistence': { displayKey: 'name' } }
+      })
+
+      expect(result).not.toBeNull()
+      expect(result!.field).toBe('run')
+      expect(result!.targetModel).toBe('ImplementationRun')
+      expect(result!.parentDisplayKey).toBe('id')
+    })
+
     test('throws if parent model missing displayKey', () => {
       const childModel = {
         type: 'object',
