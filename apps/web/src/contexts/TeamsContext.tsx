@@ -29,7 +29,9 @@
  */
 
 import { createContext, useContext, useRef, useEffect, type ReactNode } from "react"
-import { createTeamsStore, NullPersistence } from "@shogo/state-api"
+import { createTeamsStore } from "@shogo/state-api"
+import { MCPPersistence } from "../persistence/MCPPersistence"
+import { mcpService } from "../services/mcpService"
 
 interface TeamsContextValue {
   store: any
@@ -56,10 +58,10 @@ export function TeamsProvider({ children }: TeamsProviderProps) {
   if (!contextRef.current) {
     const env = {
       services: {
-        persistence: new NullPersistence(),
+        persistence: new MCPPersistence(mcpService),
       },
       context: {
-        schemaName: "teams",
+        schemaName: "teams-workspace",
       },
     }
 
@@ -69,14 +71,27 @@ export function TeamsProvider({ children }: TeamsProviderProps) {
     contextRef.current = { store }
   }
 
-  // Initialize store on mount
+  // Load persisted data on mount
   useEffect(() => {
-    // Store is ready to use - no async initialization needed for domain stores
-    // This effect is here for cleanup purposes
+    const loadData = async () => {
+      const store = contextRef.current?.store
+      if (!store) return
+
+      try {
+        // Load all collections from persistence
+        await store.organizationCollection.loadAll()
+        await store.teamCollection.loadAll()
+        await store.membershipCollection.loadAll()
+        await store.appCollection.loadAll()
+        await store.invitationCollection.loadAll()
+      } catch (err) {
+        console.error("[TeamsProvider] Failed to load persisted data:", err)
+      }
+    }
+    loadData()
 
     return () => {
-      // Cleanup on unmount
-      // Domain stores don't have external subscriptions to clean up
+      // Cleanup on unmount (no-op for now)
     }
   }, [])
 

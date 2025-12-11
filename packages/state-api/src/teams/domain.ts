@@ -8,7 +8,9 @@
  */
 
 import { scope } from "arktype"
+import { types } from "mobx-state-tree"
 import { createStoreFromScope } from "../schematic"
+import { CollectionPersistable } from "../composition/persistable"
 
 // ============================================================
 // 1. ROLE LEVELS (for permission comparison)
@@ -118,33 +120,42 @@ export function createTeamsStore(options: CreateTeamsStoreOptions = {}) {
     }),
 
     // --------------------------------------------------------
-    // enhanceCollections: Add query methods to collections
+    // enhanceCollections: Compose persistable mixin + add query methods
     // --------------------------------------------------------
-    enhanceCollections: (collections) => ({
-      ...collections,
+    enhanceCollections: (collections) => {
+      // First compose persistable mixin on ALL collections
+      const persistable: Record<string, any> = {}
+      for (const [name, collection] of Object.entries(collections)) {
+        persistable[name] = types.compose(collection, CollectionPersistable).named(name)
+      }
 
-      MembershipCollection: collections.MembershipCollection.views((self: any) => ({
-        /**
-         * Find all memberships for a given user
-         */
-        findByUserId(userId: string): any[] {
-          return self.all().filter((m: any) => m.userId === userId)
-        },
+      // Then add domain-specific views to MembershipCollection
+      return {
+        ...persistable,
 
-        /**
-         * Find all memberships for a given resource (organization or team)
-         */
-        findForResource(resourceType: "organization" | "team", resourceId: string): any[] {
-          return self.all().filter((m: any) => {
-            if (resourceType === "organization") {
-              return m.organizationId?.id === resourceId
-            } else {
-              return m.teamId?.id === resourceId
-            }
-          })
-        },
-      })),
-    }),
+        MembershipCollection: persistable.MembershipCollection.views((self: any) => ({
+          /**
+           * Find all memberships for a given user
+           */
+          findByUserId(userId: string): any[] {
+            return self.all().filter((m: any) => m.userId === userId)
+          },
+
+          /**
+           * Find all memberships for a given resource (organization or team)
+           */
+          findForResource(resourceType: "organization" | "team", resourceId: string): any[] {
+            return self.all().filter((m: any) => {
+              if (resourceType === "organization") {
+                return m.organizationId?.id === resourceId
+              } else {
+                return m.teamId?.id === resourceId
+              }
+            })
+          },
+        })),
+      }
+    },
 
     // --------------------------------------------------------
     // enhanceRootStore: Add domain actions and views

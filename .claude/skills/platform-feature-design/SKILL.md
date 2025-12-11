@@ -219,6 +219,43 @@ Relationships:
 Does this capture the domain correctly?
 ```
 
+### Phase 2a: Persistence Layout Inference
+
+**Automatically apply persistence config based on entity relationships.**
+
+For each entity, apply these rules:
+
+| Condition | `nested` value | Rationale |
+|-----------|----------------|-----------|
+| Has required single reference | `true` | Child nests under parent |
+| All references optional/polymorphic | `false` | Cannot determine parent path |
+| No parent references | `false` | Root entity |
+| Has optional self-reference | No additional nesting | Logical hierarchy only (e.g., Team→Team) |
+
+**Inference algorithm:**
+1. Identify all entities with `x-reference-type: "single"` fields
+2. For each entity:
+   - If any single ref is REQUIRED (`x-mst-type: "reference"`) → `nested: true`
+   - If all single refs are OPTIONAL (`x-mst-type: "maybe-reference"`) → `nested: false`
+   - If no single refs → `nested: false` (root entity)
+3. Set `displayKey` to first human-readable field (name, title, slug, or id)
+
+**Self-reference handling:**
+Optional self-references (e.g., Team.parentId → Team for sub-teams) represent **logical hierarchy**, not physical storage hierarchy. They do NOT add nesting levels.
+
+Example: Team nests under Organization (required ref), but sub-teams stay flat within the Team collection:
+```
+Organization/
+└── acme-corp/
+    ├── _index.json
+    └── Team/
+        ├── engineering.json     (parentId: null)
+        ├── platform.json        (parentId: engineering)
+        └── qa.json              (parentId: engineering)
+```
+
+**Always output explicit config** — every entity gets `nested: true` or `nested: false`, never implicit.
+
 ### Phase 3: Schema Generation + Coverage + Validation
 
 **Autonomous phase** - Generate schema, verify coverage, validate structure.
@@ -247,7 +284,26 @@ When designing entities, consider how they'll flow through the schematic pipelin
    - [ ] Root entities: `strategy: "entity-per-file"` + `displayKey`
    - [ ] Child entities: add `nested: true`
    - [ ] Multi-ref entities: add `partitionKey`
-7. Register via `schema.set`
+7. **Persistence Configuration Audit** (before schema.set):
+
+   | Check | Criteria | Action |
+   |-------|----------|--------|
+   | Required refs nested | Entity with required single ref has `nested: true` | Flag for review |
+   | Polymorphic refs flat | Entity with all-optional refs has `nested: false` | Flag for review |
+   | Root entities flat | Entity with no parent ref has `nested: false` | Auto-correct |
+   | DisplayKey set | All entities have `displayKey` for human-readable filenames | Flag for review |
+   | Explicit nested | Every entity has explicit `nested: true` or `nested: false` | Auto-add via inference |
+
+   **Audit output format:**
+   ```
+   Persistence Configuration Audit:
+   ✅ Product: root entity, nested=false, displayKey=sku
+   ✅ Warehouse: root entity, nested=false, displayKey=name
+   ✅ StockLevel: required refs (product, warehouse), nested=true, partitionKey=product
+   ⚠️ Category: required ref (parent) but nested=false — correcting to nested=true
+   ```
+
+8. Register via `schema.set`
 
 **Coverage check format**:
 ```
@@ -269,6 +325,41 @@ Persistence Validation:
 ✅ Warehouse: x-persistence with displayKey="name"
 ✅ StockLevel: x-persistence with nested=true, partitionKey="product"
 ```
+
+### Phase 3b: Persistence Layout Review Gate
+
+**Present layout summary for human approval before proceeding to runtime testing.**
+
+```
+Persistence Layout Review
+
+Root Entities:
+- Product (displayKey: sku)
+- Warehouse (displayKey: name)
+
+Nested Under Parent:
+- StockLevel → Product (displayKey: id, partitionKey: product)
+- Category → Category (displayKey: name, self-referential hierarchy)
+
+Flat (Polymorphic):
+- (none in this schema)
+
+Resulting Disk Structure:
+.schemas/{name}/data/
+├── Product/
+│   └── {sku}/
+│       ├── _index.json
+│       └── StockLevel/
+│           └── {id}.json
+├── Warehouse/
+│   └── {name}.json
+└── Category/
+    └── {name}.json
+
+Any concerns with this layout? [Proceed] [Adjust]
+```
+
+If user chooses "Adjust", capture specific overrides before continuing.
 
 ### Phase 4: Runtime Testing (CRITICAL)
 
