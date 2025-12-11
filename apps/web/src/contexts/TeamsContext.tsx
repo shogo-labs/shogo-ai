@@ -78,6 +78,12 @@ export function TeamsProvider({ children }: TeamsProviderProps) {
       if (!store) return
 
       try {
+        // Initialize MCP session before any tool calls (required for HTTP transport)
+        await mcpService.initializeSession()
+
+        // Load schema on MCP server (ensures runtime store exists for persistence)
+        await mcpService.loadSchema("teams-workspace")
+
         // Load all collections from persistence
         await store.organizationCollection.loadAll()
         await store.teamCollection.loadAll()
