@@ -1,18 +1,17 @@
 {
-  "id": "test-domain-invitation-expired",
+  "id": "test-invitation-expired",
   "scenario": "Invitation.isExpired computed view works",
   "given": [
-    "Store with invitation having expiresAt in past"
+    "Store contains invitation with expiresAt in the past",
+    "Store contains invitation with expiresAt in the future"
   ],
-  "when": "invitation.isExpired is accessed",
+  "when": "Invitation.isExpired is accessed",
   "then": [
-    "Returns true for expired invitation",
-    "Returns false for future expiration",
-    "Updates reactively when time passes"
+    "Past expiration returns true",
+    "Future expiration returns false"
   ],
   "testType": "unit",
   "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
-  "createdAt": 1733876500008,
-  "task": "task-teams-domain",
-  "requirement": "invitation-system"
+  "createdAt": 1733868850007,
+  "task": "task-teams-domain-store"
 }

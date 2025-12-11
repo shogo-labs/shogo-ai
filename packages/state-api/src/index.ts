@@ -26,5 +26,8 @@ export * from './persistence'
 // Auth layer
 export * from './auth'
 
+// Teams layer
+export * from './teams'
+
 // Utilities
 export * from './utils'

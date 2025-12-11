@@ -1,0 +1,11 @@
+{
+  "id": "finding-self-reference-pattern",
+  "name": "self-reference-hierarchy",
+  "type": "pattern",
+  "description": "MST supports self-referential types for hierarchies. Team entity can reference optional parent Team for nested team structure.",
+  "location": "packages/state-api/src/schematic/helpers-model-builder.ts",
+  "relevantCode": "types.reference(types.late(() => allModels[targetRef]))",
+  "recommendation": "Define Team with 'parent?: Team' for nested hierarchy support",
+  "createdAt": 1733868300005,
+  "session": "teams-workspace"
+}

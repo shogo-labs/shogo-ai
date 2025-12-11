@@ -1,9 +1,9 @@
 {
-  "id": "invitation-system",
+  "id": "req-invitation-system",
   "name": "Invitation System",
-  "description": "System should support inviting users to organizations and teams. Invitations have a target email/user, inviting user, target org/team, proposed role, expiration, and status (pending/accepted/declined/expired). Users accept invitations to create memberships.",
+  "description": "Support inviting users to organizations or teams with a pending invitation model. Invitations have expiration, status (pending/accepted/declined), and assigned role.",
   "priority": "should",
   "status": "proposed",
-  "createdAt": 1733875200005,
+  "createdAt": 1733868120006,
   "session": "teams-workspace"
 }

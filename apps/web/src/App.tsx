@@ -6,7 +6,9 @@ import { Unit2Page } from './pages/Unit2Page'
 import { Unit3Page } from './pages/Unit3Page'
 import { LegacyTestsPage } from './pages/LegacyTestsPage'
 import { AuthDemoPage } from './pages/AuthDemoPage'
+import { TeamsDemoPage } from './pages/TeamsDemoPage'
 import { AuthProvider } from './contexts/AuthContext'
+import { TeamsProvider } from './contexts/TeamsContext'
 import { SupabaseAuthService } from '@shogo/state-api'
 
 // Initialize Supabase client
@@ -61,6 +63,9 @@ function Navigation() {
       <Link to="/auth-demo" style={linkStyle('/auth-demo')}>
         Auth Demo
       </Link>
+      <Link to="/teams-demo" style={linkStyle('/teams-demo')}>
+        Teams Demo
+      </Link>
     </nav>
   )
 }
@@ -77,6 +82,11 @@ function App() {
           <Route path="/unit3" element={<Unit3Page />} />
           <Route path="/legacy-tests" element={<LegacyTestsPage />} />
           <Route path="/auth-demo" element={<AuthDemoPage />} />
+          <Route path="/teams-demo" element={
+            <TeamsProvider>
+              <TeamsDemoPage />
+            </TeamsProvider>
+          } />
         </Routes>
       </AuthProvider>
     </BrowserRouter>

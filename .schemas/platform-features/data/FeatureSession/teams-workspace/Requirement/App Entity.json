@@ -1,9 +1,9 @@
 {
-  "id": "app-entity",
+  "id": "req-app-entity",
   "name": "App Entity",
-  "description": "System must support App as a first-class entity in the permission chain. Apps belong to exactly one team, have a name, slug, settings, and creation metadata. Apps are the primary artifact users build and collaborate on.",
-  "priority": "must",
+  "description": "Define App entity that belongs to a team. Apps inherit permissions from their parent team. Include name, description, and team reference.",
+  "priority": "should",
   "status": "proposed",
-  "createdAt": 1733875200007,
+  "createdAt": 1733868120005,
   "session": "teams-workspace"
 }

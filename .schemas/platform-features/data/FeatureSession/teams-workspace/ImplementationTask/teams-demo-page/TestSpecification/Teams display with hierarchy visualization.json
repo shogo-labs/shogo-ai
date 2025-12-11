@@ -1,18 +1,17 @@
 {
-  "id": "test-demo-team-hierarchy",
+  "id": "test-demo-hierarchy-display",
   "scenario": "Teams display with hierarchy visualization",
   "given": [
-    "Organization with parent and child teams"
+    "Org with parent team and nested child team exists"
   ],
-  "when": "Teams section renders",
+  "when": "Teams list is rendered",
   "then": [
-    "Parent team shown at top level",
-    "Child teams indented under parent",
-    "Hierarchy depth visually indicated"
+    "Parent team is displayed",
+    "Child team is indented or shows tree connector",
+    "Hierarchy relationship is visually clear"
   ],
-  "testType": "unit",
+  "testType": "acceptance",
   "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
-  "createdAt": 1733876600014,
-  "task": "task-teams-demo",
-  "requirement": "hierarchy-inheritance"
+  "createdAt": 1733868870004,
+  "task": "task-teams-demo-page"
 }

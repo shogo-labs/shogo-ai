@@ -1,11 +1,11 @@
 {
-  "id": "teams-environment-extension-pattern",
+  "id": "finding-environment-extension-pattern",
   "name": "environment-extension-pattern",
   "type": "pattern",
-  "description": "IEnvironment interface defines service injection slots. Services accessed via getEnv<IEnvironment>(self).services.auth in MST actions. Environment passed to createStore() factory. Pattern supports optional services (auth?: IAuthService).",
+  "description": "IEnvironment in environment/types.ts has services slot with optional service slots. Services are injected at store creation via environment parameter.",
   "location": "packages/state-api/src/environment/types.ts",
-  "relevantCode": "export interface IEnvironment { services: { persistence: IPersistenceService; auth?: IAuthService; } }",
-  "recommendation": "Extend IEnvironment with teams service slot: ITeamsEnvironment extends IEnvironment { services: { ...base, teams: ITeamsService } }",
-  "createdAt": 1733875300004,
+  "relevantCode": "interface IEnvironment { services: { persistence, auth? }, context: { schemaName } }",
+  "recommendation": "Add optional teams?: ITeamsService slot to IEnvironment.services",
+  "createdAt": 1733868300002,
   "session": "teams-workspace"
 }

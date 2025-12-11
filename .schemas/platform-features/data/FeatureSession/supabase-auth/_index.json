@@ -8,6 +8,7 @@
     "apps/web"
   ],
   "schemaName": "supabase-auth",
+  "applicablePatterns": [],
   "createdAt": 1733616000000,
   "updatedAt": 1733616800000
 }

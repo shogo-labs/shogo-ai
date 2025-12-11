@@ -27,7 +27,7 @@
         },
         "status": {
           "type": "string",
-          "enum": ["discovery", "analysis", "design", "spec", "implementation", "testing", "complete"]
+          "enum": ["discovery", "analysis", "classification", "design", "spec", "implementation", "testing", "complete"]
         },
         "affectedPackages": {
           "type": "array",
@@ -37,6 +37,36 @@
         "schemaName": {
           "type": "string",
           "description": "If this feature produces a schema, its name"
+        },
+        "initialAssessment": {
+          "type": "object",
+          "description": "Preliminary archetype assessment from discovery (not finalized until classification)",
+          "properties": {
+            "likelyArchetype": {
+              "type": "string",
+              "enum": ["service", "domain", "infrastructure", "hybrid"]
+            },
+            "indicators": {
+              "type": "array",
+              "description": "Evidence observed during discovery",
+              "items": { "type": "string" }
+            },
+            "uncertainties": {
+              "type": "array",
+              "description": "What needs validation during classification",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "featureArchetype": {
+          "type": "string",
+          "description": "Validated archetype after classification (set by classification skill)",
+          "enum": ["service", "domain", "infrastructure", "hybrid"]
+        },
+        "applicablePatterns": {
+          "type": "array",
+          "description": "Patterns applicable to this feature (set by classification skill)",
+          "items": { "type": "string" }
         },
         "createdAt": {
           "type": "number"
@@ -135,6 +165,55 @@
       "x-original-name": "DesignDecision"
     },
 
+    "ClassificationDecision": {
+      "type": "object",
+      "description": "Records the validated archetype classification with evidence-based rationale",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "validatedArchetype",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "x-arktype": "FeatureSession",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "initialAssessment": {
+          "type": "string",
+          "description": "Archetype from discovery (before validation)",
+          "enum": ["service", "domain", "infrastructure", "hybrid"]
+        },
+        "validatedArchetype": {
+          "type": "string",
+          "description": "Final archetype after evidence-based validation",
+          "enum": ["service", "domain", "infrastructure", "hybrid"]
+        },
+        "evidenceChecklist": {
+          "type": "object",
+          "description": "What evidence was checked and its values"
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Why this archetype was chosen"
+        },
+        "correction": {
+          "type": "string",
+          "description": "If initial was wrong, what changed and why"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": ["id", "session", "validatedArchetype", "rationale", "createdAt"],
+      "x-original-name": "ClassificationDecision"
+    },
+
     "AnalysisFinding": {
       "type": "object",
       "description": "A finding from codebase analysis relevant to implementing a platform feature",
@@ -161,7 +240,7 @@
         "type": {
           "type": "string",
           "description": "Category of finding",
-          "enum": ["pattern", "integration_point", "risk", "gap", "existing_test", "verification"]
+          "enum": ["pattern", "integration_point", "risk", "gap", "existing_test", "verification", "classification_evidence"]
         },
         "description": {
           "type": "string",

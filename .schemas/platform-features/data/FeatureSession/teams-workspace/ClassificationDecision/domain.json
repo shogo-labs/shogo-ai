@@ -1,0 +1,15 @@
+{
+  "id": "class-decision-teams",
+  "initialAssessment": "domain",
+  "validatedArchetype": "domain",
+  "evidenceChecklist": {
+    "externalApiIdentified": false,
+    "providerMentioned": false,
+    "credentialRequired": false,
+    "localDataOperations": true,
+    "collectionPersistable": true
+  },
+  "rationale": "Feature manages local entities (Organization, Team, Membership, Invitation, App). All data operations are local with no external API calls. Permission cascading and role hierarchy are pure domain business logic. User references are foreign keys to external IDs, not API calls.",
+  "createdAt": 1733868420000,
+  "session": "teams-workspace"
+}
