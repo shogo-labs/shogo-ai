@@ -1,9 +1,9 @@
 {
-  "id": "teams-role-hierarchy",
+  "id": "dd-role-hierarchy",
   "name": "role-hierarchy",
-  "question": "What is the role permission hierarchy?",
-  "decision": "owner > admin > member > viewer. Numeric values: owner=4, admin=3, member=2, viewer=1 for comparison.",
-  "rationale": "Additive permissions use max(roles) across hierarchy. Owner has full control, admin manages members/settings, member has standard access, viewer is read-only. Higher numeric value = more permissions.",
-  "createdAt": 1733875500003,
+  "question": "How to implement role hierarchy for permission comparison?",
+  "decision": "Role enum values with numeric levels: owner=40, admin=30, member=20, viewer=10",
+  "rationale": "Numeric levels allow simple comparison (role >= requiredRole). Higher number = more permissions. Gaps between levels allow future insertion.",
+  "createdAt": 1733868600002,
   "session": "teams-workspace"
 }

@@ -1,18 +1,18 @@
 {
-  "id": "test-domain-find-by-user",
+  "id": "test-find-by-user",
   "scenario": "membershipCollection.findByUserId query works",
   "given": [
-    "Multiple memberships for different users exist"
+    "Store contains multiple memberships for different users",
+    "User 'user-1' has 2 memberships",
+    "User 'user-2' has 1 membership"
   ],
   "when": "membershipCollection.findByUserId('user-1') is called",
   "then": [
-    "Returns only memberships for user-1",
-    "Includes org, team, and app level memberships",
-    "Empty array if user has no memberships"
+    "Returns array of 2 memberships",
+    "All returned memberships have userId 'user-1'"
   ],
   "testType": "unit",
   "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
-  "createdAt": 1733876500010,
-  "task": "task-teams-domain",
-  "requirement": "membership-model"
+  "createdAt": 1733868850008,
+  "task": "task-teams-domain-store"
 }

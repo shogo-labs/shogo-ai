@@ -2,17 +2,19 @@
   "id": "test-demo-permission-resolution",
   "scenario": "Permission resolution demo shows effective permissions",
   "given": [
-    "User with different roles at org and team level"
+    "Org with nested teams exists",
+    "User has owner role at org level",
+    "User has viewer role at team level"
   ],
-  "when": "Permission resolution section is viewed",
+  "when": "Permission resolution demo is triggered for user",
   "then": [
-    "Effective permission level displayed",
-    "Shows max of inherited permissions",
-    "Updates when roles change"
+    "Shows effective permission is 'owner' (inherited)",
+    "Explains permission came from org level",
+    "Demonstrates cascade behavior"
   ],
   "testType": "acceptance",
   "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
-  "createdAt": 1733876600018,
-  "task": "task-teams-demo",
-  "requirement": "additive-permissions"
+  "createdAt": 1733868870007,
+  "task": "task-teams-demo-page",
+  "requirement": "req-permission-cascade"
 }

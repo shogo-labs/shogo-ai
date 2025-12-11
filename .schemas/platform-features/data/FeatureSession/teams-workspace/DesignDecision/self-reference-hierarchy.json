@@ -1,9 +1,9 @@
 {
-  "id": "teams-self-reference-hierarchy",
+  "id": "dd-self-reference-hierarchy",
   "name": "self-reference-hierarchy",
-  "question": "How to model nested team hierarchies?",
-  "decision": "Team.parent: Team? (optional self-reference) with Team.children: Team[] as computed inverse.",
-  "rationale": "Follows established self-reference pattern from catalog domain tests. System auto-generates children[] view. Supports arbitrary nesting depth with maxTeamDepth setting for limits.",
-  "createdAt": 1733875500001,
+  "question": "How to implement nested team hierarchies?",
+  "decision": "Team has optional parentId self-reference. Root teams have no parent.",
+  "rationale": "MST supports self-references via types.late(). Allows unlimited nesting depth. Parent resolution walks up hierarchy for permission inheritance.",
+  "createdAt": 1733868600003,
   "session": "teams-workspace"
 }

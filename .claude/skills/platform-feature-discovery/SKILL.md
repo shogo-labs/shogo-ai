@@ -30,34 +30,42 @@ Stored in `platform-features` schema via Wavesmith.
 
 **Local State Principle**: All features that have state needs will have local MST models. This is not a question to ask - it's how the platform works. External services own their data, but local state tracks loading/error/cached data for reactive UI. Don't ask "should we sync locally?" - the answer is always yes.
 
-3. **Classify the feature archetype** using the decision tree:
+3. **Assess initial archetype** (preliminary - will be validated after analysis):
 
-   | Archetype | Indicators | Applicable Patterns |
-   |-----------|------------|---------------------|
-   | **Service** | External API, credentials, multiple providers | Service Interface, Environment, Mock Testing, Provider Sync |
-   | **Domain** | New entities, business rules, relationships, LOCAL data | Enhancement Hooks, CollectionPersistable |
-   | **Infrastructure** | Cross-cutting, used by multiple features | Service Interface, Environment, Mixin Composition |
-   | **Hybrid** | External provider + local domain modeling (sync/mirror) | All of the above |
+   | Archetype | Indicators |
+   |-----------|------------|
+   | **Service** | External API calls, credentials, provider swapping |
+   | **Domain** | New entities, business rules, LOCAL data management |
+   | **Infrastructure** | Cross-cutting, used by multiple features |
+   | **Hybrid** | External provider + local domain modeling (sync/mirror) |
 
-   **Critical**: Ask "Does this feature's CORE DATA live in an external system?" NOT "Does it reference external entities?"
-   - If data is managed locally (even with foreign key refs to users/auth) → **Domain**
-   - If data lives in external system (Supabase tables, Stripe, etc.) → **Service**
-   - Referencing user IDs from auth does NOT make a feature "Service" or "Hybrid"
+   **Important**: This is an INITIAL ASSESSMENT, not a final classification. The classification skill will validate with evidence after analysis explores the codebase.
 
-   See [patterns/01-feature-classification.md](references/patterns/01-feature-classification.md) for the full decision tree and worked examples.
+   **Key question**: "Does this feature CALL an external API?" NOT "Does it reference external entities?"
+   - Storing foreign key refs (user IDs) is NOT calling an API → likely **Domain**
+   - Actually calling external service APIs → likely **Service**
 
-4. Create FeatureSession with archetype:
+   Note any **uncertainties** - things that need validation during classification.
+
+   See [patterns/01-feature-classification.md](references/patterns/01-feature-classification.md) for guidance.
+
+4. Create FeatureSession with initial assessment:
    ```
    store.create("FeatureSession", "platform-features", {
      id: uuid(),
      name: "<short-name>",
      intent: "<original ask>",
-     featureArchetype: "service" | "domain" | "infrastructure" | "hybrid",
-     applicablePatterns: ["service-interface", "environment-extension", ...],
+     initialAssessment: {
+       likelyArchetype: "service" | "domain" | "infrastructure" | "hybrid",
+       indicators: ["list of evidence observed"],
+       uncertainties: ["what needs validation"]
+     },
      status: "discovery",
      createdAt: Date.now()
    })
    ```
+
+   **Note**: `featureArchetype` and `applicablePatterns` are NOT set here - they are set by the classification skill after analysis.
 
 ### Phase 2: Identify Affected Areas
 
@@ -91,28 +99,54 @@ Create Requirement entities:
 store.create("Requirement", "platform-features", {
   id: uuid(),
   session: sessionId,
+  name: "<short-slug>",
   description: "<what it must do>",
   priority: "must",
-  status: "proposed"
+  status: "proposed",
+  createdAt: Date.now()
 })
 ```
 
 Typical count: 3-5 for simple features, 5-7 for complex ones.
 
+**Edge Case Probing** (for complex features): Consider what could go wrong:
+- Missing/incomplete data scenarios
+- Error handling needs
+- Scale considerations
+
+See [edge-case-probing.md](references/edge-case-probing.md) for a lightweight framework. Add 1-2 requirements for critical edge cases discovered.
+
 ### Phase 4: Validate & Handoff
 
-1. Summarize session state to developer
+1. Summarize session state to developer:
+   ```
+   Session: {name}
+   Initial Assessment: {likelyArchetype}
+   Evidence: {indicators}
+   Uncertainties: {uncertainties}
+   Requirements: {count}
+   ```
+
 2. Confirm requirements coverage ("Does this capture what you need?")
+
 3. **Do NOT change session status** - it stays at `discovery`
    - Analysis skill expects `status: "discovery"` to run explore mode
-   - Analysis will transition to `design` after exploration
-4. Present handoff:
+   - Analysis will gather classification evidence and transition to `classification`
+
+4. **Note archetype is NOT finalized**:
    ```
    Discovery complete. Session: {name}
    Status: discovery (unchanged)
 
-   Next step: Run platform-feature-analysis to explore existing codebase patterns.
-   Analysis will discover integration points and transition status to "design".
+   Initial Assessment: {likelyArchetype}
+   NOTE: This is a preliminary assessment. The classification skill will
+   validate with evidence from codebase analysis.
+
+   Next steps:
+   1. Run platform-feature-analysis to explore codebase patterns
+   2. Analysis transitions status to "classification"
+   3. Run platform-feature-classification to validate archetype with evidence
+   4. Classification sets final archetype and transitions to "design"
    ```
 
 ## Wavesmith Operations
@@ -138,5 +172,6 @@ store.list("FeatureSession", "platform-features", { name: "auth" })
 
 - [codebase-context.md](references/codebase-context.md) - Package structure and purposes
 - [example-sessions.md](references/example-sessions.md) - Worked discovery examples
+- [edge-case-probing.md](references/edge-case-probing.md) - Lightweight edge case discovery framework
 - [patterns/00-pattern-inventory.md](references/patterns/00-pattern-inventory.md) - Complete pattern catalog and decision frameworks
-- [patterns/01-feature-classification.md](references/patterns/01-feature-classification.md) - Feature archetype decision tree
+- [patterns/01-feature-classification.md](references/patterns/01-feature-classification.md) - Feature archetype guidance (for initial assessment)

@@ -1,19 +1,19 @@
 {
-  "id": "test-domain-resolve-nested-teams",
+  "id": "test-resolve-permissions-nested",
   "scenario": "resolvePermissions walks nested team hierarchy",
   "given": [
-    "User has member role at parent team",
-    "User has no direct role at child team"
+    "Org 'org-1' contains Team 'team-parent'",
+    "Team 'team-parent' contains Team 'team-child'",
+    "User has 'owner' role at 'team-parent' only"
   ],
-  "when": "store.resolvePermissions(userId, 'team', childTeamId) is called",
+  "when": "resolvePermissions(userId, 'team', 'team-child') is called",
   "then": [
-    "Returns member (inherited from parent)",
-    "Walks parent chain to find roles",
-    "Stops at org level boundary"
+    "Returns 'owner' inherited from parent team",
+    "Hierarchy traversal stops at org level"
   ],
   "testType": "unit",
   "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
-  "createdAt": 1733876500015,
-  "task": "task-teams-domain",
-  "requirement": "hierarchy-inheritance"
+  "createdAt": 1733868850011,
+  "task": "task-teams-domain-store",
+  "requirement": "req-permission-cascade"
 }

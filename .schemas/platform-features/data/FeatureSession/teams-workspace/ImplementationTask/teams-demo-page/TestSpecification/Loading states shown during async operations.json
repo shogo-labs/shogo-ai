@@ -2,17 +2,16 @@
   "id": "test-demo-loading-states",
   "scenario": "Loading states shown during async operations",
   "given": [
-    "MockTeamsService with latency configured"
+    "Page is loading initial data"
   ],
-  "when": "Create organization is clicked",
+  "when": "Async operation is in progress",
   "then": [
-    "Loading indicator appears",
-    "Form disabled during operation",
+    "Loading indicator is visible",
+    "UI is not interactive during load",
     "Loading clears when complete"
   ],
-  "testType": "unit",
+  "testType": "acceptance",
   "targetFile": "apps/web/src/pages/__tests__/TeamsDemoPage.test.tsx",
-  "createdAt": 1733876600019,
-  "task": "task-teams-demo",
-  "requirement": "org-entity"
+  "createdAt": 1733868870008,
+  "task": "task-teams-demo-page"
 }

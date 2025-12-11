@@ -1,9 +1,9 @@
 {
-  "id": "rbac-roles",
+  "id": "req-role-hierarchy",
   "name": "Role-Based Access Control",
-  "description": "System must support predefined roles with distinct permission sets. Minimum roles: owner (full control), admin (manage members/settings), member (standard access), viewer (read-only). Roles are assigned per membership context (org-level or team-level).",
+  "description": "Define Role enum with numeric levels (owner=40, admin=30, member=20, viewer=10) for permission comparison. Provide utilities to check if a user can perform actions based on minimum required role.",
   "priority": "must",
   "status": "proposed",
-  "createdAt": 1733875200003,
+  "createdAt": 1733868120004,
   "session": "teams-workspace"
 }

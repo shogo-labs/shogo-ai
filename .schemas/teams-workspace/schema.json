@@ -1,13 +1,12 @@
 {
-  "id": "93632e33-8753-4183-ab0a-f4c89a6a5208",
+  "id": "40a4b21b-344b-45a9-bea6-766a36333683",
   "name": "teams-workspace",
   "format": "enhanced-json-schema",
-  "createdAt": 1765353322923,
+  "createdAt": 1765394919163,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "Organization": {
       "type": "object",
-      "description": "Top-level container entity. All teams and memberships exist within an organization context.",
       "x-persistence": {
         "strategy": "entity-per-file",
         "displayKey": "slug"
@@ -15,6 +14,7 @@
       "properties": {
         "id": {
           "type": "string",
+          "format": "uuid",
           "x-mst-type": "identifier"
         },
         "name": {
@@ -25,29 +25,11 @@
           "type": "string",
           "pattern": "^[a-z0-9-]+$"
         },
-        "settings": {
-          "type": "object"
+        "description": {
+          "type": "string"
         },
         "createdAt": {
           "type": "number"
-        },
-        "teams": {
-          "type": "array",
-          "x-arktype": "Team[]",
-          "x-computed": true,
-          "x-inverse": "organization"
-        },
-        "memberships": {
-          "type": "array",
-          "x-arktype": "Membership[]",
-          "x-computed": true,
-          "x-inverse": "organization"
-        },
-        "invitations": {
-          "type": "array",
-          "x-arktype": "Invitation[]",
-          "x-computed": true,
-          "x-inverse": "organization"
         }
       },
       "required": [
@@ -60,16 +42,14 @@
     },
     "Team": {
       "type": "object",
-      "description": "Team within an organization. Supports nested hierarchies via self-reference.",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "name",
-        "nested": true,
-        "partitionKey": "organization"
+        "displayKey": "name"
       },
       "properties": {
         "id": {
           "type": "string",
+          "format": "uuid",
           "x-mst-type": "identifier"
         },
         "name": {
@@ -79,13 +59,13 @@
         "description": {
           "type": "string"
         },
-        "organization": {
+        "organizationId": {
           "type": "string",
           "x-arktype": "Organization",
           "x-mst-type": "reference",
           "x-reference-type": "single"
         },
-        "parent": {
+        "parentId": {
           "type": "string",
           "x-arktype": "Team",
           "x-mst-type": "maybe-reference",
@@ -93,134 +73,52 @@
         },
         "createdAt": {
           "type": "number"
-        },
-        "children": {
-          "type": "array",
-          "x-arktype": "Team[]",
-          "x-computed": true,
-          "x-inverse": "parent"
-        },
-        "apps": {
-          "type": "array",
-          "x-arktype": "App[]",
-          "x-computed": true,
-          "x-inverse": "team"
-        },
-        "memberships": {
-          "type": "array",
-          "x-arktype": "Membership[]",
-          "x-computed": true,
-          "x-inverse": "team"
-        },
-        "invitations": {
-          "type": "array",
-          "x-arktype": "Invitation[]",
-          "x-computed": true,
-          "x-inverse": "team"
         }
       },
       "required": [
         "id",
         "name",
-        "organization",
+        "organizationId",
         "createdAt"
       ],
       "x-original-name": "Team"
     },
-    "App": {
-      "type": "object",
-      "description": "First-class entity in permission chain. Apps belong to exactly one team.",
-      "x-persistence": {
-        "strategy": "entity-per-file",
-        "displayKey": "slug",
-        "nested": true,
-        "partitionKey": "team"
-      },
-      "properties": {
-        "id": {
-          "type": "string",
-          "x-mst-type": "identifier"
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "slug": {
-          "type": "string",
-          "pattern": "^[a-z0-9-]+$"
-        },
-        "team": {
-          "type": "string",
-          "x-arktype": "Team",
-          "x-mst-type": "reference",
-          "x-reference-type": "single"
-        },
-        "settings": {
-          "type": "object"
-        },
-        "createdAt": {
-          "type": "number"
-        },
-        "memberships": {
-          "type": "array",
-          "x-arktype": "Membership[]",
-          "x-computed": true,
-          "x-inverse": "app"
-        },
-        "invitations": {
-          "type": "array",
-          "x-arktype": "Invitation[]",
-          "x-computed": true,
-          "x-inverse": "app"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "slug",
-        "team",
-        "createdAt"
-      ],
-      "x-original-name": "App"
-    },
     "Membership": {
       "type": "object",
-      "description": "Polymorphic membership across org/team/app levels. Exactly one reference must be set.",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "userId"
+        "displayKey": "id"
       },
       "properties": {
         "id": {
           "type": "string",
+          "format": "uuid",
           "x-mst-type": "identifier"
         },
         "userId": {
           "type": "string",
-          "description": "External reference to auth system user"
+          "description": "External user ID from auth system"
         },
-        "organization": {
+        "role": {
+          "type": "string",
+          "enum": [
+            "owner",
+            "admin",
+            "member",
+            "viewer"
+          ]
+        },
+        "organizationId": {
           "type": "string",
           "x-arktype": "Organization",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single"
         },
-        "team": {
+        "teamId": {
           "type": "string",
           "x-arktype": "Team",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single"
-        },
-        "app": {
-          "type": "string",
-          "x-arktype": "App",
-          "x-mst-type": "maybe-reference",
-          "x-reference-type": "single"
-        },
-        "role": {
-          "type": "string",
-          "enum": ["owner", "admin", "member", "viewer"],
-          "description": "Permission role: owner > admin > member > viewer"
         },
         "createdAt": {
           "type": "number"
@@ -234,9 +132,45 @@
       ],
       "x-original-name": "Membership"
     },
+    "App": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name"
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "teamId": {
+          "type": "string",
+          "x-arktype": "Team",
+          "x-mst-type": "reference",
+          "x-reference-type": "single"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "teamId",
+        "createdAt"
+      ],
+      "x-original-name": "App"
+    },
     "Invitation": {
       "type": "object",
-      "description": "Invitation to join org/team/app. Has expiration and status tracking.",
       "x-persistence": {
         "strategy": "entity-per-file",
         "displayKey": "email"
@@ -244,42 +178,42 @@
       "properties": {
         "id": {
           "type": "string",
+          "format": "uuid",
           "x-mst-type": "identifier"
         },
         "email": {
           "type": "string",
           "format": "email"
         },
-        "invitedBy": {
+        "role": {
           "type": "string",
-          "description": "userId of the inviter"
+          "enum": [
+            "owner",
+            "admin",
+            "member",
+            "viewer"
+          ]
         },
-        "organization": {
+        "organizationId": {
           "type": "string",
           "x-arktype": "Organization",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single"
         },
-        "team": {
+        "teamId": {
           "type": "string",
           "x-arktype": "Team",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single"
         },
-        "app": {
-          "type": "string",
-          "x-arktype": "App",
-          "x-mst-type": "maybe-reference",
-          "x-reference-type": "single"
-        },
-        "role": {
-          "type": "string",
-          "enum": ["owner", "admin", "member", "viewer"],
-          "description": "Permission role for the invitation"
-        },
         "status": {
           "type": "string",
-          "enum": ["pending", "accepted", "declined", "expired"]
+          "enum": [
+            "pending",
+            "accepted",
+            "declined",
+            "expired"
+          ]
         },
         "expiresAt": {
           "type": "number"
@@ -291,7 +225,6 @@
       "required": [
         "id",
         "email",
-        "invitedBy",
         "role",
         "status",
         "expiresAt",

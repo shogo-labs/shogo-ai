@@ -1,0 +1,9 @@
+{
+  "id": "req-permission-cascade",
+  "name": "Cascading Permission Resolution",
+  "description": "Implement permission resolution that cascades from org → team → sub-team → app. A user's effective permission at any level is the highest role they have at that level or any ancestor. Org-level owner has full access to all nested entities.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1733868120003,
+  "session": "teams-workspace"
+}

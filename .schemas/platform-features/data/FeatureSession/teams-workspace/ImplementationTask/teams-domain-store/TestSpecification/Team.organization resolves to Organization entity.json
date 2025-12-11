@@ -1,19 +1,17 @@
 {
-  "id": "test-domain-team-org-reference",
+  "id": "test-team-org-reference",
   "scenario": "Team.organization resolves to Organization entity",
   "given": [
-    "Store with Organization 'org-1' exists",
-    "Team referencing 'org-1' is added"
+    "Store contains Organization with id 'org-1'",
+    "Store contains Team with organizationId 'org-1'"
   ],
-  "when": "team.organization is accessed",
+  "when": "Team entity's organization reference is accessed",
   "then": [
-    "Returns Organization instance (not string)",
-    "organization.id equals 'org-1'",
-    "organization.name is accessible"
+    "Reference resolves to Organization instance (not just string)",
+    "Organization has correct name and slug properties"
   ],
   "testType": "unit",
   "targetFile": "packages/state-api/src/teams/__tests__/domain.test.ts",
-  "createdAt": 1733876500004,
-  "task": "task-teams-domain",
-  "requirement": "team-entity"
+  "createdAt": 1733868850003,
+  "task": "task-teams-domain-store"
 }

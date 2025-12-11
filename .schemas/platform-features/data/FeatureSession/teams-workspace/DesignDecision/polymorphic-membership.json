@@ -1,9 +1,9 @@
 {
-  "id": "teams-polymorphic-membership",
+  "id": "dd-polymorphic-membership",
   "name": "polymorphic-membership",
-  "question": "How to model membership across org/team/app levels?",
-  "decision": "Single Membership entity with optional org/team/app references. Exactly one must be set per membership instance.",
-  "rationale": "Enables unified membership queries (findByUserId) across all levels. Avoids separate OrgMembership, TeamMembership, AppMembership entities which would complicate permission resolution.",
-  "createdAt": 1733875500000,
+  "question": "How to model Membership that references EITHER Organization OR Team?",
+  "decision": "Two optional reference fields (organizationId?, teamId?) with exactly-one validation in service layer",
+  "rationale": "Simpler than discriminated union. Works with MST maybe-reference. Service validates exactly one is set on create/update.",
+  "createdAt": 1733868600000,
   "session": "teams-workspace"
 }

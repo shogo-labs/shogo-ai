@@ -1,9 +1,9 @@
 {
-  "id": "team-entity",
+  "id": "req-team-entity",
   "name": "Team Entity",
-  "description": "System must support Team entities within organizations. Teams have a name, description, and belong to exactly one organization. Teams can have a parent team (self-reference) to support nested hierarchies.",
+  "description": "Define Team entity with name, description, and optional parent reference for nested hierarchies. Teams belong to an organization and can contain sub-teams.",
   "priority": "must",
   "status": "proposed",
-  "createdAt": 1733875200001,
+  "createdAt": 1733868120001,
   "session": "teams-workspace"
 }
