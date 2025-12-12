@@ -7,12 +7,13 @@
 
 import { describe, test, expect, beforeEach } from "bun:test"
 import { scope } from "arktype"
-import { getSnapshot, types, isStateTreeNode } from "mobx-state-tree"
+import { getSnapshot, types, isStateTreeNode, getEnv } from "mobx-state-tree"
 
 // These imports will fail initially (TDD)
 import { domain } from "../index"
 import { isScope, isEnhancedJsonSchema } from "../types"
 import { getEnhancements, clearEnhancementRegistry } from "../enhancement-registry"
+import { getRuntimeStore, clearRuntimeStores } from "../../meta/runtime-store-cache"
 
 // Test fixtures
 const SimpleScope = scope({
@@ -456,6 +457,7 @@ describe("domain() composition API", () => {
 
     test("register() caches runtime store with enhancements applied", () => {
       // Given: A domain with model enhancements
+      clearRuntimeStores()
       const result = domain({
         name: "register-cache-test",
         from: SimpleScope,
@@ -476,8 +478,8 @@ describe("domain() composition API", () => {
       // When: we register
       const schema = result.register(mockMetaStore)
 
-      // Then: runtime store is cached and has enhancements
-      const cachedStore = mockMetaStore.getRuntimeStore(schema.id)
+      // Then: runtime store is cached and has enhancements (use global cache)
+      const cachedStore = getRuntimeStore(schema.id)
       expect(cachedStore).toBeDefined()
 
       // Add a user to verify enhancements work
@@ -491,6 +493,7 @@ describe("domain() composition API", () => {
 
     test("register() with workspace creates isolated runtime store", () => {
       // Given: A domain
+      clearRuntimeStores()
       const result = domain({
         name: "register-workspace-test",
         from: SimpleScope,
@@ -502,9 +505,9 @@ describe("domain() composition API", () => {
       const schema1 = result.register(mockMetaStore, { workspace: "/workspace/a" })
       const schema2 = result.register(mockMetaStore, { workspace: "/workspace/b" })
 
-      // Then: Each workspace has its own runtime store
-      const storeA = mockMetaStore.getRuntimeStore(schema1.id, "/workspace/a")
-      const storeB = mockMetaStore.getRuntimeStore(schema2.id, "/workspace/b")
+      // Then: Each workspace has its own runtime store (use global cache)
+      const storeA = getRuntimeStore(schema1.id, "/workspace/a")
+      const storeB = getRuntimeStore(schema2.id, "/workspace/b")
 
       expect(storeA).toBeDefined()
       expect(storeB).toBeDefined()
@@ -810,6 +813,159 @@ describe("domain() composition API", () => {
 
       // CollectionPersistable should be composed (loadAll exists)
       expect(typeof runtimeStore.userCollection.loadAll).toBe("function")
+    })
+  })
+
+  // ==========================================================
+  // 9. REGISTER() BUG FIXES
+  // ==========================================================
+
+  describe("9. register() bug fixes", () => {
+    // Import runtime store cache functions for testing
+    const getRuntimeStoreFromCache = async () => {
+      const { getRuntimeStore } = await import("../../meta/runtime-store-cache")
+      return getRuntimeStore
+    }
+
+    // Create mock meta-store AS an MST instance (so getEnv() works)
+    function createMockMetaStoreWithEnv(env: { services: { persistence?: any } }) {
+      // External state (MST models can't have Map as observable)
+      const schemas: Map<string, any> = new Map()
+      const runtimeStores: Map<string, any> = new Map()
+
+      // Create MST model with actions - this becomes the metaStore
+      const MockMetaStoreModel = types
+        .model("MockMetaStore", {})
+        .volatile(() => ({
+          // Expose maps via volatile for test assertions
+          schemas,
+          runtimeStores,
+        }))
+        .actions(() => ({
+          findSchemaByName(name: string) {
+            return Array.from(schemas.values()).find((s: any) => s.name === name)
+          },
+          ingestEnhancedJsonSchema(enhancedSchema: any, metadata: any) {
+            const schema = {
+              id: metadata.id || `schema-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              name: metadata.name,
+              format: "enhanced-json-schema",
+              createdAt: metadata.createdAt || Date.now(),
+              toEnhancedJson: enhancedSchema,
+            }
+            schemas.set(schema.name, schema)
+            return schema
+          },
+          cacheRuntimeStore(schemaId: string, store: any, workspace?: string) {
+            const key = workspace ? `${workspace}::${schemaId}` : schemaId
+            runtimeStores.set(key, store)
+          },
+          getRuntimeStore(schemaId: string, workspace?: string) {
+            const key = workspace ? `${workspace}::${schemaId}` : schemaId
+            return runtimeStores.get(key)
+          },
+        }))
+
+      // Create instance with environment - getEnv() will now work!
+      return MockMetaStoreModel.create({}, env)
+    }
+
+    test("register() is idempotent - returns existing schema if already registered", () => {
+      // Given: A domain
+      clearEnhancementRegistry()
+      clearRuntimeStores()
+      const testDomain = domain({
+        name: "idempotent-test",
+        from: SimpleScope,
+      })
+
+      const mockPersistence = {
+        loadCollection: async () => [],
+        saveCollection: async () => {},
+      }
+      const mockMetaStore = createMockMetaStoreWithEnv({
+        services: { persistence: mockPersistence },
+      })
+
+      // When: Domain registered twice
+      const schema1 = testDomain.register(mockMetaStore)
+      const schema2 = testDomain.register(mockMetaStore)
+
+      // Then: Same schema returned, only one schema in store
+      expect(schema2.id).toBe(schema1.id)
+      expect(mockMetaStore.schemas.size).toBe(1)
+    })
+
+    test("register() passes persistence from metaStore environment to runtime store", () => {
+      // Given: MetaStore with persistence in environment
+      clearEnhancementRegistry()
+      clearRuntimeStores()
+      const mockPersistence = {
+        loadCollection: async () => [],
+        saveCollection: async () => {},
+        testMarker: "persistence-test-marker", // Marker to verify same instance
+      }
+
+      const testDomain = domain({
+        name: "persistence-flow-test",
+        from: SimpleScope,
+      })
+
+      const mockMetaStore = createMockMetaStoreWithEnv({
+        services: { persistence: mockPersistence },
+      })
+
+      // When: Domain registered
+      const schema = testDomain.register(mockMetaStore)
+      // Use global cache instead of mock's getRuntimeStore
+      const runtimeStore = getRuntimeStore(schema.id)
+
+      // Then: Runtime store's environment has the same persistence instance
+      expect(runtimeStore).toBeDefined()
+      const storeEnv = getEnv<any>(runtimeStore)
+      expect(storeEnv.services).toBeDefined()
+      expect(storeEnv.services.persistence).toBeDefined()
+      expect(storeEnv.services.persistence.testMarker).toBe("persistence-test-marker")
+    })
+
+    test("register() checks runtime store cache before creating new store", () => {
+      // Given: Domain registered once
+      clearEnhancementRegistry()
+      clearRuntimeStores()
+      const mockPersistence = {
+        loadCollection: async () => [],
+        saveCollection: async () => {},
+      }
+
+      const testDomain = domain({
+        name: "cache-check-test",
+        from: SimpleScope,
+      })
+
+      const mockMetaStore = createMockMetaStoreWithEnv({
+        services: { persistence: mockPersistence },
+      })
+
+      const schema = testDomain.register(mockMetaStore)
+      // Use global cache
+      const store1 = getRuntimeStore(schema.id)
+
+      // Add data to first store to verify it's the same instance later
+      store1.userCollection.add({
+        id: "550e8400-e29b-41d4-a716-446655440001",
+        name: "test-user",
+        email: "test@test.com",
+      })
+
+      // When: Registered again
+      testDomain.register(mockMetaStore)
+      // Use global cache
+      const store2 = getRuntimeStore(schema.id)
+
+      // Then: Same store instance (data persists, not recreated)
+      expect(store2).toBe(store1)
+      expect(store2.userCollection.all().length).toBe(1)
+      expect(store2.userCollection.all()[0].name).toBe("test-user")
     })
   })
 })

@@ -3,11 +3,11 @@
  * Extracted from meta-store.ts to reduce file size for esbuild wasm
  */
 
-import { getEnv, types, type IAnyModelType } from "mobx-state-tree"
+import { getEnv } from "mobx-state-tree"
 import { v4 as uuidv4 } from "uuid"
 import type { IEnvironment, IMetaStoreEnvironment } from "../environment/types"
 import { enhancedJsonSchemaToMST } from "../schematic/enhanced-json-schema-to-mst"
-import { CollectionPersistable } from "../composition/persistable"
+import { buildEnhanceCollections } from "../composition/enhance-collections"
 import { getRuntimeStore, cacheRuntimeStore } from "./runtime-store-cache"
 import { ingestProperty } from "./meta-helpers"
 import { getEnhancements } from "../domain/enhancement-registry"
@@ -167,41 +167,22 @@ export function createRootStoreEnhancements(RootModel: any) {
         // 4. Look up registered enhancements from domain() API
         const registeredEnhancements = getEnhancements(schema.name)
 
-        // 5. Build enhancement functions
-        // If domain() enhancements exist, use them (they already include CollectionPersistable)
-        // Otherwise, apply default CollectionPersistable composition
-        const buildEnhanceCollections = (): ((cols: Record<string, IAnyModelType>) => Record<string, IAnyModelType>) => {
-          return (collections: Record<string, IAnyModelType>) => {
-            // Always compose CollectionPersistable first
-            const withPersistence: Record<string, IAnyModelType> = {}
-            for (const [n, model] of Object.entries(collections)) {
-              withPersistence[n] = types.compose(model, CollectionPersistable).named(n)
-            }
-
-            // Then apply user enhancements if registered
-            if (registeredEnhancements?.collections) {
-              return registeredEnhancements.collections(withPersistence)
-            }
-
-            return withPersistence
-          }
-        }
-
-        // 6. Create runtime store with MST composition
+        // 5. Create runtime store with MST composition
+        // Use shared buildEnhanceCollections utility (always enables persistence for loadSchema)
         const { createStore } = enhancedJsonSchemaToMST(schema.toEnhancedJson, {
           generateActions: true,
           enhanceModels: registeredEnhancements?.models,
-          enhanceCollections: buildEnhanceCollections(),
+          enhanceCollections: buildEnhanceCollections(registeredEnhancements?.collections, true),
           enhanceRootStore: registeredEnhancements?.rootStore,
         })
 
-        // 7. Create environment with persistence (pass through from meta-store env)
+        // 6. Create environment with persistence (pass through from meta-store env)
         const env: IEnvironment = {
           services: { persistence: persistence! },
           context: { schemaName: schema.name, location: workspace }
         }
 
-        // 8. Create and cache runtime store
+        // 7. Create and cache runtime store
         const runtimeStore = createStore(env)
         cacheRuntimeStore(schema.id, runtimeStore, workspace)
 

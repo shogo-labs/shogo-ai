@@ -8,8 +8,11 @@ import { LegacyTestsPage } from './pages/LegacyTestsPage'
 import { AuthDemoPage } from './pages/AuthDemoPage'
 import { TeamsDemoPage } from './pages/TeamsDemoPage'
 import { AuthProvider } from './contexts/AuthContext'
-import { TeamsProvider } from './contexts/TeamsContext'
-import { SupabaseAuthService } from '@shogo/state-api'
+import { ApplicationDomains } from './contexts/ApplicationDomains'
+import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
+import { SupabaseAuthService, teamsDomain } from '@shogo/state-api'
+import { MCPPersistence } from './persistence/MCPPersistence'
+import { mcpService } from './services/mcpService'
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -19,6 +22,9 @@ const supabase = createClient(
 
 // Use real Supabase auth
 const authService = new SupabaseAuthService(supabase)
+
+// Shared persistence for all domains
+const persistence = new MCPPersistence(mcpService)
 
 function Navigation() {
   const location = useLocation()
@@ -73,22 +79,22 @@ function Navigation() {
 function App() {
   return (
     <BrowserRouter>
-      <AuthProvider authService={authService}>
-        <Navigation />
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/unit1" element={<Unit1Page />} />
-          <Route path="/unit2" element={<Unit2Page />} />
-          <Route path="/unit3" element={<Unit3Page />} />
-          <Route path="/legacy-tests" element={<LegacyTestsPage />} />
-          <Route path="/auth-demo" element={<AuthDemoPage />} />
-          <Route path="/teams-demo" element={
-            <TeamsProvider>
-              <TeamsDemoPage />
-            </TeamsProvider>
-          } />
-        </Routes>
-      </AuthProvider>
+      <WavesmithMetaStoreProvider persistence={persistence}>
+        <ApplicationDomains domains={[teamsDomain]} persistence={persistence}>
+          <AuthProvider authService={authService}>
+            <Navigation />
+            <Routes>
+              <Route path="/" element={<HomePage />} />
+              <Route path="/unit1" element={<Unit1Page />} />
+              <Route path="/unit2" element={<Unit2Page />} />
+              <Route path="/unit3" element={<Unit3Page />} />
+              <Route path="/legacy-tests" element={<LegacyTestsPage />} />
+              <Route path="/auth-demo" element={<AuthDemoPage />} />
+              <Route path="/teams-demo" element={<TeamsDemoPage />} />
+            </Routes>
+          </AuthProvider>
+        </ApplicationDomains>
+      </WavesmithMetaStoreProvider>
     </BrowserRouter>
   )
 }

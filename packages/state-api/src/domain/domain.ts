@@ -8,13 +8,14 @@
  * 4. Returns createStore() and register() methods
  */
 
-import { types, type IAnyModelType, type IAnyStateTreeNode } from "mobx-state-tree"
+import { getEnv, type IAnyStateTreeNode } from "mobx-state-tree"
 import { arkTypeToEnhancedJsonSchema } from "../schematic/arktype-to-json-schema"
 import { enhancedJsonSchemaToMST } from "../schematic/enhanced-json-schema-to-mst"
 import type { EnhancedJsonSchema } from "../schematic/types"
-import { CollectionPersistable } from "../composition/persistable"
+import { buildEnhanceCollections } from "../composition/enhance-collections"
 import { registerEnhancements } from "./enhancement-registry"
-import type { DomainConfig, DomainResult, DomainEnhancements } from "./types"
+import { getRuntimeStore, cacheRuntimeStore } from "../meta/runtime-store-cache"
+import type { DomainConfig, DomainResult } from "./types"
 import { isScope, isEnhancedJsonSchema } from "./types"
 
 /**
@@ -59,42 +60,13 @@ export function domain(config: DomainConfig): DomainResult {
     registerEnhancements(config.name, config.enhancements)
   }
 
-  // Build enhancement functions that include CollectionPersistable composition
-  const buildEnhanceCollections = (
-    userEnhance?: DomainEnhancements["collections"]
-  ): ((cols: Record<string, IAnyModelType>) => Record<string, IAnyModelType>) | undefined => {
-    if (!enablePersistence && !userEnhance) {
-      return undefined
-    }
-
-    return (collections: Record<string, IAnyModelType>) => {
-      let result = collections
-
-      // Step 1: Auto-compose CollectionPersistable if enabled
-      if (enablePersistence) {
-        const withPersistence: Record<string, IAnyModelType> = {}
-        for (const [name, model] of Object.entries(result)) {
-          withPersistence[name] = types.compose(model, CollectionPersistable).named(name)
-        }
-        result = withPersistence
-      }
-
-      // Step 2: Apply user enhancements on top
-      if (userEnhance) {
-        result = userEnhance(result)
-      }
-
-      return result
-    }
-  }
-
   // Convert once and reuse - this is the canonical conversion result
   const conversionResult = enhancedJsonSchemaToMST(enhancedSchema, {
     generateActions: true,
     validateReferences: false,
     arkTypeScope,
     enhanceModels: config.enhancements?.models,
-    enhanceCollections: buildEnhanceCollections(config.enhancements?.collections),
+    enhanceCollections: buildEnhanceCollections(config.enhancements?.collections, enablePersistence),
     enhanceRootStore: config.enhancements?.rootStore,
   })
 
@@ -107,28 +79,51 @@ export function domain(config: DomainConfig): DomainResult {
   const register = (metaStore: any, options?: { workspace?: string }): any => {
     const workspace = options?.workspace
 
-    // 1. Ingest schema into meta-store
-    const schema = metaStore.ingestEnhancedJsonSchema(enhancedSchema, {
-      name: config.name,
-      createdAt: Date.now(),
-    })
+    // FIX 1: Idempotency - check if schema already exists by name
+    const existingSchema = metaStore.findSchemaByName?.(config.name)
+    if (existingSchema) {
+      // FIX 3: Check if runtime store is also cached
+      const existingStore = getRuntimeStore(existingSchema.id, workspace)
+      if (existingStore) {
+        // Fully registered - return existing schema
+        return existingSchema
+      }
+      // Schema exists but store not cached - fall through to create store
+    }
 
-    // 2. Create environment for store (persistence comes from caller context)
+    // Ingest schema (or reuse existing)
+    const schema =
+      existingSchema ||
+      metaStore.ingestEnhancedJsonSchema(enhancedSchema, {
+        name: config.name,
+        createdAt: Date.now(),
+      })
+
+    // FIX 2: Get persistence from metaStore's environment (if it's an MST node)
+    let persistence: any = undefined
+    try {
+      const metaEnv = getEnv<any>(metaStore)
+      persistence = metaEnv?.services?.persistence
+    } catch {
+      // metaStore might not be an MST node in tests - that's ok
+    }
+
+    // Create environment with persistence from meta-store
     const env = {
-      services: {},
+      services: { persistence },
       context: {
         schemaName: config.name,
         location: workspace,
       },
     }
 
-    // 3. Create runtime store (reuses conversionResult)
+    // Create runtime store (reuses conversionResult)
     const runtimeStore = conversionResult.createStore(env)
 
-    // 4. Cache runtime store (supports workspace isolation)
-    metaStore.cacheRuntimeStore(schema.id, runtimeStore, workspace)
+    // Cache runtime store (supports workspace isolation)
+    cacheRuntimeStore(schema.id, runtimeStore, workspace)
 
-    // 5. Return Schema entity
+    // Return Schema entity
     return schema
   }
 
