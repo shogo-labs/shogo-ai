@@ -59,7 +59,7 @@ cd apps/web
 bun run dev
 ```
 
-Opens at http://localhost:5173 with three integration demos:
+Opens at http://localhost:3001 with three integration demos:
 - Unit 1: Direct MST store usage
 - Unit 2: Meta-store with Sandpack
 - Unit 3: Conversational builder
