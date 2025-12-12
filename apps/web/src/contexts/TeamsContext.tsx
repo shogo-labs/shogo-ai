@@ -1,138 +1,55 @@
 /**
- * TeamsContext - React context for teams domain store
+ * TeamsContext - Backward-compatible wrapper for ApplicationDomains
  *
- * Provides a teams store for managing organizations, teams, memberships,
- * apps, and invitations. The store is initialized on mount and provides
- * reactive views and actions for team management.
+ * @deprecated Use `useDomain(teamsDomain)` from ApplicationDomains instead.
  *
- * Usage:
+ * This file is kept for backward compatibility with existing code.
+ * New code should use the ApplicationDomains pattern:
+ *
  * ```tsx
- * <TeamsProvider>
- *   <MyApp />
- * </TeamsProvider>
+ * import { useDomain } from './contexts/ApplicationDomains'
+ * import { teamsDomain } from '@shogo/state-api'
  *
- * function MyApp() {
- *   const teams = useTeams()
- *
- *   // Create an organization
- *   teams.organizationCollection.add({
- *     id: crypto.randomUUID(),
- *     name: 'My Org',
- *     slug: 'my-org',
- *     createdAt: Date.now()
- *   })
- *
- *   // Check permissions
- *   const role = teams.resolvePermissions(userId, 'team', teamId)
+ * function MyComponent() {
+ *   const teams = useDomain(teamsDomain)
+ *   // ...
  * }
  * ```
  */
 
-import { createContext, useContext, useRef, useEffect, type ReactNode } from "react"
+import { type ReactNode } from "react"
 import { teamsDomain } from "@shogo/state-api"
+import { ApplicationDomains, useDomain } from "./ApplicationDomains"
 import { MCPPersistence } from "../persistence/MCPPersistence"
 import { mcpService } from "../services/mcpService"
 
-interface TeamsContextValue {
-  store: any
-}
-
-const TeamsContext = createContext<TeamsContextValue | null>(null)
+// Shared persistence instance for backward-compat TeamsProvider
+const teamsLegacyPersistence = new MCPPersistence(mcpService)
 
 export interface TeamsProviderProps {
   children: ReactNode
 }
 
 /**
- * Provider that creates a teams domain store.
+ * @deprecated Use ApplicationDomains with domains={[teamsDomain]} instead
  *
- * Features:
- * - Creates stable store instance (useRef)
- * - Initializes collections on mount
- * - Cleans up on unmount
+ * This wrapper maintains backward compatibility with existing code.
  */
 export function TeamsProvider({ children }: TeamsProviderProps) {
-  const contextRef = useRef<TeamsContextValue | null>(null)
-
-  // Initialize store once using domain() API
-  if (!contextRef.current) {
-    const env = {
-      services: {
-        persistence: new MCPPersistence(mcpService),
-      },
-      context: {
-        schemaName: "teams-workspace",
-      },
-    }
-
-    const store = teamsDomain.createStore(env)
-
-    contextRef.current = { store }
-  }
-
-  // Load persisted data on mount
-  useEffect(() => {
-    const loadData = async () => {
-      const store = contextRef.current?.store
-      if (!store) return
-
-      try {
-        // Initialize MCP session before any tool calls (required for HTTP transport)
-        await mcpService.initializeSession()
-
-        // Load schema on MCP server (ensures runtime store exists for persistence)
-        await mcpService.loadSchema("teams-workspace")
-
-        // Load all collections from persistence
-        await store.organizationCollection.loadAll()
-        await store.teamCollection.loadAll()
-        await store.membershipCollection.loadAll()
-        await store.appCollection.loadAll()
-        await store.invitationCollection.loadAll()
-      } catch (err) {
-        console.error("[TeamsProvider] Failed to load persisted data:", err)
-      }
-    }
-    loadData()
-
-    return () => {
-      // Cleanup on unmount (no-op for now)
-    }
-  }, [])
-
   return (
-    <TeamsContext.Provider value={contextRef.current}>
+    <ApplicationDomains
+      domains={[teamsDomain]}
+      persistence={teamsLegacyPersistence}
+      autoRegister={false} // Don't auto-register since this is legacy pattern
+    >
       {children}
-    </TeamsContext.Provider>
+    </ApplicationDomains>
   )
 }
 
 /**
- * Hook to access the teams store.
- *
- * The teams store provides:
- * - Collections: organizationCollection, teamCollection, membershipCollection, appCollection, invitationCollection
- * - Views: resolvePermissions(userId, resourceType, resourceId)
- * - Collection queries: membershipCollection.findByUserId(userId), findForResource(type, id)
- *
- * Use with observer() from mobx-react-lite for reactive updates:
- * ```tsx
- * import { observer } from 'mobx-react-lite'
- *
- * const MyComponent = observer(() => {
- *   const teams = useTeams()
- *   const orgs = teams.organizationCollection.all()
- *   return <div>{orgs.length} organizations</div>
- * })
- * ```
- *
- * @returns The teams store instance
- * @throws Error if used outside TeamsProvider
+ * @deprecated Use `useDomain(teamsDomain)` instead
  */
 export function useTeams() {
-  const context = useContext(TeamsContext)
-  if (!context) {
-    throw new Error("useTeams must be used within TeamsProvider")
-  }
-  return context.store
+  return useDomain(teamsDomain)
 }
