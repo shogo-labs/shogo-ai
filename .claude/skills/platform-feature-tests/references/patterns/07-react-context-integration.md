@@ -1,12 +1,12 @@
 # Pattern 6: React Context Integration (Testing)
 
-> Test React components that use MST stores via context.
+> Test React components that use MST stores via DomainProvider.
 
 ## Concept
 
-When testing React components that consume stores via context, tests need:
+When testing React components that consume stores via `useDomains()`, tests need:
 
-1. Provider wrapper with mock environment
+1. Test wrapper with DomainProvider and mock environment
 2. Ability to control store state for different scenarios
 3. Reactive assertion support (wait for state changes)
 
@@ -14,16 +14,17 @@ When testing React components that consume stores via context, tests need:
 
 ## Test Setup Pattern
 
-### Component Test with Provider
+### Component Test with DomainProvider
 
 ```typescript
 // __tests__/Dashboard.test.tsx
 
 import { render, screen, waitFor } from '@testing-library/react'
 import { describe, test, expect, beforeEach } from 'bun:test'
-import { PaymentProvider } from '../contexts/PaymentContext'
+import { EnvironmentProvider, createEnvironment } from '../contexts/EnvironmentContext'
+import { DomainProvider } from '../contexts/DomainProvider'
 import { PaymentDashboard } from '../components/PaymentDashboard'
-import { MockPaymentService } from '@shogo/state-api'
+import { paymentDomain, MockPaymentService, NullPersistence } from '@shogo/state-api'
 
 describe('PaymentDashboard', () => {
   let mockPayment: MockPaymentService
@@ -32,47 +33,52 @@ describe('PaymentDashboard', () => {
     mockPayment = new MockPaymentService()
   })
 
-  test('renders loading state initially', () => {
-    render(
-      <PaymentProvider testServices={{ payment: mockPayment }}>
-        <PaymentDashboard />
-      </PaymentProvider>
-    )
+  // Test wrapper helper
+  function renderWithProviders(ui: React.ReactElement, options?: { payment?: MockPaymentService }) {
+    const env = createEnvironment({
+      persistence: new NullPersistence(),
+      services: {
+        payment: options?.payment ?? mockPayment
+      }
+    })
 
+    return render(
+      <EnvironmentProvider env={env}>
+        <DomainProvider domains={{ payment: paymentDomain }}>
+          {ui}
+        </DomainProvider>
+      </EnvironmentProvider>
+    )
+  }
+
+  test('renders loading state initially', () => {
+    renderWithProviders(<PaymentDashboard />)
     expect(screen.getByText('Loading...')).toBeDefined()
   })
 
   test('renders transactions after initialization', async () => {
     // Pre-seed mock data
-    mockPayment = new MockPaymentService({
+    const seededMock = new MockPaymentService({
       existingCharges: new Map([
         ['tx-1', { transactionId: 'tx-1', amount: 1000, success: true }]
       ])
     })
 
-    render(
-      <PaymentProvider testServices={{ payment: mockPayment }}>
-        <PaymentDashboard />
-      </PaymentProvider>
-    )
+    renderWithProviders(<PaymentDashboard />, { payment: seededMock })
 
-    // Wait for initialization
+    // Wait for DomainProvider to load collections
     await waitFor(() => {
       expect(screen.getByText('$10.00')).toBeDefined()
     })
   })
 
   test('displays error on initialization failure', async () => {
-    mockPayment = new MockPaymentService({
+    const failingMock = new MockPaymentService({
       simulateFailure: true,
       failureMessage: 'Connection refused'
     })
 
-    render(
-      <PaymentProvider testServices={{ payment: mockPayment }}>
-        <PaymentDashboard />
-      </PaymentProvider>
-    )
+    renderWithProviders(<PaymentDashboard />, { payment: failingMock })
 
     await waitFor(() => {
       expect(screen.getByText(/Connection refused/)).toBeDefined()
@@ -81,42 +87,96 @@ describe('PaymentDashboard', () => {
 })
 ```
 
-### Provider with Test Support
+### Test Wrapper Component
+
+For cleaner test setup, create a reusable wrapper:
 
 ```typescript
-// contexts/PaymentContext.tsx
+// __tests__/helpers/TestProviders.tsx
 
-type PaymentProviderProps = {
+import { ReactNode } from 'react'
+import { EnvironmentProvider, createEnvironment } from '../../contexts/EnvironmentContext'
+import { DomainProvider } from '../../contexts/DomainProvider'
+import { paymentDomain, teamsDomain, NullPersistence } from '@shogo/state-api'
+import type { IPaymentService, ITeamsService } from '@shogo/state-api'
+
+interface TestProvidersProps {
   children: ReactNode
-  // Allow injecting test services
-  testServices?: {
+  services?: {
     payment?: IPaymentService
+    teams?: ITeamsService
   }
 }
 
-export function PaymentProvider({
-  children,
-  testServices
-}: PaymentProviderProps) {
-  // Use test services if provided, otherwise create real ones
-  if (!storeRef.current) {
-    const paymentService = testServices?.payment
-      ?? new StripePaymentService(config)
+export function TestProviders({ children, services }: TestProvidersProps) {
+  const env = createEnvironment({
+    persistence: new NullPersistence(),
+    services,
+  })
+
+  // Only include domains you need for the test
+  const domains = {
+    payment: paymentDomain,
+    teams: teamsDomain,
+  }
+
+  return (
+    <EnvironmentProvider env={env}>
+      <DomainProvider domains={domains}>
+        {children}
+      </DomainProvider>
+    </EnvironmentProvider>
+  )
+}
+```
+
+### Direct Store Testing (No React)
+
+For unit testing domain logic without React:
+
+```typescript
+// __tests__/payment-domain.test.ts
+
+import { describe, test, expect, beforeEach } from 'bun:test'
+import { paymentDomain, MockPaymentService, NullPersistence } from '@shogo/state-api'
+
+describe('PaymentDomain', () => {
+  let store: any
+  let mockPayment: MockPaymentService
+
+  beforeEach(() => {
+    mockPayment = new MockPaymentService()
 
     const env = {
       services: {
         persistence: new NullPersistence(),
-        payment: paymentService
+        payment: mockPayment
       },
-      context: { schemaName: 'payment' }
+      context: { schemaName: 'test-payment' }
     }
 
-    const { createStore } = createPaymentStore()
-    storeRef.current = createStore(env)
-  }
+    // Use named domain export with createStore method
+    store = paymentDomain.createStore(env)
+  })
 
-  // ... rest of provider
-}
+  test('processes payment through service', async () => {
+    const result = await store.processPayment({
+      amount: 1000,
+      method: 'card'
+    })
+
+    expect(result.success).toBe(true)
+    expect(store.transactionCollection.all().length).toBe(1)
+  })
+
+  test('persists transaction after payment', async () => {
+    await store.processPayment({ amount: 1000, method: 'card' })
+
+    // Transaction should be in collection
+    const transactions = store.transactionCollection.all()
+    expect(transactions[0].amount).toBe(1000)
+  })
+})
 ```
 
 ---
@@ -126,81 +186,60 @@ export function PaymentProvider({
 ### Loading State
 
 ```
-Given: Provider wraps component
+Given: DomainProvider wraps component
 When: Component mounts
-Then: Loading indicator is visible
-Then: After initialization completes, content is visible
+Then: DomainProvider triggers loadAll() on collections
+Then: Loading indicator visible until data loaded
 ```
 
-### Error State
+### Data Loaded
 
 ```
-Given: Mock service configured with simulateFailure: true
-Given: Provider wraps component
-When: Initialization fails
-Then: Error message is displayed
+Given: Mock service returns pre-seeded data
+Given: DomainProvider wraps component
+When: Collections finish loading
+Then: Component renders data from store
 ```
 
 ### User Interaction
 
 ```
 Given: Store initialized with test data
-Given: Component rendered within Provider
+Given: Component rendered within TestProviders
 When: User clicks "Process Payment" button
-Then: mockPayment.getChargeCalls() has 1 entry
-Then: Success message is displayed
+Then: Store action is called
+Then: UI updates to reflect new state
 ```
 
-### Reactive Updates
+### Error Handling
 
 ```
-Given: Component rendered and observing store.items
-When: Store action adds new item
-Then: Component re-renders with new item visible
-```
-
----
-
-## Anti-Patterns
-
-### ❌ Testing Without Provider
-
-```typescript
-// BAD: Hook throws outside provider
-render(<PaymentDashboard />)  // Error: must be within PaymentProvider
-```
-
-### ❌ Not Waiting for Async State
-
-```typescript
-// BAD: Assertion runs before initialization
-render(<PaymentProvider><Dashboard /></PaymentProvider>)
-expect(screen.getByText('Data')).toBeDefined()  // Fails - still loading!
-
-// GOOD: Wait for state change
-await waitFor(() => {
-  expect(screen.getByText('Data')).toBeDefined()
-})
-```
-
-### ❌ Shared Mock Between Tests
-
-```typescript
-// BAD: State leaks between tests
-const mockService = new MockService()
-
-// GOOD: Fresh mock per test
-beforeEach(() => {
-  mockService = new MockService()
-})
+Given: Mock service configured with simulateFailure: true
+When: Component triggers store action
+Then: Error state is captured
+Then: UI displays error message
 ```
 
 ---
 
 ## Checklist
 
-- [ ] Provider accepts testServices prop for DI
-- [ ] Tests use fresh mock instances (beforeEach)
-- [ ] Async state changes use waitFor()
-- [ ] Loading, error, and success states tested
-- [ ] User interactions tested with mock assertions
+- [ ] Test wrapper provides EnvironmentProvider + DomainProvider
+- [ ] Mock services injected via environment, not provider props
+- [ ] NullPersistence used for unit tests (no disk I/O)
+- [ ] Tests wait for async operations with `waitFor()`
+- [ ] Components wrapped with `observer()` for reactivity
+- [ ] Domain logic tests don't need React (use `domain.createStore()` directly)
+
+---
+
+## Key Differences from Old Pattern
+
+| Old Pattern | New Pattern |
+|-------------|-------------|
+| Custom Provider per domain | Shared `DomainProvider` |
+| `testServices` prop on Provider | Services via `EnvironmentProvider` |
+| `createXStore()` factory | `xDomain.createStore(env)` |
+| Manual store creation in tests | Same pattern, just different API |
+
+The main change is that **you no longer need custom context providers per domain**. The shared `DomainProvider` handles all domains, and you configure test services through `EnvironmentProvider`.

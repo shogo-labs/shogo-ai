@@ -1,15 +1,17 @@
 # Pattern 6: React Context Integration
 
-> Wrap MST store in React context with proper lifecycle management.
+> Use `DomainProvider` and `useDomains()` for React-MST integration — no per-domain context needed.
 
 ## Concept
 
 React components need access to MST stores with:
 
 1. Single store instance (not recreated on re-render)
-2. Proper initialization sequence (async setup before UI)
-3. Subscription cleanup on unmount
-4. Reactive updates when store state changes
+2. Automatic data loading on mount
+3. Reactive updates when store state changes
+4. Type-safe access to multiple domains
+
+The `DomainProvider` + `useDomains()` pattern handles all of this centrally — **do not create custom context providers per domain**.
 
 ---
 
@@ -18,177 +20,318 @@ React components need access to MST stores with:
 Apply this pattern when:
 
 - [ ] Feature has React UI components
-- [ ] Multiple components need access to the same store
-- [ ] Store has async initialization (Pattern 5)
-- [ ] Store has subscriptions that need cleanup
+- [ ] Multiple components need access to domain stores
+- [ ] Store needs data loading from persistence on mount
+- [ ] Feature adds a new domain to the app
+
+**Key Point**: You only need to add your domain to the existing `DomainProvider` — never create a new context file.
 
 ---
 
 ## Structure
 
-### Component Breakdown
+### Two-Layer Provider Stack
 
-#### 1. Context + Provider
+```
+EnvironmentProvider     ← Services (persistence, auth) + workspace
+        ↓
+   DomainProvider       ← Map of domain results → stores
+        ↓
+      App/Routes        ← Components use useDomains()
+```
 
-```typescript
-// contexts/{Domain}Context.tsx
+### App Setup (One-Time)
 
-import { createContext, useContext, useRef, useState, useEffect, ReactNode } from 'react'
-import { create{Domain}Store, {Provider}{Domain}Service, NullPersistence } from '@shogo/state-api'
+The app sets up both providers once in `App.tsx`:
 
-type {Domain}Store = ReturnType<ReturnType<typeof create{Domain}Store>['createStore']>
+```tsx
+// App.tsx
+import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
+import { DomainProvider } from './contexts/DomainProvider'
+import { teamsDomain } from '@shogo/state-api'
+import { MCPPersistence } from './persistence/MCPPersistence'
+import { mcpService } from './services/mcp'
 
-const {Domain}Context = createContext<{Domain}Store | null>(null)
+// Create environment with services
+const env = createEnvironment({
+  persistence: new MCPPersistence(mcpService),
+  workspace: import.meta.env.VITE_WORKSPACE,
+})
 
-export function {Domain}Provider({ children }: { children: ReactNode }) {
-  // useRef (not useState) for stable store reference
-  const storeRef = useRef<{Domain}Store | null>(null)
-  const [ready, setReady] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+// Register all domains (add new domains here)
+const domains = {
+  teams: teamsDomain,
+  // inventory: inventoryDomain,  ← Add new domains as needed
+} as const
 
-  // Create store synchronously (not in useEffect)
-  if (!storeRef.current) {
-    const service = new {Provider}{Domain}Service(/* config */)
-    const env = {
-      services: { persistence: new NullPersistence(), {serviceName}: service },
-      context: { schemaName: '{domain}' }
-    }
-    const { createStore } = create{Domain}Store()
-    storeRef.current = createStore(env)
-  }
-
-  // Initialize and subscribe
-  useEffect(() => {
-    const store = storeRef.current
-    if (!store) return
-
-    let unsubscribe: (() => void) | undefined
-
-    store.initialize()
-      .then(result => {
-        if (!result.success) {
-          setError(result.error?.message || 'Init failed')
-          return
-        }
-        unsubscribe = store.setup{Domain}Subscription()
-        setReady(true)
-      })
-      .catch(err => setError(err.message))
-
-    // Cleanup on unmount
-    return () => unsubscribe?.()
-  }, [])
-
-  if (error) return <div>Error: {error}</div>
-  if (!ready) return <div>Loading...</div>
-
+export function App() {
   return (
-    <{Domain}Context.Provider value={storeRef.current}>
-      {children}
-    </{Domain}Context.Provider>
+    <EnvironmentProvider env={env}>
+      <DomainProvider domains={domains}>
+        <Routes>
+          <Route path="/teams-demo" element={<TeamsDemoPage />} />
+          {/* ... */}
+        </Routes>
+      </DomainProvider>
+    </EnvironmentProvider>
   )
 }
 ```
 
-#### 2. Custom Hook
+### Component Usage
 
-```typescript
-export function use{Domain}Store(): {Domain}Store {
-  const store = useContext({Domain}Context)
-  if (!store) {
-    throw new Error('use{Domain}Store must be within {Domain}Provider')
-  }
-  return store
-}
-```
-
-#### 3. Observer Components
-
-```typescript
+```tsx
+// pages/TeamsDemoPage.tsx
 import { observer } from 'mobx-react-lite'
-import { use{Domain}Store } from '../contexts/{Domain}Context'
+import { useDomains } from '../contexts/DomainProvider'
 
-export const {Domain}Dashboard = observer(function {Domain}Dashboard() {
-  const store = use{Domain}Store()
+export const TeamsDemoPage = observer(function TeamsDemoPage() {
+  // Destructure domains from hook — type-safe!
+  const { teams } = useDomains()
 
-  // Reactive: re-renders when these change
-  const items = store.{entity}Collection.all()
+  // Collections are already loaded by DomainProvider
+  const orgs = teams.organizationCollection.all()
+
+  // Use query methods from enhancements.collections
+  const myMemberships = teams.membershipCollection.findByUserId(userId)
+
+  // Use domain actions from enhancements.rootStore
+  const handleCreateOrg = async () => {
+    await teams.createOrganization({ name: 'New Org' })
+  }
 
   return (
-    <ul>
-      {items.map(item => <li key={item.id}>{item.name}</li>)}
-    </ul>
+    <div>
+      <h1>Organizations ({orgs.length})</h1>
+      <ul>
+        {orgs.map(org => (
+          <li key={org.id}>{org.name}</li>
+        ))}
+      </ul>
+      <button onClick={handleCreateOrg}>Create Organization</button>
+    </div>
   )
 })
 ```
 
 ---
 
-## Task Template
+## Adding a New Domain
 
-When creating tasks for React Context integration:
+When implementing a new domain feature, you only need to:
 
-| Task | Acceptance Criteria |
-|------|---------------------|
-| Create {Domain}Context | Context file exports Provider, hook; useRef for store |
-| Add loading/error states | Provider renders loading during init, error on failure |
-| Setup subscription cleanup | useEffect returns unsubscribe function |
-| Create observer components | Components wrapped with `observer()` |
-| Wire into app routing | Provider wraps page/feature component tree |
+### 1. Create domain.ts with domain() API
+
+```typescript
+// packages/state-api/src/inventory/domain.ts
+import { scope } from "arktype"
+import { domain } from "@shogo/state-api"
+
+export const InventoryDomain = scope({ /* entities */ })
+
+// CRITICAL: name must match schema name from design skill
+export const inventoryDomain = domain({
+  name: "inventory",  // Must match .schemas/inventory/schema.json
+  from: InventoryDomain,
+  enhancements: { /* ... */ }
+})
+```
+
+### 2. Add to DomainProvider domains map
+
+```tsx
+// App.tsx
+import { inventoryDomain } from '@shogo/state-api'
+
+const domains = {
+  teams: teamsDomain,
+  inventory: inventoryDomain,  // ← Add here
+} as const
+```
+
+### 3. Use in components
+
+```tsx
+const { inventory } = useDomains()
+const products = inventory.productCollection.all()
+```
+
+**That's it!** No context file, no provider, no custom hook.
+
+---
+
+## Task Template for Demo Page
+
+When creating a demo page task, use these acceptance criteria:
+
+```javascript
+store.create("ImplementationTask", "platform-features", {
+  id: "task-demo-page",
+  name: "demo-page",
+  session: session.id,
+  description: "Create {domain} demo page with useDomains()",
+  acceptanceCriteria: [
+    // DomainProvider Integration
+    "Domain added to App.tsx DomainProvider domains map",
+    "Page uses useDomains() to access store (NOT custom context)",
+
+    // Demo Functionality
+    "Demonstrates CRUD operations for primary entities",
+    "Shows computed views from enhancements.models",
+    "Shows query methods from enhancements.collections",
+    "Shows domain actions from enhancements.rootStore",
+
+    // Persistence
+    "Data survives page refresh (loadAll hydration)",
+    "Uses MCPPersistence (NOT NullPersistence)",
+
+    // Routing
+    "Accessible at /{domain}-demo route"
+  ],
+  dependencies: ["task-domain-store"],
+  status: "planned",
+  createdAt: Date.now()
+})
+```
+
+---
+
+## How DomainProvider Works
+
+The provider handles:
+
+1. **Store Creation**: Creates store from each domain result with environment injection
+2. **Collection Discovery**: Finds all `*Collection` properties on the root store
+3. **Auto Loading**: Calls `loadAll()` on each collection on mount
+4. **Stable References**: Uses `useRef` to maintain single store instances
+
+```tsx
+// Simplified DomainProvider implementation
+function DomainProvider<T extends Record<string, DomainResult>>({
+  domains,
+  children,
+}: {
+  domains: T
+  children: ReactNode
+}) {
+  const env = useEnv()
+  const storesRef = useRef<Map<string, any>>()
+
+  // Create stores once
+  if (!storesRef.current) {
+    storesRef.current = new Map()
+    for (const [key, domain] of Object.entries(domains)) {
+      const store = domain.createStore({
+        ...env,
+        context: { ...env.context, schemaName: domain.name }
+      })
+      storesRef.current.set(key, store)
+    }
+  }
+
+  // Auto-load all collections on mount
+  useEffect(() => {
+    for (const store of storesRef.current!.values()) {
+      // Find all *Collection properties and call loadAll()
+      for (const key of Object.keys(store)) {
+        if (key.endsWith('Collection') && store[key].loadAll) {
+          store[key].loadAll()
+        }
+      }
+    }
+  }, [])
+
+  return (
+    <DomainContext.Provider value={Object.fromEntries(storesRef.current)}>
+      {children}
+    </DomainContext.Provider>
+  )
+}
+```
 
 ---
 
 ## Anti-Patterns
 
-### ❌ useState for Store Reference
+### ❌ Creating Custom Context Per Domain
 
-```typescript
-// BAD: Store recreated on state updates
-const [store] = useState(() => createStore(env))
+```tsx
+// BAD: Custom context for each domain
+export const InventoryContext = createContext<Store | null>(null)
+export function InventoryProvider({ children }) { ... }
+export function useInventory() { ... }
 
-// GOOD: useRef maintains single instance
-const storeRef = useRef<Store | null>(null)
+// GOOD: Use shared DomainProvider
+const domains = {
+  inventory: inventoryDomain,  // Just add to map
+}
+```
+
+### ❌ Manual Data Loading in Components
+
+```tsx
+// BAD: Loading in component
+useEffect(() => {
+  teams.organizationCollection.loadAll()
+}, [])
+
+// GOOD: DomainProvider handles loading automatically
+const { teams } = useDomains()
+const orgs = teams.organizationCollection.all()  // Already loaded!
 ```
 
 ### ❌ Missing Observer Wrapper
 
-```typescript
+```tsx
 // BAD: Component doesn't react to changes
 function Dashboard() {
-  const store = useStore()
-  return <div>{store.items.length}</div>  // Never updates!
+  const { teams } = useDomains()
+  return <div>{teams.organizationCollection.all().length}</div>  // Never updates!
 }
 
 // GOOD: observer enables reactivity
 const Dashboard = observer(function Dashboard() {
-  const store = useStore()
-  return <div>{store.items.length}</div>
+  const { teams } = useDomains()
+  return <div>{teams.organizationCollection.all().length}</div>
 })
 ```
 
-### ❌ Not Cleaning Up Subscription
+### ❌ Using NullPersistence in Demo Pages
 
-```typescript
-// BAD: Memory leak
-useEffect(() => {
-  store.setupSubscription()  // No cleanup!
-}, [])
+```tsx
+// BAD: Data doesn't persist
+const env = createEnvironment({
+  persistence: new NullPersistence(),  // Data lost on refresh!
+})
 
-// GOOD: Return cleanup function
-useEffect(() => {
-  const unsubscribe = store.setupSubscription()
-  return () => unsubscribe?.()
-}, [])
+// GOOD: Use MCPPersistence for demos
+const env = createEnvironment({
+  persistence: new MCPPersistence(mcpService),  // Data survives refresh
+})
 ```
+
+---
+
+## Persistence Layer by Context
+
+| Context | Persistence | Reason |
+|---------|-------------|--------|
+| Client-side demos (`apps/web`) | `MCPPersistence` | No direct filesystem; proves MCP integration |
+| Server/CLI contexts | `FilesystemPersistence` | Direct fs access available |
+| Unit tests | `NullPersistence` | Fast, isolated, no side effects |
+
+**Client demos MUST use MCPPersistence** to prove the full persistence pipeline works.
 
 ---
 
 ## Checklist
 
-- [ ] useRef used for store (not useState)
-- [ ] Store created synchronously (not in useEffect)
-- [ ] initialize() called in useEffect
-- [ ] Subscription cleanup returned from useEffect
-- [ ] Loading and error states handled
-- [ ] Custom hook throws if used outside provider
-- [ ] Components wrapped with observer()
+Before considering React integration complete:
+
+- [ ] Domain added to `DomainProvider` domains map in `App.tsx`
+- [ ] NO custom context/provider created for this domain
+- [ ] Components use `useDomains()` hook to access store
+- [ ] Components wrapped with `observer()` for reactivity
+- [ ] Demo uses `MCPPersistence` (not `NullPersistence`)
+- [ ] Data survives page refresh (verifies persistence pipeline)
+- [ ] Route added for demo page (`/{domain}-demo`)

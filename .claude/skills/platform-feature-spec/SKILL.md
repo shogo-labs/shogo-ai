@@ -92,8 +92,8 @@ Analyze integration points and group them into logical implementation tasks:
 |---------|-----------|----------------------------|
 | Service Interface | Add types.ts, {provider}.ts, mock.ts | Interface has no runtime imports; mock implements full interface |
 | Environment Extension | Extend IEnvironment | Services accessible via getEnv() |
-| **Domain Store** | Add domain.ts with createStoreFromScope | Exports {Domain}Domain scope and create{Domain}Store factory; enhancement hooks add views/actions |
-| React Context | Add Provider, hook, observer components | useRef for store; cleanup in useEffect |
+| **Domain Store** | Add domain.ts with domain() API | Exports {Domain}Domain scope and {domain}Domain result; domain.name matches schema name; enhancements add views/actions |
+| React Integration | Add to DomainProvider, create demo page | Domain in domains map; page uses useDomains() |
 
 See pattern references for detailed structure and anti-patterns:
 - [patterns/02-service-interface.md](references/patterns/02-service-interface.md)
@@ -127,9 +127,9 @@ Domain logic belongs in state-api for isomorphic reuse across consumers (web, mc
 | Service interface (`I{Domain}Service`) | state-api | `src/{domain}/types.ts` |
 | Service implementations | state-api | `src/{domain}/{provider}.ts` |
 | Mock service | state-api | `src/{domain}/mock.ts` |
-| Domain store (`create{Domain}Store`) | state-api | `src/{domain}/domain.ts` |
+| Domain store (`{domain}Domain`) | state-api | `src/{domain}/domain.ts` |
 | Environment extension | state-api | `src/environment/types.ts` |
-| React Provider/Context | apps/web | `src/contexts/{Domain}Context.tsx` |
+| Demo page | apps/web | `src/pages/{Domain}DemoPage.tsx` |
 | UI Components | apps/web | `src/components/{Domain}/*.tsx` |
 | MCP Tools (if needed) | packages/mcp | `src/tools/{domain}.ts` |
 
@@ -152,10 +152,10 @@ When creating IntegrationPoints, **enforce isomorphism** regardless of analysis 
 - `domain.ts` (ArkType scope + store factory)
 
 **MUST be in `apps/web/src/`:**
-- `contexts/{Domain}Context.tsx`
-- `hooks/use{Domain}.ts`
+- `pages/{Domain}DemoPage.tsx`
 - `components/{Domain}/*.tsx`
-- `pages/{Domain}Page.tsx`
+
+**NO custom context/hooks per domain** — use shared `DomainProvider` + `useDomains()`.
 
 **Override analysis findings** if they recommend placing domain logic in apps/web. The analysis skill may incorrectly suggest "keep at React layer" — this violates isomorphism and must be corrected at spec phase.
 
@@ -269,18 +269,18 @@ Ready for platform-feature-tests to create test specifications.
 
 Use the archetype to determine task structure. Do NOT mix templates.
 
-### Domain Archetype (~4 tasks)
+### Domain Archetype (~3 tasks)
 
 Domain features have NO service layer. All logic lives in MST store.
 
 | Task | File | Purpose |
 |------|------|---------|
-| task-{domain}-domain | `state-api/src/{domain}/domain.ts` | ArkType scope + createStoreFromScope + enhancement hooks |
-| task-{domain}-exports | `state-api/src/{domain}/index.ts` | Barrel exports |
-| task-{domain}-context | `apps/web/src/contexts/{Domain}Context.tsx` | React Provider + hook (optional) |
-| task-{domain}-demo | `apps/web/src/pages/{Domain}DemoPage.tsx` | Proof-of-work demo (optional) |
+| task-{domain}-domain | `state-api/src/{domain}/domain.ts` | ArkType scope + `domain({ name, from, enhancements })` |
+| task-{domain}-exports | `state-api/src/{domain}/index.ts` | Barrel exports (`{Domain}Domain`, `{domain}Domain`) |
+| task-{domain}-demo | `apps/web/src/pages/{Domain}DemoPage.tsx` | Proof-of-work demo using `useDomains()` |
 
 **NO types.ts, NO mock.ts, NO environment extension** — these are service layer patterns.
+**NO custom context file** — use shared `DomainProvider` + add domain to domains map.
 
 ### Service Archetype (~7 tasks)
 
@@ -366,28 +366,32 @@ store.create("ImplementationTask", "platform-features", {
   name: "domain-store",
   session: session.id,
   integrationPoint: "ip-domain",
-  description: "Create {domain} domain store with enhancement hooks",
+  description: "Create {domain} domain store with domain() API",
   acceptanceCriteria: [
-    // Schema structure
-    "All entity identifier fields use 'string.uuid' type for proper MST reference resolution",
-    "domain.ts exports {Domain}Domain ArkType scope with entities using MST reference syntax (e.g., order: 'Order' not orderId: 'string')",
-    "Entity relationships use entity name directly—system auto-detects references",
-    "Domain schema contains only business state—no UI state (loading, error, selectedIds)",
+    // Schema Definition
+    "domain.ts exports {Domain}Domain ArkType scope with all entity definitions",
+    "All identifier fields use 'string.uuid' type for MST reference resolution",
+    "Entity references use entity name directly (e.g., teamId: 'Team' not teamId: 'string')",
 
-    // Factory and hooks
-    "domain.ts exports create{Domain}Store() factory using createStoreFromScope",
-    "enhanceModels adds computed views: {list from DesignDecision}",
-    "enhanceCollections adds query methods (required even for simple domains)",
-    "enhanceRootStore adds initialize() and domain actions",
+    // Domain Result (CRITICAL)
+    "domain.ts exports const {domain}Domain = domain({ name, from, enhancements })",
+    "domain.name MUST match schema name from design skill exactly (e.g., 'teams-workspace' not 'teams')",
+    "domain.from is the ArkType scope",
 
-    // Integration
-    "Store integrates with I{Domain}Service via getEnv()",
+    // Enhancement Hooks
+    "enhancements.models adds computed views: {list from DesignDecision}",
+    "enhancements.collections adds query methods",
+    "enhancements.rootStore adds domain actions and views",
+    "All hooks spread base: { ...models, EnhancedModel: models.Model.views(...) }",
+
+    // Persistence (auto-composed)
+    "CollectionPersistable auto-composed (do NOT manually compose)",
 
     // Reference integrity (REQUIRED)
     "Tests verify reference fields resolve to entity instances (not just ID strings)",
     "Tests verify optional references return undefined when not set"
   ],
-  dependencies: ["task-service-interface", "task-environment-extension"],
+  dependencies: [],  // Domain archetype has no service dependencies
   status: "planned",
   createdAt: Date.now()
 })
@@ -396,41 +400,57 @@ store.create("ImplementationTask", "platform-features", {
 **What this pattern replaces** (DO NOT create these):
 - ❌ "Create {Domain}Mixin" task → would create mixin.ts with hand-coded MST
 - ❌ "Create enhancement hooks" task → would create separate hooks.ts
-- ❌ Multiple tasks for views/actions/initialization → fragments cohesive domain logic
+- ❌ "Create {Domain}Context" task → DomainProvider handles React integration
+- ❌ Manual CollectionPersistable composition → auto-composed by domain()
+- ❌ Factory function export (`createXStore`) → export named domain result (`xDomain`)
 
 **Single domain.ts contains:**
 - ArkType scope defining all domain entities
-- `createStoreFromScope()` call with all three enhancement hook callbacks
+- `domain()` call with `name`, `from`, and `enhancements`
 - All domain logic in one cohesive, testable unit
 
 See [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.md) for the complete hook API and examples.
 
 ### Proof-of-Work Page Task
 
-For features with external service integration, create a demo page task:
+Create a demo page task proving the feature works end-to-end:
 
 ```javascript
 store.create("ImplementationTask", "platform-features", {
   id: "task-proof-of-work-page",
   name: "proof-of-work-page",
   session: session.id,
-  description: "Create proof-of-work page demonstrating {feature} end-to-end with real {service}",
+  description: "Create proof-of-work page demonstrating {feature} end-to-end",
   acceptanceCriteria: [
+    // DomainProvider Integration
+    "Domain added to App.tsx DomainProvider domains map",
+    "Page uses useDomains() to access store (NOT custom context)",
+
+    // Complete Flow Proof (Service archetype only)
     "Page demonstrates complete flow with real service credentials (not mocks)",
     "Shows all major feature scenarios end-to-end",
     "Displays real data returned from service",
+
+    // Demo Functionality (All archetypes)
+    "Demonstrates CRUD operations for primary entities",
+    "Shows computed views from enhancements.models",
+    "Shows query methods from enhancements.collections",
     "Includes loading states and error handling",
+
+    // Persistence
     "Uses MCPPersistence for client-side persistence (NOT NullPersistence)",
     "Data survives page refresh (proves MCP → Wavesmith → disk pipeline)",
+
+    // Routing
     "Accessible at /{feature}-demo route"
   ],
-  dependencies: ["task-react-context", "task-domain-store"],
+  dependencies: ["task-domain-store"],
   status: "planned",
   createdAt: Date.now()
 })
 ```
 
-**When required**: Any feature integrating with external services (auth providers, payment processors, storage backends, etc.) should include this task.
+**When required**: All features should include this task. For Service/Hybrid archetypes, include real service credentials proof. For Domain archetype, prove local persistence works end-to-end.
 
 **Persistence layer by context:**
 

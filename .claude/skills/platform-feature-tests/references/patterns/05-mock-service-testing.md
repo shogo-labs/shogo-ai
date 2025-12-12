@@ -117,8 +117,8 @@ describe('OrderStore', () => {
       context: { schemaName: 'test' }
     }
 
-    const { createStore } = createOrderStore()
-    store = createStore(env)
+    // Use named domain export with createStore method
+    store = orderDomain.createStore(env)
   })
 
   // Tests...
