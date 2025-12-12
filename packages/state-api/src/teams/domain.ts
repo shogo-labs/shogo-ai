@@ -1,14 +1,16 @@
 /**
  * Teams Domain Store
  *
- * Schema-first implementation using createStoreFromScope.
- * Defines Organization, Team, Membership, App, Invitation entities with enhancement hooks
- * for computed views (level, isExpired), collection queries (findByUserId, findForResource),
- * and permission resolution.
+ * Uses the domain() composition API to define Organization, Team, Membership,
+ * App, Invitation entities with enhancement hooks for computed views (level, isExpired),
+ * collection queries (findByUserId, findForResource), and permission resolution.
+ *
+ * Migration note: Switched from createStoreFromScope to domain() API.
+ * CollectionPersistable is now auto-composed by domain().
  */
 
 import { scope } from "arktype"
-import { createStoreFromScope } from "../schematic"
+import { domain } from "../domain"
 
 // ============================================================
 // 1. ROLE LEVELS (for permission comparison)
@@ -82,17 +84,21 @@ export interface CreateTeamsStoreOptions {
 }
 
 // ============================================================
-// 4. STORE FACTORY WITH ENHANCEMENT HOOKS
+// 4. DOMAIN DEFINITION WITH ENHANCEMENTS
 // ============================================================
 
-export function createTeamsStore(options: CreateTeamsStoreOptions = {}) {
-  return createStoreFromScope(TeamsDomain, {
-    validateReferences: options.validateReferences,
-
+/**
+ * Teams domain with all enhancements.
+ * Registered in enhancement registry for meta-store integration.
+ */
+export const teamsDomain = domain({
+  name: "teams-workspace",
+  from: TeamsDomain,
+  enhancements: {
     // --------------------------------------------------------
-    // enhanceModels: Add computed views to individual entities
+    // models: Add computed views to individual entities
     // --------------------------------------------------------
-    enhanceModels: (models) => ({
+    models: (models) => ({
       ...models,
 
       // Membership.level - numeric role value for comparison
@@ -118,9 +124,9 @@ export function createTeamsStore(options: CreateTeamsStoreOptions = {}) {
     }),
 
     // --------------------------------------------------------
-    // enhanceCollections: Add query methods to collections
+    // collections: Add query methods (CollectionPersistable auto-composed)
     // --------------------------------------------------------
-    enhanceCollections: (collections) => ({
+    collections: (collections) => ({
       ...collections,
 
       MembershipCollection: collections.MembershipCollection.views((self: any) => ({
@@ -147,9 +153,9 @@ export function createTeamsStore(options: CreateTeamsStoreOptions = {}) {
     }),
 
     // --------------------------------------------------------
-    // enhanceRootStore: Add domain actions and views
+    // rootStore: Add domain actions and views
     // --------------------------------------------------------
-    enhanceRootStore: (RootModel) =>
+    rootStore: (RootModel) =>
       RootModel.views((self: any) => ({
         /**
          * Resolve effective permissions for a user on a resource.
@@ -168,17 +174,6 @@ export function createTeamsStore(options: CreateTeamsStoreOptions = {}) {
         ): string | null {
           let maxLevel = 0
           let maxRole: string | null = null
-
-          // Helper to check membership and update max role
-          const checkMembership = (type: "organization" | "team", id: string) => {
-            const memberships = self.membershipCollection.findForResource(type, id)
-            for (const m of memberships) {
-              if (m.userId === userId && m.level > maxLevel) {
-                maxLevel = m.level
-                maxRole = m.role
-              }
-            }
-          }
 
           // Helper to check user memberships directly
           const checkUserMemberships = (type: "organization" | "team", id: string) => {
@@ -234,5 +229,23 @@ export function createTeamsStore(options: CreateTeamsStoreOptions = {}) {
           return maxRole
         },
       })),
-  })
+  },
+})
+
+// ============================================================
+// 5. BACKWARD-COMPATIBLE STORE FACTORY
+// ============================================================
+
+/**
+ * Creates teams store with backward-compatible API.
+ * Returns object with createStore and RootStoreModel for compatibility
+ * with existing code that expects createStoreFromScope shape.
+ */
+export function createTeamsStore(_options: CreateTeamsStoreOptions = {}) {
+  return {
+    createStore: teamsDomain.createStore,
+    RootStoreModel: teamsDomain.RootStoreModel,
+    // Also expose domain result for new code
+    domain: teamsDomain,
+  }
 }

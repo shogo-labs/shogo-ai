@@ -17,6 +17,9 @@ export * from './composition'
 // Schema transformation pipeline
 export * from './schematic'
 
+// Domain composition API
+export * from './domain'
+
 // Meta-store system
 export * from './meta'
 

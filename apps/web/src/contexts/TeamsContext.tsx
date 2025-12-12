@@ -29,7 +29,9 @@
  */
 
 import { createContext, useContext, useRef, useEffect, type ReactNode } from "react"
-import { createTeamsStore, NullPersistence } from "@shogo/state-api"
+import { teamsDomain } from "@shogo/state-api"
+import { MCPPersistence } from "../persistence/MCPPersistence"
+import { mcpService } from "../services/mcpService"
 
 interface TeamsContextValue {
   store: any
@@ -52,31 +54,49 @@ export interface TeamsProviderProps {
 export function TeamsProvider({ children }: TeamsProviderProps) {
   const contextRef = useRef<TeamsContextValue | null>(null)
 
-  // Initialize store once
+  // Initialize store once using domain() API
   if (!contextRef.current) {
     const env = {
       services: {
-        persistence: new NullPersistence(),
+        persistence: new MCPPersistence(mcpService),
       },
       context: {
-        schemaName: "teams",
+        schemaName: "teams-workspace",
       },
     }
 
-    const result = createTeamsStore()
-    const store = result.createStore(env)
+    const store = teamsDomain.createStore(env)
 
     contextRef.current = { store }
   }
 
-  // Initialize store on mount
+  // Load persisted data on mount
   useEffect(() => {
-    // Store is ready to use - no async initialization needed for domain stores
-    // This effect is here for cleanup purposes
+    const loadData = async () => {
+      const store = contextRef.current?.store
+      if (!store) return
+
+      try {
+        // Initialize MCP session before any tool calls (required for HTTP transport)
+        await mcpService.initializeSession()
+
+        // Load schema on MCP server (ensures runtime store exists for persistence)
+        await mcpService.loadSchema("teams-workspace")
+
+        // Load all collections from persistence
+        await store.organizationCollection.loadAll()
+        await store.teamCollection.loadAll()
+        await store.membershipCollection.loadAll()
+        await store.appCollection.loadAll()
+        await store.invitationCollection.loadAll()
+      } catch (err) {
+        console.error("[TeamsProvider] Failed to load persisted data:", err)
+      }
+    }
+    loadData()
 
     return () => {
-      // Cleanup on unmount
-      // Domain stores don't have external subscriptions to clean up
+      // Cleanup on unmount (no-op for now)
     }
   }, [])
 
