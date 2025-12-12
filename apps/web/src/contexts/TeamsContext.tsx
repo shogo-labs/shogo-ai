@@ -29,7 +29,7 @@
  */
 
 import { createContext, useContext, useRef, useEffect, type ReactNode } from "react"
-import { createTeamsStore } from "@shogo/state-api"
+import { teamsDomain } from "@shogo/state-api"
 import { MCPPersistence } from "../persistence/MCPPersistence"
 import { mcpService } from "../services/mcpService"
 
@@ -54,7 +54,7 @@ export interface TeamsProviderProps {
 export function TeamsProvider({ children }: TeamsProviderProps) {
   const contextRef = useRef<TeamsContextValue | null>(null)
 
-  // Initialize store once
+  // Initialize store once using domain() API
   if (!contextRef.current) {
     const env = {
       services: {
@@ -65,8 +65,7 @@ export function TeamsProvider({ children }: TeamsProviderProps) {
       },
     }
 
-    const result = createTeamsStore()
-    const store = result.createStore(env)
+    const store = teamsDomain.createStore(env)
 
     contextRef.current = { store }
   }
