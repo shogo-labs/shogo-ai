@@ -6,7 +6,7 @@
  */
 
 // Domain scope and store factory
-export { TeamsDomain, createTeamsStore } from "./domain"
+export { TeamsDomain, teamsDomain, createTeamsStore } from "./domain"
 
 // Types
 export type { CreateTeamsStoreOptions } from "./domain"

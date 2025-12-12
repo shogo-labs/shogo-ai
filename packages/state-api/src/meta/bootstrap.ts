@@ -6,7 +6,7 @@
  * Runtime stores are dynamically generated MST stores for actual data.
  */
 
-import { createMetaStore, type MetaStoreOptions } from "./meta-store"
+import { createMetaStore } from "./meta-store"
 import type { IMetaStoreEnvironment } from "../environment/types"
 
 // Re-export runtime store cache functions for backward compatibility
@@ -34,11 +34,6 @@ let _metaStore: any = null
  * Used to detect configuration changes and pass to createStore().
  */
 let _metaStoreEnv: IMetaStoreEnvironment | undefined
-
-/**
- * @deprecated Use _metaStoreEnv instead
- */
-let _metaStoreOptions: MetaStoreOptions | undefined
 
 /**
  * Gets or creates the singleton meta-store.
@@ -106,5 +101,4 @@ export function createMetaStoreInstance(env?: IMetaStoreEnvironment) {
 export function resetMetaStore() {
   _metaStore = null
   _metaStoreEnv = undefined
-  _metaStoreOptions = undefined
 }

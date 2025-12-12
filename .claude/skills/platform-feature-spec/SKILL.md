@@ -420,6 +420,8 @@ store.create("ImplementationTask", "platform-features", {
     "Shows all major feature scenarios end-to-end",
     "Displays real data returned from service",
     "Includes loading states and error handling",
+    "Uses MCPPersistence for client-side persistence (NOT NullPersistence)",
+    "Data survives page refresh (proves MCP → Wavesmith → disk pipeline)",
     "Accessible at /{feature}-demo route"
   ],
   dependencies: ["task-react-context", "task-domain-store"],
@@ -429,6 +431,14 @@ store.create("ImplementationTask", "platform-features", {
 ```
 
 **When required**: Any feature integrating with external services (auth providers, payment processors, storage backends, etc.) should include this task.
+
+**Persistence layer by context:**
+
+| Context | Persistence | Reason |
+|---------|-------------|--------|
+| Client-side demos (apps/web) | MCPPersistence | No direct filesystem; proves MCP integration |
+| Server/CLI contexts | FilesystemPersistence | Direct fs access available |
+| Unit tests | NullPersistence | Fast, isolated, no side effects |
 
 ## References
 

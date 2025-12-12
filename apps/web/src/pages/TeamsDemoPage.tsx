@@ -128,12 +128,13 @@ export const TeamsDemoPage = observer(function TeamsDemoPage() {
     setError(null)
 
     try {
-      teams.organizationCollection.add({
+      const newOrg = teams.organizationCollection.add({
         id: crypto.randomUUID(),
         name: orgName,
         slug: orgSlug,
         createdAt: Date.now(),
       })
+      await teams.organizationCollection.saveOne(newOrg.id)
       setOrgName("")
       setOrgSlug("")
     } catch (err: any) {
@@ -152,13 +153,14 @@ export const TeamsDemoPage = observer(function TeamsDemoPage() {
     }
 
     try {
-      teams.teamCollection.add({
+      const newTeam = teams.teamCollection.add({
         id: crypto.randomUUID(),
         name: teamName,
         organizationId: currentOrg.id,
         parentId: parentTeamId || undefined,
         createdAt: Date.now(),
       })
+      await teams.teamCollection.saveOne(newTeam.id)
       setTeamName("")
       setParentTeamId("")
     } catch (err: any) {
@@ -178,7 +180,7 @@ export const TeamsDemoPage = observer(function TeamsDemoPage() {
 
     try {
       const [targetType, targetId] = memberTarget.split(":")
-      teams.membershipCollection.add({
+      const newMembership = teams.membershipCollection.add({
         id: crypto.randomUUID(),
         userId: memberUserId,
         role: memberRole,
@@ -186,6 +188,7 @@ export const TeamsDemoPage = observer(function TeamsDemoPage() {
         teamId: targetType === "team" ? targetId : undefined,
         createdAt: Date.now(),
       })
+      await teams.membershipCollection.saveOne(newMembership.id)
       setMemberUserId("")
       setMemberRole("member")
     } catch (err: any) {

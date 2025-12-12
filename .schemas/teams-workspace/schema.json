@@ -1,15 +1,16 @@
 {
-  "id": "40a4b21b-344b-45a9-bea6-766a36333683",
+  "id": "8a98fcaa-6740-4dee-b0f8-c23bed0f9af3",
   "name": "teams-workspace",
   "format": "enhanced-json-schema",
-  "createdAt": 1765394919163,
+  "createdAt": 1765404569474,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "Organization": {
       "type": "object",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "slug"
+        "displayKey": "slug",
+        "nested": false
       },
       "properties": {
         "id": {
@@ -44,7 +45,8 @@
       "type": "object",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "name"
+        "displayKey": "name",
+        "nested": true
       },
       "properties": {
         "id": {
@@ -87,7 +89,8 @@
       "type": "object",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "id"
+        "displayKey": "id",
+        "nested": false
       },
       "properties": {
         "id": {
@@ -136,7 +139,8 @@
       "type": "object",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "name"
+        "displayKey": "name",
+        "nested": true
       },
       "properties": {
         "id": {
@@ -173,7 +177,8 @@
       "type": "object",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "email"
+        "displayKey": "email",
+        "nested": false
       },
       "properties": {
         "id": {

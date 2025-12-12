@@ -19,5 +19,5 @@ export type { MockAuthServiceOptions } from "./mock"
 export { SupabaseAuthService } from "./supabase"
 
 // Domain store
-export { AuthDomain, createAuthStore } from "./domain"
+export { AuthDomain, authDomain, createAuthStore } from "./domain"
 export type { CreateAuthStoreOptions } from "./domain"

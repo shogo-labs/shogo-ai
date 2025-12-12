@@ -23,17 +23,6 @@ import { createRootStoreEnhancements } from "./meta-store-root-enhancements"
 import type { IPersistenceService } from "../persistence/types"
 
 /**
- * Options for creating a meta-store with persistence support.
- *
- * @deprecated Pass persistence via environment to createStore() instead.
- * This type is kept for backward compatibility but will be removed in v2.
- */
-export interface MetaStoreOptions {
-  /** Persistence service for isomorphic schema loading and runtime store data */
-  persistence?: IPersistenceService
-}
-
-/**
  * Creates an enhanced meta-store with layered computed views.
  *
  * Uses enhancement hooks to add views and actions BEFORE store instantiation.
@@ -56,7 +45,7 @@ export interface MetaStoreOptions {
  * @param _options - DEPRECATED. Pass persistence via environment instead.
  * @returns Enhanced store factory with models and createStore function
  */
-export function createMetaStore(_options?: MetaStoreOptions) {
+export function createMetaStore() {
   return createStoreFromScope(MetaRegistry, {
     // HOOK 1: Enhance entity models with layered views
     enhanceModels: (baseModels) => ({
