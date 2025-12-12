@@ -10,7 +10,7 @@
 
 import { useState } from "react"
 import { observer } from "mobx-react-lite"
-import { useTeams } from "../contexts/TeamsContext"
+import { useDomains } from "../contexts/DomainProvider"
 
 // Styles
 const containerStyle = {
@@ -101,7 +101,7 @@ const hierarchyIndent = (level: number) => ({
 })
 
 export const TeamsDemoPage = observer(function TeamsDemoPage() {
-  const teams = useTeams()
+  const { teams } = useDomains()
 
   // Form state
   const [orgName, setOrgName] = useState("")

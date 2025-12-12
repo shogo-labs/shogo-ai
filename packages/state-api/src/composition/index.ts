@@ -24,3 +24,6 @@
 
 // Unit 4: Persistable mixin
 export { CollectionPersistable } from './persistable'
+
+// Shared utility for collection enhancement (used by domain() and loadSchema())
+export { buildEnhanceCollections } from './enhance-collections'
