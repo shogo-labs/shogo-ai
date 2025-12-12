@@ -106,12 +106,27 @@ export function DomainProvider<T extends DomainsMap>({
     console.log(`[DomainProvider] Created stores for: ${Object.keys(stores).join(", ")}`)
   }
 
-  // Load persisted data on mount
+  // Load schemas and persisted data on mount
   useEffect(() => {
     const loadAllDomainData = async () => {
       const stores = storesRef.current
       if (!stores) return
 
+      // First, ensure schemas are loaded into the MCP server's meta-store
+      // This is required before store.create/update operations will work
+      const persistence = env.services?.persistence as any
+      if (persistence?.loadSchema) {
+        for (const [key, domain] of Object.entries(domains)) {
+          try {
+            await persistence.loadSchema(domain.name, env.context?.location)
+            console.log(`[DomainProvider] Loaded schema for "${key}" (${domain.name})`)
+          } catch (err) {
+            console.error(`[DomainProvider] Failed to load schema for "${key}":`, err)
+          }
+        }
+      }
+
+      // Then load persisted data for each store
       for (const [key, store] of Object.entries(stores)) {
         try {
           // Find all collections (properties ending with "Collection")

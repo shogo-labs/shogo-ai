@@ -78,7 +78,7 @@ All domain entities use the collection pattern. What might seem like a "singleto
   }
 }
 ```
-Access: `store.appSettingsCollection.get("default")` or add a `currentSettings` view in enhanceRootStore.
+Access: `store.appSettingsCollection.get("default")` or add a `currentSettings` view in `rootStore` enhancements.
 
 | Feature Type | Entities | Notes |
 |--------------|----------|-------|
@@ -196,10 +196,10 @@ If the answer to all three is "no", it's UI state and belongs in React, not the 
 
 | Schema Element | Enhancement Hook | Design Implication |
 |----------------|------------------|-------------------|
-| Raw value fields | `enhanceModels` views | Store priceInCents, hook provides displayPrice |
-| Status enums | `enhanceModels` views | Store status, hook provides isActive, isComplete |
-| Collection queries | `enhanceCollections` views | Index by field, hook provides findBy{Field} |
-| Cross-entity actions | `enhanceRootStore` actions | Ensure fields needed for coordination exist |
+| Raw value fields | `models` views | Store priceInCents, model provides displayPrice |
+| Status enums | `models` views | Store status, model provides isActive, isComplete |
+| Collection queries | `collections` views | Index by field, collection provides findBy{Field} |
+| Cross-entity actions | `rootStore` actions | Ensure fields needed for coordination exist |
 
 **Key principle**: Don't duplicate in schema what hooks will compute. Ensure raw fields exist for hooks to derive from.
 
@@ -269,7 +269,7 @@ When designing entities, consider how they'll flow through the schematic pipelin
 - Reference with `x-reference-type: single` → ArkType `product: 'Product'` (entity name only, no `.id` suffix)
 - Reference with `x-reference-type: array` → ArkType `items: 'Item[]'` (entity name with `[]`)
 - Computed inverse arrays → Include them - system auto-detects and marks `x-computed: true`
-- Computed **views** (derived values) → **NOT in schema** - added via `enhanceModels` hook during implementation
+- Computed **views** (derived values) → **NOT in schema** - added via `models` enhancements during implementation
 
 **Steps:**
 1. Build Enhanced JSON Schema structure
@@ -424,16 +424,16 @@ If user chooses "Adjust", capture specific overrides before continuing.
      id: uuid(),
      name: "enhancement-hooks-plan",
      session: session.id,
-     question: "What enhancement hooks will the domain need?",
-     decision: "enhanceModels: {Entity}.{view}; enhanceCollections: {Collection}.{method}; enhanceRootStore: {actions}",
-     rationale: "All hooks will be implemented in a single domain.ts using createStoreFromScope(). The spec skill will create ONE 'Domain Store' task for this - never separate mixin.ts or hooks.ts files."
+     question: "What enhancements will the domain need?",
+     decision: "models: {Entity}.{view}; collections: {Collection}.{method}; rootStore: {actions}",
+     rationale: "All enhancements composed via domain({ name, from, enhancements }). CollectionPersistable auto-composed. Export named domain result ({domain}Domain) for DomainProvider integration."
    })
    ```
 
-   **Enhancement hooks template:**
-   - `enhanceModels: EntityName.viewOrAction` - computed from entity fields
-   - `enhanceCollections: EntityCollection.method` - query helpers
-   - `enhanceRootStore: actionOrView` - coordination, initialization, cross-entity
+   **Enhancements template:**
+   - `models: EntityName.viewOrAction` - computed from entity fields
+   - `collections: EntityCollection.method` - query helpers
+   - `rootStore: actionOrView` - coordination, CRUD actions
 
    **Important**: This DesignDecision directly informs the spec skill. The spec skill reads these hooks and creates a single "Domain Store" task with acceptance criteria derived from this decision. See [patterns/04-enhancement-hooks.md](references/patterns/04-enhancement-hooks.md).
 
