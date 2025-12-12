@@ -4,33 +4,51 @@ The golden path for implementing domain logic in Shogo. This pattern ensures all
 
 ## Core Principle
 
-**Schema defines structure. Hooks add behavior.**
+**Schema defines structure. Enhancements add behavior.**
 
 - ArkType scope defines entity shapes and relationships
-- `createStoreFromScope()` generates MST models, collections, and root store
+- `domain()` generates MST models, collections, and root store with **auto-composed persistence**
 - Enhancement hooks add computed views, queries, and domain actions
 
 ## File Structure
 
+### Domain Archetype (Internal Feature)
+
+For features where all data is local — no external API calls:
+
 ```
 packages/state-api/src/{feature}/
-├── types.ts      # IService interface + domain types (for service layer)
+├── domain.ts     # ArkType scope + domain() definition ← THE KEY FILE
+├── index.ts      # Barrel exports
+└── __tests__/
+    └── domain.test.ts  # Domain logic tests
+```
+
+**No `types.ts`, `mock.ts`, or `{provider}.ts`** — these are for Service archetype only.
+
+### Service/Hybrid Archetype (External API)
+
+For features that integrate with external services:
+
+```
+packages/state-api/src/{feature}/
+├── types.ts      # IService interface + domain types
 ├── mock.ts       # Mock service for TDD
 ├── {provider}.ts # Real service implementation (e.g., supabase.ts)
-├── domain.ts     # ArkType scope + createStore factory ← THE KEY FILE
+├── domain.ts     # ArkType scope + domain() definition ← THE KEY FILE
 ├── index.ts      # Barrel exports
 └── __tests__/
     ├── mock.test.ts   # Service interface tests
-    └── store.test.ts  # Domain logic tests (uses mock service)
+    └── domain.test.ts # Domain logic tests
 ```
+
+---
 
 ## domain.ts Template
 
 ```typescript
 import { scope } from 'arktype'
-import { getEnv } from 'mobx-state-tree'
-import { createStoreFromScope } from '../schematic'
-import type { IEnvironment } from '../environment/types'
+import { domain } from '@shogo/state-api'
 
 // ============================================================
 // 1. DOMAIN SCHEMA (ArkType)
@@ -41,62 +59,61 @@ import type { IEnvironment } from '../environment/types'
 
 export const InventoryDomain = scope({
   Product: {
-    id: 'string',
+    id: 'string.uuid',        // Use string.uuid for identifiers
     sku: 'string',
     name: 'string',
     priceInCents: 'number',
-    category: 'string',
-    isActive: 'boolean = true',
+    category: 'Category',      // Reference - just the entity name
+    'isActive?': 'boolean',    // Optional with property syntax
     createdAt: 'number',
-    stockLevels: 'StockLevel[]',   // Computed inverse (auto-detected)
+  },
+
+  Category: {
+    id: 'string.uuid',
+    name: 'string',
+    'parentId?': 'Category',   // Optional self-reference
+    'products?': 'Product[]',  // Computed inverse (auto-detected)
   },
 
   StockLevel: {
-    id: 'string',
-    product: 'Product',            // Reference - just the entity name
-    warehouse: 'Warehouse',        // Reference - just the entity name
+    id: 'string.uuid',
+    product: 'Product',        // Required reference
+    warehouse: 'Warehouse',    // Required reference
     quantity: 'number',
-    reorderPoint: 'number = 10',
+    reorderPoint: 'number',
     lastUpdated: 'number',
   },
 
   Warehouse: {
-    id: 'string',
+    id: 'string.uuid',
     name: 'string',
     location: 'string',
-    stockLevels: 'StockLevel[]',   // Computed inverse (auto-detected)
+    'stockLevels?': 'StockLevel[]',  // Computed inverse
   },
 })
 
 // ============================================================
-// 2. STORE FACTORY OPTIONS
+// 2. DOMAIN RESULT
 // ============================================================
+// CRITICAL: name MUST match the schema name from design skill
+// This ensures persistence loads from correct .schemas/{name}/data/ directory
 
-export interface CreateInventoryStoreOptions {
-  /** Environment with injected services */
-  environment?: Partial<IEnvironment>
-  /** Enable reference validation (default: true in dev) */
-  validateReferences?: boolean
-}
-
-// ============================================================
-// 3. STORE FACTORY WITH ENHANCEMENT HOOKS
-// ============================================================
-
-export function createInventoryStore(options: CreateInventoryStoreOptions = {}) {
-  return createStoreFromScope(InventoryDomain, {
-    validateReferences: options.validateReferences,
-
+export const inventoryDomain = domain({
+  name: 'inventory',  // Must match schema name exactly
+  from: InventoryDomain,
+  enhancements: {
     // --------------------------------------------------------
-    // enhanceModels: Add computed views to individual entities
-    // Receives: Record<string, IAnyModelType> - all generated models
-    // Returns: Same record with enhanced models
+    // models: Add computed views to individual entities
     // --------------------------------------------------------
-    enhanceModels: (models) => ({
+    models: (models) => ({
       ...models,
       Product: models.Product.views((self: any) => ({
         get displayPrice(): string {
           return `$${(self.priceInCents / 100).toFixed(2)}`
+        },
+        get isInStock(): boolean {
+          // Access inverse relationship
+          return (self.stockLevels || []).some((s: any) => s.quantity > 0)
         },
       })),
       StockLevel: models.StockLevel.views((self: any) => ({
@@ -112,29 +129,27 @@ export function createInventoryStore(options: CreateInventoryStoreOptions = {}) 
     }),
 
     // --------------------------------------------------------
-    // enhanceCollections: Add query methods to collections
-    // Receives: Record<string, IAnyModelType> - all collection models
-    // Returns: Same record with enhanced collections
+    // collections: Add query methods
+    // NOTE: CollectionPersistable is AUTO-COMPOSED - don't add manually!
     // --------------------------------------------------------
-    enhanceCollections: (collections) => ({
+    collections: (collections) => ({
       ...collections,
       ProductCollection: collections.ProductCollection.views((self: any) => ({
         get active() {
-          return self.all().filter((p: any) => p.isActive)
+          return self.all().filter((p: any) => p.isActive !== false)
         },
         findBySku(sku: string) {
           return self.all().find((p: any) => p.sku === sku)
         },
-        forCategory(category: string) {
-          return self.all().filter((p: any) => p.category === category)
+        findByCategory(categoryId: string) {
+          return self.all().filter((p: any) => p.category?.id === categoryId)
         },
       })),
       StockLevelCollection: collections.StockLevelCollection.views((self: any) => ({
-        forProduct(productId: string) {
-          // s.product is the resolved entity instance, s.product.id gets the ID
+        findByProduct(productId: string) {
           return self.all().filter((s: any) => s.product?.id === productId)
         },
-        forWarehouse(warehouseId: string) {
+        findByWarehouse(warehouseId: string) {
           return self.all().filter((s: any) => s.warehouse?.id === warehouseId)
         },
         get lowStock() {
@@ -144,18 +159,15 @@ export function createInventoryStore(options: CreateInventoryStoreOptions = {}) 
     }),
 
     // --------------------------------------------------------
-    // enhanceRootStore: Add domain actions and coordination
-    // Receives: IAnyModelType - the root store model
-    // Returns: Enhanced model with views and actions
+    // rootStore: Add domain actions and coordination
     // --------------------------------------------------------
-    enhanceRootStore: (RootModel) =>
+    rootStore: (RootModel) =>
       RootModel
         .views((self: any) => ({
-          // Aggregate views across collections
           get totalInventoryValue(): number {
             let total = 0
             for (const product of self.productCollection.all()) {
-              const levels = self.stockLevelCollection.forProduct(product.id)
+              const levels = self.stockLevelCollection.findByProduct(product.id)
               const totalQty = levels.reduce((sum: number, l: any) => sum + l.quantity, 0)
               total += product.priceInCents * totalQty
             }
@@ -163,56 +175,57 @@ export function createInventoryStore(options: CreateInventoryStoreOptions = {}) 
           },
         }))
         .actions((self: any) => ({
-          // Initialize from external service
-          async initialize() {
-            const env = getEnv<IEnvironment>(self)
-            const service = env.services.inventory
-            if (!service) return
-
-            const products = await service.fetchProducts()
-            for (const p of products) {
-              self.productCollection.add(p)
-            }
-
-            const levels = await service.fetchStockLevels()
-            for (const l of levels) {
-              self.stockLevelCollection.add(l)
-            }
-          },
-
-          // Domain action: adjust stock with service call
-          async adjustStock(productId: string, warehouseId: string, delta: number) {
-            const env = getEnv<IEnvironment>(self)
-            const result = await env.services.inventory.adjustStock(productId, warehouseId, delta)
-
-            // Sync result to local state
-            const existing = self.stockLevelCollection.forProduct(productId)
-              .find((s: any) => s.warehouse?.id === warehouseId)
-
-            if (existing) {
-              existing.update({ quantity: result.newQuantity, lastUpdated: Date.now() })
-            }
-          },
-
-          // Domain action: add new product
-          async addProduct(data: { sku: string; name: string; priceInCents: number; category: string }) {
-            const env = getEnv<IEnvironment>(self)
-            const product = await env.services.inventory.createProduct(data)
-            self.productCollection.add(product)
+          // CRUD using auto-composed CollectionPersistable
+          async createProduct(data: { sku: string; name: string; priceInCents: number; categoryId?: string }) {
+            const product = self.productCollection.create({
+              id: crypto.randomUUID(),
+              ...data,
+              category: data.categoryId,
+              createdAt: Date.now(),
+            })
+            await self.productCollection.saveOne(product.id)
             return product
           },
+
+          async updateProduct(id: string, changes: Partial<{ name: string; priceInCents: number }>) {
+            const product = self.productCollection.get(id)
+            if (product) {
+              for (const [key, value] of Object.entries(changes)) {
+                product[key] = value
+              }
+              await self.productCollection.saveOne(id)
+            }
+            return product
+          },
+
+          async deleteProduct(id: string) {
+            self.productCollection.remove(id)
+            await self.productCollection.saveAll()
+          },
         })),
-  })
-}
+  },
+  // CollectionPersistable auto-composed by default
+  // Use `persistence: false` only if you explicitly don't want persistence
+})
+
+// ============================================================
+// 3. EXPORTS (index.ts)
+// ============================================================
+// Export from index.ts:
+// export { InventoryDomain, inventoryDomain } from './domain'
 ```
+
+---
 
 ## Enhancement Hook Levels
 
 | Hook | Purpose | What to Add | Examples |
 |------|---------|-------------|----------|
-| `enhanceModels` | Entity-level computed properties | Views that derive from entity fields | `displayPrice`, `isExpired`, `fullName`, `status` |
-| `enhanceCollections` | Collection-level queries | Views/actions for querying entities | `findBySku()`, `active`, `forCategory()`, `lowStock` |
-| `enhanceRootStore` | Domain-level coordination | Actions that span collections, initialize from services | `initialize()`, `adjustStock()`, aggregate views |
+| `models` | Entity-level computed properties | Views that derive from entity fields | `displayPrice`, `isExpired`, `fullName`, `status` |
+| `collections` | Collection-level queries | Views for querying entities | `findBySku()`, `active`, `findByCategory()`, `lowStock` |
+| `rootStore` | Domain-level coordination | Actions that span collections | `createProduct()`, `adjustStock()`, aggregate views |
+
+---
 
 ## Translating Design Schema to ArkType
 
@@ -233,13 +246,13 @@ The design phase creates Enhanced JSON Schema. Translate to ArkType:
 
 ### Identifier Format
 
-Use `string.uuid` for entity identifiers to ensure proper MST reference resolution:
+Use `string.uuid` for entity identifiers:
 
 ```typescript
 // ✅ CORRECT: Use string.uuid for identifiers
 export const MyDomain = scope({
   User: {
-    id: 'string.uuid',  // Validates UUID format, works reliably with references
+    id: 'string.uuid',  // Validates UUID format
     name: 'string',
   },
   Order: {
@@ -247,28 +260,19 @@ export const MyDomain = scope({
     customer: 'User',  // Reference resolves correctly
   }
 })
-
-// ❌ AVOID: Plain string identifiers may cause reference issues
-export const MyDomain = scope({
-  User: {
-    id: 'string',  // May cause reference resolution issues
-    name: 'string',
-  }
-})
 ```
 
 ### Optional Field Syntax
 
-ArkType uses property-level optionality—the `?` goes on the property name, NOT the type:
+ArkType uses property-level optionality — the `?` goes on the property name, NOT the type:
 
 ```typescript
-// ✅ CORRECT: Question mark on property name
+// ✅ CORRECT: Question mark on property name (quoted)
 export const UserDomain = scope({
   User: {
     id: 'string.uuid',
     email: 'string',
     "displayName?": 'string',   // Optional property
-    "avatarUrl?": 'string',     // Optional property
     "manager?": 'User',         // Optional reference
   }
 })
@@ -276,185 +280,210 @@ export const UserDomain = scope({
 // ❌ INCORRECT: This will FAIL validation
 export const UserDomain = scope({
   User: {
-    id: 'string.uuid',
     displayName: 'string?',     // WRONG - not valid ArkType syntax
   }
 })
 ```
 
-### Reference Field Naming
-
-Both naming styles work—the reference detection matches the type value, not the field name:
-
-```typescript
-export const BusinessDomain = scope({
-  User: { id: 'string.uuid', name: 'string' },
-  Order: {
-    id: 'string.uuid',
-    customer: 'User',     // ✅ Field matches entity (recommended for clarity)
-    createdBy: 'User',    // ✅ Field differs from entity (also works)
-  },
-  Company: { id: 'string.uuid', name: 'string' }
-})
-```
-
-**CamelCase entities**: Multi-word entity names are handled correctly:
-- `AuthUser` → collection: `authUserCollection`
-- `ProductCategory` → collection: `productCategoryCollection`
-- `OrderLineItem` → collection: `orderLineItemCollection`
-
-## Service Integration Pattern
-
-The domain store coordinates with external services via environment injection:
-
-```typescript
-// In domain actions, access service via getEnv
-async initialize() {
-  const env = getEnv<IEnvironment>(self)
-  const service = env.services.inventory  // Nested under services
-  if (!service) return  // Handle optional service gracefully
-
-  const data = await service.fetchAll()
-  // Sync to local MST state
-  for (const item of data) {
-    self.collection.add(item)
-  }
-}
-```
-
-**Environment structure**: `{ services: { inventory, persistence, ... }, context: { schemaName, ... } }`
-
-**Key principle**: External service is source of truth. MST is reactive cache for UI.
+---
 
 ## Anti-Patterns
 
 | ❌ Wrong | ✅ Right |
 |----------|----------|
-| `types.model('Product', { id: types.identifier, ... })` | `scope({ Product: { id: 'string', ... } })` |
-| Creating `mixin.ts` with hand-coded MST actions | Put actions in `enhanceRootStore` |
-| Standalone `hooks.ts` applied to manual models | Pass hooks to `createStoreFromScope()` |
-| Inline MST model definitions in React contexts | Import store factory from domain.ts |
-| Defining computed views in schema | Add them via `enhanceModels` hook |
+| `types.model('Product', { id: types.identifier, ... })` | `scope({ Product: { id: 'string.uuid', ... } })` |
+| `createStoreFromScope(Scope, { ... })` | `domain({ name, from: Scope, enhancements: { ... } })` |
+| Creating `mixin.ts` or `hooks.ts` files | Put all enhancements in single `domain()` call |
+| Manual `CollectionPersistable` composition | Rely on auto-composition (it's the default!) |
+| `export function createXStore()` | `export const xDomain = domain({ ... })` |
+| Custom context per domain | Use shared `DomainProvider` + `useDomains()` |
+| NullPersistence in demo pages | Use `MCPPersistence` for client demos |
+
+---
 
 ## Testing the Domain
 
 ```typescript
-// __tests__/store.test.ts
+// __tests__/domain.test.ts
 import { describe, test, expect, beforeEach } from 'bun:test'
-import { createInventoryStore } from '../domain'
-import { MockInventoryService } from '../mock'
+import { inventoryDomain } from '../domain'
 import { NullPersistence } from '../../persistence/null'
-import type { IEnvironment } from '../../environment/types'
 
-describe('InventoryStore', () => {
-  let mockService: MockInventoryService
-  let env: IEnvironment
+describe('InventoryDomain', () => {
   let store: any
 
   beforeEach(() => {
-    mockService = new MockInventoryService()
-
-    env = {
+    const env = {
       services: {
         persistence: new NullPersistence(),
-        inventory: mockService,
       },
       context: {
         schemaName: 'test-inventory',
       },
     }
-
-    const { createStore } = createInventoryStore()
-    store = createStore(env)
+    store = inventoryDomain.createStore(env)
   })
 
-  test('initialize loads products from service', async () => {
-    mockService.addProduct({ id: 'p1', sku: 'SKU-001', name: 'Widget', priceInCents: 999 })
+  test('createProduct adds to collection and returns product', async () => {
+    const product = await store.createProduct({
+      sku: 'SKU-001',
+      name: 'Widget',
+      priceInCents: 999,
+    })
 
-    await store.initialize()
-
-    expect(store.productCollection.findBySku('SKU-001')).toBeDefined()
+    expect(product.id).toBeDefined()
+    expect(product.sku).toBe('SKU-001')
+    expect(store.productCollection.findBySku('SKU-001')).toBe(product)
   })
 
   test('displayPrice formats cents to dollars', async () => {
-    mockService.addProduct({ id: 'p1', sku: 'SKU-001', name: 'Widget', priceInCents: 1999 })
-    await store.initialize()
+    const product = await store.createProduct({
+      sku: 'SKU-001',
+      name: 'Widget',
+      priceInCents: 1999,
+    })
 
-    const product = store.productCollection.findBySku('SKU-001')
-    expect(product?.displayPrice).toBe('$19.99')
+    expect(product.displayPrice).toBe('$19.99')
+  })
+
+  test('reference resolution works', async () => {
+    const category = store.categoryCollection.create({
+      id: crypto.randomUUID(),
+      name: 'Electronics',
+    })
+
+    const product = store.productCollection.create({
+      id: crypto.randomUUID(),
+      sku: 'SKU-001',
+      name: 'Widget',
+      priceInCents: 999,
+      category: category.id,  // Pass ID
+      createdAt: Date.now(),
+    })
+
+    // CRITICAL: Instance equality proves MST reference works
+    expect(product.category).toBe(category)
+    expect(product.category?.name).toBe('Electronics')
   })
 })
 ```
 
-### Reference Resolution Tests (Required)
-
-Every domain store with entity references MUST include tests verifying reference resolution:
-
-```typescript
-test("session.user resolves to AuthUser instance", () => {
-  const user = store.authUserCollection.add({
-    id: "550e8400-e29b-41d4-a716-446655440001",
-    email: "test@example.com",
-    createdAt: new Date().toISOString()
-  })
-
-  const session = store.authSessionCollection.add({
-    id: "550e8400-e29b-41d4-a716-446655440002",
-    user: user.id,
-    lastRefreshedAt: new Date().toISOString()
-  })
-
-  // CRITICAL: Instance equality proves MST reference works
-  expect(session.user).toBe(user)
-  expect(session.user?.email).toBe("test@example.com")
-})
-```
-
-**Why this matters:** Without this test, broken references may appear to work (returning undefined silently) while hiding bugs.
+---
 
 ## React Integration
 
-```typescript
-// contexts/InventoryContext.tsx
-import { createContext, useContext, useRef, useEffect } from 'react'
+Use the shared `DomainProvider` — **do not create custom context per domain**.
+
+### 1. Add domain to DomainProvider
+
+```tsx
+// App.tsx
+import { DomainProvider } from './contexts/DomainProvider'
+import { inventoryDomain } from '@shogo/state-api'
+
+const domains = {
+  inventory: inventoryDomain,  // Add here
+} as const
+
+<EnvironmentProvider env={env}>
+  <DomainProvider domains={domains}>
+    <Routes>...</Routes>
+  </DomainProvider>
+</EnvironmentProvider>
+```
+
+### 2. Use in components
+
+```tsx
+// pages/InventoryDemoPage.tsx
 import { observer } from 'mobx-react-lite'
-import { createInventoryStore } from '@shogo/state-api/inventory'
-import { SupabaseInventoryService } from '@shogo/state-api/inventory/supabase'
-import { NullPersistence } from '@shogo/state-api/persistence/null'
+import { useDomains } from '../contexts/DomainProvider'
 
-const InventoryContext = createContext<any>(null)
+export const InventoryDemoPage = observer(function InventoryDemoPage() {
+  const { inventory } = useDomains()
 
-export const InventoryProvider = observer(({ children }: { children: React.ReactNode }) => {
-  const storeRef = useRef<any>(null)
+  // Collections already loaded by DomainProvider
+  const products = inventory.productCollection.active
+  const lowStock = inventory.stockLevelCollection.lowStock
 
-  if (!storeRef.current) {
-    const env = {
-      services: {
-        persistence: new NullPersistence(),
-        inventory: new SupabaseInventoryService(/* config */),
-      },
-      context: {
-        schemaName: 'inventory',
-      },
-    }
-    const { createStore } = createInventoryStore()
-    storeRef.current = createStore(env)
+  const handleCreate = async () => {
+    await inventory.createProduct({ sku: 'NEW-001', name: 'New Product', priceInCents: 1000 })
   }
 
-  useEffect(() => {
-    storeRef.current?.initialize()
-  }, [])
-
   return (
-    <InventoryContext.Provider value={storeRef.current}>
-      {children}
-    </InventoryContext.Provider>
+    <div>
+      <h1>Products ({products.length})</h1>
+      <ul>
+        {products.map(p => (
+          <li key={p.id}>{p.name} - {p.displayPrice}</li>
+        ))}
+      </ul>
+      <button onClick={handleCreate}>Add Product</button>
+
+      <h2>Low Stock ({lowStock.length})</h2>
+      <ul>
+        {lowStock.map(s => (
+          <li key={s.id}>{s.product?.name}: {s.quantity}</li>
+        ))}
+      </ul>
+    </div>
   )
 })
-
-export function useInventory() {
-  const store = useContext(InventoryContext)
-  if (!store) throw new Error('useInventory must be used within InventoryProvider')
-  return store
-}
 ```
+
+### Key Points
+
+- **No custom context** — just add to DomainProvider domains map
+- **No manual loading** — DomainProvider calls loadAll() on mount
+- **MCPPersistence for demos** — proves full persistence pipeline works
+- **observer() required** — for MobX reactivity
+
+---
+
+## Service/Hybrid Archetype (External API Integration)
+
+For features that call external APIs, add service access via environment:
+
+```typescript
+import { getEnv } from 'mobx-state-tree'
+import type { IEnvironment } from '../environment/types'
+
+export const paymentDomain = domain({
+  name: 'payment',
+  from: PaymentDomain,
+  enhancements: {
+    rootStore: (RootModel) => RootModel
+      .actions((self: any) => ({
+        async initialize() {
+          const env = getEnv<IEnvironment>(self)
+          const service = env.services.payment
+          if (!service) return { success: true }
+
+          const transactions = await service.fetchTransactions()
+          for (const t of transactions) {
+            self.transactionCollection.add(t)
+          }
+          return { success: true }
+        },
+
+        async processPayment(amount: number, method: string) {
+          const env = getEnv<IEnvironment>(self)
+          const result = await env.services.payment.charge({ amount, method })
+
+          // Sync result to local state
+          const transaction = self.transactionCollection.create({
+            id: result.id,
+            amount: result.amount,
+            status: result.status,
+            processedAt: Date.now(),
+          })
+          await self.transactionCollection.saveOne(transaction.id)
+
+          return transaction
+        },
+      })),
+  },
+})
+```
+
+**Key principle**: External service is source of truth. MST is reactive cache for UI.

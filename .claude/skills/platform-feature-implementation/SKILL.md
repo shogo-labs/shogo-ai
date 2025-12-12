@@ -156,17 +156,19 @@ Proceed with implementation?
 **NEVER hand-code MST models.** Always use the schematic pipeline:
 
 1. Domain entities defined in ArkType scope (translate from design phase schema)
-2. `createStoreFromScope()` generates MST models + collections + root store
-3. Enhancement hooks add domain behavior:
-   - `enhanceModels`: Computed views on entities
-   - `enhanceCollections`: Query methods
-   - `enhanceRootStore`: Domain actions, orchestration
+2. `domain()` generates MST models + collections + root store with auto-composed CollectionPersistable
+3. Enhancements add domain behavior:
+   - `models`: Computed views on entities
+   - `collections`: Query methods
+   - `rootStore`: Domain actions, CRUD operations
 
 ### The domain.ts Pattern
 
 Every feature MUST have a `domain.ts` that exports:
 - `{Feature}Domain` - ArkType scope defining entities
-- `create{Feature}Store(options)` - Factory with enhancement hooks
+- `{feature}Domain` - Named domain result from `domain({ name, from, enhancements })`
+
+**CRITICAL**: `domain.name` MUST match the schema name from the design skill (stored in `.schemas/{name}/schema.json`).
 
 See [domain-pattern.md](references/domain-pattern.md) for the full template and examples.
 
@@ -176,10 +178,13 @@ See [domain-pattern.md](references/domain-pattern.md) for the full template and 
 ❌ Don't use `types.model()` directly for domain entities
 ❌ Don't create standalone `hooks.ts` applied to manual models
 ❌ Don't define MST models inline in React contexts
+❌ Don't manually compose CollectionPersistable (it's auto-composed)
+❌ Don't create custom context/provider per domain (use DomainProvider)
 
-✅ Always use `createStoreFromScope()` with enhancement hooks
+✅ Always use `domain()` with inline enhancements
 ✅ Let the schematic pipeline generate MST boilerplate
-✅ Add behavior via hooks, not manual composition
+✅ Add behavior via enhancements, not manual composition
+✅ Use `useDomains()` hook for React access
 
 ---
 
