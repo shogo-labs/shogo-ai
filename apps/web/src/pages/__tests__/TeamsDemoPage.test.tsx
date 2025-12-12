@@ -11,7 +11,9 @@ import { render, waitFor, act, cleanup, fireEvent } from "@testing-library/react
 import React from "react"
 import { BrowserRouter } from "react-router-dom"
 import { TeamsDemoPage } from "../TeamsDemoPage"
-import { TeamsProvider } from "../../contexts/TeamsContext"
+import { EnvironmentProvider, createEnvironment } from "../../contexts/EnvironmentContext"
+import { DomainProvider } from "../../contexts/DomainProvider"
+import { teamsDomain } from "@shogo/state-api"
 
 // Set up happy-dom
 import { Window } from "happy-dom"
@@ -40,13 +42,28 @@ afterEach(() => {
   cleanup()
 })
 
+// Mock persistence for testing
+const mockPersistence = {
+  loadCollection: async () => null,
+  saveCollection: async () => {},
+  loadEntity: async () => null,
+  saveEntity: async () => {},
+  loadSchema: async () => null,
+  listSchemas: async () => [],
+}
+
 // Helper to render with required providers
 function renderWithProviders(ui: React.ReactNode) {
+  const env = createEnvironment({ persistence: mockPersistence })
+  const domains = { teams: teamsDomain } as const
+
   return render(
     <BrowserRouter>
-      <TeamsProvider>
-        {ui}
-      </TeamsProvider>
+      <EnvironmentProvider env={env}>
+        <DomainProvider domains={domains}>
+          {ui}
+        </DomainProvider>
+      </EnvironmentProvider>
     </BrowserRouter>
   )
 }

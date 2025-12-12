@@ -28,9 +28,8 @@
  */
 
 import { createContext, useContext, useRef, type ReactNode } from 'react'
-import { MCPPersistence } from '../persistence/MCPPersistence'
 import { type IPersistenceService, createMetaStoreInstance } from '@shogo/state-api'
-import { mcpService } from '../services/mcpService'
+import { useOptionalEnv } from './EnvironmentContext'
 
 interface MetaStoreContextValue {
   metaStore: any
@@ -48,18 +47,27 @@ export interface WavesmithMetaStoreProviderProps {
 /**
  * Provider that creates a meta-store with persistence support.
  *
- * By default, uses MCPPersistence to communicate with the MCP server.
+ * Gets persistence from EnvironmentProvider ancestor by default.
  * The meta-store provides `loadSchema()` action for dynamic schema loading.
  */
 export function WavesmithMetaStoreProvider({
   persistence: customPersistence,
   children
 }: WavesmithMetaStoreProviderProps) {
+  // Get persistence from EnvironmentProvider if available
+  const ancestorEnv = useOptionalEnv()
   const contextRef = useRef<MetaStoreContextValue | null>(null)
 
   if (!contextRef.current) {
-    // Use custom persistence or default to MCPPersistence
-    const persistence = customPersistence || new MCPPersistence(mcpService)
+    // Use custom persistence prop, or fall back to EnvironmentProvider's persistence
+    const persistence = customPersistence ?? ancestorEnv?.services.persistence
+
+    if (!persistence) {
+      throw new Error(
+        'WavesmithMetaStoreProvider requires persistence. ' +
+        'Either provide a persistence prop or wrap in EnvironmentProvider.'
+      )
+    }
 
     // Create meta-store with persistence injected
     const metaStore = createMetaStoreInstance({ services: { persistence } })

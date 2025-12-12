@@ -3,13 +3,14 @@
  * Extracted from meta-store.ts to reduce file size for esbuild wasm
  */
 
-import { getEnv, types } from "mobx-state-tree"
+import { getEnv } from "mobx-state-tree"
 import { v4 as uuidv4 } from "uuid"
 import type { IEnvironment, IMetaStoreEnvironment } from "../environment/types"
 import { enhancedJsonSchemaToMST } from "../schematic/enhanced-json-schema-to-mst"
-import { CollectionPersistable } from "../composition/persistable"
+import { buildEnhanceCollections } from "../composition/enhance-collections"
 import { getRuntimeStore, cacheRuntimeStore } from "./runtime-store-cache"
 import { ingestProperty } from "./meta-helpers"
+import { getEnhancements } from "../domain/enhancement-registry"
 
 export function createRootStoreEnhancements(RootModel: any) {
   return RootModel
@@ -163,25 +164,25 @@ export function createRootStoreEnhancements(RootModel: any) {
           return schema
         }
 
-        // 4. Create runtime store with MST composition (same pattern as schema.set.ts)
+        // 4. Look up registered enhancements from domain() API
+        const registeredEnhancements = getEnhancements(schema.name)
+
+        // 5. Create runtime store with MST composition
+        // Use shared buildEnhanceCollections utility (always enables persistence for loadSchema)
         const { createStore } = enhancedJsonSchemaToMST(schema.toEnhancedJson, {
           generateActions: true,
-          enhanceCollections: (baseCollections) => {
-            const enhanced: Record<string, any> = {}
-            for (const [n, model] of Object.entries(baseCollections)) {
-              enhanced[n] = types.compose(model, CollectionPersistable).named(n)
-            }
-            return enhanced
-          }
+          enhanceModels: registeredEnhancements?.models,
+          enhanceCollections: buildEnhanceCollections(registeredEnhancements?.collections, true),
+          enhanceRootStore: registeredEnhancements?.rootStore,
         })
 
-        // 5. Create environment with persistence (pass through from meta-store env)
+        // 6. Create environment with persistence (pass through from meta-store env)
         const env: IEnvironment = {
           services: { persistence: persistence! },
           context: { schemaName: schema.name, location: workspace }
         }
 
-        // 6. Create and cache runtime store
+        // 7. Create and cache runtime store
         const runtimeStore = createStore(env)
         cacheRuntimeStore(schema.id, runtimeStore, workspace)
 

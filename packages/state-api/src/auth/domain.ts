@@ -1,14 +1,17 @@
 /**
  * Auth Domain Store
  *
- * Schema-first implementation using createStoreFromScope.
- * Defines AuthUser and AuthSession entities with enhancement hooks
- * for computed views, collection queries, and domain actions.
+ * Uses the domain() composition API to define AuthUser and AuthSession
+ * entities with enhancement hooks for computed views, volatile state,
+ * and domain actions.
+ *
+ * Migration note: Switched from createStoreFromScope to domain() API.
+ * CollectionPersistable is now auto-composed by domain().
  */
 
 import { scope } from "arktype"
 import { getEnv } from "mobx-state-tree"
-import { createStoreFromScope } from "../schematic"
+import { domain } from "../domain"
 import type { IEnvironment } from "../environment/types"
 import type { AuthCredentials, AuthSession as ServiceAuthSession } from "./types"
 
@@ -43,17 +46,21 @@ export interface CreateAuthStoreOptions {
 }
 
 // ============================================================
-// 3. STORE FACTORY WITH ENHANCEMENT HOOKS
+// 3. DOMAIN DEFINITION WITH ENHANCEMENTS
 // ============================================================
 
-export function createAuthStore(options: CreateAuthStoreOptions = {}) {
-  return createStoreFromScope(AuthDomain, {
-    validateReferences: options.validateReferences,
-
+/**
+ * Auth domain with all enhancements.
+ * Registered in enhancement registry for meta-store integration.
+ */
+export const authDomain = domain({
+  name: "auth",
+  from: AuthDomain,
+  enhancements: {
     // --------------------------------------------------------
-    // enhanceModels: Add computed views to individual entities
+    // models: Add computed views to individual entities
     // --------------------------------------------------------
-    enhanceModels: (models) => ({
+    models: (models) => ({
       ...models,
       AuthSession: models.AuthSession.views((self: any) => ({
         /**
@@ -67,18 +74,9 @@ export function createAuthStore(options: CreateAuthStoreOptions = {}) {
     }),
 
     // --------------------------------------------------------
-    // enhanceCollections: Add query methods to collections
+    // rootStore: Add domain actions and volatile state
     // --------------------------------------------------------
-    enhanceCollections: (collections) => ({
-      ...collections,
-      // Basic collection access is already provided by createStoreFromScope
-      // Add any custom queries here if needed
-    }),
-
-    // --------------------------------------------------------
-    // enhanceRootStore: Add domain actions and volatile state
-    // --------------------------------------------------------
-    enhanceRootStore: (RootModel) =>
+    rootStore: (RootModel) =>
       RootModel
         // Volatile state for auth status
         .volatile(() => ({
@@ -248,5 +246,23 @@ export function createAuthStore(options: CreateAuthStoreOptions = {}) {
             }
           },
         })),
-  })
+  },
+})
+
+// ============================================================
+// 4. BACKWARD-COMPATIBLE STORE FACTORY
+// ============================================================
+
+/**
+ * Creates auth store with backward-compatible API.
+ * Returns object with createStore and RootStoreModel for compatibility
+ * with existing code that expects createStoreFromScope shape.
+ */
+export function createAuthStore(_options: CreateAuthStoreOptions = {}) {
+  return {
+    createStore: authDomain.createStore,
+    RootStoreModel: authDomain.RootStoreModel,
+    // Also expose domain result for new code
+    domain: authDomain,
+  }
 }
