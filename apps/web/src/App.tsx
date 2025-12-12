@@ -8,7 +8,8 @@ import { LegacyTestsPage } from './pages/LegacyTestsPage'
 import { AuthDemoPage } from './pages/AuthDemoPage'
 import { TeamsDemoPage } from './pages/TeamsDemoPage'
 import { AuthProvider } from './contexts/AuthContext'
-import { ApplicationDomains } from './contexts/ApplicationDomains'
+import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
+import { DomainProvider } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { SupabaseAuthService, teamsDomain } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
@@ -23,8 +24,16 @@ const supabase = createClient(
 // Use real Supabase auth
 const authService = new SupabaseAuthService(supabase)
 
-// Shared persistence for all domains
-const persistence = new MCPPersistence(mcpService)
+// Centralized environment configuration
+const env = createEnvironment({
+  persistence: new MCPPersistence(mcpService),
+  workspace: import.meta.env.VITE_WORKSPACE,
+})
+
+// Domain configuration - keys become property names in useDomains()
+const domains = {
+  teams: teamsDomain,
+} as const
 
 function Navigation() {
   const location = useLocation()
@@ -79,22 +88,24 @@ function Navigation() {
 function App() {
   return (
     <BrowserRouter>
-      <WavesmithMetaStoreProvider persistence={persistence}>
-        <ApplicationDomains domains={[teamsDomain]} persistence={persistence}>
-          <AuthProvider authService={authService}>
-            <Navigation />
-            <Routes>
-              <Route path="/" element={<HomePage />} />
-              <Route path="/unit1" element={<Unit1Page />} />
-              <Route path="/unit2" element={<Unit2Page />} />
-              <Route path="/unit3" element={<Unit3Page />} />
-              <Route path="/legacy-tests" element={<LegacyTestsPage />} />
-              <Route path="/auth-demo" element={<AuthDemoPage />} />
-              <Route path="/teams-demo" element={<TeamsDemoPage />} />
-            </Routes>
-          </AuthProvider>
-        </ApplicationDomains>
-      </WavesmithMetaStoreProvider>
+      <EnvironmentProvider env={env}>
+        <DomainProvider domains={domains}>
+          <WavesmithMetaStoreProvider>
+            <AuthProvider authService={authService}>
+              <Navigation />
+              <Routes>
+                <Route path="/" element={<HomePage />} />
+                <Route path="/unit1" element={<Unit1Page />} />
+                <Route path="/unit2" element={<Unit2Page />} />
+                <Route path="/unit3" element={<Unit3Page />} />
+                <Route path="/legacy-tests" element={<LegacyTestsPage />} />
+                <Route path="/auth-demo" element={<AuthDemoPage />} />
+                <Route path="/teams-demo" element={<TeamsDemoPage />} />
+              </Routes>
+            </AuthProvider>
+          </WavesmithMetaStoreProvider>
+        </DomainProvider>
+      </EnvironmentProvider>
     </BrowserRouter>
   )
 }
