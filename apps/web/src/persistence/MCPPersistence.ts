@@ -13,7 +13,54 @@ import type {
 } from '@shogo/state-api'
 
 export class MCPPersistence implements IPersistenceService {
-  constructor(private mcp: MCPService) { }
+  private initialized = false
+  private initPromise: Promise<void> | null = null
+
+  constructor(private mcp: MCPService) {}
+
+  // === Lazy Initialization ===
+
+  /**
+   * Ensure MCP session is initialized before any operations.
+   * Uses lazy initialization with retry logic for transient failures.
+   */
+  private async ensureInitialized(): Promise<void> {
+    if (this.initialized) return
+
+    if (!this.initPromise) {
+      this.initPromise = this.initWithRetry()
+    }
+    await this.initPromise
+  }
+
+  /**
+   * Initialize with retry and exponential backoff.
+   * Clears the cached promise on final failure to allow future retries.
+   */
+  private async initWithRetry(maxRetries = 3): Promise<void> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.mcp.initializeSession()
+        this.initialized = true
+        return
+      } catch (error) {
+        if (attempt === maxRetries) {
+          // Clear the promise so future calls can retry
+          this.initPromise = null
+          throw error
+        }
+        // Exponential backoff: 100ms, 200ms, 400ms...
+        await this.delay(100 * Math.pow(2, attempt - 1))
+      }
+    }
+  }
+
+  /**
+   * Helper for async delay.
+   */
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  }
 
   // === Schema operations ===
 
@@ -25,6 +72,7 @@ export class MCPPersistence implements IPersistenceService {
     metadata: { name: string; id?: string; views?: Record<string, any> }
     enhanced: any
   } | null> {
+    await this.ensureInitialized()
     try {
       // First load schema (triggers server-side caching and returns metadata)
       const loadResult = await this.mcp.callTool<{
@@ -70,6 +118,7 @@ export class MCPPersistence implements IPersistenceService {
    * List available schemas via MCP.
    */
   async listSchemas(location?: string): Promise<string[]> {
+    await this.ensureInitialized()
     try {
       const result = await this.mcp.callTool<{
         ok: boolean
@@ -91,6 +140,7 @@ export class MCPPersistence implements IPersistenceService {
    * Passes filter through for partition pushdown optimization.
    */
   async loadCollection(ctx: PersistenceContext): Promise<any | null> {
+    await this.ensureInitialized()
     try {
       const result = await this.mcp.callTool<{
         ok: boolean
@@ -130,6 +180,7 @@ export class MCPPersistence implements IPersistenceService {
    * with MCP's entity-level operations.
    */
   async saveCollection(ctx: PersistenceContext, snapshot: any): Promise<void> {
+    await this.ensureInitialized()
     const items = snapshot.items || {}
 
     for (const [id, entity] of Object.entries(items)) {
@@ -153,6 +204,7 @@ export class MCPPersistence implements IPersistenceService {
    * Load a single entity via MCP store.get tool.
    */
   async loadEntity(ctx: EntityContext): Promise<any | null> {
+    await this.ensureInitialized()
     try {
       const result = await this.mcp.callTool<{
         ok: boolean
@@ -177,6 +229,7 @@ export class MCPPersistence implements IPersistenceService {
    * Determines whether to create or update based on existence check.
    */
   async saveEntity(ctx: EntityContext, snapshot: any): Promise<void> {
+    await this.ensureInitialized()
     try {
       // Check if entity exists to decide create vs update
       const existing = await this.loadEntity(ctx)
