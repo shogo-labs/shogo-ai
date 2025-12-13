@@ -1,0 +1,11 @@
+{
+  "id": "finding-sql-backend",
+  "name": "sql-backend-ucast-sql",
+  "type": "library-evaluation",
+  "description": "SQL backend PoC using @ucast/sql. All 39 tests pass covering: operator translation (SQL-01), parameterized queries (SQL-02), ORDER BY (SQL-03), LIMIT/OFFSET (SQL-04), COUNT(*) (SQL-05), EXISTS (SQL-06), capabilities (SQL-08). Custom $contains interpreter compiles to LIKE with parameterized wildcards. Uses PostgreSQL dialect with $1, $2 placeholders.",
+  "location": "packages/state-api/src/query/discovery/sql-backend-poc.test.ts",
+  "relevantCode": "SqlBackend class: compileSelect() uses @ucast/sql interpret() returning [sql, params] tuple. Custom contains SqlOperator uses query.where(field, 'LIKE', '%value%'). pgOptions includes joinRelation: () => false.",
+  "recommendation": "ADOPT @ucast/sql for SQL backend. Pairs naturally with @ucast/mongo parser. Parameterized queries prevent SQL injection. Custom operators extend via SqlOperator interface. ORDER BY/LIMIT/OFFSET added manually (not part of @ucast/sql).",
+  "createdAt": 1734019200000,
+  "session": "iqueryable-persistence-projection"
+}

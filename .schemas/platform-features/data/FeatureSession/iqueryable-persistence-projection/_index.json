@@ -1,0 +1,26 @@
+{
+  "id": "iqueryable-persistence-projection",
+  "name": "iqueryable-persistence-projection",
+  "intent": "Enable persistence as projection over queryable entities with schema-driven, backend-agnostic query comprehension. Provides IQueryable interface for chainable queries, MongoDB-style operators, backend abstraction with capability declaration, and isomorphic execution across browser/server contexts.",
+  "status": "discovery",
+  "affectedPackages": [
+    "packages/state-api"
+  ],
+  "initialAssessment": {
+    "likelyArchetype": "infrastructure",
+    "indicators": [
+      "Cross-cutting query capability used by all domain features",
+      "No external API calls - purely internal platform capability",
+      "Extends existing IPersistenceService with read-path abstraction",
+      "Environment DI pattern for dependency injection",
+      "Isomorphic design (browser + server)"
+    ],
+    "uncertainties": [
+      "Library choice for query AST (@ucast vs custom)",
+      "Library choice for in-memory execution (sift vs mingo vs custom)",
+      "Library choice for SQL compilation (@ucast/sql vs Kysely vs Drizzle)"
+    ]
+  },
+  "applicablePatterns": [],
+  "createdAt": 1734019200000
+}
