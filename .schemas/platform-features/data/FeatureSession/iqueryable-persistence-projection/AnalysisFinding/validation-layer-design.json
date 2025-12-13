@@ -1,0 +1,11 @@
+{
+  "id": "finding-validation-layer",
+  "name": "validation-layer-design",
+  "type": "architecture-decision",
+  "description": "Validation layer PoC complete. Approach C (Lazy Memoization) validated with 23 passing tests. Key finding: @ucast/mongo has built-in parse-time validation for type mismatches (e.g., $gt on boolean). Our validation adds schema-aware checks: (1) property existence, (2) operator-type compatibility derived from JSON Schema types, (3) actionable error messages. Two-tier validation: @ucast catches JS type errors at parse, we catch schema-semantic errors post-parse.",
+  "location": "packages/state-api/src/query/discovery/validation-poc.test.ts",
+  "relevantCode": "OPERATOR_BY_TYPE maps JSON Schema types to valid operators. QueryValidator uses lazy memoization with clearCache() for schema changes. ValidationResult returns {valid, errors[]} with INVALID_PROPERTY and INVALID_OPERATOR codes.",
+  "recommendation": "ADOPT Approach C (Lazy Memoization). Integrate with real meta-store by replacing MockMetaStore with actual meta-store property lookups. Add clearCache() call on schema reload.",
+  "createdAt": 1734019200000,
+  "session": "iqueryable-persistence-projection"
+}
