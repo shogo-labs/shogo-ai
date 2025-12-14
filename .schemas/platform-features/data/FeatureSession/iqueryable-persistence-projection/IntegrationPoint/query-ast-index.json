@@ -1,0 +1,11 @@
+{
+  "id": "ip-query-ast-index",
+  "name": "query-ast-index",
+  "filePath": "packages/state-api/src/query/ast/index.ts",
+  "package": "state-api",
+  "changeType": "add",
+  "description": "Barrel exports for query/ast module: all types, parser functions, operator utilities, serialization functions, re-exported @ucast/core classes",
+  "rationale": "Standard module structure. Public API surface for query AST.",
+  "createdAt": 1734105800004,
+  "session": "iqueryable-persistence-projection"
+}

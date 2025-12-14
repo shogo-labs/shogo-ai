@@ -1,0 +1,18 @@
+{
+  "id": "test-validator-valid-query",
+  "scenario": "Validator returns valid for correct query",
+  "given": [
+    "QueryValidator with meta-store access",
+    "Schema with User model having name (string) and age (number)"
+  ],
+  "when": "Validating { name: { $eq: 'Alice' }, age: { $gt: 21 } }",
+  "then": [
+    "Returns { valid: true, errors: [] }",
+    "No validation errors"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/validation/__tests__/validator.test.ts",
+  "createdAt": 1734106500045,
+  "task": "task-validation-layer",
+  "requirement": "req-05-metastore-validation"
+}

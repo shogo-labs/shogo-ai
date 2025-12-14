@@ -1,0 +1,18 @@
+{
+  "id": "test-memory-implements-interface",
+  "scenario": "MemoryBackend implements IBackend interface",
+  "given": [
+    "MemoryBackend class is imported"
+  ],
+  "when": "Creating MemoryBackend instance",
+  "then": [
+    "Instance has execute method",
+    "Instance has capabilities property",
+    "Satisfies IBackend interface"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/memory.test.ts",
+  "createdAt": 1734106500070,
+  "task": "task-memory-backend",
+  "requirement": "req-03-backend-abstraction"
+}

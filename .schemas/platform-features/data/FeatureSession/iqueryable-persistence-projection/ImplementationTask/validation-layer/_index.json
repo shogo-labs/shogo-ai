@@ -1,0 +1,28 @@
+{
+  "id": "task-validation-layer",
+  "name": "validation-layer",
+  "description": "Implement schema-aware query validation with operator-type compatibility checking",
+  "acceptanceCriteria": [
+    "types.ts: IQueryValidator interface with validateQuery(ast, schemaName, modelName)",
+    "types.ts: ValidationResult type with {valid: boolean, errors: ValidationError[]}",
+    "types.ts: ValidationError with code (INVALID_PROPERTY | INVALID_OPERATOR), message, path",
+    "types.ts: OPERATOR_BY_TYPE maps JSON Schema types to valid operators",
+    "validator.ts: QueryValidator class implements IQueryValidator",
+    "validator.ts: Uses lazy memoization for schema lookups (caches property types)",
+    "validator.ts: clearCache() method for schema reload scenarios",
+    "validator.ts: Integrates with meta-store for property type lookup",
+    "validator.ts: Returns actionable error messages with property path",
+    "index.ts: Barrel exports QueryValidator, IQueryValidator, ValidationResult, ValidationError, OPERATOR_BY_TYPE",
+    "Validates property existence against schema",
+    "Validates operator compatibility with property type (e.g., $gt not valid on boolean)"
+  ],
+  "status": "complete",
+  "createdAt": 1734106300003,
+  "updatedAt": 1734130000000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-validation-types",
+  "requirement": "req-05-metastore-validation",
+  "dependencies": [
+    "task-query-ast-index"
+  ]
+}

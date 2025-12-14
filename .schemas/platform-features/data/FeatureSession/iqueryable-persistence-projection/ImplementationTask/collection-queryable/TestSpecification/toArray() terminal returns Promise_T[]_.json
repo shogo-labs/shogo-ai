@@ -1,0 +1,18 @@
+{
+  "id": "test-queryable-toarray",
+  "scenario": "toArray() terminal returns Promise<T[]>",
+  "given": [
+    "IQueryable with filter and pagination"
+  ],
+  "when": "Calling await query.toArray()",
+  "then": [
+    "Returns Promise that resolves to array",
+    "Array contains matching items",
+    "Respects skip/take if set"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/composition/__tests__/queryable.test.ts",
+  "createdAt": 1734106500145,
+  "task": "task-collection-queryable",
+  "requirement": "req-01-iqueryable-interface"
+}

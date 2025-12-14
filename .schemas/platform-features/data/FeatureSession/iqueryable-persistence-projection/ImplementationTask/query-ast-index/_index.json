@@ -1,0 +1,22 @@
+{
+  "id": "task-query-ast-index",
+  "name": "query-ast-index",
+  "description": "Create barrel exports for query/ast module",
+  "acceptanceCriteria": [
+    "File exists at packages/state-api/src/query/ast/index.ts",
+    "Re-exports all types from types.ts",
+    "Re-exports parseQuery, createQueryParser, defaultParser from parser.ts",
+    "Re-exports operator utilities from operators.ts",
+    "Re-exports serializeCondition, deserializeCondition from serialization.ts",
+    "Re-exports Condition, FieldCondition, CompoundCondition from @ucast/core"
+  ],
+  "status": "complete",
+  "createdAt": 1734106300002,
+  "updatedAt": 1734125500000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-query-ast-index",
+  "requirement": "req-02-mongodb-operators",
+  "dependencies": [
+    "task-query-ast-core"
+  ]
+}

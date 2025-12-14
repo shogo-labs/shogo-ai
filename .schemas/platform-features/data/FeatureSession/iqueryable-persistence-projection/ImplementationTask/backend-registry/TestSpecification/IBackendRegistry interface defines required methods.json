@@ -1,0 +1,20 @@
+{
+  "id": "test-registry-interface",
+  "scenario": "IBackendRegistry interface defines required methods",
+  "given": [
+    "IBackendRegistry interface is imported"
+  ],
+  "when": "Implementing IBackendRegistry",
+  "then": [
+    "register(name, backend) method required",
+    "get(name) method required",
+    "has(name) method required",
+    "resolve(schemaName, modelName) method required",
+    "setDefault(name) method required"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/__tests__/registry.test.ts",
+  "createdAt": 1734106500110,
+  "task": "task-backend-registry",
+  "requirement": "req-04-schema-driven-binding"
+}

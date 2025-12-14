@@ -1,0 +1,18 @@
+{
+  "id": "test-memory-capabilities",
+  "scenario": "capabilities declares all supported operators",
+  "given": [
+    "MemoryBackend instance"
+  ],
+  "when": "Accessing capabilities property",
+  "then": [
+    "operators includes $eq, $ne, $gt, $gte, $lt, $lte",
+    "operators includes $in, $nin, $regex, $contains",
+    "operators includes $and, $or, $not"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/memory.test.ts",
+  "createdAt": 1734106500077,
+  "task": "task-memory-backend",
+  "requirement": "req-03-backend-abstraction"
+}

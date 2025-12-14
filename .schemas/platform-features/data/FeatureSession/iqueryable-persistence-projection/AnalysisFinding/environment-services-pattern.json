@@ -1,0 +1,11 @@
+{
+  "id": "pattern-environment-services",
+  "name": "environment-services-pattern",
+  "type": "pattern",
+  "description": "IEnvironment.services holds injected dependencies. Currently has: persistence (required), auth? (optional). Services accessed via getEnv<IEnvironment>(self).services.{serviceName}. Context holds metadata (schemaName, location).",
+  "location": "packages/state-api/src/environment/types.ts",
+  "relevantCode": "interface IEnvironment { services: { persistence: IPersistenceService; auth?: IAuthService; }; context: {...} }",
+  "recommendation": "Extend with: backendRegistry: IBackendRegistry (required for queryable), queryValidator?: IQueryValidator (optional)",
+  "createdAt": 1734105700002,
+  "session": "iqueryable-persistence-projection"
+}

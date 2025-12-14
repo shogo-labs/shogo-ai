@@ -1,0 +1,19 @@
+{
+  "id": "test-sql-no-auto-join",
+  "scenario": "joinRelation returns false (no automatic joins)",
+  "given": [
+    "SqlBackend instance",
+    "Query with dot notation field"
+  ],
+  "when": "Compiling { 'author.name': 'Alice' }",
+  "then": [
+    "joinRelation callback returns false",
+    "Join tracked but not auto-generated",
+    "Consumer responsible for adding JOIN clause"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/sql.test.ts",
+  "createdAt": 1734106500100,
+  "task": "task-sql-backend",
+  "requirement": "req-03-backend-abstraction"
+}

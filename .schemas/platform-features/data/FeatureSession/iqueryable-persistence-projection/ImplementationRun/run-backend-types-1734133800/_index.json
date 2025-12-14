@@ -1,0 +1,12 @@
+{
+  "id": "run-backend-types-1734133800",
+  "status": "complete",
+  "currentTaskId": "task-backend-types",
+  "completedTasks": [
+    "task-backend-types"
+  ],
+  "failedTasks": [],
+  "startedAt": 1734133800000,
+  "completedAt": 1734134100000,
+  "session": "iqueryable-persistence-projection"
+}

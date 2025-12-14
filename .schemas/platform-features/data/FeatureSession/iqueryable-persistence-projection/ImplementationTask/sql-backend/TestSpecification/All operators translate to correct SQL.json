@@ -1,0 +1,22 @@
+{
+  "id": "test-sql-operator-translation",
+  "scenario": "All operators translate to correct SQL",
+  "given": [
+    "SqlBackend instance"
+  ],
+  "when": "Compiling queries with each operator type",
+  "then": [
+    "$eq becomes =",
+    "$ne becomes <> or !=",
+    "$gt becomes >",
+    "$in becomes IN(...)",
+    "$regex becomes ~ (PostgreSQL)",
+    "$and becomes AND",
+    "$or becomes OR"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/sql.test.ts",
+  "createdAt": 1734106500102,
+  "task": "task-sql-backend",
+  "requirement": "req-03-backend-abstraction"
+}

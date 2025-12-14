@@ -1,0 +1,19 @@
+{
+  "id": "test-registry-resolve-model",
+  "scenario": "resolve() uses model-level x-persistence.backend first",
+  "given": [
+    "BackendRegistry with meta-store",
+    "Model has x-persistence.backend: 'sql'"
+  ],
+  "when": "Calling resolve(schemaName, modelName)",
+  "then": [
+    "Returns 'sql' backend",
+    "Model config takes precedence",
+    "Schema config not checked"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/__tests__/registry.test.ts",
+  "createdAt": 1734106500115,
+  "task": "task-backend-registry",
+  "requirement": "req-04-schema-driven-binding"
+}

@@ -2,7 +2,7 @@
   "id": "iqueryable-persistence-projection",
   "name": "iqueryable-persistence-projection",
   "intent": "Enable persistence as projection over queryable entities with schema-driven, backend-agnostic query comprehension. Provides IQueryable interface for chainable queries, MongoDB-style operators, backend abstraction with capability declaration, and isomorphic execution across browser/server contexts.",
-  "status": "discovery",
+  "status": "implemented",
   "affectedPackages": [
     "packages/state-api"
   ],
@@ -21,6 +21,12 @@
       "Library choice for SQL compilation (@ucast/sql vs Kysely vs Drizzle)"
     ]
   },
-  "applicablePatterns": [],
-  "createdAt": 1734019200000
+  "featureArchetype": "infrastructure",
+  "applicablePatterns": [
+    "service-interface",
+    "mixin-composition",
+    "environment-extension"
+  ],
+  "createdAt": 1734019200000,
+  "updatedAt": 1734136500000
 }

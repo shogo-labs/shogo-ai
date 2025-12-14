@@ -1,0 +1,12 @@
+{
+  "id": "ip-validation-types",
+  "name": "validation-types",
+  "filePath": "packages/state-api/src/query/validation/types.ts",
+  "package": "state-api",
+  "changeType": "add",
+  "description": "Validation types: IQueryValidator interface, ValidationResult, ValidationError with codes (INVALID_PROPERTY, INVALID_OPERATOR), OPERATOR_BY_TYPE mapping",
+  "rationale": "VAL-01/02/03 requirements. Types define operator-type compatibility matrix.",
+  "createdAt": 1734105800010,
+  "session": "iqueryable-persistence-projection",
+  "finding": "finding-validation-layer"
+}

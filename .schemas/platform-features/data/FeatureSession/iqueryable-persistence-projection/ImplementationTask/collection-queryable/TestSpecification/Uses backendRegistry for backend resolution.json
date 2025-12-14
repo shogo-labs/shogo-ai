@@ -1,0 +1,19 @@
+{
+  "id": "test-queryable-backend-resolution",
+  "scenario": "Uses backendRegistry for backend resolution",
+  "given": [
+    "Collection with CollectionQueryable",
+    "Environment with backendRegistry"
+  ],
+  "when": "Executing query terminal operation",
+  "then": [
+    "Accesses getEnv(self).services.backendRegistry",
+    "Resolves backend for schema/model",
+    "Delegates execution to resolved backend"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/composition/__tests__/queryable.test.ts",
+  "createdAt": 1734106500148,
+  "task": "task-collection-queryable",
+  "requirement": "req-07-mst-integration"
+}

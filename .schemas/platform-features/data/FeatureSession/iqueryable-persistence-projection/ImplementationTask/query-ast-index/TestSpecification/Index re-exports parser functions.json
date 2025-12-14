@@ -1,0 +1,18 @@
+{
+  "id": "test-ast-index-parser",
+  "scenario": "Index re-exports parser functions",
+  "given": [
+    "ast/index.ts module exists"
+  ],
+  "when": "Importing parser functions from ast/index.ts",
+  "then": [
+    "parseQuery function is accessible",
+    "createQueryParser function is accessible",
+    "defaultParser instance is accessible"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/ast/__tests__/index.test.ts",
+  "createdAt": 1734106500031,
+  "task": "task-query-ast-index",
+  "requirement": "req-02-mongodb-operators"
+}
