@@ -1,0 +1,10 @@
+{
+  "id": "class-evidence-mixin-composition",
+  "name": "mixin-composition-fit",
+  "type": "classification_evidence",
+  "description": "Feature adds cross-cutting capability to existing collections via mixin composition. Same pattern as CollectionPersistable (Unit 4). No new entity types created - enhances existing collections with .query() method.",
+  "location": "packages/state-api/src/composition/",
+  "recommendation": "Confirms Infrastructure archetype with mixin-composition pattern. CollectionQueryable parallels CollectionPersistable.",
+  "createdAt": 1734105700004,
+  "session": "iqueryable-persistence-projection"
+}

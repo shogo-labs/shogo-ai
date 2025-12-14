@@ -1,0 +1,18 @@
+{
+  "id": "test-parser-convenience",
+  "scenario": "parseQuery convenience function uses defaultParser",
+  "given": [
+    "parseQuery function is imported"
+  ],
+  "when": "Calling parseQuery with MongoDB-style filter",
+  "then": [
+    "Returns Condition AST",
+    "Supports all standard operators",
+    "Supports $contains custom operator"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/ast/__tests__/parser.test.ts",
+  "createdAt": 1734106500012,
+  "task": "task-query-ast-core",
+  "requirement": "req-02-mongodb-operators"
+}

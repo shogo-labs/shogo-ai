@@ -14,6 +14,8 @@
 
 import type { IPersistenceService } from '../persistence/types'
 import type { IAuthService } from '../auth/types'
+import type { IBackendRegistry } from '../query/registry'
+import type { IQueryValidator } from '../query/validation/types'
 
 /**
  * Environment structure for runtime MST stores.
@@ -75,6 +77,78 @@ export interface IEnvironment {
      * Optional - not all stores need authentication.
      */
     auth?: IAuthService
+
+    /**
+     * Backend registry for query execution.
+     *
+     * Maps backend names to IBackend implementations and resolves which backend
+     * to use for a given schema/model using cascade lookup:
+     * 1. Model's x-persistence.backend property
+     * 2. Schema's x-persistence.backend property
+     * 3. Registry default backend
+     *
+     * Implementation:
+     * - BackendRegistry (standard implementation with Map-based storage)
+     * - Created via createBackendRegistry({ default: 'memory', backends: {...} })
+     *
+     * Required - all queryable collections need backend resolution capability.
+     *
+     * @see IBackendRegistry for interface details
+     * @see BackendRegistry for implementation
+     * @see createBackendRegistry for factory function
+     *
+     * @example
+     * ```typescript
+     * const registry = createBackendRegistry({
+     *   default: 'memory',
+     *   backends: {
+     *     memory: new MemoryBackend(),
+     *     sql: new SqlBackend()
+     *   }
+     * })
+     * const env: IEnvironment = {
+     *   services: {
+     *     persistence: new FileSystemPersistence(),
+     *     backendRegistry: registry
+     *   },
+     *   context: { schemaName: 'my-schema' }
+     * }
+     * ```
+     */
+    backendRegistry: IBackendRegistry
+
+    /**
+     * Query validator for schema-aware validation.
+     *
+     * Validates parsed query ASTs against schema/model definitions to ensure:
+     * - Properties exist in the schema
+     * - Operators are compatible with property types
+     * - Actionable error messages for invalid queries
+     *
+     * Implementation:
+     * - QueryValidator (standard implementation using meta-store)
+     * - Uses lazy memoization for performance
+     *
+     * Optional - query validation can be skipped for performance or when
+     * queries are generated programmatically and guaranteed to be valid.
+     *
+     * @see IQueryValidator for interface details
+     * @see QueryValidator for implementation
+     *
+     * @example
+     * ```typescript
+     * const validator = new QueryValidator(metaStore)
+     * const env: IEnvironment = {
+     *   services: {
+     *     persistence: new FileSystemPersistence(),
+     *     backendRegistry: registry,
+     *     queryValidator: validator  // Optional
+     *   },
+     *   context: { schemaName: 'my-schema' }
+     * }
+     * ```
+     */
+    queryValidator?: IQueryValidator
   }
 
   /**

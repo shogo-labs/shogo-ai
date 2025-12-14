@@ -1,0 +1,18 @@
+{
+  "id": "test-validation-interface",
+  "scenario": "IQueryValidator interface defines validateQuery method",
+  "given": [
+    "IQueryValidator interface is imported"
+  ],
+  "when": "Implementing IQueryValidator",
+  "then": [
+    "validateQuery(ast, schemaName, modelName) signature required",
+    "Returns ValidationResult type",
+    "Can be used for dependency injection"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/validation/__tests__/types.test.ts",
+  "createdAt": 1734106500040,
+  "task": "task-validation-layer",
+  "requirement": "req-05-metastore-validation"
+}

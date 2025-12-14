@@ -1,0 +1,11 @@
+{
+  "id": "ip-backend-index",
+  "name": "backend-index",
+  "filePath": "packages/state-api/src/query/backends/index.ts",
+  "package": "state-api",
+  "changeType": "add",
+  "description": "Barrel exports for query/backends module: IBackend, MemoryBackend, SqlBackend, BackendCapabilities, QueryOptions",
+  "rationale": "Standard module structure.",
+  "createdAt": 1734105800023,
+  "session": "iqueryable-persistence-projection"
+}

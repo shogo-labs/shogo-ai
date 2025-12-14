@@ -1,0 +1,11 @@
+{
+  "id": "risk-ucast-js-api",
+  "name": "ucast-js-api-gotcha",
+  "type": "risk",
+  "description": "CRITICAL: @ucast/js interpret() API is interpret(ast, item), NOT interpret(ast)(item). Using wrong pattern causes 'Unable to get field X out of undefined' error. Discovered during PoC when filtering returned empty results.",
+  "location": "packages/state-api/src/query/backends/memory.ts",
+  "relevantCode": "result.filter(item => interpret(ast, item)) // CORRECT\nresult.filter(interpret(ast)) // WRONG - will fail",
+  "recommendation": "Document in code comments. Add integration test that fails if pattern regresses.",
+  "createdAt": 1734105800071,
+  "session": "iqueryable-persistence-projection"
+}

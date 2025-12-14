@@ -1,0 +1,19 @@
+{
+  "id": "test-sql-ucast-sql",
+  "scenario": "SqlBackend uses @ucast/sql with PostgreSQL dialect",
+  "given": [
+    "SqlBackend instance",
+    "Parsed AST condition"
+  ],
+  "when": "Compiling query to SQL",
+  "then": [
+    "Uses createSqlInterpreter from @ucast/sql",
+    "Uses pg dialect options",
+    "Produces PostgreSQL-compatible SQL"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/sql.test.ts",
+  "createdAt": 1734106500091,
+  "task": "task-sql-backend",
+  "requirement": "req-03-backend-abstraction"
+}

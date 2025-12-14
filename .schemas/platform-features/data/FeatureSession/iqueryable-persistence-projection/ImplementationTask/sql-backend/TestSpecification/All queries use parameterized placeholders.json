@@ -1,0 +1,19 @@
+{
+  "id": "test-sql-parameterized",
+  "scenario": "All queries use parameterized placeholders",
+  "given": [
+    "SqlBackend instance",
+    "Query with various values"
+  ],
+  "when": "Compiling query with string, number, and special characters",
+  "then": [
+    "Values appear in params array, not SQL string",
+    "Placeholders use $1, $2 format",
+    "SQL injection prevented"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/sql.test.ts",
+  "createdAt": 1734106500099,
+  "task": "task-sql-backend",
+  "requirement": "req-03-backend-abstraction"
+}

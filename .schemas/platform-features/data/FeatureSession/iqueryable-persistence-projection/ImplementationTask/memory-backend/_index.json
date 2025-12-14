@@ -1,0 +1,29 @@
+{
+  "id": "task-memory-backend",
+  "name": "memory-backend",
+  "description": "Implement MemoryBackend for in-memory filtering of MST collections using @ucast/js",
+  "acceptanceCriteria": [
+    "File exists at packages/state-api/src/query/backends/memory.ts",
+    "MemoryBackend class implements IBackend interface",
+    "Uses @ucast/js createJsInterpreter for filtering",
+    "CRITICAL: Uses interpret(ast, item) pattern, NOT interpret(ast)(item)",
+    "Custom $contains interpreter handles string.includes() and array.includes()",
+    "Implements applyOrderBy() for multi-field sorting",
+    "Implements pagination via array slice() for skip/take",
+    "capabilities property declares all supported operators",
+    "Returns same MST references (not cloned objects)",
+    "Handles empty collection edge case",
+    "Handles empty filter (returns all items)",
+    "Performance: 10k items filter+sort+paginate < 200ms"
+  ],
+  "status": "complete",
+  "createdAt": 1734106300005,
+  "updatedAt": 1734134600000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-backend-memory",
+  "requirement": "req-03-backend-abstraction",
+  "dependencies": [
+    "task-query-ast-index",
+    "task-backend-types"
+  ]
+}

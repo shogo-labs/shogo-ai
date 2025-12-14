@@ -1,0 +1,18 @@
+{
+  "id": "test-validation-error-type",
+  "scenario": "ValidationError has code, message, and path",
+  "given": [
+    "ValidationError type is imported"
+  ],
+  "when": "Creating ValidationError objects",
+  "then": [
+    "code field accepts INVALID_PROPERTY or INVALID_OPERATOR",
+    "message field contains human-readable description",
+    "path field identifies the problematic query location"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/validation/__tests__/types.test.ts",
+  "createdAt": 1734106500042,
+  "task": "task-validation-layer",
+  "requirement": "req-05-metastore-validation"
+}

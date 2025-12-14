@@ -1,0 +1,18 @@
+{
+  "id": "test-env-factory-update",
+  "scenario": "Factory functions updated for new services",
+  "given": [
+    "Environment factory functions exist"
+  ],
+  "when": "Creating environment via factory",
+  "then": [
+    "Factory accepts backendRegistry parameter",
+    "Factory accepts optional queryValidator parameter",
+    "Returns complete IEnvironment"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/environment/__tests__/types.test.ts",
+  "createdAt": 1734106500134,
+  "task": "task-environment-extension",
+  "requirement": "req-06-isomorphic-execution"
+}

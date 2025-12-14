@@ -1,0 +1,19 @@
+{
+  "id": "test-memory-pagination",
+  "scenario": "skip/take pagination via array slice",
+  "given": [
+    "MemoryBackend instance",
+    "Collection of 100 items"
+  ],
+  "when": "Executing with skip: 20, take: 10",
+  "then": [
+    "Returns items 21-30 (0-indexed: 20-29)",
+    "Exactly 10 items returned",
+    "Original collection unchanged"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/memory.test.ts",
+  "createdAt": 1734106500076,
+  "task": "task-memory-backend",
+  "requirement": "req-03-backend-abstraction"
+}

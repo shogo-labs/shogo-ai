@@ -1,0 +1,19 @@
+{
+  "id": "test-sql-orderby",
+  "scenario": "ORDER BY clause constructed manually",
+  "given": [
+    "SqlBackend instance",
+    "Query with orderBy option"
+  ],
+  "when": "Compiling with orderBy: [{ field: 'name', direction: 'asc' }]",
+  "then": [
+    "SQL includes ORDER BY clause",
+    "Field names are quoted",
+    "Direction is ASC or DESC"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/sql.test.ts",
+  "createdAt": 1734106500094,
+  "task": "task-sql-backend",
+  "requirement": "req-03-backend-abstraction"
+}

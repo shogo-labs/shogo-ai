@@ -1,0 +1,18 @@
+{
+  "id": "test-backend-types-generics",
+  "scenario": "Generic type parameter flows correctly",
+  "given": [
+    "IBackend and QueryResult types imported"
+  ],
+  "when": "Using IBackend<User> with typed collection",
+  "then": [
+    "execute returns Promise<QueryResult<User>>",
+    "QueryResult.items is User[]",
+    "Type safety maintained through pipeline"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/types.test.ts",
+  "createdAt": 1734106500067,
+  "task": "task-backend-types",
+  "requirement": "req-03-backend-abstraction"
+}

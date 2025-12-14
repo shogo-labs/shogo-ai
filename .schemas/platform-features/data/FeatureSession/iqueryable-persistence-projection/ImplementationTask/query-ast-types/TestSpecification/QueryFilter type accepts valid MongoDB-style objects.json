@@ -1,0 +1,18 @@
+{
+  "id": "test-ast-types-queryfilter",
+  "scenario": "QueryFilter type accepts valid MongoDB-style objects",
+  "given": [
+    "QueryFilter type is imported"
+  ],
+  "when": "Assigning MongoDB-style filter object to QueryFilter variable",
+  "then": [
+    "Simple equality filter { name: 'Alice' } is valid",
+    "Operator filter { age: { $gt: 21 } } is valid",
+    "Nested logical filter { $or: [{...}, {...}] } is valid"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/ast/__tests__/types.test.ts",
+  "createdAt": 1734106500001,
+  "task": "task-query-ast-types",
+  "requirement": "req-02-mongodb-operators"
+}

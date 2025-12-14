@@ -1,0 +1,12 @@
+{
+  "id": "ip-queryable-mixin",
+  "name": "collection-queryable-mixin",
+  "filePath": "packages/state-api/src/composition/queryable.ts",
+  "package": "state-api",
+  "changeType": "add",
+  "description": "CollectionQueryable mixin: types.model() with .views() returning query() factory that creates IQueryable builder. Builder has where(), orderBy(), skip(), take() chainable methods and toArray(), first(), count() terminal operations.",
+  "rationale": "REQ-01 IQueryable interface, REQ-07 MST integration. Parallels CollectionPersistable pattern.",
+  "createdAt": 1734105800040,
+  "session": "iqueryable-persistence-projection",
+  "finding": "finding-collection-mixin"
+}
