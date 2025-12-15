@@ -15,8 +15,9 @@
     "Barrel exports: generateDDL, createPostgresDialect, createSqliteDialect, topologicalSort, SqlDialect type, DDLOutput type",
     "JSDoc documentation for main API function"
   ],
-  "status": "planned",
+  "status": "complete",
   "createdAt": 1734203400000,
+  "updatedAt": 1734415900000,
   "session": "ddl-generator-001",
   "requirement": "req-ddl-structured-output",
   "dependencies": [

@@ -1,0 +1,20 @@
+{
+  "id": "test-sql-gen-002",
+  "scenario": "Generate CREATE TABLE with CHECK constraint",
+  "given": [
+    "TableDef with status column",
+    "Column has checkConstraint: \"status IN ('active', 'inactive')\"",
+    "PostgreSQL dialect"
+  ],
+  "when": "tableDefToCreateTableSQL is called",
+  "then": [
+    "Status column includes CHECK constraint",
+    "CHECK constraint properly quoted",
+    "Constraint format: CHECK (status IN ('active', 'inactive'))"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/sql-generator.test.ts",
+  "createdAt": 1734477000000,
+  "task": "task-ddl-sql-generator",
+  "requirement": "req-ddl-sql-string-generation"
+}
