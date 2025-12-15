@@ -1,0 +1,18 @@
+{
+  "id": "test-utils-001",
+  "scenario": "Topological sort with FK dependencies",
+  "given": [
+    "Organization model with no FK dependencies",
+    "Team model with FK to Organization"
+  ],
+  "when": "topologicalSort is called with both models",
+  "then": [
+    "Returns ['Organization', 'Team']",
+    "Organization appears before Team in execution order"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/utils.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-utils",
+  "requirement": "req-ddl-topo-sort"
+}

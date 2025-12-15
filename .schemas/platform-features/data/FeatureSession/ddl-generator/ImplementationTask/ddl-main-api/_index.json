@@ -1,0 +1,27 @@
+{
+  "id": "task-ddl-main-api",
+  "name": "ddl-main-api",
+  "description": "Implement generateDDL() main entry point and barrel exports",
+  "acceptanceCriteria": [
+    "File exists at packages/state-api/src/ddl/index.ts",
+    "generateDDL(schema: EnhancedJsonSchema, dialect: SqlDialect) returns DDLOutput per design-ddl-api-surface",
+    "Uses utils.topologicalSort() to determine table creation order",
+    "Generates tables using table-generator.generateCreateTable()",
+    "Generates junction tables using junction-generator.generateJunctionTable()",
+    "DDLOutput.executionOrder contains table names in topologically sorted order",
+    "DDLOutput.tables contains all entity tables",
+    "DDLOutput.junctionTables contains all many-to-many junction tables",
+    "DDLOutput.foreignKeys contains all FK constraints (for PostgreSQL ALTER TABLE)",
+    "Barrel exports: generateDDL, createPostgresDialect, createSqliteDialect, topologicalSort, SqlDialect type, DDLOutput type",
+    "JSDoc documentation for main API function"
+  ],
+  "status": "planned",
+  "createdAt": 1734203400000,
+  "session": "ddl-generator-001",
+  "requirement": "req-ddl-structured-output",
+  "dependencies": [
+    "task-ddl-dialect",
+    "task-ddl-table-generator",
+    "task-ddl-junction-generator"
+  ]
+}

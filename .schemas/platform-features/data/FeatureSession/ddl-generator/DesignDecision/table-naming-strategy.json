@@ -1,0 +1,9 @@
+{
+  "id": "design-ddl-table-naming",
+  "name": "table-naming-strategy",
+  "question": "How to convert model names to table names?",
+  "decision": "1:1 mapping with model name, no pluralization. Organization → Organization table (not organizations). Avoids pluralization edge cases (Person→People, Category→Categories). Matches resolved design from vault documentation (02-discovery-entrypoint.md decision #1).",
+  "rationale": "Simplicity and consistency. Schema defines Organization, table is Organization. Pluralization rules are complex and language-specific. Direct mapping is predictable.",
+  "createdAt": 1734188800000,
+  "session": "ddl-generator-001"
+}

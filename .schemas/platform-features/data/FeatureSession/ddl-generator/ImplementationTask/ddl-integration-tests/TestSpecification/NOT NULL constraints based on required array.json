@@ -1,0 +1,18 @@
+{
+  "id": "test-integration-004",
+  "scenario": "NOT NULL constraints based on required array",
+  "given": [
+    "Model with properties in and out of required array"
+  ],
+  "when": "generateDDL is called",
+  "then": [
+    "Properties in required array have NOT NULL constraint",
+    "Properties not in required are nullable",
+    "Identifier property always has NOT NULL regardless of required array"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/ddl/__tests__/ddl.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-integration-tests",
+  "requirement": "req-ddl-not-null"
+}

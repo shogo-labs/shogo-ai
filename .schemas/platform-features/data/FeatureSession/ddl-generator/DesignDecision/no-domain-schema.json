@@ -1,0 +1,9 @@
+{
+  "id": "design-ddl-no-schema-needed",
+  "name": "no-domain-schema",
+  "question": "Does DDL generator need a domain schema?",
+  "decision": "NO domain schema. DDL generator is pure TypeScript functions with no runtime state. Like schematic layer (ArkType → JSON Schema → MST), it's a transformation utility. Input: EnhancedJsonSchema type. Output: DDLOutput interface. No MST entities, no collections, no persistence.",
+  "rationale": "Infrastructure archetype but stateless transformation. No entities to model. TypeScript interfaces define contracts. Confirmed by analysis: 'Pure functional transformation' (finding-ddl-no-external-api). Parallel to schematic which also has no domain schema.",
+  "createdAt": 1734188800000,
+  "session": "ddl-generator-001"
+}

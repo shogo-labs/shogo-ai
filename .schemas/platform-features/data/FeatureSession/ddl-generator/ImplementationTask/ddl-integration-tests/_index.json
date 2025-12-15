@@ -1,0 +1,27 @@
+{
+  "id": "task-ddl-integration-tests",
+  "name": "ddl-integration-tests",
+  "description": "Create integration tests validating DDL generation against Teams domain schema",
+  "acceptanceCriteria": [
+    "File exists at packages/state-api/src/ddl/ddl.test.ts",
+    "Tests use Teams domain schema from finding-ddl-test-schema (Organization, Team, Membership, App, Invitation)",
+    "Test: PostgreSQL dialect generates correct type mappings (UUID, TIMESTAMPTZ, BOOLEAN)",
+    "Test: SQLite dialect generates correct type fallbacks (TEXT, INTEGER)",
+    "Test: Primary keys inferred from x-mst-type: 'identifier'",
+    "Test: NOT NULL constraints applied based on required array",
+    "Test: Single references generate FK constraints with correct ON DELETE behavior",
+    "Test: Self-references (Team.parentId) generate valid constraints",
+    "Test: Junction tables generated for array references",
+    "Test: Enum properties generate CHECK constraints",
+    "Test: Topological ordering ensures Team appears after Organization",
+    "Test: Computed properties (x-computed: true) are skipped",
+    "All must/should requirements covered by tests"
+  ],
+  "status": "planned",
+  "createdAt": 1734203400000,
+  "session": "ddl-generator-001",
+  "requirement": "req-ddl-type-mapping",
+  "dependencies": [
+    "task-ddl-main-api"
+  ]
+}

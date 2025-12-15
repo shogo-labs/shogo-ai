@@ -1,0 +1,18 @@
+{
+  "id": "test-utils-004",
+  "scenario": "Convert PascalCase to snake_case for column names",
+  "given": [
+    "toSnakeCase function is available"
+  ],
+  "when": "toSnakeCase is called with various inputs",
+  "then": [
+    "toSnakeCase('Organization') returns 'organization'",
+    "toSnakeCase('TeamMember') returns 'team_member'",
+    "toSnakeCase('organizationId') returns 'organization_id'"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/utils.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-utils",
+  "requirement": "req-ddl-single-refs"
+}
