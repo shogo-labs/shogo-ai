@@ -1,0 +1,18 @@
+{
+  "id": "test-utils-002",
+  "scenario": "Self-referential FK does not break ordering",
+  "given": [
+    "Team model with self-reference via parentId"
+  ],
+  "when": "topologicalSort is called",
+  "then": [
+    "Returns ['Team']",
+    "Self-reference does not cause infinite loop",
+    "Self-reference does not cause error"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/utils.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-utils",
+  "requirement": "req-ddl-self-refs"
+}

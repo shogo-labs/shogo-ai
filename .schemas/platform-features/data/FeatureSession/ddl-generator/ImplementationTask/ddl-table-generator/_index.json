@@ -1,0 +1,27 @@
+{
+  "id": "task-ddl-table-generator",
+  "name": "ddl-table-generator",
+  "description": "Generate CREATE TABLE statements for entities with columns, constraints, and foreign keys",
+  "acceptanceCriteria": [
+    "File exists at packages/state-api/src/ddl/table-generator.ts",
+    "generateCreateTable(model, dialect) returns SQL CREATE TABLE statement",
+    "Table name uses 1:1 mapping with model name (no pluralization) per design-ddl-table-naming",
+    "Columns generated from properties using type-mapper.mapPropertyType()",
+    "PRIMARY KEY constraint added for identifier property",
+    "NOT NULL constraints added based on constraint-builder.inferNotNull()",
+    "CHECK constraints added for enum properties",
+    "Skips properties with x-computed: true",
+    "Returns TableDef structure matching types.ts interface",
+    "PostgreSQL: FK constraints via ALTER TABLE (separate from CREATE TABLE)",
+    "SQLite: FK constraints inline in CREATE TABLE definition"
+  ],
+  "status": "planned",
+  "createdAt": 1734203400000,
+  "session": "ddl-generator-001",
+  "requirement": "req-ddl-single-refs",
+  "dependencies": [
+    "task-ddl-type-mapper",
+    "task-ddl-constraint-builder",
+    "task-ddl-utils"
+  ]
+}

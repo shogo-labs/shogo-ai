@@ -1,0 +1,17 @@
+{
+  "id": "test-table-gen-002",
+  "scenario": "Skip computed properties",
+  "given": [
+    "Model with property having x-computed: true"
+  ],
+  "when": "generateCreateTable is called",
+  "then": [
+    "Computed property is not included in column list",
+    "Only stored properties generate columns"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/table-generator.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-table-generator",
+  "requirement": "req-ddl-single-refs"
+}

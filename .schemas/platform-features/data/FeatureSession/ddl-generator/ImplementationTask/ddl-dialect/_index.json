@@ -1,0 +1,22 @@
+{
+  "id": "task-ddl-dialect",
+  "name": "ddl-dialect",
+  "description": "Implement SqlDialect interface with PostgreSQL and SQLite dialect implementations",
+  "acceptanceCriteria": [
+    "File exists at packages/state-api/src/ddl/dialect.ts",
+    "PostgresDialect implements SqlDialect with name='postgresql'",
+    "PostgresDialect.mapType() maps: string+uuid→UUID, string+date-time→TIMESTAMPTZ, integer→INTEGER, number→DOUBLE PRECISION, boolean→BOOLEAN",
+    "PostgresDialect.escapeIdentifier() uses double quotes with quote-doubling escape",
+    "SqliteDialect implements SqlDialect with name='sqlite'",
+    "SqliteDialect.mapType() maps: string+uuid→TEXT, string+date-time→TEXT, integer→INTEGER, number→REAL, boolean→INTEGER",
+    "SqliteDialect.escapeIdentifier() uses double quotes",
+    "Both dialects exported via createPostgresDialect() and createSqliteDialect() factory functions"
+  ],
+  "status": "planned",
+  "createdAt": 1734203400000,
+  "session": "ddl-generator-001",
+  "requirement": "req-ddl-sqlite-dialect-support",
+  "dependencies": [
+    "task-ddl-types"
+  ]
+}
