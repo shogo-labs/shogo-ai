@@ -14,8 +14,9 @@
     "Maps type: 'array' of primitives to JSONB (pg) or TEXT (sqlite) per req-ddl-jsonb-arrays",
     "Handles enum with checkConstraint flag per req-ddl-enum-checks"
   ],
-  "status": "planned",
+  "status": "complete",
   "createdAt": 1734203400000,
+  "updatedAt": 1734313500000,
   "session": "ddl-generator-001",
   "requirement": "req-ddl-type-mapping",
   "dependencies": [

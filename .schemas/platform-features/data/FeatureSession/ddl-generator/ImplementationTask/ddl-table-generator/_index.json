@@ -15,8 +15,9 @@
     "PostgreSQL: FK constraints via ALTER TABLE (separate from CREATE TABLE)",
     "SQLite: FK constraints inline in CREATE TABLE definition"
   ],
-  "status": "planned",
+  "status": "complete",
   "createdAt": 1734203400000,
+  "updatedAt": 1734323100000,
   "session": "ddl-generator-001",
   "requirement": "req-ddl-single-refs",
   "dependencies": [

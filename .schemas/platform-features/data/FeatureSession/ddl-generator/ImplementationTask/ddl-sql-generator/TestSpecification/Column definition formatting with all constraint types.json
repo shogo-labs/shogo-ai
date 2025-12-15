@@ -1,0 +1,21 @@
+{
+  "id": "test-sql-gen-009",
+  "scenario": "Column definition formatting with all constraint types",
+  "given": [
+    "ColumnDef with type TEXT, nullable false, checkConstraint present"
+  ],
+  "when": "columnDefToSQL is called",
+  "then": [
+    "Returns column definition string",
+    "Includes column name (escaped)",
+    "Includes SQL type",
+    "Includes NOT NULL",
+    "Includes CHECK constraint",
+    "Format: \"name\" TEXT NOT NULL CHECK (...)"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/sql-generator.test.ts",
+  "createdAt": 1734477000000,
+  "task": "task-ddl-sql-generator",
+  "requirement": "req-ddl-sql-string-generation"
+}

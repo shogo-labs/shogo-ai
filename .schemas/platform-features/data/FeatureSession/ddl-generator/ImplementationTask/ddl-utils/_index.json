@@ -12,8 +12,9 @@
     "toSnakeCase(str: string) converts PascalCase/camelCase to snake_case for column naming",
     "Reserved word handling integrated with dialect.escapeIdentifier() per req-ddl-reserved-words"
   ],
-  "status": "planned",
+  "status": "complete",
   "createdAt": 1734203400000,
+  "updatedAt": 1734295200000,
   "session": "ddl-generator-001",
   "requirement": "req-ddl-topo-sort",
   "dependencies": [
