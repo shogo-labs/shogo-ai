@@ -32,5 +32,8 @@ export * from './auth'
 // Teams layer
 export * from './teams'
 
+// Teams Multi-Tenancy layer
+export * from './teams-multi-tenancy'
+
 // Utilities
 export * from './utils'
