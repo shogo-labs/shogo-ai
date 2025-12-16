@@ -1,0 +1,9 @@
+{
+  "id": "design-001",
+  "name": "workspace-persistence",
+  "question": "How should Workspace be persisted given two required parent references (tenant_id, billing_account_id)?",
+  "decision": "Use nested: false (flat storage) for Workspace since it has two required references and no clear single parent",
+  "rationale": "Runtime testing revealed that nested:true with multiple required refs causes 'Cannot determine parent' error. Workspace references both Tenant (control) and BillingAccount (billing) - neither is a clear sole parent.",
+  "createdAt": 1734307800000,
+  "session": "teams-multi-tenancy-001"
+}

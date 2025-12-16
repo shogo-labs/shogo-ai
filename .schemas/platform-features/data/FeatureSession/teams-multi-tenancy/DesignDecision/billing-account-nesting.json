@@ -1,0 +1,9 @@
+{
+  "id": "design-002",
+  "name": "billing-account-nesting",
+  "question": "How should BillingAccount be persisted?",
+  "decision": "Use nested: true under Tenant since tenant_id is the sole required reference",
+  "rationale": "BillingAccount has a clear single parent (Tenant). Nested storage organizes billing accounts under their owning tenant.",
+  "createdAt": 1734307800000,
+  "session": "teams-multi-tenancy-001"
+}
