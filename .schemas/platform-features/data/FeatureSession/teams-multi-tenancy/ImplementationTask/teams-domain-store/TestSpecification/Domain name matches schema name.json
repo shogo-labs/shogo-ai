@@ -1,0 +1,16 @@
+{
+  "id": "test-domain-schema-name",
+  "scenario": "Domain name matches schema name",
+  "given": [
+    "teamsMultiTenancyDomain is imported"
+  ],
+  "when": "Checking domain.name property",
+  "then": [
+    "domain.name equals 'teams-multi-tenancy'",
+    "Matches the schema name used by Wavesmith"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/tests/domain.test.ts",
+  "createdAt": 1734308300000,
+  "task": "task-teams-domain"
+}

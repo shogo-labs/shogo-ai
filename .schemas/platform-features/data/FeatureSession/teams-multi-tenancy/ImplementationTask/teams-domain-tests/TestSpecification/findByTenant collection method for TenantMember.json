@@ -1,0 +1,20 @@
+{
+  "id": "test-find-members-by-tenant",
+  "scenario": "findByTenant collection method for TenantMember",
+  "given": [
+    "Store has Tenant A and Tenant B",
+    "Store has 2 TenantMembers for Tenant A",
+    "Store has 1 TenantMember for Tenant B"
+  ],
+  "when": "Calling tenantMemberCollection.findByTenant(tenantA.id)",
+  "then": [
+    "Returns array of 2 TenantMember instances",
+    "All returned members have tenant_id matching Tenant A",
+    "Does not include TenantMember from Tenant B"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/tests/domain.test.ts",
+  "createdAt": 1734308300000,
+  "task": "task-teams-tests",
+  "requirement": "req-003"
+}

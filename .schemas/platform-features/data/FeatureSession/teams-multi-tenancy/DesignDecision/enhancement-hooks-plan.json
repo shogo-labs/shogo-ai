@@ -2,8 +2,8 @@
   "id": "design-004",
   "name": "enhancement-hooks-plan",
   "question": "What enhancements will the domain need?",
-  "decision": "models: none (schema-only). collections: none. rootStore: none. Schema deliverable only - no domain.ts or enhancements needed.",
-  "rationale": "User confirmed schema-only deliverable. No web integration, MCP tools, or runtime enhancements required. CollectionPersistable will auto-compose when schema is loaded.",
+  "decision": "models: TenantMember.isBillingAdmin computed view. collections: tenantMemberCollection.findByTenant(id), workspaceCollection.findByTenant(id). rootStore: none needed.",
+  "rationale": "Full domain implementation in packages/state-api with domain() API. Export TeamsMultiTenancyDomain scope and teamsMultiTenancyDomain result. CollectionPersistable auto-composed.",
   "createdAt": 1734307800000,
   "session": "teams-multi-tenancy-001"
 }

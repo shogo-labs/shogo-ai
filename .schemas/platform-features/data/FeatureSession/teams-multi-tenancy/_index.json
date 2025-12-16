@@ -2,9 +2,10 @@
   "id": "teams-multi-tenancy-001",
   "name": "teams-multi-tenancy",
   "intent": "Implement a multi-tenant data model with User, Tenant, Tenant_Member, Billing_Account, Workspace, Project, and App entities. Support many-to-many user-tenant relationships with roles, tenant-owned billing accounts with Stripe integration references, and a workspace → project → app containment hierarchy. Billing accounts can pay for workspaces across tenants.",
-  "status": "spec",
+  "status": "completed",
   "affectedPackages": [
-    ".schemas"
+    ".schemas",
+    "packages/state-api"
   ],
   "schemaName": "teams-multi-tenancy",
   "initialAssessment": {
@@ -28,5 +29,5 @@
     "collection-persistable"
   ],
   "createdAt": 1734307200000,
-  "updatedAt": 1734307900000
+  "updatedAt": 1734400000000
 }

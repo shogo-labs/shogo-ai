@@ -1,0 +1,20 @@
+{
+  "id": "test-is-billing-admin",
+  "scenario": "TenantMember.isBillingAdmin computed view",
+  "given": [
+    "Store has TenantMember with role 'billing_admin'",
+    "Store has TenantMember with role 'admin'",
+    "Store has TenantMember with role 'member'"
+  ],
+  "when": "Accessing isBillingAdmin computed property",
+  "then": [
+    "TenantMember with role 'billing_admin' returns isBillingAdmin: true",
+    "TenantMember with role 'admin' returns isBillingAdmin: false",
+    "TenantMember with role 'member' returns isBillingAdmin: false"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/tests/domain.test.ts",
+  "createdAt": 1734308300000,
+  "task": "task-teams-tests",
+  "requirement": "req-006"
+}
