@@ -1,0 +1,11 @@
+{
+  "id": "finding-environment-executor",
+  "name": "environment-executor-injection",
+  "type": "pattern",
+  "description": "IEnvironment.services already has backendRegistry (required) and queryValidator (optional). For Postgres execution, need to inject ISqlExecutor instance. Two approaches: (1) Add sqlExecutor to IEnvironment.services, or (2) Let PostgresBackend manage its own executor via constructor. Recommend approach (2) - PostgresBackend(executor) - because executor is backend-specific, not a general environment service.",
+  "location": "packages/state-api/src/environment/types.ts",
+  "relevantCode": "// Current IEnvironment.services:\nservices: {\n  persistence: IPersistenceService      // required\n  auth?: IAuthService                   // optional\n  backendRegistry: IBackendRegistry     // required\n  queryValidator?: IQueryValidator      // optional\n}\n\n// PostgresBackend approach:\nconst executor = new BunSqlExecutor(connectionConfig)\nconst backend = new PostgresBackend(executor)\nregistry.register('postgres', backend)",
+  "recommendation": "Keep ISqlExecutor out of IEnvironment. PostgresBackend owns its executor instance. This maintains clean separation - environment provides registry, backend owns execution details.",
+  "createdAt": 1734278400006,
+  "session": "iqueryable-persistence-projection"
+}

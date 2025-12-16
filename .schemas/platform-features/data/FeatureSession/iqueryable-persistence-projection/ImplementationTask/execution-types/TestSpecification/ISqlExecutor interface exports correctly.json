@@ -1,0 +1,18 @@
+{
+  "id": "test-p2-exec-types-01",
+  "scenario": "ISqlExecutor interface exports correctly",
+  "given": [
+    "query/execution/types.ts module exists"
+  ],
+  "when": "ISqlExecutor interface is imported",
+  "then": [
+    "Interface has execute method signature",
+    "execute accepts [sql, params] tuple",
+    "execute returns Promise<Row[]>"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/execution/__tests__/types.test.ts",
+  "createdAt": 1734278600000,
+  "task": "task-p2-execution-types",
+  "requirement": "req-08-database-executor"
+}

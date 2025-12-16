@@ -155,8 +155,15 @@ export interface IEnvironment {
    * Contextual metadata about the runtime store.
    *
    * This is "where we are" - which schema, which workspace, etc.
+   *
+   * **Optional for meta-store:**
+   * The meta-store itself doesn't belong to a schema - it manages schemas.
+   * When creating the meta-store, context can be omitted.
+   *
+   * **Required for runtime stores:**
+   * Runtime stores are tied to a specific schema and need context.schemaName.
    */
-  context: {
+  context?: {
     /**
      * Schema name identifier (stable string reference).
      *
@@ -220,23 +227,3 @@ export interface IEnvironment {
  * ```
  */
 export type ISchemaEntity = any
-
-// ============================================================================
-// Meta-Store Environment
-// ============================================================================
-
-/**
- * Simplified environment for the meta-store itself.
- *
- * Unlike runtime stores (which have a schema context), the meta-store
- * IS the schema store - so it doesn't need context.schema.
- *
- * This is used for isomorphic schema loading where the meta-store
- * needs access to a persistence service to fetch schemas.
- */
-export interface IMetaStoreEnvironment {
-  services: {
-    /** Persistence service for schema loading */
-    persistence?: IPersistenceService
-  }
-}

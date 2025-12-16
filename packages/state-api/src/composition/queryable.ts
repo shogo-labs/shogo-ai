@@ -282,7 +282,7 @@ class QueryBuilder<T> implements IQueryable<T> {
     }
 
     const result = await backend.execute(ast, collection, options)
-    return result.items
+    return result.items as T[]
   }
 
   async first(): Promise<T | undefined> {
@@ -297,7 +297,7 @@ class QueryBuilder<T> implements IQueryable<T> {
     }
 
     const result = await backend.execute(ast, collection, options)
-    return result.items[0]
+    return result.items[0] as T | undefined
   }
 
   async count(): Promise<number> {
@@ -336,7 +336,8 @@ class QueryBuilder<T> implements IQueryable<T> {
    * @throws Error if no backend found and no default set
    */
   private resolveBackend() {
-    const schemaName = this.env.context.schemaName
+    // Runtime stores always have context (meta-store doesn't use CollectionQueryable)
+    const schemaName = this.env.context!.schemaName
     const modelName = this.collection.modelName
     return this.env.services.backendRegistry.resolve(schemaName, modelName)
   }

@@ -1,0 +1,24 @@
+{
+  "id": "task-p2-backend-registry-mcp",
+  "name": "backend-registry-mcp-integration",
+  "description": "Wire PostgresBackend into MCP via backend registry. Connection implicit via x-persistence.backend schema metadata.",
+  "acceptanceCriteria": [
+    "MCP server creates PostgresBackend instance when db.connect establishes connection",
+    "PostgresBackend registered in backendRegistry under 'postgres' key",
+    "store.list and store.query tools resolve backend via x-persistence.backend schema extension",
+    "When x-persistence.backend='postgres', queries execute via PostgresBackend instead of in-memory",
+    "When x-persistence.backend='file' or unset, existing FileSystemPersistence behavior unchanged",
+    "Backend resolution cascade: model -> schema -> registry default",
+    "Integration test verifies postgres-backed collection query returns database results"
+  ],
+  "status": "complete",
+  "createdAt": 1734278500014,
+  "updatedAt": 1734575500000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-postgres-backend",
+  "requirement": "req-11-backend-registry-mcp",
+  "dependencies": [
+    "task-p2-postgres-backend",
+    "task-p2-mcp-registry-modify"
+  ]
+}

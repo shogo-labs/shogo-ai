@@ -6,6 +6,7 @@
  * - Backend abstraction (query/backends)
  * - Schema validation (query/validation)
  * - Backend registry (query/registry)
+ * - Database execution (query/execution)
  *
  * @module query
  *
@@ -17,6 +18,8 @@
  * - REQ-05: Schema-aware validation
  * - REQ-06: Isomorphic execution (browser + server)
  * - REQ-07: MST integration via CollectionQueryable
+ * - REQ-08: Database execution layer via ISqlExecutor
+ * - REQ-12: PostgreSQL queryable implementation
  *
  * @example
  * ```typescript
@@ -29,20 +32,31 @@
  *   // Backends
  *   MemoryBackend,
  *   SqlBackend,
+ *   PostgresBackend,
  *   type IBackend,
  *   // Registry
  *   createBackendRegistry,
  *   type IBackendRegistry,
  *   // Validation
  *   QueryValidator,
- *   type IQueryValidator
+ *   type IQueryValidator,
+ *   // Execution
+ *   BunSqlExecutor,
+ *   type ISqlExecutor,
+ *   snakeToCamel,
+ *   normalizeRows
  * } from '@shogo/state-api/query'
  *
- * // Create backend registry
+ * // Create backend registry with PostgreSQL
+ * const sql = Database.open(':memory:')
+ * const executor = new BunSqlExecutor(sql)
+ * const postgresBackend = new PostgresBackend(executor)
+ *
  * const registry = createBackendRegistry({
- *   default: 'memory',
+ *   default: 'postgres',
  *   backends: {
- *     memory: new MemoryBackend()
+ *     memory: new MemoryBackend(),
+ *     postgres: postgresBackend
  *   }
  * })
  *
@@ -113,6 +127,10 @@ export {
   SqlBackend
 } from './backends/sql'
 
+export {
+  PostgresBackend
+} from './backends/postgres'
+
 // ============================================================================
 // Registry Exports (query/registry)
 // ============================================================================
@@ -141,7 +159,7 @@ export {
  */
 export type {
   IQueryValidator,
-  ValidationResult,
+  QueryValidationResult,
   ValidationError,
   ValidationErrorCode
 } from './validation/types'
@@ -153,3 +171,28 @@ export {
 export {
   QueryValidator
 } from './validation/validator'
+
+// ============================================================================
+// Execution Exports (query/execution)
+// ============================================================================
+
+/**
+ * Database execution layer with SQL executor interface and utilities.
+ * Re-exported from ./execution
+ */
+export type {
+  ISqlExecutor,
+  SqlExecutorConfig,
+  Row
+} from './execution/types'
+
+export {
+  BunSqlExecutor
+} from './execution/bun-sql'
+
+export {
+  snakeToCamel,
+  camelToSnake,
+  normalizeRow,
+  normalizeRows
+} from './execution/utils'

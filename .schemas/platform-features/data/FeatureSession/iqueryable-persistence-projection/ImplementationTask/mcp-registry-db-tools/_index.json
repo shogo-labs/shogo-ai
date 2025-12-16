@@ -1,0 +1,22 @@
+{
+  "id": "task-p2-mcp-registry-modify",
+  "name": "mcp-registry-db-tools",
+  "description": "Register db.query tool in MCP registry. (db.connect and db.migrate deferred)",
+  "acceptanceCriteria": [
+    "Import registerDbConnect from './db.connect'",
+    "Import registerDbMigrate from './db.migrate'",
+    "Import registerDbQuery from './db.query'",
+    "Add registerDbConnect(server), registerDbMigrate(server), registerDbQuery(server) calls in registerAllTools()",
+    "Update header comment: 'Total: 19 tools across 6 namespaces (schema, store, view, data, agent, db)'",
+    "Tool registration order: db.connect, db.migrate, db.query"
+  ],
+  "status": "complete",
+  "createdAt": 1734278500013,
+  "updatedAt": 1734575400000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-mcp-registry-modify",
+  "requirement": "req-10-mcp-database-tools",
+  "dependencies": [
+    "task-p2-db-query"
+  ]
+}

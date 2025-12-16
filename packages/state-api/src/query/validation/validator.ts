@@ -14,7 +14,7 @@
  */
 
 import { FieldCondition, CompoundCondition, type Condition } from "../ast/types"
-import { OPERATOR_BY_TYPE, type IQueryValidator, type ValidationResult, type ValidationError } from "./types"
+import { OPERATOR_BY_TYPE, type IQueryValidator, type QueryValidationResult, type ValidationError } from "./types"
 
 // ============================================================================
 // Property Type Info (for memoization)
@@ -256,7 +256,7 @@ export class QueryValidator implements IQueryValidator {
    * }
    * ```
    */
-  validateQuery(ast: Condition, schemaName: string, modelName: string): ValidationResult {
+  validateQuery(ast: Condition, schemaName: string, modelName: string): QueryValidationResult {
     // First check schema exists
     const schema = this.metaStore.findSchemaByName(schemaName)
     if (!schema) {

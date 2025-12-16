@@ -1,0 +1,9 @@
+{
+  "id": "decision-executor-placement",
+  "name": "executor-module-placement",
+  "question": "Where should BunSqlExecutor live in the codebase?",
+  "decision": "New directory packages/state-api/src/query/execution/ with types.ts (ISqlExecutor interface), bun-sql.ts (BunSqlExecutor), utils.ts (tagged template conversion, field normalization), index.ts (barrel)",
+  "rationale": "Maintains separation: backends/ contains IBackend implementations (compile or in-memory execute), execution/ contains ISqlExecutor implementations (actual database execution). Follows existing query/ subdirectory pattern (ast/, backends/, validation/).",
+  "createdAt": 1734278400001,
+  "session": "iqueryable-persistence-projection"
+}

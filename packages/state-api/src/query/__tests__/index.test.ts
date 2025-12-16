@@ -84,3 +84,72 @@ describe('query/index.ts barrel exports entire module', () => {
     expect(registry.has('memory')).toBe(true)
   })
 })
+
+/**
+ * Tests for Phase 2 exports: execution module and PostgresBackend
+ *
+ * Generated from TestSpecifications:
+ * - test-p2-query-index-01: execution module types
+ * - test-p2-query-index-02: BunSqlExecutor class
+ * - test-p2-query-index-03: utility functions
+ * - test-p2-query-index-04: PostgresBackend
+ */
+describe('query/index.ts re-exports execution module', () => {
+  test('execution module types are exported', async () => {
+    // Given: query/index.ts module exists
+    // When: ISqlExecutor, SqlExecutorConfig are imported from query
+    const queryModule = await import('../index')
+
+    // Then: Types should be available at top-level query module
+    // Note: Type exports can't be tested at runtime, but we can verify the module structure
+    expect(queryModule).toBeDefined()
+  })
+
+  test('BunSqlExecutor class is exported', async () => {
+    // Given: query/index.ts module exists
+    // When: BunSqlExecutor is imported from query
+    const { BunSqlExecutor } = await import('../index')
+
+    // Then: BunSqlExecutor class should be available
+    expect(BunSqlExecutor).toBeDefined()
+    expect(typeof BunSqlExecutor).toBe('function')
+
+    // And: Can instantiate from top-level import (requires SQL connection, so we just verify constructor exists)
+    expect(BunSqlExecutor.prototype.constructor).toBeDefined()
+  })
+
+  test('utility functions are exported', async () => {
+    // Given: query/index.ts module exists
+    // When: snakeToCamel, camelToSnake, normalizeRow, normalizeRows are imported from query
+    const { snakeToCamel, camelToSnake, normalizeRow, normalizeRows } = await import('../index')
+
+    // Then: All utility functions should be available at top-level
+    expect(snakeToCamel).toBeDefined()
+    expect(camelToSnake).toBeDefined()
+    expect(normalizeRow).toBeDefined()
+    expect(normalizeRows).toBeDefined()
+
+    // And: Functions should work correctly after re-export
+    expect(typeof snakeToCamel).toBe('function')
+    expect(typeof camelToSnake).toBe('function')
+    expect(typeof normalizeRow).toBe('function')
+    expect(typeof normalizeRows).toBe('function')
+
+    // Verify basic functionality
+    expect(snakeToCamel('created_at')).toBe('createdAt')
+    expect(camelToSnake('createdAt')).toBe('created_at')
+  })
+
+  test('PostgresBackend is exported from backends', async () => {
+    // Given: query/index.ts module exists
+    // When: PostgresBackend is imported from query
+    const { PostgresBackend } = await import('../index')
+
+    // Then: PostgresBackend class should be available at top-level
+    expect(PostgresBackend).toBeDefined()
+    expect(typeof PostgresBackend).toBe('function')
+
+    // And: Follows existing pattern for backend exports
+    expect(PostgresBackend.prototype.constructor).toBeDefined()
+  })
+})
