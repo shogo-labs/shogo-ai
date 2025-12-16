@@ -1,0 +1,18 @@
+{
+  "id": "test-p2-db-query-07",
+  "scenario": "db.query tool handles query without params",
+  "given": [
+    "db.query tool is registered",
+    "Database connection is available"
+  ],
+  "when": "db.query is called with { sql: 'SELECT 1 AS one' } (no params)",
+  "then": [
+    "Query executes without parameters",
+    "Returns { ok: true, rows: [{ one: 1 }], rowCount: 1 }"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/mcp/src/tools/__tests__/db.query.test.ts",
+  "createdAt": 1734278600076,
+  "task": "task-p2-db-query",
+  "requirement": "req-10-mcp-database-tools"
+}

@@ -1,0 +1,22 @@
+{
+  "id": "task-p2-query-index-modify",
+  "name": "query-index-exports",
+  "description": "Add execution module and PostgresBackend exports to top-level query module index",
+  "acceptanceCriteria": [
+    "query/index.ts re-exports ISqlExecutor and SqlExecutorConfig types from execution/",
+    "query/index.ts re-exports BunSqlExecutor class from execution/",
+    "query/index.ts re-exports snakeToCamel, camelToSnake, normalizeRow, normalizeRows from execution/",
+    "query/index.ts re-exports PostgresBackend from backends/",
+    "All exports follow existing pattern in query/index.ts"
+  ],
+  "status": "complete",
+  "createdAt": 1734278500006,
+  "updatedAt": 1734563500000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-query-index-modify",
+  "requirement": "req-08-database-executor",
+  "dependencies": [
+    "task-p2-execution-index",
+    "task-p2-backend-index-modify"
+  ]
+}

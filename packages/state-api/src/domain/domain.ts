@@ -99,18 +99,20 @@ export function domain(config: DomainConfig): DomainResult {
         createdAt: Date.now(),
       })
 
-    // FIX 2: Get persistence from metaStore's environment (if it's an MST node)
+    // FIX 2: Get services from metaStore's environment (if it's an MST node)
     let persistence: any = undefined
+    let backendRegistry: any = undefined
     try {
       const metaEnv = getEnv<any>(metaStore)
       persistence = metaEnv?.services?.persistence
+      backendRegistry = metaEnv?.services?.backendRegistry
     } catch {
       // metaStore might not be an MST node in tests - that's ok
     }
 
-    // Create environment with persistence from meta-store
+    // Create environment with services from meta-store
     const env = {
-      services: { persistence },
+      services: { persistence, backendRegistry },
       context: {
         schemaName: config.name,
         location: workspace,

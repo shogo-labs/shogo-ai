@@ -16,6 +16,9 @@ export type {
 } from './types'
 
 export { MemoryBackend } from './memory'
+export { SqlBackend } from './sql'
+export { PostgresBackend } from './postgres'
+export { ContextAwareBackend } from './context-aware'
 
 export type { IBackendRegistry, BackendRegistryConfig } from '../registry'
 export { BackendRegistry, createBackendRegistry } from '../registry'

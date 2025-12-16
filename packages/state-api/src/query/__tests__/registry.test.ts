@@ -12,6 +12,7 @@
 
 import { describe, test, expect, beforeEach } from "bun:test"
 import type { IBackend } from "../backends/types"
+import { ContextAwareBackend } from "../backends/context-aware"
 import { getMetaStore, resetMetaStore } from "../../meta/bootstrap"
 import {
   IBackendRegistry,
@@ -197,8 +198,10 @@ describe("BackendRegistry", () => {
       // When: Calling resolve(schemaName, modelName)
       const backend = registry.resolve("test-schema", "User")
 
-      // Then: Returns 'sql' backend
-      expect(backend).toBe(sqlBackend)
+      // Then: Returns ContextAwareBackend wrapping 'sql' backend
+      // (Registry now wraps backends with schema-aware normalization)
+      expect(backend).toBeInstanceOf(ContextAwareBackend)
+      expect(backend.capabilities).toEqual(sqlBackend.capabilities)
 
       // Then: Model config takes precedence
       // Then: Schema config not checked (validated by getting sql backend)
@@ -240,8 +243,10 @@ describe("BackendRegistry", () => {
       // When: Calling resolve(schemaName, modelName)
       const backend = registry.resolve("test-schema-fallback", "User")
 
-      // Then: Returns 'memory' backend (from default, since schema-level not supported)
-      expect(backend).toBe(memoryBackend)
+      // Then: Returns ContextAwareBackend wrapping 'memory' backend
+      // (Registry now wraps backends with schema-aware normalization)
+      expect(backend).toBeInstanceOf(ContextAwareBackend)
+      expect(backend.capabilities).toEqual(memoryBackend.capabilities)
 
       // Then: Falls back through cascade to default
       // Schema-level config would take precedence once meta-store supports it
@@ -280,8 +285,9 @@ describe("BackendRegistry", () => {
       // When: Calling resolve(schemaName, modelName)
       const backend = registry.resolve("test-schema-default", "User")
 
-      // Then: Returns 'memory' backend (the default)
-      expect(backend).toBe(memoryBackend)
+      // Then: Returns ContextAwareBackend wrapping 'memory' backend (the default)
+      expect(backend).toBeInstanceOf(ContextAwareBackend)
+      expect(backend.capabilities).toEqual(memoryBackend.capabilities)
 
       // Then: Cascade: model → schema → default (validated by getting default)
     })
@@ -315,12 +321,14 @@ describe("BackendRegistry", () => {
 
       // Then: resolve() uses this when no config found
       const backend = registry.resolve("test-setdefault", "Task")
-      expect(backend).toBe(memoryBackend)
+      expect(backend).toBeInstanceOf(ContextAwareBackend)
+      expect(backend.capabilities).toEqual(memoryBackend.capabilities)
 
       // Then: Can be changed later
       registry.setDefault('sql')
       const backend2 = registry.resolve("test-setdefault", "Task")
-      expect(backend2).toBe(sqlBackend)
+      expect(backend2).toBeInstanceOf(ContextAwareBackend)
+      expect(backend2.capabilities).toEqual(sqlBackend.capabilities)
     })
   })
 
@@ -362,7 +370,8 @@ describe("BackendRegistry", () => {
       }
       metaStore.ingestEnhancedJsonSchema(inputSchema, { name: "test-factory" })
       const backend = registry.resolve("test-factory", "Item")
-      expect(backend).toBe(memoryBackend)
+      expect(backend).toBeInstanceOf(ContextAwareBackend)
+      expect(backend.capabilities).toEqual(memoryBackend.capabilities)
     })
   })
 

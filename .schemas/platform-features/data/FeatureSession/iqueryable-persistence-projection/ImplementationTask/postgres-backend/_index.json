@@ -1,0 +1,27 @@
+{
+  "id": "task-p2-postgres-backend",
+  "name": "postgres-backend",
+  "description": "Create PostgresBackend class that wraps SqlBackend (compilation) + ISqlExecutor (execution) for unified IBackend interface",
+  "acceptanceCriteria": [
+    "PostgresBackend implements IBackend interface",
+    "Constructor takes ISqlExecutor instance (dependency injection)",
+    "execute() method: compiles query via SqlBackend, executes via ISqlExecutor, normalizes results",
+    "Uses SqlBackend.compileSelect() for toArray/first queries",
+    "Uses SqlBackend.compileCount() for count queries",
+    "Uses SqlBackend.compileExists() for any queries",
+    "Calls normalizeRow() on each result row before returning",
+    "capabilities property declares supported operators (inherits from SqlBackend)",
+    "Stateless except for executor reference (no internal caching)",
+    "Unit tests verify compilation + execution + normalization pipeline"
+  ],
+  "status": "complete",
+  "createdAt": 1734278500004,
+  "updatedAt": 1734295500000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-postgres-backend",
+  "requirement": "req-12-postgres-queryable",
+  "dependencies": [
+    "task-p2-bun-sql-executor",
+    "task-p2-execution-utils"
+  ]
+}

@@ -57,4 +57,39 @@ describe("backends/index.ts exports", () => {
     expect(backend.capabilities).toBeDefined()
     expect(typeof backend.execute).toBe('function')
   })
+
+  // Test specification: test-p2-backend-index-01
+  test("PostgresBackend class accessible", async () => {
+    const { PostgresBackend } = await import('../index')
+    expect(PostgresBackend).toBeDefined()
+    expect(typeof PostgresBackend).toBe('function')
+
+    // Verify it's constructable (requires ISqlExecutor mock)
+    const mockExecutor = {
+      execute: async () => [],
+      connection: {} as any
+    }
+    const instance = new PostgresBackend(mockExecutor)
+    expect(instance).toBeDefined()
+    expect(instance.capabilities).toBeDefined()
+    expect(typeof instance.execute).toBe('function')
+  })
+
+  // Test specification: test-p2-backend-index-02
+  test("SqlBackend accessible alongside existing exports", async () => {
+    const module = await import('../index')
+    const { IBackend, MemoryBackend, SqlBackend, PostgresBackend } = module as any
+
+    // Verify all exports are available
+    expect(MemoryBackend).toBeDefined()
+    expect(SqlBackend).toBeDefined()
+    expect(PostgresBackend).toBeDefined()
+
+    // Verify no breaking changes - existing exports still work
+    const memBackend = new MemoryBackend()
+    expect(memBackend.capabilities).toBeDefined()
+
+    const sqlBackend = new SqlBackend()
+    expect(sqlBackend.capabilities).toBeDefined()
+  })
 })

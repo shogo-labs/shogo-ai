@@ -29,7 +29,7 @@
 // Type Exports
 // ============================================================================
 
-export type { IQueryValidator, ValidationResult, ValidationError, ValidationErrorCode } from "./types"
+export type { IQueryValidator, QueryValidationResult, ValidationError, ValidationErrorCode } from "./types"
 export { OPERATOR_BY_TYPE } from "./types"
 
 // ============================================================================

@@ -54,13 +54,13 @@ export interface ValidationError {
  * @example
  * ```typescript
  * // Valid query
- * const result: ValidationResult = {
+ * const result: QueryValidationResult = {
  *   valid: true,
  *   errors: []
  * }
  *
  * // Invalid query
- * const result: ValidationResult = {
+ * const result: QueryValidationResult = {
  *   valid: false,
  *   errors: [{
  *     code: "INVALID_PROPERTY",
@@ -70,7 +70,7 @@ export interface ValidationError {
  * }
  * ```
  */
-export interface ValidationResult {
+export interface QueryValidationResult {
   /** Whether the query passed validation */
   valid: boolean
   /** Array of validation errors (empty if valid) */
@@ -103,7 +103,7 @@ export interface IQueryValidator {
    * @param modelName - Name of the model within the schema
    * @returns Validation result with errors if invalid
    */
-  validateQuery(ast: Condition, schemaName: string, modelName: string): ValidationResult
+  validateQuery(ast: Condition, schemaName: string, modelName: string): QueryValidationResult
 }
 
 // ============================================================================

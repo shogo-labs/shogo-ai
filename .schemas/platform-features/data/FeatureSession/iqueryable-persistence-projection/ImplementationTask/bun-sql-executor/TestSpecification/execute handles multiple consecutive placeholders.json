@@ -1,0 +1,20 @@
+{
+  "id": "test-p2-bun-executor-04",
+  "scenario": "execute handles multiple consecutive placeholders",
+  "given": [
+    "BunSqlExecutor instance with test database connection",
+    "SQL string: 'SELECT * FROM users WHERE age > $1 AND age < $2'",
+    "Params array: [18, 65]"
+  ],
+  "when": "execute(['SELECT * FROM users WHERE age > $1 AND age < $2', [18, 65]]) is called",
+  "then": [
+    "Both placeholders are substituted correctly",
+    "Parts array has 3 elements (before $1, between $1 and $2, after $2)",
+    "Query executes with correct parameter binding"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/query/execution/__tests__/bun-sql-executor.test.ts",
+  "createdAt": 1734278600023,
+  "task": "task-p2-bun-sql-executor",
+  "requirement": "req-08-database-executor"
+}

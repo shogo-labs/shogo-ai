@@ -5,13 +5,13 @@
  *
  * Tests validation type definitions:
  * - IQueryValidator interface
- * - ValidationResult type
+ * - QueryValidationResult type
  * - ValidationError type
  * - OPERATOR_BY_TYPE constant
  */
 
 import { describe, test, expect } from "bun:test"
-import type { IQueryValidator, ValidationResult, ValidationError } from "../types"
+import type { IQueryValidator, QueryValidationResult, ValidationError } from "../types"
 import { OPERATOR_BY_TYPE } from "../types"
 import type { Condition } from "../../ast/types"
 
@@ -22,12 +22,12 @@ describe("test-validation-interface: IQueryValidator interface defines validateQ
     // When: Implementing IQueryValidator
     // Then: validateQuery(ast, schemaName, modelName) signature required
     const mockValidator: IQueryValidator = {
-      validateQuery: (ast: Condition, schemaName: string, modelName: string): ValidationResult => {
+      validateQuery: (ast: Condition, schemaName: string, modelName: string): QueryValidationResult => {
         return { valid: true, errors: [] }
       }
     }
 
-    // Then: Returns ValidationResult type
+    // Then: Returns QueryValidationResult type
     const result = mockValidator.validateQuery({} as Condition, "test-schema", "TestModel")
     expect(result).toHaveProperty("valid")
     expect(result).toHaveProperty("errors")
@@ -40,12 +40,12 @@ describe("test-validation-interface: IQueryValidator interface defines validateQ
   })
 })
 
-describe("test-validation-result-type: ValidationResult contains valid flag and errors array", () => {
+describe("test-validation-result-type: QueryValidationResult contains valid flag and errors array", () => {
   test("valid: true with empty errors array is valid", () => {
-    // Given: ValidationResult type is imported
+    // Given: QueryValidationResult type is imported
 
-    // When: Creating ValidationResult objects
-    const result: ValidationResult = {
+    // When: Creating QueryValidationResult objects
+    const result: QueryValidationResult = {
       valid: true,
       errors: []
     }
@@ -56,7 +56,7 @@ describe("test-validation-result-type: ValidationResult contains valid flag and 
   })
 
   test("valid: false with populated errors array is valid", () => {
-    const result: ValidationResult = {
+    const result: QueryValidationResult = {
       valid: false,
       errors: [
         {
@@ -73,7 +73,7 @@ describe("test-validation-result-type: ValidationResult contains valid flag and 
   })
 
   test("Structure matches { valid: boolean, errors: ValidationError[] }", () => {
-    const result: ValidationResult = {
+    const result: QueryValidationResult = {
       valid: false,
       errors: []
     }

@@ -1,0 +1,9 @@
+{
+  "id": "req-12-postgres-queryable",
+  "name": "postgres-queryable-implementation",
+  "description": "Extend CollectionQueryable terminal operations (toArray, first, count, any) to execute via BunSqlExecutor when backend='postgres'. Flow: build query chain -> compile via SqlBackend -> execute via BunSqlExecutor -> hydrate results to MST via applySnapshot with field name normalization (snake_case to camelCase).",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734278400000,
+  "session": "iqueryable-persistence-projection"
+}

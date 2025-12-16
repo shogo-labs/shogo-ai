@@ -1,0 +1,11 @@
+{
+  "id": "exec-task-p2-postgres-backend-1734295000",
+  "status": "test_passing",
+  "testFilePath": "packages/state-api/src/query/backends/__tests__/postgres.test.ts",
+  "implementationFilePath": "packages/state-api/src/query/backends/postgres.ts",
+  "testOutput": "7 pass, 1 skip, 0 fail, 50 expect() calls",
+  "startedAt": 1734295000000,
+  "completedAt": 1734295500000,
+  "run": "run-p2-1734279100000",
+  "task": "task-p2-postgres-backend"
+}

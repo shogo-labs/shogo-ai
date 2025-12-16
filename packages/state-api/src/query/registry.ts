@@ -1,12 +1,19 @@
 /**
  * Backend Registry
  *
- * Schema-driven backend resolution with cascade lookup.
+ * Schema-driven backend resolution with cascade lookup and schema-aware wrapping.
  * Resolves which backend to use for a given schema/model using this cascade:
  * 1. Check model's x-persistence.backend property in meta-store
  * 2. If not set, check schema's x-persistence.backend property
  * 3. If not set, use registry's default backend
  * 4. If no default, throw descriptive error
+ *
+ * ## Schema-Aware Wrapping
+ *
+ * After resolving a backend, the registry wraps it with ContextAwareBackend
+ * to provide schema-aware row normalization. This ensures database column names
+ * (snake_case) are correctly mapped back to schema property names, even for
+ * edge cases like consecutive capitals (HTTPSUrl, userID).
  *
  * @module query/registry
  *
@@ -20,9 +27,12 @@
  * - BackendRegistry class with Map-based storage
  * - createBackendRegistry() factory for pre-configuration
  * - Meta-store integration for reading x-persistence config
+ * - ContextAwareBackend wrapper for schema-aware normalization
  */
 
 import type { IBackend } from './backends/types'
+import { ContextAwareBackend } from './backends/context-aware'
+import { createColumnPropertyMap } from './execution/utils'
 import { getMetaStore } from '../meta/bootstrap'
 import type { Instance } from 'mobx-state-tree'
 
@@ -124,47 +134,85 @@ export class BackendRegistry implements IBackendRegistry {
   }
 
   resolve(schemaName: string, modelName: string): IBackend {
-    // 1. Check model-level x-persistence.backend
+    // Access meta-store for schema/model lookup
     const metaStore = getMetaStore()
     const schema = metaStore.schemaCollection.all().find((s: any) => s.name === schemaName)
 
+    let resolvedBackend: IBackend | undefined
+    let model: any = undefined
+
     if (schema) {
-      const model = metaStore.modelCollection.all().find(
+      model = metaStore.modelCollection.all().find(
         (m: any) => m.schema === schema && m.name === modelName
       )
 
+      // 1. Check model-level x-persistence.backend
       if (model && model.xPersistence) {
         // xPersistence can have a backend field even though it's not in the strict type
         const modelBackendName = (model.xPersistence as any).backend
         if (modelBackendName && typeof modelBackendName === 'string') {
-          const backend = this.get(modelBackendName)
-          if (backend) {
-            return backend
-          }
+          resolvedBackend = this.get(modelBackendName)
         }
       }
 
       // 2. Check schema-level x-persistence.backend
       // Note: Schema-level x-persistence is not currently stored in meta-store Schema entity
       // For now, this cascade step is reserved for future enhancement
-      // We skip directly to default fallback
     }
 
     // 3. Fall back to default backend
-    if (this.defaultBackendName) {
-      const backend = this.get(this.defaultBackendName)
-      if (backend) {
-        return backend
-      }
+    if (!resolvedBackend && this.defaultBackendName) {
+      resolvedBackend = this.get(this.defaultBackendName)
     }
 
-    // 4. Throw descriptive error
-    throw new Error(
-      `No backend found for schema "${schemaName}" model "${modelName}". ` +
-      `Tried: model x-persistence.backend, schema x-persistence.backend, registry default. ` +
-      `Solution: Either set a default backend via setDefault(), or configure x-persistence.backend ` +
-      `in your schema (model-level x-persistence.backend).`
-    )
+    // 4. Throw descriptive error if no backend found
+    if (!resolvedBackend) {
+      throw new Error(
+        `No backend found for schema "${schemaName}" model "${modelName}". ` +
+        `Tried: model x-persistence.backend, schema x-persistence.backend, registry default. ` +
+        `Solution: Either set a default backend via setDefault(), or configure x-persistence.backend ` +
+        `in your schema (model-level x-persistence.backend).`
+      )
+    }
+
+    // 5. Wrap with ContextAwareBackend for schema-aware normalization
+    // Get property names from meta-store model and create column-property mapping
+    const propertyNames = this.getPropertyNames(model)
+    if (propertyNames.length > 0) {
+      const columnPropertyMap = createColumnPropertyMap(propertyNames)
+      return new ContextAwareBackend(resolvedBackend, columnPropertyMap)
+    }
+
+    // If no property names available, return unwrapped backend
+    // (This happens if meta-store doesn't have model info, e.g., early bootstrap)
+    return resolvedBackend
+  }
+
+  /**
+   * Extract property names from a meta-store model entity.
+   *
+   * @param model - Meta-store Model instance (may be undefined)
+   * @returns Array of property names, empty if model not available
+   *
+   * @remarks
+   * The model.properties view returns all top-level properties.
+   * We extract just the names for building the column-property mapping.
+   */
+  private getPropertyNames(model: any): string[] {
+    if (!model) return []
+
+    try {
+      // model.properties is a computed view from meta-store-model-enhancements
+      const properties = model.properties
+      if (Array.isArray(properties)) {
+        return properties.map((p: any) => p.name).filter(Boolean)
+      }
+    } catch {
+      // If properties view isn't available, return empty
+      // This can happen during bootstrap before enhancements are applied
+    }
+
+    return []
   }
 
   setDefault(name: string): void {

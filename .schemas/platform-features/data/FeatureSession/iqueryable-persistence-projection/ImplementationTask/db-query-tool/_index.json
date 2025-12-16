@@ -1,0 +1,27 @@
+{
+  "id": "task-p2-db-query",
+  "name": "db-query-tool",
+  "description": "MCP tool for raw SQL query execution. Connection resolved implicitly via schema x-persistence metadata.",
+  "acceptanceCriteria": [
+    "Tool name is 'db.query'",
+    "ArkType params schema: { sql: string, params?: any[], connection?: string }",
+    "Executes SQL via BunSqlExecutor using named connection",
+    "Normalizes result rows via normalizeRows() for camelCase keys",
+    "Returns { ok: true, rows: any[], rowCount: number }",
+    "Returns { ok: false, error: {...} } on execution failure",
+    "Uses 'default' connection if connection param not specified",
+    "registerDbQuery(server) follows existing tool registration pattern",
+    "Validates connection exists before attempting query",
+    "Handles both SELECT (returns rows) and DML (returns affected count) statements"
+  ],
+  "status": "complete",
+  "createdAt": 1734278500012,
+  "updatedAt": 1734574900000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-db-query",
+  "requirement": "req-10-mcp-database-tools",
+  "dependencies": [
+    "task-p2-bun-sql-executor",
+    "task-p2-execution-utils"
+  ]
+}

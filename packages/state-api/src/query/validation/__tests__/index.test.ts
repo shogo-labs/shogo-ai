@@ -29,10 +29,10 @@ describe("test-validation-index-exports: Index exports all validation components
     expect(module).toBeDefined()
   })
 
-  test("ValidationResult type is accessible", async () => {
+  test("QueryValidationResult type is accessible", async () => {
     const module = await import("../index")
 
-    // Then: ValidationResult type is accessible
+    // Then: QueryValidationResult type is accessible
     expect(module).toBeDefined()
   })
 
