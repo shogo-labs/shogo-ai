@@ -1,0 +1,9 @@
+{
+  "id": "req-005",
+  "name": "workspace-entity",
+  "description": "Define Workspace entity with tenant_id and billing_account_id references (tenant controls, billing account pays)",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734307400000,
+  "session": "teams-multi-tenancy-001"
+}

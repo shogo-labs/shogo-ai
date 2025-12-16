@@ -1,0 +1,9 @@
+{
+  "id": "req-003",
+  "name": "tenant-member-junction",
+  "description": "Define Tenant_Member junction entity with user_id, tenant_id references and role enum (admin, billing_admin, editor, member)",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734307400000,
+  "session": "teams-multi-tenancy-001"
+}
