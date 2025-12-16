@@ -7,22 +7,22 @@ import { Unit3Page } from './pages/Unit3Page'
 import { LegacyTestsPage } from './pages/LegacyTestsPage'
 import { AuthDemoPage } from './pages/AuthDemoPage'
 import { TeamsDemoPage } from './pages/TeamsDemoPage'
+import { TenantDemoPage } from './pages/TenantDemoPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
-import { SupabaseAuthService, teamsDomain } from '@shogo/state-api'
+import { SupabaseAuthService, MockAuthService, teamsDomain, teamsMultiTenancyDomain } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
 import { mcpService } from './services/mcpService'
 
-// Initialize Supabase client
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
-)
+// Initialize auth service - use Supabase if configured, otherwise mock
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
-// Use real Supabase auth
-const authService = new SupabaseAuthService(supabase)
+const authService = supabaseUrl && supabaseKey
+  ? new SupabaseAuthService(createClient(supabaseUrl, supabaseKey))
+  : new MockAuthService()
 
 // Centralized environment configuration
 const env = createEnvironment({
@@ -33,6 +33,7 @@ const env = createEnvironment({
 // Domain configuration - keys become property names in useDomains()
 const domains = {
   teams: teamsDomain,
+  multiTenancy: teamsMultiTenancyDomain,
 } as const
 
 function Navigation() {
@@ -81,6 +82,9 @@ function Navigation() {
       <Link to="/teams-demo" style={linkStyle('/teams-demo')}>
         Teams Demo
       </Link>
+      <Link to="/tenant-demo" style={linkStyle('/tenant-demo')}>
+        Tenant Demo
+      </Link>
     </nav>
   )
 }
@@ -101,6 +105,7 @@ function App() {
                 <Route path="/legacy-tests" element={<LegacyTestsPage />} />
                 <Route path="/auth-demo" element={<AuthDemoPage />} />
                 <Route path="/teams-demo" element={<TeamsDemoPage />} />
+                <Route path="/tenant-demo" element={<TenantDemoPage />} />
               </Routes>
             </AuthProvider>
           </WavesmithMetaStoreProvider>
