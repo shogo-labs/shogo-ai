@@ -1,0 +1,11 @@
+{
+  "id": "exec-task-p2-bun-sql-executor-1734570000000",
+  "status": "test_passing",
+  "testFilePath": "packages/state-api/src/query/execution/__tests__/bun-sql-executor.test.ts",
+  "implementationFilePath": "packages/state-api/src/query/execution/bun-sql.ts",
+  "testOutput": "11 pass, 0 fail - All tests passing",
+  "startedAt": 1734570000000,
+  "completedAt": 1734570500000,
+  "run": "run-single-task-p2-bun-sql",
+  "task": "task-p2-bun-sql-executor"
+}

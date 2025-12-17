@@ -50,6 +50,7 @@ export const MetaRegistry = scope({
       "partitionKey?": "string",
       "displayKey?": "string",
       "nested?": "boolean",  // Store children under parent folder
+      "backend?": "string",  // Backend identifier for query execution
     },
   },
 

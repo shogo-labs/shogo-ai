@@ -1,0 +1,35 @@
+{
+  "id": "iqueryable-persistence-projection",
+  "name": "iqueryable-persistence-projection",
+  "intent": "Enable persistence as projection over queryable entities with schema-driven, backend-agnostic query comprehension. Phase 1 (complete): IQueryable interface, MongoDB-style operators, backend abstraction, SqlBackend compilation. Phase 2 (new): Database execution layer via Bun.sql, DDL execution integration, MCP database tools, and full isomorphic query execution.",
+  "status": "complete",
+  "affectedPackages": [
+    "packages/state-api",
+    "packages/mcp"
+  ],
+  "initialAssessment": {
+    "likelyArchetype": "infrastructure",
+    "indicators": [
+      "Cross-cutting query capability used by all domain features",
+      "No external API calls - purely internal platform capability",
+      "Extends existing IPersistenceService with read-path abstraction",
+      "Environment DI pattern for dependency injection",
+      "Isomorphic design (browser + server)",
+      "Phase 2: Database execution via Bun.sql native driver",
+      "Phase 2: MCP tools for Claude database management"
+    ],
+    "uncertainties": [
+      "Resolved: Bun.sql chosen for execution layer",
+      "Connection pooling strategy for MCP server context",
+      "MST hydration merge strategy for query results"
+    ]
+  },
+  "featureArchetype": "infrastructure",
+  "applicablePatterns": [
+    "service-interface",
+    "mixin-composition",
+    "environment-extension"
+  ],
+  "createdAt": 1734019200000,
+  "updatedAt": 1734280000000
+}

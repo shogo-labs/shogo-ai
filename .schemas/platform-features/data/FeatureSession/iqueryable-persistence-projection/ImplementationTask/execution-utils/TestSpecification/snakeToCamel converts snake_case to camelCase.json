@@ -1,0 +1,17 @@
+{
+  "id": "test-p2-exec-utils-01",
+  "scenario": "snakeToCamel converts snake_case to camelCase",
+  "given": [
+    "snakeToCamel function is available"
+  ],
+  "when": "snakeToCamel('created_at') is called",
+  "then": [
+    "Returns 'createdAt'",
+    "Single underscores become camelCase boundaries"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/execution/__tests__/utils.test.ts",
+  "createdAt": 1734278600010,
+  "task": "task-p2-execution-utils",
+  "requirement": "req-12-postgres-queryable"
+}

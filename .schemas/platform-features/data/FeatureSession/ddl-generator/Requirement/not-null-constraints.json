@@ -1,0 +1,9 @@
+{
+  "id": "req-ddl-not-null",
+  "name": "not-null-constraints",
+  "description": "Properties in schema required array generate NOT NULL constraint. Properties not in required are nullable. Identifiers always NOT NULL regardless of required array.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734188400000,
+  "session": "ddl-generator-001"
+}

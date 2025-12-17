@@ -1,0 +1,17 @@
+{
+  "id": "test-constraint-001",
+  "scenario": "Infer primary key from identifier property",
+  "given": [
+    "Model with property having x-mst-type: 'identifier'"
+  ],
+  "when": "inferPrimaryKey is called",
+  "then": [
+    "Returns the identifier property",
+    "Identifier is marked as NOT NULL"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/constraint-builder.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-constraint-builder",
+  "requirement": "req-ddl-primary-keys"
+}

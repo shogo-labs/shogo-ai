@@ -1,0 +1,12 @@
+{
+  "id": "ip-ddl-idempotent",
+  "name": "ddl-idempotent-enhancement",
+  "filePath": "packages/state-api/src/ddl/sql-generator.ts",
+  "package": "state-api",
+  "changeType": "modify",
+  "description": "Enhance tableDefToCreateTableSQL() to support IF NOT EXISTS option. Add generateSQLIdempotent(schema, dialect) that wraps CREATE TABLE with IF NOT EXISTS. Alternatively, add ifNotExists parameter to generateSQL() function for migration-safe DDL generation.",
+  "rationale": "REQ-09 ddl-execution-integration. Idempotent migrations for safe re-runs of db.migrate.",
+  "createdAt": 1734278400032,
+  "session": "iqueryable-persistence-projection",
+  "finding": "finding-ddl-sql-generator"
+}

@@ -14,6 +14,8 @@
 
 import type { IPersistenceService } from '../persistence/types'
 import type { IAuthService } from '../auth/types'
+import type { IBackendRegistry } from '../query/registry'
+import type { IQueryValidator } from '../query/validation/types'
 
 /**
  * Environment structure for runtime MST stores.
@@ -75,14 +77,93 @@ export interface IEnvironment {
      * Optional - not all stores need authentication.
      */
     auth?: IAuthService
+
+    /**
+     * Backend registry for query execution.
+     *
+     * Maps backend names to IBackend implementations and resolves which backend
+     * to use for a given schema/model using cascade lookup:
+     * 1. Model's x-persistence.backend property
+     * 2. Schema's x-persistence.backend property
+     * 3. Registry default backend
+     *
+     * Implementation:
+     * - BackendRegistry (standard implementation with Map-based storage)
+     * - Created via createBackendRegistry({ default: 'memory', backends: {...} })
+     *
+     * Required - all queryable collections need backend resolution capability.
+     *
+     * @see IBackendRegistry for interface details
+     * @see BackendRegistry for implementation
+     * @see createBackendRegistry for factory function
+     *
+     * @example
+     * ```typescript
+     * const registry = createBackendRegistry({
+     *   default: 'memory',
+     *   backends: {
+     *     memory: new MemoryBackend(),
+     *     sql: new SqlBackend()
+     *   }
+     * })
+     * const env: IEnvironment = {
+     *   services: {
+     *     persistence: new FileSystemPersistence(),
+     *     backendRegistry: registry
+     *   },
+     *   context: { schemaName: 'my-schema' }
+     * }
+     * ```
+     */
+    backendRegistry: IBackendRegistry
+
+    /**
+     * Query validator for schema-aware validation.
+     *
+     * Validates parsed query ASTs against schema/model definitions to ensure:
+     * - Properties exist in the schema
+     * - Operators are compatible with property types
+     * - Actionable error messages for invalid queries
+     *
+     * Implementation:
+     * - QueryValidator (standard implementation using meta-store)
+     * - Uses lazy memoization for performance
+     *
+     * Optional - query validation can be skipped for performance or when
+     * queries are generated programmatically and guaranteed to be valid.
+     *
+     * @see IQueryValidator for interface details
+     * @see QueryValidator for implementation
+     *
+     * @example
+     * ```typescript
+     * const validator = new QueryValidator(metaStore)
+     * const env: IEnvironment = {
+     *   services: {
+     *     persistence: new FileSystemPersistence(),
+     *     backendRegistry: registry,
+     *     queryValidator: validator  // Optional
+     *   },
+     *   context: { schemaName: 'my-schema' }
+     * }
+     * ```
+     */
+    queryValidator?: IQueryValidator
   }
 
   /**
    * Contextual metadata about the runtime store.
    *
    * This is "where we are" - which schema, which workspace, etc.
+   *
+   * **Optional for meta-store:**
+   * The meta-store itself doesn't belong to a schema - it manages schemas.
+   * When creating the meta-store, context can be omitted.
+   *
+   * **Required for runtime stores:**
+   * Runtime stores are tied to a specific schema and need context.schemaName.
    */
-  context: {
+  context?: {
     /**
      * Schema name identifier (stable string reference).
      *
@@ -146,23 +227,3 @@ export interface IEnvironment {
  * ```
  */
 export type ISchemaEntity = any
-
-// ============================================================================
-// Meta-Store Environment
-// ============================================================================
-
-/**
- * Simplified environment for the meta-store itself.
- *
- * Unlike runtime stores (which have a schema context), the meta-store
- * IS the schema store - so it doesn't need context.schema.
- *
- * This is used for isomorphic schema loading where the meta-store
- * needs access to a persistence service to fetch schemas.
- */
-export interface IMetaStoreEnvironment {
-  services: {
-    /** Persistence service for schema loading */
-    persistence?: IPersistenceService
-  }
-}

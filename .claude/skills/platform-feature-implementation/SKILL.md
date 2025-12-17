@@ -32,7 +32,35 @@ Execute TDD implementation from tasks and test specifications.
 
 ---
 
-## Workflow
+## Modes
+
+This skill operates in two modes based on user request:
+
+| Mode | When to Use | Executes |
+|------|-------------|----------|
+| **Orchestrate** | "implement the feature", "run full TDD", no specific task mentioned | All tasks in dependency order with parallel execution where possible |
+| **Single-Task** | "implement task-003", when invoked by orchestrator agent with specific task ID | One specific task only |
+
+### Mode Detection
+
+**When you (Claude) are invoked with this skill:**
+
+1. Load session context from Wavesmith (Phase 1)
+2. Check if user mentioned a specific task ID or task name:
+   - User says: "implement task-003" → **Single-task mode**
+   - User says: "implement the feature" → **Orchestrate mode**
+   - Agent instructs: "Focus on task-003 only" → **Single-task mode**
+3. If single-task mode detected:
+   - Extract task ID from user request
+   - Skip to **Workflow: Single-Task Mode** (see below)
+4. If orchestrate mode (default):
+   - Continue with **Workflow: Orchestrate Mode** (see below)
+
+---
+
+## Workflow: Orchestrate Mode
+
+**Use when**: Implementing entire feature with all tasks
 
 ### Phase 1: Load Context
 
@@ -115,39 +143,54 @@ Analysis Verification:
 ⚠️ Drift detected in {n} integration points. Run full re-analysis?
 ```
 
-### Phase 3: Order Tasks
+### Phase 3: Compute Dependency Levels & Present Execution Plan
 
-Build dependency graph and compute execution order:
+**Compute dependency graph:**
 
-```javascript
-// Topological sort tasks
-const ordered = topologicalSort(tasks)
+1. For each task, examine the `dependencies` field (array of task IDs referencing other tasks)
+2. Compute dependency levels using topological sort:
+   - **Level 0**: Tasks with empty `dependencies` array
+   - **Level 1**: Tasks whose dependencies are all in Level 0
+   - **Level N**: Tasks whose dependencies are all in levels < N
+3. Group tasks by level
 
-// Identify dependency levels
-const levels = computeLevels(tasks)
+**Algorithm**:
+- Start with all tasks that have no dependencies (Level 0)
+- For each subsequent level, find tasks whose dependencies are all satisfied by previous levels
+- Continue until all tasks are assigned to a level
+
+**Present execution plan to user:**
+
+```
+Execution Plan: {total} tasks across {n} dependency levels
+
+Level 0 ({count} task{s}):
+  → [task-001] Create core interfaces and types
+
+Level 1 ({count} tasks - PARALLEL):
+  → [task-002] Implement service interface
+  → [task-003] Add utility functions
+
+Level 2 ({count} tasks - PARALLEL):
+  → [task-004] Implement provider A (depends: task-002)
+  → [task-005] Implement provider B (depends: task-002)
+
+Level 3 ({count} task{s}):
+  → [task-006] Wire up integration (depends: task-004, task-005)
+
+Level 4 ({count} task{s}):
+  → [task-007] Add integration tests (depends: task-006)
+
+Estimated speedup: ~40% (7 sequential → 4 parallel levels)
+
+Proceed with parallel execution? (yes/no)
 ```
 
-Present execution plan:
-```
-Execution Order (dependency-sorted):
+**Wait for user approval** before proceeding to Phase 4.
 
-Level 0 (no dependencies):
-  [task-001] Create IAuthService interface
-  [task-002] Add auth dependencies
+**Note**: Mark levels with 2+ tasks as "PARALLEL" in the output.
 
-Level 1:
-  [task-003] Implement SupabaseAuthService (depends: task-001)
-  [task-004] Implement MockAuthService (depends: task-001)
-
-Level 2:
-  [task-005] Create auth domain store (depends: task-001, task-003)
-
-...
-
-Total: {n} tasks across {m} dependency levels
-
-Proceed with implementation?
-```
+**CRITICAL TRANSITION**: After user approves, you MUST proceed to Phase 4 (Orchestrated TDD Execution). **Do NOT execute TDD yourself**. Instead, spawn subagents using the Task tool, and instruct each subagent to invoke this skill in single-task mode.
 
 ---
 
@@ -188,7 +231,7 @@ See [domain-pattern.md](references/domain-pattern.md) for the full template and 
 
 ---
 
-### Phase 4: TDD Loop
+### Phase 4: Orchestrated TDD Execution
 
 Create implementation run record:
 ```javascript
@@ -202,281 +245,161 @@ store.create("ImplementationRun", "platform-features", {
 })
 ```
 
-**For each task in dependency order:**
+**For each dependency level (in order):**
 
-#### 4.1 Task Setup
+#### 4.1 Spawn Agents for Level Tasks
 
+**IMPORTANT**: You (the orchestrator) do NOT execute TDD yourself. You spawn subagents who will invoke this skill.
+
+For EVERY task in the current level (whether 1 task or multiple):
+
+1. **Use the Task tool** to spawn a foreground subagent per task
+2. **Instruct the subagent to invoke this skill** in single-task mode
+3. **Set `run_in_background: false`** so agents have MCP access to Wavesmith
+
+**How to spawn an agent:**
+
+You must call the Task tool with these parameters:
+- `description`: Brief description of what this agent will do
+- `subagent_type`: "general-purpose"
+- `prompt`: Instructions telling the agent to invoke /platform-feature-implementation skill
+- `run_in_background`: false (CRITICAL for MCP access)
+
+**Agent prompt template:**
+
+When you invoke the Task tool, use this prompt structure:
+
+```
+Implement task {task.id} for the {session.name} feature using TDD.
+
+Instructions:
+1. Invoke the /platform-feature-implementation skill by typing: /platform-feature-implementation
+2. When the skill loads and asks what to implement, respond with: "implement task {task.id} only"
+3. The skill will detect single-task mode and guide you through the TDD cycle for this one task
+4. Follow all TDD guidelines (RED → GREEN cycle)
+5. The skill will use Wavesmith MCP tools to track your progress
+6. Report when the task completes (tests pass) or fails
+
+Task details:
+- ID: {task.id}
+- Name: {task.name}
+- Description: {task.description}
+- Acceptance Criteria: {task.acceptanceCriteria}
+
+Focus exclusively on implementing this one task. Do not work on any other tasks.
+```
+
+**Concrete example - Level 1 with 2 tasks:**
+
+When you reach Level 1, you should make TWO Task tool calls (in the same message for parallelization):
+
+**First agent (for task-002):**
+```
+Tool: Task
+Parameters:
+  description: "Implement task-002"
+  subagent_type: "general-purpose"
+  prompt: "Implement task task-002 for the ddl-generator feature using TDD.
+
+Instructions:
+1. Invoke the /platform-feature-implementation skill by typing: /platform-feature-implementation
+2. When the skill asks what to implement, respond with: 'implement task-002 only'
+3. The skill will guide you through TDD for this task
+4. Follow all TDD guidelines (RED → GREEN cycle)
+
+Task: Implement service interface
+Description: {task.description}
+
+Focus exclusively on task-002."
+  run_in_background: false
+```
+
+**Second agent (for task-003):**
+```
+Tool: Task
+Parameters:
+  description: "Implement task-003"
+  subagent_type: "general-purpose"
+  prompt: "Implement task task-003 for the ddl-generator feature using TDD.
+
+Instructions:
+1. Invoke the /platform-feature-implementation skill by typing: /platform-feature-implementation
+2. When the skill asks what to implement, respond with: 'implement task-003 only'
+3. The skill will guide you through TDD for this task
+4. Follow all TDD guidelines (RED → GREEN cycle)
+
+Task: Add utility functions
+Description: {task.description}
+
+Focus exclusively on task-003."
+  run_in_background: false
+```
+
+**You spawn these agents by making actual Task tool calls**, not by writing JavaScript code.
+
+2. **Wait for all agents in the level to complete** (blocking wait using TaskOutput)
+
+3. **Verify completion** by checking Wavesmith:
 ```javascript
-store.create("TaskExecution", "platform-features", {
-  id: `exec-${task.id}-${Date.now()}`,
-  run: currentRun.id,
-  task: task.id,
-  status: "pending",
-  startedAt: Date.now()
-})
+// After agents complete, verify task status
+for (task of currentLevelTasks) {
+  const updatedTask = store.get(task.id, "ImplementationTask", "platform-features")
 
-store.update(task.id, "ImplementationTask", "platform-features", {
-  status: "in_progress",
-  updatedAt: Date.now()
-})
+  if (updatedTask.status === "complete") {
+    console.log(`✅ ${task.name} completed`)
+  } else if (updatedTask.status === "blocked") {
+    console.log(`❌ ${task.name} blocked - marking dependent tasks`)
+    // Mark tasks that depend on this one as blocked
+  }
+}
 ```
 
-Present task context:
+4. **Present level completion:**
 ```
+Level {n} Complete
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Task: {task.description}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Integration Point: {integrationPoint.filePath}
-Change Type: {integrationPoint.changeType}
+Completed:
+✅ [task-002] {task.name}
+✅ [task-003] {task.name}
 
-Acceptance Criteria:
-- {criterion 1}
-- {criterion 2}
-
-Test Specifications ({count}):
-- {test-001}: {scenario}
-- {test-002}: {scenario}
-```
-
-#### 4.2 Write Tests (RED Phase)
-
-For each `TestSpecification` associated with this task:
-
-1. **Generate test file** from Given/When/Then spec:
-
-```typescript
-/**
- * Generated from TestSpecification: {testSpec.id}
- * Task: {task.id}
- * Requirement: {requirement}
- */
-
-import { describe, test, expect, beforeEach } from "bun:test"
-// ... imports based on task type
-
-describe("{testSpec.scenario}", () => {
-  // Given: {given statements as setup}
-  beforeEach(() => {
-    // Setup code derived from given statements
-  })
-
-  test("{when} -> {then[0]}", () => {
-    // When: {when}
-    // Then: {then[0]}
-  })
-
-  // Additional then assertions as separate tests if needed
-})
-```
-
-2. **Run tests** - verify they fail (RED):
-
-```bash
-bun test {targetFile}
-```
-
-Expected: Tests should fail because implementation doesn't exist yet.
-
-```
-Test Status: RED (expected)
-Failing: {n} tests
-- {test name}: {error}
-
-Proceeding to implementation...
-```
-
-Update execution:
-```javascript
-store.update(execId, "TaskExecution", "platform-features", {
-  status: "test_failing",
-  testFilePath: targetFile,
-  testOutput: testOutput
-})
-```
-
-### TDD Gate: Mandatory Test Execution
-
-**CRITICAL**: Do NOT proceed to implementation (4.3) until tests have been:
-1. Written to the test file
-2. Executed with `bun test {testFile}`
-3. Confirmed to be RED (failing)
-
-**Gate Check**:
-```
-Before implementing {task.description}:
-[ ] Test file created: {testFilePath}
-[ ] Tests executed: bun test {testFilePath}
-[ ] Status: RED (tests failing as expected)
-
-Proceeding to implementation...
-```
-
-If tests pass before implementation, **STOP** — either:
-- Tests are not testing new functionality (test is wrong)
-- Implementation already exists (task may be duplicate)
-- Tests are not correctly written (assertions never fire)
-
-**Resolution**: Investigate and fix the test before proceeding. A passing test before implementation means the test cannot verify the code you're about to write.
-
-#### 4.3 Implement Code
-
-Based on `IntegrationPoint.changeType`:
-
-| changeType | Action |
-|------------|--------|
-| `add` | Create new file with implementation |
-| `modify` | Edit existing file |
-| `extend` | Add to existing pattern (registry, router, etc.) |
-
-**Consult pattern references:**
-- Service interface → [patterns/02-service-interface.md](../platform-feature-analysis/references/patterns/02-service-interface.md)
-- Environment extension → [patterns/03-environment-extension.md](../platform-feature-analysis/references/patterns/03-environment-extension.md)
-- Enhancement hooks → [patterns/04-enhancement-hooks.md](../platform-feature-analysis/references/patterns/04-enhancement-hooks.md)
-- Mock service → [patterns/05-mock-service-testing.md](../platform-feature-analysis/references/patterns/05-mock-service-testing.md)
-- Provider sync → [patterns/06-provider-synchronization.md](../platform-feature-analysis/references/patterns/06-provider-synchronization.md)
-- React context → [patterns/07-react-context-integration.md](../platform-feature-analysis/references/patterns/07-react-context-integration.md)
-
-Present implementation:
-```
-Implementing: {task.description}
-
-File: {filePath}
-Action: {changeType}
-
-{Show code being written/modified}
-
-Implementation complete. Running tests...
-```
-
-#### 4.4 Verify Tests Pass (GREEN Phase)
-
-```bash
-bun test {targetFile}
-```
-
-**If tests pass:**
-```
-Test Status: GREEN ✅
-Passing: {n}/{n} tests
-
-All acceptance criteria met:
-✅ {criterion 1}
-✅ {criterion 2}
-```
-
-**GREEN Gate Check**:
-```
-Implementation complete for {task.description}:
-[ ] Tests executed: bun test {testFilePath}
-[ ] Status: GREEN (all tests passing)
-[ ] No regressions: bun test (full suite)
-
-Task complete.
-```
-
-Do NOT mark task complete until GREEN is confirmed via actual test execution.
-
-Update execution:
-```javascript
-store.update(execId, "TaskExecution", "platform-features", {
-  status: "test_passing",
-  implementationFilePath: implFile,
-  testOutput: testOutput
-})
-```
-
-**If tests fail (retry up to 3x):**
-```
-Test Status: RED (unexpected)
-Failing: {n} tests
-- {test name}: {error}
-
-Analyzing failure... (attempt {n}/3)
-```
-
-On persistent failure (3+ attempts):
-```javascript
-store.update(execId, "TaskExecution", "platform-features", {
-  status: "failed",
-  errorMessage: lastError,
-  retryCount: attempts
-})
-
-store.update(task.id, "ImplementationTask", "platform-features", {
-  status: "blocked",
-  updatedAt: Date.now()
-})
-```
-
-Present:
-```
-Task blocked after {n} attempts.
-Error: {lastError}
-
-Options:
-1. Skip and continue with non-dependent tasks
-2. Pause implementation for manual intervention
-3. Discard task changes and retry fresh
-
-Which approach?
-```
-
-#### 4.5 Complete Task
-
-After GREEN, update records:
-```javascript
-store.update(execId, "TaskExecution", "platform-features", {
-  status: "test_passing",
-  completedAt: Date.now()
-})
-
-store.update(task.id, "ImplementationTask", "platform-features", {
-  status: "complete",
-  updatedAt: Date.now()
-})
-```
-
-Present:
-```
-Task Complete ✅
-
+Time: {duration}
 Progress: {completed}/{total} tasks
-Remaining: {remaining tasks}
 
-Continuing to next task...
+Continuing to Level {n+1}...
 ```
 
-### TDD Cycle Enforcement Summary
+#### 4.2 Handle Blocked Tasks
 
-For EVERY task with TestSpecifications, the cycle MUST be:
+If any task in the level failed:
+- Identify all tasks that depend on the failed task
+- Mark those tasks as `blocked` in Wavesmith
+- Do NOT spawn agents for blocked tasks in subsequent levels
+- Continue with tasks that don't depend on failed ones
 
-| Step | Action | Validation | Cannot Skip |
-|------|--------|------------|-------------|
-| 1 | **WRITE** test file from specs | File exists | ❌ |
-| 2 | **RUN** tests | `bun test {file}` executes | ❌ |
-| 3 | **VERIFY** RED | Tests fail as expected | ❌ |
-| 4 | **IMPLEMENT** code | Code written to files | ❌ |
-| 5 | **RUN** tests again | `bun test {file}` executes | ❌ |
-| 6 | **VERIFY** GREEN | All tests pass | ❌ |
-| 7 | **MARK** complete | Task status updated | ❌ |
+```javascript
+// Example: If task-002 fails, block task-005 which depends on it
+if (task002.status === "blocked") {
+  const dependentTasks = tasks.filter(t =>
+    t.dependencies.includes(task002.id)
+  )
 
-**Exception**: Tasks with no TestSpecifications (e.g., dependency-only tasks like "add packages") can skip steps 1-3, 5-6.
-
-**Anti-pattern: Writing all tests then all implementations**
-```
-❌ WRONG:
-  Write test-001, test-002, test-003
-  Implement task-001, task-002, task-003
-  Run all tests at end
-
-✅ CORRECT (per task):
-  Write test-001 → Run (RED) → Implement → Run (GREEN) → Complete
-  Write test-002 → Run (RED) → Implement → Run (GREEN) → Complete
-  Write test-003 → Run (RED) → Implement → Run (GREEN) → Complete
+  for (const dep of dependentTasks) {
+    store.update(dep.id, "ImplementationTask", "platform-features", {
+      status: "blocked",
+      updatedAt: Date.now()
+    })
+  }
+}
 ```
 
-The TDD cycle provides immediate feedback and catches issues early. Batching defeats the purpose.
+#### 4.3 Continue to Next Level
+
+After all tasks in current level complete (or are blocked):
+- Move to next dependency level
+- Repeat 4.1-4.2 until all levels processed
+
+**Important**: The orchestrator (you, the main thread) does NOT execute the TDD loop directly. Agents do that by invoking this skill in single-task mode.
 
 ### Phase 5: Integration Verification
 
@@ -586,6 +509,341 @@ Files Created/Modified:
 
 Feature is ready for review.
 ```
+
+---
+
+## Workflow: Single-Task Mode
+
+**Use when**: Invoked by orchestrator agent to implement one specific task
+
+This mode is triggered when:
+- User explicitly mentions a task ID: "implement task-003"
+- Agent prompt instructs: "Focus on task {task.id} only"
+- User says: "work on [task description matching a single task]"
+
+### Phase 1: Load Context and Identify Task
+
+```javascript
+// Load session context
+schema.load("platform-features")
+data.loadAll("platform-features")
+session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
+tasks = store.list("ImplementationTask", "platform-features", { session: session.id })
+
+// Identify which task to execute
+// Extract task ID from user request or agent instruction
+const taskId = extractTaskIdFromRequest(userRequest)  // e.g., "task-003"
+const task = tasks.find(t => t.id === taskId)
+
+if (!task) {
+  console.error(`Task ${taskId} not found in session ${session.name}`)
+  // List available tasks and ask user to clarify
+  return
+}
+
+// Load related entities for this task only
+const testSpecs = store.list("TestSpecification", "platform-features", {
+  task: task.id
+})
+const integrationPoint = store.list("IntegrationPoint", "platform-features", {
+  task: task.id
+})[0]
+```
+
+Present task context:
+```
+Single-Task Mode: {task.name}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Task ID: {task.id}
+Description: {task.description}
+Status: {task.status}
+
+Dependencies: {dependencies.length}
+{if dependencies}
+  - {dep1.name}
+  - {dep2.name}
+{endif}
+
+Test Specs: {testSpecs.length}
+Integration Point: {integrationPoint.filePath}
+
+Proceeding with TDD cycle...
+```
+
+### Phase 2: Validate Dependencies (Optional Check)
+
+```javascript
+// Verify all dependency tasks are complete
+const incompleteDeps = task.dependencies.filter(depId => {
+  const dep = tasks.find(t => t.id === depId)
+  return dep.status !== "complete"
+})
+
+if (incompleteDeps.length > 0) {
+  console.warn(`Warning: ${incompleteDeps.length} dependencies not complete`)
+  console.warn(`This task may fail due to missing prerequisites`)
+  // Continue anyway - orchestrator should handle this
+}
+```
+
+### Phase 3: Execute TDD Cycle for This Task Only
+
+Execute the **exact same TDD loop** as Orchestrate Mode Phase 4, but for **only this task**:
+
+#### 3.1 Task Setup
+
+```javascript
+store.create("TaskExecution", "platform-features", {
+  id: `exec-${task.id}-${Date.now()}`,
+  task: task.id,
+  status: "pending",
+  startedAt: Date.now()
+})
+
+store.update(task.id, "ImplementationTask", "platform-features", {
+  status: "in_progress",
+  updatedAt: Date.now()
+})
+```
+
+#### 3.2 Write Tests (RED Phase)
+
+For each TestSpecification associated with this task:
+
+1. **Generate test file** from Given/When/Then spec:
+
+```typescript
+/**
+ * Generated from TestSpecification: {testSpec.id}
+ * Task: {task.id}
+ * Requirement: {requirement}
+ */
+
+import { describe, test, expect, beforeEach } from "bun:test"
+// ... imports based on task type
+
+describe("{testSpec.scenario}", () => {
+  // Given: {given statements as setup}
+  beforeEach(() => {
+    // Setup code derived from given statements
+  })
+
+  test("{when} -> {then[0]}", () => {
+    // When: {when}
+    // Then: {then[0]}
+  })
+
+  // Additional then assertions as separate tests if needed
+})
+```
+
+2. **Run tests** - verify they fail (RED):
+
+```bash
+bun test {targetFile}
+```
+
+Expected: Tests should fail because implementation doesn't exist yet.
+
+```
+Test Status: RED (expected)
+Failing: {n} tests
+- {test name}: {error}
+
+Proceeding to implementation...
+```
+
+Update execution:
+```javascript
+store.update(execId, "TaskExecution", "platform-features", {
+  status: "test_failing",
+  testFilePath: targetFile,
+  testOutput: testOutput
+})
+```
+
+### TDD Gate: Mandatory Test Execution
+
+**CRITICAL**: Do NOT proceed to implementation (3.3) until tests have been:
+1. Written to the test file
+2. Executed with `bun test {testFile}`
+3. Confirmed to be RED (failing)
+
+**Gate Check**:
+```
+Before implementing {task.description}:
+[ ] Test file created: {testFilePath}
+[ ] Tests executed: bun test {testFilePath}
+[ ] Status: RED (tests failing as expected)
+
+Proceeding to implementation...
+```
+
+If tests pass before implementation, **STOP** — either:
+- Tests are not testing new functionality (test is wrong)
+- Implementation already exists (task may be duplicate)
+- Tests are not correctly written (assertions never fire)
+
+**Resolution**: Investigate and fix the test before proceeding. A passing test before implementation means the test cannot verify the code you're about to write.
+
+#### 3.3 Implement Code
+
+Based on `IntegrationPoint.changeType`:
+- `add`: Create new file with implementation
+- `modify`: Edit existing file
+- `extend`: Add to existing pattern (registry, router, etc.)
+
+**Consult pattern references:**
+- [patterns/02-service-interface.md](../platform-feature-analysis/references/patterns/02-service-interface.md)
+- [patterns/03-environment-extension.md](../platform-feature-analysis/references/patterns/03-environment-extension.md)
+- [patterns/04-enhancement-hooks.md](../platform-feature-analysis/references/patterns/04-enhancement-hooks.md)
+- [patterns/05-mock-service-testing.md](../platform-feature-analysis/references/patterns/05-mock-service-testing.md)
+- [patterns/06-provider-synchronization.md](../platform-feature-analysis/references/patterns/06-provider-synchronization.md)
+- [patterns/07-react-context-integration.md](../platform-feature-analysis/references/patterns/07-react-context-integration.md)
+
+Write implementation code to make tests pass.
+
+#### 3.4 Verify Tests Pass (GREEN Phase)
+
+```bash
+bun test {targetFile}
+```
+
+**If tests pass:**
+```
+Test Status: GREEN ✅
+Passing: {n}/{n} tests
+
+All acceptance criteria met:
+✅ {criterion 1}
+✅ {criterion 2}
+```
+
+**GREEN Gate Check**:
+```
+Implementation complete for {task.description}:
+[ ] Tests executed: bun test {testFilePath}
+[ ] Status: GREEN (all tests passing)
+[ ] No regressions: bun test (full suite)
+
+Task complete.
+```
+
+Do NOT mark task complete until GREEN is confirmed via actual test execution.
+
+Update execution:
+```javascript
+store.update(execId, "TaskExecution", "platform-features", {
+  status: "test_passing",
+  implementationFilePath: implFile,
+  testOutput: testOutput
+})
+```
+
+**If tests fail (retry up to 3x):**
+```
+Test Status: RED (unexpected)
+Failing: {n} tests
+- {test name}: {error}
+
+Analyzing failure... (attempt {n}/3)
+```
+
+On persistent failure (3+ attempts):
+```javascript
+store.update(execId, "TaskExecution", "platform-features", {
+  status: "failed",
+  errorMessage: lastError,
+  retryCount: attempts
+})
+
+store.update(task.id, "ImplementationTask", "platform-features", {
+  status: "blocked",
+  updatedAt: Date.now()
+})
+```
+
+Present:
+```
+Task blocked after {n} attempts.
+Error: {lastError}
+
+Options:
+1. Skip and continue with non-dependent tasks
+2. Pause implementation for manual intervention
+3. Discard task changes and retry fresh
+
+Which approach?
+```
+
+#### 3.5 Complete Task
+
+```javascript
+store.update(execId, "TaskExecution", "platform-features", {
+  status: "test_passing",
+  completedAt: Date.now()
+})
+
+store.update(task.id, "ImplementationTask", "platform-features", {
+  status: "complete",
+  updatedAt: Date.now()
+})
+```
+
+Present:
+```
+Task Complete ✅
+
+Task: {task.name}
+Status: COMPLETE (tests passing)
+Duration: {time}
+
+This task is done. Returning control to orchestrator.
+```
+
+### TDD Cycle Enforcement Summary
+
+For EVERY task with TestSpecifications, the cycle MUST be:
+
+| Step | Action | Validation | Cannot Skip |
+|------|--------|------------|-------------|
+| 1 | **WRITE** test file from specs | File exists | ❌ |
+| 2 | **RUN** tests | `bun test {file}` executes | ❌ |
+| 3 | **VERIFY** RED | Tests fail as expected | ❌ |
+| 4 | **IMPLEMENT** code | Code written to files | ❌ |
+| 5 | **RUN** tests again | `bun test {file}` executes | ❌ |
+| 6 | **VERIFY** GREEN | All tests pass | ❌ |
+| 7 | **MARK** complete | Task status updated | ❌ |
+
+**Exception**: Tasks with no TestSpecifications (e.g., dependency-only tasks like "add packages") can skip steps 1-3, 5-6.
+
+**Anti-pattern: Writing all tests then all implementations**
+```
+❌ WRONG:
+  Write test-001, test-002, test-003
+  Implement task-001, task-002, task-003
+  Run all tests at end
+
+✅ CORRECT (per task):
+  Write test-001 → Run (RED) → Implement → Run (GREEN) → Complete
+  Write test-002 → Run (RED) → Implement → Run (GREEN) → Complete
+  Write test-003 → Run (RED) → Implement → Run (GREEN) → Complete
+```
+
+The TDD cycle provides immediate feedback and catches issues early. Batching defeats the purpose.
+
+### Phase 4: Exit (No Integration or Handoff)
+
+**Important**: Single-task mode does NOT perform:
+- Integration verification (orchestrator handles this)
+- Session status updates (orchestrator handles this)
+- Full test suite runs (orchestrator may do this between levels)
+
+Simply complete the task and exit. The orchestrator will:
+- Wait for all tasks in the level to complete
+- Check for failures
+- Continue to next level
 
 ---
 

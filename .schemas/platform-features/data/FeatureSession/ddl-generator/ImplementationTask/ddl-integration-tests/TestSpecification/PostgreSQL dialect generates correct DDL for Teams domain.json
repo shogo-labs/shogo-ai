@@ -1,0 +1,22 @@
+{
+  "id": "test-integration-001",
+  "scenario": "PostgreSQL dialect generates correct DDL for Teams domain",
+  "given": [
+    "Teams domain Enhanced JSON Schema (Organization, Team, Membership, App, Invitation)",
+    "PostgreSQL dialect"
+  ],
+  "when": "generateDDL is called with Teams schema",
+  "then": [
+    "Organization table uses UUID for id",
+    "Team table has organization_id FK with CASCADE",
+    "Team table has parentId FK with SET NULL (self-reference)",
+    "Invitation table has status CHECK constraint for enum",
+    "Invitation table has expiresAt TIMESTAMPTZ column",
+    "Tables are in correct dependency order"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/ddl/__tests__/ddl.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-integration-tests",
+  "requirement": "req-ddl-type-mapping"
+}

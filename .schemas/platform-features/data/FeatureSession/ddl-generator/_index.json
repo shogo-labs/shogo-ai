@@ -1,0 +1,28 @@
+{
+  "id": "ddl-generator-001",
+  "name": "ddl-generator",
+  "intent": "Implement a native DDL generator that transforms Enhanced JSON Schema into CREATE TABLE statements for PostgreSQL and SQLite, completing the 'persistence as projection' vision where database structure is derived from the same schema that drives MST models.",
+  "status": "complete",
+  "affectedPackages": [
+    "packages/state-api"
+  ],
+  "initialAssessment": {
+    "likelyArchetype": "infrastructure",
+    "indicators": [
+      "Cross-cutting transformation utility used by persistence layer",
+      "No external API calls - purely internal schema transformation",
+      "Transforms Enhanced JSON Schema (internal format) to SQL DDL",
+      "Will be integrated with existing SqlBackend and query infrastructure",
+      "Creates foundational tooling other features depend on"
+    ],
+    "uncertainties": [
+      "Exact module location (src/ddl/ vs src/query/ddl/)",
+      "Interface design for dialect abstraction",
+      "How tightly coupled to meta-store vs standalone utility"
+    ]
+  },
+  "featureArchetype": "infrastructure",
+  "applicablePatterns": [],
+  "createdAt": 1734188400000,
+  "updatedAt": 1734478500000
+}

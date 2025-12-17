@@ -1,0 +1,11 @@
+{
+  "id": "exec-task-environment-extension-1734106800000",
+  "status": "test_passing",
+  "testFilePath": "/Users/ryangahl/dev/ai/odin/shogo-ai/packages/state-api/src/environment/__tests__/types.test.ts",
+  "implementationFilePath": "/Users/ryangahl/dev/ai/odin/shogo-ai/packages/state-api/src/environment/types.ts",
+  "testOutput": "11 pass, 0 fail, 25 expect() calls",
+  "startedAt": 1734106800000,
+  "completedAt": 1734106900000,
+  "run": "run-environment-extension-1734106800000",
+  "task": "task-environment-extension"
+}

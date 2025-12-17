@@ -1,0 +1,9 @@
+{
+  "id": "decision-postgres-backend",
+  "name": "postgres-backend-pattern",
+  "question": "How should SQL compilation and execution be integrated?",
+  "decision": "Create PostgresBackend class that wraps SqlBackend (compilation) + BunSqlExecutor (execution). SqlBackend stays unchanged as stateless compiler. PostgresBackend.execute() does: compile via SqlBackend -> execute via BunSqlExecutor -> normalize field names -> return rows.",
+  "rationale": "Clear separation of concerns: SqlBackend compiles queries (pure function), BunSqlExecutor runs SQL (I/O), PostgresBackend orchestrates the flow. PostgresBackend implements IBackend interface for registry compatibility.",
+  "createdAt": 1734278400002,
+  "session": "iqueryable-persistence-projection"
+}

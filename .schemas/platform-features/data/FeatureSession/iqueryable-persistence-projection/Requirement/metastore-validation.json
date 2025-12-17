@@ -1,0 +1,9 @@
+{
+  "id": "req-05-metastore-validation",
+  "name": "metastore-validation",
+  "description": "Query operators validated against property types via isomorphic meta-store integration. Operator validity derived from JSON Schema types at query-building time. Vision §2.3.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734019200000,
+  "session": "iqueryable-persistence-projection"
+}

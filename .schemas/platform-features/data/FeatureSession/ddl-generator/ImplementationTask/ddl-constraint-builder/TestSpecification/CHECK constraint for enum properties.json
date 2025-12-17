@@ -1,0 +1,17 @@
+{
+  "id": "test-constraint-005",
+  "scenario": "CHECK constraint for enum properties",
+  "given": [
+    "Property 'status' with enum: ['active', 'inactive', 'pending']"
+  ],
+  "when": "inferCheckConstraint is called",
+  "then": [
+    "Returns CHECK constraint clause",
+    "Constraint format: 'status IN ('active', 'inactive', 'pending')'"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/constraint-builder.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-constraint-builder",
+  "requirement": "req-ddl-enum-checks"
+}

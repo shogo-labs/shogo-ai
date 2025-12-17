@@ -1,0 +1,19 @@
+{
+  "id": "test-ast-types-logical",
+  "scenario": "LogicalExpression covers all logical operators",
+  "given": [
+    "LogicalExpression type is imported"
+  ],
+  "when": "Creating expressions with logical operators",
+  "then": [
+    "$and with array of conditions accepted",
+    "$or with array of conditions accepted",
+    "$not with single condition accepted",
+    "Nested logical operators accepted"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/ast/__tests__/types.test.ts",
+  "createdAt": 1734106500003,
+  "task": "task-query-ast-types",
+  "requirement": "req-02-mongodb-operators"
+}

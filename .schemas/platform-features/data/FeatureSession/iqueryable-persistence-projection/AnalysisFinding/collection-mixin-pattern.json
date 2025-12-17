@@ -1,0 +1,11 @@
+{
+  "id": "pattern-collection-mixin",
+  "name": "collection-mixin-pattern",
+  "type": "pattern",
+  "description": "CollectionPersistable mixin pattern: types.model() with .views() for context derivation and .actions() for async operations. Uses getEnv<IEnvironment>(self) for dependency injection. Composed via types.compose(BaseCollection, Mixin).named(name).",
+  "location": "packages/state-api/src/composition/persistable.ts",
+  "relevantCode": "export const CollectionPersistable = types.model().views(self => ({...})).actions(self => ({...}))",
+  "recommendation": "CollectionQueryable should follow identical pattern: views for query() builder factory, actions for async terminal operations",
+  "createdAt": 1734105700000,
+  "session": "iqueryable-persistence-projection"
+}

@@ -1,0 +1,9 @@
+{
+  "id": "req-ddl-sql-string-generation",
+  "name": "sql-string-generation",
+  "description": "Convert structured DDLOutput objects into executable SQL strings (CREATE TABLE and ALTER TABLE statements) for PostgreSQL and SQLite dialects. Enables 'persistence as projection' vision by providing executable SQL from the same Enhanced JSON Schema that drives MST models.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734476900000,
+  "session": "ddl-generator-001"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "ip-execution-utils",
+  "name": "execution-utils",
+  "filePath": "packages/state-api/src/query/execution/utils.ts",
+  "package": "state-api",
+  "changeType": "add",
+  "description": "Utility functions for SQL execution: snakeToCamel() for row normalization, camelToSnake() for reverse mapping, normalizeRows() for batch processing. Used by PostgresBackend to convert database results to MST-compatible format.",
+  "rationale": "REQ-12 postgres-queryable-implementation. Field name normalization between snake_case DB and camelCase MST.",
+  "createdAt": 1734278400022,
+  "session": "iqueryable-persistence-projection",
+  "finding": "finding-snakecase-camelcase"
+}

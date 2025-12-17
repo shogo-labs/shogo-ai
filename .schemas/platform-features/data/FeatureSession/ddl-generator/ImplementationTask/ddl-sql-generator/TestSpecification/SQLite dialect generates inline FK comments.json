@@ -1,0 +1,19 @@
+{
+  "id": "test-sql-gen-004",
+  "scenario": "SQLite dialect generates inline FK comments",
+  "given": [
+    "ForeignKeyDef with SQLite dialect"
+  ],
+  "when": "foreignKeyDefToSQL is called",
+  "then": [
+    "Returns comment string (not ALTER TABLE)",
+    "Comment starts with --",
+    "Includes inline FK syntax",
+    "Notes that FK should be in CREATE TABLE"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/sql-generator.test.ts",
+  "createdAt": 1734477000000,
+  "task": "task-ddl-sql-generator",
+  "requirement": "req-ddl-sql-string-generation"
+}

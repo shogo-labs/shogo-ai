@@ -1,0 +1,9 @@
+{
+  "id": "req-02-mongodb-operators",
+  "name": "mongodb-style-operators",
+  "description": "Full comparison operators ($eq, $ne, $gt, $gte, $lt, $lte, $in, $nin, $regex, $contains) plus logical operators ($and, $or, $not) with arbitrary nesting. Vision §4.1.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734019200000,
+  "session": "iqueryable-persistence-projection"
+}

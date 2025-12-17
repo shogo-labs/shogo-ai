@@ -1,0 +1,17 @@
+{
+  "id": "test-dialect-003",
+  "scenario": "PostgreSQL identifier escaping with quotes",
+  "given": [
+    "PostgresDialect is instantiated"
+  ],
+  "when": "escapeIdentifier('table\"name') is called",
+  "then": [
+    "Returns '\"table\"\"name\"'",
+    "Internal quotes are doubled for escaping"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/dialect.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-dialect",
+  "requirement": "req-ddl-reserved-words"
+}

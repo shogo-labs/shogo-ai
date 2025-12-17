@@ -1,0 +1,18 @@
+{
+  "id": "test-type-mapper-002",
+  "scenario": "Map UUID type with dialect differences",
+  "given": [
+    "Property with type: 'string' and format: 'uuid'",
+    "PostgresDialect and SqliteDialect available"
+  ],
+  "when": "mapPropertyType is called",
+  "then": [
+    "Returns 'UUID' for PostgreSQL",
+    "Returns 'TEXT' for SQLite"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/type-mapper.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-type-mapper",
+  "requirement": "req-ddl-type-mapping"
+}

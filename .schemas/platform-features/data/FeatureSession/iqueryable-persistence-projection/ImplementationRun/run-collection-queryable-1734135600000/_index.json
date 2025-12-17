@@ -1,0 +1,12 @@
+{
+  "id": "run-collection-queryable-1734135600000",
+  "status": "complete",
+  "currentTaskId": "task-collection-queryable",
+  "completedTasks": [
+    "task-collection-queryable"
+  ],
+  "failedTasks": [],
+  "startedAt": 1734135600000,
+  "completedAt": 1734136000000,
+  "session": "iqueryable-persistence-projection"
+}

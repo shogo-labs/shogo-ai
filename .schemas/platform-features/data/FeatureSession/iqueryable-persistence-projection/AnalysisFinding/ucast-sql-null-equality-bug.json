@@ -1,0 +1,11 @@
+{
+  "id": "risk-sql-null-bug",
+  "name": "ucast-sql-null-equality-bug",
+  "type": "risk",
+  "description": "@ucast/sql generates wrong SQL for null checks: { deletedAt: { $eq: null } } produces 'deletedAt = $1' with params [null], but SQL requires 'deletedAt IS NULL' for correct semantics.",
+  "location": "packages/state-api/src/query/backends/sql.ts",
+  "relevantCode": "// Workaround: Custom interpreter or post-processing for IS NULL",
+  "recommendation": "Document limitation. Consider custom $isNull operator or post-process WHERE clause to fix = NULL patterns.",
+  "createdAt": 1734105800072,
+  "session": "iqueryable-persistence-projection"
+}

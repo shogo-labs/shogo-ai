@@ -1,0 +1,19 @@
+{
+  "id": "test-p2-exec-utils-05",
+  "scenario": "normalizeRows batch processes array of rows",
+  "given": [
+    "normalizeRows function is available",
+    "Array of rows with snake_case keys"
+  ],
+  "when": "normalizeRows(rows) is called",
+  "then": [
+    "Returns array of same length",
+    "Each row has camelCase keys",
+    "Empty array returns empty array"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/execution/__tests__/utils.test.ts",
+  "createdAt": 1734278600014,
+  "task": "task-p2-execution-utils",
+  "requirement": "req-12-postgres-queryable"
+}

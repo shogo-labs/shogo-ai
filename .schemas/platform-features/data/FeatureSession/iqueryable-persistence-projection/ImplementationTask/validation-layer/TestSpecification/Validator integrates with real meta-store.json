@@ -1,0 +1,19 @@
+{
+  "id": "test-validator-metastore-integration",
+  "scenario": "Validator integrates with real meta-store",
+  "given": [
+    "QueryValidator instance",
+    "Real meta-store with loaded schema"
+  ],
+  "when": "Validating query against schema-defined model",
+  "then": [
+    "Property types derived from JSON Schema",
+    "Validation reflects actual schema structure",
+    "Works with Enhanced JSON Schema x-* extensions"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/query/validation/__tests__/validator.test.ts",
+  "createdAt": 1734106500050,
+  "task": "task-validation-layer",
+  "requirement": "req-05-metastore-validation"
+}

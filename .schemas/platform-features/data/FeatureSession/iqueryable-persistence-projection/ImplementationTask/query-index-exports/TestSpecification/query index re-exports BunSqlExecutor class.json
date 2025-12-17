@@ -1,0 +1,17 @@
+{
+  "id": "test-p2-query-index-02",
+  "scenario": "query index re-exports BunSqlExecutor class",
+  "given": [
+    "query/index.ts module exists"
+  ],
+  "when": "BunSqlExecutor is imported from query",
+  "then": [
+    "BunSqlExecutor class is available",
+    "Can instantiate from top-level import"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/__tests__/index.test.ts",
+  "createdAt": 1734278600061,
+  "task": "task-p2-query-index-modify",
+  "requirement": "req-08-database-executor"
+}
