@@ -163,12 +163,25 @@ export function inferForeignKey(
     return null
   }
 
-  const target = property["x-reference-target"]
+  // Derive target from x-reference-target, x-arktype, or $ref
+  let target = property["x-reference-target"]
+  if (!target && property["x-arktype"]) {
+    // x-arktype contains the type name directly (e.g., "Organization")
+    target = property["x-arktype"]
+  }
+  if (!target && property["$ref"]) {
+    // Extract from $ref (e.g., "#/$defs/Organization" -> "Organization")
+    const refMatch = property["$ref"].match(/#\/\$defs\/(.+)/)
+    if (refMatch) {
+      target = refMatch[1]
+    }
+  }
   if (!target) {
     return null
   }
 
-  // Derive column name: snake_case(target) + "_id"
+  // Derive column name from target type: Organization -> organization_id
+  // This ensures consistent FK column naming regardless of property name
   const columnName = toSnakeCase(target) + "_id"
 
   // Derive constraint name: fk_{table}_{column}
