@@ -14,6 +14,13 @@ function createTestEnv(): IEnvironment {
   return {
     services: {
       persistence: new NullPersistence(),
+      backendRegistry: {
+        register: () => {},
+        get: () => undefined,
+        has: () => false,
+        resolve: () => { throw new Error("No backend configured") },
+        setDefault: () => {},
+      } as any,
     },
     context: {
       schemaName: "test-teams",

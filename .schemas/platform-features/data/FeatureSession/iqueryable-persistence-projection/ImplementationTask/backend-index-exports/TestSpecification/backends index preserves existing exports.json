@@ -1,0 +1,18 @@
+{
+  "id": "test-p2-backend-index-02",
+  "scenario": "backends index preserves existing exports",
+  "given": [
+    "backends/index.ts module exists"
+  ],
+  "when": "IBackend, MemoryBackend, SqlBackend are imported",
+  "then": [
+    "All existing exports still available",
+    "No breaking changes to existing imports",
+    "Type exports preserved"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/index.test.ts",
+  "createdAt": 1734278600051,
+  "task": "task-p2-backend-index-modify",
+  "requirement": "req-12-postgres-queryable"
+}

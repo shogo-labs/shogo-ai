@@ -1,0 +1,12 @@
+{
+  "id": "run-environment-extension-1734106800000",
+  "status": "complete",
+  "currentTaskId": "task-environment-extension",
+  "completedTasks": [
+    "task-environment-extension"
+  ],
+  "failedTasks": [],
+  "startedAt": 1734106800000,
+  "completedAt": 1734106900000,
+  "session": "iqueryable-persistence-projection"
+}

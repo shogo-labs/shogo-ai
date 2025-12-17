@@ -16,6 +16,13 @@ function createTestEnv(mockAuth?: MockAuthService): IEnvironment {
     services: {
       persistence: new NullPersistence(),
       auth: mockAuth ?? new MockAuthService(),
+      backendRegistry: {
+        register: () => {},
+        get: () => undefined,
+        has: () => false,
+        resolve: () => { throw new Error("No backend configured") },
+        setDefault: () => {},
+      } as any,
     },
     context: {
       schemaName: "test-auth",

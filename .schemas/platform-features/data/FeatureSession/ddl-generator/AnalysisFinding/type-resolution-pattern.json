@@ -1,0 +1,11 @@
+{
+  "id": "finding-ddl-type-resolution",
+  "name": "type-resolution-pattern",
+  "type": "pattern",
+  "description": "helpers-type-resolution.ts shows recursive schema traversal with visited set to prevent infinite loops. Uses let+assignment pattern for mutual recursion (esbuild compatibility). DDL type mapping should follow similar recursion-safe pattern.",
+  "location": "packages/state-api/src/schematic/helpers-type-resolution.ts:44-47",
+  "relevantCode": "let resolveTypeDefinitionImpl: (def: any, allDefs: Record<string, any>, visited: Set<string>) => any\nlet resolvePropertyTypeImpl: (propName: string, propSchema: any, allDefs: Record<string, any>, visited: Set<string>) => any",
+  "recommendation": "Use visited Set<string> pattern for traversing model dependencies in topological sort to handle circular/self-references.",
+  "createdAt": 1734188500000,
+  "session": "ddl-generator-001"
+}

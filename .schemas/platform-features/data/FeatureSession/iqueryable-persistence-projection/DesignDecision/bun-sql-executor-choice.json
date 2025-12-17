@@ -1,0 +1,9 @@
+{
+  "id": "decision-executor-choice",
+  "name": "bun-sql-executor-choice",
+  "question": "Which database driver/executor should we use for SQL execution?",
+  "decision": "Use Bun.sql native driver via programmatic tagged template invocation pattern: split SQL on $N placeholders, call sql(parts, ...params)",
+  "rationale": "Zero dependencies (built into Bun), native C performance, built-in pooling/transactions/savepoints, multi-database support (Postgres/MySQL/SQLite), already using Bun runtime. Research validated the tagged template trick works identically to normal template usage.",
+  "createdAt": 1734278400000,
+  "session": "iqueryable-persistence-projection"
+}

@@ -1,0 +1,28 @@
+{
+  "id": "task-backend-registry",
+  "name": "backend-registry",
+  "description": "Implement BackendRegistry for schema-driven backend resolution with cascade lookup",
+  "acceptanceCriteria": [
+    "File exists at packages/state-api/src/query/registry.ts",
+    "IBackendRegistry interface with register, get, has, resolve, setDefault methods",
+    "BackendRegistry class implements IBackendRegistry",
+    "register(name, backend) adds backend by name",
+    "get(name) returns backend or undefined",
+    "has(name) returns boolean",
+    "resolve(schemaName, modelName) implements cascade: model → schema → default",
+    "setDefault(name) sets fallback backend",
+    "createBackendRegistry() factory function for configured construction",
+    "index.ts: Barrel exports from backends/ including registry",
+    "Resolution uses meta-store to read x-persistence.backend from model/schema",
+    "Throws descriptive error if no backend found and no default set"
+  ],
+  "status": "complete",
+  "createdAt": 1734106300007,
+  "updatedAt": 1734134400000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-registry",
+  "requirement": "req-04-schema-driven-binding",
+  "dependencies": [
+    "task-backend-types"
+  ]
+}

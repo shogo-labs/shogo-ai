@@ -1,0 +1,23 @@
+{
+  "id": "task-ddl-utils",
+  "name": "ddl-utils",
+  "description": "Implement topological sorting for table dependency ordering and utility functions",
+  "acceptanceCriteria": [
+    "File exists at packages/state-api/src/ddl/utils.ts",
+    "topologicalSort(models: Record<string, any>) returns string[] of model names in dependency order per req-ddl-topo-sort",
+    "Tables with no FK dependencies appear first in order",
+    "Self-referential FKs do not break ordering per req-ddl-self-refs",
+    "Detects circular dependencies (excluding self-refs) and throws error with cycle description",
+    "Uses visited Set<string> pattern from finding-ddl-type-resolution to prevent infinite loops",
+    "toSnakeCase(str: string) converts PascalCase/camelCase to snake_case for column naming",
+    "Reserved word handling integrated with dialect.escapeIdentifier() per req-ddl-reserved-words"
+  ],
+  "status": "complete",
+  "createdAt": 1734203400000,
+  "updatedAt": 1734295200000,
+  "session": "ddl-generator-001",
+  "requirement": "req-ddl-topo-sort",
+  "dependencies": [
+    "task-ddl-types"
+  ]
+}

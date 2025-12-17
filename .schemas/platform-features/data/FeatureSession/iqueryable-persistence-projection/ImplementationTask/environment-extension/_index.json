@@ -1,0 +1,23 @@
+{
+  "id": "task-environment-extension",
+  "name": "environment-extension",
+  "description": "Extend IEnvironment.services with backendRegistry and optional queryValidator",
+  "acceptanceCriteria": [
+    "Modify packages/state-api/src/environment/types.ts",
+    "Add backendRegistry: IBackendRegistry to IEnvironment.services (required)",
+    "Add queryValidator?: IQueryValidator to IEnvironment.services (optional)",
+    "Add imports for IBackendRegistry and IQueryValidator interfaces",
+    "Existing persistence and auth services unchanged",
+    "Update any factory functions that construct IEnvironment",
+    "Document new services in JSDoc comments"
+  ],
+  "status": "complete",
+  "createdAt": 1734106300008,
+  "updatedAt": 1734106900000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-environment-types-modify",
+  "requirement": "req-06-isomorphic-execution",
+  "dependencies": [
+    "task-backend-registry"
+  ]
+}

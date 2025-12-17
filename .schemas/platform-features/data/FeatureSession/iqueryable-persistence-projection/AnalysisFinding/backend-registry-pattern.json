@@ -1,0 +1,11 @@
+{
+  "id": "finding-backend-registry",
+  "name": "backend-registry-pattern",
+  "type": "architecture-decision",
+  "description": "Backend registry PoC complete. Approach B (Per-Environment Instance) validated with 22 passing tests. Resolution cascade: model x-persistence.backend → schema x-persistence.backend → registry default. Registry passed via IEnvironment.services.backendRegistry, matching existing DI pattern.",
+  "location": "packages/state-api/src/query/discovery/backend-registry-poc.test.ts",
+  "relevantCode": "BackendRegistry class: register(), get(), has(), resolve(), setDefault(). Factory function createBackendRegistry() for configured construction. Meta-store integration via query interface (getSchema, getModel).",
+  "recommendation": "ADOPT Approach B (Per-Environment Instance). Matches MST environment DI pattern, enables test isolation (no global state), supports different backends per environment. Add backendRegistry to IEnvironment.services.",
+  "createdAt": 1734105600000,
+  "session": "iqueryable-persistence-projection"
+}

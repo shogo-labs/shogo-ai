@@ -1,0 +1,9 @@
+{
+  "id": "req-ddl-structured-output",
+  "name": "structured-output-format",
+  "description": "Return structured DDLOutput with tables[], foreignKeys[], junctionTables[], executionOrder[]. Support both SQL string generation and programmatic inspection of DDL structure.",
+  "priority": "could",
+  "status": "proposed",
+  "createdAt": 1734188400000,
+  "session": "ddl-generator-001"
+}

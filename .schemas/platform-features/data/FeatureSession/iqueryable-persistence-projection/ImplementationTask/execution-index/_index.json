@@ -1,0 +1,23 @@
+{
+  "id": "task-p2-execution-index",
+  "name": "execution-index",
+  "description": "Create barrel exports for query/execution module",
+  "acceptanceCriteria": [
+    "index.ts exports ISqlExecutor and SqlExecutorConfig types",
+    "index.ts exports BunSqlExecutor class",
+    "index.ts exports snakeToCamel, camelToSnake, normalizeRow, normalizeRows utilities",
+    "All exports use named exports (no default exports)",
+    "File located at packages/state-api/src/query/execution/index.ts"
+  ],
+  "status": "complete",
+  "createdAt": 1734278500003,
+  "updatedAt": 1734485100000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-execution-index",
+  "requirement": "req-08-database-executor",
+  "dependencies": [
+    "task-p2-execution-types",
+    "task-p2-execution-utils",
+    "task-p2-bun-sql-executor"
+  ]
+}

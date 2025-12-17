@@ -1,0 +1,19 @@
+{
+  "id": "test-env-mst-integration",
+  "scenario": "New services accessible from MST models",
+  "given": [
+    "MST model with getEnv<IEnvironment>(self)",
+    "Environment with backendRegistry configured"
+  ],
+  "when": "Accessing services from model action",
+  "then": [
+    "getEnv(self).services.backendRegistry returns registry",
+    "Registry methods callable from model",
+    "DI pattern works end-to-end"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/environment/__tests__/types.test.ts",
+  "createdAt": 1734106500136,
+  "task": "task-environment-extension",
+  "requirement": "req-06-isomorphic-execution"
+}

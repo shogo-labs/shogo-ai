@@ -1,0 +1,12 @@
+{
+  "id": "ip-ddl-index-modify",
+  "name": "ddl-index-modify",
+  "filePath": "packages/state-api/src/ddl/index.ts",
+  "package": "state-api",
+  "changeType": "modify",
+  "description": "Add export for generateSQLIdempotent or update generateSQL signature with options parameter. Ensure DDL module exposes idempotent generation capability for db.migrate tool.",
+  "rationale": "REQ-09 ddl-execution-integration. Public API for idempotent DDL generation.",
+  "createdAt": 1734278400033,
+  "session": "iqueryable-persistence-projection",
+  "finding": "finding-ddl-sql-generator"
+}

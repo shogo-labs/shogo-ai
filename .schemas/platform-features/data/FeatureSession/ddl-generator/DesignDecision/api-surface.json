@@ -1,0 +1,9 @@
+{
+  "id": "design-ddl-api-surface",
+  "name": "api-surface",
+  "question": "What functions should DDL generator export?",
+  "decision": "Main API: generateDDL(schema: EnhancedJsonSchema, dialect: SqlDialect) => DDLOutput. Supporting: createPostgresDialect(), createSqliteDialect(), topologicalSort(models), mapTypeToSQL(prop, dialect). DDLOutput structure: { tables: TableDef[], foreignKeys: ForeignKeyDef[], junctionTables: TableDef[], executionOrder: string[] }",
+  "rationale": "generateDDL() is primary entry point. Dialect factories allow customization. Structured output supports both SQL string generation and programmatic inspection. Execution order ensures safe FK creation.",
+  "createdAt": 1734188800000,
+  "session": "ddl-generator-001"
+}

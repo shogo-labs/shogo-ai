@@ -32,5 +32,8 @@ export * from './auth'
 // Teams layer
 export * from './teams'
 
+// Query layer
+export * from './query'
+
 // Utilities
 export * from './utils'

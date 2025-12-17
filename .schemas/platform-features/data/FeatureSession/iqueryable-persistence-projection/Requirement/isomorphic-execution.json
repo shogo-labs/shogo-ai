@@ -1,0 +1,9 @@
+{
+  "id": "req-06-isomorphic-execution",
+  "name": "isomorphic-execution",
+  "description": "Same query API works in browser (in-memory MST collections) and server (database) contexts. Backend binding resolved at runtime via environment DI. Vision §7.",
+  "priority": "should",
+  "status": "proposed",
+  "createdAt": 1734019200000,
+  "session": "iqueryable-persistence-projection"
+}

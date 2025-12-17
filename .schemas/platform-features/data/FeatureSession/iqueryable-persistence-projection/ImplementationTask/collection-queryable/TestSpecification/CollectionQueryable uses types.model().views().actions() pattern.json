@@ -1,0 +1,19 @@
+{
+  "id": "test-queryable-mixin-pattern",
+  "scenario": "CollectionQueryable uses types.model().views().actions() pattern",
+  "given": [
+    "CollectionQueryable mixin is imported"
+  ],
+  "when": "Inspecting mixin structure",
+  "then": [
+    "Uses types.model() from mobx-state-tree",
+    "Has .views() section for query builder",
+    "Has .actions() for async terminal operations",
+    "Matches CollectionPersistable pattern"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/composition/__tests__/queryable.test.ts",
+  "createdAt": 1734106500140,
+  "task": "task-collection-queryable",
+  "requirement": "req-01-iqueryable-interface"
+}

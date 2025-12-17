@@ -1,0 +1,18 @@
+{
+  "id": "test-p2-postgres-backend-07",
+  "scenario": "PostgresBackend is stateless except for executor reference",
+  "given": [
+    "PostgresBackend instance with executor"
+  ],
+  "when": "Multiple execute calls are made",
+  "then": [
+    "No internal state accumulated",
+    "Each call is independent",
+    "Only executor reference is maintained"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/postgres.test.ts",
+  "createdAt": 1734278600046,
+  "task": "task-p2-postgres-backend",
+  "requirement": "req-12-postgres-queryable"
+}

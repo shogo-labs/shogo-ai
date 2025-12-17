@@ -1,0 +1,18 @@
+{
+  "id": "test-backend-interface",
+  "scenario": "IBackend interface defines execute method",
+  "given": [
+    "IBackend interface is imported"
+  ],
+  "when": "Implementing IBackend interface",
+  "then": [
+    "execute<T>(ast, collection, options?) method required",
+    "Method returns Promise<QueryResult<T>>",
+    "Generic T flows through to result items"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/types.test.ts",
+  "createdAt": 1734106500060,
+  "task": "task-backend-types",
+  "requirement": "req-03-backend-abstraction"
+}

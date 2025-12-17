@@ -1,0 +1,12 @@
+{
+  "id": "ip-enhance-collections-modify",
+  "name": "enhance-collections-modify",
+  "filePath": "packages/state-api/src/composition/enhance-collections.ts",
+  "package": "state-api",
+  "changeType": "modify",
+  "description": "Extend buildEnhanceCollections() with enableQueryable option (default: true). Compose CollectionQueryable after CollectionPersistable, before user enhancements.",
+  "rationale": "Pipeline integration for automatic mixin composition.",
+  "createdAt": 1734105800041,
+  "session": "iqueryable-persistence-projection",
+  "finding": "pattern-enhance-collections"
+}

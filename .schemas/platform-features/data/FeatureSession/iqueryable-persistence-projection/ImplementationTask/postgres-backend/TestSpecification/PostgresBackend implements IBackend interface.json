@@ -1,0 +1,19 @@
+{
+  "id": "test-p2-postgres-backend-01",
+  "scenario": "PostgresBackend implements IBackend interface",
+  "given": [
+    "PostgresBackend class is available",
+    "ISqlExecutor mock instance"
+  ],
+  "when": "new PostgresBackend(executor) is instantiated",
+  "then": [
+    "Instance has execute method",
+    "Instance has capabilities property",
+    "Instance conforms to IBackend interface"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/postgres.test.ts",
+  "createdAt": 1734278600040,
+  "task": "task-p2-postgres-backend",
+  "requirement": "req-12-postgres-queryable"
+}

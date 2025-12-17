@@ -1,0 +1,18 @@
+{
+  "id": "test-p2-db-query-05",
+  "scenario": "db.query tool uses default connection when connection param omitted",
+  "given": [
+    "db.query tool is registered",
+    "Connection named 'default' exists"
+  ],
+  "when": "db.query is called without connection param",
+  "then": [
+    "Uses 'default' connection automatically",
+    "Query executes successfully"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/mcp/src/tools/__tests__/db.query.test.ts",
+  "createdAt": 1734278600074,
+  "task": "task-p2-db-query",
+  "requirement": "req-10-mcp-database-tools"
+}

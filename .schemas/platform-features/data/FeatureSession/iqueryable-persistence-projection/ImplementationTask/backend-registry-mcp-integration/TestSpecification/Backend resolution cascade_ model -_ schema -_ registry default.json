@@ -1,0 +1,20 @@
+{
+  "id": "test-p2-backend-registry-mcp-03",
+  "scenario": "Backend resolution cascade: model -> schema -> registry default",
+  "given": [
+    "Schema with model-level x-persistence.backend override",
+    "Schema-level default backend",
+    "Registry default backend"
+  ],
+  "when": "Backend is resolved for a model",
+  "then": [
+    "Model-level setting takes precedence",
+    "Falls back to schema-level if model not specified",
+    "Falls back to registry default if neither specified"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/mcp/src/tools/__tests__/backend-registry.test.ts",
+  "createdAt": 1734278600092,
+  "task": "task-p2-backend-registry-mcp",
+  "requirement": "req-11-backend-registry-mcp"
+}
