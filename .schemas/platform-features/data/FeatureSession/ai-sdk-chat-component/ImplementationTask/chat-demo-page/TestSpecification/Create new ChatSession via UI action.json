@@ -1,0 +1,19 @@
+{
+  "id": "test-demo-002",
+  "scenario": "Create new ChatSession via UI action",
+  "given": [
+    "AIChatDemoPage rendered",
+    "no existing sessions"
+  ],
+  "when": "click 'New Chat' button",
+  "then": [
+    "createChatSession action called",
+    "new session appears in session list",
+    "session is selected as active",
+    "chat input is focused"
+  ],
+  "testType": "component",
+  "targetFile": "apps/web/src/pages/tests/AIChatDemoPage.test.tsx",
+  "createdAt": 1734462600001,
+  "task": "task-chat-demo-page"
+}

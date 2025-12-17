@@ -1,0 +1,9 @@
+{
+  "id": "ai-sdk-mcp-integration",
+  "name": "mcp-integration",
+  "description": "Replace agent.chat MCP tool internals to use AI SDK with Claude Code provider instead of @anthropic-ai/claude-agent-sdk. Keep the same MCP interface so frontend code (mcpService.streamChat) continues to work. Configure AI SDK with mcpServers: ['wavesmith'] for tool access.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734462002000,
+  "session": "ai-sdk-chat-component"
+}

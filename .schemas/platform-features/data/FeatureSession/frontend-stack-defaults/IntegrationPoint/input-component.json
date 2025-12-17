@@ -1,0 +1,12 @@
+{
+  "id": "ip-fsd-002",
+  "name": "input-component",
+  "filePath": "apps/web/src/components/ui/input.tsx",
+  "package": "apps/web",
+  "changeType": "install",
+  "description": "Install Input component via npx shadcn@latest add input",
+  "rationale": "Input is used in forms throughout demo pages",
+  "createdAt": 1734481000000,
+  "session": "fs-frontend-defaults-001",
+  "finding": "finding-fsd-004"
+}

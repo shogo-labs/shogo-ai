@@ -1,0 +1,9 @@
+{
+  "id": "ai-sdk-tool-visibility",
+  "name": "ai-sdk-tool-visibility",
+  "description": "Display tool calls made by Claude in the chat UI, similar to existing ConversationalAppBuilder. Show which Wavesmith tools were invoked (schema_set, store_create, etc.) so users understand what Claude did.",
+  "priority": "should",
+  "status": "proposed",
+  "createdAt": 1734461713000,
+  "session": "ai-sdk-chat-component"
+}

@@ -1,0 +1,9 @@
+{
+  "id": "req-pfv-004",
+  "name": "sorting",
+  "description": "Sort entities by common fields like createdAt, name, status with ascending/descending toggle",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734480000000,
+  "session": "pf-viewer-001"
+}

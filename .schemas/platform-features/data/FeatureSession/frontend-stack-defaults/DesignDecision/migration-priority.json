@@ -1,0 +1,9 @@
+{
+  "id": "dd-fsd-003",
+  "name": "migration-priority",
+  "question": "Which files should be migrated from inline styles first?",
+  "decision": "Prioritize high-visibility pages: HomePage, then Unit pages (Unit1, Unit2, Unit3), then demo pages",
+  "rationale": "HomePage is the landing page with ~15 inline style blocks. Unit pages are core demos. This order maximizes visual impact while establishing migration patterns.",
+  "createdAt": 1734480700000,
+  "session": "fs-frontend-defaults-001"
+}

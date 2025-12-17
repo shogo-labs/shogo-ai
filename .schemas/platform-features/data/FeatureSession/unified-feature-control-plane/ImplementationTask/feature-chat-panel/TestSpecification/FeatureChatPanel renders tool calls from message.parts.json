@@ -1,0 +1,20 @@
+{
+  "id": "test-003-chat-panel-tool-calls",
+  "scenario": "FeatureChatPanel renders tool calls from message.parts",
+  "given": [
+    "FeatureChatPanel is rendered with featureSessionId",
+    "useChat returns messages with assistant message containing tool-* parts"
+  ],
+  "when": "Component renders the message list",
+  "then": [
+    "Assistant message bubble is displayed",
+    "ToolCallPart components are rendered for each tool-* part in message.parts",
+    "Text parts are rendered as regular message content",
+    "Tool calls appear inline with message text"
+  ],
+  "testType": "integration",
+  "targetFile": "apps/web/src/components/FeatureControlPlane/__tests__/FeatureChatPanel.test.tsx",
+  "createdAt": 1734480902000,
+  "task": "task-005-feature-chat-panel",
+  "requirement": "req-008-tool-call-display"
+}

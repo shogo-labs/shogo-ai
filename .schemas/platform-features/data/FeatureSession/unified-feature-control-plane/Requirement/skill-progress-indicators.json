@@ -1,0 +1,9 @@
+{
+  "id": "req-005-progress-indicators",
+  "name": "skill-progress-indicators",
+  "description": "Visual progress indicators for each skill phase showing: (1) Phase completion status (pending/in-progress/completed), (2) Entity counts per phase (e.g., '5 requirements', '3 findings'), (3) Current activity indicator when a skill is actively running.",
+  "priority": "should",
+  "status": "proposed",
+  "createdAt": 1734480005000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

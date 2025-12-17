@@ -1,0 +1,10 @@
+{
+  "id": "class-evidence-local-state",
+  "name": "class-evidence-local-state",
+  "type": "classification_evidence",
+  "description": "Feature requires PERSISTENT local state: Chat sessions, message history, and mapping to created features. Needs MST domain entities with CollectionPersistable for persistence. Not ephemeral UI state.",
+  "location": "apps/web/src/hooks/useAgentChat.ts",
+  "recommendation": "Confirms Hybrid - external API + local domain entities with persistence",
+  "createdAt": 1734461807000,
+  "session": "ai-sdk-chat-component"
+}

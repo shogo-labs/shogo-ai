@@ -1,6 +1,81 @@
 import { useState, useCallback, useRef } from 'react'
 import { mcpService } from '../services/mcpService'
 
+/**
+ * Record artifacts created by tool calls
+ * Detects schema_set and store_create calls and records them to the ai-sdk-chat schema
+ */
+async function recordArtifacts(sessionId: string | null, toolCalls: Array<{ tool: string; args: any; result?: string }>) {
+  if (!sessionId) return
+
+  // Ensure ai-sdk-chat schema is loaded
+  try {
+    await mcpService.callTool('schema.load', { name: 'ai-sdk-chat' })
+  } catch (error) {
+    console.warn('Could not load ai-sdk-chat schema for artifact tracking:', error)
+    return
+  }
+
+  // Detect artifacts from tool calls
+  for (const toolCall of toolCalls) {
+    let artifactType: 'schema' | 'entity' | 'other' | null = null
+    let artifactName: string | null = null
+
+    // Detect schema_set tool calls
+    if (toolCall.tool === 'mcp__wavesmith__schema_set' && toolCall.args?.name) {
+      artifactType = 'schema'
+      artifactName = toolCall.args.name
+    }
+    // Detect store_create tool calls
+    else if (toolCall.tool === 'mcp__wavesmith__store_create' && toolCall.args?.data?.id) {
+      artifactType = 'entity'
+      artifactName = `${toolCall.args.model}:${toolCall.args.data.id}`
+    }
+
+    // Record artifact if detected
+    if (artifactType && artifactName) {
+      try {
+        // First ensure the chat session exists in the store
+        try {
+          await mcpService.callTool('store.get', {
+            schema: 'ai-sdk-chat',
+            model: 'ChatSession',
+            id: sessionId
+          })
+        } catch {
+          // Session doesn't exist, create it
+          await mcpService.callTool('store.create', {
+            schema: 'ai-sdk-chat',
+            model: 'ChatSession',
+            data: {
+              id: sessionId,
+              name: `Chat Session ${sessionId.slice(0, 8)}`,
+              status: 'active',
+              createdAt: Date.now()
+            }
+          })
+        }
+
+        // Create the artifact record
+        await mcpService.callTool('store.create', {
+          schema: 'ai-sdk-chat',
+          model: 'CreatedArtifact',
+          data: {
+            id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            session: sessionId,
+            artifactType,
+            artifactName,
+            toolName: toolCall.tool,
+            createdAt: Date.now()
+          }
+        })
+      } catch (error) {
+        console.warn('Failed to record artifact:', error)
+      }
+    }
+  }
+}
+
 /** Message in a chat conversation */
 export interface ChatMessage {
   id: string
@@ -106,7 +181,7 @@ export function useAgentChat() {
           }))
         },
         // onComplete - finalize with metadata
-        (result) => {
+        async (result) => {
           if (!result.ok) {
             setState(prev => ({
               ...prev,
@@ -115,6 +190,11 @@ export function useAgentChat() {
             }))
             resolve(false)
             return
+          }
+
+          // Detect and record artifacts created during this chat interaction
+          if (result.toolCalls && result.toolCalls.length > 0) {
+            await recordArtifacts(result.sessionId || sessionIdRef.current, result.toolCalls)
           }
 
           setState(prev => ({

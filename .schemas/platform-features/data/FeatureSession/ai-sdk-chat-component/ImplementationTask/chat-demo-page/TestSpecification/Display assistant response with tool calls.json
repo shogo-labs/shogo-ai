@@ -1,0 +1,18 @@
+{
+  "id": "test-demo-004",
+  "scenario": "Display assistant response with tool calls",
+  "given": [
+    "user message sent",
+    "AI SDK returns response with tool_calls"
+  ],
+  "when": "streaming response completes",
+  "then": [
+    "assistant message appears with role='assistant'",
+    "tool calls section shows called tools",
+    "tool names and arguments visible"
+  ],
+  "testType": "component",
+  "targetFile": "apps/web/src/pages/tests/AIChatDemoPage.test.tsx",
+  "createdAt": 1734462600003,
+  "task": "task-chat-demo-page"
+}

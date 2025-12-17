@@ -1,0 +1,20 @@
+{
+  "id": "test-004-entity-panel-polling",
+  "scenario": "EntityDataPanel polls for updates and refreshes data",
+  "given": [
+    "EntityDataPanel is rendered with sessionId",
+    "mcpService.callTool is mocked to return Requirements data",
+    "Polling interval is set to 1000ms for testing"
+  ],
+  "when": "1 second passes after initial render",
+  "then": [
+    "mcpService.callTool is called again for refresh",
+    "Updated data is displayed in the panel",
+    "Polling stops when component unmounts"
+  ],
+  "testType": "integration",
+  "targetFile": "apps/web/src/components/FeatureControlPlane/__tests__/EntityDataPanel.test.tsx",
+  "createdAt": 1734480903000,
+  "task": "task-006-entity-data-panel",
+  "requirement": "req-003-realtime-updates"
+}

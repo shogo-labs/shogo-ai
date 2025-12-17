@@ -1,0 +1,20 @@
+{
+  "id": "task-008-app-routing",
+  "name": "app-routing-integration",
+  "description": "Add FeatureControlPlanePage to App.tsx routing and navigation.",
+  "acceptanceCriteria": [
+    "Import FeatureControlPlanePage in App.tsx",
+    "Add Route: path='/feature-control-plane' element={<FeatureControlPlanePage />}",
+    "Add NavLink in Navigation component: 'Control Plane'",
+    "NavLink positioned after 'Platform Features' in nav order",
+    "Remove or keep existing Platform Features and AI Chat Demo routes (user preference)",
+    "Page accessible at /feature-control-plane route",
+    "Navigation highlights correctly when on route"
+  ],
+  "status": "planned",
+  "createdAt": 1734480707000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e",
+  "dependencies": [
+    "task-007-feature-control-plane-page"
+  ]
+}

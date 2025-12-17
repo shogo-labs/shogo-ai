@@ -1,0 +1,20 @@
+{
+  "id": "test-005-control-plane-integration",
+  "scenario": "FeatureControlPlanePage renders unified layout with all components",
+  "given": [
+    "FeatureControlPlanePage is rendered with providers",
+    "mcpService returns FeatureSessions from platform-features schema"
+  ],
+  "when": "User selects a FeatureSession from the selector",
+  "then": [
+    "SkillCycleStepper shows the selected session's status",
+    "FeatureChatPanel displays with the selected featureSessionId",
+    "EntityDataPanel shows entities filtered by selected session",
+    "Three-column layout is visible"
+  ],
+  "testType": "acceptance",
+  "targetFile": "apps/web/src/pages/__tests__/FeatureControlPlanePage.test.tsx",
+  "createdAt": 1734480904000,
+  "task": "task-007-feature-control-plane-page",
+  "requirement": "req-001-unified-layout"
+}
