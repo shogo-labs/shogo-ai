@@ -54,12 +54,20 @@ describe("SQL-01: SqlQueryExecutor", () => {
     // Create executor with property map for normalization
     const propertyNames = ["id", "userId", "createdAt", "isActive"]
     const columnPropertyMap = createColumnPropertyMap(propertyNames)
+    const propertyTypes = {
+      id: "string",
+      userId: "string",
+      createdAt: "number",
+      isActive: "boolean"
+    }
 
     executor = new SqlQueryExecutor(
       "test_model",
-      new SqlBackend(),
+      new SqlBackend("sqlite"),  // SQLite dialect
       new BunSqlExecutor(db),
-      columnPropertyMap
+      columnPropertyMap,
+      "sqlite",
+      propertyTypes
     )
   })
 
@@ -296,12 +304,20 @@ describe("SQL-02: Edge Case Field Names", () => {
     // Property names with consecutive capitals
     const propertyNames = ["ID", "HTTPSUrl", "userID", "XMLParser"]
     const columnPropertyMap = createColumnPropertyMap(propertyNames)
+    const propertyTypes = {
+      ID: "string",
+      HTTPSUrl: "string",
+      userID: "string",
+      XMLParser: "string"
+    }
 
     executor = new SqlQueryExecutor(
       "edge_cases",
-      new SqlBackend(),
+      new SqlBackend("sqlite"),
       new BunSqlExecutor(db),
-      columnPropertyMap
+      columnPropertyMap,
+      "sqlite",
+      propertyTypes
     )
   })
 
@@ -374,12 +390,18 @@ testExecutorContract<{ id: string; name: string }>(
 
     const propertyNames = ["id", "name"]
     const columnPropertyMap = createColumnPropertyMap(propertyNames)
+    const propertyTypes = {
+      id: "string",
+      name: "string"
+    }
 
     const executor = new SqlQueryExecutor(
       "contract_test",
-      new SqlBackend(),
+      new SqlBackend("sqlite"),
       new BunSqlExecutor(db),
-      columnPropertyMap
+      columnPropertyMap,
+      "sqlite",
+      propertyTypes
     )
 
     return {

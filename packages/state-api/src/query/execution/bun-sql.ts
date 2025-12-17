@@ -89,11 +89,8 @@ export class BunSqlExecutor implements ISqlExecutor {
       let sortedParams = [...params]
 
       if (params.length > 0) {
-        // Replace $1, $2, etc. with ? placeholders
-        // We need to handle them in order
+        // Check if SQL uses PostgreSQL-style placeholders ($1, $2)
         const placeholderMap: Array<{ placeholder: string; index: number }> = []
-
-        // Find all $N placeholders and their positions
         const placeholderRegex = /\$(\d+)/g
         let match
         while ((match = placeholderRegex.exec(sql)) !== null) {
@@ -101,12 +98,12 @@ export class BunSqlExecutor implements ISqlExecutor {
           placeholderMap.push({ placeholder: match[0], index: paramIndex })
         }
 
-        // Replace all $N with ?
-        sqliteQuery = sql.replace(/\$\d+/g, "?")
-
-        // Reorder params to match the order they appear in SQL
-        // (in case of non-sequential like $2, $1)
-        sortedParams = placeholderMap.map(p => params[p.index])
+        if (placeholderMap.length > 0) {
+          // PostgreSQL-style found - convert to SQLite style
+          sqliteQuery = sql.replace(/\$\d+/g, "?")
+          sortedParams = placeholderMap.map(p => params[p.index])
+        }
+        // else: Already using ? placeholders (SQLite dialect), no conversion needed
       }
 
       // Use Database.query() to prepare statement and execute

@@ -34,6 +34,7 @@ import { types, getEnv } from 'mobx-state-tree'
 import type { IEnvironment } from '../environment/types'
 import type { QueryFilter } from '../query/ast/types'
 import type { OrderByClause } from '../query/backends/types'
+import type { IQueryExecutor } from '../query/executors/types'
 import { parseQuery } from '../query/ast/parser'
 
 // ============================================================================
@@ -233,113 +234,74 @@ interface QueryBuilderState {
  * @remarks
  * Implements IQueryable interface with immutable pattern.
  * Each chainable method creates a new instance with updated state.
- * Terminal operations execute query via backend registry.
+ * Terminal operations delegate to IQueryExecutor.
  */
 class QueryBuilder<T> implements IQueryable<T> {
   constructor(
-    private collection: any, // MST collection instance
-    private env: IEnvironment,
+    private executor: IQueryExecutor<T>,
     private state: QueryBuilderState
   ) {}
 
   where(filter: QueryFilter): IQueryable<T> {
-    return new QueryBuilder<T>(this.collection, this.env, {
+    return new QueryBuilder<T>(this.executor, {
       ...this.state,
       filters: [...this.state.filters, filter]
     })
   }
 
   orderBy(field: string, direction: 'asc' | 'desc' = 'asc'): IQueryable<T> {
-    return new QueryBuilder<T>(this.collection, this.env, {
+    return new QueryBuilder<T>(this.executor, {
       ...this.state,
       ordering: [...this.state.ordering, { field, direction }]
     })
   }
 
   skip(count: number): IQueryable<T> {
-    return new QueryBuilder<T>(this.collection, this.env, {
+    return new QueryBuilder<T>(this.executor, {
       ...this.state,
       skipCount: count
     })
   }
 
   take(count: number): IQueryable<T> {
-    return new QueryBuilder<T>(this.collection, this.env, {
+    return new QueryBuilder<T>(this.executor, {
       ...this.state,
       takeCount: count
     })
   }
 
   async toArray(): Promise<T[]> {
-    const backend = this.resolveBackend()
     const ast = this.buildAST()
-    const collection = this.collection.all() // Get array from MST collection
-
     const options = {
       orderBy: this.state.ordering.length > 0 ? this.state.ordering : undefined,
       skip: this.state.skipCount,
       take: this.state.takeCount
     }
 
-    const result = await backend.execute(ast, collection, options)
-    return result.items as T[]
+    return this.executor.select(ast, options)
   }
 
   async first(): Promise<T | undefined> {
-    const backend = this.resolveBackend()
     const ast = this.buildAST()
-    const collection = this.collection.all()
-
     const options = {
       orderBy: this.state.ordering.length > 0 ? this.state.ordering : undefined,
       skip: this.state.skipCount,
-      take: 1 // Optimization: only fetch first item
+      // Note: first() optimization happens in executor.first()
     }
 
-    const result = await backend.execute(ast, collection, options)
-    return result.items[0] as T | undefined
+    return this.executor.first(ast, options)
   }
 
   async count(): Promise<number> {
-    const backend = this.resolveBackend()
     const ast = this.buildAST()
-    const collection = this.collection.all()
-
-    const options = {
-      // Count doesn't need ordering or pagination
-      // But we might need skip/take for counting a subset
-      skip: this.state.skipCount,
-      take: this.state.takeCount
-    }
-
-    const result = await backend.execute(ast, collection, options)
-    return result.items.length
+    // Count doesn't need ordering or pagination
+    return this.executor.count(ast)
   }
 
   async any(): Promise<boolean> {
-    const backend = this.resolveBackend()
     const ast = this.buildAST()
-    const collection = this.collection.all()
-
-    const options = {
-      take: 1 // Optimization: only check if first item exists
-    }
-
-    const result = await backend.execute(ast, collection, options)
-    return result.items.length > 0
-  }
-
-  /**
-   * Resolve backend for this collection via registry cascade.
-   *
-   * @returns Backend implementation
-   * @throws Error if no backend found and no default set
-   */
-  private resolveBackend() {
-    // Runtime stores always have context (meta-store doesn't use CollectionQueryable)
-    const schemaName = this.env.context!.schemaName
-    const modelName = this.collection.modelName
-    return this.env.services.backendRegistry.resolve(schemaName, modelName)
+    // Exists doesn't need ordering or pagination
+    return this.executor.exists(ast)
   }
 
   /**
@@ -406,6 +368,10 @@ export const CollectionQueryable = types
      * Returns an immutable query builder. Each chainable method
      * returns a new instance. Terminal operations execute the query.
      *
+     * Resolves IQueryExecutor from environment's BackendRegistry with
+     * collection reference bound for memory backends or table name bound
+     * for SQL backends.
+     *
      * @example
      * ```typescript
      * const query = collection.query()
@@ -419,12 +385,23 @@ export const CollectionQueryable = types
      */
     query<T>(): IQueryable<T> {
       const env = getEnv<IEnvironment>(self)
+      const schemaName = env.context!.schemaName
+      const modelName = (self as any).modelName
+
+      // Resolve executor from registry with collection reference
+      const executor = env.services.backendRegistry.resolve<T>(
+        schemaName,
+        modelName,
+        self  // Pass collection reference for memory backends
+      )
+
       const initialState: QueryBuilderState = {
         filters: [],
         ordering: [],
         skipCount: undefined,
         takeCount: undefined
       }
-      return new QueryBuilder<T>(self, env, initialState)
+
+      return new QueryBuilder<T>(executor, initialState)
     }
   }))

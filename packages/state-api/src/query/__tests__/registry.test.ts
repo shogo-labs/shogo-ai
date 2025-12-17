@@ -12,7 +12,8 @@
 
 import { describe, test, expect, beforeEach } from "bun:test"
 import type { IBackend } from "../backends/types"
-import { ContextAwareBackend } from "../backends/context-aware"
+import { SqlQueryExecutor } from "../executors/sql"
+import { MemoryQueryExecutor } from "../executors/memory"
 import { getMetaStore, resetMetaStore } from "../../meta/bootstrap"
 import {
   IBackendRegistry,
@@ -38,6 +39,9 @@ class MockMemoryBackend implements IBackend {
 }
 
 class MockSqlBackend implements IBackend {
+  dialect: 'pg' | 'sqlite' = 'sqlite'
+  executor: any = { execute: async () => [] }  // Mock executor
+
   capabilities = {
     operators: ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'nin', 'like'],
     features: {
@@ -196,15 +200,12 @@ describe("BackendRegistry", () => {
       })
 
       // When: Calling resolve(schemaName, modelName)
-      const backend = registry.resolve("test-schema", "User")
+      const executor = registry.resolve("test-schema", "User")
 
-      // Then: Returns ContextAwareBackend wrapping 'sql' backend
-      // (Registry now wraps backends with schema-aware normalization)
-      expect(backend).toBeInstanceOf(ContextAwareBackend)
-      expect(backend.capabilities).toEqual(sqlBackend.capabilities)
+      // Then: Returns SqlQueryExecutor for SQL backend
+      expect(executor).toBeInstanceOf(SqlQueryExecutor)
 
-      // Then: Model config takes precedence
-      // Then: Schema config not checked (validated by getting sql backend)
+      // Then: Model config takes precedence (sql backend selected)
     })
   })
 
@@ -240,13 +241,12 @@ describe("BackendRegistry", () => {
         name: "test-schema-fallback"
       })
 
-      // When: Calling resolve(schemaName, modelName)
-      const backend = registry.resolve("test-schema-fallback", "User")
+      // When: Calling resolve(schemaName, modelName) with collection
+      const collection = { all: () => [{ id: "1" }], modelName: "User" }
+      const executor = registry.resolve("test-schema-fallback", "User", collection)
 
-      // Then: Returns ContextAwareBackend wrapping 'memory' backend
-      // (Registry now wraps backends with schema-aware normalization)
-      expect(backend).toBeInstanceOf(ContextAwareBackend)
-      expect(backend.capabilities).toEqual(memoryBackend.capabilities)
+      // Then: Returns MemoryQueryExecutor for memory backend
+      expect(executor).toBeInstanceOf(MemoryQueryExecutor)
 
       // Then: Falls back through cascade to default
       // Schema-level config would take precedence once meta-store supports it
@@ -282,12 +282,12 @@ describe("BackendRegistry", () => {
         name: "test-schema-default"
       })
 
-      // When: Calling resolve(schemaName, modelName)
-      const backend = registry.resolve("test-schema-default", "User")
+      // When: Calling resolve(schemaName, modelName) with collection
+      const collection = { all: () => [{ id: "1" }], modelName: "User" }
+      const executor = registry.resolve("test-schema-default", "User", collection)
 
-      // Then: Returns ContextAwareBackend wrapping 'memory' backend (the default)
-      expect(backend).toBeInstanceOf(ContextAwareBackend)
-      expect(backend.capabilities).toEqual(memoryBackend.capabilities)
+      // Then: Returns MemoryQueryExecutor for memory backend (the default)
+      expect(executor).toBeInstanceOf(MemoryQueryExecutor)
 
       // Then: Cascade: model → schema → default (validated by getting default)
     })
@@ -320,15 +320,14 @@ describe("BackendRegistry", () => {
       metaStore.ingestEnhancedJsonSchema(inputSchema, { name: "test-setdefault" })
 
       // Then: resolve() uses this when no config found
-      const backend = registry.resolve("test-setdefault", "Task")
-      expect(backend).toBeInstanceOf(ContextAwareBackend)
-      expect(backend.capabilities).toEqual(memoryBackend.capabilities)
+      const collection = { all: () => [{ id: "1" }], modelName: "Task" }
+      const executor = registry.resolve("test-setdefault", "Task", collection)
+      expect(executor).toBeInstanceOf(MemoryQueryExecutor)
 
       // Then: Can be changed later
       registry.setDefault('sql')
-      const backend2 = registry.resolve("test-setdefault", "Task")
-      expect(backend2).toBeInstanceOf(ContextAwareBackend)
-      expect(backend2.capabilities).toEqual(sqlBackend.capabilities)
+      const executor2 = registry.resolve("test-setdefault", "Task")
+      expect(executor2).toBeInstanceOf(SqlQueryExecutor)
     })
   })
 
@@ -369,9 +368,9 @@ describe("BackendRegistry", () => {
         }
       }
       metaStore.ingestEnhancedJsonSchema(inputSchema, { name: "test-factory" })
-      const backend = registry.resolve("test-factory", "Item")
-      expect(backend).toBeInstanceOf(ContextAwareBackend)
-      expect(backend.capabilities).toEqual(memoryBackend.capabilities)
+      const collection = { all: () => [{ id: "1" }], modelName: "Item" }
+      const executor = registry.resolve("test-factory", "Item", collection)
+      expect(executor).toBeInstanceOf(MemoryQueryExecutor)
     })
   })
 
