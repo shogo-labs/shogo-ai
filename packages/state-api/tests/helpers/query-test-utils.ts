@@ -12,6 +12,7 @@ import { MemoryBackend } from "../../src/query/backends/memory"
 import { SqlBackend } from "../../src/query/backends/sql"
 import { NullPersistence } from "../../src/persistence/null"
 import { teamsDomain } from "../../src/teams/domain"
+import { generateDDL, createSqliteDialect, tableDefToCreateTableSQL } from "../../src/ddl"
 
 export interface TestData {
   organizations: Array<{
@@ -81,6 +82,28 @@ export function createEnvironment(options: CreateEnvironmentOptions) {
   }
 }
 
+// Cache dialect instance
+const sqliteDialect = createSqliteDialect()
+
+/**
+ * Create tables from Enhanced JSON Schema using DDL generator.
+ *
+ * @param db - SQLite database instance
+ * @param schema - Enhanced JSON Schema to generate DDL from
+ */
+function createTablesFromSchema(db: Database, schema: any) {
+  const ddl = generateDDL(schema, sqliteDialect)
+
+  // Create tables in topological order (respects FK dependencies)
+  for (const tableName of ddl.executionOrder) {
+    const table = ddl.tables.find(t => t.name === tableName)
+    if (table) {
+      const sql = tableDefToCreateTableSQL(table, sqliteDialect)
+      db.run(sql)
+    }
+  }
+}
+
 /**
  * Create a store with seeded test data.
  *
@@ -98,10 +121,8 @@ export async function createSeededStore(
   if (backend === "sql") {
     db = new Database(":memory:")
 
-    // Create tables manually (teams schema lacks x-mst-type metadata for DDL generator)
-    db.run(`CREATE TABLE organization (id TEXT PRIMARY KEY, name TEXT, slug TEXT, created_at INTEGER)`)
-    db.run(`CREATE TABLE team (id TEXT PRIMARY KEY, name TEXT, organization_id TEXT, created_at INTEGER)`)
-    db.run(`CREATE TABLE membership (id TEXT PRIMARY KEY, user_id TEXT, role TEXT, team_id TEXT, created_at INTEGER)`)
+    // Create tables using DDL generator (schema has proper x-mst-type metadata)
+    createTablesFromSchema(db, teamsDomain.enhancedSchema)
 
     env = createEnvironment({
       backend: "sql",
@@ -116,16 +137,17 @@ export async function createSeededStore(
   // Seed data
   if (backend === "sql" && db) {
     // Insert directly to database for SQL backends
+    // Note: Table names are PascalCase (quoted), column names are snake_case
     for (const org of data.organizations) {
-      db.run(`INSERT INTO organization (id, name, slug, created_at) VALUES (?, ?, ?, ?)`,
+      db.run(`INSERT INTO "Organization" ("id", "name", "slug", "created_at") VALUES (?, ?, ?, ?)`,
         [org.id, org.name, org.slug, org.createdAt])
     }
     for (const team of data.teams) {
-      db.run(`INSERT INTO team (id, name, organization_id, created_at) VALUES (?, ?, ?, ?)`,
+      db.run(`INSERT INTO "Team" ("id", "name", "organization_id", "created_at") VALUES (?, ?, ?, ?)`,
         [team.id, team.name, team.organizationId, team.createdAt])
     }
     for (const mem of data.memberships) {
-      db.run(`INSERT INTO membership (id, user_id, role, team_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+      db.run(`INSERT INTO "Membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`,
         [mem.id, mem.userId, mem.role, mem.teamId, mem.createdAt])
     }
   } else {

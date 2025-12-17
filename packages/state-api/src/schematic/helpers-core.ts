@@ -4,6 +4,7 @@
  */
 
 import type { EnhancedJsonSchema } from './types';
+import { normalizePropertySchema } from './helpers-foundation';
 
 /**
  * Helper to check if a schema matches an arkType alias structure
@@ -118,6 +119,14 @@ export function enhanceObjectDefinition(
   options: any
 ): void {
   if (!def.properties) return;
+
+  // First pass: normalize all properties (handles UUID anyOf structures, sets x-mst-type for identifiers)
+  for (const entry of Object.entries(def.properties)) {
+    const propName = entry[0];
+    const propSchema = entry[1];
+    const normalized = normalizePropertySchema(propSchema, propName);
+    def.properties[propName] = normalized;
+  }
 
   if (!arkAlias) {
     for (const entry of Object.entries(def.properties)) {

@@ -14,6 +14,7 @@ import { Database } from "bun:sqlite"
 import { BunSqlExecutor } from "../../src/query/execution/bun-sql"
 import { teamsDomain } from "../../src/teams/domain"
 import type { IQueryable } from "../../src/composition/queryable"
+import { generateDDL, createSqliteDialect, tableDefToCreateTableSQL } from "../../src/ddl"
 
 // Test utilities (to be implemented)
 import {
@@ -21,6 +22,22 @@ import {
   createSeededStore,
   type TestData
 } from "../helpers/query-test-utils"
+
+// Cache dialect instance for direct SQL tests
+const sqliteDialect = createSqliteDialect()
+
+/**
+ * Create tables from Enhanced JSON Schema using DDL generator.
+ */
+function createTablesFromSchema(db: Database) {
+  const ddl = generateDDL(teamsDomain.enhancedSchema, sqliteDialect)
+  for (const tableName of ddl.executionOrder) {
+    const table = ddl.tables.find(t => t.name === tableName)
+    if (table) {
+      db.run(tableDefToCreateTableSQL(table, sqliteDialect))
+    }
+  }
+}
 
 // ============================================================================
 // INT-01: Memory Backend - Basic Query Operations
@@ -235,10 +252,8 @@ describe("INT-02: SQL Backend Query Operations", () => {
     // Setup: Create in-memory SQLite database
     db = new Database(":memory:")
 
-    // Create tables manually (DDL generator requires x-mst-type metadata)
-    db.run(`CREATE TABLE organization (id TEXT PRIMARY KEY, name TEXT, slug TEXT, created_at INTEGER)`)
-    db.run(`CREATE TABLE team (id TEXT PRIMARY KEY, name TEXT, organization_id TEXT, created_at INTEGER)`)
-    db.run(`CREATE TABLE membership (id TEXT PRIMARY KEY, user_id TEXT, role TEXT, team_id TEXT, created_at INTEGER)`)
+    // Create tables using DDL generator (schema has proper x-mst-type metadata)
+    createTablesFromSchema(db)
 
     // Setup: Create teams-workspace domain with SQL backend
     const executor = new BunSqlExecutor(db)
@@ -250,13 +265,14 @@ describe("INT-02: SQL Backend Query Operations", () => {
     store = teamsDomain.createStore(env)
 
     // Seed data directly to database (SQL backend doesn't auto-persist)
+    // Note: Table names are PascalCase (quoted), column names are snake_case
     const now = Date.now()
-    db.run(`INSERT INTO organization (id, name, slug, created_at) VALUES (?, ?, ?, ?)`, [orgId, "Acme Corp", "acme", now])
-    db.run(`INSERT INTO team (id, name, organization_id, created_at) VALUES (?, ?, ?, ?)`, [team1Id, "Engineering", orgId, now])
-    db.run(`INSERT INTO team (id, name, organization_id, created_at) VALUES (?, ?, ?, ?)`, [team2Id, "Design", orgId, now])
-    db.run(`INSERT INTO membership (id, user_id, role, team_id, created_at) VALUES (?, ?, ?, ?, ?)`, [mem1Id, "user-alice", "admin", team1Id, now])
-    db.run(`INSERT INTO membership (id, user_id, role, team_id, created_at) VALUES (?, ?, ?, ?, ?)`, [mem2Id, "user-bob", "member", team1Id, now])
-    db.run(`INSERT INTO membership (id, user_id, role, team_id, created_at) VALUES (?, ?, ?, ?, ?)`, [mem3Id, "user-alice", "viewer", team2Id, now])
+    db.run(`INSERT INTO "Organization" ("id", "name", "slug", "created_at") VALUES (?, ?, ?, ?)`, [orgId, "Acme Corp", "acme", now])
+    db.run(`INSERT INTO "Team" ("id", "name", "organization_id", "created_at") VALUES (?, ?, ?, ?)`, [team1Id, "Engineering", orgId, now])
+    db.run(`INSERT INTO "Team" ("id", "name", "organization_id", "created_at") VALUES (?, ?, ?, ?)`, [team2Id, "Design", orgId, now])
+    db.run(`INSERT INTO "Membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem1Id, "user-alice", "admin", team1Id, now])
+    db.run(`INSERT INTO "Membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem2Id, "user-bob", "member", team1Id, now])
+    db.run(`INSERT INTO "Membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem3Id, "user-alice", "viewer", team2Id, now])
   })
 
   afterEach(() => {
