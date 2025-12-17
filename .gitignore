@@ -56,3 +56,4 @@ _tmp/
 # Schema session data (user-specific, generated at runtime)
 # .schemas/*/data/
 .schemas/*/workspaces/
+.schemas/index.ts
