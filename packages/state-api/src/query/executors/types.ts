@@ -62,4 +62,70 @@ export interface IQueryExecutor<T> {
    * For memory backends, this can early-exit on first match.
    */
   exists(ast: Condition): Promise<boolean>
+
+  // ==========================================================================
+  // Mutation Operations
+  // ==========================================================================
+
+  /**
+   * Insert a new entity.
+   *
+   * @param entity - Partial entity data (id may be generated)
+   * @returns Promise resolving to the inserted entity with all fields
+   *
+   * @remarks
+   * For SQL backends, generates INSERT statement and uses RETURNING.
+   * For memory backends, adds to collection with auto-generated ID if needed.
+   */
+  insert(entity: Partial<T>): Promise<T>
+
+  /**
+   * Update an existing entity by ID.
+   *
+   * @param id - Entity identifier
+   * @param changes - Partial entity with fields to update
+   * @returns Promise resolving to updated entity, or undefined if not found
+   *
+   * @remarks
+   * Supports partial updates - only specified fields are modified.
+   * Returns undefined if no entity with the given ID exists.
+   */
+  update(id: string, changes: Partial<T>): Promise<T | undefined>
+
+  /**
+   * Delete an entity by ID.
+   *
+   * @param id - Entity identifier
+   * @returns Promise resolving to true if deleted, false if not found
+   */
+  delete(id: string): Promise<boolean>
+
+  /**
+   * Insert multiple entities in a batch.
+   *
+   * @param entities - Array of partial entity data
+   * @returns Promise resolving to array of inserted entities
+   *
+   * @remarks
+   * For SQL backends, uses transaction for atomicity.
+   * For memory backends, adds each to collection.
+   */
+  insertMany(entities: Partial<T>[]): Promise<T[]>
+
+  /**
+   * Update multiple entities matching a filter.
+   *
+   * @param ast - Query condition AST (from parseQuery)
+   * @param changes - Partial entity with fields to update
+   * @returns Promise resolving to count of updated entities
+   */
+  updateMany(ast: Condition, changes: Partial<T>): Promise<number>
+
+  /**
+   * Delete multiple entities matching a filter.
+   *
+   * @param ast - Query condition AST (from parseQuery)
+   * @returns Promise resolving to count of deleted entities
+   */
+  deleteMany(ast: Condition): Promise<number>
 }

@@ -292,3 +292,191 @@ describe("BunSqlExecutor", () => {
     })
   })
 })
+
+// ============================================================================
+// Layer 6: Transaction Support (RED Tests)
+// ============================================================================
+
+describe("BunSqlExecutor Transaction Support", () => {
+  let db: Database
+  let connection: SQL
+  let executor: BunSqlExecutor
+
+  beforeEach(() => {
+    db = setupTestDatabase()
+    connection = db as unknown as SQL
+    executor = new BunSqlExecutor(connection)
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  /**
+   * Test Spec: test-transaction-01
+   * Scenario: beginTransaction wraps callback in BEGIN/COMMIT
+   */
+  describe("beginTransaction method", () => {
+    test("ISqlExecutor has beginTransaction method", () => {
+      // Given: BunSqlExecutor instance
+      // Then: Should have beginTransaction method
+      expect(executor.beginTransaction).toBeDefined()
+      expect(typeof executor.beginTransaction).toBe("function")
+    })
+
+    test("beginTransaction executes callback and commits on success", async () => {
+      // Given: BunSqlExecutor with test database
+      let callbackExecuted = false
+
+      // When: beginTransaction is called with successful callback
+      await executor.beginTransaction(async (tx) => {
+        callbackExecuted = true
+        await tx.execute(["INSERT INTO users (name, age) VALUES ($1, $2)", ["TxUser", 99]])
+      })
+
+      // Then: Callback was executed
+      expect(callbackExecuted).toBe(true)
+
+      // Then: Data was persisted (committed)
+      const result = await executor.execute([
+        "SELECT * FROM users WHERE name = $1",
+        ["TxUser"]
+      ])
+      expect(result.length).toBe(1)
+      expect(result[0].name).toBe("TxUser")
+    })
+
+    test("beginTransaction auto-rollbacks on error", async () => {
+      // Given: BunSqlExecutor with test database
+      const initialCount = await executor.execute(["SELECT COUNT(*) as count FROM users", []])
+
+      // When: beginTransaction callback throws error
+      await expect(
+        executor.beginTransaction(async (tx) => {
+          await tx.execute(["INSERT INTO users (name, age) VALUES ($1, $2)", ["RollbackUser", 88]])
+          throw new Error("Simulated failure")
+        })
+      ).rejects.toThrow("Simulated failure")
+
+      // Then: No data was persisted (rolled back)
+      const finalCount = await executor.execute(["SELECT COUNT(*) as count FROM users", []])
+      expect(finalCount[0].count).toBe(initialCount[0].count)
+
+      const result = await executor.execute([
+        "SELECT * FROM users WHERE name = $1",
+        ["RollbackUser"]
+      ])
+      expect(result.length).toBe(0)
+    })
+
+    test("multiple executes within transaction share same connection", async () => {
+      // Given: BunSqlExecutor with test database
+
+      // When: Multiple operations in same transaction
+      await executor.beginTransaction(async (tx) => {
+        // Insert first user
+        await tx.execute(["INSERT INTO users (name, age) VALUES ($1, $2)", ["User1", 11]])
+
+        // Insert second user - should see first user
+        const firstInserted = await tx.execute([
+          "SELECT * FROM users WHERE name = $1",
+          ["User1"]
+        ])
+        expect(firstInserted.length).toBe(1)
+
+        // Insert second user
+        await tx.execute(["INSERT INTO users (name, age) VALUES ($1, $2)", ["User2", 22]])
+      })
+
+      // Then: Both users persisted
+      const users = await executor.execute([
+        "SELECT * FROM users WHERE name IN ($1, $2)",
+        ["User1", "User2"]
+      ])
+      expect(users.length).toBe(2)
+    })
+
+    test("transaction executor uses same parameter conversion as regular executor", async () => {
+      // Given: BunSqlExecutor with test database
+
+      // When: Using placeholders in transaction
+      await executor.beginTransaction(async (tx) => {
+        await tx.execute([
+          "INSERT INTO users (name, age, created_at) VALUES ($1, $2, $3)",
+          ["TxParams", 77, "2025-01-01"]
+        ])
+      })
+
+      // Then: Parameters were correctly bound
+      const result = await executor.execute([
+        "SELECT * FROM users WHERE name = $1",
+        ["TxParams"]
+      ])
+      expect(result[0].age).toBe(77)
+      expect(result[0].created_at).toBe("2025-01-01")
+    })
+
+    test("beginTransaction returns callback result", async () => {
+      // Given: BunSqlExecutor with test database
+
+      // When: Callback returns a value
+      const result = await executor.beginTransaction(async (tx) => {
+        await tx.execute(["INSERT INTO users (name, age) VALUES ($1, $2)", ["ReturnUser", 55]])
+        return { success: true, insertedName: "ReturnUser" }
+      })
+
+      // Then: beginTransaction returns the callback's return value
+      expect(result).toEqual({ success: true, insertedName: "ReturnUser" })
+    })
+  })
+
+  /**
+   * Test Spec: test-transaction-02
+   * Scenario: Transaction with batch inserts
+   */
+  describe("Batch operations in transaction", () => {
+    test("insertMany uses transaction for atomicity", async () => {
+      // Given: Multiple entities to insert
+      const entities = [
+        { name: "Batch1", age: 31 },
+        { name: "Batch2", age: 32 },
+        { name: "Batch3", age: 33 }
+      ]
+
+      // When: All inserts run in same transaction
+      await executor.beginTransaction(async (tx) => {
+        for (const entity of entities) {
+          await tx.execute([
+            "INSERT INTO users (name, age) VALUES ($1, $2)",
+            [entity.name, entity.age]
+          ])
+        }
+      })
+
+      // Then: All entities inserted
+      const result = await executor.execute([
+        "SELECT * FROM users WHERE name LIKE $1",
+        ["Batch%"]
+      ])
+      expect(result.length).toBe(3)
+    })
+
+    test("batch insert rolls back all on failure", async () => {
+      // Given: Multiple entities, but one will cause failure
+      const initialCount = await executor.execute(["SELECT COUNT(*) as count FROM users", []])
+
+      // When: Batch insert fails after partial inserts
+      await expect(
+        executor.beginTransaction(async (tx) => {
+          await tx.execute(["INSERT INTO users (name, age) VALUES ($1, $2)", ["WillRollback1", 1]])
+          await tx.execute(["INSERT INTO users (name, age) VALUES ($1, $2)", ["WillRollback2", 2]])
+          throw new Error("Batch failure")
+        })
+      ).rejects.toThrow()
+
+      // Then: None of the entities inserted (all rolled back)
+      const finalCount = await executor.execute(["SELECT COUNT(*) as count FROM users", []])
+      expect(finalCount[0].count).toBe(initialCount[0].count)
+    })
+  })
+})

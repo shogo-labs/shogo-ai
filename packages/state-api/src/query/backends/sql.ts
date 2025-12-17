@@ -41,6 +41,7 @@ import {
 import type { FieldCondition } from '@ucast/core'
 import { parseQuery } from '../ast'
 import type { IBackend, BackendCapabilities, QueryOptions, QueryResult } from './types'
+import type { ISqlExecutor } from '../execution/types'
 
 // ============================================================================
 // Dialect Types
@@ -362,6 +363,36 @@ export class SqlBackend implements IBackend {
     }
 
     return [sql, params, joins]
+  }
+
+  /**
+   * Compile just the WHERE clause from an AST.
+   *
+   * @param ast - Query AST (from parseQuery)
+   * @returns Tuple of [whereClause, params]
+   *
+   * @remarks
+   * Used by mutation operations (updateMany, deleteMany) that need
+   * WHERE clause compilation without SELECT/ORDER BY/LIMIT.
+   *
+   * @example
+   * ```typescript
+   * const ast = parseQuery({ status: 'active' })
+   * const [whereClause, params] = backend.compileWhere(ast)
+   * // whereClause: '"status" = $1'
+   * // params: ['active']
+   * ```
+   */
+  compileWhere(ast: Condition): [string, any[]] {
+    const joins: string[] = []
+    const [whereSql, params] = interpret(ast, createDialectOptions(this.dialect, joins))
+
+    // Handle empty WHERE clause (parseQuery({}))
+    if (whereSql.trim() === '()' || whereSql.trim() === '') {
+      return ['', []]
+    }
+
+    return [whereSql, params]
   }
 
   /**

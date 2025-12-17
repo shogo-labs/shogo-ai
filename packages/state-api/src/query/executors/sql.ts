@@ -15,7 +15,15 @@ import type { IQueryExecutor } from "./types"
 import type { SqlBackend } from "../backends/sql"
 import type { ISqlExecutor } from "../execution/types"
 import type { ColumnPropertyMap, PropertyTypeMap, SqlDialect } from "../execution/utils"
-import { normalizeRowsWithTypes } from "../execution/utils"
+import {
+  normalizeRowsWithTypes,
+  normalizeRowWithTypes,
+  entityToColumns,
+  buildInsertSQL,
+  buildUpdateSQL,
+  buildDeleteSQL,
+  createPropertyColumnMap,
+} from "../execution/utils"
 import { toSnakeCase } from "../../ddl/utils"
 
 export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
@@ -225,6 +233,308 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
       inverted.set(property, column)
     }
     return inverted
+  }
+
+  // ==========================================================================
+  // Mutation Operations
+  // ==========================================================================
+
+  /**
+   * Insert a new entity into the database.
+   */
+  async insert(entity: Partial<T>): Promise<T> {
+    // Generate ID if not provided
+    const entityWithId = this.ensureId(entity)
+
+    // Convert camelCase properties to snake_case columns
+    const propertyColumnMapObj = this.getPropertyColumnMapObject()
+    const columns = entityToColumns(entityWithId, propertyColumnMapObj)
+
+    // Build INSERT SQL
+    const columnNames = Object.keys(columns)
+    const sql = buildInsertSQL(this.tableName, columnNames, this.dialect)
+    const params = Object.values(columns)
+
+    // Execute INSERT
+    const rows = await this.executor.execute([sql, params])
+
+    // For PostgreSQL with RETURNING, we get the row back
+    if (rows.length > 0) {
+      return normalizeRowWithTypes(
+        rows[0],
+        this.columnPropertyMap,
+        this.dialect,
+        this.propertyTypes
+      ) as T
+    }
+
+    // For SQLite (no RETURNING), fetch the inserted row
+    const idColumn = this.normalizeInputField("id")
+    const selectSql = `SELECT * FROM "${this.tableName}" WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
+    const selectRows = await this.executor.execute([selectSql, [(entityWithId as any).id]])
+
+    if (selectRows.length > 0) {
+      return normalizeRowWithTypes(
+        selectRows[0],
+        this.columnPropertyMap,
+        this.dialect,
+        this.propertyTypes
+      ) as T
+    }
+
+    // Return the entity with ID as fallback
+    return entityWithId as T
+  }
+
+  /**
+   * Update an existing entity by ID.
+   */
+  async update(id: string, changes: Partial<T>): Promise<T | undefined> {
+    // Convert camelCase properties to snake_case columns
+    const propertyColumnMapObj = this.getPropertyColumnMapObject()
+    const columns = entityToColumns(changes, propertyColumnMapObj)
+
+    // If no columns to update, just fetch and return current state
+    const columnNames = Object.keys(columns)
+    if (columnNames.length === 0) {
+      return this.first({ type: "field", field: "id", operator: "eq", value: id })
+    }
+
+    // Build UPDATE SQL
+    const idColumn = this.normalizeInputField("id")
+    const sql = buildUpdateSQL(this.tableName, columnNames, idColumn, this.dialect)
+    const params = [...Object.values(columns), id]
+
+    // Execute UPDATE
+    const rows = await this.executor.execute([sql, params])
+
+    // For PostgreSQL with RETURNING
+    if (rows.length > 0) {
+      return normalizeRowWithTypes(
+        rows[0],
+        this.columnPropertyMap,
+        this.dialect,
+        this.propertyTypes
+      ) as T
+    }
+
+    // For SQLite, fetch the updated row
+    const selectSql = `SELECT * FROM "${this.tableName}" WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
+    const selectRows = await this.executor.execute([selectSql, [id]])
+
+    if (selectRows.length > 0) {
+      return normalizeRowWithTypes(
+        selectRows[0],
+        this.columnPropertyMap,
+        this.dialect,
+        this.propertyTypes
+      ) as T
+    }
+
+    // Entity not found
+    return undefined
+  }
+
+  /**
+   * Delete an entity by ID.
+   */
+  async delete(id: string): Promise<boolean> {
+    // Check if entity exists first
+    const idColumn = this.normalizeInputField("id")
+    const checkSql = `SELECT 1 FROM "${this.tableName}" WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
+    const exists = await this.executor.execute([checkSql, [id]])
+
+    if (exists.length === 0) {
+      return false
+    }
+
+    // Build and execute DELETE
+    const sql = buildDeleteSQL(this.tableName, idColumn, this.dialect)
+    await this.executor.execute([sql, [id]])
+
+    return true
+  }
+
+  /**
+   * Insert multiple entities using a transaction.
+   */
+  async insertMany(entities: Partial<T>[]): Promise<T[]> {
+    if (entities.length === 0) {
+      return []
+    }
+
+    const results: T[] = []
+
+    // Use transaction for atomicity
+    await this.executor.beginTransaction(async (tx) => {
+      for (const entity of entities) {
+        // Generate ID if not provided
+        const entityWithId = this.ensureId(entity)
+
+        // Convert to columns
+        const propertyColumnMapObj = this.getPropertyColumnMapObject()
+        const columns = entityToColumns(entityWithId, propertyColumnMapObj)
+
+        // Build and execute INSERT
+        const columnNames = Object.keys(columns)
+        const sql = buildInsertSQL(this.tableName, columnNames, this.dialect)
+        const params = Object.values(columns)
+
+        const rows = await tx.execute([sql, params])
+
+        // Get inserted row
+        if (rows.length > 0) {
+          results.push(
+            normalizeRowWithTypes(
+              rows[0],
+              this.columnPropertyMap,
+              this.dialect,
+              this.propertyTypes
+            ) as T
+          )
+        } else {
+          // For SQLite, fetch the row
+          const idColumn = this.normalizeInputField("id")
+          const selectSql = `SELECT * FROM "${this.tableName}" WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
+          const selectRows = await tx.execute([selectSql, [(entityWithId as any).id]])
+
+          if (selectRows.length > 0) {
+            results.push(
+              normalizeRowWithTypes(
+                selectRows[0],
+                this.columnPropertyMap,
+                this.dialect,
+                this.propertyTypes
+              ) as T
+            )
+          } else {
+            results.push(entityWithId as T)
+          }
+        }
+      }
+    })
+
+    return results
+  }
+
+  /**
+   * Update multiple entities matching a filter.
+   */
+  async updateMany(ast: Condition, changes: Partial<T>): Promise<number> {
+    // Convert changes to columns
+    const propertyColumnMapObj = this.getPropertyColumnMapObject()
+    const columns = entityToColumns(changes, propertyColumnMapObj)
+
+    const columnNames = Object.keys(columns)
+    if (columnNames.length === 0) {
+      return 0
+    }
+
+    // Normalize the filter AST
+    const normalizedAst = this.normalizeAstFieldNames(ast)
+
+    // Build SET clause
+    const setClauses = columnNames
+      .map((col, i) => {
+        const placeholder = this.dialect === "pg" ? `$${i + 1}` : "?"
+        return `"${col}" = ${placeholder}`
+      })
+      .join(", ")
+
+    // Compile WHERE clause from AST
+    const [whereClause, whereParams] = this.sqlBackend.compileWhere(normalizedAst)
+
+    // Adjust placeholder indices for PostgreSQL
+    let adjustedWhereClause = whereClause
+    if (this.dialect === "pg" && whereParams.length > 0) {
+      const offset = columnNames.length
+      adjustedWhereClause = whereClause.replace(/\$(\d+)/g, (_, num) => `$${parseInt(num) + offset}`)
+    }
+
+    // Build UPDATE statement with dialect-specific affected row counting
+    const whereStr = adjustedWhereClause ? ` WHERE ${adjustedWhereClause}` : ""
+    const params = [...Object.values(columns), ...whereParams]
+
+    if (this.dialect === "pg") {
+      // PostgreSQL: Use RETURNING * and count returned rows
+      const sql = `UPDATE "${this.tableName}" SET ${setClauses}${whereStr} RETURNING *`
+      const rows = await this.executor.execute([sql, params])
+      return rows.length
+    } else {
+      // SQLite: Execute UPDATE, then use changes() to get affected count
+      const sql = `UPDATE "${this.tableName}" SET ${setClauses}${whereStr}`
+      await this.executor.execute([sql, params])
+      const changesResult = await this.executor.execute(["SELECT changes() as count", []])
+      return (changesResult[0]?.count as number) ?? 0
+    }
+  }
+
+  /**
+   * Delete multiple entities matching a filter.
+   */
+  async deleteMany(ast: Condition): Promise<number> {
+    // Normalize the filter AST
+    const normalizedAst = this.normalizeAstFieldNames(ast)
+
+    // Compile WHERE clause from AST
+    const [whereClause, whereParams] = this.sqlBackend.compileWhere(normalizedAst)
+
+    // Build DELETE statement with dialect-specific affected row counting
+    const whereStr = whereClause ? ` WHERE ${whereClause}` : ""
+
+    if (this.dialect === "pg") {
+      // PostgreSQL: Use RETURNING * and count returned rows
+      const sql = `DELETE FROM "${this.tableName}"${whereStr} RETURNING *`
+      const rows = await this.executor.execute([sql, whereParams])
+      return rows.length
+    } else {
+      // SQLite: Execute DELETE, then use changes() to get affected count
+      const sql = `DELETE FROM "${this.tableName}"${whereStr}`
+      await this.executor.execute([sql, whereParams])
+      const changesResult = await this.executor.execute(["SELECT changes() as count", []])
+      return (changesResult[0]?.count as number) ?? 0
+    }
+  }
+
+  // ==========================================================================
+  // Mutation Helpers
+  // ==========================================================================
+
+  /**
+   * Ensure entity has an ID, generating one if not provided.
+   */
+  private ensureId(entity: Partial<T>): Partial<T> {
+    if ((entity as any).id) {
+      return entity
+    }
+
+    return {
+      ...entity,
+      id: this.generateId(),
+    }
+  }
+
+  /**
+   * Generate a unique ID.
+   */
+  private generateId(): string {
+    // Simple UUID v4-like generation
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0
+      const v = c === "x" ? r : (r & 0x3) | 0x8
+      return v.toString(16)
+    })
+  }
+
+  /**
+   * Get property→column mapping as a plain object for entityToColumns.
+   */
+  private getPropertyColumnMapObject(): Record<string, string> {
+    const obj: Record<string, string> = {}
+    for (const [prop, col] of this.propertyColumnMap) {
+      obj[prop] = col
+    }
+    return obj
   }
 }
 

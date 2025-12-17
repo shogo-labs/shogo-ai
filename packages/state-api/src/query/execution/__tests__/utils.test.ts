@@ -401,3 +401,256 @@ describe("normalizeRowsWithSchema", () => {
     expect(normalizeRowsWithSchema([], {})).toEqual([])
   })
 })
+
+// ============================================================================
+// Layer 5: Mutation SQL Generation Utilities (RED Tests)
+// ============================================================================
+
+import {
+  entityToColumns,
+  buildInsertSQL,
+  buildUpdateSQL,
+  buildDeleteSQL,
+  createPropertyColumnMap,
+} from "../utils"
+
+describe("createPropertyColumnMap (inverse of createColumnPropertyMap)", () => {
+  /**
+   * Test Spec: test-mutation-utils-01
+   * Scenario: Create mapping from property names to column names
+   *
+   * Inverse of createColumnPropertyMap - maps property → column
+   * for use in INSERT/UPDATE statements.
+   */
+  test("creates mapping from property names to column names", () => {
+    // Given: Array of property names from schema
+    const propertyNames = ["userId", "createdAt", "isActive", "name"]
+
+    // When: createPropertyColumnMap is called
+    const map = createPropertyColumnMap(propertyNames)
+
+    // Then: Returns mapping from camelCase property to snake_case column
+    expect(map).toEqual({
+      userId: "user_id",
+      createdAt: "created_at",
+      isActive: "is_active",
+      name: "name",
+    })
+  })
+
+  test("handles consecutive capitals correctly", () => {
+    // Given: Property names with consecutive capitals
+    const propertyNames = ["HTTPSUrl", "XMLParser", "userID", "ID"]
+
+    // When: createPropertyColumnMap is called
+    const map = createPropertyColumnMap(propertyNames)
+
+    // Then: Uses DDL toSnakeCase algorithm
+    expect(map.HTTPSUrl).toBe("https_url")
+    expect(map.XMLParser).toBe("xml_parser")
+    expect(map.userID).toBe("user_id")
+    expect(map.ID).toBe("id")
+  })
+})
+
+describe("entityToColumns", () => {
+  /**
+   * Test Spec: test-mutation-utils-02
+   * Scenario: Convert camelCase entity to snake_case columns
+   */
+  test("converts camelCase properties to snake_case columns", () => {
+    // Given: Entity with camelCase properties
+    const entity = {
+      id: "123",
+      userName: "alice",
+      createdAt: "2024-01-01",
+      isActive: true,
+    }
+
+    // When: entityToColumns is called
+    const result = entityToColumns(entity)
+
+    // Then: Returns object with snake_case keys
+    expect(result).toEqual({
+      id: "123",
+      user_name: "alice",
+      created_at: "2024-01-01",
+      is_active: true,
+    })
+  })
+
+  test("uses explicit mapping when provided", () => {
+    // Given: Entity and explicit property-to-column mapping
+    const entity = { HTTPSUrl: "https://example.com", userID: "usr_123" }
+    const propertyColumnMap = {
+      HTTPSUrl: "https_url",
+      userID: "user_id",
+    }
+
+    // When: entityToColumns is called with mapping
+    const result = entityToColumns(entity, propertyColumnMap)
+
+    // Then: Uses provided mapping for correct column names
+    expect(result).toEqual({
+      https_url: "https://example.com",
+      user_id: "usr_123",
+    })
+  })
+
+  test("handles null and undefined values", () => {
+    // Given: Entity with null/undefined values
+    const entity = { name: "test", email: null, phone: undefined }
+
+    // When: entityToColumns is called
+    const result = entityToColumns(entity)
+
+    // Then: Preserves null, excludes undefined
+    expect(result.name).toBe("test")
+    expect(result.email).toBeNull()
+    expect(result).not.toHaveProperty("phone")
+  })
+
+  test("handles empty entity", () => {
+    expect(entityToColumns({})).toEqual({})
+  })
+})
+
+describe("buildInsertSQL", () => {
+  /**
+   * Test Spec: test-mutation-utils-03
+   * Scenario: Generate INSERT SQL for PostgreSQL
+   */
+  test("generates INSERT SQL for PostgreSQL", () => {
+    // Given: Table name and column names
+    const tableName = "users"
+    const columns = ["id", "name", "status"]
+
+    // When: buildInsertSQL is called for PostgreSQL
+    const result = buildInsertSQL(tableName, columns, "pg")
+
+    // Then: Generates correct INSERT syntax with $1, $2 placeholders
+    expect(result).toContain('INSERT INTO "users"')
+    expect(result).toContain('"id", "name", "status"')
+    expect(result).toContain("VALUES ($1, $2, $3)")
+    expect(result).toContain("RETURNING *")
+  })
+
+  test("generates INSERT SQL for SQLite", () => {
+    // Given: Table name and column names
+    const tableName = "users"
+    const columns = ["id", "name", "status"]
+
+    // When: buildInsertSQL is called for SQLite
+    const result = buildInsertSQL(tableName, columns, "sqlite")
+
+    // Then: Generates correct INSERT syntax with ? placeholders
+    expect(result).toContain('INSERT INTO "users"')
+    expect(result).toContain('"id", "name", "status"')
+    expect(result).toContain("VALUES (?, ?, ?)")
+    // SQLite doesn't support RETURNING in all versions
+  })
+
+  test("escapes identifiers correctly", () => {
+    // Given: Table name with special characters
+    const tableName = "user_roles"
+    const columns = ["user_id", "role_id"]
+
+    // When: buildInsertSQL is called
+    const result = buildInsertSQL(tableName, columns, "pg")
+
+    // Then: Identifiers are quoted
+    expect(result).toContain('"user_roles"')
+    expect(result).toContain('"user_id"')
+    expect(result).toContain('"role_id"')
+  })
+})
+
+describe("buildUpdateSQL", () => {
+  /**
+   * Test Spec: test-mutation-utils-04
+   * Scenario: Generate UPDATE SQL
+   */
+  test("generates UPDATE SQL for PostgreSQL", () => {
+    // Given: Table name, SET columns, and WHERE column
+    const tableName = "users"
+    const setColumns = ["name", "status"]
+    const whereColumn = "id"
+
+    // When: buildUpdateSQL is called for PostgreSQL
+    const result = buildUpdateSQL(tableName, setColumns, whereColumn, "pg")
+
+    // Then: Generates correct UPDATE syntax
+    expect(result).toContain('UPDATE "users"')
+    expect(result).toContain("SET")
+    expect(result).toContain('"name" = $1')
+    expect(result).toContain('"status" = $2')
+    expect(result).toContain('WHERE "id" = $3')
+    expect(result).toContain("RETURNING *")
+  })
+
+  test("generates UPDATE SQL for SQLite", () => {
+    // Given: Table name, SET columns, and WHERE column
+    const tableName = "users"
+    const setColumns = ["name", "status"]
+    const whereColumn = "id"
+
+    // When: buildUpdateSQL is called for SQLite
+    const result = buildUpdateSQL(tableName, setColumns, whereColumn, "sqlite")
+
+    // Then: Generates correct UPDATE syntax with ? placeholders
+    expect(result).toContain('UPDATE "users"')
+    expect(result).toContain('"name" = ?')
+    expect(result).toContain('"status" = ?')
+    expect(result).toContain('WHERE "id" = ?')
+  })
+
+  test("handles single column update", () => {
+    // Given: Single column to update
+    const result = buildUpdateSQL("users", ["status"], "id", "pg")
+
+    // Then: SET clause has single column
+    expect(result).toContain('"status" = $1')
+    expect(result).toContain('WHERE "id" = $2')
+  })
+})
+
+describe("buildDeleteSQL", () => {
+  /**
+   * Test Spec: test-mutation-utils-05
+   * Scenario: Generate DELETE SQL
+   */
+  test("generates DELETE SQL for PostgreSQL", () => {
+    // Given: Table name and WHERE column
+    const tableName = "users"
+    const whereColumn = "id"
+
+    // When: buildDeleteSQL is called for PostgreSQL
+    const result = buildDeleteSQL(tableName, whereColumn, "pg")
+
+    // Then: Generates correct DELETE syntax
+    expect(result).toContain('DELETE FROM "users"')
+    expect(result).toContain('WHERE "id" = $1')
+  })
+
+  test("generates DELETE SQL for SQLite", () => {
+    // Given: Table name and WHERE column
+    const tableName = "users"
+    const whereColumn = "id"
+
+    // When: buildDeleteSQL is called for SQLite
+    const result = buildDeleteSQL(tableName, whereColumn, "sqlite")
+
+    // Then: Generates correct DELETE syntax with ? placeholder
+    expect(result).toContain('DELETE FROM "users"')
+    expect(result).toContain('WHERE "id" = ?')
+  })
+
+  test("escapes identifiers correctly", () => {
+    // Given: Table name with underscores
+    const result = buildDeleteSQL("user_sessions", "session_id", "pg")
+
+    // Then: Identifiers are quoted
+    expect(result).toContain('"user_sessions"')
+    expect(result).toContain('"session_id"')
+  })
+})

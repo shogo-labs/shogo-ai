@@ -30,5 +30,8 @@ export { CollectionPersistable } from './persistable'
 // Queryable mixin
 export { CollectionQueryable, type IQueryable } from './queryable'
 
+// Mutatable mixin
+export { CollectionMutatable } from './mutatable'
+
 // Shared utility for collection enhancement (used by domain() and loadSchema())
 export { buildEnhanceCollections } from './enhance-collections'

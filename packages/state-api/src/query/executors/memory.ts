@@ -150,5 +150,131 @@ export class MemoryQueryExecutor<T> implements IQueryExecutor<T> {
   private getNestedValue(obj: any, path: string): any {
     return path.split(".").reduce((current, part) => current?.[part], obj)
   }
+
+  // ==========================================================================
+  // Mutation Operations
+  // ==========================================================================
+
+  /**
+   * Insert a new entity into the collection.
+   */
+  async insert(entity: Partial<T>): Promise<T> {
+    // Generate ID if not provided
+    const entityWithId = this.ensureId(entity)
+
+    // Add to collection (MST collection.add())
+    const added = this.collection.add(entityWithId)
+
+    return added as T
+  }
+
+  /**
+   * Update an existing entity by ID.
+   */
+  async update(id: string, changes: Partial<T>): Promise<T | undefined> {
+    // Find entity by ID
+    const entity = this.collection.get(id)
+
+    if (!entity) {
+      return undefined
+    }
+
+    // Apply changes (MST instances are mutable)
+    Object.assign(entity, changes)
+
+    return entity as T
+  }
+
+  /**
+   * Delete an entity by ID.
+   */
+  async delete(id: string): Promise<boolean> {
+    // Find entity by ID
+    const entity = this.collection.get(id)
+
+    if (!entity) {
+      return false
+    }
+
+    // Remove from collection
+    this.collection.remove(entity)
+
+    return true
+  }
+
+  /**
+   * Insert multiple entities.
+   */
+  async insertMany(entities: Partial<T>[]): Promise<T[]> {
+    const results: T[] = []
+
+    for (const entity of entities) {
+      const inserted = await this.insert(entity)
+      results.push(inserted)
+    }
+
+    return results
+  }
+
+  /**
+   * Update multiple entities matching a filter.
+   */
+  async updateMany(ast: Condition, changes: Partial<T>): Promise<number> {
+    // Find all matching entities
+    const items = this.collection.all() as T[]
+    const matching = items.filter((item) => interpret(ast, item))
+
+    // Apply changes to each
+    for (const entity of matching) {
+      Object.assign(entity, changes)
+    }
+
+    return matching.length
+  }
+
+  /**
+   * Delete multiple entities matching a filter.
+   */
+  async deleteMany(ast: Condition): Promise<number> {
+    // Find all matching entities
+    const items = this.collection.all() as T[]
+    const matching = items.filter((item) => interpret(ast, item))
+
+    // Remove each
+    for (const entity of matching) {
+      this.collection.remove(entity)
+    }
+
+    return matching.length
+  }
+
+  // ==========================================================================
+  // Mutation Helpers
+  // ==========================================================================
+
+  /**
+   * Ensure entity has an ID, generating one if not provided.
+   */
+  private ensureId(entity: Partial<T>): Partial<T> {
+    if ((entity as any).id) {
+      return entity
+    }
+
+    return {
+      ...entity,
+      id: this.generateId(),
+    }
+  }
+
+  /**
+   * Generate a unique ID.
+   */
+  private generateId(): string {
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0
+      const v = c === "x" ? r : (r & 0x3) | 0x8
+      return v.toString(16)
+    })
+  }
 }
 
