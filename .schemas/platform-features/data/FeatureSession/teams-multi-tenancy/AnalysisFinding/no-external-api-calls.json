@@ -1,0 +1,10 @@
+{
+  "id": "class-evidence-no-api",
+  "name": "no-external-api-calls",
+  "type": "classification_evidence",
+  "description": "User confirmed: stripe_customer_id and sso_settings are reference-only fields. No external API calls to Stripe or SSO providers. Credits balance is a simple integer counter, not tied to metering service.",
+  "location": "User clarification during discovery",
+  "recommendation": "Confirms Domain archetype - pure data modeling, no Service or Hybrid needed",
+  "createdAt": 1734307500000,
+  "session": "teams-multi-tenancy-001"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "test-member-001",
+  "role": "admin",
+  "user_id": "test-user-001",
+  "tenant_id": "test-tenant-001"
+}

@@ -35,5 +35,8 @@ export * from './teams'
 // Query layer
 export * from './query'
 
+// Teams Multi-Tenancy layer
+export * from './teams-multi-tenancy'
+
 // Utilities
 export * from './utils'

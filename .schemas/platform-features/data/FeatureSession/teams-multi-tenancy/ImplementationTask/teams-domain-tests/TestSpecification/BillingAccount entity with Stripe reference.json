@@ -1,0 +1,19 @@
+{
+  "id": "test-billing-account-crud",
+  "scenario": "BillingAccount entity with Stripe reference",
+  "given": [
+    "Store has existing Tenant entity"
+  ],
+  "when": "Creating BillingAccount with tenant_id, stripe_customer_id, tax_id, credits_balance",
+  "then": [
+    "BillingAccount is created in billingAccountCollection",
+    "BillingAccount.tenant_id resolves to Tenant instance",
+    "stripe_customer_id and tax_id can be empty strings",
+    "credits_balance is a non-negative integer"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/tests/domain.test.ts",
+  "createdAt": 1734308300000,
+  "task": "task-teams-tests",
+  "requirement": "req-004"
+}
