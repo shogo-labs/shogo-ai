@@ -167,11 +167,11 @@ describe("inferForeignKey", () => {
 
     expect(result).toBeDefined()
     expect(result?.column).toBe("organization_id")
-    expect(result?.referencesTable).toBe("Organization")
+    expect(result?.referencesTable).toBe("organization")  // snake_case
     expect(result?.referencesColumn).toBe("id")
     expect(result?.onDelete).toBe("CASCADE")
-    expect(result?.name).toBe("fk_Team_organization_id")
-    expect(result?.table).toBe("Team")
+    expect(result?.name).toBe("fk_team_organization_id")  // snake_case
+    expect(result?.table).toBe("team")  // snake_case
   })
 
   test("returns SET NULL for optional reference", () => {

@@ -51,8 +51,8 @@ describe("generateCreateTable", () => {
 
     const result: TableDef = generateCreateTable(model, modelName, dialect)
 
-    // Table name matches model name (no pluralization)
-    expect(result.name).toBe("Organization")
+    // Table name is snake_case (matches query executor expectations)
+    expect(result.name).toBe("organization")
 
     // Primary key is 'id'
     expect(result.primaryKey).toBe("id")

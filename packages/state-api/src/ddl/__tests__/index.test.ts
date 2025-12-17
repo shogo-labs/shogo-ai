@@ -106,52 +106,52 @@ describe("generateDDL", () => {
     expect(result.junctionTables).toBeDefined()
     expect(result.executionOrder).toBeDefined()
 
-    // DDLOutput.tables contains TableDef for Organization, Team, and User
+    // DDLOutput.tables contains TableDef for organization, team, and user (snake_case)
     expect(result.tables.length).toBe(3)
     const tableNames = result.tables.map((t) => t.name)
-    expect(tableNames).toContain("Organization")
-    expect(tableNames).toContain("Team")
-    expect(tableNames).toContain("User")
+    expect(tableNames).toContain("organization")
+    expect(tableNames).toContain("team")
+    expect(tableNames).toContain("user")
 
-    // DDLOutput.executionOrder is topologically sorted
-    // Organization has no dependencies, so it should come before Team
-    // User has no dependencies, so it should come before or at same level as Team
-    expect(result.executionOrder).toContain("Organization")
-    expect(result.executionOrder).toContain("Team")
-    expect(result.executionOrder).toContain("User")
+    // DDLOutput.executionOrder is topologically sorted (snake_case table names)
+    // organization has no dependencies, so it should come before team
+    // user has no dependencies, so it should come before or at same level as team
+    expect(result.executionOrder).toContain("organization")
+    expect(result.executionOrder).toContain("team")
+    expect(result.executionOrder).toContain("user")
 
-    const orgIndex = result.executionOrder.indexOf("Organization")
-    const teamIndex = result.executionOrder.indexOf("Team")
-    expect(orgIndex).toBeLessThan(teamIndex) // Organization must come before Team
+    const orgIndex = result.executionOrder.indexOf("organization")
+    const teamIndex = result.executionOrder.indexOf("team")
+    expect(orgIndex).toBeLessThan(teamIndex) // organization must come before team
 
-    // DDLOutput.foreignKeys contains FK constraints
-    // Team has FK to Organization
+    // DDLOutput.foreignKeys contains FK constraints (snake_case table names)
+    // team has FK to organization
     expect(result.foreignKeys.length).toBeGreaterThan(0)
     const teamOrgFk = result.foreignKeys.find(
-      (fk) => fk.table === "Team" && fk.referencesTable === "Organization"
+      (fk) => fk.table === "team" && fk.referencesTable === "organization"
     )
     expect(teamOrgFk).toBeDefined()
     expect(teamOrgFk?.column).toBe("organization_id")
     expect(teamOrgFk?.referencesColumn).toBe("id")
 
-    // DDLOutput.junctionTables contains Team_members junction table
+    // DDLOutput.junctionTables contains team_members junction table (snake_case)
     expect(result.junctionTables.length).toBe(1)
     const teamMembersJunction = result.junctionTables.find(
-      (t) => t.name === "Team_members"
+      (t) => t.name === "team_members"
     )
     expect(teamMembersJunction).toBeDefined()
     expect(teamMembersJunction?.columns.length).toBe(2)
     expect(teamMembersJunction?.columns[0].name).toBe("team_id")
     expect(teamMembersJunction?.columns[1].name).toBe("user_id")
 
-    // Junction table FKs should also be in foreignKeys array
+    // Junction table FKs should also be in foreignKeys array (snake_case)
     const teamMembersTeamFk = result.foreignKeys.find(
       (fk) =>
-        fk.table === "Team_members" && fk.referencesTable === "Team"
+        fk.table === "team_members" && fk.referencesTable === "team"
     )
     const teamMembersUserFk = result.foreignKeys.find(
       (fk) =>
-        fk.table === "Team_members" && fk.referencesTable === "User"
+        fk.table === "team_members" && fk.referencesTable === "user"
     )
     expect(teamMembersTeamFk).toBeDefined()
     expect(teamMembersUserFk).toBeDefined()

@@ -77,33 +77,33 @@ describe("Teams Domain DDL Integration", () => {
       expect(() => generateDDL(schema, sqliteDialect)).not.toThrow()
     })
 
-    test("generated DDL includes all entity tables", () => {
+    test("generated DDL includes all entity tables (snake_case)", () => {
       const schema = teamsDomain.enhancedSchema
       const ddl = generateDDL(schema, sqliteDialect)
 
       const tableNames = ddl.tables.map(t => t.name)
 
-      expect(tableNames).toContain("Organization")
-      expect(tableNames).toContain("Team")
-      expect(tableNames).toContain("Membership")
-      expect(tableNames).toContain("App")
-      expect(tableNames).toContain("Invitation")
+      expect(tableNames).toContain("organization")
+      expect(tableNames).toContain("team")
+      expect(tableNames).toContain("membership")
+      expect(tableNames).toContain("app")
+      expect(tableNames).toContain("invitation")
     })
 
-    test("Organization table has id as primary key", () => {
+    test("organization table has id as primary key", () => {
       const schema = teamsDomain.enhancedSchema
       const ddl = generateDDL(schema, sqliteDialect)
 
-      const orgTable = ddl.tables.find(t => t.name === "Organization")
+      const orgTable = ddl.tables.find(t => t.name === "organization")
       expect(orgTable).toBeDefined()
       expect(orgTable?.primaryKey).toBe("id")
     })
 
-    test("Team table has id as primary key", () => {
+    test("team table has id as primary key", () => {
       const schema = teamsDomain.enhancedSchema
       const ddl = generateDDL(schema, sqliteDialect)
 
-      const teamTable = ddl.tables.find(t => t.name === "Team")
+      const teamTable = ddl.tables.find(t => t.name === "team")
       expect(teamTable).toBeDefined()
       expect(teamTable?.primaryKey).toBe("id")
     })
@@ -112,9 +112,9 @@ describe("Teams Domain DDL Integration", () => {
       const schema = teamsDomain.enhancedSchema
       const ddl = generateDDL(schema, sqliteDialect)
 
-      // Organization should come before Team (Team references Organization)
-      const orgIndex = ddl.executionOrder.indexOf("Organization")
-      const teamIndex = ddl.executionOrder.indexOf("Team")
+      // organization should come before team (team references organization)
+      const orgIndex = ddl.executionOrder.indexOf("organization")
+      const teamIndex = ddl.executionOrder.indexOf("team")
 
       expect(orgIndex).toBeLessThan(teamIndex)
     })

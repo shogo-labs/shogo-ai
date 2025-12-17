@@ -89,12 +89,14 @@ export function generateJunctionTable(
     return null
   }
 
-  // Derive junction table name: {SourceModel}_{propertyName}
-  const junctionTableName = `${sourceModelName}_${property.name}`
+  // Derive junction table name: {source_snake_case}_{propertyName}
+  const sourceTableName = toSnakeCase(sourceModelName)
+  const targetTableName = toSnakeCase(targetModelName)
+  const junctionTableName = `${sourceTableName}_${property.name}`
 
   // Derive column names using snake_case convention
-  const sourceColumnName = toSnakeCase(sourceModelName) + "_id"
-  const targetColumnName = toSnakeCase(targetModelName) + "_id"
+  const sourceColumnName = sourceTableName + "_id"
+  const targetColumnName = targetTableName + "_id"
 
   // Determine SQL type for ID columns (typically UUID for string identifiers)
   // We assume identifiers are UUIDs (string + uuid format) as per the pattern in the codebase
@@ -120,7 +122,7 @@ export function generateJunctionTable(
       name: `fk_${junctionTableName}_${sourceColumnName}`,
       table: junctionTableName,
       column: sourceColumnName,
-      referencesTable: sourceModelName,
+      referencesTable: sourceTableName,  // snake_case
       referencesColumn: "id",
       onDelete: "CASCADE",
     },
@@ -128,7 +130,7 @@ export function generateJunctionTable(
       name: `fk_${junctionTableName}_${targetColumnName}`,
       table: junctionTableName,
       column: targetColumnName,
-      referencesTable: targetModelName,
+      referencesTable: targetTableName,  // snake_case
       referencesColumn: "id",
       onDelete: "CASCADE",
     },

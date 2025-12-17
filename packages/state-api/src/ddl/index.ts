@@ -15,7 +15,7 @@
  */
 
 import type { DDLOutput, SqlDialect, TableDef, ForeignKeyDef } from "./types"
-import { topologicalSort } from "./utils"
+import { topologicalSort, toSnakeCase } from "./utils"
 import { generateCreateTable } from "./table-generator"
 import { generateJunctionTable } from "./junction-generator"
 
@@ -95,7 +95,9 @@ export function generateDDL(schema: any, dialect: SqlDialect): DDLOutput {
   const modelNames = Object.keys(models)
 
   // 2. Compute topological sort for table creation order
-  const executionOrder = topologicalSort(models)
+  // Convert model names to snake_case table names for consistency
+  const sortedModels = topologicalSort(models)
+  const executionOrder = sortedModels.map(toSnakeCase)
 
   // 3. Generate entity tables
   const tables: TableDef[] = []

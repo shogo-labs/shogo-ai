@@ -221,14 +221,14 @@ describe("DDL Generation - PostgreSQL Dialect", () => {
     expect(result.tables).toBeDefined()
 
     const tableNames = result.tables.map((t) => t.name)
-    expect(tableNames).toContain("Organization")
-    expect(tableNames).toContain("Team")
-    expect(tableNames).toContain("Membership")
-    expect(tableNames).toContain("App")
-    expect(tableNames).toContain("Invitation")
+    expect(tableNames).toContain("organization")
+    expect(tableNames).toContain("team")
+    expect(tableNames).toContain("membership")
+    expect(tableNames).toContain("app")
+    expect(tableNames).toContain("invitation")
 
-    // Organization table uses UUID for id
-    const orgTable = result.tables.find((t) => t.name === "Organization")
+    // Organization table uses UUID for id (snake_case table name)
+    const orgTable = result.tables.find((t) => t.name === "organization")
     expect(orgTable).toBeDefined()
 
     const orgIdColumn = orgTable?.columns.find((col) => col.name === "id")
@@ -236,8 +236,8 @@ describe("DDL Generation - PostgreSQL Dialect", () => {
     expect(orgIdColumn?.nullable).toBe(false)
     expect(orgTable?.primaryKey).toBe("id")
 
-    // Team table has organization_id FK with CASCADE
-    const teamTable = result.tables.find((t) => t.name === "Team")
+    // Team table has organization_id FK with CASCADE (snake_case table name)
+    const teamTable = result.tables.find((t) => t.name === "team")
     expect(teamTable).toBeDefined()
 
     const teamOrgIdColumn = teamTable?.columns.find((col) => col.name === "organization_id")
@@ -246,10 +246,10 @@ describe("DDL Generation - PostgreSQL Dialect", () => {
     expect(teamOrgIdColumn?.nullable).toBe(false) // Required reference
 
     const teamOrgFk = result.foreignKeys.find(
-      (fk) => fk.table === "Team" && fk.column === "organization_id"
+      (fk) => fk.table === "team" && fk.column === "organization_id"
     )
     expect(teamOrgFk).toBeDefined()
-    expect(teamOrgFk?.referencesTable).toBe("Organization")
+    expect(teamOrgFk?.referencesTable).toBe("organization")
     expect(teamOrgFk?.referencesColumn).toBe("id")
     expect(teamOrgFk?.onDelete).toBe("CASCADE")
 
@@ -262,15 +262,15 @@ describe("DDL Generation - PostgreSQL Dialect", () => {
     expect(teamSelfRefColumn?.nullable).toBe(true) // Optional reference
 
     const teamSelfRefFk = result.foreignKeys.find(
-      (fk) => fk.table === "Team" && fk.column === "team_id" && fk.referencesTable === "Team"
+      (fk) => fk.table === "team" && fk.column === "team_id" && fk.referencesTable === "team"
     )
     expect(teamSelfRefFk).toBeDefined()
-    expect(teamSelfRefFk?.referencesTable).toBe("Team")
+    expect(teamSelfRefFk?.referencesTable).toBe("team")
     expect(teamSelfRefFk?.referencesColumn).toBe("id")
     expect(teamSelfRefFk?.onDelete).toBe("SET NULL")
 
-    // Invitation table has status CHECK constraint for enum
-    const invitationTable = result.tables.find((t) => t.name === "Invitation")
+    // Invitation table has status CHECK constraint for enum (snake_case table name)
+    const invitationTable = result.tables.find((t) => t.name === "invitation")
     expect(invitationTable).toBeDefined()
 
     const invitationStatusColumn = invitationTable?.columns.find((col) => col.name === "status")
@@ -289,11 +289,11 @@ describe("DDL Generation - PostgreSQL Dialect", () => {
     // Numbers map to DOUBLE PRECISION in PostgreSQL
     expect(invitationExpiresAtColumn?.type).toBe("DOUBLE PRECISION")
 
-    // Tables are in correct dependency order
+    // Tables are in correct dependency order (snake_case table names)
     expect(result.executionOrder).toBeDefined()
-    const orgIndex = result.executionOrder.indexOf("Organization")
-    const teamIndex = result.executionOrder.indexOf("Team")
-    const appIndex = result.executionOrder.indexOf("App")
+    const orgIndex = result.executionOrder.indexOf("organization")
+    const teamIndex = result.executionOrder.indexOf("team")
+    const appIndex = result.executionOrder.indexOf("app")
 
     // Organization has no dependencies, must come first
     expect(orgIndex).toBeGreaterThanOrEqual(0)
@@ -334,8 +334,8 @@ describe("DDL Generation - PostgreSQL Dialect", () => {
     const dialect = createPostgresDialect()
     const result = generateDDL(schema, dialect)
 
-    // Organization: name is required, description is optional
-    const orgTable = result.tables.find((t) => t.name === "Organization")
+    // Organization: name is required, description is optional (snake_case table name)
+    const orgTable = result.tables.find((t) => t.name === "organization")
     expect(orgTable).toBeDefined()
 
     const orgNameColumn = orgTable?.columns.find((col) => col.name === "name")
@@ -345,12 +345,12 @@ describe("DDL Generation - PostgreSQL Dialect", () => {
     expect(orgDescColumn?.nullable).toBe(true)
 
     // Team: parentId property becomes team_id column (self-reference, nullable)
-    const teamTable = result.tables.find((t) => t.name === "Team")
+    const teamTable = result.tables.find((t) => t.name === "team")
     const teamSelfRefColumn = teamTable?.columns.find((col) => col.name === "team_id")
     expect(teamSelfRefColumn?.nullable).toBe(true)
 
     // Membership: organizationId and teamId are both optional (polymorphic)
-    const membershipTable = result.tables.find((t) => t.name === "Membership")
+    const membershipTable = result.tables.find((t) => t.name === "membership")
     const membershipOrgIdColumn = membershipTable?.columns.find(
       (col) => col.name === "organization_id"
     )
@@ -370,24 +370,24 @@ describe("DDL Generation - PostgreSQL Dialect", () => {
     const dialect = createPostgresDialect()
     const result = generateDDL(schema, dialect)
 
-    // Required reference: App.teamId → CASCADE
+    // Required reference: App.teamId → CASCADE (snake_case table names)
     const appTeamFk = result.foreignKeys.find(
-      (fk) => fk.table === "App" && fk.column === "team_id"
+      (fk) => fk.table === "app" && fk.column === "team_id"
     )
     expect(appTeamFk).toBeDefined()
-    expect(appTeamFk?.referencesTable).toBe("Team")
+    expect(appTeamFk?.referencesTable).toBe("team")
     expect(appTeamFk?.onDelete).toBe("CASCADE")
 
     // Optional reference: Team.parentId → team_id column with SET NULL
     const teamSelfRefFk = result.foreignKeys.find(
-      (fk) => fk.table === "Team" && fk.column === "team_id" && fk.referencesTable === "Team"
+      (fk) => fk.table === "team" && fk.column === "team_id" && fk.referencesTable === "team"
     )
     expect(teamSelfRefFk).toBeDefined()
     expect(teamSelfRefFk?.onDelete).toBe("SET NULL")
 
     // Optional polymorphic: Membership.organizationId → SET NULL
     const membershipOrgFk = result.foreignKeys.find(
-      (fk) => fk.table === "Membership" && fk.column === "organization_id"
+      (fk) => fk.table === "membership" && fk.column === "organization_id"
     )
     expect(membershipOrgFk).toBeDefined()
     expect(membershipOrgFk?.onDelete).toBe("SET NULL")
@@ -404,18 +404,18 @@ describe("DDL Generation - PostgreSQL Dialect", () => {
 
     // Team has self-reference via parentId property (becomes team_id column)
     const teamSelfRefFk = result.foreignKeys.find(
-      (fk) => fk.table === "Team" && fk.column === "team_id" && fk.referencesTable === "Team"
+      (fk) => fk.table === "team" && fk.column === "team_id" && fk.referencesTable === "team"
     )
     expect(teamSelfRefFk).toBeDefined()
-    expect(teamSelfRefFk?.referencesTable).toBe("Team")
+    expect(teamSelfRefFk?.referencesTable).toBe("team")
     expect(teamSelfRefFk?.referencesColumn).toBe("id")
 
-    // Team should still appear in execution order exactly once
-    const teamOccurrences = result.executionOrder.filter((name) => name === "Team")
+    // Team should still appear in execution order exactly once (snake_case)
+    const teamOccurrences = result.executionOrder.filter((name) => name === "team")
     expect(teamOccurrences.length).toBe(1)
 
     // Self-reference should not create circular dependency error
-    expect(result.executionOrder).toContain("Team")
+    expect(result.executionOrder).toContain("team")
   })
 
   /**
@@ -427,8 +427,8 @@ describe("DDL Generation - PostgreSQL Dialect", () => {
     const dialect = createPostgresDialect()
     const result = generateDDL(schema, dialect)
 
-    // Membership.role is an enum
-    const membershipTable = result.tables.find((t) => t.name === "Membership")
+    // Membership.role is an enum (snake_case table name)
+    const membershipTable = result.tables.find((t) => t.name === "membership")
     const roleColumn = membershipTable?.columns.find((col) => col.name === "role")
     expect(roleColumn).toBeDefined()
     expect(roleColumn?.checkConstraint).toBeDefined()
@@ -437,8 +437,8 @@ describe("DDL Generation - PostgreSQL Dialect", () => {
     expect(roleColumn?.checkConstraint).toContain("member")
     expect(roleColumn?.checkConstraint).toContain("viewer")
 
-    // Invitation.status is an enum
-    const invitationTable = result.tables.find((t) => t.name === "Invitation")
+    // Invitation.status is an enum (snake_case table name)
+    const invitationTable = result.tables.find((t) => t.name === "invitation")
     const statusColumn = invitationTable?.columns.find((col) => col.name === "status")
     expect(statusColumn).toBeDefined()
     expect(statusColumn?.checkConstraint).toBeDefined()
@@ -477,8 +477,8 @@ describe("DDL Generation - SQLite Dialect", () => {
     const dialect = createSqliteDialect()
     const result = generateDDL(schema, dialect)
 
-    // Organization id uses TEXT instead of UUID
-    const orgTable = result.tables.find((t) => t.name === "Organization")
+    // Organization id uses TEXT instead of UUID (snake_case table name)
+    const orgTable = result.tables.find((t) => t.name === "organization")
     const orgIdColumn = orgTable?.columns.find((col) => col.name === "id")
     expect(orgIdColumn?.type).toBe("TEXT")
 
@@ -486,7 +486,7 @@ describe("DDL Generation - SQLite Dialect", () => {
     const orgCreatedAtColumn = orgTable?.columns.find((col) => col.name === "created_at")
     expect(orgCreatedAtColumn?.type).toBe("REAL")
 
-    const invitationTable = result.tables.find((t) => t.name === "Invitation")
+    const invitationTable = result.tables.find((t) => t.name === "invitation")
     const invitationExpiresAtColumn = invitationTable?.columns.find(
       (col) => col.name === "expires_at"
     )
@@ -511,13 +511,13 @@ describe("DDL Generation - SQLite Dialect", () => {
     const dialect = createSqliteDialect()
     const result = generateDDL(schema, dialect)
 
-    // SQLite supports CHECK constraints
-    const membershipTable = result.tables.find((t) => t.name === "Membership")
+    // SQLite supports CHECK constraints (snake_case table names)
+    const membershipTable = result.tables.find((t) => t.name === "membership")
     const roleColumn = membershipTable?.columns.find((col) => col.name === "role")
     expect(roleColumn?.checkConstraint).toBeDefined()
     expect(roleColumn?.checkConstraint).toContain("owner")
 
-    const invitationTable = result.tables.find((t) => t.name === "Invitation")
+    const invitationTable = result.tables.find((t) => t.name === "invitation")
     const statusColumn = invitationTable?.columns.find((col) => col.name === "status")
     expect(statusColumn?.checkConstraint).toBeDefined()
     expect(statusColumn?.checkConstraint).toContain("pending")
@@ -540,26 +540,26 @@ describe("DDL Generation - Topological Sorting", () => {
 
     const { executionOrder } = result
 
-    // Organization has no dependencies (root level)
-    const orgIndex = executionOrder.indexOf("Organization")
+    // Organization has no dependencies (root level, snake_case table names)
+    const orgIndex = executionOrder.indexOf("organization")
     expect(orgIndex).toBeGreaterThanOrEqual(0)
 
     // Team depends on Organization
-    const teamIndex = executionOrder.indexOf("Team")
+    const teamIndex = executionOrder.indexOf("team")
     expect(teamIndex).toBeGreaterThan(orgIndex)
 
     // App depends on Team
-    const appIndex = executionOrder.indexOf("App")
+    const appIndex = executionOrder.indexOf("app")
     expect(appIndex).toBeGreaterThan(teamIndex)
 
     // Membership depends on both Organization and Team (polymorphic)
     // Must come after both
-    const membershipIndex = executionOrder.indexOf("Membership")
+    const membershipIndex = executionOrder.indexOf("membership")
     expect(membershipIndex).toBeGreaterThan(orgIndex)
     expect(membershipIndex).toBeGreaterThan(teamIndex)
 
     // Invitation also depends on both Organization and Team (polymorphic)
-    const invitationIndex = executionOrder.indexOf("Invitation")
+    const invitationIndex = executionOrder.indexOf("invitation")
     expect(invitationIndex).toBeGreaterThan(orgIndex)
     expect(invitationIndex).toBeGreaterThan(teamIndex)
   })
@@ -577,8 +577,8 @@ describe("DDL Generation - Topological Sorting", () => {
 
     const result = generateDDL(schema, dialect)
 
-    // Team should appear exactly once in execution order
-    const teamOccurrences = result.executionOrder.filter((name) => name === "Team")
+    // Team should appear exactly once in execution order (snake_case)
+    const teamOccurrences = result.executionOrder.filter((name) => name === "team")
     expect(teamOccurrences.length).toBe(1)
   })
 })
@@ -632,15 +632,15 @@ describe("DDL Generation - Computed Properties", () => {
     const dialect = createPostgresDialect()
     const result = generateDDL(schemaWithComputed, dialect)
 
-    const userTable = result.tables.find((t) => t.name === "User")
+    const userTable = result.tables.find((t) => t.name === "user")
     expect(userTable).toBeDefined()
 
     // fullName should NOT appear in columns
     const fullNameColumn = userTable?.columns.find((col) => col.name === "full_name")
     expect(fullNameColumn).toBeUndefined()
 
-    // posts should NOT generate a junction table
-    const postsJunction = result.junctionTables.find((t) => t.name === "User_posts")
+    // posts should NOT generate a junction table (snake_case)
+    const postsJunction = result.junctionTables.find((t) => t.name === "user_posts")
     expect(postsJunction).toBeUndefined()
 
     // Only firstName and lastName should be present (plus id)

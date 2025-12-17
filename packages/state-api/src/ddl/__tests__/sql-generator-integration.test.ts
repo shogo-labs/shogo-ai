@@ -72,9 +72,9 @@ describe("sql-generator integration", () => {
     const createStatements = result.filter((s) => s.startsWith("CREATE TABLE"))
     expect(createStatements.length).toBeGreaterThan(0)
 
-    // Should be in proper order
-    const hasOrganization = result.some((s) => s.includes('"Organization"'))
-    const hasTeam = result.some((s) => s.includes('"Team"'))
+    // Should be in proper order (snake_case table names)
+    const hasOrganization = result.some((s) => s.includes('"organization"'))
+    const hasTeam = result.some((s) => s.includes('"team"'))
     expect(hasOrganization).toBe(true)
     expect(hasTeam).toBe(true)
 
@@ -93,24 +93,24 @@ describe("sql-generator integration", () => {
     // Generates valid executable SQL
     expect(result.length).toBeGreaterThan(0)
 
-    // Creates all tables with correct structure
-    const orgTable = result.find((s) => s.includes('CREATE TABLE "Organization"'))
+    // Creates all tables with correct structure (snake_case table names)
+    const orgTable = result.find((s) => s.includes('CREATE TABLE "organization"'))
     expect(orgTable).toBeDefined()
     expect(orgTable).toContain('"id" UUID PRIMARY KEY')
     expect(orgTable).toContain('"name" TEXT NOT NULL')
     expect(orgTable).toContain('"created_at" TIMESTAMPTZ')
 
-    const teamTable = result.find((s) => s.includes('CREATE TABLE "Team"'))
+    const teamTable = result.find((s) => s.includes('CREATE TABLE "team"'))
     expect(teamTable).toBeDefined()
     expect(teamTable).toContain('"id" UUID PRIMARY KEY')
     expect(teamTable).toContain('"name" TEXT NOT NULL')
     expect(teamTable).toContain('"organization_id" UUID NOT NULL')
 
-    // All foreign keys reference existing tables
+    // All foreign keys reference existing tables (snake_case)
     const fkStatements = result.filter((s) => s.includes("FOREIGN KEY"))
     fkStatements.forEach((fk) => {
       if (fk.includes("organization_id")) {
-        expect(fk).toContain('REFERENCES "Organization"')
+        expect(fk).toContain('REFERENCES "organization"')
       }
     })
 
