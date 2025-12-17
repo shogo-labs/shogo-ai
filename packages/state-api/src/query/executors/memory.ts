@@ -191,15 +191,15 @@ export class MemoryQueryExecutor<T> implements IQueryExecutor<T> {
    * Delete an entity by ID.
    */
   async delete(id: string): Promise<boolean> {
-    // Find entity by ID
+    // Check if entity exists
     const entity = this.collection.get(id)
 
     if (!entity) {
       return false
     }
 
-    // Remove from collection
-    this.collection.remove(entity)
+    // Remove from collection by ID
+    this.collection.remove(id)
 
     return true
   }
@@ -242,9 +242,9 @@ export class MemoryQueryExecutor<T> implements IQueryExecutor<T> {
     const items = this.collection.all() as T[]
     const matching = items.filter((item) => interpret(ast, item))
 
-    // Remove each
+    // Remove each by ID
     for (const entity of matching) {
-      this.collection.remove(entity)
+      this.collection.remove((entity as any).id)
     }
 
     return matching.length

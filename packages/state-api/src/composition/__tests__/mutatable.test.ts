@@ -59,8 +59,8 @@ const BaseTestCollection = types
       self.items.put(item)
       return self.items.get(item.id)
     },
-    remove(item: any) {
-      self.items.delete(item.id)
+    remove(id: string) {
+      self.items.delete(id)
     },
     clear() {
       self.items.clear()
