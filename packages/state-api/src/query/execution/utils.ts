@@ -207,3 +207,88 @@ export function normalizeRowsWithSchema<T extends Record<string, unknown>>(
 ): Record<string, unknown>[] {
   return rows.map((row) => normalizeRowWithSchema(row, columnPropertyMap))
 }
+
+// ============================================================================
+// Type-Aware Normalization (Dialect-Specific)
+// ============================================================================
+
+/**
+ * Property type map for dialect-specific conversions
+ */
+export type PropertyTypeMap = Record<string, string>
+
+/**
+ * SQL dialect type for type conversion
+ */
+export type SqlDialect = 'pg' | 'sqlite'
+
+/**
+ * Normalize a database row with schema-aware column mapping AND type conversions.
+ *
+ * Handles dialect-specific type conversions:
+ * - SQLite: INTEGER (0/1) → boolean (false/true)
+ * - PostgreSQL: boolean → boolean (passthrough)
+ *
+ * @param row - Database row with snake_case column names
+ * @param columnPropertyMap - Mapping from column name to property name
+ * @param dialect - SQL dialect ('pg' or 'sqlite')
+ * @param propertyTypes - Map of property name to type ('boolean', 'string', 'number', etc.)
+ * @returns Normalized row with correct property names and type conversions
+ *
+ * @example
+ * ```typescript
+ * const row = { is_active: 1, user_id: 'alice' }
+ * const columnMap = { is_active: 'isActive', user_id: 'userId' }
+ * const types = { isActive: 'boolean', userId: 'string' }
+ *
+ * normalizeRowWithTypes(row, columnMap, 'sqlite', types)
+ * // => { isActive: true, userId: 'alice' }
+ * ```
+ */
+export function normalizeRowWithTypes<T extends Record<string, unknown>>(
+  row: T,
+  columnPropertyMap: ColumnPropertyMap,
+  dialect: SqlDialect,
+  propertyTypes: PropertyTypeMap
+): Record<string, unknown> {
+  const normalized: Record<string, unknown> = {}
+
+  for (const [column, value] of Object.entries(row)) {
+    // Map column name to property name
+    const propName = columnPropertyMap[column] ?? snakeToCamel(column)
+
+    // Apply type conversion if needed
+    const propType = propertyTypes[propName]
+
+    if (propType === 'boolean' && dialect === 'sqlite' && value !== null && value !== undefined) {
+      // SQLite stores boolean as INTEGER (0/1)
+      // Only convert if value is actually 0 or 1 (not null/undefined)
+      normalized[propName] = value === 1 || value === true
+    } else {
+      // All other types pass through (including null/undefined)
+      normalized[propName] = value
+    }
+  }
+
+  return normalized
+}
+
+/**
+ * Batch normalize database rows with type conversions.
+ *
+ * @param rows - Array of database rows
+ * @param columnPropertyMap - Mapping from column name to property name
+ * @param dialect - SQL dialect
+ * @param propertyTypes - Map of property types
+ * @returns Array of normalized rows with type conversions
+ */
+export function normalizeRowsWithTypes<T extends Record<string, unknown>>(
+  rows: T[],
+  columnPropertyMap: ColumnPropertyMap,
+  dialect: SqlDialect,
+  propertyTypes: PropertyTypeMap
+): Record<string, unknown>[] {
+  return rows.map((row) =>
+    normalizeRowWithTypes(row, columnPropertyMap, dialect, propertyTypes)
+  )
+}

@@ -10,7 +10,7 @@
  *
  * ## Schema-Aware Wrapping
  *
- * After resolving a backend, the registry wraps it with ContextAwareBackend
+ * After resolving a backend, the registry wraps it with 
  * to provide schema-aware row normalization. This ensures database column names
  * (snake_case) are correctly mapped back to schema property names, even for
  * edge cases like consecutive capitals (HTTPSUrl, userID).
@@ -27,13 +27,16 @@
  * - BackendRegistry class with Map-based storage
  * - createBackendRegistry() factory for pre-configuration
  * - Meta-store integration for reading x-persistence config
- * - ContextAwareBackend wrapper for schema-aware normalization
  */
 
 import type { IBackend } from './backends/types'
-import { ContextAwareBackend } from './backends/context-aware'
+import type { IQueryExecutor } from './executors/types'
+import { MemoryQueryExecutor } from './executors/memory'
+import { SqlQueryExecutor } from './executors/sql'
+import { SqlBackend } from './backends/sql'
 import { createColumnPropertyMap } from './execution/utils'
 import { getMetaStore } from '../meta/bootstrap'
+import { toSnakeCase } from '../ddl/utils'
 import type { Instance } from 'mobx-state-tree'
 
 /**
@@ -85,11 +88,12 @@ export interface IBackendRegistry {
   has(name: string): boolean
 
   /**
-   * Resolve which backend to use for a schema/model.
+   * Resolve which backend to use for a schema/model and return configured executor.
    *
    * @param schemaName - Schema name
    * @param modelName - Model name within schema
-   * @returns Backend implementation
+   * @param collection - Optional collection reference (required for memory backends)
+   * @returns Query executor with data source bound
    * @throws Error if no backend found and no default set
    *
    * @remarks
@@ -98,8 +102,12 @@ export interface IBackendRegistry {
    * 2. Schema's x-persistence.backend property
    * 3. Registry default backend
    * 4. Throw error if none found
+   *
+   * Returns IQueryExecutor (not IBackend) with data source bound:
+   * - Memory backends: collection reference bound
+   * - SQL backends: tableName, dialect, propertyTypes bound
    */
-  resolve(schemaName: string, modelName: string): IBackend
+  resolve<T = any>(schemaName: string, modelName: string, collection?: any): IQueryExecutor<T>
 
   /**
    * Set the default backend for fallback resolution.
@@ -133,12 +141,12 @@ export class BackendRegistry implements IBackendRegistry {
     return this.backends.has(name)
   }
 
-  resolve(schemaName: string, modelName: string): IBackend {
+  resolve<T = any>(schemaName: string, modelName: string, collection?: any): IQueryExecutor<T> {
     // Access meta-store for schema/model lookup
     const metaStore = getMetaStore()
     const schema = metaStore.schemaCollection.all().find((s: any) => s.name === schemaName)
 
-    let resolvedBackend: IBackend | undefined
+    let resolvedBackendName: string | undefined
     let model: any = undefined
 
     if (schema) {
@@ -148,10 +156,9 @@ export class BackendRegistry implements IBackendRegistry {
 
       // 1. Check model-level x-persistence.backend
       if (model && model.xPersistence) {
-        // xPersistence can have a backend field even though it's not in the strict type
         const modelBackendName = (model.xPersistence as any).backend
         if (modelBackendName && typeof modelBackendName === 'string') {
-          resolvedBackend = this.get(modelBackendName)
+          resolvedBackendName = modelBackendName
         }
       }
 
@@ -161,12 +168,12 @@ export class BackendRegistry implements IBackendRegistry {
     }
 
     // 3. Fall back to default backend
-    if (!resolvedBackend && this.defaultBackendName) {
-      resolvedBackend = this.get(this.defaultBackendName)
+    if (!resolvedBackendName && this.defaultBackendName) {
+      resolvedBackendName = this.defaultBackendName
     }
 
     // 4. Throw descriptive error if no backend found
-    if (!resolvedBackend) {
+    if (!resolvedBackendName) {
       throw new Error(
         `No backend found for schema "${schemaName}" model "${modelName}". ` +
         `Tried: model x-persistence.backend, schema x-persistence.backend, registry default. ` +
@@ -175,17 +182,48 @@ export class BackendRegistry implements IBackendRegistry {
       )
     }
 
-    // 5. Wrap with ContextAwareBackend for schema-aware normalization
-    // Get property names from meta-store model and create column-property mapping
+    // 5. Extract property metadata from meta-store
     const propertyNames = this.getPropertyNames(model)
-    if (propertyNames.length > 0) {
-      const columnPropertyMap = createColumnPropertyMap(propertyNames)
-      return new ContextAwareBackend(resolvedBackend, columnPropertyMap)
+    const propertyTypes = this.getPropertyTypes(model)
+    const columnPropertyMap = createColumnPropertyMap(propertyNames)
+
+    // 6. Get the resolved backend instance
+    const backend = this.get(resolvedBackendName)
+    if (!backend) {
+      throw new Error(`Backend "${resolvedBackendName}" not found in registry`)
     }
 
-    // If no property names available, return unwrapped backend
-    // (This happens if meta-store doesn't have model info, e.g., early bootstrap)
-    return resolvedBackend
+    // 7. Discriminate backend type via dialect property
+    if (backend.dialect) {
+      // SQL backend - has dialect property
+      if (!backend.executor) {
+        throw new Error(
+          `SQL backend "${resolvedBackendName}" has dialect but missing executor. ` +
+          `Provide executor: new SqlBackend({ dialect: '${backend.dialect}', executor: ... })`
+        )
+      }
+
+      const tableName = toSnakeCase(modelName)
+
+      return new SqlQueryExecutor<T>(
+        tableName,
+        backend as SqlBackend,  // Pass the SqlBackend instance
+        backend.executor,
+        columnPropertyMap,
+        backend.dialect,
+        propertyTypes
+      )
+    } else {
+      // Memory backend - no dialect property
+      if (!collection) {
+        throw new Error(
+          `Memory backend "${resolvedBackendName}" requires collection reference. ` +
+          `Pass collection as third parameter to resolve().`
+        )
+      }
+
+      return new MemoryQueryExecutor<T>(collection)
+    }
   }
 
   /**
@@ -213,6 +251,37 @@ export class BackendRegistry implements IBackendRegistry {
     }
 
     return []
+  }
+
+  /**
+   * Extract property types from a meta-store model entity.
+   *
+   * @param model - Meta-store Model instance (may be undefined)
+   * @returns Map of property name to type string
+   *
+   * @remarks
+   * Extracts type information for dialect-specific conversions (e.g., boolean).
+   * Returns types like 'string', 'number', 'boolean', 'array', 'object', etc.
+   */
+  private getPropertyTypes(model: any): Record<string, string> {
+    if (!model) return {}
+
+    try {
+      const properties = model.properties
+      if (Array.isArray(properties)) {
+        const typeMap: Record<string, string> = {}
+        for (const prop of properties) {
+          if (prop.name && prop.type) {
+            typeMap[prop.name] = prop.type
+          }
+        }
+        return typeMap
+      }
+    } catch {
+      // If properties view isn't available, return empty
+    }
+
+    return {}
   }
 
   setDefault(name: string): void {

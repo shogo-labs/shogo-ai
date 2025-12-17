@@ -88,13 +88,9 @@ describe("REG-02: Memory backend resolution (target behavior)", () => {
   test("resolve() with collection returns MemoryQueryExecutor", () => {
     const collection = createMockCollection([{ id: "1", name: "Test" }])
 
-    // TARGET: Should return MemoryQueryExecutor
-    // CURRENT: Returns IBackend (MemoryBackend)
-    const result = registry.resolve("test-schema", "TestModel")
+    const result = registry.resolve("test-schema", "TestModel", collection)
 
-    // Will fail until refactored
-    expect(result).toBeInstanceOf(MemoryBackend) // Current
-    // expect(result).toBeInstanceOf(MemoryQueryExecutor) // Target
+    expect(result).toBeInstanceOf(MemoryQueryExecutor)
   })
 
   test("memory executor has collection bound at creation", async () => {
@@ -150,9 +146,12 @@ describe("REG-03: SQL backend resolution (target behavior)", () => {
 
     db.run(`INSERT INTO test_model VALUES ('1', 'Test')`)
 
-    // Register SQL backend (current way)
-    const sqlBackend = new SqlBackend()
-    registry.register("sql", sqlBackend as any) // Cast because SqlBackend doesn't fully implement IBackend
+    // Register SQL backend with executor
+    const sqlBackend = new SqlBackend({
+      dialect: 'sqlite',
+      executor: sqlExecutor
+    })
+    registry.register("sql", sqlBackend)
     registry.setDefault("sql")
   })
 
@@ -160,47 +159,20 @@ describe("REG-03: SQL backend resolution (target behavior)", () => {
     db.close()
   })
 
-  test("resolve() for SQL backend returns SqlQueryExecutor (target)", () => {
-    // TARGET: Should return SqlQueryExecutor with tableName bound
-    // CURRENT: Returns SqlBackend
-
+  test("resolve() for SQL backend returns SqlQueryExecutor", () => {
     const result = registry.resolve("test-schema", "TestModel")
 
-    // Will fail until refactored
-    expect(result).toBeInstanceOf(SqlBackend) // Current
-    // expect(result).toBeInstanceOf(SqlQueryExecutor) // Target
+    expect(result).toBeInstanceOf(SqlQueryExecutor)
   })
 
   test("sql executor has tableName derived from model name", () => {
-    // TARGET: Executor created with tableName = toSnakeCase(modelName)
+    const result = registry.resolve("test-schema", "TestModel")
 
-    const columnPropertyMap = new Map([
-      ["id", "id"],
-      ["name", "name"]
-    ])
-
-    const executor = new SqlQueryExecutor(
-      "test_model", // tableName bound
-      new SqlBackend(),
-      sqlExecutor,
-      columnPropertyMap
-    )
-
-    expect((executor as any).tableName).toBe("test_model")
+    expect((result as any).tableName).toBe("test_model")
   })
 
   test("sql executor queries without passing tableName again", async () => {
-    const columnPropertyMap = new Map([
-      ["id", "id"],
-      ["name", "name"]
-    ])
-
-    const executor = new SqlQueryExecutor(
-      "test_model",
-      new SqlBackend(),
-      sqlExecutor,
-      columnPropertyMap
-    )
+    const executor = registry.resolve("test-schema", "TestModel")
 
     // Table name already bound - just pass query
     const result = await executor.select(parseQuery({}))
@@ -226,10 +198,11 @@ describe("REG-04: Backend resolution cascade", () => {
     registry.register("memory", new MemoryBackend())
     registry.setDefault("memory")
 
-    const result = registry.resolve("test-schema", "TestModel")
+    const collection = createMockCollection([{ id: "1" }])
+    const result = registry.resolve("test-schema", "TestModel", collection)
 
     // Should resolve to default when no model/schema override
-    expect(result).toBeDefined()
+    expect(result).toBeInstanceOf(MemoryQueryExecutor)
   })
 
   test("throws descriptive error when no backend found", () => {
@@ -270,9 +243,10 @@ describe("REG-05: Column property map from meta-store", () => {
     registry.setDefault("memory")
 
     // This tests current behavior - getPropertyNames gets called internally
-    const result = registry.resolve("test-schema", "TestModel")
+    const collection = createMockCollection([{ id: "1" }])
+    const result = registry.resolve("test-schema", "TestModel", collection)
 
-    expect(result).toBeDefined()
+    expect(result).toBeInstanceOf(MemoryQueryExecutor)
     // Property names would be extracted if meta-store had the model
   })
 

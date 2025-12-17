@@ -35,11 +35,18 @@ import {
   createSqlInterpreter,
   allInterpreters,
   pg,
+  sqlite,
   type SqlOperator,
 } from '@ucast/sql'
 import type { FieldCondition } from '@ucast/core'
 import { parseQuery } from '../ast'
 import type { IBackend, BackendCapabilities, QueryOptions, QueryResult } from './types'
+
+// ============================================================================
+// Dialect Types
+// ============================================================================
+
+export type SqlDialect = 'pg' | 'sqlite'
 
 // ============================================================================
 // Custom Operators
@@ -73,14 +80,17 @@ const interpret = createSqlInterpreter({
 })
 
 /**
- * Create PostgreSQL dialect options with join tracking.
+ * Create dialect options with join tracking.
  *
+ * @param dialect - SQL dialect ('pg' or 'sqlite')
  * @param joinTracker - Array to collect required join names
  * @returns Dialect options with joinRelation callback
  */
-function createPgOptions(joinTracker: string[]) {
+function createDialectOptions(dialect: SqlDialect, joinTracker: string[]) {
+  const baseDialect = dialect === 'sqlite' ? sqlite : pg
+
   return {
-    ...pg,
+    ...baseDialect,
     // Track required joins but don't auto-generate JOIN clauses
     // Consumer is responsible for constructing complete query with JOINs
     joinRelation: (relationName: string) => {
@@ -121,6 +131,18 @@ function createPgOptions(joinTracker: string[]) {
  */
 export class SqlBackend implements IBackend {
   /**
+   * SQL dialect for this backend instance.
+   * Determines placeholder style, identifier escaping, and dialect-specific quirks.
+   */
+  readonly dialect: SqlDialect
+
+  /**
+   * Optional SQL executor for database access.
+   * When provided, enables BackendRegistry to create SqlQueryExecutor.
+   */
+  readonly executor?: ISqlExecutor
+
+  /**
    * Declares the operators and features supported by this backend.
    */
   readonly capabilities: BackendCapabilities = {
@@ -136,6 +158,37 @@ export class SqlBackend implements IBackend {
       pagination: true,
       relations: false,  // Consumer handles JOINs
       parameterized: true,
+    }
+  }
+
+  /**
+   * Create a new SqlBackend.
+   *
+   * @param config - Either a dialect string or config object with dialect and executor
+   *
+   * @example
+   * ```typescript
+   * // String form (backward compatible)
+   * const backend = new SqlBackend('sqlite')
+   *
+   * // Config form (with executor)
+   * const backend = new SqlBackend({
+   *   dialect: 'sqlite',
+   *   executor: new BunSqlExecutor(db)
+   * })
+   * ```
+   */
+  constructor(config?: SqlDialect | { dialect?: SqlDialect; executor?: ISqlExecutor }) {
+    if (typeof config === 'string') {
+      // String form: just dialect
+      this.dialect = config
+    } else if (config && typeof config === 'object') {
+      // Object form: dialect and executor
+      this.dialect = config.dialect ?? 'pg'
+      this.executor = config.executor
+    } else {
+      // No config: default to pg
+      this.dialect = 'pg'
     }
   }
 
@@ -195,8 +248,8 @@ export class SqlBackend implements IBackend {
     // Track required joins
     const joins: string[] = []
 
-    // Compile WHERE clause using @ucast/sql
-    const [whereSql, params] = interpret(ast, createPgOptions(joins))
+    // Compile WHERE clause using dialect-specific options
+    const [whereSql, params] = interpret(ast, createDialectOptions(this.dialect, joins))
 
     const parts: string[] = [whereSql]
 
@@ -216,8 +269,11 @@ export class SqlBackend implements IBackend {
     }
 
     // LIMIT clause (manual construction)
+    // SQLite quirk: OFFSET requires LIMIT, so add LIMIT -1 if skip without take
     if (options?.take !== undefined) {
       parts.push(`LIMIT ${options.take}`)
+    } else if (options?.skip !== undefined && this.dialect === 'sqlite') {
+      parts.push('LIMIT -1')  // SQLite: -1 means no limit
     }
 
     // OFFSET clause (manual construction)
@@ -255,8 +311,16 @@ export class SqlBackend implements IBackend {
     const joins: string[] = []
 
     // COUNT queries don't need ORDER BY or LIMIT
-    const [whereSql, params] = interpret(ast, createPgOptions(joins))
-    const sql = `SELECT COUNT(*) FROM ${this.escapeIdentifier(tableName)} WHERE ${whereSql}`
+    const [whereSql, params] = interpret(ast, createDialectOptions(this.dialect, joins))
+
+    // Handle empty WHERE clause
+    let sql: string
+    if (whereSql.trim() === '()' || whereSql.trim() === '') {
+      sql = `SELECT COUNT(*) FROM ${this.escapeIdentifier(tableName)}`
+    } else {
+      sql = `SELECT COUNT(*) FROM ${this.escapeIdentifier(tableName)} WHERE ${whereSql}`
+    }
+
     return [sql, params, joins]
   }
 
@@ -287,8 +351,16 @@ export class SqlBackend implements IBackend {
     const joins: string[] = []
 
     // EXISTS queries should LIMIT 1 for efficiency
-    const [whereSql, params] = interpret(ast, createPgOptions(joins))
-    const sql = `SELECT 1 FROM ${this.escapeIdentifier(tableName)} WHERE ${whereSql} LIMIT 1`
+    const [whereSql, params] = interpret(ast, createDialectOptions(this.dialect, joins))
+
+    // Handle empty WHERE clause
+    let sql: string
+    if (whereSql.trim() === '()' || whereSql.trim() === '') {
+      sql = `SELECT 1 FROM ${this.escapeIdentifier(tableName)} LIMIT 1`
+    } else {
+      sql = `SELECT 1 FROM ${this.escapeIdentifier(tableName)} WHERE ${whereSql} LIMIT 1`
+    }
+
     return [sql, params, joins]
   }
 
@@ -299,18 +371,29 @@ export class SqlBackend implements IBackend {
    * @returns Quoted identifier safe for SQL
    *
    * @remarks
-   * PostgreSQL uses double quotes for identifiers.
-   * Handles quote escaping by doubling quotes.
+   * PostgreSQL uses double quotes, SQLite/MySQL use backticks.
+   * Handles quote escaping by doubling quotes or escaping backticks.
    *
    * @example
    * ```typescript
+   * // PostgreSQL:
    * escapeIdentifier('firstName')  // "firstName"
    * escapeIdentifier('user"name')  // "user""name"
+   *
+   * // SQLite:
+   * escapeIdentifier('firstName')  // `firstName`
+   * escapeIdentifier('user`name')  // `user``name`
    * ```
    */
   private escapeIdentifier(name: string): string {
-    // PostgreSQL uses double quotes for identifiers
-    // Escape existing quotes by doubling them
-    return `"${name.replace(/"/g, '""')}"`
+    if (this.dialect === 'sqlite') {
+      // SQLite uses backticks for identifiers
+      // Escape existing backticks by doubling them
+      return `\`${name.replace(/`/g, '``')}\``
+    } else {
+      // PostgreSQL uses double quotes for identifiers
+      // Escape existing quotes by doubling them
+      return `"${name.replace(/"/g, '""')}"`
+    }
   }
 }

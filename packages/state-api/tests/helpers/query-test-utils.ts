@@ -8,9 +8,10 @@
 import { Database } from "bun:sqlite"
 import { BunSqlExecutor } from "../../src/query/execution/bun-sql"
 import { createBackendRegistry } from "../../src/query/registry"
+import { MemoryBackend } from "../../src/query/backends/memory"
+import { SqlBackend } from "../../src/query/backends/sql"
 import { NullPersistence } from "../../src/persistence/null"
 import { teamsDomain } from "../../src/teams/domain"
-// import { generateDDL } from "../../src/ddl"
 
 export interface TestData {
   organizations: Array<{
@@ -52,10 +53,20 @@ export function createEnvironment(options: CreateEnvironmentOptions) {
     if (!options.sqlExecutor) {
       throw new Error("SQL backend requires sqlExecutor")
     }
-    // TODO: Register SQL backend once SqlQueryExecutor is implemented
-    throw new Error("SQL backend not yet implemented")
+
+    // Register SQL backend with executor
+    const sqlBackend = new SqlBackend({
+      dialect: "sqlite",
+      executor: options.sqlExecutor
+    })
+
+    registry.register("sql", sqlBackend)
+    registry.setDefault("sql")
   } else {
-    // TODO: Register memory backend once MemoryQueryExecutor is implemented
+    // Register memory backend
+    const memoryBackend = new MemoryBackend()
+
+    registry.register("memory", memoryBackend)
     registry.setDefault("memory")
   }
 
@@ -86,11 +97,12 @@ export async function createSeededStore(
 
   if (backend === "sql") {
     db = new Database(":memory:")
-    // TODO: Generate and run DDL once DDL generator is implemented
-    // const ddl = generateDDL(teamsDomain.enhancedSchema, { dialect: "sqlite" })
-    // for (const stmt of ddl) {
-    //   db.run(stmt)
-    // }
+
+    // Create tables manually (teams schema lacks x-mst-type metadata for DDL generator)
+    db.run(`CREATE TABLE organization (id TEXT PRIMARY KEY, name TEXT, slug TEXT, created_at INTEGER)`)
+    db.run(`CREATE TABLE team (id TEXT PRIMARY KEY, name TEXT, organization_id TEXT, created_at INTEGER)`)
+    db.run(`CREATE TABLE membership (id TEXT PRIMARY KEY, user_id TEXT, role TEXT, team_id TEXT, created_at INTEGER)`)
+
     env = createEnvironment({
       backend: "sql",
       sqlExecutor: new BunSqlExecutor(db)
@@ -102,14 +114,31 @@ export async function createSeededStore(
   const store = teamsDomain.createStore(env)
 
   // Seed data
-  for (const org of data.organizations) {
-    await store.organizationCollection.add(org)
-  }
-  for (const team of data.teams) {
-    await store.teamCollection.add(team)
-  }
-  for (const mem of data.memberships) {
-    await store.membershipCollection.add(mem)
+  if (backend === "sql" && db) {
+    // Insert directly to database for SQL backends
+    for (const org of data.organizations) {
+      db.run(`INSERT INTO organization (id, name, slug, created_at) VALUES (?, ?, ?, ?)`,
+        [org.id, org.name, org.slug, org.createdAt])
+    }
+    for (const team of data.teams) {
+      db.run(`INSERT INTO team (id, name, organization_id, created_at) VALUES (?, ?, ?, ?)`,
+        [team.id, team.name, team.organizationId, team.createdAt])
+    }
+    for (const mem of data.memberships) {
+      db.run(`INSERT INTO membership (id, user_id, role, team_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+        [mem.id, mem.userId, mem.role, mem.teamId, mem.createdAt])
+    }
+  } else {
+    // Use .add() for memory backends
+    for (const org of data.organizations) {
+      store.organizationCollection.add(org)
+    }
+    for (const team of data.teams) {
+      store.teamCollection.add(team)
+    }
+    for (const mem of data.memberships) {
+      store.membershipCollection.add(mem)
+    }
   }
 
   return store

@@ -5,7 +5,7 @@
  * Provides reusable test suite for executor implementations.
  */
 
-import { describe, test, expect } from "bun:test"
+import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { parseQuery } from "../../ast/parser"
 import type { IQueryExecutor } from "../types"
 

@@ -20,6 +20,7 @@
  */
 
 import type { Condition } from '../ast/types'
+import type { ISqlExecutor } from '../execution/types'
 
 // ============================================================================
 // Backend Capabilities
@@ -231,4 +232,18 @@ export interface IBackend {
     collection: T[],
     options?: QueryOptions
   ): Promise<QueryResult<T>>
+
+  /**
+   * Optional: SQL dialect for SQL-based backends.
+   * When present, indicates this is a SQL backend (not memory).
+   * Used by BackendRegistry to discriminate backend type.
+   */
+  dialect?: 'pg' | 'sqlite'
+
+  /**
+   * Optional: SQL executor for SQL-based backends.
+   * Required when dialect is present.
+   * Used by BackendRegistry to create SqlQueryExecutor.
+   */
+  executor?: ISqlExecutor
 }
