@@ -1,0 +1,17 @@
+{
+  "id": "test-p2-query-index-01",
+  "scenario": "query index re-exports execution module types",
+  "given": [
+    "query/index.ts module exists"
+  ],
+  "when": "ISqlExecutor, SqlExecutorConfig are imported from query",
+  "then": [
+    "Types are available at top-level query module",
+    "Re-exports from execution/ submodule work correctly"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/__tests__/index.test.ts",
+  "createdAt": 1734278600060,
+  "task": "task-p2-query-index-modify",
+  "requirement": "req-08-database-executor"
+}

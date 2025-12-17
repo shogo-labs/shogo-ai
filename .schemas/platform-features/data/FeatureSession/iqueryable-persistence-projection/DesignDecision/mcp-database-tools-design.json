@@ -1,0 +1,9 @@
+{
+  "id": "decision-mcp-db-tools",
+  "name": "mcp-database-tools-design",
+  "question": "How should MCP database tools be structured?",
+  "decision": "Three new tools in db.* namespace: db.connect (establish connection, store in MCP state), db.migrate (execute DDL from schema via generateSQL + BunSqlExecutor), db.query (raw SQL for power users). Follow existing registerXxx pattern with ArkType params.",
+  "rationale": "Consistent with existing MCP tool patterns. Connection state managed in packages/mcp/src/state.ts alongside existing schema/store state. db.migrate leverages existing DDL generator.",
+  "createdAt": 1734278400003,
+  "session": "iqueryable-persistence-projection"
+}

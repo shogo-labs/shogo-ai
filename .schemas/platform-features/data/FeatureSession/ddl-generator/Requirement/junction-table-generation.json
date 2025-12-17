@@ -1,0 +1,9 @@
+{
+  "id": "req-ddl-junction-tables",
+  "name": "junction-table-generation",
+  "description": "Properties with x-reference-type: array generate junction tables. Table named {source}_{property}. Columns: {source}_id and {target}_id, both NOT NULL with FK constraints. Composite PK on both columns. ON DELETE CASCADE on both FKs.",
+  "priority": "should",
+  "status": "proposed",
+  "createdAt": 1734188400000,
+  "session": "ddl-generator-001"
+}

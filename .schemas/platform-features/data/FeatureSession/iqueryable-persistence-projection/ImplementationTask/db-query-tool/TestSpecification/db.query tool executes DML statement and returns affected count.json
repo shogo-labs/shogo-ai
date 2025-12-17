@@ -1,0 +1,20 @@
+{
+  "id": "test-p2-db-query-02",
+  "scenario": "db.query tool executes DML statement and returns affected count",
+  "given": [
+    "db.query tool is registered",
+    "Database connection is available",
+    "Test record exists"
+  ],
+  "when": "db.query is called with { sql: 'UPDATE users SET status = $1 WHERE id = $2', params: ['inactive', 1] }",
+  "then": [
+    "Returns { ok: true, rows: [], rowCount: N }",
+    "rowCount reflects affected rows",
+    "No rows returned for DML"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/mcp/src/tools/__tests__/db.query.test.ts",
+  "createdAt": 1734278600071,
+  "task": "task-p2-db-query",
+  "requirement": "req-10-mcp-database-tools"
+}

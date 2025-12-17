@@ -1,0 +1,19 @@
+{
+  "id": "test-p2-db-query-06",
+  "scenario": "db.query tool validates connection exists before executing",
+  "given": [
+    "db.query tool is registered",
+    "No connection named 'nonexistent' exists"
+  ],
+  "when": "db.query is called with { connection: 'nonexistent' }",
+  "then": [
+    "Returns { ok: false, error: { ... } }",
+    "Error message indicates connection not found",
+    "No query execution attempted"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/mcp/src/tools/__tests__/db.query.test.ts",
+  "createdAt": 1734278600075,
+  "task": "task-p2-db-query",
+  "requirement": "req-10-mcp-database-tools"
+}

@@ -1,0 +1,25 @@
+{
+  "id": "task-p2-bun-sql-executor",
+  "name": "bun-sql-executor",
+  "description": "Implement BunSqlExecutor class using Bun.sql native driver with programmatic tagged template pattern",
+  "acceptanceCriteria": [
+    "BunSqlExecutor implements ISqlExecutor interface",
+    "Constructor takes Bun.sql connection instance (SQL type from bun:sql)",
+    "execute([sql, params]) converts parameterized SQL to tagged template invocation",
+    "Tagged template pattern: sql.split(/\\$\\d+/) for parts, then sql(parts, ...params)",
+    "Handles edge cases: empty params array, trailing placeholders, consecutive placeholders",
+    "Returns array of rows as-is (normalization done by caller)",
+    "Includes executeMany(statements) for batch DDL execution",
+    "Connection getter exposes underlying SQL connection for advanced use",
+    "Unit tests verify correct SQL execution against test database"
+  ],
+  "status": "complete",
+  "createdAt": 1734278500002,
+  "updatedAt": 1734570500000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-bunsql-executor",
+  "requirement": "req-08-database-executor",
+  "dependencies": [
+    "task-p2-execution-types"
+  ]
+}

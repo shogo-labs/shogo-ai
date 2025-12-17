@@ -1,0 +1,11 @@
+{
+  "id": "exec-task-collection-queryable-1734135600000",
+  "status": "test_passing",
+  "testFilePath": "packages/state-api/src/composition/__tests__/queryable.test.ts",
+  "implementationFilePath": "packages/state-api/src/composition/queryable.ts",
+  "testOutput": "GREEN: All 34 tests passing",
+  "startedAt": 1734135600000,
+  "completedAt": 1734136000000,
+  "run": "run-collection-queryable-1734135600000",
+  "task": "task-collection-queryable"
+}

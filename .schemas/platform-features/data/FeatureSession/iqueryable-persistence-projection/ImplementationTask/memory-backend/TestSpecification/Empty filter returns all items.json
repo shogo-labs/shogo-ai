@@ -1,0 +1,19 @@
+{
+  "id": "test-memory-empty-filter",
+  "scenario": "Empty filter returns all items",
+  "given": [
+    "MemoryBackend instance",
+    "Collection with 5 items"
+  ],
+  "when": "Executing with empty filter {}",
+  "then": [
+    "All 5 items returned",
+    "Order preserved",
+    "Equivalent to no WHERE clause"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/memory.test.ts",
+  "createdAt": 1734106500080,
+  "task": "task-memory-backend",
+  "requirement": "req-03-backend-abstraction"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "test-validation-result-type",
+  "scenario": "ValidationResult contains valid flag and errors array",
+  "given": [
+    "ValidationResult type is imported"
+  ],
+  "when": "Creating ValidationResult objects",
+  "then": [
+    "valid: true with empty errors array is valid",
+    "valid: false with populated errors array is valid",
+    "Structure matches { valid: boolean, errors: ValidationError[] }"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/validation/__tests__/types.test.ts",
+  "createdAt": 1734106500041,
+  "task": "task-validation-layer",
+  "requirement": "req-05-metastore-validation"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "test-backend-types-no-runtime",
+  "scenario": "Types module has no runtime code",
+  "given": [
+    "backends/types.ts module exists"
+  ],
+  "when": "Analyzing compiled output",
+  "then": [
+    "Only type definitions exported",
+    "No function implementations",
+    "Zero runtime footprint"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/types.test.ts",
+  "createdAt": 1734106500066,
+  "task": "task-backend-types",
+  "requirement": "req-03-backend-abstraction"
+}

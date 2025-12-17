@@ -1,0 +1,17 @@
+{
+  "id": "test-ast-index-serialization",
+  "scenario": "Index re-exports serialization functions",
+  "given": [
+    "ast/index.ts module exists"
+  ],
+  "when": "Importing serialization functions from ast/index.ts",
+  "then": [
+    "serializeCondition function is accessible",
+    "deserializeCondition function is accessible"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/ast/__tests__/index.test.ts",
+  "createdAt": 1734106500033,
+  "task": "task-query-ast-index",
+  "requirement": "req-02-mongodb-operators"
+}

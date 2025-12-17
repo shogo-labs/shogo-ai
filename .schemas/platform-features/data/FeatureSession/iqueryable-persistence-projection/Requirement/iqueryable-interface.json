@@ -1,0 +1,9 @@
+{
+  "id": "req-01-iqueryable-interface",
+  "name": "iqueryable-interface",
+  "description": "Chainable, type-safe query builder API with terminal operations (toArray(), first(), count(), any()). Supports where(), orderBy(), skip(), take(), include() methods. Vision §4.3.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734019200000,
+  "session": "iqueryable-persistence-projection"
+}

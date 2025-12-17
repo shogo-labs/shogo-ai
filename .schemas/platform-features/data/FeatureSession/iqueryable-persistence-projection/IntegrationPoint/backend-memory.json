@@ -1,0 +1,12 @@
+{
+  "id": "ip-backend-memory",
+  "name": "backend-memory",
+  "filePath": "packages/state-api/src/query/backends/memory.ts",
+  "package": "state-api",
+  "changeType": "add",
+  "description": "MemoryBackend class: implements IBackend, uses @ucast/js for filtering, custom orderBy/skip/take, custom $contains interpreter. CRITICAL: interpret(ast, item) NOT interpret(ast)(item)",
+  "rationale": "MEM-01 through MEM-07 requirements. In-memory execution for MST collections.",
+  "createdAt": 1734105800020,
+  "session": "iqueryable-persistence-projection",
+  "finding": "finding-memory-backend"
+}

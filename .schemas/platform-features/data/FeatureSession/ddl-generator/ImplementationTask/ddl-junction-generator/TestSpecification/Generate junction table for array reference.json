@@ -1,0 +1,21 @@
+{
+  "id": "test-junction-001",
+  "scenario": "Generate junction table for array reference",
+  "given": [
+    "Team model with members property",
+    "members has x-reference-type: 'array' and x-reference-target: 'User'"
+  ],
+  "when": "generateJunctionTable is called",
+  "then": [
+    "Returns TableDef with name 'Team_members'",
+    "Includes column 'team_id' NOT NULL with FK to Team",
+    "Includes column 'user_id' NOT NULL with FK to User",
+    "Both FKs have ON DELETE CASCADE",
+    "Composite PRIMARY KEY on (team_id, user_id)"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/junction-generator.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-junction-generator",
+  "requirement": "req-ddl-junction-tables"
+}

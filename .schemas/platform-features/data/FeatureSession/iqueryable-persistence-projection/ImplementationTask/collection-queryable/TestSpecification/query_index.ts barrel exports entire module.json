@@ -1,0 +1,19 @@
+{
+  "id": "test-query-index-exports",
+  "scenario": "query/index.ts barrel exports entire module",
+  "given": [
+    "query/index.ts module exists"
+  ],
+  "when": "Importing from query/index.ts",
+  "then": [
+    "AST types and functions exported",
+    "Validation components exported",
+    "Backend classes exported",
+    "Registry components exported"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/__tests__/index.test.ts",
+  "createdAt": 1734106500152,
+  "task": "task-collection-queryable",
+  "requirement": "req-07-mst-integration"
+}

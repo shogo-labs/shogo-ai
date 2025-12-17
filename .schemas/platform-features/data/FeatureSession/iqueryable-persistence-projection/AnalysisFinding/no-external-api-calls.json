@@ -1,0 +1,10 @@
+{
+  "id": "class-evidence-no-external-api",
+  "name": "no-external-api-calls",
+  "type": "classification_evidence",
+  "description": "This feature has NO external API calls. Query execution happens against in-memory MST collections or local database connections. All @ucast libraries are pure JavaScript with no network I/O. Backend registry resolves to local implementations.",
+  "location": "packages/state-api/src/query/",
+  "recommendation": "Confirms Infrastructure archetype. No service layer abstraction needed for providers (unlike auth which wraps Supabase). Direct mixin implementation appropriate.",
+  "createdAt": 1734105700003,
+  "session": "iqueryable-persistence-projection"
+}

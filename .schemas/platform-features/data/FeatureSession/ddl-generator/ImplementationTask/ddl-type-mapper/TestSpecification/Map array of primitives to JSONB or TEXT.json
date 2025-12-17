@@ -1,0 +1,17 @@
+{
+  "id": "test-type-mapper-003",
+  "scenario": "Map array of primitives to JSONB or TEXT",
+  "given": [
+    "Property with type: 'array' of primitive items"
+  ],
+  "when": "mapPropertyType is called",
+  "then": [
+    "Returns 'JSONB' for PostgreSQL",
+    "Returns 'TEXT' for SQLite"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/type-mapper.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-type-mapper",
+  "requirement": "req-ddl-jsonb-arrays"
+}

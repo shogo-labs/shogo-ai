@@ -1,0 +1,20 @@
+{
+  "id": "test-p2-postgres-backend-08",
+  "scenario": "PostgresBackend pipeline integration test: compile + execute + normalize",
+  "given": [
+    "PostgresBackend with real test database connection",
+    "Test data in users table with snake_case columns"
+  ],
+  "when": "execute(parseQuery({ status: 'active' }), 'users') is called",
+  "then": [
+    "SQL compiled correctly from AST",
+    "Query executed against database",
+    "Results returned with camelCase keys",
+    "Data matches expected rows"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/postgres.test.ts",
+  "createdAt": 1734278600047,
+  "task": "task-p2-postgres-backend",
+  "requirement": "req-12-postgres-queryable"
+}

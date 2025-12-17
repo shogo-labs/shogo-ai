@@ -1,0 +1,9 @@
+{
+  "id": "req-03-backend-abstraction",
+  "name": "backend-abstraction",
+  "description": "IBackend interface with capability declaration (BackendCapabilities) enabling pluggable execution strategies. Backends declare supported operators and features. Vision §5.2.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734019200000,
+  "session": "iqueryable-persistence-projection"
+}

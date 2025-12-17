@@ -1,0 +1,12 @@
+{
+  "id": "ip-db-connect",
+  "name": "db-connect-tool",
+  "filePath": "packages/mcp/src/tools/db.connect.ts",
+  "package": "mcp",
+  "changeType": "add",
+  "description": "MCP tool db.connect: Establishes database connection from connection string. Params: { connectionString: string, name?: string }. Creates Bun.sql connection and stores in MCP server state. Returns { ok: true, connected: true, name: string }.",
+  "rationale": "REQ-10 mcp-database-tools. First of 3 new db.* namespace tools.",
+  "createdAt": 1734278400026,
+  "session": "iqueryable-persistence-projection",
+  "finding": "finding-mcp-tool-pattern"
+}

@@ -5,7 +5,7 @@
 
 import { getEnv } from "mobx-state-tree"
 import { v4 as uuidv4 } from "uuid"
-import type { IEnvironment, IMetaStoreEnvironment } from "../environment/types"
+import type { IEnvironment } from "../environment/types"
 import { enhancedJsonSchemaToMST } from "../schematic/enhanced-json-schema-to-mst"
 import { buildEnhanceCollections } from "../composition/enhance-collections"
 import { getRuntimeStore, cacheRuntimeStore } from "./runtime-store-cache"
@@ -144,7 +144,7 @@ export function createRootStoreEnhancements(RootModel: any) {
         let schema = self.findSchemaByName(name)
 
         // 2. If not found, load via persistence service (from environment)
-        const metaEnv = getEnv<IMetaStoreEnvironment>(self)
+        const metaEnv = getEnv<IEnvironment>(self)
         const persistence = metaEnv.services?.persistence
 
         if (!schema && persistence?.loadSchema) {
@@ -176,9 +176,27 @@ export function createRootStoreEnhancements(RootModel: any) {
           enhanceRootStore: registeredEnhancements?.rootStore,
         })
 
-        // 6. Create environment with persistence (pass through from meta-store env)
+        // 6. Create environment with services (pass through from meta-store env)
+        // Extract backendRegistry from meta-store's environment, or create default
+        let backendRegistry = metaEnv?.services?.backendRegistry
+
+        if (!backendRegistry) {
+          // Fallback: Create default MemoryBackend registry if not provided
+          // Import here to avoid circular dependency
+          const { createBackendRegistry } = await import("../query/registry")
+          const { MemoryBackend } = await import("../query/backends/memory")
+
+          backendRegistry = createBackendRegistry({
+            default: 'memory',
+            backends: { memory: new MemoryBackend() }
+          })
+        }
+
         const env: IEnvironment = {
-          services: { persistence: persistence! },
+          services: {
+            persistence: persistence!,
+            backendRegistry
+          },
           context: { schemaName: schema.name, location: workspace }
         }
 

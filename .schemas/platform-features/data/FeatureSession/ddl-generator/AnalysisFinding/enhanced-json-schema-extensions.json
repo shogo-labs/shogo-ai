@@ -1,0 +1,11 @@
+{
+  "id": "finding-ddl-enhanced-schema",
+  "name": "enhanced-json-schema-extensions",
+  "type": "pattern",
+  "description": "Enhanced JSON Schema uses x-* extensions for MST metadata: x-mst-type (identifier|reference|maybe-reference), x-reference-type (single|array), x-reference-target (model name), x-computed (boolean). DDL must read these extensions to infer PKs, FKs, and skip computed properties.",
+  "location": "packages/state-api/src/schematic/types.ts:43-50",
+  "relevantCode": "export interface EnhancedJsonSchema {\n  \"x-arktype\"?: string;\n  \"x-reference-type\"?: \"single\" | \"array\";\n  \"x-computed\"?: boolean;\n  \"x-inverse\"?: string;\n  \"x-original-name\"?: string;\n  \"x-mst-type\"?: \"identifier\" | \"reference\" | \"maybe-reference\";\n}",
+  "recommendation": "DDL generator should use the EnhancedJsonSchema type as input schema format. Import from schematic/types.ts.",
+  "createdAt": 1734188500000,
+  "session": "ddl-generator-001"
+}

@@ -1,0 +1,19 @@
+{
+  "id": "test-query-options-type",
+  "scenario": "QueryOptions includes orderBy, skip, take, include",
+  "given": [
+    "QueryOptions type is imported"
+  ],
+  "when": "Creating query options object",
+  "then": [
+    "orderBy accepts OrderByClause or array thereof",
+    "skip accepts number for pagination offset",
+    "take accepts number for page size",
+    "include accepts array of relation names"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/types.test.ts",
+  "createdAt": 1734106500063,
+  "task": "task-backend-types",
+  "requirement": "req-03-backend-abstraction"
+}

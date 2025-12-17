@@ -1,0 +1,19 @@
+{
+  "id": "test-registry-register",
+  "scenario": "register(name, backend) adds backend by name",
+  "given": [
+    "BackendRegistry instance",
+    "MemoryBackend instance"
+  ],
+  "when": "Calling register('memory', memoryBackend)",
+  "then": [
+    "Backend is stored",
+    "Can be retrieved by name",
+    "No error thrown"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/__tests__/registry.test.ts",
+  "createdAt": 1734106500112,
+  "task": "task-backend-registry",
+  "requirement": "req-04-schema-driven-binding"
+}

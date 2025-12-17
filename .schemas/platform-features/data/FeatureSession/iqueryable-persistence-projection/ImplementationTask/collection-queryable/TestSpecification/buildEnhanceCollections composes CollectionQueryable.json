@@ -1,0 +1,18 @@
+{
+  "id": "test-queryable-enhance-collections",
+  "scenario": "buildEnhanceCollections composes CollectionQueryable",
+  "given": [
+    "buildEnhanceCollections with enableQueryable: true"
+  ],
+  "when": "Enhancing collection models",
+  "then": [
+    "CollectionQueryable composed after CollectionPersistable",
+    "Composed before user enhancements",
+    "Collection has .query() method"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/composition/__tests__/enhance-collections.test.ts",
+  "createdAt": 1734106500149,
+  "task": "task-collection-queryable",
+  "requirement": "req-07-mst-integration"
+}

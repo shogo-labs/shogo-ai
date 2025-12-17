@@ -1,0 +1,20 @@
+{
+  "id": "test-p2-backend-registry-mcp-02",
+  "scenario": "store.list resolves backend via x-persistence.backend schema extension",
+  "given": [
+    "Schema with x-persistence.backend='postgres' defined",
+    "PostgresBackend registered in backendRegistry",
+    "Test data in database"
+  ],
+  "when": "store.list is called for model with postgres backend",
+  "then": [
+    "Backend resolved via x-persistence.backend metadata",
+    "Query executes via PostgresBackend",
+    "Results returned from database (not in-memory)"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/mcp/src/tools/__tests__/backend-registry.test.ts",
+  "createdAt": 1734278600091,
+  "task": "task-p2-backend-registry-mcp",
+  "requirement": "req-11-backend-registry-mcp"
+}

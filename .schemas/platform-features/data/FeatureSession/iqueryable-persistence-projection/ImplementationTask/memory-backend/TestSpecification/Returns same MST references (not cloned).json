@@ -1,0 +1,19 @@
+{
+  "id": "test-memory-same-references",
+  "scenario": "Returns same MST references (not cloned)",
+  "given": [
+    "MemoryBackend instance",
+    "MST collection with observable items"
+  ],
+  "when": "Executing query that matches items",
+  "then": [
+    "Returned items are === original references",
+    "No object cloning performed",
+    "MST reactivity preserved"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/memory.test.ts",
+  "createdAt": 1734106500078,
+  "task": "task-memory-backend",
+  "requirement": "req-03-backend-abstraction"
+}

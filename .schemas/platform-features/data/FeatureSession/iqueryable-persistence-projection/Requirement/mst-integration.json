@@ -1,0 +1,9 @@
+{
+  "id": "req-07-mst-integration",
+  "name": "mst-integration",
+  "description": "Query results returned as MST model instances (not plain objects) with environment DI pattern. Integration via PersistableCollectionMixin with .query() method. Vision §6.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734019200000,
+  "session": "iqueryable-persistence-projection"
+}

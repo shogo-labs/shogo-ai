@@ -1,0 +1,18 @@
+{
+  "id": "test-p2-exec-types-03",
+  "scenario": "Row type is generic Record for flexibility",
+  "given": [
+    "query/execution/types.ts module exists"
+  ],
+  "when": "Row type is imported",
+  "then": [
+    "Row is Record<string, unknown>",
+    "Row accepts arbitrary key-value pairs",
+    "Row is database-agnostic"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/execution/__tests__/types.test.ts",
+  "createdAt": 1734278600002,
+  "task": "task-p2-execution-types",
+  "requirement": "req-08-database-executor"
+}

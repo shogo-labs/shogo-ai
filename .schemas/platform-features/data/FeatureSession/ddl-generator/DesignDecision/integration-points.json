@@ -1,0 +1,9 @@
+{
+  "id": "design-ddl-integration-points",
+  "name": "integration-points",
+  "question": "How do other parts of the system use DDL generator?",
+  "decision": "Primary consumer: SqlBackend users need to provision tables before executing queries. Integration: 1) Import generateDDL from @shogo/state-api/ddl, 2) Pass Enhanced JSON Schema (from schematic), 3) Execute returned SQL against database, 4) SqlBackend can then query tables. Secondary: Meta-store could generate DDL for runtime schemas.",
+  "rationale": "DDL generator is infrastructure for SqlBackend. Fills gap identified in analysis (finding-ddl-sql-backend-gap). Standalone utility, no tight coupling. Pure function with no side effects.",
+  "createdAt": 1734188800000,
+  "session": "ddl-generator-001"
+}

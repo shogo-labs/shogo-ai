@@ -1,0 +1,18 @@
+{
+  "id": "test-queryable-first",
+  "scenario": "first() terminal returns Promise<T | undefined>",
+  "given": [
+    "IQueryable with filter"
+  ],
+  "when": "Calling await query.first()",
+  "then": [
+    "Returns Promise resolving to single item or undefined",
+    "Returns first matching item",
+    "Returns undefined if no matches"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/composition/__tests__/queryable.test.ts",
+  "createdAt": 1734106500146,
+  "task": "task-collection-queryable",
+  "requirement": "req-01-iqueryable-interface"
+}

@@ -1,0 +1,20 @@
+{
+  "id": "test-memory-ucast-js",
+  "scenario": "MemoryBackend uses @ucast/js for filtering",
+  "given": [
+    "MemoryBackend instance",
+    "Collection of items",
+    "Parsed AST condition"
+  ],
+  "when": "Executing query with filter",
+  "then": [
+    "Items matching condition are returned",
+    "Items not matching are excluded",
+    "Uses @ucast/js interpret function internally"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/memory.test.ts",
+  "createdAt": 1734106500071,
+  "task": "task-memory-backend",
+  "requirement": "req-03-backend-abstraction"
+}
