@@ -132,6 +132,23 @@ export {
 } from './backends/postgres'
 
 // ============================================================================
+// Executor Exports (query/executors)
+// ============================================================================
+
+/**
+ * Query executors for collections.
+ * Re-exported from ./executors
+ */
+export type {
+  IQueryExecutor
+} from './executors'
+
+export {
+  MemoryQueryExecutor,
+  SqlQueryExecutor
+} from './executors'
+
+// ============================================================================
 // Registry Exports (query/registry)
 // ============================================================================
 

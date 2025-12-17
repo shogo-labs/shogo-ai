@@ -205,7 +205,7 @@ interface MutableMockCollection<T extends { id: string }> {
   all(): T[]
   get(id: string): T | undefined
   add(item: T): T
-  remove(item: T): void
+  remove(id: string): void
   modelName: string
 }
 
@@ -222,8 +222,8 @@ function createMutableMockCollection<T extends { id: string }>(
       _items.push(item)
       return item
     },
-    remove: (item: T) => {
-      const index = _items.findIndex((i) => i.id === item.id)
+    remove: (id: string) => {
+      const index = _items.findIndex((i) => i.id === id)
       if (index !== -1) {
         _items.splice(index, 1)
       }

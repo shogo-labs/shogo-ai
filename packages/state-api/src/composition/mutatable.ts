@@ -39,6 +39,7 @@ import type { IEnvironment } from '../environment/types'
 import type { QueryFilter } from '../query/ast/types'
 import { parseQuery } from '../query/ast/parser'
 import type { IQueryExecutor } from '../query/executors/types'
+import { MemoryQueryExecutor } from '../query/executors/memory'
 
 /**
  * Check if executor is remote (SQL backend) vs local (Memory backend).
@@ -64,6 +65,9 @@ function isRemoteExecutor(executor: IQueryExecutor<any>): boolean {
  */
 export const CollectionMutatable = types
   .model('CollectionMutatable', {})
+  .volatile(() => ({
+    localExecutor: null as MemoryQueryExecutor<any> | null
+  }))
   .actions((self) => {
     /**
      * Get the query executor for this collection.
@@ -79,6 +83,13 @@ export const CollectionMutatable = types
     }
 
     return {
+      /**
+       * Initialize local executor for filtering MST entities during batch mutation sync.
+       */
+      afterCreate() {
+        self.localExecutor = new MemoryQueryExecutor(self as any)
+      },
+
       /**
        * Insert a new entity into the collection.
        *
@@ -130,10 +141,7 @@ export const CollectionMutatable = types
 
         // Sync MST for remote executors (local already updates MST directly)
         if (success && isRemoteExecutor(executor)) {
-          const instance = (self as any).get(id)
-          if (instance) {
-            ;(self as any).remove(instance)
-          }
+          ;(self as any).remove(id)
         }
         return success
       },
@@ -170,14 +178,18 @@ export const CollectionMutatable = types
         const count = await executor.updateMany(ast, changes)
 
         // Sync MST for remote executors (local already updates MST directly)
-        // Apply changes to all MST entities (simplified - proper impl would filter)
         if (isRemoteExecutor(executor) && count > 0) {
-          const allEntities = (self as any).all()
-          for (const entity of allEntities) {
-            // Apply the changes to each MST entity
-            const currentSnapshot = getSnapshot(entity) as Record<string, unknown>
-            const updated = { ...currentSnapshot, ...changes }
-            applySnapshot(entity, updated)
+          // Use local executor to filter matching MST entities (returns snapshots)
+          const matchingSnapshots = await self.localExecutor!.select(ast)
+
+          // Get MST instances by ID and update them
+          for (const snapshot of matchingSnapshots) {
+            const instance = (self as any).get((snapshot as any).id)
+            if (instance) {
+              const currentSnapshot = getSnapshot(instance) as Record<string, unknown>
+              const updated = { ...currentSnapshot, ...changes }
+              applySnapshot(instance, updated)
+            }
           }
         }
         return count
@@ -195,9 +207,14 @@ export const CollectionMutatable = types
         const count = await executor.deleteMany(ast)
 
         // Sync MST for remote executors (local already updates MST directly)
-        // Remove all MST entities (simplified - proper impl would filter)
         if (isRemoteExecutor(executor) && count > 0) {
-          ;(self as any).clear()
+          // Use local executor to filter matching MST entities (returns snapshots)
+          const matchingSnapshots = await self.localExecutor!.select(ast)
+
+          // Remove entities by ID
+          for (const snapshot of matchingSnapshots) {
+            ;(self as any).remove((snapshot as any).id)
+          }
         }
         return count
       },
