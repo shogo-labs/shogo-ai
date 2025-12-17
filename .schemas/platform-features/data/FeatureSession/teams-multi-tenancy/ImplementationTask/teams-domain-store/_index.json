@@ -1,0 +1,22 @@
+{
+  "id": "task-teams-domain",
+  "name": "teams-domain-store",
+  "description": "Create teams-multi-tenancy domain store with domain() API in packages/state-api/src/teams/",
+  "acceptanceCriteria": [
+    "domain.ts exports TeamsMultiTenancyDomain ArkType scope with User, Tenant, TenantMember, BillingAccount, Workspace entities",
+    "All identifier fields use 'string' type with x-mst-type: identifier pattern",
+    "Entity references use entity name directly (e.g., tenant_id: 'Tenant')",
+    "domain.ts exports const teamsMultiTenancyDomain = domain({ name: 'teams-multi-tenancy', from: TeamsMultiTenancyDomain, enhancements })",
+    "domain.name MUST match schema name exactly: 'teams-multi-tenancy'",
+    "enhancements.models adds TenantMember.isBillingAdmin computed view",
+    "enhancements.collections adds findByTenant methods for TenantMember and Workspace collections",
+    "CollectionPersistable auto-composed (do NOT manually compose)",
+    "Snake_case field names: user_id, tenant_id, billing_account_id, sso_settings, stripe_customer_id, tax_id, credits_balance",
+    "Role enum includes: admin, billing_admin, editor, member"
+  ],
+  "status": "completed",
+  "createdAt": 1734308100000,
+  "updatedAt": 1734400000000,
+  "session": "teams-multi-tenancy-001",
+  "dependencies": []
+}

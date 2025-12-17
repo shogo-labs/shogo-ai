@@ -1,0 +1,11 @@
+{
+  "id": "finding-schema-pattern",
+  "name": "enhanced-json-schema-pattern",
+  "type": "pattern",
+  "description": "Existing schemas in .schemas/ follow Enhanced JSON Schema format with $defs containing entity definitions, x-persistence for storage config, and x-mst-type/x-arktype for reference handling",
+  "location": ".schemas/teams-workspace/schema.json",
+  "relevantCode": "{\"x-persistence\": {\"strategy\": \"entity-per-file\", \"displayKey\": \"name\", \"nested\": true}}",
+  "recommendation": "Follow same structure for teams-multi-tenancy schema",
+  "createdAt": 1734307500000,
+  "session": "teams-multi-tenancy-001"
+}

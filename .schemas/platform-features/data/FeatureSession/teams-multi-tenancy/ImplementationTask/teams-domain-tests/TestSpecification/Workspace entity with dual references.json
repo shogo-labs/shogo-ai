@@ -1,0 +1,18 @@
+{
+  "id": "test-workspace-crud",
+  "scenario": "Workspace entity with dual references",
+  "given": [
+    "Store has existing Tenant and BillingAccount entities"
+  ],
+  "when": "Creating Workspace with name, tenant_id, billing_account_id",
+  "then": [
+    "Workspace is created in workspaceCollection",
+    "Workspace.tenant_id resolves to Tenant instance",
+    "Workspace.billing_account_id resolves to BillingAccount instance"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/tests/domain.test.ts",
+  "createdAt": 1734308300000,
+  "task": "task-teams-tests",
+  "requirement": "req-005"
+}

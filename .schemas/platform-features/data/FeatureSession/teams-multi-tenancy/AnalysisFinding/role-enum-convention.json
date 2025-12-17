@@ -1,0 +1,11 @@
+{
+  "id": "finding-enum-pattern",
+  "name": "role-enum-convention",
+  "type": "pattern",
+  "description": "Roles are defined as string enums directly in schema. Existing teams-workspace uses ['owner', 'admin', 'member', 'viewer']. Our schema needs ['admin', 'billing_admin', 'editor', 'member'] per user requirements.",
+  "location": ".schemas/teams-workspace/schema.json",
+  "relevantCode": "{\"type\": \"string\", \"enum\": [\"owner\", \"admin\", \"member\", \"viewer\"]}",
+  "recommendation": "Define role enum with admin, billing_admin, editor, member values",
+  "createdAt": 1734307500000,
+  "session": "teams-multi-tenancy-001"
+}

@@ -1,0 +1,19 @@
+{
+  "id": "test-role-enum-valid",
+  "scenario": "Role enum accepts valid values",
+  "given": [
+    "teamsMultiTenancyDomain store is initialized"
+  ],
+  "when": "Creating TenantMembers with each valid role value",
+  "then": [
+    "Role 'admin' is accepted",
+    "Role 'billing_admin' is accepted",
+    "Role 'editor' is accepted",
+    "Role 'member' is accepted"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/tests/domain.test.ts",
+  "createdAt": 1734308300000,
+  "task": "task-teams-tests",
+  "requirement": "req-003"
+}

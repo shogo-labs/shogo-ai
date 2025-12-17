@@ -1,0 +1,9 @@
+{
+  "id": "req-006",
+  "name": "billing-governance",
+  "description": "Support billing_admin role in Tenant_Member that can manage billing accounts owned by the tenant",
+  "priority": "should",
+  "status": "proposed",
+  "createdAt": 1734307400000,
+  "session": "teams-multi-tenancy-001"
+}
