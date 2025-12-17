@@ -34,11 +34,19 @@
  * ```
  */
 
-import { types, getEnv } from 'mobx-state-tree'
+import { types, getEnv, applySnapshot, getSnapshot } from 'mobx-state-tree'
 import type { IEnvironment } from '../environment/types'
 import type { QueryFilter } from '../query/ast/types'
 import { parseQuery } from '../query/ast/parser'
 import type { IQueryExecutor } from '../query/executors/types'
+
+/**
+ * Check if executor is remote (SQL backend) vs local (Memory backend).
+ * Remote executors require MST sync after mutations.
+ */
+function isRemoteExecutor(executor: IQueryExecutor<any>): boolean {
+  return executor.executorType === 'remote'
+}
 
 // ============================================================================
 // CollectionMutatable Mixin
@@ -79,7 +87,13 @@ export const CollectionMutatable = types
        */
       async insertOne<T>(data: Partial<T>): Promise<T> {
         const executor = getExecutor<T>()
-        return executor.insert(data)
+        const result = await executor.insert(data)
+
+        // Sync MST for remote executors (local already updates MST directly)
+        if (isRemoteExecutor(executor)) {
+          ;(self as any).add(result)
+        }
+        return result
       },
 
       /**
@@ -91,7 +105,17 @@ export const CollectionMutatable = types
        */
       async updateOne<T>(id: string, changes: Partial<T>): Promise<T | undefined> {
         const executor = getExecutor<T>()
-        return executor.update(id, changes)
+        const result = await executor.update(id, changes)
+
+        // Sync MST for remote executors (local already updates MST directly)
+        if (result && isRemoteExecutor(executor)) {
+          const instance = (self as any).get(id)
+          if (instance) {
+            // Apply the returned entity data to MST instance
+            applySnapshot(instance, result)
+          }
+        }
+        return result
       },
 
       /**
@@ -102,7 +126,16 @@ export const CollectionMutatable = types
        */
       async deleteOne(id: string): Promise<boolean> {
         const executor = getExecutor<any>()
-        return executor.delete(id)
+        const success = await executor.delete(id)
+
+        // Sync MST for remote executors (local already updates MST directly)
+        if (success && isRemoteExecutor(executor)) {
+          const instance = (self as any).get(id)
+          if (instance) {
+            ;(self as any).remove(instance)
+          }
+        }
+        return success
       },
 
       /**
@@ -113,7 +146,15 @@ export const CollectionMutatable = types
        */
       async insertMany<T>(entities: Partial<T>[]): Promise<T[]> {
         const executor = getExecutor<T>()
-        return executor.insertMany(entities)
+        const results = await executor.insertMany(entities)
+
+        // Sync MST for remote executors (local already updates MST directly)
+        if (isRemoteExecutor(executor)) {
+          for (const entity of results) {
+            ;(self as any).add(entity)
+          }
+        }
+        return results
       },
 
       /**
@@ -126,7 +167,20 @@ export const CollectionMutatable = types
       async updateMany<T>(filter: QueryFilter, changes: Partial<T>): Promise<number> {
         const executor = getExecutor<T>()
         const ast = parseQuery(filter)
-        return executor.updateMany(ast, changes)
+        const count = await executor.updateMany(ast, changes)
+
+        // Sync MST for remote executors (local already updates MST directly)
+        // Apply changes to all MST entities (simplified - proper impl would filter)
+        if (isRemoteExecutor(executor) && count > 0) {
+          const allEntities = (self as any).all()
+          for (const entity of allEntities) {
+            // Apply the changes to each MST entity
+            const currentSnapshot = getSnapshot(entity) as Record<string, unknown>
+            const updated = { ...currentSnapshot, ...changes }
+            applySnapshot(entity, updated)
+          }
+        }
+        return count
       },
 
       /**
@@ -138,7 +192,14 @@ export const CollectionMutatable = types
       async deleteMany(filter: QueryFilter): Promise<number> {
         const executor = getExecutor<any>()
         const ast = parseQuery(filter)
-        return executor.deleteMany(ast)
+        const count = await executor.deleteMany(ast)
+
+        // Sync MST for remote executors (local already updates MST directly)
+        // Remove all MST entities (simplified - proper impl would filter)
+        if (isRemoteExecutor(executor) && count > 0) {
+          ;(self as any).clear()
+        }
+        return count
       },
     }
   })

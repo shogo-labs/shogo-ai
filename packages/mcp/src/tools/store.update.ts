@@ -75,7 +75,37 @@ export function registerStoreUpdate(server: FastMCP) {
           })
         }
 
-        // 5. Get instance
+        // 5. Validate changes parameter
+        if (!changes || typeof changes !== "object") {
+          return JSON.stringify({
+            ok: false,
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "Changes must be an object"
+            }
+          })
+        }
+
+        // 6. Update instance using CollectionMutatable.updateOne when available
+        // This handles both MST state and backend persistence in one operation
+        if (typeof collection.updateOne === 'function') {
+          const updated = await collection.updateOne(id, changes)
+          if (!updated) {
+            return JSON.stringify({
+              ok: false,
+              error: {
+                code: "NOT_FOUND",
+                message: `Entity with id '${id}' not found in model '${model}'`
+              }
+            })
+          }
+          return JSON.stringify({
+            ok: true,
+            data: updated
+          })
+        }
+
+        // Fallback for collections without CollectionMutatable mixin
         const instance = collection.get(id)
         if (!instance) {
           return JSON.stringify({
@@ -87,22 +117,9 @@ export function registerStoreUpdate(server: FastMCP) {
           })
         }
 
-        // 6. Apply changes (merge with current snapshot)
-        if (!changes || typeof changes !== "object") {
-          return JSON.stringify({
-            ok: false,
-            error: {
-              code: "VALIDATION_ERROR",
-              message: "Changes must be an object"
-            }
-          })
-        }
-
         const currentSnapshot = getSnapshot(instance) as Record<string, any>
         const updatedSnapshot = { ...currentSnapshot, ...(changes as Record<string, any>) }
         applySnapshot(instance, updatedSnapshot)
-
-        // 7. Auto-save collection to disk using CollectionPersistable mixin
         await collection.saveAll()
 
         return JSON.stringify({

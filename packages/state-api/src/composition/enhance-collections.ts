@@ -4,7 +4,8 @@
  * Builds collection enhancement function that:
  * 1. Composes CollectionPersistable (if enabled)
  * 2. Composes CollectionQueryable (if enabled)
- * 3. Applies user enhancements on top
+ * 3. Composes CollectionMutatable (if enabled)
+ * 4. Applies user enhancements on top
  *
  * Shared by domain() and loadSchema() to eliminate duplication.
  */
@@ -12,6 +13,7 @@
 import { types, type IAnyModelType } from "mobx-state-tree"
 import { CollectionPersistable } from "./persistable"
 import { CollectionQueryable } from "./queryable"
+import { CollectionMutatable } from "./mutatable"
 import type { DomainEnhancements } from "../domain/types"
 
 /**
@@ -20,11 +22,12 @@ import type { DomainEnhancements } from "../domain/types"
  * @param userEnhance - Optional user enhancement function from domain config
  * @param enablePersistence - Whether to compose CollectionPersistable (default: true)
  * @param enableQueryable - Whether to compose CollectionQueryable (default: true)
+ * @param enableMutatable - Whether to compose CollectionMutatable (default: true)
  * @returns Enhancement function, or undefined if nothing to enhance
  *
  * @example
  * // In domain()
- * const enhance = buildEnhanceCollections(config.enhancements?.collections, true, true)
+ * const enhance = buildEnhanceCollections(config.enhancements?.collections, true, true, true)
  *
  * // In loadSchema()
  * const enhance = buildEnhanceCollections(registeredEnhancements?.collections)
@@ -32,10 +35,11 @@ import type { DomainEnhancements } from "../domain/types"
 export function buildEnhanceCollections(
   userEnhance?: DomainEnhancements["collections"],
   enablePersistence: boolean = true,
-  enableQueryable: boolean = true
+  enableQueryable: boolean = true,
+  enableMutatable: boolean = true
 ): ((cols: Record<string, IAnyModelType>) => Record<string, IAnyModelType>) | undefined {
   // Early return if nothing to do
-  if (!enablePersistence && !enableQueryable && !userEnhance) {
+  if (!enablePersistence && !enableQueryable && !enableMutatable && !userEnhance) {
     return undefined
   }
 
@@ -60,7 +64,16 @@ export function buildEnhanceCollections(
       result = withQueryable
     }
 
-    // Step 3: Apply user enhancements on top
+    // Step 3: Auto-compose CollectionMutatable if enabled
+    if (enableMutatable) {
+      const withMutatable: Record<string, IAnyModelType> = {}
+      for (const [name, model] of Object.entries(result)) {
+        withMutatable[name] = types.compose(model, CollectionMutatable).named(name)
+      }
+      result = withMutatable
+    }
+
+    // Step 4: Apply user enhancements on top
     if (userEnhance) {
       result = userEnhance(result)
     }

@@ -84,6 +84,10 @@ describe("SQL-01: SqlQueryExecutor", () => {
     // All dependencies bound - no need to pass them to methods
   })
 
+  test("executorType is 'remote'", () => {
+    expect(executor.executorType).toBe('remote')
+  })
+
   // ==========================================================================
   // Basic Query Execution
   // ==========================================================================

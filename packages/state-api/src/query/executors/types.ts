@@ -22,6 +22,12 @@ import type { QueryOptions } from "../backends/types"
  */
 export interface IQueryExecutor<T> {
   /**
+   * Discriminator for executor type.
+   * - 'local': Mutations directly modify the bound collection (e.g., MemoryQueryExecutor)
+   * - 'remote': Mutations execute against external store, MST sync needed (e.g., SqlQueryExecutor)
+   */
+  readonly executorType: 'local' | 'remote'
+  /**
    * Execute a select query and return matching items.
    *
    * @param ast - Query condition AST (from parseQuery)
