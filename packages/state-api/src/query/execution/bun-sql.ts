@@ -15,7 +15,7 @@
  */
 
 import type { SQL } from "bun:sql"
-import type { ISqlExecutor, Row } from "./types"
+import type { ISqlExecutor, ITransactionExecutor, Row } from "./types"
 
 /**
  * SQL executor implementation using Bun.sql native driver.
@@ -162,5 +162,69 @@ export class BunSqlExecutor implements ISqlExecutor {
     }
 
     return count
+  }
+
+  /**
+   * Execute a callback within a database transaction.
+   *
+   * Wraps the callback in BEGIN/COMMIT. If the callback throws,
+   * the transaction is automatically rolled back.
+   *
+   * Implementation Note:
+   * Uses explicit BEGIN/COMMIT/ROLLBACK statements since bun:sqlite
+   * doesn't expose the same transaction API as bun:sql for Postgres.
+   *
+   * @param callback - Async function receiving a transaction executor
+   * @returns Promise resolving to the callback's return value
+   *
+   * @example
+   * ```ts
+   * const result = await executor.beginTransaction(async (tx) => {
+   *   await tx.execute(["INSERT INTO users (name) VALUES ($1)", ["Alice"]])
+   *   await tx.execute(["INSERT INTO logs (msg) VALUES ($1)", ["User created"]])
+   *   return { success: true }
+   * })
+   * ```
+   */
+  async beginTransaction<T>(
+    callback: (tx: ITransactionExecutor) => Promise<T>
+  ): Promise<T> {
+    const db = this._connection as any
+
+    // Begin transaction
+    db.run("BEGIN TRANSACTION")
+
+    // Create transaction executor that uses the same connection
+    const txExecutor: ITransactionExecutor = {
+      execute: async (query: [sql: string, params: unknown[]]): Promise<Row[]> => {
+        // Reuse the same parameter conversion logic from main execute
+        return this.execute(query)
+      }
+    }
+
+    try {
+      // Execute callback within transaction context
+      const result = await callback(txExecutor)
+
+      // Commit on success
+      db.run("COMMIT")
+
+      return result
+    } catch (error) {
+      // Rollback on error
+      try {
+        db.run("ROLLBACK")
+      } catch (rollbackError) {
+        // If rollback fails, include both errors in the message
+        throw new Error(
+          `Transaction failed and rollback also failed.\n` +
+          `Original error: ${error instanceof Error ? error.message : String(error)}\n` +
+          `Rollback error: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+        )
+      }
+
+      // Re-throw the original error
+      throw error
+    }
   }
 }

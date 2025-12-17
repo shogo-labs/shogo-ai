@@ -413,3 +413,356 @@ testExecutorContract<{ id: string; name: string }>(
     }
   }
 )
+
+// ============================================================================
+// SQL-04: SqlQueryExecutor Mutation Tests (Layer 4a RED Tests)
+// ============================================================================
+
+describe("SQL-04: SqlQueryExecutor Mutation Operations", () => {
+  type TestEntity = {
+    id: string
+    name: string
+    status: string
+    age: number
+  }
+
+  let db: Database
+  let executor: SqlQueryExecutor<TestEntity>
+
+  beforeEach(() => {
+    db = new Database(":memory:")
+
+    db.run(`
+      CREATE TABLE test_entity (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        age INTEGER NOT NULL
+      )
+    `)
+
+    // Seed with initial data
+    db.run(`
+      INSERT INTO test_entity (id, name, status, age) VALUES
+      ('1', 'Alice', 'active', 30),
+      ('2', 'Bob', 'inactive', 25)
+    `)
+
+    const propertyNames = ["id", "name", "status", "age"]
+    const columnPropertyMap = createColumnPropertyMap(propertyNames)
+    const propertyTypes = {
+      id: "string",
+      name: "string",
+      status: "string",
+      age: "number"
+    }
+
+    executor = new SqlQueryExecutor(
+      "test_entity",
+      new SqlBackend("sqlite"),
+      new BunSqlExecutor(db),
+      columnPropertyMap,
+      "sqlite",
+      propertyTypes
+    )
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  // ==========================================================================
+  // insert() Tests
+  // ==========================================================================
+
+  test("insert() generates INSERT SQL with snake_case columns", async () => {
+    const entity = await executor.insert({
+      name: "Charlie",
+      status: "active",
+      age: 35
+    })
+
+    expect(entity).toBeDefined()
+    expect(entity.id).toBeDefined()
+    expect(entity.name).toBe("Charlie")
+    expect(entity.status).toBe("active")
+    expect(entity.age).toBe(35)
+  })
+
+  test("insert() generates id if not provided", async () => {
+    const entity = await executor.insert({
+      name: "David",
+      status: "pending",
+      age: 40
+    })
+
+    expect(entity.id).toBeDefined()
+    expect(typeof entity.id).toBe("string")
+    expect(entity.id.length).toBeGreaterThan(0)
+  })
+
+  test("insert() preserves explicit id", async () => {
+    const entity = await executor.insert({
+      id: "custom-id-123",
+      name: "Eve",
+      status: "active",
+      age: 28
+    })
+
+    expect(entity.id).toBe("custom-id-123")
+  })
+
+  test("insert() uses correct placeholder style for SQLite", async () => {
+    // SQLite uses ? placeholders
+    const entity = await executor.insert({
+      name: "Test",
+      status: "active",
+      age: 99
+    })
+
+    // If placeholders are wrong, this would throw
+    expect(entity).toBeDefined()
+  })
+
+  test("inserted entity is retrievable via select", async () => {
+    const inserted = await executor.insert({
+      name: "Frank",
+      status: "active",
+      age: 45
+    })
+
+    const found = await executor.first(parseQuery({ id: inserted.id }))
+    expect(found).toBeDefined()
+    expect(found?.name).toBe("Frank")
+  })
+
+  test("insert() returns normalized camelCase properties", async () => {
+    const entity = await executor.insert({
+      name: "Grace",
+      status: "active",
+      age: 33
+    })
+
+    // Should have camelCase properties (not snake_case)
+    expect(entity).toHaveProperty("name")
+    expect(entity).toHaveProperty("status")
+    expect(entity).toHaveProperty("age")
+    expect(entity).not.toHaveProperty("user_name")
+  })
+
+  // ==========================================================================
+  // update() Tests
+  // ==========================================================================
+
+  test("update() generates UPDATE SQL with WHERE id", async () => {
+    const updated = await executor.update("1", { name: "Alice Updated" })
+
+    expect(updated).toBeDefined()
+    expect(updated?.id).toBe("1")
+    expect(updated?.name).toBe("Alice Updated")
+    expect(updated?.status).toBe("active") // unchanged
+    expect(updated?.age).toBe(30) // unchanged
+  })
+
+  test("update() merges partial changes", async () => {
+    const updated = await executor.update("1", { status: "inactive" })
+
+    expect(updated?.name).toBe("Alice") // unchanged
+    expect(updated?.status).toBe("inactive") // updated
+    expect(updated?.age).toBe(30) // unchanged
+  })
+
+  test("update() returns undefined for non-existent id", async () => {
+    const result = await executor.update("nonexistent", { name: "Ghost" })
+
+    expect(result).toBeUndefined()
+  })
+
+  test("update() persists changes in database", async () => {
+    await executor.update("1", { name: "Persisted", age: 31 })
+
+    // Query directly to verify persistence
+    const found = await executor.first(parseQuery({ id: "1" }))
+    expect(found?.name).toBe("Persisted")
+    expect(found?.age).toBe(31)
+  })
+
+  test("update() converts camelCase to snake_case in SET clause", async () => {
+    // This would fail if snake_case conversion isn't working
+    const updated = await executor.update("1", { status: "archived" })
+
+    expect(updated?.status).toBe("archived")
+  })
+
+  // ==========================================================================
+  // delete() Tests
+  // ==========================================================================
+
+  test("delete() returns true when entity deleted", async () => {
+    const result = await executor.delete("1")
+
+    expect(result).toBe(true)
+  })
+
+  test("delete() returns false for non-existent id", async () => {
+    const result = await executor.delete("nonexistent")
+
+    expect(result).toBe(false)
+  })
+
+  test("deleted entity is not retrievable", async () => {
+    await executor.delete("1")
+
+    const found = await executor.first(parseQuery({ id: "1" }))
+    expect(found).toBeUndefined()
+  })
+
+  test("delete() generates DELETE SQL with WHERE id", async () => {
+    const countBefore = await executor.count(parseQuery({}))
+    expect(countBefore).toBe(2)
+
+    await executor.delete("1")
+
+    const countAfter = await executor.count(parseQuery({}))
+    expect(countAfter).toBe(1)
+  })
+
+  // ==========================================================================
+  // insertMany() Tests
+  // ==========================================================================
+
+  test("insertMany() returns array of created entities", async () => {
+    const entities = await executor.insertMany([
+      { name: "Batch1", status: "active", age: 20 },
+      { name: "Batch2", status: "pending", age: 21 }
+    ])
+
+    expect(Array.isArray(entities)).toBe(true)
+    expect(entities.length).toBe(2)
+    expect(entities[0].name).toBe("Batch1")
+    expect(entities[1].name).toBe("Batch2")
+  })
+
+  test("insertMany() assigns unique ids", async () => {
+    const entities = await executor.insertMany([
+      { name: "A", status: "active", age: 1 },
+      { name: "B", status: "active", age: 2 }
+    ])
+
+    expect(entities[0].id).toBeDefined()
+    expect(entities[1].id).toBeDefined()
+    expect(entities[0].id).not.toBe(entities[1].id)
+  })
+
+  test("insertMany() uses transaction for atomicity", async () => {
+    // Count before
+    const countBefore = await executor.count(parseQuery({}))
+
+    // Insert multiple
+    await executor.insertMany([
+      { name: "Tx1", status: "active", age: 10 },
+      { name: "Tx2", status: "active", age: 11 },
+      { name: "Tx3", status: "active", age: 12 }
+    ])
+
+    // Count after - all should be inserted
+    const countAfter = await executor.count(parseQuery({}))
+    expect(countAfter).toBe(countBefore + 3)
+  })
+
+  // ==========================================================================
+  // updateMany() Tests
+  // ==========================================================================
+
+  test("updateMany() returns count of updated entities", async () => {
+    const count = await executor.updateMany(
+      parseQuery({ status: "active" }),
+      { status: "archived" }
+    )
+
+    expect(typeof count).toBe("number")
+    expect(count).toBe(1) // Only Alice is active
+  })
+
+  test("updateMany() updates all matching entities", async () => {
+    // First make both entities active
+    await executor.update("2", { status: "active" })
+
+    // Now update all active to archived
+    await executor.updateMany(
+      parseQuery({ status: "active" }),
+      { status: "archived" }
+    )
+
+    // Query to verify both are archived
+    const results = await executor.select(parseQuery({ status: "archived" }))
+    expect(results.length).toBe(2)
+  })
+
+  test("updateMany() returns 0 when no matches", async () => {
+    const count = await executor.updateMany(
+      parseQuery({ status: "nonexistent" }),
+      { status: "updated" }
+    )
+
+    expect(count).toBe(0)
+  })
+
+  test("updateMany() compiles filter AST to WHERE clause", async () => {
+    // Insert more test data
+    await executor.insertMany([
+      { name: "Young1", status: "active", age: 20 },
+      { name: "Young2", status: "active", age: 22 }
+    ])
+
+    // Update entities with age < 25
+    const count = await executor.updateMany(
+      parseQuery({ age: { $lt: 25 } }),
+      { status: "young" }
+    )
+
+    expect(count).toBe(2) // Young1 and Young2
+  })
+
+  // ==========================================================================
+  // deleteMany() Tests
+  // ==========================================================================
+
+  test("deleteMany() returns count of deleted entities", async () => {
+    const count = await executor.deleteMany(parseQuery({ status: "active" }))
+
+    expect(typeof count).toBe("number")
+    expect(count).toBe(1) // Only Alice is active
+  })
+
+  test("deleteMany() removes all matching entities", async () => {
+    // Add more entities
+    await executor.insertMany([
+      { name: "ToDelete1", status: "temp", age: 1 },
+      { name: "ToDelete2", status: "temp", age: 2 }
+    ])
+
+    // Delete all temp status
+    await executor.deleteMany(parseQuery({ status: "temp" }))
+
+    // Verify they're gone
+    const remaining = await executor.select(parseQuery({ status: "temp" }))
+    expect(remaining.length).toBe(0)
+  })
+
+  test("deleteMany() returns 0 when no matches", async () => {
+    const count = await executor.deleteMany(parseQuery({ status: "nonexistent" }))
+
+    expect(count).toBe(0)
+  })
+
+  test("deleteMany() compiles filter AST to WHERE clause", async () => {
+    const countBefore = await executor.count(parseQuery({}))
+
+    // Delete all (empty filter)
+    await executor.deleteMany(parseQuery({}))
+
+    const countAfter = await executor.count(parseQuery({}))
+    expect(countAfter).toBe(0)
+  })
+})

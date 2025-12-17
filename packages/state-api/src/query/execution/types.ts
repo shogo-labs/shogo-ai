@@ -27,6 +27,22 @@ export interface SqlExecutorConfig {
 }
 
 /**
+ * Transaction executor interface for operations within a transaction.
+ *
+ * Provides the same execute method as ISqlExecutor, but operations
+ * are scoped to the transaction context.
+ */
+export interface ITransactionExecutor {
+  /**
+   * Execute a parameterized SQL query within the transaction.
+   *
+   * @param query - Tuple of [sql, params]
+   * @returns Promise resolving to array of result rows
+   */
+  execute(query: [sql: string, params: unknown[]]): Promise<Row[]>
+}
+
+/**
  * Database executor interface for executing parameterized SQL queries.
  *
  * This interface is database-agnostic and can be implemented by any database driver
@@ -51,4 +67,34 @@ export interface ISqlExecutor {
    * ```
    */
   execute(query: [sql: string, params: unknown[]]): Promise<Row[]>
+
+  /**
+   * Execute multiple SQL statements in order (typically DDL).
+   *
+   * @param statements - Array of SQL statements to execute
+   * @returns Promise resolving to count of executed statements
+   */
+  executeMany?(statements: string[]): Promise<number>
+
+  /**
+   * Execute a callback within a database transaction.
+   *
+   * Wraps the callback in BEGIN/COMMIT. If the callback throws,
+   * the transaction is automatically rolled back.
+   *
+   * @param callback - Async function receiving a transaction executor
+   * @returns Promise resolving to the callback's return value
+   *
+   * @example
+   * ```ts
+   * const result = await executor.beginTransaction(async (tx) => {
+   *   await tx.execute(["INSERT INTO users (name) VALUES ($1)", ["Alice"]])
+   *   await tx.execute(["INSERT INTO logs (msg) VALUES ($1)", ["User created"]])
+   *   return { success: true }
+   * })
+   * ```
+   */
+  beginTransaction<T>(
+    callback: (tx: ITransactionExecutor) => Promise<T>
+  ): Promise<T>
 }
