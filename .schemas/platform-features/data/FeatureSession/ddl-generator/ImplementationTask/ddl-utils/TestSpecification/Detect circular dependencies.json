@@ -1,0 +1,18 @@
+{
+  "id": "test-utils-003",
+  "scenario": "Detect circular dependencies",
+  "given": [
+    "ModelA with FK to ModelB",
+    "ModelB with FK to ModelA (circular dependency)"
+  ],
+  "when": "topologicalSort is called",
+  "then": [
+    "Throws error describing the circular dependency",
+    "Error message includes both model names"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/utils.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-utils",
+  "requirement": "req-ddl-topo-sort"
+}

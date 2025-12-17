@@ -1,0 +1,19 @@
+{
+  "id": "test-registry-no-backend-error",
+  "scenario": "Throws error if no backend found and no default",
+  "given": [
+    "BackendRegistry with no default set",
+    "No x-persistence.backend in schema/model"
+  ],
+  "when": "Calling resolve(schemaName, modelName)",
+  "then": [
+    "Throws descriptive error",
+    "Error mentions schema and model names",
+    "Suggests setting default or configuring x-persistence"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/__tests__/registry.test.ts",
+  "createdAt": 1734106500120,
+  "task": "task-backend-registry",
+  "requirement": "req-04-schema-driven-binding"
+}

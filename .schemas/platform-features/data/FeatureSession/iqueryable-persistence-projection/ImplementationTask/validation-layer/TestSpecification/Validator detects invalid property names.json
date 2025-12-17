@@ -1,0 +1,20 @@
+{
+  "id": "test-validator-invalid-property",
+  "scenario": "Validator detects invalid property names",
+  "given": [
+    "QueryValidator with meta-store access",
+    "Schema with User model (no 'foo' property)"
+  ],
+  "when": "Validating { foo: { $eq: 'bar' } }",
+  "then": [
+    "Returns { valid: false, errors: [...] }",
+    "Error has code INVALID_PROPERTY",
+    "Error message mentions 'foo' property",
+    "Error path identifies the field location"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/validation/__tests__/validator.test.ts",
+  "createdAt": 1734106500046,
+  "task": "task-validation-layer",
+  "requirement": "req-05-metastore-validation"
+}

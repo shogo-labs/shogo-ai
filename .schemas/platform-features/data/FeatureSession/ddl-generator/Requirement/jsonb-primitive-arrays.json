@@ -1,0 +1,9 @@
+{
+  "id": "req-ddl-jsonb-arrays",
+  "name": "jsonb-primitive-arrays",
+  "description": "Arrays of primitives (string[], number[], boolean[]) stored as JSONB (PostgreSQL) or TEXT/JSON (SQLite). Arrays with x-reference-type: array use junction tables instead.",
+  "priority": "could",
+  "status": "proposed",
+  "createdAt": 1734188400000,
+  "session": "ddl-generator-001"
+}

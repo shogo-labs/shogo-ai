@@ -1,0 +1,9 @@
+{
+  "id": "design-ddl-sql-string-generation",
+  "name": "sql-string-generation",
+  "question": "How should we convert DDLOutput structures into executable SQL strings?",
+  "decision": "Create src/ddl/sql-generator.ts module with four core functions: columnDefToSQL() (column definition strings), tableDefToCreateTableSQL() (CREATE TABLE statements), foreignKeyDefToSQL() (ALTER TABLE for PostgreSQL / inline comments for SQLite), and ddlOutputToSQL() (complete DDL orchestration). Add convenience function generateSQL(schema, dialect) to index.ts as one-step wrapper. Maintain DDLOutput as inspectable intermediate format.",
+  "rationale": "Separates structure generation (existing) from string formatting (new), following existing module pattern. PoC at ddl-native.test.ts proves this pattern works. Two-tier API provides flexibility: generateDDL() for structure inspection, ddlOutputToSQL() for SQL execution, generateSQL() for convenience. Enables testing SQL string output independently and supports future output formats (JSON, YAML).",
+  "createdAt": 1734476900000,
+  "session": "ddl-generator-001"
+}

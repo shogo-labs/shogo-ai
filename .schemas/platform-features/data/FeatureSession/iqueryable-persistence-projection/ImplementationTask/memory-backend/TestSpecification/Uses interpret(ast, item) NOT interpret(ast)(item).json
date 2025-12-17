@@ -1,0 +1,19 @@
+{
+  "id": "test-memory-interpret-pattern",
+  "scenario": "Uses interpret(ast, item) NOT interpret(ast)(item)",
+  "given": [
+    "MemoryBackend instance",
+    "Collection with items"
+  ],
+  "when": "Filtering with any condition",
+  "then": [
+    "Filter executes without 'Unable to get field X out of undefined' error",
+    "Each item passed individually to interpret",
+    "Correct items returned"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/memory.test.ts",
+  "createdAt": 1734106500072,
+  "task": "task-memory-backend",
+  "requirement": "req-03-backend-abstraction"
+}

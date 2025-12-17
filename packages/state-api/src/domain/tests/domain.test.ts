@@ -384,7 +384,16 @@ describe("domain() composition API", () => {
 
       // When: we create store with persistence in environment
       const store = result.createStore({
-        services: { persistence: mockPersistence },
+        services: {
+          persistence: mockPersistence,
+          backendRegistry: {
+            register: () => {},
+            get: () => undefined,
+            has: () => false,
+            resolve: () => { throw new Error("No backend") },
+            setDefault: () => {},
+          } as any,
+        },
         context: { schemaName: "env-test" },
       })
 

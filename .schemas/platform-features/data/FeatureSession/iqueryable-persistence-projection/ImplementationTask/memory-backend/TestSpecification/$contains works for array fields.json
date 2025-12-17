@@ -1,0 +1,19 @@
+{
+  "id": "test-memory-contains-array",
+  "scenario": "$contains works for array fields",
+  "given": [
+    "MemoryBackend instance",
+    "Items with tags array field"
+  ],
+  "when": "Executing { tags: { $contains: 'featured' } }",
+  "then": [
+    "Returns items where tags includes 'featured'",
+    "Array.includes() used for checking",
+    "Items without tag excluded"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/memory.test.ts",
+  "createdAt": 1734106500074,
+  "task": "task-memory-backend",
+  "requirement": "req-03-backend-abstraction"
+}

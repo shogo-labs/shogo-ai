@@ -1,0 +1,12 @@
+{
+  "id": "ip-backend-index-modify",
+  "name": "backend-index-modify",
+  "filePath": "packages/state-api/src/query/backends/index.ts",
+  "package": "state-api",
+  "changeType": "modify",
+  "description": "Add exports for PostgresBackend from backends module index. Updated exports: IBackend, MemoryBackend, SqlBackend, PostgresBackend.",
+  "rationale": "Public API surface for new PostgresBackend.",
+  "createdAt": 1734278400025,
+  "session": "iqueryable-persistence-projection",
+  "finding": "finding-queryable-terminal-ops"
+}

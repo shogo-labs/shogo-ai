@@ -1,0 +1,19 @@
+{
+  "id": "test-memory-performance",
+  "scenario": "10k items filter+sort+paginate < 200ms",
+  "given": [
+    "MemoryBackend instance",
+    "Collection of 10,000 items"
+  ],
+  "when": "Executing complex query with filter, orderBy, skip, take",
+  "then": [
+    "Execution completes in under 200ms",
+    "Correct results returned",
+    "No memory issues"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/memory.test.ts",
+  "createdAt": 1734106500081,
+  "task": "task-memory-backend",
+  "requirement": "req-03-backend-abstraction"
+}

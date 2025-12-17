@@ -1,0 +1,12 @@
+{
+  "id": "run-ddl-sql-gen-001",
+  "status": "complete",
+  "currentTaskId": "task-ddl-sql-generator",
+  "completedTasks": [
+    "task-ddl-sql-generator"
+  ],
+  "failedTasks": [],
+  "startedAt": 1734478000000,
+  "completedAt": 1734478500000,
+  "session": "ddl-generator-001"
+}

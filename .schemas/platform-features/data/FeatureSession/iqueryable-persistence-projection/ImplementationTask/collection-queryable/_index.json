@@ -1,0 +1,31 @@
+{
+  "id": "task-collection-queryable",
+  "name": "collection-queryable",
+  "description": "Implement CollectionQueryable mixin and integrate into composition pipeline",
+  "acceptanceCriteria": [
+    "queryable.ts: CollectionQueryable mixin using types.model().views().actions() pattern",
+    "queryable.ts: .query() view returns IQueryable builder instance",
+    "queryable.ts: IQueryable has where(), orderBy(), skip(), take() chainable methods",
+    "queryable.ts: IQueryable has toArray(), first(), count(), any() terminal operations",
+    "queryable.ts: Uses getEnv<IEnvironment>(self).services.backendRegistry for backend resolution",
+    "queryable.ts: Terminal operations are async (return Promise)",
+    "enhance-collections.ts: Add enableQueryable option (default: true)",
+    "enhance-collections.ts: Compose CollectionQueryable after CollectionPersistable, before user enhancements",
+    "composition/index.ts: Export CollectionQueryable",
+    "query/index.ts: Top-level barrel exports for entire query module",
+    "Mixin can be composed independently or alongside CollectionPersistable",
+    "Query builder is immutable (each method returns new instance)"
+  ],
+  "status": "complete",
+  "createdAt": 1734106300009,
+  "updatedAt": 1734136000000,
+  "session": "iqueryable-persistence-projection",
+  "integrationPoint": "ip-queryable-mixin",
+  "requirement": "req-01-iqueryable-interface",
+  "dependencies": [
+    "task-validation-layer",
+    "task-memory-backend",
+    "task-sql-backend",
+    "task-environment-extension"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "test-env-existing-unchanged",
+  "scenario": "Existing persistence and auth services unchanged",
+  "given": [
+    "IEnvironment type is imported"
+  ],
+  "when": "Creating environment with existing services",
+  "then": [
+    "services.persistence still required",
+    "services.auth still optional",
+    "Backward compatible with existing code"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/environment/__tests__/types.test.ts",
+  "createdAt": 1734106500133,
+  "task": "task-environment-extension",
+  "requirement": "req-06-isomorphic-execution"
+}

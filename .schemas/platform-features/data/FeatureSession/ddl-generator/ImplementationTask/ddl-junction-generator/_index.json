@@ -1,0 +1,25 @@
+{
+  "id": "task-ddl-junction-generator",
+  "name": "ddl-junction-generator",
+  "description": "Generate junction tables for many-to-many relationships (x-reference-type: array)",
+  "acceptanceCriteria": [
+    "File exists at packages/state-api/src/ddl/junction-generator.ts",
+    "generateJunctionTable(sourceModel, property, dialect) returns TableDef for array references per req-ddl-junction-tables",
+    "Junction table name format: {source}_{property} (e.g., Team_members)",
+    "Columns: {source}_id and {target}_id, both NOT NULL",
+    "Both columns have FK constraints with ON DELETE CASCADE",
+    "Composite PRIMARY KEY on ({source}_id, {target}_id)",
+    "Uses constraint-builder.inferForeignKey() for FK generation",
+    "Skips properties without x-reference-type: 'array'",
+    "Skips properties with x-computed: true"
+  ],
+  "status": "complete",
+  "createdAt": 1734203400000,
+  "updatedAt": 1734313800000,
+  "session": "ddl-generator-001",
+  "requirement": "req-ddl-junction-tables",
+  "dependencies": [
+    "task-ddl-constraint-builder",
+    "task-ddl-utils"
+  ]
+}

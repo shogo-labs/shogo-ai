@@ -1,0 +1,11 @@
+{
+  "id": "finding-executor-placement",
+  "name": "executor-placement-analysis",
+  "type": "architecture-decision",
+  "description": "BunSqlExecutor should live in packages/state-api/src/query/execution/ as a new subdirectory. This placement: (1) Keeps execution separate from backends (SqlBackend compiles SQL, BunSqlExecutor runs it), (2) Follows existing pattern where query/ has subdirectories for ast/, backends/, validation/, (3) Allows future executors (e.g., TursoExecutor, D1Executor) to coexist. The execution/ directory establishes clear compile-vs-execute separation.",
+  "location": "packages/state-api/src/query/execution/",
+  "relevantCode": "// Proposed structure:\n// src/query/execution/\n//   types.ts       - ISqlExecutor interface\n//   bun-sql.ts     - BunSqlExecutor implementation\n//   index.ts       - barrel exports",
+  "recommendation": "Create new execution/ subdirectory in query/. Define ISqlExecutor interface with execute([sql, params]) signature. BunSqlExecutor implements this using Bun.sql tagged template invocation pattern.",
+  "createdAt": 1734278400000,
+  "session": "iqueryable-persistence-projection"
+}

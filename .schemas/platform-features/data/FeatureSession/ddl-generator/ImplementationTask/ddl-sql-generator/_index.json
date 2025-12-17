@@ -1,0 +1,32 @@
+{
+  "id": "task-ddl-sql-generator",
+  "name": "ddl-sql-generator",
+  "description": "Implement SQL string generation functions to convert DDLOutput structures into executable CREATE TABLE and ALTER TABLE statements",
+  "acceptanceCriteria": [
+    "File exists at packages/state-api/src/ddl/sql-generator.ts",
+    "columnDefToSQL(column, isPrimaryKey, dialect) converts ColumnDef to column definition string",
+    "tableDefToCreateTableSQL(table, dialect) converts TableDef to CREATE TABLE string with proper formatting",
+    "foreignKeyDefToSQL(fk, dialect) converts ForeignKeyDef to ALTER TABLE (PostgreSQL) or inline comment (SQLite)",
+    "ddlOutputToSQL(ddl, dialect) orchestrates complete DDL generation in execution order",
+    "All identifiers properly escaped using dialect.escapeIdentifier()",
+    "CHECK constraints formatted correctly with proper quoting",
+    "Composite primary keys supported for junction tables",
+    "PostgreSQL: Generates ALTER TABLE statements for foreign keys",
+    "SQLite: Generates inline FK syntax as comments",
+    "Proper indentation (2 spaces) for readability",
+    "All statements end with semicolon (except SQLite comments)",
+    "generateSQL(schema, dialect) convenience function added to index.ts",
+    "Barrel exports updated to include sql-generator functions",
+    "JSDoc documentation for all exported functions"
+  ],
+  "status": "complete",
+  "createdAt": 1734476900000,
+  "updatedAt": 1734478500000,
+  "session": "ddl-generator-001",
+  "requirement": "req-ddl-sql-string-generation",
+  "dependencies": [
+    "task-ddl-types",
+    "task-ddl-dialect",
+    "task-ddl-main-api"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "finding-connection-management",
+  "name": "database-connection-lifecycle",
+  "type": "risk",
+  "description": "Bun.sql connections need lifecycle management. In MCP server context: (1) Long-lived server process, (2) Multiple Claude sessions may connect/disconnect, (3) Connection pooling may be needed for concurrent queries. Risk: Connection leaks if not properly managed. Mitigation: BunSqlExecutor should handle connect/disconnect lifecycle, db.connect tool establishes connection, stores reference in MCP server state.",
+  "location": "packages/mcp/src/tools/db.connect.ts",
+  "relevantCode": "// MCP state needs connection storage:\nlet activeConnection: SQL | null = null\n\n// db.connect tool:\nexport function registerDbConnect(server: FastMCP) {\n  server.addTool({\n    name: 'db.connect',\n    execute: async (args) => {\n      const { connectionString } = args\n      activeConnection = await Bun.sql(connectionString)\n      return JSON.stringify({ ok: true, connected: true })\n    }\n  })\n}",
+  "recommendation": "Add connection state management to packages/mcp/src/state.ts. BunSqlExecutor takes connection as constructor param. db.connect creates connection and stores globally in MCP server state.",
+  "createdAt": 1734278400007,
+  "session": "iqueryable-persistence-projection"
+}

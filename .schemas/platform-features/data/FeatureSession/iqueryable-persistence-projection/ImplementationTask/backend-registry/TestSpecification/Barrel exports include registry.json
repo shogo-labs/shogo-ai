@@ -1,0 +1,20 @@
+{
+  "id": "test-registry-index-exports",
+  "scenario": "Barrel exports include registry",
+  "given": [
+    "backends/index.ts module exists"
+  ],
+  "when": "Importing from backends/index.ts",
+  "then": [
+    "BackendRegistry class accessible",
+    "IBackendRegistry interface accessible",
+    "createBackendRegistry function accessible",
+    "MemoryBackend accessible",
+    "SqlBackend accessible"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/backends/__tests__/index.test.ts",
+  "createdAt": 1734106500121,
+  "task": "task-backend-registry",
+  "requirement": "req-04-schema-driven-binding"
+}

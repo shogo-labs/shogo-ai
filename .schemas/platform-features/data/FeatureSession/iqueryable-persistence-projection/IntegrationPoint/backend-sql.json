@@ -1,0 +1,12 @@
+{
+  "id": "ip-backend-sql",
+  "name": "backend-sql",
+  "filePath": "packages/state-api/src/query/backends/sql.ts",
+  "package": "state-api",
+  "changeType": "add",
+  "description": "SqlBackend class: implements IBackend, uses @ucast/sql for WHERE compilation, custom $contains LIKE interpreter, manual ORDER BY/LIMIT/OFFSET. Returns [sql, params, joins] tuple.",
+  "rationale": "SQL-01 through SQL-08 requirements. PostgreSQL dialect with parameterized queries.",
+  "createdAt": 1734105800021,
+  "session": "iqueryable-persistence-projection",
+  "finding": "finding-sql-backend"
+}

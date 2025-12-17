@@ -1,0 +1,20 @@
+{
+  "id": "task-ddl-types",
+  "name": "ddl-types",
+  "description": "Define core TypeScript interfaces for DDL generator (DDLOutput, TableDef, ColumnDef, ForeignKeyDef, SqlDialect)",
+  "acceptanceCriteria": [
+    "File exists at packages/state-api/src/ddl/types.ts",
+    "DDLOutput interface includes: tables[], foreignKeys[], junctionTables[], executionOrder[]",
+    "TableDef interface includes: name, columns[], primaryKey, foreignKeys[]",
+    "ColumnDef interface includes: name, type, nullable, defaultValue?, checkConstraint?",
+    "ForeignKeyDef interface includes: name, table, column, referencesTable, referencesColumn, onDelete",
+    "SqlDialect interface includes: name, escapeIdentifier(name), mapType(jsonType, format?), supportsForeignKeys, supportsCheckConstraints",
+    "All interfaces exported with JSDoc documentation"
+  ],
+  "status": "complete",
+  "createdAt": 1734203400000,
+  "updatedAt": 1734293600000,
+  "session": "ddl-generator-001",
+  "requirement": "req-ddl-structured-output",
+  "dependencies": []
+}

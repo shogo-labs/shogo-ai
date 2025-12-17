@@ -1,0 +1,18 @@
+{
+  "id": "test-p2-db-query-08",
+  "scenario": "db.query ArkType params schema validates input",
+  "given": [
+    "db.query tool is registered"
+  ],
+  "when": "db.query is called with invalid params (e.g., sql as number)",
+  "then": [
+    "ArkType validation fails",
+    "Returns error before execution",
+    "Error describes schema violation"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/mcp/src/tools/__tests__/db.query.test.ts",
+  "createdAt": 1734278600077,
+  "task": "task-p2-db-query",
+  "requirement": "req-10-mcp-database-tools"
+}

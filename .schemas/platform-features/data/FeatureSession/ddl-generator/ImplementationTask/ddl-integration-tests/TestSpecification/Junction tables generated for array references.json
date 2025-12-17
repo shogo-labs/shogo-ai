@@ -1,0 +1,20 @@
+{
+  "id": "test-integration-003",
+  "scenario": "Junction tables generated for array references",
+  "given": [
+    "Schema with Team model having members array reference to User"
+  ],
+  "when": "generateDDL is called",
+  "then": [
+    "DDLOutput.junctionTables includes Team_members table",
+    "Junction table has team_id and user_id columns",
+    "Both columns are NOT NULL with FK constraints",
+    "Both FKs have ON DELETE CASCADE",
+    "Composite PK on both columns"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/ddl/__tests__/ddl.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-integration-tests",
+  "requirement": "req-ddl-junction-tables"
+}

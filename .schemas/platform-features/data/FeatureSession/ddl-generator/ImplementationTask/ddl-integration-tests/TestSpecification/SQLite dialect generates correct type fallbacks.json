@@ -1,0 +1,20 @@
+{
+  "id": "test-integration-002",
+  "scenario": "SQLite dialect generates correct type fallbacks",
+  "given": [
+    "Teams domain Enhanced JSON Schema",
+    "SQLite dialect"
+  ],
+  "when": "generateDDL is called with Teams schema",
+  "then": [
+    "Organization id uses TEXT instead of UUID",
+    "Boolean fields use INTEGER instead of BOOLEAN",
+    "Timestamp fields use TEXT instead of TIMESTAMPTZ",
+    "FK constraints are inline in CREATE TABLE (not ALTER TABLE)"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/state-api/src/ddl/__tests__/ddl.test.ts",
+  "createdAt": 1734203500000,
+  "task": "task-ddl-integration-tests",
+  "requirement": "req-ddl-sqlite-dialect-support"
+}

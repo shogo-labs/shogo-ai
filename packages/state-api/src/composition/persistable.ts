@@ -33,10 +33,12 @@ export const CollectionPersistable = types.model()
      */
     get persistenceContext(): PersistenceContext {
       const env = getEnv<IEnvironment>(self)
+      // Runtime stores always have context (meta-store doesn't use CollectionPersistable)
+      const context = env.context!
       return {
-        schemaName: env.context.schemaName,   // Stable string from environment
+        schemaName: context.schemaName,   // Stable string from environment
         modelName: (self as any).modelName,   // From collection's view (closure-based)
-        location: env.context.location,
+        location: context.location,
         persistenceConfig: (self as any).persistenceConfigMetadata,  // From collection's view (closure-based)
         schemaDefs: (self as any).schemaDefsMetadata  // For nested persistence parent lookup
       }

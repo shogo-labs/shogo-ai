@@ -1,0 +1,19 @@
+{
+  "id": "test-p2-backend-registry-mcp-06",
+  "scenario": "Connection implicit via x-persistence.backend schema metadata",
+  "given": [
+    "Schema defines x-persistence.backend='postgres'",
+    "No explicit connection param in query"
+  ],
+  "when": "Query is executed against postgres-backed model",
+  "then": [
+    "Connection resolved from schema metadata",
+    "No need for explicit connection specification",
+    "Query executes against correct database"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/mcp/src/tools/__tests__/backend-registry.test.ts",
+  "createdAt": 1734278600095,
+  "task": "task-p2-backend-registry-mcp",
+  "requirement": "req-11-backend-registry-mcp"
+}

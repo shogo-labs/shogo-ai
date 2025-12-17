@@ -1,0 +1,9 @@
+{
+  "id": "design-ddl-dialect-abstraction",
+  "name": "dialect-abstraction",
+  "question": "How to handle PostgreSQL vs SQLite differences?",
+  "decision": "Define SqlDialect interface: { name: string, escapeIdentifier(name): string, mapType(jsonType, format): string, supportsForeignKeys: boolean, supportsCheckConstraints: boolean }. Implementations: PostgresDialect (UUID, TIMESTAMPTZ, BOOLEAN, ALTER TABLE FKs), SqliteDialect (TEXT fallbacks, INTEGER for bool, inline FKs)",
+  "rationale": "Interface allows adding dialects without changing core logic. Type mapping is dialect-specific (UUID vs TEXT). FK syntax differs (ALTER TABLE vs inline). Analysis found escapeIdentifier pattern in SqlBackend.",
+  "createdAt": 1734188800000,
+  "session": "ddl-generator-001"
+}

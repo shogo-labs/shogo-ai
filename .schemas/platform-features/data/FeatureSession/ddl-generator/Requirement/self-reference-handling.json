@@ -1,0 +1,9 @@
+{
+  "id": "req-ddl-self-refs",
+  "name": "self-reference-handling",
+  "description": "Self-referential FKs (e.g., Team.parentId → Team.id) generate valid constraints. Self-refs are typically optional (nullable). ON DELETE SET NULL for optional self-refs to avoid cascade deletion issues.",
+  "priority": "should",
+  "status": "proposed",
+  "createdAt": 1734188400000,
+  "session": "ddl-generator-001"
+}

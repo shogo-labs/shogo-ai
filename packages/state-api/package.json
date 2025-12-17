@@ -9,12 +9,16 @@
     ".": "./dist/index.js"
   },
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target node",
+    "build": "bun build src/index.ts --outdir dist --target node && tsc --emitDeclarationOnly --outDir dist",
     "dev": "bun run --watch src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ucast/core": "^1.10.2",
+    "@ucast/js": "^3.0.4",
+    "@ucast/mongo": "^2.4.3",
+    "@ucast/sql": "^1.0.0-alpha.1",
     "arktype": "^2.0.0-beta.7",
     "jsondiffpatch": "^0.6.0",
     "mobx": "^6.13.5",

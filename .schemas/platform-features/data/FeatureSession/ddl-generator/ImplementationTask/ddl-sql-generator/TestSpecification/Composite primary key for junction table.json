@@ -1,0 +1,19 @@
+{
+  "id": "test-sql-gen-006",
+  "scenario": "Composite primary key for junction table",
+  "given": [
+    "Junction TableDef with primaryKey: 'team_id, user_id'",
+    "PostgreSQL dialect"
+  ],
+  "when": "tableDefToCreateTableSQL is called",
+  "then": [
+    "PRIMARY KEY clause includes both columns",
+    "Format: PRIMARY KEY (\"team_id\", \"user_id\")",
+    "Columns properly escaped and comma-separated"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/ddl/__tests__/sql-generator.test.ts",
+  "createdAt": 1734477000000,
+  "task": "task-ddl-sql-generator",
+  "requirement": "req-ddl-sql-string-generation"
+}

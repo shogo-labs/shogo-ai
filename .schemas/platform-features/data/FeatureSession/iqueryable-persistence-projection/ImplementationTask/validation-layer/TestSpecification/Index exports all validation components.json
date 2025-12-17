@@ -1,0 +1,20 @@
+{
+  "id": "test-validation-index-exports",
+  "scenario": "Index exports all validation components",
+  "given": [
+    "validation/index.ts module exists"
+  ],
+  "when": "Importing from validation/index.ts",
+  "then": [
+    "QueryValidator class is accessible",
+    "IQueryValidator interface is accessible",
+    "ValidationResult type is accessible",
+    "ValidationError type is accessible",
+    "OPERATOR_BY_TYPE constant is accessible"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/validation/__tests__/index.test.ts",
+  "createdAt": 1734106500051,
+  "task": "task-validation-layer",
+  "requirement": "req-05-metastore-validation"
+}

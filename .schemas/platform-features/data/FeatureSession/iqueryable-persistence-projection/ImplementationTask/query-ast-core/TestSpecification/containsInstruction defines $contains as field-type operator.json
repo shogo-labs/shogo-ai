@@ -1,0 +1,18 @@
+{
+  "id": "test-operators-contains",
+  "scenario": "containsInstruction defines $contains as field-type operator",
+  "given": [
+    "containsInstruction is exported from operators.ts"
+  ],
+  "when": "Inspecting containsInstruction structure",
+  "then": [
+    "Has type: 'field'",
+    "Operator name is 'contains'",
+    "Can be passed to MongoQueryParser"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/query/ast/__tests__/operators.test.ts",
+  "createdAt": 1734106500013,
+  "task": "task-query-ast-core",
+  "requirement": "req-02-mongodb-operators"
+}
