@@ -1,0 +1,18 @@
+{
+  "id": "test-demo-006",
+  "scenario": "Chat data persists across page refresh",
+  "given": [
+    "ChatSession created with messages",
+    "MCPPersistence configured"
+  ],
+  "when": "refresh page and navigate back to /ai-chat-demo",
+  "then": [
+    "previous sessions appear in list",
+    "selecting session shows previous messages",
+    "proves persistence pipeline working"
+  ],
+  "testType": "integration",
+  "targetFile": "apps/web/src/pages/tests/AIChatDemoPage.test.tsx",
+  "createdAt": 1734462600005,
+  "task": "task-chat-demo-page"
+}

@@ -1,0 +1,11 @@
+{
+  "id": "finding-002-domain-provider",
+  "name": "domain-provider-pattern",
+  "type": "pattern",
+  "description": "DomainProvider creates MST stores from domain definitions (teams, multiTenancy, chat). Stores auto-load persisted data via useEffect on mount. Components access stores via useDomains() hook destructuring: const { chat } = useDomains().",
+  "location": "apps/web/src/contexts/DomainProvider.tsx",
+  "relevantCode": "const domains = { teams: teamsDomain, chat: chatDomain } as const",
+  "recommendation": "Unified page should use useDomains() to access chat store for session management. May need to add platform-features domain.",
+  "createdAt": 1734480201000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

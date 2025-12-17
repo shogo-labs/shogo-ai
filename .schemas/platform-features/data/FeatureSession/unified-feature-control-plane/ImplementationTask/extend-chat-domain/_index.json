@@ -1,0 +1,18 @@
+{
+  "id": "task-001-extend-chat-domain",
+  "name": "extend-chat-domain",
+  "description": "Extend chatDomain to support feature session linking. Add featureSessionId field to ChatSession and new enhancements for querying and creating feature-linked chats.",
+  "acceptanceCriteria": [
+    "ChatDomain ArkType scope includes 'featureSessionId?': 'string' on ChatSession entity",
+    "enhancements.models adds ChatSession.featureSessionId view (returns the linked ID or undefined)",
+    "enhancements.collections adds ChatSessionCollection.findByFeatureSession(featureSessionId) returning all chat sessions for a feature",
+    "enhancements.rootStore adds createFeatureChat(featureSessionId, name) action that creates a ChatSession linked to a FeatureSession",
+    "Existing chatDomain functionality (createChatSession, addMessage, recordArtifact) remains unchanged",
+    "Unit tests verify findByFeatureSession returns correct sessions",
+    "Unit tests verify createFeatureChat links session correctly"
+  ],
+  "status": "planned",
+  "createdAt": 1734480700000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e",
+  "dependencies": []
+}

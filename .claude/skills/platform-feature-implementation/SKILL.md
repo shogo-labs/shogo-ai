@@ -896,6 +896,66 @@ if (existingRun) {
 
 ---
 
+## Frontend Technology Defaults
+
+When implementing features that involve frontend development (React components, UI, dashboards, etc.), use these defaults:
+
+### Default Stack
+- **UI Components**: shadcn/ui - accessible, customizable component library built on Radix UI
+- **Styling**: Tailwind CSS - utility-first CSS framework
+- **Icons**: Lucide React (included with shadcn/ui)
+
+### Current Setup (apps/web)
+
+The demo app has this stack configured:
+- Tailwind CSS v4 with `@tailwindcss/vite` plugin
+- Theme colors in `src/index.css` using `@theme` directive:
+  - `--color-background`, `--color-foreground`, `--color-primary`, `--color-secondary`
+  - `--color-card`, `--color-muted`, `--color-border`, `--color-ring`
+- shadcn/ui foundation: `components.json`, `src/lib/utils.ts` with `cn()` helper
+- Path alias `@/` configured in tsconfig and vite
+- Button component as reference pattern in `src/components/ui/button.tsx`
+
+### Implementation Patterns
+
+**Use Tailwind classes instead of inline styles:**
+```tsx
+// ❌ Don't use inline styles
+<div style={{ padding: '1rem', background: '#1e1e1e' }}>
+
+// ✅ Use Tailwind classes
+<div className="p-4 bg-card">
+```
+
+**Use cn() for conditional classes:**
+```tsx
+import { cn } from "@/lib/utils"
+
+<button className={cn(
+  "px-4 py-2 rounded-md font-bold",
+  isActive ? "bg-primary text-primary-foreground" : "bg-secondary"
+)}>
+```
+
+**Use shadcn components when available:**
+```tsx
+import { Button } from "@/components/ui/button"
+
+<Button variant="default" size="sm">Click me</Button>
+```
+
+### Adding New shadcn Components
+
+Follow the existing Button pattern in `src/components/ui/button.tsx`:
+1. Create file in `src/components/ui/{component}.tsx`
+2. Use `cva()` for variant definitions
+3. Use `cn()` for class merging
+4. Export component and variants
+
+Available components to add: Card, Input, Label, Dialog, Sheet, Tabs, Badge, Separator.
+
+---
+
 ## References
 
 - [domain-pattern.md](references/domain-pattern.md) - **Schema-first domain.ts pattern (CRITICAL)**

@@ -1,0 +1,22 @@
+{
+  "id": "task-fsd-002",
+  "name": "migrate-homepage",
+  "description": "Migrate HomePage.tsx from inline styles to Tailwind classes. Replace all style={{}} blocks with utility classes. Use Card component for content sections.",
+  "acceptanceCriteria": [
+    "No inline style={{}} attributes remain",
+    "Layout uses Tailwind spacing (p-*, m-*, gap-*)",
+    "Typography uses Tailwind text utilities",
+    "Colors use theme variables (bg-card, text-foreground, etc.)",
+    "Card component used for major content sections",
+    "Visual appearance matches current design"
+  ],
+  "status": "completed",
+  "createdAt": 1734481100000,
+  "updatedAt": 1734481600000,
+  "session": "fs-frontend-defaults-001",
+  "integrationPoint": "ip-fsd-006",
+  "requirement": "req-fsd-005",
+  "dependencies": [
+    "task-fsd-001"
+  ]
+}

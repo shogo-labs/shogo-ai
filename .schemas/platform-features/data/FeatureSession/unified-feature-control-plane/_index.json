@@ -1,0 +1,23 @@
+{
+  "id": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e",
+  "name": "unified-feature-control-plane",
+  "intent": "Merge the Platform Features tab and AI Chat Demo tab into a unified UI experience where users have a single control plane for feature development. Users should be able to chat with features, navigate through the skill cycle (discovery → analysis → classification → design → spec → implementation), and track the progress the system is making live.",
+  "status": "implementation",
+  "affectedPackages": [
+    "apps/web"
+  ],
+  "initialAssessment": {
+    "likelyArchetype": "domain",
+    "indicators": [
+      "UI integration - combining two existing pages",
+      "No external API calls - uses existing MCP/Wavesmith infrastructure",
+      "Local state management for feature sessions and chat",
+      "Real-time reactive updates using MST stores"
+    ],
+    "uncertainties": []
+  },
+  "featureArchetype": "domain",
+  "applicablePatterns": [],
+  "createdAt": 1734480000000,
+  "updatedAt": 1734481000000
+}

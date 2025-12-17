@@ -1,0 +1,24 @@
+{
+  "id": "task-006-entity-data-panel",
+  "name": "entity-data-panel",
+  "description": "Create EntityDataPanel component - tabbed viewer showing Requirements, Findings, Tasks, Decisions for selected session with polling refresh.",
+  "acceptanceCriteria": [
+    "Component at apps/web/src/components/FeatureControlPlane/EntityDataPanel.tsx",
+    "Accepts sessionId prop to filter entities",
+    "Tabbed interface: Requirements, Findings, Tasks, Decisions, Integration Points",
+    "Each tab shows count badge",
+    "Uses mcpService.callTool to fetch data from platform-features schema",
+    "Implements polling with setInterval (configurable, default 5 seconds)",
+    "Shows loading skeleton during fetch",
+    "Entity rows are expandable to show full details",
+    "Requirements show priority badge (must/should/could)",
+    "Findings show type badge (pattern/gap/risk)",
+    "Tasks show status badge (planned/in_progress/completed)",
+    "Refresh button for manual reload",
+    "Stop polling when component unmounts (cleanup)"
+  ],
+  "status": "planned",
+  "createdAt": 1734480705000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e",
+  "dependencies": []
+}

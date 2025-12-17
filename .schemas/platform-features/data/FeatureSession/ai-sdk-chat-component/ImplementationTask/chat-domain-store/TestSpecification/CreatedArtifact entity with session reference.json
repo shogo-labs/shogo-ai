@@ -1,0 +1,23 @@
+{
+  "id": "test-created-artifact-entity",
+  "scenario": "CreatedArtifact entity with session reference",
+  "given": [
+    "chatDomain is initialized",
+    "ChatSession 'session-1' exists"
+  ],
+  "when": "CreatedArtifact is created linking to session-1",
+  "then": [
+    "CreatedArtifact has id field (identifier)",
+    "CreatedArtifact has session field referencing ChatSession",
+    "CreatedArtifact.session resolves to ChatSession instance",
+    "CreatedArtifact has artifactType field (enum: schema, entity, other)",
+    "CreatedArtifact has artifactName field (string)",
+    "CreatedArtifact has toolName field (string)",
+    "CreatedArtifact has createdAt field (number)"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/chat/__tests__/domain.test.ts",
+  "createdAt": 1734462503000,
+  "task": "task-chat-domain-store",
+  "requirement": "ai-sdk-feature-mapping"
+}

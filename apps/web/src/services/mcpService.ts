@@ -146,21 +146,33 @@ export class MCPService {
   }
 
   /**
-   * Parse SSE-formatted response to extract JSON-RPC payload
+   * Parse SSE-formatted response to extract final JSON-RPC result
    * SSE format: "event: message\ndata: {json}\n\n"
+   * With streaming, there may be multiple data: lines - we want the one with `result`
    * Falls back to parsing entire text as JSON if not SSE format
    */
   private parseSSEResponse<T = any>(text: string): MCPResponse<T> {
     const lines = text.split('\n')
+    let lastValidResponse: MCPResponse<T> | null = null
+
     for (const line of lines) {
       if (line.startsWith('data: ')) {
         try {
-          return JSON.parse(line.slice(6))
+          const parsed = JSON.parse(line.slice(6))
+          // Look for the final result (has `result` or `error` field, not a notification)
+          if (parsed.result || parsed.error) {
+            lastValidResponse = parsed
+          }
         } catch {
           continue
         }
       }
     }
+
+    if (lastValidResponse) {
+      return lastValidResponse
+    }
+
     // Fallback: try parsing entire text as JSON (in case server returns JSON directly)
     return JSON.parse(text)
   }
@@ -201,17 +213,22 @@ export class MCPService {
 
     // Parse SSE response format (stateful mode returns SSE even for simple calls)
     const text = await response.text()
+    console.log('[mcpService.callTool] Raw response text:', text.slice(0, 500))
     const data: MCPResponse<T> = this.parseSSEResponse(text)
+    console.log('[mcpService.callTool] Parsed SSE data:', JSON.stringify(data, null, 2).slice(0, 500))
 
     if (data.error) {
       throw new Error(`MCP tool error: ${data.error.message}`)
     }
 
     if (!data.result?.content?.[0]?.text) {
+      console.error('[mcpService.callTool] Invalid response format, data:', data)
       throw new Error('Invalid MCP response format')
     }
 
-    return JSON.parse(data.result.content[0].text)
+    const parsed = JSON.parse(data.result.content[0].text)
+    console.log('[mcpService.callTool] Final parsed result:', JSON.stringify(parsed, null, 2).slice(0, 500))
+    return parsed
   }
 
   async generateSchema(intent: string, options?: {
@@ -260,10 +277,13 @@ export class MCPService {
     toolCalls?: Array<{ tool: string; args: any; result?: string }>
     error?: { code: string; message: string }
   }> {
-    return this.callTool('agent.chat', {
+    console.log('[mcpService.chat] Calling agent.chat with message:', message)
+    const result = await this.callTool('agent.chat', {
       message,
       ...(sessionId && { sessionId }),
     })
+    console.log('[mcpService.chat] Got result:', JSON.stringify(result, null, 2))
+    return result
   }
 
   /**

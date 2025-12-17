@@ -1,0 +1,9 @@
+{
+  "id": "dd-003-reactivity-approach",
+  "name": "reactivity-approach",
+  "question": "How to achieve real-time updates for platform-features entities?",
+  "decision": "Use polling with setInterval (5-10 second refresh) initially. Leverage existing mcpService.callTool for data fetching.",
+  "rationale": "Polling is simple to implement and sufficient for MVP. Can upgrade to MST domain with MobX reactivity or WebSocket push later if needed. MCP SSE already exists for streaming.",
+  "createdAt": 1734480502000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

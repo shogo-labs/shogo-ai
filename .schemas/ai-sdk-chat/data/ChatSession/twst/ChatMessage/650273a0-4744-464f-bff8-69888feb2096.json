@@ -1,0 +1,8 @@
+{
+  "id": "650273a0-4744-464f-bff8-69888feb2096",
+  "role": "assistant",
+  "content": "I can see there's a **platform-feature-discovery** skill available! Let me invoke it for you.Perfect! I've loaded the **platform-feature-discovery** skill. I'm ready to help you capture your intent and requirements for a new platform feature.\n\nThis skill will guide us through:\n\n1. **Capture Intent** - Understanding what you want to build and making an initial assessment of the feature archetype\n2. **Identify Affected Areas** - Determining which packages will be touched\n3. **Derive Requirements** - Breaking down your intent into must/should/could requirements\n4. **Validate & Handoff** - Confirming completeness and preparing for the next phase (analysis)\n\nAll of this gets stored in the `platform-features` schema via Wavesmith, creating a FeatureSession and Requirement entities that flow through the entire app builder pipeline.\n\n---\n\n**What feature would you like to build?** \n\nTell me about the functionality you need, and I'll help capture the requirements and initial assessment.",
+  "toolCalls": [],
+  "createdAt": 1766009428871,
+  "session": "7d6079a6-7873-497a-88c4-4d95b7b184ad"
+}

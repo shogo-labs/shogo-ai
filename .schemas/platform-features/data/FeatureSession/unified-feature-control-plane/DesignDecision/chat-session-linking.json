@@ -1,0 +1,9 @@
+{
+  "id": "dd-002-chat-linking",
+  "name": "chat-session-linking",
+  "question": "How should ChatSession be linked to FeatureSession?",
+  "decision": "Add optional featureSessionId field to ChatSession in ai-sdk-chat schema. Update chatDomain in packages/state-api/src/chat/domain.ts.",
+  "rationale": "Clean, explicit linking via foreign key reference. ChatSession can exist independently (for general chat) or be linked to a feature (for feature development chat).",
+  "createdAt": 1734480501000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

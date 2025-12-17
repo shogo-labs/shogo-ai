@@ -1,0 +1,9 @@
+{
+  "id": "ai-sdk-deps",
+  "name": "ai-sdk-deps",
+  "description": "Install and configure AI SDK dependencies: ai (or ai@latest for v5-beta), ai-sdk-provider-claude-code. Ensure Claude Code CLI is available on the server for the provider to invoke.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734461714000,
+  "session": "ai-sdk-chat-component"
+}

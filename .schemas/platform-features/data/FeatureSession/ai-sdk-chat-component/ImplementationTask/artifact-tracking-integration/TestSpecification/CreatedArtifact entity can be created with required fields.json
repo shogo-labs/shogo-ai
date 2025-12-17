@@ -1,0 +1,21 @@
+{
+  "id": "test-artifact-001",
+  "scenario": "CreatedArtifact entity can be created with required fields",
+  "given": [
+    "ai-sdk-chat schema loaded",
+    "runtime store initialized",
+    "ChatSession exists with id 'session-1'"
+  ],
+  "when": "store.create CreatedArtifact with session='session-1', artifactType='schema', artifactId='my-schema', artifactName='My Schema'",
+  "then": [
+    "artifact.id is string",
+    "artifact.session resolves to ChatSession instance",
+    "artifact.artifactType equals 'schema'",
+    "artifact.artifactId equals 'my-schema'",
+    "artifact.createdAt is timestamp"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/chat/tests/artifact-tracking.test.ts",
+  "createdAt": 1734462500000,
+  "task": "task-artifact-tracking"
+}

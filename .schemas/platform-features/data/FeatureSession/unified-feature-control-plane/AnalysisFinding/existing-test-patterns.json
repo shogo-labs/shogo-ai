@@ -1,0 +1,10 @@
+{
+  "id": "finding-011-existing-tests",
+  "name": "existing-test-patterns",
+  "type": "existing_test",
+  "description": "Test files exist for contexts (AuthContext.test.tsx, DomainProvider.test.tsx, EnvironmentContext.test.tsx) and pages (AuthDemoPage.test.tsx, TeamsDemoPage.test.tsx). Use @testing-library/react with happy-dom. Pattern: render component, verify elements, simulate interactions.",
+  "location": "apps/web/src/contexts/__tests__/, apps/web/src/pages/__tests__/",
+  "recommendation": "New page should have FeatureControlPlanePage.test.tsx following existing patterns.",
+  "createdAt": 1734480213000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

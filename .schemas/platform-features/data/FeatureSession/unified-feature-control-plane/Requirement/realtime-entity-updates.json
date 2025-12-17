@@ -1,0 +1,9 @@
+{
+  "id": "req-003-realtime-updates",
+  "name": "realtime-entity-updates",
+  "description": "Live updates to the entity data panel as Claude skills execute. When a skill creates Requirements, Findings, Tasks, etc., they appear in the UI without manual refresh. Uses MobX reactivity from the MST stores.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734480003000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

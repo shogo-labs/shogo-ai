@@ -1,0 +1,20 @@
+{
+  "id": "task-004-tool-call-part",
+  "name": "tool-call-part",
+  "description": "Create ToolCallPart component - renders individual tool call from AI SDK message.parts with state-based UI.",
+  "acceptanceCriteria": [
+    "Component at apps/web/src/components/FeatureControlPlane/ToolCallPart.tsx",
+    "Accepts part prop with type, toolCallId, input, output, state, errorText properties",
+    "Renders spinner icon when state='input-streaming'",
+    "Shows tool name and collapsible input params when state='input-available'",
+    "Shows tool name, input, and result when state='output-available'",
+    "Shows error styling and errorText when state='output-error'",
+    "Tool names are formatted nicely (mcp__wavesmith__store_create -> store.create)",
+    "Wavesmith tool calls show relevant info: schema, model, entity ID for store operations",
+    "Uses lucide-react icons (Loader2 for spinner, Check for success, X for error)"
+  ],
+  "status": "planned",
+  "createdAt": 1734480703000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e",
+  "dependencies": []
+}

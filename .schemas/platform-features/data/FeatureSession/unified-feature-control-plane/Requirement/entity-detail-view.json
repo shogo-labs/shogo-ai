@@ -1,0 +1,9 @@
+{
+  "id": "req-006-entity-detail-view",
+  "name": "entity-detail-view",
+  "description": "Ability to drill into individual entities (Requirements, Findings, Tasks, etc.) to see full details. Should support expanding/collapsing within the data panel without leaving the unified view.",
+  "priority": "should",
+  "status": "proposed",
+  "createdAt": 1734480006000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

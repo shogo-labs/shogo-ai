@@ -1,0 +1,9 @@
+{
+  "id": "ai-sdk-api-route",
+  "name": "ai-sdk-api-route",
+  "description": "Create a server-side API route that uses AI SDK with the Claude Code provider (ai-sdk-provider-claude-code). Configure it with mcpServers: ['wavesmith'] to give Claude access to Wavesmith MCP tools. Use streamText() for streaming responses.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734461710000,
+  "session": "ai-sdk-chat-component"
+}

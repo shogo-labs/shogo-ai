@@ -1,0 +1,10 @@
+{
+  "id": "class-evidence-no-domain-entities",
+  "name": "class-evidence-no-domain-entities",
+  "type": "classification_evidence",
+  "description": "NEW: Domain entities ARE needed - ChatSession, ChatMessage entities to persist conversation history and link to created features (schemas, etc). This is domain modeling that belongs in packages/state-api.",
+  "location": "apps/web/src/hooks/",
+  "recommendation": "Needs domain layer in packages/state-api with MST models for Chat domain",
+  "createdAt": 1734461808000,
+  "session": "ai-sdk-chat-component"
+}

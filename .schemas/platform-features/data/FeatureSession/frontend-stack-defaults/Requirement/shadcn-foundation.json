@@ -1,0 +1,9 @@
+{
+  "id": "req-fsd-002",
+  "name": "shadcn-foundation",
+  "description": "shadcn/ui foundation setup including: components.json configuration, lib/utils.ts with cn() helper, path aliases (@/), and core dependencies (class-variance-authority, clsx, tailwind-merge, lucide-react, @radix-ui/react-slot)",
+  "priority": "must",
+  "status": "implemented",
+  "createdAt": 1734480120000,
+  "session": "fs-frontend-defaults-001"
+}

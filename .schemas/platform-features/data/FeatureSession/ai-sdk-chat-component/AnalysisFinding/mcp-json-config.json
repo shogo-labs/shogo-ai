@@ -1,0 +1,11 @@
+{
+  "id": "finding-mcp-json-config",
+  "name": "mcp-json-config",
+  "type": "pattern",
+  "description": "Wavesmith MCP server is already configured in .mcp.json with name 'wavesmith'. AI SDK provider can reference this via mcpServers: ['wavesmith'] to give Claude access to all Wavesmith tools.",
+  "location": ".mcp.json",
+  "relevantCode": "{ \"mcpServers\": { \"wavesmith\": { \"command\": \"bun\", \"args\": [\"run\", \"packages/mcp/src/server.ts\"] } } }",
+  "recommendation": "Use mcpServers: ['wavesmith'] in AI SDK provider config to leverage existing MCP setup",
+  "createdAt": 1734461804000,
+  "session": "ai-sdk-chat-component"
+}

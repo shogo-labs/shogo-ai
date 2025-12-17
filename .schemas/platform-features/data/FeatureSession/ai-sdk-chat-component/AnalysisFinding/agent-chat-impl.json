@@ -1,0 +1,11 @@
+{
+  "id": "finding-agent-chat-impl",
+  "name": "agent-chat-impl",
+  "type": "pattern",
+  "description": "Current agent.chat tool uses @anthropic-ai/claude-agent-sdk query() function with streaming. It configures mcpServers, allowedTools, systemPrompt, and settingSources. Streams via context.streamContent().",
+  "location": "packages/mcp/src/tools/agent.chat.ts",
+  "relevantCode": "const stream = query({ prompt, options: { mcpServers: { wavesmith: {...} }, allowedTools: [...], settingSources: ['user', 'project'] } })",
+  "recommendation": "AI SDK provider uses similar config: mcpServers, allowedTools. Can replicate the streaming pattern using streamText()",
+  "createdAt": 1734461803000,
+  "session": "ai-sdk-chat-component"
+}

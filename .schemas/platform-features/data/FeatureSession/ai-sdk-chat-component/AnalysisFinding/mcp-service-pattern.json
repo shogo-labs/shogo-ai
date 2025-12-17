@@ -1,0 +1,11 @@
+{
+  "id": "finding-mcp-service-pattern",
+  "name": "mcp-service-pattern",
+  "type": "pattern",
+  "description": "mcpService handles all HTTP communication with MCP server including SSE streaming, session management, and JSON-RPC protocol. It's a singleton service class that manages connection state.",
+  "location": "apps/web/src/services/mcpService.ts",
+  "relevantCode": "class MCPService { streamChat(..., onDelta, onComplete, onError) }",
+  "recommendation": "Create a similar aiService.ts for AI SDK communication, or add methods to existing mcpService",
+  "createdAt": 1734461801000,
+  "session": "ai-sdk-chat-component"
+}
