@@ -1,14 +1,13 @@
 /**
  * store.query MCP Tool
  *
- * Executes queries against collections using MongoDB-style QueryFilter abstraction.
- * Replaces db.query (raw SQL) with proper query system integration.
+ * Executes queries against collections using the CollectionQueryable abstraction.
+ * Leverages collection.query() fluent API for backend-agnostic query execution.
  *
  * Tool Requirements:
  * - Tool name: 'store.query'
- * - Uses QueryFilter abstraction (MongoDB-style operators: $gt, $lt, $in, $and, $or, etc.)
- * - Resolves backend via BackendRegistry from environment (Issue 2: DI pattern)
- * - Applies schema-aware normalization via ContextAwareBackend (Issue 1: row normalization)
+ * - Uses CollectionQueryable.query() for isomorphic query building
+ * - Supports MongoDB-style filter operators: $gt, $lt, $in, $and, $or, etc.
  * - Supports terminal operations: toArray, first, count, any
  * - Supports ordering and pagination: orderBy, skip, take
  * - Returns { ok: true, count, items } or { ok: false, error }
@@ -16,15 +15,7 @@
 
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
-import {
-  getMetaStore,
-  getRuntimeStore,
-  parseQuery,
-} from "@shogo/state-api"
-import { toSnakeCase } from "../../../state-api/src/ddl/utils"
-import { getEnv } from "mobx-state-tree"
-import type { IEnvironment } from "@shogo/state-api"
-// Note: getEffectiveWorkspace is for filesystem operations, not runtime store cache keys
+import { getMetaStore, getRuntimeStore } from "@shogo/state-api"
 
 // ============================================================================
 // Type Definitions
@@ -77,7 +68,7 @@ export interface StoreQueryResult {
 // ============================================================================
 
 /**
- * Execute a query against a collection using QueryFilter abstraction.
+ * Execute a query against a collection using CollectionQueryable abstraction.
  *
  * This function implements the core logic for store.query tool.
  * It's exported as a standalone function for testability (proper TDD approach).
@@ -87,13 +78,11 @@ export interface StoreQueryResult {
  *
  * @remarks
  * Execution flow:
- * 1. Find schema/model in meta-store (same as store.list)
+ * 1. Find schema/model in meta-store
  * 2. Get runtime store from cache (workspace-aware)
- * 3. Resolve backend from runtime store environment
- * 4. Parse QueryFilter into AST
- * 5. Determine table name from model name (using DDL's toSnakeCase)
- * 6. Execute via backend.execute() with appropriate operation type
- * 7. Return formatted result based on terminal operation
+ * 3. Access collection and build query via IQueryable fluent API
+ * 4. Execute terminal operation
+ * 5. Return formatted result
  */
 export async function executeStoreQuery(
   args: StoreQueryParams
@@ -138,7 +127,6 @@ export async function executeStoreQuery(
     }
 
     // 3. Get runtime store from cache (workspace-aware)
-    // Use workspace as-is to match how loadSchema caches the store
     const runtimeStore = getRuntimeStore(schemaEntity.id, workspace)
 
     if (!runtimeStore) {
@@ -151,82 +139,62 @@ export async function executeStoreQuery(
       }
     }
 
-    // 4. Resolve backend from runtime store environment
-    const runtimeEnv = getEnv<IEnvironment>(runtimeStore)
-    const backend = runtimeEnv.services.backendRegistry.resolve(schema, model)
+    // 4. Access collection
+    const collectionName = modelEntity.collectionName
+    const collection = runtimeStore[collectionName]
 
-    // 5. Parse QueryFilter into AST
-    // Empty filter {} becomes empty AND which matches all items
-    const ast = parseQuery(filter || {})
+    if (!collection) {
+      return {
+        ok: false,
+        error: {
+          code: "COLLECTION_NOT_FOUND",
+          message: `Collection '${collectionName}' not found in runtime store`,
+        },
+      }
+    }
 
-    // 6. Build query options
-    // IMPORTANT: Convert orderBy field names from camelCase to snake_case
-    // to match database column names (same as DDL generator)
-    const options: any = {}
+    // 5. Build query via IQueryable fluent API
+    let q = collection.query()
+
+    if (filter && Object.keys(filter).length > 0) {
+      q = q.where(filter)
+    }
     if (orderBy) {
-      options.orderBy = {
-        field: toSnakeCase(orderBy.field),
-        direction: orderBy.direction,
-      }
+      q = q.orderBy(orderBy.field, orderBy.direction)
     }
-    // SQLite requires LIMIT before OFFSET, so if skip is provided without take,
-    // we need to provide a large LIMIT value to effectively get all remaining rows
     if (skip !== undefined) {
-      options.skip = skip
-      if (take === undefined) {
-        options.take = 999999 // Large number to get all remaining rows
-      }
+      q = q.skip(skip)
     }
-    if (take !== undefined) options.take = take
+    if (take !== undefined) {
+      q = q.take(take)
+    }
 
-    // 7. Determine table name from model name (same as DDL generator)
-    const tableName = toSnakeCase(model)
-
-    // 8. Execute query based on terminal operation
-    let result: any
-
+    // 6. Execute terminal operation
     switch (terminal) {
-      case "count":
-        // COUNT(*) query returns { items: [{ "COUNT(*)": N }] }
-        options.operation = "count"
-        result = await backend.execute(ast, tableName, options)
-        const countValue = result.items[0]
-          ? Object.values(result.items[0])[0]
-          : 0
-        return {
-          ok: true,
-          count: countValue as number,
-        }
+      case "count": {
+        const count = await q.count()
+        return { ok: true, count }
+      }
 
-      case "any":
-        // EXISTS query returns { items: [{ ?column?: 1 }] } or { items: [] }
-        options.operation = "exists"
-        result = await backend.execute(ast, tableName, options)
-        return {
-          ok: true,
-          count: result.items.length > 0 ? 1 : 0,
-          items: [],
-        }
+      case "any": {
+        const exists = await q.any()
+        return { ok: true, count: exists ? 1 : 0, items: [] }
+      }
 
-      case "first":
-        // SELECT with LIMIT 1
-        options.take = 1
-        result = await backend.execute(ast, tableName, options)
+      case "first": {
+        const first = await q.first()
         return {
           ok: true,
-          count: result.items.length,
-          items: result.items.slice(0, 1),
+          count: first ? 1 : 0,
+          items: first ? [first] : [],
         }
+      }
 
       case "toArray":
-      default:
-        // Standard SELECT query
-        result = await backend.execute(ast, tableName, options)
-        return {
-          ok: true,
-          count: result.items.length,
-          items: result.items,
-        }
+      default: {
+        const items = await q.toArray()
+        return { ok: true, count: items.length, items }
+      }
     }
   } catch (error: any) {
     return {
