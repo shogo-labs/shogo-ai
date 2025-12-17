@@ -265,14 +265,14 @@ describe("INT-02: SQL Backend Query Operations", () => {
     store = teamsDomain.createStore(env)
 
     // Seed data directly to database (SQL backend doesn't auto-persist)
-    // Note: Table names are PascalCase (quoted), column names are snake_case
+    // Note: Table and column names are snake_case (SQL convention)
     const now = Date.now()
-    db.run(`INSERT INTO "Organization" ("id", "name", "slug", "created_at") VALUES (?, ?, ?, ?)`, [orgId, "Acme Corp", "acme", now])
-    db.run(`INSERT INTO "Team" ("id", "name", "organization_id", "created_at") VALUES (?, ?, ?, ?)`, [team1Id, "Engineering", orgId, now])
-    db.run(`INSERT INTO "Team" ("id", "name", "organization_id", "created_at") VALUES (?, ?, ?, ?)`, [team2Id, "Design", orgId, now])
-    db.run(`INSERT INTO "Membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem1Id, "user-alice", "admin", team1Id, now])
-    db.run(`INSERT INTO "Membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem2Id, "user-bob", "member", team1Id, now])
-    db.run(`INSERT INTO "Membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem3Id, "user-alice", "viewer", team2Id, now])
+    db.run(`INSERT INTO "organization" ("id", "name", "slug", "created_at") VALUES (?, ?, ?, ?)`, [orgId, "Acme Corp", "acme", now])
+    db.run(`INSERT INTO "team" ("id", "name", "organization_id", "created_at") VALUES (?, ?, ?, ?)`, [team1Id, "Engineering", orgId, now])
+    db.run(`INSERT INTO "team" ("id", "name", "organization_id", "created_at") VALUES (?, ?, ?, ?)`, [team2Id, "Design", orgId, now])
+    db.run(`INSERT INTO "membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem1Id, "user-alice", "admin", team1Id, now])
+    db.run(`INSERT INTO "membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem2Id, "user-bob", "member", team1Id, now])
+    db.run(`INSERT INTO "membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem3Id, "user-alice", "viewer", team2Id, now])
   })
 
   afterEach(() => {

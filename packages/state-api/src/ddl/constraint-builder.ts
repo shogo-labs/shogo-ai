@@ -184,8 +184,12 @@ export function inferForeignKey(
   // This ensures consistent FK column naming regardless of property name
   const columnName = toSnakeCase(target) + "_id"
 
+  // Use snake_case for table names (matches DDL generator and query executor)
+  const tableName = toSnakeCase(modelName)
+  const referencesTableName = toSnakeCase(target)
+
   // Derive constraint name: fk_{table}_{column}
-  const constraintName = `fk_${modelName}_${columnName}`
+  const constraintName = `fk_${tableName}_${columnName}`
 
   // Determine ON DELETE behavior
   const isRequired = required.includes(property.name)
@@ -193,9 +197,9 @@ export function inferForeignKey(
 
   return {
     name: constraintName,
-    table: modelName,
+    table: tableName,
     column: columnName,
-    referencesTable: target,
+    referencesTable: referencesTableName,
     referencesColumn: "id",
     onDelete,
   }

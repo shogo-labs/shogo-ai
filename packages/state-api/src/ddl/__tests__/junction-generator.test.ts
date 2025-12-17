@@ -49,13 +49,13 @@ describe("Generate junction table for array reference", () => {
 
   const dialect = createPostgresDialect()
 
-  test("When generateJunctionTable is called -> Returns TableDef with name 'Team_members'", () => {
+  test("When generateJunctionTable is called -> Returns TableDef with snake_case name 'team_members'", () => {
     // When
     const result = generateJunctionTable("Team", membersProperty, dialect)
 
-    // Then: Returns TableDef with name 'Team_members'
+    // Then: Returns TableDef with snake_case name 'team_members'
     expect(result).toBeDefined()
-    expect(result!.name).toBe("Team_members")
+    expect(result!.name).toBe("team_members")
   })
 
   test("When generateJunctionTable is called -> Includes column 'team_id' NOT NULL with FK to Team", () => {
@@ -68,7 +68,7 @@ describe("Generate junction table for array reference", () => {
     expect(teamIdColumn?.nullable).toBe(false)
 
     const teamFk = result!.foreignKeys.find(
-      (fk) => fk.column === "team_id" && fk.referencesTable === "Team"
+      (fk) => fk.column === "team_id" && fk.referencesTable === "team"  // snake_case
     )
     expect(teamFk).toBeDefined()
     expect(teamFk?.referencesColumn).toBe("id")
@@ -84,7 +84,7 @@ describe("Generate junction table for array reference", () => {
     expect(userIdColumn?.nullable).toBe(false)
 
     const userFk = result!.foreignKeys.find(
-      (fk) => fk.column === "user_id" && fk.referencesTable === "User"
+      (fk) => fk.column === "user_id" && fk.referencesTable === "user"  // snake_case
     )
     expect(userFk).toBeDefined()
     expect(userFk?.referencesColumn).toBe("id")

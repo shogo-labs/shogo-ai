@@ -137,17 +137,17 @@ export async function createSeededStore(
   // Seed data
   if (backend === "sql" && db) {
     // Insert directly to database for SQL backends
-    // Note: Table names are PascalCase (quoted), column names are snake_case
+    // Note: Table and column names are snake_case (SQL convention)
     for (const org of data.organizations) {
-      db.run(`INSERT INTO "Organization" ("id", "name", "slug", "created_at") VALUES (?, ?, ?, ?)`,
+      db.run(`INSERT INTO "organization" ("id", "name", "slug", "created_at") VALUES (?, ?, ?, ?)`,
         [org.id, org.name, org.slug, org.createdAt])
     }
     for (const team of data.teams) {
-      db.run(`INSERT INTO "Team" ("id", "name", "organization_id", "created_at") VALUES (?, ?, ?, ?)`,
+      db.run(`INSERT INTO "team" ("id", "name", "organization_id", "created_at") VALUES (?, ?, ?, ?)`,
         [team.id, team.name, team.organizationId, team.createdAt])
     }
     for (const mem of data.memberships) {
-      db.run(`INSERT INTO "Membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`,
+      db.run(`INSERT INTO "membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`,
         [mem.id, mem.userId, mem.role, mem.teamId, mem.createdAt])
     }
   } else {

@@ -178,7 +178,7 @@ export function generateCreateTable(
 
   // 4. Return TableDef structure
   return {
-    name: modelName, // 1:1 mapping with model name (no pluralization)
+    name: toSnakeCase(modelName), // snake_case table name (matches query executor expectations)
     columns,
     primaryKey: primaryKeyName,
     foreignKeys,
