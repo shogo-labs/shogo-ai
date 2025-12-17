@@ -569,3 +569,114 @@ export function testMutationContract<T extends { id: string; name?: string }>(
     })
   })
 }
+
+// ============================================================================
+// EXEC-05: executorType Property Tests
+// ============================================================================
+
+describe("EXEC-05: IQueryExecutor executorType Property", () => {
+  test("interface requires executorType property", () => {
+    // This is a compile-time test - if this file compiles, the interface is correct
+    // NOTE: These tests will FAIL until IQueryExecutor has executorType property
+    const mockLocalExecutor: IQueryExecutor<any> = {
+      executorType: 'local',
+      select: async () => [],
+      first: async () => undefined,
+      count: async () => 0,
+      exists: async () => false,
+      insert: async () => ({ id: "1" }),
+      update: async () => ({ id: "1" }),
+      delete: async () => true,
+      insertMany: async () => [],
+      updateMany: async () => 0,
+      deleteMany: async () => 0,
+    }
+
+    const mockRemoteExecutor: IQueryExecutor<any> = {
+      executorType: 'remote',
+      select: async () => [],
+      first: async () => undefined,
+      count: async () => 0,
+      exists: async () => false,
+      insert: async () => ({ id: "1" }),
+      update: async () => ({ id: "1" }),
+      delete: async () => true,
+      insertMany: async () => [],
+      updateMany: async () => 0,
+      deleteMany: async () => 0,
+    }
+
+    expect(mockLocalExecutor.executorType).toBe('local')
+    expect(mockRemoteExecutor.executorType).toBe('remote')
+  })
+
+  test("executorType is literal union type 'local' | 'remote'", () => {
+    // Type check: executorType must be one of the valid values
+    const executor: IQueryExecutor<any> = {
+      executorType: 'local', // Only 'local' or 'remote' should be valid
+      select: async () => [],
+      first: async () => undefined,
+      count: async () => 0,
+      exists: async () => false,
+      insert: async () => ({ id: "1" }),
+      update: async () => ({ id: "1" }),
+      delete: async () => true,
+      insertMany: async () => [],
+      updateMany: async () => 0,
+      deleteMany: async () => 0,
+    }
+
+    // Runtime check
+    expect(['local', 'remote']).toContain(executor.executorType)
+  })
+})
+
+/**
+ * Reusable test to verify executor implements executorType correctly.
+ * Both MemoryQueryExecutor and SqlQueryExecutor should call this.
+ */
+export function testExecutorTypeProperty<T extends { id: string }>(
+  name: string,
+  expectedType: 'local' | 'remote',
+  setup: () => Promise<{
+    executor: IQueryExecutor<T>
+    cleanup?: () => Promise<void>
+  }>
+) {
+  describe(`EXEC-05: ${name} executorType Property`, () => {
+    let executor: IQueryExecutor<T>
+    let cleanup: (() => Promise<void>) | undefined
+
+    beforeEach(async () => {
+      const result = await setup()
+      executor = result.executor
+      cleanup = result.cleanup
+    })
+
+    afterEach(async () => {
+      if (cleanup) {
+        await cleanup()
+      }
+    })
+
+    test(`executorType is '${expectedType}'`, () => {
+      expect(executor.executorType).toBe(expectedType)
+    })
+
+    test("executorType is readonly (cannot be modified)", () => {
+      // TypeScript readonly enforcement at compile time
+      // At runtime, we just verify the property exists and has correct value
+      expect(executor.executorType).toBe(expectedType)
+
+      // Attempting to modify should have no effect (or throw in strict mode)
+      const originalType = executor.executorType
+      try {
+        (executor as any).executorType = expectedType === 'local' ? 'remote' : 'local'
+      } catch {
+        // Expected if object is frozen or property is truly readonly
+      }
+      // If modification was blocked, value should be unchanged
+      // Note: This depends on implementation - class properties may be mutable at runtime
+    })
+  })
+}

@@ -74,10 +74,19 @@ export function registerStoreCreate(server: FastMCP) {
           })
         }
 
-        // 5. Create instance (MST validates automatically)
-        const instance = collection.add(data)
+        // 5. Create instance using CollectionMutatable.insertOne when available
+        // This handles both MST state and backend persistence in one operation
+        if (typeof collection.insertOne === 'function') {
+          const instance = await collection.insertOne(data)
+          return JSON.stringify({
+            ok: true,
+            id: (instance as any).id,
+            data: instance
+          })
+        }
 
-        // 6. Auto-save collection to disk using CollectionPersistable mixin
+        // Fallback for collections without CollectionMutatable mixin
+        const instance = collection.add(data)
         await collection.saveAll()
 
         return JSON.stringify({

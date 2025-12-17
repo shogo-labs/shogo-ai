@@ -51,6 +51,8 @@ const interpret = createJsInterpreter(extendedInterpreters)
 // ============================================================================
 
 export class MemoryQueryExecutor<T> implements IQueryExecutor<T> {
+  readonly executorType = 'local' as const
+
   constructor(private collection: any) {
     // Collection reference bound at creation
     // Expected interface: { all(): T[], modelName: string }
@@ -270,11 +272,7 @@ export class MemoryQueryExecutor<T> implements IQueryExecutor<T> {
    * Generate a unique ID.
    */
   private generateId(): string {
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0
-      const v = c === "x" ? r : (r & 0x3) | 0x8
-      return v.toString(16)
-    })
+    return crypto.randomUUID()
   }
 }
 

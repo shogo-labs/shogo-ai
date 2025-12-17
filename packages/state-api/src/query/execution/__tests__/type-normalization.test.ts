@@ -129,13 +129,14 @@ describe("NORM-01: normalizeRowWithTypes", () => {
   // Edge Cases
   // ==========================================================================
 
-  test("handles null values", () => {
+  test("handles null values (converts to undefined for MST compatibility)", () => {
     const row = { is_active: null }
     const propertyTypes = { isActive: "boolean" }
 
     const result = normalizeRowWithTypes(row, columnMap, "sqlite", propertyTypes)
 
-    expect(result.isActive).toBeNull()
+    // SQL NULL is converted to undefined for MST compatibility
+    expect(result.isActive).toBeUndefined()
   })
 
   test("handles undefined values", () => {

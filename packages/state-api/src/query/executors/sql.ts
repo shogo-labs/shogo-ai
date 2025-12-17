@@ -27,6 +27,7 @@ import {
 import { toSnakeCase } from "../../ddl/utils"
 
 export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
+  readonly executorType = 'remote' as const
   private propertyColumnMap: Map<string, string> // camelCase → snake_case (derived)
 
   constructor(
@@ -518,12 +519,7 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
    * Generate a unique ID.
    */
   private generateId(): string {
-    // Simple UUID v4-like generation
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0
-      const v = c === "x" ? r : (r & 0x3) | 0x8
-      return v.toString(16)
-    })
+    return crypto.randomUUID()
   }
 
   /**

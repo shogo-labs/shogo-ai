@@ -50,6 +50,10 @@ describe("MEM-01: MemoryQueryExecutor", () => {
     // Collection is bound - executor doesn't need it passed to execute methods
   })
 
+  test("executorType is 'local'", () => {
+    expect(executor.executorType).toBe('local')
+  })
+
   test("select() with empty filter returns all items", async () => {
     const result = await executor.select(parseQuery({}))
     expect(result).toHaveLength(4)

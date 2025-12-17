@@ -264,15 +264,14 @@ describe("INT-02: SQL Backend Query Operations", () => {
 
     store = teamsDomain.createStore(env)
 
-    // Seed data directly to database (SQL backend doesn't auto-persist)
-    // Note: Table and column names are snake_case (SQL convention)
+    // Seed data using CollectionMutatable.insertOne for isomorphic behavior
     const now = Date.now()
-    db.run(`INSERT INTO "organization" ("id", "name", "slug", "created_at") VALUES (?, ?, ?, ?)`, [orgId, "Acme Corp", "acme", now])
-    db.run(`INSERT INTO "team" ("id", "name", "organization_id", "created_at") VALUES (?, ?, ?, ?)`, [team1Id, "Engineering", orgId, now])
-    db.run(`INSERT INTO "team" ("id", "name", "organization_id", "created_at") VALUES (?, ?, ?, ?)`, [team2Id, "Design", orgId, now])
-    db.run(`INSERT INTO "membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem1Id, "user-alice", "admin", team1Id, now])
-    db.run(`INSERT INTO "membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem2Id, "user-bob", "member", team1Id, now])
-    db.run(`INSERT INTO "membership" ("id", "user_id", "role", "team_id", "created_at") VALUES (?, ?, ?, ?, ?)`, [mem3Id, "user-alice", "viewer", team2Id, now])
+    await store.organizationCollection.insertOne({ id: orgId, name: "Acme Corp", slug: "acme", createdAt: now })
+    await store.teamCollection.insertOne({ id: team1Id, name: "Engineering", organizationId: orgId, createdAt: now })
+    await store.teamCollection.insertOne({ id: team2Id, name: "Design", organizationId: orgId, createdAt: now })
+    await store.membershipCollection.insertOne({ id: mem1Id, userId: "user-alice", role: "admin", teamId: team1Id, createdAt: now })
+    await store.membershipCollection.insertOne({ id: mem2Id, userId: "user-bob", role: "member", teamId: team1Id, createdAt: now })
+    await store.membershipCollection.insertOne({ id: mem3Id, userId: "user-alice", role: "viewer", teamId: team2Id, createdAt: now })
   })
 
   afterEach(() => {
