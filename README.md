@@ -20,6 +20,11 @@ The system captures your intent, generates schemas, creates implementation specs
 
 ### For Developers
 
+**Prerequisites:**
+- [Bun](https://bun.sh) — JavaScript runtime
+- [Node.js](https://nodejs.org) — Required for npx
+- [Google Chrome](https://www.google.com/chrome/) — Required for browser-based E2E testing
+
 ```bash
 # Install dependencies
 bun install
