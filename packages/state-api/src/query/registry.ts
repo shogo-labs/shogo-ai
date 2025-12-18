@@ -34,10 +34,8 @@ import type { IQueryExecutor } from './executors/types'
 import { MemoryQueryExecutor } from './executors/memory'
 import { SqlQueryExecutor } from './executors/sql'
 import { SqlBackend } from './backends/sql'
-import { createColumnPropertyMap } from './execution/utils'
 import { getMetaStore } from '../meta/bootstrap'
 import { toSnakeCase } from '../ddl/utils'
-import type { Instance } from 'mobx-state-tree'
 
 /**
  * Interface for backend registry with schema-driven resolution.
@@ -163,8 +161,12 @@ export class BackendRegistry implements IBackendRegistry {
       }
 
       // 2. Check schema-level x-persistence.backend
-      // Note: Schema-level x-persistence is not currently stored in meta-store Schema entity
-      // For now, this cascade step is reserved for future enhancement
+      if (!resolvedBackendName && schema.xPersistence) {
+        const schemaBackendName = (schema.xPersistence as any).backend
+        if (schemaBackendName && typeof schemaBackendName === 'string') {
+          resolvedBackendName = schemaBackendName
+        }
+      }
     }
 
     // 3. Fall back to default backend
@@ -183,9 +185,9 @@ export class BackendRegistry implements IBackendRegistry {
     }
 
     // 5. Extract property metadata from meta-store
-    const propertyNames = this.getPropertyNames(model)
     const propertyTypes = this.getPropertyTypes(model)
-    const columnPropertyMap = createColumnPropertyMap(propertyNames)
+    // Use model's columnPropertyMap view (handles reference FK column naming)
+    const columnPropertyMap = model?.columnPropertyMap ?? {}
 
     // 6. Get the resolved backend instance
     const backend = this.get(resolvedBackendName)

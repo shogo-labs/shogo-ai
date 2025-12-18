@@ -35,5 +35,8 @@ export * from './teams'
 // Query layer
 export * from './query'
 
+// DDL generation
+export * from './ddl'
+
 // Utilities
 export * from './utils'

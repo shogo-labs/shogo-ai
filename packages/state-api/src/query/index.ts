@@ -208,6 +208,14 @@ export {
 } from './execution/bun-sql'
 
 export {
+  BunPostgresExecutor
+} from './execution/bun-postgres'
+
+export type {
+  BunPostgresExecutorOptions
+} from './execution/bun-postgres'
+
+export {
   snakeToCamel,
   camelToSnake,
   normalizeRow,

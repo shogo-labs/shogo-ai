@@ -239,35 +239,36 @@ interface QueryBuilderState {
 class QueryBuilder<T> implements IQueryable<T> {
   constructor(
     private executor: IQueryExecutor<T>,
-    private state: QueryBuilderState
+    private state: QueryBuilderState,
+    private onResults?: (results: T[]) => void
   ) {}
 
   where(filter: QueryFilter): IQueryable<T> {
     return new QueryBuilder<T>(this.executor, {
       ...this.state,
       filters: [...this.state.filters, filter]
-    })
+    }, this.onResults)
   }
 
   orderBy(field: string, direction: 'asc' | 'desc' = 'asc'): IQueryable<T> {
     return new QueryBuilder<T>(this.executor, {
       ...this.state,
       ordering: [...this.state.ordering, { field, direction }]
-    })
+    }, this.onResults)
   }
 
   skip(count: number): IQueryable<T> {
     return new QueryBuilder<T>(this.executor, {
       ...this.state,
       skipCount: count
-    })
+    }, this.onResults)
   }
 
   take(count: number): IQueryable<T> {
     return new QueryBuilder<T>(this.executor, {
       ...this.state,
       takeCount: count
-    })
+    }, this.onResults)
   }
 
   async toArray(): Promise<T[]> {
@@ -278,7 +279,9 @@ class QueryBuilder<T> implements IQueryable<T> {
       take: this.state.takeCount
     }
 
-    return this.executor.select(ast, options)
+    const results = await this.executor.select(ast, options)
+    this.onResults?.(results)
+    return results
   }
 
   async first(): Promise<T | undefined> {
@@ -289,7 +292,9 @@ class QueryBuilder<T> implements IQueryable<T> {
       // Note: first() optimization happens in executor.first()
     }
 
-    return this.executor.first(ast, options)
+    const result = await this.executor.first(ast, options)
+    this.onResults?.(result ? [result] : [])
+    return result
   }
 
   async count(): Promise<number> {
@@ -358,6 +363,19 @@ class QueryBuilder<T> implements IQueryable<T> {
  */
 export const CollectionQueryable = types
   .model('CollectionQueryable', {})
+  .actions((self) => ({
+    /**
+     * Sync results from remote query into MST collection.
+     * Uses items.put() for upsert semantics (add or update by id).
+     *
+     * @param results - Array of entities from remote query
+     */
+    syncFromRemote(results: any[]) {
+      for (const item of results) {
+        ;(self as any).items.put(item)
+      }
+    }
+  }))
   .views((self) => ({
     /**
      * Create a new query builder for this collection.
@@ -371,6 +389,9 @@ export const CollectionQueryable = types
      * Resolves IQueryExecutor from environment's BackendRegistry with
      * collection reference bound for memory backends or table name bound
      * for SQL backends.
+     *
+     * For remote executors (e.g., PostgreSQL), a sync callback is registered
+     * to populate the MST collection with query results.
      *
      * @example
      * ```typescript
@@ -395,6 +416,11 @@ export const CollectionQueryable = types
         self  // Pass collection reference for memory backends
       )
 
+      // Register sync callback for remote executors
+      const onResults = executor.executorType === 'remote'
+        ? (results: T[]) => (self as any).syncFromRemote(results)
+        : undefined
+
       const initialState: QueryBuilderState = {
         filters: [],
         ordering: [],
@@ -402,6 +428,6 @@ export const CollectionQueryable = types
         takeCount: undefined
       }
 
-      return new QueryBuilder<T>(executor, initialState)
+      return new QueryBuilder<T>(executor, initialState, onResults)
     }
   }))

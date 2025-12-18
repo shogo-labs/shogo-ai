@@ -39,6 +39,11 @@ export function createSchemaEnhancements(baseModels: any) {
         $defs: {}
       }
 
+      // Include schema-level x-persistence if present
+      if (self.xPersistence !== undefined) {
+        enhancedSchema["x-persistence"] = { ...self.xPersistence }
+      }
+
       self.models.forEach((model: any) => {
         const modelDef = model.toJsonSchema()
 

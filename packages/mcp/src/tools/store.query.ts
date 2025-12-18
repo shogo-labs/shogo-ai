@@ -16,6 +16,7 @@
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
 import { getMetaStore, getRuntimeStore } from "@shogo/state-api"
+import { getEffectiveWorkspace } from "../state"
 
 // ============================================================================
 // Type Definitions
@@ -127,7 +128,8 @@ export async function executeStoreQuery(
     }
 
     // 3. Get runtime store from cache (workspace-aware)
-    const runtimeStore = getRuntimeStore(schemaEntity.id, workspace)
+    const effectiveWorkspace = getEffectiveWorkspace(workspace)
+    const runtimeStore = getRuntimeStore(schemaEntity.id, effectiveWorkspace)
 
     if (!runtimeStore) {
       return {

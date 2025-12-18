@@ -71,6 +71,7 @@ export function ingestProperty(
   if (propSchema["x-arktype"] !== undefined) propertyData.xArktype = propSchema["x-arktype"]
   if (propSchema["x-mst-type"] !== undefined) propertyData.xMstType = propSchema["x-mst-type"]
   if (propSchema["x-reference-type"] !== undefined) propertyData.xReferenceType = propSchema["x-reference-type"]
+  if (propSchema["x-reference-target"] !== undefined) propertyData.xReferenceTarget = propSchema["x-reference-target"]
   if (propSchema["x-computed"] !== undefined) propertyData.xComputed = propSchema["x-computed"]
   if (propSchema["x-inverse"] !== undefined) propertyData.xInverse = propSchema["x-inverse"]
   if (propSchema["x-original-name"] !== undefined) propertyData.xOriginalName = propSchema["x-original-name"]
