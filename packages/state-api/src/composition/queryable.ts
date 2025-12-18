@@ -32,7 +32,7 @@
 
 import { types, getEnv } from 'mobx-state-tree'
 import type { IEnvironment } from '../environment/types'
-import type { QueryFilter } from '../query/ast/types'
+import type { QueryFilter, Condition } from '../query/ast/types'
 import type { OrderByClause } from '../query/backends/types'
 import type { IQueryExecutor } from '../query/executors/types'
 import { parseQuery } from '../query/ast/parser'
@@ -84,6 +84,29 @@ export interface IQueryable<T> {
    * ```
    */
   where(filter: QueryFilter): IQueryable<T>
+
+  /**
+   * Add a pre-built AST condition to the query.
+   *
+   * @param condition - AST Condition object (FieldCondition or CompoundCondition)
+   * @returns New IQueryable instance with condition applied
+   *
+   * @remarks
+   * Immutable operation - returns new instance.
+   * This bypasses filter parsing, allowing direct AST usage.
+   * Useful for MCP transport where AST is serialized/deserialized.
+   * The condition takes precedence over filters set via where().
+   *
+   * @example
+   * ```typescript
+   * import { deserializeCondition } from '@shogo/state-api'
+   *
+   * const serializedAst = { type: 'field', operator: 'eq', field: 'status', value: 'active' }
+   * const condition = deserializeCondition(serializedAst)
+   * const results = await collection.query().whereCondition(condition).toArray()
+   * ```
+   */
+  whereCondition(condition: Condition): IQueryable<T>
 
   /**
    * Set sort order for the query.
@@ -220,6 +243,8 @@ export interface IQueryable<T> {
 interface QueryBuilderState {
   /** Combined filter conditions (multiple where calls are merged) */
   filters: QueryFilter[]
+  /** Pre-built AST condition (takes precedence over filters) */
+  condition?: Condition
   /** Ordering clauses (multiple orderBy calls are accumulated) */
   ordering: OrderByClause[]
   /** Number of records to skip */
@@ -247,6 +272,13 @@ class QueryBuilder<T> implements IQueryable<T> {
     return new QueryBuilder<T>(this.executor, {
       ...this.state,
       filters: [...this.state.filters, filter]
+    }, this.onResults)
+  }
+
+  whereCondition(condition: Condition): IQueryable<T> {
+    return new QueryBuilder<T>(this.executor, {
+      ...this.state,
+      condition
     }, this.onResults)
   }
 
@@ -315,10 +347,16 @@ class QueryBuilder<T> implements IQueryable<T> {
    * @returns Condition AST (or empty condition if no filters)
    *
    * @remarks
+   * Pre-built condition (from whereCondition()) takes precedence.
    * Multiple where() calls are combined with $and logic.
-   * If no filters, returns empty object (matches all).
+   * If no filters or condition, returns empty object (matches all).
    */
   private buildAST() {
+    // Pre-built condition takes precedence
+    if (this.state.condition) {
+      return this.state.condition
+    }
+
     if (this.state.filters.length === 0) {
       // Empty filter matches all items
       return parseQuery({})

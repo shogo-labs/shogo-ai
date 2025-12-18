@@ -86,8 +86,9 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     const rows = await this.executor.execute([sql, params])
 
     // COUNT(*) returns { 'COUNT(*)': N } or similar
+    // PostgreSQL returns bigint as string, so we need to parse it
     const countValue = rows[0] ? Object.values(rows[0])[0] : 0
-    return countValue as number
+    return typeof countValue === 'string' ? parseInt(countValue, 10) : (countValue as number)
   }
 
   async exists(ast: Condition): Promise<boolean> {

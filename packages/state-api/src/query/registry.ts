@@ -214,7 +214,7 @@ export class BackendRegistry implements IBackendRegistry {
       throw new Error(`Backend "${resolvedBackendName}" not found in registry`)
     }
 
-    // 7. Discriminate backend type via dialect property
+    // 7. Discriminate backend type via dialect property or createExecutor factory
     if (backend.dialect) {
       // SQL backend - has dialect property
       if (!backend.executor) {
@@ -234,8 +234,12 @@ export class BackendRegistry implements IBackendRegistry {
         backend.dialect,
         propertyTypes
       )
+    } else if (typeof (backend as any).createExecutor === 'function') {
+      // Remote backend with custom executor factory (e.g., MCPBackend)
+      // Factory creates executor with schemaName, modelName, collection bound
+      return (backend as any).createExecutor<T>(schemaName, modelName, collection)
     } else {
-      // Memory backend - no dialect property
+      // Memory backend - no dialect property, no createExecutor factory
       if (!collection) {
         throw new Error(
           `Memory backend "${resolvedBackendName}" requires collection reference. ` +
