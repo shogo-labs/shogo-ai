@@ -195,7 +195,8 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
   // ===========================================================================
 
   async insertMany(entities: Partial<T>[]): Promise<T[]> {
-    const result = await this.mcp.callTool<StoreBatchResponse<T>>("store.createMany", {
+    // Uses enhanced store.create which accepts array for batch operations
+    const result = await this.mcp.callTool<StoreBatchResponse<T>>("store.create", {
       schema: this.schemaName,
       model: this.modelName,
       workspace: this.workspace,
@@ -210,13 +211,14 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
   }
 
   async updateMany(ast: Condition, changes: Partial<T>): Promise<number> {
-    const serializedAst = serializeCondition(ast)
+    // Convert AST to filter object for enhanced store.update
+    const filter = this.conditionToFilter(ast)
 
-    const result = await this.mcp.callTool<StoreBatchResponse<T>>("store.updateMany", {
+    const result = await this.mcp.callTool<StoreBatchResponse<T>>("store.update", {
       schema: this.schemaName,
       model: this.modelName,
       workspace: this.workspace,
-      ast: serializedAst,
+      filter,
       changes,
     })
 
@@ -228,13 +230,14 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
   }
 
   async deleteMany(ast: Condition): Promise<number> {
-    const serializedAst = serializeCondition(ast)
+    // Convert AST to filter object for enhanced store.delete
+    const filter = this.conditionToFilter(ast)
 
-    const result = await this.mcp.callTool<StoreBatchResponse<T>>("store.deleteMany", {
+    const result = await this.mcp.callTool<StoreBatchResponse<T>>("store.delete", {
       schema: this.schemaName,
       model: this.modelName,
       workspace: this.workspace,
-      ast: serializedAst,
+      filter,
     })
 
     if (!result.ok) {
@@ -242,5 +245,37 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
     }
 
     return result.count ?? 0
+  }
+
+  // ===========================================================================
+  // Private Helpers
+  // ===========================================================================
+
+  /**
+   * Convert a Condition AST to a simple filter object.
+   * Supports equality conditions; complex conditions throw.
+   */
+  private conditionToFilter(condition: Condition): Record<string, unknown> {
+    const serialized = serializeCondition(condition)
+
+    // Simple field equality: { field: value }
+    if (serialized.type === "field" && serialized.operator === "eq") {
+      return { [serialized.field]: serialized.value }
+    }
+
+    // Compound AND: combine all field equalities
+    if (serialized.type === "compound" && serialized.operator === "and") {
+      const filter: Record<string, unknown> = {}
+      for (const child of serialized.conditions) {
+        if (child.type === "field" && child.operator === "eq") {
+          filter[child.field] = child.value
+        } else {
+          throw new Error("Complex conditions not yet supported in batch operations")
+        }
+      }
+      return filter
+    }
+
+    throw new Error("Complex conditions not yet supported in batch operations")
   }
 }

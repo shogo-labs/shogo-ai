@@ -102,8 +102,20 @@ describe("IEnvironment includes optional auth service slot", () => {
  * Requirement: req-06-isomorphic-execution
  */
 describe("IEnvironment.services includes backendRegistry", () => {
-  test("services.backendRegistry is required property", () => {
-    const env: IEnvironment = {
+  test("services.backendRegistry is optional property", () => {
+    // backendRegistry is optional - not all contexts need query capabilities
+    const envWithoutRegistry: IEnvironment = {
+      services: {
+        persistence: mockPersistence,
+      },
+      context: {
+        schemaName: "test-schema",
+      },
+    }
+    expect(envWithoutRegistry.services.backendRegistry).toBeUndefined()
+
+    // When provided, it should be accessible
+    const envWithRegistry: IEnvironment = {
       services: {
         persistence: mockPersistence,
         backendRegistry: mockBackendRegistry,
@@ -112,8 +124,8 @@ describe("IEnvironment.services includes backendRegistry", () => {
         schemaName: "test-schema",
       },
     }
-    expect(env.services.backendRegistry).toBeDefined()
-    expect(env.services.backendRegistry).toBe(mockBackendRegistry)
+    expect(envWithRegistry.services.backendRegistry).toBeDefined()
+    expect(envWithRegistry.services.backendRegistry).toBe(mockBackendRegistry)
   })
 
   test("Accepts IBackendRegistry type", () => {
@@ -128,12 +140,15 @@ describe("IEnvironment.services includes backendRegistry", () => {
       },
     }
 
+    // Guard ensures TypeScript knows backendRegistry is defined
+    const registry = env.services.backendRegistry!
+
     // Call IBackendRegistry methods to verify interface compatibility
-    expect(typeof env.services.backendRegistry.register).toBe("function")
-    expect(typeof env.services.backendRegistry.get).toBe("function")
-    expect(typeof env.services.backendRegistry.has).toBe("function")
-    expect(typeof env.services.backendRegistry.resolve).toBe("function")
-    expect(typeof env.services.backendRegistry.setDefault).toBe("function")
+    expect(typeof registry.register).toBe("function")
+    expect(typeof registry.get).toBe("function")
+    expect(typeof registry.has).toBe("function")
+    expect(typeof registry.resolve).toBe("function")
+    expect(typeof registry.setDefault).toBe("function")
   })
 })
 

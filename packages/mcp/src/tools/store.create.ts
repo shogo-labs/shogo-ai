@@ -1,22 +1,21 @@
 /**
  * store.create MCP Tool
  *
- * Creates a new entity instance in the specified model collection.
- * Uses CollectionMutatable.insertOne for proper MST state + backend persistence.
+ * Creates entity instances in the specified model collection.
+ * Supports both single and batch operations:
+ * - Single: data is an object → { ok, id, data }
+ * - Batch: data is an array → { ok, count, items }
  *
  * Tool Requirements:
  * - Tool name: 'store.create'
- * - Uses CollectionMutatable.insertOne when available
+ * - Uses CollectionMutatable.insertOne/insertMany when available
  * - Falls back to collection.add + saveAll for legacy collections
- * - Returns { ok: true, id, data } or { ok: false, error }
  */
 
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
 import { getSnapshot } from "mobx-state-tree"
-import { getMetaStore } from "@shogo/state-api"
-import { getRuntimeStore } from "@shogo/state-api"
-import { getEffectiveWorkspace } from "../state"
+import { getMetaStore, getRuntimeStore } from "@shogo/state-api"
 
 // ============================================================================
 // Type Definitions
@@ -24,31 +23,37 @@ import { getEffectiveWorkspace } from "../state"
 
 /**
  * ArkType schema for store.create parameters
+ * - data: object for single, array for batch
  */
 const Params = t({
   schema: "string",
   model: "string",
-  data: "object",
+  data: "object | object[]",
   "workspace?": "string"
 })
 
 /**
  * Input parameters for store.create
+ * - data: object for single insert, object[] for batch insert
  */
 export interface StoreCreateParams {
   schema: string
   model: string
-  data: object
+  data: object | object[]
   workspace?: string
 }
 
 /**
  * Result structure for store.create
+ * - Single: { ok, id, data }
+ * - Batch: { ok, count, items }
  */
 export interface StoreCreateResult {
   ok: boolean
   id?: string
   data?: any
+  count?: number
+  items?: any[]
   error?: {
     code: string
     message: string
@@ -101,9 +106,8 @@ export async function executeStoreCreate(
       }
     }
 
-    // 3. Get runtime store from cache (Unit 3: workspace-aware caching)
-    const effectiveWorkspace = getEffectiveWorkspace(workspace)
-    const runtimeStore = getRuntimeStore(schemaEntity.id, effectiveWorkspace)
+    // 3. Get runtime store from cache (workspace-aware caching)
+    const runtimeStore = getRuntimeStore(schemaEntity.id, workspace)
     if (!runtimeStore) {
       return {
         ok: false,
@@ -127,8 +131,36 @@ export async function executeStoreCreate(
       }
     }
 
-    // 5. Create instance using CollectionMutatable.insertOne when available
-    // This handles both MST state and backend persistence in one operation
+    // 5. Determine single vs batch mode
+    const isBatch = Array.isArray(data)
+
+    if (isBatch) {
+      // Batch mode: data is an array
+      if (typeof collection.insertMany === 'function') {
+        const instances = await collection.insertMany(data as object[])
+        return {
+          ok: true,
+          count: instances.length,
+          items: instances
+        }
+      }
+
+      // Fallback for collections without insertMany
+      const instances = []
+      for (const item of data as object[]) {
+        const instance = collection.add(item)
+        instances.push(getSnapshot(instance))
+      }
+      await collection.saveAll()
+
+      return {
+        ok: true,
+        count: instances.length,
+        items: instances
+      }
+    }
+
+    // Single mode: data is an object
     if (typeof collection.insertOne === 'function') {
       const instance = await collection.insertOne(data)
       return {
@@ -170,7 +202,7 @@ export async function executeStoreCreate(
 export function registerStoreCreate(server: FastMCP) {
   server.addTool({
     name: "store.create",
-    description: "Create a new entity instance in the specified model",
+    description: "Create entity instances. Single (data: object) or batch (data: array).",
     parameters: Params,
     execute: async (args: StoreCreateParams) => {
       const result = await executeStoreCreate(args)
