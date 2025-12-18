@@ -179,35 +179,79 @@ describe("domain() Full Pipeline: ArkType -> SQL Persistence", () => {
     })
 
     // =================================================================
-    // Step 8: Verify SQL tables have snake_case FK columns
+    // Step 8: Query back all entities via abstraction layer
+    // Verifies complete round-trip: INSERT → SQL → SELECT → normalized
     // =================================================================
-    const projectRow = db.prepare("SELECT client_id FROM project WHERE id = ?").get(projectId) as any
-    expect(projectRow.client_id).toBe(clientId)
 
-    const taskRow = db.prepare("SELECT project_id FROM task WHERE id = ?").get(taskId) as any
-    expect(taskRow.project_id).toBe(projectId)
+    // Query Client
+    const queriedClient = await store.clientCollection.query().where({ id: clientId }).first()
+    expect(queriedClient).toBeDefined()
+    expect(queriedClient.id).toBe(clientId)
+    expect(queriedClient.name).toBe("Acme Corp")
+    expect(queriedClient.industry).toBe("Technology")
 
-    const subtaskRow = db.prepare("SELECT task_id FROM task WHERE id = ?").get(subtaskId) as any
-    expect(subtaskRow.task_id).toBe(taskId)
-
-    // =================================================================
-    // Step 9: SELECT entities - verify camelCase normalization
-    // =================================================================
+    // Query Project - verify FK reference is correctly mapped
     const queriedProject = await store.projectCollection.query().where({ id: projectId }).first()
-    expect(queriedProject.clientId).toBe(clientId) // camelCase
+    expect(queriedProject).toBeDefined()
+    expect(queriedProject.id).toBe(projectId)
+    expect(queriedProject.name).toBe("Website Redesign")
+    expect(queriedProject.clientId).toBe(clientId) // camelCase FK
+    expect(queriedProject.status).toBe("active")
     expect((queriedProject as any).client_id).toBeUndefined() // NOT snake_case
 
+    // Query Task - verify FK reference is correctly mapped
+    const queriedTask = await store.taskCollection.query().where({ id: taskId }).first()
+    expect(queriedTask).toBeDefined()
+    expect(queriedTask.id).toBe(taskId)
+    expect(queriedTask.title).toBe("Design homepage")
+    expect(queriedTask.projectId).toBe(projectId) // camelCase FK
+    expect(queriedTask.priority).toBe("high")
+    expect(queriedTask.completed).toBe(false) // boolean type conversion
+    expect(queriedTask.parentId).toBeUndefined() // no parent
+    expect((queriedTask as any).project_id).toBeUndefined() // NOT snake_case
+
+    // Query Subtask - verify self-reference FK is correctly mapped
     const queriedSubtask = await store.taskCollection.query().where({ id: subtaskId }).first()
+    expect(queriedSubtask).toBeDefined()
+    expect(queriedSubtask.id).toBe(subtaskId)
+    expect(queriedSubtask.title).toBe("Create wireframe")
     expect(queriedSubtask.projectId).toBe(projectId)
     expect(queriedSubtask.parentId).toBe(taskId) // camelCase self-reference
-    expect((queriedSubtask as any).task_id).toBeUndefined()
+    expect(queriedSubtask.completed).toBe(false)
+    expect((queriedSubtask as any).task_id).toBeUndefined() // NOT snake_case
 
     // =================================================================
-    // Step 10: Query by reference property (camelCase filter)
+    // Step 9: Query by reference property (filter on FK)
     // =================================================================
     const projectTasks = await store.taskCollection.query().where({ projectId: projectId }).toArray()
     expect(projectTasks).toHaveLength(2)
     expect(projectTasks.map((t: any) => t.title).sort()).toEqual(["Create wireframe", "Design homepage"])
+
+    // Query by self-reference FK
+    const subtasks = await store.taskCollection.query().where({ parentId: taskId }).toArray()
+    expect(subtasks).toHaveLength(1)
+    expect(subtasks[0].title).toBe("Create wireframe")
+
+    // =================================================================
+    // Step 10: Query with multiple conditions and ordering
+    // =================================================================
+    const highPriorityTasks = await store.taskCollection
+      .query()
+      .where({ projectId: projectId, priority: "high" })
+      .toArray()
+    expect(highPriorityTasks).toHaveLength(1)
+    expect(highPriorityTasks[0].title).toBe("Design homepage")
+
+    // Count query
+    const taskCount = await store.taskCollection.query().where({ projectId: projectId }).count()
+    expect(taskCount).toBe(2)
+
+    // Any query
+    const hasIncompleteTasks = await store.taskCollection
+      .query()
+      .where({ projectId: projectId, completed: false })
+      .any()
+    expect(hasIncompleteTasks).toBe(true)
   })
 
   test("optional references work correctly in full pipeline", async () => {
@@ -258,20 +302,51 @@ describe("domain() Full Pipeline: ArkType -> SQL Persistence", () => {
       context: { schemaName: "order-system" },
     })
 
-    // Insert order WITHOUT customer (null reference)
-    const orderId = crypto.randomUUID()
+    // Insert a customer first
+    const customerId = crypto.randomUUID()
+    await store.customerCollection.insertOne({
+      id: customerId,
+      email: "alice@example.com",
+    })
+
+    // Insert order WITH customer reference
+    const orderWithCustomerId = crypto.randomUUID()
     await store.orderCollection.insertOne({
-      id: orderId,
+      id: orderWithCustomerId,
+      total: 149.99,
+      customerId: customerId,
+    })
+
+    // Insert order WITHOUT customer (null reference)
+    const orderWithoutCustomerId = crypto.randomUUID()
+    await store.orderCollection.insertOne({
+      id: orderWithoutCustomerId,
       total: 99.99,
       // customerId omitted (optional)
     })
 
-    // Verify NULL in database
-    const row = db.prepare("SELECT customer_id FROM \"order\" WHERE id = ?").get(orderId) as any
-    expect(row.customer_id).toBeNull()
+    // Query order WITH customer - verify FK is correctly mapped
+    const orderWithCustomer = await store.orderCollection.query().where({ id: orderWithCustomerId }).first()
+    expect(orderWithCustomer).toBeDefined()
+    expect(orderWithCustomer.id).toBe(orderWithCustomerId)
+    expect(orderWithCustomer.total).toBe(149.99)
+    expect(orderWithCustomer.customerId).toBe(customerId) // camelCase FK
+    expect((orderWithCustomer as any).customer_id).toBeUndefined() // NOT snake_case
 
-    // Query returns undefined for null reference
-    const order = await store.orderCollection.query().where({ id: orderId }).first()
-    expect(order.customerId).toBeUndefined()
+    // Query order WITHOUT customer - verify null reference returns undefined
+    const orderWithoutCustomer = await store.orderCollection.query().where({ id: orderWithoutCustomerId }).first()
+    expect(orderWithoutCustomer).toBeDefined()
+    expect(orderWithoutCustomer.id).toBe(orderWithoutCustomerId)
+    expect(orderWithoutCustomer.total).toBe(99.99)
+    expect(orderWithoutCustomer.customerId).toBeUndefined() // null → undefined
+
+    // Query by FK - find orders for a specific customer
+    const customerOrders = await store.orderCollection.query().where({ customerId: customerId }).toArray()
+    expect(customerOrders).toHaveLength(1)
+    expect(customerOrders[0].id).toBe(orderWithCustomerId)
+
+    // Count orders
+    const totalOrders = await store.orderCollection.query().count()
+    expect(totalOrders).toBe(2)
   })
 })

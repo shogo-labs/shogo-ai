@@ -92,6 +92,7 @@ export interface IBackendRegistry {
    * @param modelName - Model name within schema
    * @param collection - Optional collection reference (required for memory backends)
    * @param columnPropertyMap - Optional pre-computed column→property mapping (bypasses meta-store lookup)
+   * @param propertyTypes - Optional pre-computed property→type mapping for dialect-specific conversions
    * @returns Query executor with data source bound
    * @throws Error if no backend found and no default set
    *
@@ -107,11 +108,16 @@ export interface IBackendRegistry {
    * 2. Fall back to meta-store model.columnPropertyMap view
    * 3. Fall back to empty map (simple snake_case conversion)
    *
+   * Property types resolution:
+   * 1. Use provided propertyTypes if given (from domain().createStore())
+   * 2. Fall back to meta-store model properties
+   * 3. Fall back to empty map (no type conversions)
+   *
    * Returns IQueryExecutor (not IBackend) with data source bound:
    * - Memory backends: collection reference bound
    * - SQL backends: tableName, dialect, propertyTypes bound
    */
-  resolve<T = any>(schemaName: string, modelName: string, collection?: any, columnPropertyMap?: Record<string, string>): IQueryExecutor<T>
+  resolve<T = any>(schemaName: string, modelName: string, collection?: any, columnPropertyMap?: Record<string, string>, propertyTypes?: Record<string, string>): IQueryExecutor<T>
 
   /**
    * Set the default backend for fallback resolution.
@@ -145,7 +151,7 @@ export class BackendRegistry implements IBackendRegistry {
     return this.backends.has(name)
   }
 
-  resolve<T = any>(schemaName: string, modelName: string, collection?: any, providedColumnPropertyMap?: Record<string, string>): IQueryExecutor<T> {
+  resolve<T = any>(schemaName: string, modelName: string, collection?: any, providedColumnPropertyMap?: Record<string, string>, providedPropertyTypes?: Record<string, string>): IQueryExecutor<T> {
     // Access meta-store for schema/model lookup
     const metaStore = getMetaStore()
     const schema = metaStore.schemaCollection.all().find((s: any) => s.name === schemaName)
@@ -190,8 +196,12 @@ export class BackendRegistry implements IBackendRegistry {
       )
     }
 
-    // 5. Extract property metadata from meta-store
-    const propertyTypes = this.getPropertyTypes(model)
+    // 5. Extract property metadata - cascade: provided → meta-store → empty
+    // Property types resolution:
+    // 1. Use provided propertyTypes (from domain().createStore() via env.context)
+    // 2. Fall back to meta-store model properties
+    // 3. Fall back to empty map (no type conversions)
+    const propertyTypes = providedPropertyTypes ?? this.getPropertyTypes(model)
     // Column property map resolution cascade:
     // 1. Use provided map (from domain().createStore() via env.context)
     // 2. Fall back to meta-store model.columnPropertyMap view
