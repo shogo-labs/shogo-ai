@@ -205,7 +205,7 @@ store.create("TestSpecification", "platform-features", {
   requirement: "req-xxx",
   scenario: "User can create entity via demo page",
   given: [
-    "Dev server is running at localhost:5173",
+    "Dev server is running at localhost:3000",
     "User has navigated to /demo-page",
     "Page has fully loaded"
   ],
