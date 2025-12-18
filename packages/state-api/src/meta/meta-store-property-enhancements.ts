@@ -5,7 +5,7 @@
 
 import { getRoot } from "mobx-state-tree"
 import type { ModelField, ModelRef } from "../mcp/state"
-import { toSnakeCase } from "../ddl/utils"
+import { getColumnName } from "../ddl/utils"
 
 export function createPropertyEnhancements(baseModels: any) {
   return baseModels.Property.views((self: any) => ({
@@ -204,12 +204,8 @@ export function createPropertyEnhancements(baseModels: any) {
      * property.columnName // => "department_name"
      */
     get columnName(): string {
-      // For single references, use DDL convention: target_id
-      if (self.xReferenceType === "single" && self.xReferenceTarget) {
-        return toSnakeCase(self.xReferenceTarget) + "_id"
-      }
-      // Regular properties: snake_case of property name
-      return toSnakeCase(self.name)
+      // Use canonical helper for column naming (single source of truth)
+      return getColumnName(self.name, self.xReferenceTarget, self.xReferenceType)
     }
   }))
 }

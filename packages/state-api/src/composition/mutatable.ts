@@ -79,7 +79,11 @@ export const CollectionMutatable = types
       const schemaName = env.context?.schemaName ?? 'default'
       const modelName = (self as any).modelName ?? 'Unknown'
 
-      return registry.resolve<T>(schemaName, modelName, self)
+      // Get pre-computed column property map from env.context (if available)
+      // This enables createStore() to work with SQL backends without meta-store registration
+      const columnPropertyMap = (env.context as any)?.columnPropertyMaps?.[modelName]
+
+      return registry.resolve<T>(schemaName, modelName, self, columnPropertyMap)
     }
 
     return {

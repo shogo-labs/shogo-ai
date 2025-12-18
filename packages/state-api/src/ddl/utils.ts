@@ -129,3 +129,105 @@ export function toSnakeCase(str: string): string {
     // Convert to lowercase
     .toLowerCase()
 }
+
+/**
+ * Computes the SQL column name for a property based on its reference metadata.
+ *
+ * This is the single source of truth for column naming, used by:
+ * - DDL generator (constraint-builder.ts)
+ * - Meta-store Property.columnName view
+ * - Column property map computation
+ *
+ * Naming convention:
+ * - Regular properties: snake_case of property name
+ * - Single references: snake_case(target) + "_id"
+ * - Array references: snake_case of property name (FKs in junction tables)
+ *
+ * @param propName - Property name (e.g., "organizationId", "parentId")
+ * @param xReferenceTarget - Target model name if reference (e.g., "Organization", "Team")
+ * @param xReferenceType - Reference type: "single", "array", or undefined
+ * @returns SQL column name (e.g., "organization_id", "team_id", "first_name")
+ *
+ * @example
+ * ```ts
+ * getColumnName("firstName")                           // "first_name"
+ * getColumnName("organization", "Organization", "single") // "organization_id"
+ * getColumnName("parentId", "Team", "single")          // "team_id" (NOT parent_id!)
+ * getColumnName("members", "User", "array")            // "members"
+ * ```
+ */
+export function getColumnName(
+  propName: string,
+  xReferenceTarget?: string,
+  xReferenceType?: string
+): string {
+  // Single references use target_id convention
+  // This ensures consistent FK column naming regardless of property name
+  if (xReferenceType === "single" && xReferenceTarget) {
+    return toSnakeCase(xReferenceTarget) + "_id"
+  }
+
+  // Regular properties and array references use snake_case of property name
+  return toSnakeCase(propName)
+}
+
+/**
+ * Computes column → property mappings for all models in an Enhanced JSON Schema.
+ *
+ * Returns a nested map: { ModelName: { column_name: "propertyName", ... }, ... }
+ *
+ * Used by domain() to pre-compute mappings that enable createStore() to work
+ * with SQL backends without requiring meta-store registration.
+ *
+ * @param schema - Enhanced JSON Schema with $defs or definitions
+ * @returns Record mapping model names to their column→property maps
+ *
+ * @example
+ * ```ts
+ * const schema = {
+ *   $defs: {
+ *     Team: {
+ *       properties: {
+ *         id: { type: "string" },
+ *         organizationId: { "x-reference-type": "single", "x-reference-target": "Organization" },
+ *         parentId: { "x-reference-type": "single", "x-reference-target": "Team" }
+ *       }
+ *     }
+ *   }
+ * }
+ *
+ * const maps = computeColumnPropertyMaps(schema)
+ * // maps.Team = { id: "id", organization_id: "organizationId", team_id: "parentId" }
+ * ```
+ */
+export function computeColumnPropertyMaps(
+  schema: any
+): Record<string, Record<string, string>> {
+  const models = schema.$defs || schema.definitions || {}
+  const result: Record<string, Record<string, string>> = {}
+
+  for (const [modelName, modelDef] of Object.entries(models)) {
+    const model = modelDef as any
+    const columnPropertyMap: Record<string, string> = {}
+
+    if (model.properties) {
+      for (const [propName, propDef] of Object.entries(model.properties)) {
+        const prop = propDef as any
+
+        // Compute column name using the canonical helper
+        const columnName = getColumnName(
+          propName,
+          prop["x-reference-target"],
+          prop["x-reference-type"]
+        )
+
+        // Map: column_name → propertyName
+        columnPropertyMap[columnName] = propName
+      }
+    }
+
+    result[modelName] = columnPropertyMap
+  }
+
+  return result
+}
