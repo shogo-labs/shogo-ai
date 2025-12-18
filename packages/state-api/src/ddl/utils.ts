@@ -231,3 +231,63 @@ export function computeColumnPropertyMaps(
 
   return result
 }
+
+/**
+ * Computes property → type mappings for all models in an Enhanced JSON Schema.
+ *
+ * Returns a nested map: { ModelName: { propertyName: "type", ... }, ... }
+ *
+ * Used by domain() to pre-compute type metadata that enables SQL backends
+ * to perform dialect-specific type conversions (e.g., SQLite INTEGER → boolean).
+ *
+ * @param schema - Enhanced JSON Schema with $defs or definitions
+ * @returns Record mapping model names to their property→type maps
+ *
+ * @example
+ * ```ts
+ * const schema = {
+ *   $defs: {
+ *     Task: {
+ *       properties: {
+ *         id: { type: "string" },
+ *         completed: { type: "boolean" },
+ *         priority: { type: "number" }
+ *       }
+ *     }
+ *   }
+ * }
+ *
+ * const maps = computePropertyTypeMaps(schema)
+ * // maps.Task = { id: "string", completed: "boolean", priority: "number" }
+ * ```
+ */
+export function computePropertyTypeMaps(
+  schema: any
+): Record<string, Record<string, string>> {
+  const models = schema.$defs || schema.definitions || {}
+  const result: Record<string, Record<string, string>> = {}
+
+  for (const [modelName, modelDef] of Object.entries(models)) {
+    const model = modelDef as any
+    const propertyTypeMap: Record<string, string> = {}
+
+    if (model.properties) {
+      for (const [propName, propDef] of Object.entries(model.properties)) {
+        const prop = propDef as any
+
+        // Extract type from property definition
+        // Handle arrays, references, and basic types
+        if (prop.type) {
+          propertyTypeMap[propName] = prop.type
+        } else if (prop["x-reference-type"]) {
+          // Reference properties have x-reference-type but may not have type
+          propertyTypeMap[propName] = "string" // FK references are strings (IDs)
+        }
+      }
+    }
+
+    result[modelName] = propertyTypeMap
+  }
+
+  return result
+}

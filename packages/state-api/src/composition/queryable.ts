@@ -409,16 +409,18 @@ export const CollectionQueryable = types
       const schemaName = env.context!.schemaName
       const modelName = (self as any).modelName
 
-      // Get pre-computed column property map from env.context (if available)
+      // Get pre-computed maps from env.context (if available)
       // This enables createStore() to work with SQL backends without meta-store registration
       const columnPropertyMap = (env.context as any)?.columnPropertyMaps?.[modelName]
+      const propertyTypes = (env.context as any)?.propertyTypeMaps?.[modelName]
 
-      // Resolve executor from registry with collection reference and column map
+      // Resolve executor from registry with collection reference and pre-computed maps
       const executor = env.services.backendRegistry.resolve<T>(
         schemaName,
         modelName,
         self,  // Pass collection reference for memory backends
-        columnPropertyMap  // Pass pre-computed column map (bypasses meta-store lookup)
+        columnPropertyMap,  // Pass pre-computed column map (bypasses meta-store lookup)
+        propertyTypes  // Pass pre-computed property types for dialect-specific conversions
       )
 
       // Register sync callback for remote executors

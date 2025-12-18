@@ -15,7 +15,7 @@ import type { EnhancedJsonSchema } from "../schematic/types"
 import { buildEnhanceCollections } from "../composition/enhance-collections"
 import { registerEnhancements } from "./enhancement-registry"
 import { getRuntimeStore, cacheRuntimeStore } from "../meta/runtime-store-cache"
-import { computeColumnPropertyMaps } from "../ddl/utils"
+import { computeColumnPropertyMaps, computePropertyTypeMaps } from "../ddl/utils"
 import type { DomainConfig, DomainResult } from "./types"
 import { isScope, isEnhancedJsonSchema } from "./types"
 
@@ -71,19 +71,21 @@ export function domain(config: DomainConfig): DomainResult {
     enhanceRootStore: config.enhancements?.rootStore,
   })
 
-  // Pre-compute column property maps for SQL backend support
+  // Pre-compute column property maps and property type maps for SQL backend support
   // This enables createStore() to work with SQL backends without meta-store registration
   const columnPropertyMaps = computeColumnPropertyMaps(enhancedSchema)
+  const propertyTypeMaps = computePropertyTypeMaps(enhancedSchema)
 
   // Create the store factory (delegates to conversion result)
   const createStore = (env?: any): IAnyStateTreeNode => {
-    // Inject pre-computed column property maps into env.context
-    // This allows queryable.ts to pass them to registry.resolve()
+    // Inject pre-computed maps into env.context
+    // This allows queryable.ts and mutatable.ts to pass them to registry.resolve()
     const enhancedEnv = env ? {
       ...env,
       context: {
         ...env.context,
         columnPropertyMaps,
+        propertyTypeMaps,
       },
     } : undefined
 
