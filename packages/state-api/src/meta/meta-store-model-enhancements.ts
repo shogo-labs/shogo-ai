@@ -94,6 +94,29 @@ export function createModelEnhancements(baseModels: any) {
         fields,
         ...(refs.length > 0 ? { refs } : {})
       }
+    },
+
+    // === Layer 4: SQL Column Mapping ===
+
+    /**
+     * Mapping from database column names to property names.
+     *
+     * Composes Property.columnName views to build a complete map.
+     * Used by SqlQueryExecutor for bidirectional field normalization:
+     * - Input: property name → column name (via inverse of this map)
+     * - Output: column name → property name (this map)
+     *
+     * @example
+     * // Model with properties: id, name, organization (ref to Organization)
+     * model.columnPropertyMap
+     * // => { id: "id", name: "name", organization_id: "organization" }
+     */
+    get columnPropertyMap(): Record<string, string> {
+      const map: Record<string, string> = {}
+      for (const prop of self.properties) {
+        map[prop.columnName] = prop.name
+      }
+      return map
     }
   }))
 }

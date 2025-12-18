@@ -192,6 +192,143 @@ describe("x-persistence Round-Trip", () => {
   })
 })
 
+describe("Schema-level x-persistence Round-Trip", () => {
+  beforeEach(() => {
+    resetMetaStore()
+  })
+
+  test("preserves schema-level x-persistence.backend", () => {
+    const metaStore = getMetaStore()
+    const inputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      "x-persistence": {
+        backend: "postgres"
+      },
+      $defs: {
+        User: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            name: { type: "string" }
+          },
+          required: ["id", "name"]
+        }
+      }
+    }
+
+    const schema = metaStore.ingestEnhancedJsonSchema(inputSchema, {
+      name: "test-schema-persistence"
+    })
+
+    const output = schema.toEnhancedJson
+
+    expect(output["x-persistence"]).toBeDefined()
+    expect(output["x-persistence"].backend).toBe("postgres")
+  })
+
+  test("preserves schema-level x-persistence with multiple fields", () => {
+    const metaStore = getMetaStore()
+    const inputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      "x-persistence": {
+        backend: "sql",
+        strategy: "entity-per-file"
+      },
+      $defs: {
+        Task: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            title: { type: "string" }
+          }
+        }
+      }
+    }
+
+    const schema = metaStore.ingestEnhancedJsonSchema(inputSchema, {
+      name: "test-multi-field"
+    })
+
+    const output = schema.toEnhancedJson
+
+    expect(output["x-persistence"]).toBeDefined()
+    expect(output["x-persistence"].backend).toBe("sql")
+    expect(output["x-persistence"].strategy).toBe("entity-per-file")
+  })
+
+  test("handles schema without x-persistence (backward compat)", () => {
+    const metaStore = getMetaStore()
+    const inputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      $defs: {
+        User: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            name: { type: "string" }
+          }
+        }
+      }
+    }
+
+    const schema = metaStore.ingestEnhancedJsonSchema(inputSchema, {
+      name: "test-no-schema-persistence"
+    })
+
+    const output = schema.toEnhancedJson
+
+    // Should not add x-persistence if not present in input
+    expect(output["x-persistence"]).toBeUndefined()
+  })
+
+  test("model-level x-persistence coexists with schema-level", () => {
+    const metaStore = getMetaStore()
+    const inputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      "x-persistence": {
+        backend: "postgres"
+      },
+      $defs: {
+        User: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            name: { type: "string" }
+          }
+        },
+        AuditLog: {
+          type: "object",
+          "x-persistence": {
+            strategy: "flat",  // Required by model xPersistence schema
+            backend: "elasticsearch"
+          },
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            action: { type: "string" }
+          }
+        }
+      }
+    }
+
+    const schema = metaStore.ingestEnhancedJsonSchema(inputSchema, {
+      name: "test-mixed-persistence"
+    })
+
+    const output = schema.toEnhancedJson
+
+    // Schema level preserved
+    expect(output["x-persistence"]).toBeDefined()
+    expect(output["x-persistence"].backend).toBe("postgres")
+
+    // User doesn't override
+    expect(output.$defs.User["x-persistence"]).toBeUndefined()
+
+    // AuditLog has model-level override
+    expect(output.$defs.AuditLog["x-persistence"]).toBeDefined()
+    expect(output.$defs.AuditLog["x-persistence"].backend).toBe("elasticsearch")
+  })
+})
+
 describe("x-persistence Disk Round-Trip", () => {
   const testDir = "/tmp/x-persistence-test"
 

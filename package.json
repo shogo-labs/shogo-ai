@@ -8,7 +8,9 @@
     "dev": "turbo dev",
     "test": "turbo test",
     "lint": "turbo lint",
-    "typecheck": "turbo typecheck"
+    "typecheck": "turbo typecheck",
+    "mcp:http": "bun run packages/mcp/src/server-http.ts",
+    "mcp:stdio": "bun run packages/mcp/src/server.ts"
   },
   "devDependencies": {
     "turbo": "^2.3.3",

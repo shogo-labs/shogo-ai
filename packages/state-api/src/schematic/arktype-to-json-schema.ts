@@ -308,6 +308,7 @@ function convertScopeToEnhancedJsonSchema(
             def.properties[propName] = {
               $ref: `#/$defs/${arkPropDef}`,
               "x-reference-type": "single",
+              "x-reference-target": arkPropDef,
               "x-arktype": arkPropDef
             };
             continue; // Skip to next property
@@ -322,6 +323,7 @@ function convertScopeToEnhancedJsonSchema(
                   $ref: `#/$defs/${entityName}`
                 },
                 "x-reference-type": "array",
+                "x-reference-target": entityName,
                 "x-arktype": arkPropDef
               };
               continue; // Skip to next property
@@ -336,6 +338,7 @@ function convertScopeToEnhancedJsonSchema(
               def.properties[propName] = {
                 $ref: `#/$defs/${otherTypeName}`,
                 "x-reference-type": "single",
+                "x-reference-target": otherTypeName,
                 "x-arktype": otherTypeName
               };
               break;
@@ -352,6 +355,7 @@ function convertScopeToEnhancedJsonSchema(
                   $ref: `#/$defs/${otherTypeName}`
                 },
                 "x-reference-type": "array",
+                "x-reference-target": otherTypeName,
                 "x-arktype": `${otherTypeName}[]`
               };
               break;

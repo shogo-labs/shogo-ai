@@ -25,7 +25,7 @@ test("debug: check runtime store structure", async () => {
 
   // Ingest into meta-store
   const metaStore = getMetaStore()
-  const schema = metaStore.ingestEnhancedJsonSchema(enhancedSchema)
+  const schema = metaStore.ingestEnhancedJsonSchema(enhancedSchema, { name: "debug-test" })
 
   // Generate runtime MST store
   const { createStore } = enhancedJsonSchemaToMST(enhancedSchema, {
@@ -70,7 +70,7 @@ test("debug: check domain-qualified model error", async () => {
 
   try {
     const metaStore = getMetaStore()
-    const schema = metaStore.ingestEnhancedJsonSchema(enhancedSchema)
+    const schema = metaStore.ingestEnhancedJsonSchema(enhancedSchema, { name: "domain-test" })
 
     // Generate runtime MST store
     const { createStore } = enhancedJsonSchemaToMST(enhancedSchema, {

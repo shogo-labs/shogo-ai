@@ -33,7 +33,10 @@ async function handleSchemaSet(args: { format: string; payload: unknown; options
   try {
     // 1. Ingest into meta-store
     const metaStore = getMetaStore()
-    const schema = metaStore.ingestEnhancedJsonSchema(enhanced)
+    // Generate a schema name from model names or use default
+    const modelNames = Object.keys(defs).join("-")
+    const schemaName = modelNames || `test-schema-${Date.now()}`
+    const schema = metaStore.ingestEnhancedJsonSchema(enhanced, { name: schemaName })
 
     // 2. Generate runtime MST store
     // Use original enhanced schema
