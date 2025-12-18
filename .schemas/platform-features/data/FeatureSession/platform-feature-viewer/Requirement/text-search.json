@@ -1,0 +1,9 @@
+{
+  "id": "req-pfv-006",
+  "name": "text-search",
+  "description": "Quick text search to filter displayed entities by matching text in name/description fields",
+  "priority": "could",
+  "status": "proposed",
+  "createdAt": 1734480000000,
+  "session": "pf-viewer-001"
+}

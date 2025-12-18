@@ -1,0 +1,19 @@
+{
+  "id": "test-ai-sdk-provider-config",
+  "scenario": "claudeCode provider configured with mcpServers",
+  "given": [
+    "agent.chat tool is invoked",
+    "MCP server is running"
+  ],
+  "when": "streamText is called internally",
+  "then": [
+    "claudeCode() provider is created with mcpServers option",
+    "mcpServers includes 'wavesmith'",
+    "Provider has access to Wavesmith MCP tools"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/mcp/src/tools/__tests__/agent.chat.test.ts",
+  "createdAt": 1734462511000,
+  "task": "task-agent-chat-ai-sdk",
+  "requirement": "ai-sdk-mcp-integration"
+}

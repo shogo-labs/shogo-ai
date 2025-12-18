@@ -436,11 +436,51 @@ Issues:
 
 If issues found, analyze and fix before proceeding.
 
-**Proof-of-Work Verification**
+**Proof-of-Work Verification with Browser Automation**
 
-The proof-of-work page validates the complete feature integration. Requirements differ by feature type:
+The proof-of-work page validates the complete feature integration. After passing unit tests, typecheck, and build, use Chrome DevTools MCP for browser-based verification.
+
+**Pre-requisites**:
+- Unit tests pass (`bun test`)
+- Type check passes (`bun run typecheck`)
+- Build succeeds (`bun run build`)
+- Chrome DevTools MCP server available
+
+**Step 1: Start Dev Server**
+
+```bash
+# Start Vite dev server in background
+cd apps/web && bun run dev &
+```
+
+Wait for server ready message. Default URL: `http://localhost:3000`
+
+**Step 2: Navigate and Basic Verification**
+
+Using Chrome DevTools MCP tools:
+
+1. `navigate_page` to `http://localhost:3000/{demo-page-path}`
+2. `wait_for` main content element (e.g., `[data-testid="demo-container"]`)
+3. `list_console_messages` to check for errors
+4. `take_screenshot` for visual baseline
+
+**Success criteria**:
+- No JavaScript errors in console
+- No unhandled promise rejections
+- Main UI elements render correctly
+
+**Step 3: Service/Persistence Verification**
 
 **External Service Features** (auth, payments, analytics, etc.):
+
+```javascript
+// Use evaluate_script to verify real service
+evaluate_script: "window.__services?.auth?.constructor?.name !== 'MockAuthService'"
+
+// Verify real API calls
+list_network_requests // Should show calls to real endpoints (not localhost mocks)
+```
+
 1. Page renders without errors
 2. Real provider service injected (not MockService)
 3. Real credentials from env vars (`VITE_*`, etc.)
@@ -448,25 +488,87 @@ The proof-of-work page validates the complete feature integration. Requirements 
 5. Error states tested with real service responses
 
 **Internal Domain Features** (workspace management, project tracking, etc.):
+
+```javascript
+// Use evaluate_script to verify real persistence
+evaluate_script: "window.__persistence?.constructor?.name !== 'NullPersistence'"
+```
+
 1. Page renders without errors
 2. Real persistence service (`MCPPersistence` for browser-side demos)
 3. **NOT** `NullPersistence` (mocks are for unit tests only)
-4. Data round-trips through save/load cycle
+4. Data round-trips through save/load cycle:
+   - Create entity via UI (`click`, `fill_form`)
+   - `navigate_page` to same URL (refresh)
+   - `wait_for` entity still visible
 5. CRUD operations persist to disk and reload correctly
+
+**Step 4: Interaction Verification**
+
+Test core user flows using input tools:
+
+```
+click -> "Create" button
+wait_for -> Form modal visible
+fill_form -> { name: "Test Entity", ... }
+click -> "Save"
+wait_for -> Success indicator
+list_console_messages -> No new errors
+```
+
+**Step 5: Performance Check (Optional)**
+
+For performance-critical features:
+
+```
+performance_start_trace
+navigate_page -> demo URL
+wait_for -> fully loaded
+performance_stop_trace
+performance_analyze_insight
+```
+
+**Acceptable thresholds**:
+- First Contentful Paint: < 2s
+- No blocking long tasks > 50ms
+
+**Step 6: Production Build Verification (Optional)**
+
+If dev server tests pass, verify production build:
+
+```bash
+bun run build && bun run preview
+# Navigate to http://localhost:4173/{demo-page-path}
+```
+
+Repeat Steps 2-4 against the preview server to catch build-only issues.
+
+**Test vs Proof-of-Work distinction:**
+
+| Context | Persistence | Service Layer | Verification |
+|---------|-------------|---------------|--------------|
+| Unit tests | `NullPersistence` | `MockService` | `bun test` |
+| Proof-of-work | `MCPPersistence` (browser) | Real provider | Chrome DevTools MCP |
 
 **What NullPersistence is for:**
 - Unit tests only (fast, isolated, no file I/O)
 - **Never** in proof-of-work pages
 - **Never** for validating feature integration
 
-**Test vs Proof-of-Work distinction:**
+**If Browser Tests Fail**
 
-| Context | Persistence | Service Layer |
-|---------|-------------|---------------|
-| Unit tests | `NullPersistence` | `MockService` |
-| Proof-of-work | `MCPPersistence` (browser) | Real provider |
+Do NOT mark the feature complete. Instead:
 
-This page validates all components integrate correctly with real persistence and/or external services.
+1. Capture screenshot and console logs
+2. Identify failure point (render, service, interaction)
+3. Return to TDD cycle if code changes needed
+4. Re-run browser verification after fixes
+
+The implementation is only complete when both:
+- All unit tests pass (TDD cycle)
+- Browser verification succeeds (proof-of-work)
+
+See [08-browser-verification.md](references/08-browser-verification.md) for detailed patterns and tool reference.
 
 ### Phase 6: Handoff
 
@@ -893,6 +995,66 @@ if (existingRun) {
      ↓ status=complete
 [Done]
 ```
+
+---
+
+## Frontend Technology Defaults
+
+When implementing features that involve frontend development (React components, UI, dashboards, etc.), use these defaults:
+
+### Default Stack
+- **UI Components**: shadcn/ui - accessible, customizable component library built on Radix UI
+- **Styling**: Tailwind CSS - utility-first CSS framework
+- **Icons**: Lucide React (included with shadcn/ui)
+
+### Current Setup (apps/web)
+
+The demo app has this stack configured:
+- Tailwind CSS v4 with `@tailwindcss/vite` plugin
+- Theme colors in `src/index.css` using `@theme` directive:
+  - `--color-background`, `--color-foreground`, `--color-primary`, `--color-secondary`
+  - `--color-card`, `--color-muted`, `--color-border`, `--color-ring`
+- shadcn/ui foundation: `components.json`, `src/lib/utils.ts` with `cn()` helper
+- Path alias `@/` configured in tsconfig and vite
+- Button component as reference pattern in `src/components/ui/button.tsx`
+
+### Implementation Patterns
+
+**Use Tailwind classes instead of inline styles:**
+```tsx
+// ❌ Don't use inline styles
+<div style={{ padding: '1rem', background: '#1e1e1e' }}>
+
+// ✅ Use Tailwind classes
+<div className="p-4 bg-card">
+```
+
+**Use cn() for conditional classes:**
+```tsx
+import { cn } from "@/lib/utils"
+
+<button className={cn(
+  "px-4 py-2 rounded-md font-bold",
+  isActive ? "bg-primary text-primary-foreground" : "bg-secondary"
+)}>
+```
+
+**Use shadcn components when available:**
+```tsx
+import { Button } from "@/components/ui/button"
+
+<Button variant="default" size="sm">Click me</Button>
+```
+
+### Adding New shadcn Components
+
+Follow the existing Button pattern in `src/components/ui/button.tsx`:
+1. Create file in `src/components/ui/{component}.tsx`
+2. Use `cva()` for variant definitions
+3. Use `cn()` for class merging
+4. Export component and variants
+
+Available components to add: Card, Input, Label, Dialog, Sheet, Tabs, Badge, Separator.
 
 ---
 

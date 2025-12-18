@@ -1,0 +1,18 @@
+{
+  "id": "task-fsd-001",
+  "name": "add-core-shadcn-components",
+  "description": "Add Card, Input, Label, Badge, and Separator components following shadcn/ui patterns. Use cva() for variants, cn() for class merging, Radix primitives where applicable.",
+  "acceptanceCriteria": [
+    "Card component with CardHeader, CardTitle, CardDescription, CardContent, CardFooter exports",
+    "Input component with focus ring, disabled state styling",
+    "Label component using @radix-ui/react-label",
+    "Badge component with default, secondary, destructive, outline variants",
+    "Separator component using @radix-ui/react-separator with horizontal/vertical orientation",
+    "All components use cn() utility and Tailwind classes only"
+  ],
+  "status": "pending",
+  "createdAt": 1734481100000,
+  "session": "fs-frontend-defaults-001",
+  "requirement": "req-fsd-004",
+  "dependencies": []
+}

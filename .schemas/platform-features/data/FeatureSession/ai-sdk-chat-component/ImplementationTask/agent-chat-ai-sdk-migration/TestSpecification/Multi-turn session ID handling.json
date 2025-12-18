@@ -1,0 +1,19 @@
+{
+  "id": "test-ai-sdk-session-handling",
+  "scenario": "Multi-turn session ID handling",
+  "given": [
+    "First message sent without sessionId",
+    "Response includes new sessionId"
+  ],
+  "when": "Second message sent with sessionId from first response",
+  "then": [
+    "Session context is maintained",
+    "AI has access to previous conversation history",
+    "Same sessionId returned in response"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/mcp/src/tools/__tests__/agent.chat.test.ts",
+  "createdAt": 1734462514000,
+  "task": "task-agent-chat-ai-sdk",
+  "requirement": "ai-sdk-session-resume"
+}

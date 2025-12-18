@@ -1,0 +1,22 @@
+{
+  "id": "task-artifact-tracking",
+  "name": "artifact-tracking-integration",
+  "description": "Integrate artifact tracking so chats record what schemas/entities they create",
+  "acceptanceCriteria": [
+    "agent.chat tool detects schema_set tool calls in response",
+    "When schema_set detected, calls store.create for CreatedArtifact",
+    "CreatedArtifact links to current ChatSession",
+    "artifactType set based on tool (schema_set → 'schema')",
+    "artifactName captures the schema name from tool args",
+    "Demo page shows artifacts created by each session",
+    "Query 'what did this chat create?' works via session filter"
+  ],
+  "status": "planned",
+  "createdAt": 1734462405000,
+  "session": "ai-sdk-chat-component",
+  "requirement": "ai-sdk-feature-mapping",
+  "dependencies": [
+    "task-chat-domain-store",
+    "task-agent-chat-ai-sdk"
+  ]
+}

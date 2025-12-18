@@ -1,0 +1,11 @@
+{
+  "id": "finding-fsd-002",
+  "name": "code-gen-python-only",
+  "type": "gap",
+  "description": "app-builder-implementation-code-generator skill generates Python code only (Pydantic models, pytest tests). No React/TypeScript frontend code generation exists. Adding shadcn+Tailwind patterns to code gen would require new skill or major skill extension.",
+  "location": ".claude/skills/app-builder-implementation-code-generator/",
+  "relevantCode": "Transform Layer 2.5 implementation specifications into executable Python code",
+  "recommendation": "Code gen templates (req-fsd-006) is a significant scope expansion - consider deferring or creating separate skill",
+  "createdAt": 1734480300000,
+  "session": "fs-frontend-defaults-001"
+}

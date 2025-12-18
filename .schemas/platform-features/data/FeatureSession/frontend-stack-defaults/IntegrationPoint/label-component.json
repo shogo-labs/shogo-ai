@@ -1,0 +1,12 @@
+{
+  "id": "ip-fsd-003",
+  "name": "label-component",
+  "filePath": "apps/web/src/components/ui/label.tsx",
+  "package": "apps/web",
+  "changeType": "install",
+  "description": "Install Label component via npx shadcn@latest add label",
+  "rationale": "Label pairs with Input for accessible forms",
+  "createdAt": 1734481000000,
+  "session": "fs-frontend-defaults-001",
+  "finding": "finding-fsd-004"
+}

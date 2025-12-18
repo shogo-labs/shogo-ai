@@ -1,0 +1,11 @@
+{
+  "id": "finding-006-tool-call-display",
+  "name": "existing-tool-call-display",
+  "type": "pattern",
+  "description": "ConversationalAppBuilder shows tool calls in MessageBubble component via message.toolCalls array. Displays tool name and checkmark for artifact-creating tools. This is a simpler approach than AI SDK message.parts but functional.",
+  "location": "apps/web/src/components/Unit3_ConversationalBuilder/ConversationalAppBuilder.tsx:294-319",
+  "relevantCode": "{message.toolCalls.map((tc, i) => <div>{tc.tool}{isArtifact && '✓'}</div>)}",
+  "recommendation": "Upgrade to message.parts pattern for richer tool call states (input-streaming, output-available, output-error).",
+  "createdAt": 1734480205000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "ip-fsd-007",
+  "name": "unit1-migration",
+  "filePath": "apps/web/src/pages/Unit1Page.tsx",
+  "package": "apps/web",
+  "changeType": "modify",
+  "description": "Migrate Unit1Page from inline styles to Tailwind classes. Replace style={{}} blocks with utility classes.",
+  "rationale": "Core demo page - Unit 1: Host MST",
+  "createdAt": 1734481000000,
+  "session": "fs-frontend-defaults-001",
+  "finding": "finding-fsd-003"
+}

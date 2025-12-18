@@ -1,0 +1,11 @@
+{
+  "id": "finding-004-mcp-service",
+  "name": "mcp-service-pattern",
+  "type": "pattern",
+  "description": "mcpService provides MCP client with session management and SSE streaming. Key methods: initializeSession(), callTool(), streamChat(), loadSchema(). Used by PlatformFeaturesPage for store queries and by useAgentChat for chat interactions.",
+  "location": "apps/web/src/services/mcpService.ts",
+  "relevantCode": "mcpService.callTool('store.list', { schema: 'platform-features', model: 'FeatureSession' })",
+  "recommendation": "Unified page will use mcpService to load platform-features data and for chat streaming via agent.chat tool.",
+  "createdAt": 1734480203000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

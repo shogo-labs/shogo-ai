@@ -1,0 +1,19 @@
+{
+  "id": "test-002-tool-call-part-states",
+  "scenario": "ToolCallPart renders correct UI for each tool call state",
+  "given": [
+    "ToolCallPart component is rendered"
+  ],
+  "when": "part prop has different state values",
+  "then": [
+    "state='input-streaming' renders Loader2 spinner icon",
+    "state='input-available' renders tool name and input params",
+    "state='output-available' renders tool name, input, and result with Check icon",
+    "state='output-error' renders error styling with X icon and errorText"
+  ],
+  "testType": "unit",
+  "targetFile": "apps/web/src/components/FeatureControlPlane/__tests__/ToolCallPart.test.tsx",
+  "createdAt": 1734480901000,
+  "task": "task-004-tool-call-part",
+  "requirement": "req-008-tool-call-display"
+}

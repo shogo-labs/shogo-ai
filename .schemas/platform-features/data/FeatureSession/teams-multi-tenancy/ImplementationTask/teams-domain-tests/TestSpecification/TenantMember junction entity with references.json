@@ -1,0 +1,19 @@
+{
+  "id": "test-tenant-member-crud",
+  "scenario": "TenantMember junction entity with references",
+  "given": [
+    "Store has existing User and Tenant entities"
+  ],
+  "when": "Creating TenantMember with user_id, tenant_id, and role",
+  "then": [
+    "TenantMember is created in tenantMemberCollection",
+    "TenantMember.user_id resolves to User instance",
+    "TenantMember.tenant_id resolves to Tenant instance",
+    "TenantMember.role is one of: admin, billing_admin, editor, member"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/teams/tests/domain.test.ts",
+  "createdAt": 1734308300000,
+  "task": "task-teams-tests",
+  "requirement": "req-003"
+}

@@ -1,0 +1,17 @@
+{
+  "id": "task-chat-domain-exports",
+  "name": "chat-domain-exports",
+  "description": "Create barrel exports for chat domain",
+  "acceptanceCriteria": [
+    "packages/state-api/src/chat/index.ts exports ChatDomain scope",
+    "packages/state-api/src/chat/index.ts exports chatDomain result",
+    "packages/state-api/src/index.ts re-exports chat domain",
+    "Imports from '@shogo/state-api' can access chatDomain"
+  ],
+  "status": "planned",
+  "createdAt": 1734462403000,
+  "session": "ai-sdk-chat-component",
+  "dependencies": [
+    "task-chat-domain-store"
+  ]
+}

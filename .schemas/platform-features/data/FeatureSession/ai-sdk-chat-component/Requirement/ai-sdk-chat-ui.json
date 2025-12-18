@@ -1,0 +1,9 @@
+{
+  "id": "ai-sdk-chat-ui",
+  "name": "ai-sdk-chat-ui",
+  "description": "Create an AIChatComponent similar to ConversationalAppBuilder with side-by-side layout: left panel for chat interface, right panel for schema preview. Reuse existing ChatPanel and SchemaPreviewPanel patterns where appropriate.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734461712000,
+  "session": "ai-sdk-chat-component"
+}

@@ -1,0 +1,9 @@
+{
+  "id": "dd-006-tool-call-rendering",
+  "name": "tool-call-rendering",
+  "question": "How to display tool calls for live progress tracking?",
+  "decision": "Use AI SDK message.parts with typed tool parts (tool-{toolName}). Render based on part.state: input-streaming shows spinner, input-available shows tool name + params, output-available shows result, output-error shows error. Create ToolCallPart component.",
+  "rationale": "AI SDK 4.2+ provides rich tool call state via message.parts. Superior to current toolCalls array approach. Shows real-time progress as Claude executes Wavesmith tools.",
+  "createdAt": 1734480505000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

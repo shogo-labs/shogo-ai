@@ -1,0 +1,23 @@
+{
+  "id": "test-chat-message-entity",
+  "scenario": "ChatMessage entity with session reference",
+  "given": [
+    "chatDomain is initialized",
+    "ChatSession 'session-1' exists"
+  ],
+  "when": "ChatMessage is created with session: 'session-1'",
+  "then": [
+    "ChatMessage has id field (identifier)",
+    "ChatMessage has session field referencing ChatSession",
+    "ChatMessage.session resolves to ChatSession instance (not just ID string)",
+    "ChatMessage has role field (enum: user, assistant)",
+    "ChatMessage has content field (string)",
+    "ChatMessage has toolCalls field (array)",
+    "ChatMessage has createdAt field (number)"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/chat/__tests__/domain.test.ts",
+  "createdAt": 1734462502000,
+  "task": "task-chat-domain-store",
+  "requirement": "ai-sdk-chat-persistence"
+}

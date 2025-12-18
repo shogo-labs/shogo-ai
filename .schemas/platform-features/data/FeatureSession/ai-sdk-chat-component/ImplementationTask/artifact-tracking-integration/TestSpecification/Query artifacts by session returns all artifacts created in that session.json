@@ -1,0 +1,18 @@
+{
+  "id": "test-artifact-003",
+  "scenario": "Query artifacts by session returns all artifacts created in that session",
+  "given": [
+    "ChatSession 'session-1' with 2 artifacts",
+    "ChatSession 'session-2' with 1 artifact"
+  ],
+  "when": "store.query CreatedArtifact with filter {session: 'session-1'}",
+  "then": [
+    "returns array of 2 artifacts",
+    "all artifacts have session='session-1'",
+    "session-2 artifact not included"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/chat/tests/artifact-tracking.test.ts",
+  "createdAt": 1734462500002,
+  "task": "task-artifact-tracking"
+}

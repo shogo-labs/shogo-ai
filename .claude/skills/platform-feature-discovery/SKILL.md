@@ -5,9 +5,9 @@ description: >
   needs to add, design, plan, or build a new capability for the Shogo AI
   platform (auth, MCP tools, skills, persistence features, etc.). Captures
   intent, affected packages, and requirements as Wavesmith entities. Invoke
-  when someone says "add [feature]", "implement [feature]", "design [capability]",
+  when someone says something like "add [feature]", "implement [feature]", "design [capability]",
   "help me build [feature]", "I need [capability] for the platform", "I want
-  to add [feature]", or similar requests for internal platform work.
+  to add [feature]", or similar requests around building or modifying feature.
 ---
 
 # Platform Feature Discovery

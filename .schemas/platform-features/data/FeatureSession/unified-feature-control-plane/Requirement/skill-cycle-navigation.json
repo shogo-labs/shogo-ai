@@ -1,0 +1,9 @@
+{
+  "id": "req-002-skill-cycle-nav",
+  "name": "skill-cycle-navigation",
+  "description": "Horizontal stepper UI showing the skill cycle (discovery → analysis → classification → design → spec → implementation). Current phase is highlighted based on session status. Stepper allows navigation between steps to view phase-specific data.",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734480002000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

@@ -1,0 +1,19 @@
+{
+  "id": "test-ai-sdk-error-handling",
+  "scenario": "Error handling for AI SDK failures",
+  "given": [
+    "agent.chat tool is invoked",
+    "AI SDK throws an error (e.g., rate limit, auth failure)"
+  ],
+  "when": "Error occurs during streamText",
+  "then": [
+    "Returns { ok: false, error: { code, message } }",
+    "Error message is descriptive",
+    "Does not crash MCP server"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/mcp/src/tools/__tests__/agent.chat.test.ts",
+  "createdAt": 1734462516000,
+  "task": "task-agent-chat-ai-sdk",
+  "requirement": "ai-sdk-mcp-integration"
+}

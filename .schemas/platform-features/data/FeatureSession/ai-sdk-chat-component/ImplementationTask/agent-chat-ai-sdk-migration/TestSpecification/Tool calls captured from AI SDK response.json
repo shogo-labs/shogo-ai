@@ -1,0 +1,20 @@
+{
+  "id": "test-ai-sdk-tool-calls-capture",
+  "scenario": "Tool calls captured from AI SDK response",
+  "given": [
+    "agent.chat tool is invoked",
+    "AI SDK response includes tool_use blocks"
+  ],
+  "when": "Response is processed",
+  "then": [
+    "toolCalls array includes each tool invocation",
+    "Each toolCall has tool name",
+    "Each toolCall has args object",
+    "Each toolCall has result (if available)"
+  ],
+  "testType": "integration",
+  "targetFile": "packages/mcp/src/tools/__tests__/agent.chat.test.ts",
+  "createdAt": 1734462513000,
+  "task": "task-agent-chat-ai-sdk",
+  "requirement": "ai-sdk-mcp-integration"
+}

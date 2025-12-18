@@ -15,8 +15,11 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.50",
     "@shogo/state-api": "workspace:*",
+    "ai": "^5.0.115",
+    "ai-sdk-provider-claude-code": "^2.2.4",
     "arktype": "^2.0.0-beta.7",
-    "fastmcp": "^3.19.2"
+    "fastmcp": "^3.19.2",
+    "zod": "^4.2.1"
   },
   "devDependencies": {
     "@types/bun": "latest",

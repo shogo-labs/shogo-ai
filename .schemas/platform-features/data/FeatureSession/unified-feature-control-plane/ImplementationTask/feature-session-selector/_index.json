@@ -1,0 +1,20 @@
+{
+  "id": "task-003-feature-session-selector",
+  "name": "feature-session-selector",
+  "description": "Create FeatureSessionSelector component - sidebar list of FeatureSessions with selection state and status badges.",
+  "acceptanceCriteria": [
+    "Component at apps/web/src/components/FeatureControlPlane/FeatureSessionSelector.tsx",
+    "Accepts sessions array, selectedId, and onSelect callback props",
+    "Renders scrollable list of session cards showing name, status badge, and creation date",
+    "Selected session has highlighted border/background",
+    "Status badge uses color coding: discovery=purple, analysis=blue, design=orange, spec=green, implementation=teal",
+    "Shows session count in header",
+    "Includes search/filter input for session name",
+    "Empty state message when no sessions exist",
+    "Uses shadcn Card and Badge components"
+  ],
+  "status": "planned",
+  "createdAt": 1734480702000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e",
+  "dependencies": []
+}

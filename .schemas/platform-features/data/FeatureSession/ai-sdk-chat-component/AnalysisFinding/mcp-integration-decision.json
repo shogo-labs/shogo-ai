@@ -1,0 +1,10 @@
+{
+  "id": "finding-mcp-integration-decision",
+  "name": "mcp-integration-decision",
+  "type": "pattern",
+  "description": "Decision: Replace agent.chat internals with AI SDK. Current agent.chat uses @anthropic-ai/claude-agent-sdk query(). Will replace with AI SDK streamText() using claudeCode() provider. MCP interface unchanged - frontend continues using mcpService.streamChat().",
+  "location": "packages/mcp/src/tools/agent.chat.ts",
+  "recommendation": "Modify agent.chat.ts to import ai-sdk-provider-claude-code and use streamText() instead of query(). Map streaming events to context.streamContent() for SSE compatibility.",
+  "createdAt": 1734462050000,
+  "session": "ai-sdk-chat-component"
+}

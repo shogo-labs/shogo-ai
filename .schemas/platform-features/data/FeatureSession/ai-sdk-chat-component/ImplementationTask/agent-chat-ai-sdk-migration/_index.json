@@ -1,0 +1,24 @@
+{
+  "id": "task-agent-chat-ai-sdk",
+  "name": "agent-chat-ai-sdk-migration",
+  "description": "Replace agent.chat MCP tool internals with AI SDK streamText() using claudeCode() provider",
+  "acceptanceCriteria": [
+    "agent.chat.ts imports claudeCode from ai-sdk-provider-claude-code",
+    "agent.chat.ts imports streamText from ai",
+    "Replaces query() from @anthropic-ai/claude-agent-sdk with streamText()",
+    "Configures claudeCode() provider with mcpServers: ['wavesmith']",
+    "Maps AI SDK streaming events to context.streamContent() for SSE compatibility",
+    "Captures tool calls from AI SDK response for toolCalls array",
+    "Session ID handling works for multi-turn conversations",
+    "MCP interface unchanged - mcpService.streamChat() continues working",
+    "Existing ConversationalAppBuilder demo still functions correctly"
+  ],
+  "status": "completed",
+  "createdAt": 1734462401000,
+  "updatedAt": 1734479000000,
+  "session": "ai-sdk-chat-component",
+  "requirement": "ai-sdk-mcp-integration",
+  "dependencies": [
+    "task-ai-sdk-deps"
+  ]
+}

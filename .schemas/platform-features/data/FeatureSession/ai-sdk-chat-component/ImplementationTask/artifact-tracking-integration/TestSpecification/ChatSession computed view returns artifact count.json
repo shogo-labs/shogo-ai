@@ -1,0 +1,17 @@
+{
+  "id": "test-artifact-005",
+  "scenario": "ChatSession computed view returns artifact count",
+  "given": [
+    "ChatSession exists",
+    "3 CreatedArtifact entities reference this session"
+  ],
+  "when": "access session.artifactCount computed view",
+  "then": [
+    "returns number 3",
+    "value updates when new artifact added"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/chat/tests/artifact-tracking.test.ts",
+  "createdAt": 1734462500004,
+  "task": "task-artifact-tracking"
+}

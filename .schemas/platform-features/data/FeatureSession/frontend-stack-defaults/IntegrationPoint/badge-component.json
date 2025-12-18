@@ -1,0 +1,12 @@
+{
+  "id": "ip-fsd-004",
+  "name": "badge-component",
+  "filePath": "apps/web/src/components/ui/badge.tsx",
+  "package": "apps/web",
+  "changeType": "install",
+  "description": "Install Badge component via npx shadcn@latest add badge",
+  "rationale": "Badge is used for status indicators in demo pages",
+  "createdAt": 1734481000000,
+  "session": "fs-frontend-defaults-001",
+  "finding": "finding-fsd-004"
+}

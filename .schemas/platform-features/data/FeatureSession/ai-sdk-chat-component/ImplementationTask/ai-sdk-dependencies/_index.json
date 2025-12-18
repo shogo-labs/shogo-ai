@@ -1,0 +1,18 @@
+{
+  "id": "task-ai-sdk-deps",
+  "name": "ai-sdk-dependencies",
+  "description": "Install AI SDK dependencies in packages/mcp for the agent.chat tool update",
+  "acceptanceCriteria": [
+    "packages/mcp/package.json includes 'ai' (v4 or v5-beta)",
+    "packages/mcp/package.json includes 'ai-sdk-provider-claude-code'",
+    "bun install succeeds without errors",
+    "TypeScript can import { claudeCode } from 'ai-sdk-provider-claude-code'",
+    "TypeScript can import { streamText } from 'ai'"
+  ],
+  "status": "complete",
+  "createdAt": 1734462400000,
+  "updatedAt": 1734462720000,
+  "session": "ai-sdk-chat-component",
+  "requirement": "ai-sdk-deps",
+  "dependencies": []
+}
