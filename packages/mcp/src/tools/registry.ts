@@ -12,6 +12,7 @@ import { registerStoreCreate } from "./store.create"
 import { registerStoreGet } from "./store.get"
 import { registerStoreList } from "./store.list"
 import { registerStoreUpdate } from "./store.update"
+import { registerStoreDelete } from "./store.delete"
 import { registerStoreQuery } from "./store.query"
 
 // View tools
@@ -34,9 +35,9 @@ import { registerAgentChat } from "./agent.chat"
  * Register all Wavesmith MCP tools on a FastMCP server instance.
  * This is the single source of truth for tool registration.
  *
- * Total: 18 tools across 6 namespaces
+ * Total: 19 tools across 6 namespaces
  * - Schema: 4 tools (set, get, load, list)
- * - Store: 6 tools (models, create, get, list, update, query)
+ * - Store: 7 tools (models, create, get, list, update, delete, query)
  * - View: 4 tools (execute, define, delete, project)
  * - Data: 2 tools (load, loadAll)
  * - DDL: 1 tool (execute)
@@ -51,12 +52,13 @@ export function registerAllTools(server: FastMCP) {
   registerSchemaLoad(server)
   registerSchemaList(server)
 
-  // Store namespace (6 tools)
+  // Store namespace (7 tools)
   registerStoreModels(server)
   registerStoreCreate(server)
   registerStoreGet(server)
   registerStoreList(server)
   registerStoreUpdate(server)
+  registerStoreDelete(server)
   registerStoreQuery(server)
 
   // View namespace (4 tools)
