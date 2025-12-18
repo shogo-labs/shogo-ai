@@ -1,0 +1,9 @@
+{
+  "id": "design-003",
+  "name": "tenant-member-junction",
+  "question": "How should TenantMember junction table be persisted?",
+  "decision": "Use nested: false (flat storage) since it spans two root entities (User, Tenant)",
+  "rationale": "Junction tables that link two independent root entities should be stored flat. No clear parent hierarchy.",
+  "createdAt": 1734307800000,
+  "session": "teams-multi-tenancy-001"
+}

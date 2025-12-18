@@ -37,6 +37,11 @@ export * from './query'
 
 // DDL generation
 export * from './ddl'
+// Teams Multi-Tenancy layer
+export * from './teams-multi-tenancy'
+
+// Chat layer (AI SDK integration)
+export * from './chat'
 
 // Utilities
 export * from './utils'

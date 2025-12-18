@@ -43,10 +43,11 @@ export function registerAgentChat(server: FastMCP) {
         // Generate response via Claude agent with streaming
         const result = await generateChatResponseStreaming(message, providedSessionId, context)
 
-        // Return metadata only - text already streamed via context.streamContent()
+        // Return full result including accumulated response text
         return JSON.stringify({
           ok: true,
           sessionId: result.sessionId,
+          response: result.response,
           toolCalls: result.toolCalls,
         })
       } catch (error: any) {
@@ -64,6 +65,7 @@ export function registerAgentChat(server: FastMCP) {
 
 interface StreamingChatResult {
   sessionId: string
+  response: string  // Accumulated text from streaming
   toolCalls: Array<{ tool: string, args: any, result?: string }>
 }
 
@@ -146,16 +148,26 @@ IMPORTANT CONSTRAINTS:
   }, null, 2))
   console.log('[agent.chat] === DEBUG END ===')
 
-  const stream = query({
-    prompt: message,
-    options
-  })
+  console.log('[agent.chat] Creating query stream...')
+  let stream
+  try {
+    stream = query({
+      prompt: message,
+      options
+    })
+    console.log('[agent.chat] Query stream created successfully')
+  } catch (queryError: any) {
+    console.error('[agent.chat] Failed to create query stream:', queryError)
+    throw queryError
+  }
 
   let capturedSessionId: string | undefined
   const toolCalls: Array<{ tool: string, args: any, result?: string }> = []
+  let accumulatedResponse = ''  // Accumulate streamed text for final response
 
   // Process stream messages
   let msgCount = 0
+  console.log('[agent.chat] Starting to iterate stream...')
   for await (const msg of stream) {
     msgCount++
 
@@ -183,6 +195,7 @@ IMPORTANT CONSTRAINTS:
         const delta = event.delta
         if (delta?.type === 'text_delta' && delta?.text) {
           console.log('[agent.chat] Streaming text delta:', delta.text.slice(0, 50))
+          accumulatedResponse += delta.text
           await context.streamContent({
             type: "text",
             text: delta.text
@@ -206,6 +219,7 @@ IMPORTANT CONSTRAINTS:
         // Also stream text from assistant messages if no stream_event (fallback)
         if (block.type === 'text' && block.text) {
           console.log('[agent.chat] Streaming from assistant block:', block.text.slice(0, 50))
+          accumulatedResponse += block.text
           await context.streamContent({
             type: "text",
             text: block.text
@@ -249,6 +263,7 @@ IMPORTANT CONSTRAINTS:
 
   return {
     sessionId: finalSessionId,
+    response: accumulatedResponse,
     toolCalls,
   }
 }

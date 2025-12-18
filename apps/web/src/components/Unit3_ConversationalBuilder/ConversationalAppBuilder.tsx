@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
 import { useAgentChat, type ChatMessage } from '../../hooks/useAgentChat'
 import { useSchemaPreview } from '../../hooks/useSchemaPreview'
+import { useArtifactTracker } from '../../hooks/useArtifactTracker'
 import { DynamicCollectionList } from './DynamicCollectionList'
 
 /**
@@ -14,6 +15,7 @@ import { DynamicCollectionList } from './DynamicCollectionList'
 export function ConversationalAppBuilder() {
   const [generatedSchemaName, setGeneratedSchemaName] = useState<string | null>(null)
   const chat = useAgentChat()
+  const artifacts = useArtifactTracker(chat.sessionId)
 
   // Watch for schema tool calls to update preview
   // agent_chat calls schema_set/schema_load directly, so we only need to detect those
@@ -66,11 +68,14 @@ export function ConversationalAppBuilder() {
           alignItems: 'center',
         }}>
           <span>Chat with Claude</span>
-          {chat.sessionId && (
-            <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>
-              Session: {chat.sessionId.slice(0, 8)}...
-            </span>
-          )}
+          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', fontSize: '0.75rem', opacity: 0.8 }}>
+            {chat.sessionId && (
+              <span>Session: {chat.sessionId.slice(0, 8)}...</span>
+            )}
+            {artifacts.length > 0 && (
+              <span>{artifacts.length} artifact{artifacts.length !== 1 ? 's' : ''} created</span>
+            )}
+          </div>
         </div>
         <div style={{
           flex: 1,
@@ -296,11 +301,20 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             color: '#64748b',
           }}>
             <div style={{ fontWeight: 'bold', marginBottom: '0.25rem' }}>Tools used:</div>
-            {message.toolCalls.map((tc, i) => (
-              <div key={i} style={{ marginLeft: '0.5rem' }}>
-                {tc.tool}
-              </div>
-            ))}
+            {message.toolCalls.map((tc, i) => {
+              const isArtifact = tc.tool === 'mcp__wavesmith__schema_set' || tc.tool === 'mcp__wavesmith__store_create'
+              return (
+                <div key={i} style={{
+                  marginLeft: '0.5rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem'
+                }}>
+                  <span>{tc.tool}</span>
+                  {isArtifact && <span style={{ color: '#10b981', fontSize: '1rem' }}>✓</span>}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

@@ -1,0 +1,11 @@
+{
+  "id": "finding-no-api-server",
+  "name": "no-api-server",
+  "type": "pattern",
+  "description": "AI SDK will run client-side in the browser. No API server needed since this runs locally. The existing vite dev server is sufficient.",
+  "location": "apps/web/vite.config.ts",
+  "relevantCode": "proxy: { '/api': { target: 'http://localhost:8001' } }",
+  "recommendation": "Use AI SDK directly in React components/hooks. Call claudeCode() provider from frontend.",
+  "createdAt": 1734461802000,
+  "session": "ai-sdk-chat-component"
+}

@@ -1,0 +1,20 @@
+{
+  "id": "test-chat-session-latest-message",
+  "scenario": "ChatSession.latestMessage computed view",
+  "given": [
+    "chatDomain is initialized",
+    "ChatSession 'session-1' exists",
+    "Multiple ChatMessages with different createdAt timestamps"
+  ],
+  "when": "ChatSession.latestMessage is accessed",
+  "then": [
+    "Returns ChatMessage with highest createdAt",
+    "Returns undefined for session with no messages",
+    "Updates when new message added with later timestamp"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/state-api/src/chat/__tests__/domain.test.ts",
+  "createdAt": 1734462505000,
+  "task": "task-chat-domain-store",
+  "requirement": "ai-sdk-chat-persistence"
+}

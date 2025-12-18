@@ -1,0 +1,9 @@
+{
+  "id": "req-fsd-001",
+  "name": "tailwind-config",
+  "description": "Tailwind CSS v4 configured with Vite plugin, custom theme colors (background, foreground, primary, secondary, card, border, muted), and dark mode as default color scheme",
+  "priority": "must",
+  "status": "implemented",
+  "createdAt": 1734480120000,
+  "session": "fs-frontend-defaults-001"
+}

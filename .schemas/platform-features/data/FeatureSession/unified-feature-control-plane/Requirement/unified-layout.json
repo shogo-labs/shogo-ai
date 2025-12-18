@@ -1,0 +1,9 @@
+{
+  "id": "req-001-unified-layout",
+  "name": "unified-layout",
+  "description": "Single page layout that combines: (1) FeatureSession selector/list, (2) Chat interface for conversing about the feature, (3) Entity data panel showing Requirements, Findings, Tasks, etc. for the selected session",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734480001000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

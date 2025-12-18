@@ -1,0 +1,9 @@
+{
+  "id": "req-pfv-003",
+  "name": "filtering",
+  "description": "Filter entities by model type (sidebar/tabs), by session (for related entities), and by status values where applicable",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734480000000,
+  "session": "pf-viewer-001"
+}

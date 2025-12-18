@@ -1,0 +1,21 @@
+{
+  "id": "task-teams-tests",
+  "name": "teams-domain-tests",
+  "description": "Create unit tests for teams-multi-tenancy domain",
+  "acceptanceCriteria": [
+    "Test file at packages/state-api/src/teams/tests/domain.test.ts",
+    "Tests verify all 5 entities can be created with valid data",
+    "Tests verify reference fields resolve to entity instances",
+    "Tests verify TenantMember.isBillingAdmin computed view works correctly",
+    "Tests verify findByTenant collection methods return correct results",
+    "Tests verify role enum validation (admin, billing_admin, editor, member)",
+    "Tests use NullPersistence for fast, isolated execution"
+  ],
+  "status": "completed",
+  "createdAt": 1734308100000,
+  "updatedAt": 1734400000000,
+  "session": "teams-multi-tenancy-001",
+  "dependencies": [
+    "task-teams-domain"
+  ]
+}

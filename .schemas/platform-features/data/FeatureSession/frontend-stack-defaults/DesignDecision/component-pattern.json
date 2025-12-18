@@ -1,0 +1,9 @@
+{
+  "id": "dd-fsd-002",
+  "name": "component-pattern",
+  "question": "How should new shadcn components be structured?",
+  "decision": "Follow existing Button pattern: cva() for variants, cn() for class merging, Radix primitives for accessibility",
+  "rationale": "Button component in src/components/ui/button.tsx demonstrates the established pattern. Consistency ensures maintainability and familiar DX.",
+  "createdAt": 1734480700000,
+  "session": "fs-frontend-defaults-001"
+}

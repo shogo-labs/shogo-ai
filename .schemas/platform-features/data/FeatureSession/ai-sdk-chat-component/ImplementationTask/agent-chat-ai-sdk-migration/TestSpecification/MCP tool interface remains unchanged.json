@@ -1,0 +1,19 @@
+{
+  "id": "test-mcp-interface-unchanged",
+  "scenario": "MCP tool interface remains unchanged",
+  "given": [
+    "agent.chat MCP tool is registered"
+  ],
+  "when": "Tool schema is inspected",
+  "then": [
+    "Parameters include message (required string)",
+    "Parameters include sessionId (optional string)",
+    "Response format matches existing { ok, sessionId, toolCalls }",
+    "mcpService.streamChat() continues to work unchanged"
+  ],
+  "testType": "unit",
+  "targetFile": "packages/mcp/src/tools/__tests__/agent.chat.test.ts",
+  "createdAt": 1734462515000,
+  "task": "task-agent-chat-ai-sdk",
+  "requirement": "ai-sdk-mcp-integration"
+}

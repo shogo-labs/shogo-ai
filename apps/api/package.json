@@ -1,0 +1,22 @@
+{
+  "name": "@shogo/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@shogo/state-api": "workspace:*",
+    "ai": "^5.0.115",
+    "ai-sdk-provider-claude-code": "^2.2.4",
+    "hono": "^4.7.10"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.2"
+  }
+}
+

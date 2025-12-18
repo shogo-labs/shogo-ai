@@ -1,0 +1,9 @@
+{
+  "id": "req-pfv-002",
+  "name": "readable-format",
+  "description": "Display entities in a readable format using tables or cards with proper field labels, formatted dates, and truncated long text - not raw JSON dumps",
+  "priority": "must",
+  "status": "proposed",
+  "createdAt": 1734480000000,
+  "session": "pf-viewer-001"
+}

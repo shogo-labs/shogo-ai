@@ -1,0 +1,10 @@
+{
+  "id": "finding-no-ai-sdk-deps",
+  "name": "no-ai-sdk-deps",
+  "type": "gap",
+  "description": "No AI SDK dependencies exist in the monorepo. Need to install 'ai' and 'ai-sdk-provider-claude-code' packages. These should go in apps/web or a new api package.",
+  "location": "apps/web/package.json",
+  "recommendation": "Add dependencies: ai@latest (or specific version), ai-sdk-provider-claude-code",
+  "createdAt": 1734461809000,
+  "session": "ai-sdk-chat-component"
+}

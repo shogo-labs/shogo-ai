@@ -1,0 +1,16 @@
+{
+  "id": "task-fsd-001",
+  "name": "install-shadcn-components",
+  "description": "Install Card, Input, Label, Badge, and Separator components using shadcn CLI: npx shadcn@latest add card input label badge separator",
+  "acceptanceCriteria": [
+    "Run npx shadcn@latest add card input label badge separator",
+    "Components installed to src/components/ui/",
+    "Required Radix dependencies auto-installed"
+  ],
+  "status": "completed",
+  "createdAt": 1734481100000,
+  "updatedAt": 1734481500000,
+  "session": "fs-frontend-defaults-001",
+  "requirement": "req-fsd-004",
+  "dependencies": []
+}

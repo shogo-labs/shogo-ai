@@ -1,8 +1,0 @@
-# Base dependencies for generated Python projects
-pydantic>=2.0
-pytest>=7.0
-mypy>=1.0
-datamodel-code-generator>=0.25.0
-
-# Domain-specific libraries will be appended during generation
-# (extracted from ModuleSpecification.details.libraries)

@@ -1,0 +1,27 @@
+{
+  "id": "task-chat-demo-page",
+  "name": "chat-demo-page",
+  "description": "Create proof-of-work demo page demonstrating AI SDK chat with persistence",
+  "acceptanceCriteria": [
+    "apps/web/src/pages/AIChatDemoPage.tsx created",
+    "chatDomain added to App.tsx DomainProvider domains map",
+    "Page uses useDomains() to access chat store (NOT custom context)",
+    "Demonstrates creating new ChatSession via createChatSession action",
+    "Demonstrates sending messages and receiving AI responses",
+    "Shows ChatMessage list with role indicators (user/assistant)",
+    "Shows tool calls made by assistant",
+    "Shows CreatedArtifact list linking to schemas created",
+    "Uses MCPPersistence for client-side persistence",
+    "Data survives page refresh (proves persistence pipeline)",
+    "Accessible at /ai-chat-demo route",
+    "Loading states and error handling included"
+  ],
+  "status": "planned",
+  "createdAt": 1734462404000,
+  "session": "ai-sdk-chat-component",
+  "requirement": "ai-sdk-chat-ui",
+  "dependencies": [
+    "task-chat-domain-exports",
+    "task-agent-chat-ai-sdk"
+  ]
+}

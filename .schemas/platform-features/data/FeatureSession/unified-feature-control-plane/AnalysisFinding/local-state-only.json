@@ -1,0 +1,10 @@
+{
+  "id": "class-evidence-003-local-state",
+  "name": "local-state-only",
+  "type": "classification_evidence",
+  "description": "All state is local or via Wavesmith MCP. chatDomain uses MST with MCPPersistence for local-first reactive state. platform-features data is queried from MCP server's in-memory store. No external state synchronization patterns needed.",
+  "location": "packages/state-api/src/chat/domain.ts",
+  "recommendation": "Confirms Domain archetype - no Service or Hybrid patterns required.",
+  "createdAt": 1734480212000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
+}

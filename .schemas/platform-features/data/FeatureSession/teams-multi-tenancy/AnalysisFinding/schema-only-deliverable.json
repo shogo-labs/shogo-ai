@@ -1,0 +1,10 @@
+{
+  "id": "class-evidence-schema-only",
+  "name": "schema-only-deliverable",
+  "type": "classification_evidence",
+  "description": "User confirmed scope is schema-only: create Enhanced JSON Schema in .schemas/teams-multi-tenancy/. No web integration, no MCP tools, no API endpoints.",
+  "location": "User clarification during discovery",
+  "recommendation": "Minimal scope confirms Domain archetype - single schema file deliverable",
+  "createdAt": 1734307500000,
+  "session": "teams-multi-tenancy-001"
+}

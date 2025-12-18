@@ -1,0 +1,20 @@
+{
+  "id": "task-002-skill-cycle-stepper",
+  "name": "skill-cycle-stepper",
+  "description": "Create SkillCycleStepper component - horizontal stepper showing the 6 skill phases (discovery, analysis, classification, design, spec, implementation) with current phase highlighted.",
+  "acceptanceCriteria": [
+    "Component at apps/web/src/components/FeatureControlPlane/SkillCycleStepper.tsx",
+    "Accepts currentStatus prop matching FeatureSession.status values",
+    "Renders 6 steps horizontally: discovery, analysis, classification, design, spec, implementation",
+    "Current step is visually highlighted (different background/border)",
+    "Completed steps show checkmark or filled indicator",
+    "Future steps are dimmed/outlined",
+    "Clicking a step calls optional onStepClick(status) callback for navigation",
+    "Uses tailwind classes and cn() utility for styling",
+    "Responsive - stacks vertically on mobile if needed"
+  ],
+  "status": "planned",
+  "createdAt": 1734480701000,
+  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e",
+  "dependencies": []
+}
