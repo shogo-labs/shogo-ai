@@ -23,22 +23,21 @@
  */
 
 import { createContext, useContext, type ReactNode } from "react"
-import type { IEnvironment, IPersistenceService, IAuthService } from "@shogo/state-api"
+import type { IEnvironment } from "@shogo/state-api"
 
 // ============================================================================
 // Types
 // ============================================================================
 
 /**
- * Configuration options for createEnvironment factory.
+ * Configuration for createEnvironment factory.
+ *
+ * Extends IEnvironment['services'] directly - takes persistence, backendRegistry,
+ * auth, queryValidator as top-level fields. Adds workspace which maps to context.location.
  */
-export interface EnvironmentConfig {
-  /** Required: Persistence service for loading/saving data */
-  persistence: IPersistenceService
-  /** Optional: Workspace/location for data isolation */
+export interface EnvironmentConfig extends IEnvironment {
+  /** Optional: Workspace/location for data isolation (maps to context.location) */
   workspace?: string
-  /** Optional: Auth service for authentication flows */
-  auth?: IAuthService
 }
 
 // ============================================================================
@@ -48,26 +47,25 @@ export interface EnvironmentConfig {
 /**
  * Create an IEnvironment from configuration options.
  *
- * @param config - Environment configuration
+ * @param config - Environment configuration (services + workspace)
  * @returns IEnvironment suitable for MST stores
  *
  * @example
  * ```typescript
  * const env = createEnvironment({
  *   persistence: new MCPPersistence(mcpService),
+ *   backendRegistry: createBackendRegistry({ default: 'postgres', backends: { postgres: mcpBackend } }),
  *   workspace: '.schemas/my-project'
  * })
  * ```
  */
 export function createEnvironment(config: EnvironmentConfig): IEnvironment {
+  const { workspace, services } = config
   return {
-    services: {
-      persistence: config.persistence,
-      auth: config.auth,
-    },
+    services,
     context: {
       schemaName: "default",
-      location: config.workspace,
+      location: workspace,
     },
   }
 }

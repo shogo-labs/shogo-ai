@@ -1,14 +1,15 @@
 /**
  * store.delete MCP Tool
  *
- * Deletes an entity instance by ID from the specified model collection.
- * Uses CollectionMutatable.deleteOne for proper MST state + backend persistence.
+ * Deletes entity instances from the specified model collection.
+ * Supports both single and batch operations:
+ * - Single: id → deleteOne → { ok, data }
+ * - Batch: filter (no id) → deleteMany → { ok, count }
  *
  * Tool Requirements:
  * - Tool name: 'store.delete'
- * - Uses CollectionMutatable.deleteOne when available
+ * - Uses CollectionMutatable.deleteOne/deleteMany when available
  * - Falls back to collection.remove + saveAll for legacy collections
- * - Returns { ok: true, data: <deleted entity> } or { ok: false, error }
  */
 
 import { type as t } from "arktype"
@@ -23,30 +24,39 @@ import { getRuntimeStore } from "@shogo/state-api"
 
 /**
  * ArkType schema for store.delete parameters
+ * - Single: id
+ * - Batch: filter (no id)
  */
 const Params = t({
   schema: "string",
   model: "string",
-  id: "string",
+  "id?": "string",
+  "filter?": "object",
   "workspace?": "string"
 })
 
 /**
  * Input parameters for store.delete
+ * - Single mode: id
+ * - Batch mode: filter (no id)
  */
 export interface StoreDeleteParams {
   schema: string
   model: string
-  id: string
+  id?: string
+  filter?: object
   workspace?: string
 }
 
 /**
  * Result structure for store.delete
+ * - Single: { ok, data }
+ * - Batch: { ok, count }
  */
 export interface StoreDeleteResult {
   ok: boolean
   data?: any
+  count?: number
   error?: {
     code: string
     message: string
@@ -64,12 +74,12 @@ export interface StoreDeleteResult {
  * It's exported as a standalone function for testability (proper TDD approach).
  *
  * @param args - Delete parameters
- * @returns Delete result with ok status, data (deleted entity), or error
+ * @returns Delete result with ok status, data/count, or error
  */
 export async function executeStoreDelete(
   args: StoreDeleteParams
 ): Promise<StoreDeleteResult> {
-  const { schema, model, id, workspace } = args
+  const { schema, model, id, filter, workspace } = args
 
   try {
     // 1. Find schema in meta-store
@@ -124,7 +134,50 @@ export async function executeStoreDelete(
       }
     }
 
-    // 5. Get entity data before deletion (for return value)
+    // 5. Determine single vs batch mode
+    // Single mode: id is provided
+    // Batch mode: filter is provided (no id)
+    const isBatchMode = !id && filter
+
+    if (isBatchMode) {
+      // Batch mode: delete all matching entities
+      if (typeof collection.deleteMany === 'function') {
+        const count = await collection.deleteMany(filter)
+        return {
+          ok: true,
+          count
+        }
+      }
+
+      // Fallback: query + loop delete
+      const matches = collection.all().filter((entity: any) => {
+        return Object.entries(filter as object).every(([key, value]) => entity[key] === value)
+      })
+
+      for (const entity of matches) {
+        collection.remove(entity)
+      }
+      await collection.saveAll()
+
+      return {
+        ok: true,
+        count: matches.length
+      }
+    }
+
+    // Validate: either id or filter must be provided
+    if (!id) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Either 'id' (single delete) or 'filter' (batch delete) is required"
+        }
+      }
+    }
+
+    // Single mode: delete by id
+    // 6. Get entity data before deletion (for return value)
     const entity = collection.get(id)
     if (!entity) {
       return {
@@ -139,8 +192,7 @@ export async function executeStoreDelete(
     // Capture data before deletion
     const deletedData = getSnapshot(entity)
 
-    // 6. Delete instance using CollectionMutatable.deleteOne when available
-    // This handles both MST state and backend persistence in one operation
+    // 7. Delete instance using CollectionMutatable.deleteOne when available
     if (typeof collection.deleteOne === 'function') {
       const deleted = await collection.deleteOne(id)
       if (!deleted) {
@@ -189,7 +241,7 @@ export async function executeStoreDelete(
 export function registerStoreDelete(server: FastMCP) {
   server.addTool({
     name: "store.delete",
-    description: "Delete an entity instance by ID",
+    description: "Delete entity instances. Single (id) or batch (filter).",
     parameters: Params,
     execute: async (args: StoreDeleteParams) => {
       const result = await executeStoreDelete(args)

@@ -76,6 +76,15 @@ export const CollectionMutatable = types
     function getExecutor<T>(): IQueryExecutor<T> {
       const env = getEnv<IEnvironment>(self)
       const registry = env.services.backendRegistry
+
+      // Guard: backendRegistry is optional in IEnvironment but required for mutations
+      if (!registry) {
+        throw new Error(
+          `backendRegistry is required for collection mutations. ` +
+          `Add backendRegistry to your environment services when creating the store.`
+        )
+      }
+
       const schemaName = env.context?.schemaName ?? 'default'
       const modelName = (self as any).modelName ?? 'Unknown'
 

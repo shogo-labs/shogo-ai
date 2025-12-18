@@ -15,9 +15,10 @@ import {
   clearRuntimeStores,
   MemoryBackend,
   SqlBackend,
-  BunSqlExecutor,
   NullPersistence,
 } from "../../index"
+// Server-only executor - import directly to avoid browser bundle bloat
+import { BunSqlExecutor } from "../execution/bun-sql"
 import { Database } from "bun:sqlite"
 import type { IBackend, BackendCapabilities } from "../backends/types"
 import type { IQueryExecutor } from "../executors/types"

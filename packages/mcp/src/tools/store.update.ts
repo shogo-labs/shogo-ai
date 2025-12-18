@@ -1,22 +1,21 @@
 /**
  * store.update MCP Tool
  *
- * Updates an existing entity instance's properties.
- * Uses CollectionMutatable.updateOne for proper MST state + backend persistence.
+ * Updates entity instances' properties.
+ * Supports both single and batch operations:
+ * - Single: id + changes → updateOne → { ok, data }
+ * - Batch: filter + changes (no id) → updateMany → { ok, count }
  *
  * Tool Requirements:
  * - Tool name: 'store.update'
- * - Uses CollectionMutatable.updateOne when available
+ * - Uses CollectionMutatable.updateOne/updateMany when available
  * - Falls back to applySnapshot + saveAll for legacy collections
- * - Returns { ok: true, data } or { ok: false, error }
  */
 
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
 import { getSnapshot, applySnapshot } from "mobx-state-tree"
-import { getMetaStore } from "@shogo/state-api"
-import { getRuntimeStore } from "@shogo/state-api"
-import { getEffectiveWorkspace } from "../state"
+import { getMetaStore, getRuntimeStore } from "@shogo/state-api"
 
 // ============================================================================
 // Type Definitions
@@ -24,32 +23,41 @@ import { getEffectiveWorkspace } from "../state"
 
 /**
  * ArkType schema for store.update parameters
+ * - Single: id + changes
+ * - Batch: filter + changes (no id)
  */
 const Params = t({
   schema: "string",
   model: "string",
-  id: "string",
+  "id?": "string",
+  "filter?": "object",
   changes: "object",
   "workspace?": "string"
 })
 
 /**
  * Input parameters for store.update
+ * - Single mode: id + changes
+ * - Batch mode: filter + changes (no id)
  */
 export interface StoreUpdateParams {
   schema: string
   model: string
-  id: string
+  id?: string
+  filter?: object
   changes: object
   workspace?: string
 }
 
 /**
  * Result structure for store.update
+ * - Single: { ok, data }
+ * - Batch: { ok, count }
  */
 export interface StoreUpdateResult {
   ok: boolean
   data?: any
+  count?: number
   error?: {
     code: string
     message: string
@@ -72,7 +80,7 @@ export interface StoreUpdateResult {
 export async function executeStoreUpdate(
   args: StoreUpdateParams
 ): Promise<StoreUpdateResult> {
-  const { schema, model, id, changes, workspace } = args
+  const { schema, model, id, filter, changes, workspace } = args
 
   try {
     // 1. Find schema in meta-store
@@ -102,9 +110,8 @@ export async function executeStoreUpdate(
       }
     }
 
-    // 3. Get runtime store from cache (Unit 3: workspace-aware caching)
-    const effectiveWorkspace = getEffectiveWorkspace(workspace)
-    const runtimeStore = getRuntimeStore(schemaEntity.id, effectiveWorkspace)
+    // 3. Get runtime store from cache (workspace-aware caching)
+    const runtimeStore = getRuntimeStore(schemaEntity.id, workspace)
     if (!runtimeStore) {
       return {
         ok: false,
@@ -139,8 +146,51 @@ export async function executeStoreUpdate(
       }
     }
 
-    // 6. Update instance using CollectionMutatable.updateOne when available
-    // This handles both MST state and backend persistence in one operation
+    // 6. Determine single vs batch mode
+    // Single mode: id is provided
+    // Batch mode: filter is provided (no id)
+    const isBatchMode = !id && filter
+
+    if (isBatchMode) {
+      // Batch mode: update all matching entities
+      if (typeof collection.updateMany === 'function') {
+        const count = await collection.updateMany(filter, changes)
+        return {
+          ok: true,
+          count
+        }
+      }
+
+      // Fallback: query + loop update
+      const matches = collection.all().filter((entity: any) => {
+        return Object.entries(filter as object).every(([key, value]) => entity[key] === value)
+      })
+
+      for (const entity of matches) {
+        const currentSnapshot = getSnapshot(entity) as Record<string, any>
+        const updatedSnapshot = { ...currentSnapshot, ...(changes as Record<string, any>) }
+        applySnapshot(entity, updatedSnapshot)
+      }
+      await collection.saveAll()
+
+      return {
+        ok: true,
+        count: matches.length
+      }
+    }
+
+    // Validate: either id or filter must be provided
+    if (!id) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Either 'id' (single update) or 'filter' (batch update) is required"
+        }
+      }
+    }
+
+    // Single mode: update by id
     if (typeof collection.updateOne === 'function') {
       const updated = await collection.updateOne(id, changes)
       if (!updated) {
@@ -202,7 +252,7 @@ export async function executeStoreUpdate(
 export function registerStoreUpdate(server: FastMCP) {
   server.addTool({
     name: "store.update",
-    description: "Update an entity instance's properties",
+    description: "Update entity instances. Single (id + changes) or batch (filter + changes).",
     parameters: Params,
     execute: async (args: StoreUpdateParams) => {
       const result = await executeStoreUpdate(args)

@@ -105,17 +105,18 @@ describe('query/index.ts re-exports execution module', () => {
     expect(queryModule).toBeDefined()
   })
 
-  test('BunSqlExecutor class is exported', async () => {
+  test('BunSqlExecutor is NOT exported from barrel (server-only)', async () => {
     // Given: query/index.ts module exists
-    // When: BunSqlExecutor is imported from query
-    const { BunSqlExecutor } = await import('../index')
+    // When: Checking for BunSqlExecutor in query barrel
+    const queryModule = await import('../index')
 
-    // Then: BunSqlExecutor class should be available
+    // Then: BunSqlExecutor should NOT be in the barrel (prevents browser bundle bloat)
+    expect((queryModule as any).BunSqlExecutor).toBeUndefined()
+
+    // But: It's still available via direct import for server-side code
+    const { BunSqlExecutor } = await import('../execution/bun-sql')
     expect(BunSqlExecutor).toBeDefined()
     expect(typeof BunSqlExecutor).toBe('function')
-
-    // And: Can instantiate from top-level import (requires SQL connection, so we just verify constructor exists)
-    expect(BunSqlExecutor.prototype.constructor).toBeDefined()
   })
 
   test('utility functions are exported', async () => {

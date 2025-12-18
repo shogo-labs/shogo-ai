@@ -304,7 +304,7 @@ describe("MCPQueryExecutor", () => {
   })
 
   describe("insertMany()", () => {
-    test("calls store.createMany with entities array", async () => {
+    test("calls store.create with entities array (batch mode)", async () => {
       const entities = [
         { title: "Task 1" },
         { title: "Task 2" },
@@ -323,9 +323,9 @@ describe("MCPQueryExecutor", () => {
       // When: insertMany() is called
       await executor.insertMany(entities)
 
-      // Then: store.createMany is called
+      // Then: store.create is called with array (batch mode)
       const [toolName, args] = (mockMcp.callTool as any).mock.calls[0]
-      expect(toolName).toBe("store.createMany")
+      expect(toolName).toBe("store.create")
       expect(args.schema).toBe("test-schema")
       expect(args.model).toBe("Task")
       expect(args.data).toEqual(entities)
@@ -344,7 +344,7 @@ describe("MCPQueryExecutor", () => {
   })
 
   describe("updateMany()", () => {
-    test("calls store.updateMany with AST and changes", async () => {
+    test("calls store.update with filter and changes (batch mode)", async () => {
       const condition = new FieldCondition("eq", "status", "pending")
       const changes = { status: "active" }
       mockMcp.callTool = mock(() =>
@@ -354,17 +354,13 @@ describe("MCPQueryExecutor", () => {
       // When: updateMany() is called
       await executor.updateMany(condition, changes)
 
-      // Then: store.updateMany is called
+      // Then: store.update is called with filter (batch mode)
       const [toolName, args] = (mockMcp.callTool as any).mock.calls[0]
-      expect(toolName).toBe("store.updateMany")
+      expect(toolName).toBe("store.update")
       expect(args.schema).toBe("test-schema")
       expect(args.model).toBe("Task")
-      expect(args.ast).toEqual({
-        type: "field",
-        operator: "eq",
-        field: "status",
-        value: "pending",
-      })
+      expect(args.workspace).toBe("test-workspace")
+      expect(args.filter).toEqual({ status: "pending" })
       expect(args.changes).toEqual(changes)
     })
 
@@ -380,7 +376,7 @@ describe("MCPQueryExecutor", () => {
   })
 
   describe("deleteMany()", () => {
-    test("calls store.deleteMany with AST", async () => {
+    test("calls store.delete with filter (batch mode)", async () => {
       const condition = new FieldCondition("eq", "status", "archived")
       mockMcp.callTool = mock(() =>
         Promise.resolve({ ok: true, count: 2 })
@@ -389,17 +385,13 @@ describe("MCPQueryExecutor", () => {
       // When: deleteMany() is called
       await executor.deleteMany(condition)
 
-      // Then: store.deleteMany is called
+      // Then: store.delete is called with filter (batch mode)
       const [toolName, args] = (mockMcp.callTool as any).mock.calls[0]
-      expect(toolName).toBe("store.deleteMany")
+      expect(toolName).toBe("store.delete")
       expect(args.schema).toBe("test-schema")
       expect(args.model).toBe("Task")
-      expect(args.ast).toEqual({
-        type: "field",
-        operator: "eq",
-        field: "status",
-        value: "archived",
-      })
+      expect(args.workspace).toBe("test-workspace")
+      expect(args.filter).toEqual({ status: "archived" })
     })
 
     test("returns count of deleted entities", async () => {

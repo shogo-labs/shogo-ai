@@ -447,6 +447,14 @@ export const CollectionQueryable = types
       const schemaName = env.context!.schemaName
       const modelName = (self as any).modelName
 
+      // Guard: backendRegistry is optional in IEnvironment but required for queries
+      if (!env.services.backendRegistry) {
+        throw new Error(
+          `backendRegistry is required for query(). ` +
+          `Add backendRegistry to your environment services when creating the store.`
+        )
+      }
+
       // Get pre-computed maps from env.context (if available)
       // This enables createStore() to work with SQL backends without meta-store registration
       const columnPropertyMap = (env.context as any)?.columnPropertyMaps?.[modelName]
