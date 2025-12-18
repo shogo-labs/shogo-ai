@@ -453,13 +453,13 @@ The proof-of-work page validates the complete feature integration. After passing
 cd apps/web && bun run dev &
 ```
 
-Wait for server ready message. Default URL: `http://localhost:5173`
+Wait for server ready message. Default URL: `http://localhost:3000`
 
 **Step 2: Navigate and Basic Verification**
 
 Using Chrome DevTools MCP tools:
 
-1. `navigate_page` to `http://localhost:5173/{demo-page-path}`
+1. `navigate_page` to `http://localhost:3000/{demo-page-path}`
 2. `wait_for` main content element (e.g., `[data-testid="demo-container"]`)
 3. `list_console_messages` to check for errors
 4. `take_screenshot` for visual baseline

@@ -63,7 +63,7 @@ Generate E2E test specs when:
 | Given Statement | Browser Tool | Example |
 |-----------------|--------------|---------|
 | "Dev server running" | Pre-requisite (manual) | N/A |
-| "User on page X" | `navigate_page` | `navigate_page -> http://localhost:5173/teams` |
+| "User on page X" | `navigate_page` | `navigate_page -> http://localhost:3000/teams` |
 | "Page loaded" | `wait_for` | `wait_for -> [data-testid="page-container"]` |
 | "Form visible" | `wait_for` | `wait_for -> [data-testid="create-form"]` |
 | "User logged in" | Prior `fill` + `click` | Login flow first |
@@ -110,7 +110,7 @@ Generate E2E test specs when:
   requirement: "req-002",
   scenario: "User creates new team via demo page",
   given: [
-    "Dev server running at localhost:5173",
+    "Dev server running at localhost:3000",
     "User navigated to /teams-demo",
     "Organization already exists in store"
   ],
@@ -129,7 +129,7 @@ Generate E2E test specs when:
 
 **Verification sequence:**
 ```
-navigate_page -> http://localhost:5173/teams-demo
+navigate_page -> http://localhost:3000/teams-demo
 wait_for -> [data-testid="teams-container"]
 click -> [data-testid="create-team-button"]
 wait_for -> [data-testid="team-form"]
@@ -137,7 +137,7 @@ fill -> [name="teamName"], "Engineering"
 click -> [data-testid="save-button"]
 wait_for -> text "Engineering" in list
 list_console_messages -> (no errors)
-navigate_page -> http://localhost:5173/teams-demo (refresh)
+navigate_page -> http://localhost:3000/teams-demo (refresh)
 wait_for -> text "Engineering" still visible
 ```
 
@@ -170,7 +170,7 @@ wait_for -> text "Engineering" still visible
 
 **Verification sequence:**
 ```
-navigate_page -> http://localhost:5173/auth-demo
+navigate_page -> http://localhost:3000/auth-demo
 wait_for -> [data-testid="auth-form"]
 evaluate_script -> "window.__services?.auth?.constructor?.name !== 'MockAuthService'"
 fill_form -> { email: "test@example.com", password: "password123" }
@@ -209,7 +209,7 @@ wait_for -> [data-testid="success-message"]
 **Verification sequence:**
 ```
 performance_start_trace
-navigate_page -> http://localhost:5173/dashboard
+navigate_page -> http://localhost:3000/dashboard
 wait_for -> [data-testid="dashboard-loaded"]
 performance_stop_trace
 performance_analyze_insight -> FCP < 2000ms, no long tasks

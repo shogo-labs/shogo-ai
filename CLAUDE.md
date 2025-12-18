@@ -79,6 +79,27 @@ bun run dev --filter=@shogo/web
 bun run build --filter=@shogo/web
 ```
 
+### Browser Testing with Chrome DevTools MCP
+
+The project uses [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) for browser-based E2E testing of proof-of-work demo pages.
+
+**Requirements:**
+- **Google Chrome** - Must be installed and accessible
+- **npx** - Used to run chrome-devtools-mcp (comes with Node.js)
+
+**Setup:**
+The MCP server is configured in `.mcp.json`. After restarting Claude Code, the following tools become available:
+- Input: `click`, `fill`, `fill_form`, `hover`, `press_key`, `drag`, `upload_file`, `handle_dialog`
+- Navigation: `navigate_page`, `new_page`, `close_page`, `select_page`, `list_pages`, `wait_for`
+- Debugging: `take_screenshot`, `take_snapshot`, `evaluate_script`, `list_console_messages`
+- Performance: `performance_start_trace`, `performance_stop_trace`, `performance_analyze_insight`
+- Network: `list_network_requests`, `get_network_request`
+
+**Usage:**
+Browser verification runs during implementation Phase 5 (proof-of-work). See:
+- `.claude/skills/platform-feature-implementation/references/08-browser-verification.md`
+- `.claude/skills/platform-feature-tests/references/patterns/08-e2e-browser-testing.md`
+
 ## Architecture Overview
 
 Shogo AI is a monorepo with schema-first reactive state management. The core idea: define schemas (ArkType or Enhanced JSON Schema) and automatically generate MobX-State-Tree stores with proper types, references, and persistence.

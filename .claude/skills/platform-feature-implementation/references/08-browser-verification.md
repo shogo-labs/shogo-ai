@@ -97,7 +97,7 @@ Before browser testing, start the development server:
 cd apps/web && bun run dev &
 
 # Wait for server to be ready
-# Default URL: http://localhost:5173
+# Default URL: http://localhost:3000
 ```
 
 ### Phase 2: Basic Render Verification
@@ -105,7 +105,7 @@ cd apps/web && bun run dev &
 **Goal**: Confirm page loads without critical errors.
 
 ```
-1. navigate_page -> http://localhost:5173/{demo-page-path}
+1. navigate_page -> http://localhost:3000/{demo-page-path}
 2. wait_for -> Main content element visible (e.g., [data-testid="demo-container"])
 3. list_console_messages -> Check for errors
 4. take_screenshot -> Visual baseline
@@ -183,7 +183,7 @@ Then repeat Phases 2-4 against `http://localhost:4173/{demo-page-path}`.
 
 ## Test Target Priority
 
-1. **Localhost dev server first** (`http://localhost:5173`)
+1. **Localhost dev server first** (`http://localhost:3000`)
    - Fast feedback loop
    - Easy debugging with HMR
    - Quick iteration on fixes
@@ -396,7 +396,7 @@ click -> "Save"
 
 ```
 # 1. Start verification
-navigate_page -> http://localhost:5173/teams-demo
+navigate_page -> http://localhost:3000/teams-demo
 wait_for -> [data-testid="teams-container"]
 list_console_messages -> (check for errors)
 take_screenshot -> "01-initial-load.png"
@@ -414,7 +414,7 @@ wait_for -> [data-testid="team-item"]
 take_screenshot -> "02-entity-created.png"
 
 # 4. Verify persistence (refresh test)
-navigate_page -> http://localhost:5173/teams-demo
+navigate_page -> http://localhost:3000/teams-demo
 wait_for -> [data-testid="teams-container"]
 wait_for -> text "Test Team" visible
 take_screenshot -> "03-after-refresh.png"
