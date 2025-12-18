@@ -192,8 +192,65 @@ Then: Navigation shows logged-in state
 | packages/state-api | src/{module}/__tests__/{name}.test.ts |
 | apps/web | src/{component}/__tests__/{name}.test.tsx |
 
+## E2E Browser Test Specifications
+
+When a feature requires browser-based E2E verification (proof-of-work pages), generate TestSpecifications with `testType: "e2e"`.
+
+**E2E Test Spec Structure**:
+
+```javascript
+store.create("TestSpecification", "platform-features", {
+  id: "test-e2e-xxx",
+  task: "task-xxx",
+  requirement: "req-xxx",
+  scenario: "User can create entity via demo page",
+  given: [
+    "Dev server is running at localhost:5173",
+    "User has navigated to /demo-page",
+    "Page has fully loaded"
+  ],
+  when: "User fills form and clicks Save",
+  then: [
+    "New entity appears in list",
+    "Entity persists after page refresh",
+    "No console errors during flow"
+  ],
+  testType: "e2e",
+  targetFile: null,  // E2E tests use Chrome DevTools MCP, not test files
+  browserTools: ["navigate_page", "fill_form", "click", "wait_for", "list_console_messages"],
+  createdAt: Date.now()
+})
+```
+
+**Key differences from unit/integration tests:**
+- `testType: "e2e"` - Indicates browser-based verification
+- `targetFile: null` - No test file generated (uses Chrome DevTools MCP)
+- `browserTools: []` - Lists Chrome DevTools MCP tools needed for verification
+
+**E2E Test Type Guidelines**:
+
+| Criterion Pattern | E2E Verification | Browser Tools |
+|-------------------|------------------|---------------|
+| "Page renders..." | Load page, check for errors | `navigate_page`, `wait_for`, `take_screenshot` |
+| "Form submits..." | Fill and submit form | `fill_form`, `click`, `wait_for` |
+| "Data persists..." | Action + refresh + verify | `click`, `navigate_page`, `wait_for` |
+| "Real service used..." | Check service type | `evaluate_script`, `list_network_requests` |
+| "No errors..." | Check console | `list_console_messages` |
+| "Performance..." | Profile load time | `performance_start_trace`, `performance_stop_trace`, `performance_analyze_insight` |
+
+**When to generate E2E specs:**
+- Feature has a proof-of-work demo page
+- Acceptance criteria mention "user can..." or "page shows..."
+- Integration requires real services/persistence verification
+- Visual or interactive validation needed
+
+**Important**: E2E specs do NOT generate test files. They serve as guidance for browser verification during implementation Phase 5.
+
+See [patterns/08-e2e-browser-testing.md](references/patterns/08-e2e-browser-testing.md) for detailed patterns.
+
 ## References
 
 - [test-patterns.md](references/test-patterns.md) - Common test patterns by component type
 - [patterns/05-mock-service-testing.md](references/patterns/05-mock-service-testing.md) - Mock service implementation patterns
 - [patterns/07-react-context-integration.md](references/patterns/07-react-context-integration.md) - React component testing patterns
+- [patterns/08-e2e-browser-testing.md](references/patterns/08-e2e-browser-testing.md) - E2E browser testing patterns with Chrome DevTools MCP
