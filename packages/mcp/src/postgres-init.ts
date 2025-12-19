@@ -7,7 +7,7 @@
  * Usage:
  * ```ts
  * // At server startup
- * initializePostgresBackend()
+ * await initializePostgresBackend()
  *
  * // In tools that need backend registry
  * const registry = getGlobalBackendRegistry()
@@ -86,14 +86,14 @@ let sqliteInitialized = false
  * @example
  * ```ts
  * // At server startup
- * if (initializePostgresBackend()) {
+ * if (await initializePostgresBackend()) {
  *   console.log('PostgreSQL backend available')
  * } else {
  *   console.log('Running with memory backend only')
  * }
  * ```
  */
-export function initializePostgresBackend(): boolean {
+export async function initializePostgresBackend(): Promise<boolean> {
   // Already initialized
   if (postgresInitialized && postgresExecutor) {
     return true
@@ -106,7 +106,7 @@ export function initializePostgresBackend(): boolean {
     console.log(
       "[postgres-init] DATABASE_URL not set - falling back to SQLite backend."
     )
-    initializeSqliteBackend()
+    await initializeSqliteBackend()
     return false
   }
 
@@ -145,7 +145,7 @@ export function initializePostgresBackend(): boolean {
     )
     // Fall back to SQLite on PostgreSQL failure
     console.log("[postgres-init] Falling back to SQLite backend.")
-    initializeSqliteBackend()
+    await initializeSqliteBackend()
     return false
   }
 }
@@ -158,7 +158,7 @@ export function initializePostgresBackend(): boolean {
  *
  * @returns true if sqlite was initialized, false otherwise
  */
-export function initializeSqliteBackend(): boolean {
+export async function initializeSqliteBackend(): Promise<boolean> {
   // Already initialized
   if (sqliteInitialized && sqliteExecutor) {
     return true
