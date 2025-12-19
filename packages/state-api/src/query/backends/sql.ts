@@ -475,7 +475,8 @@ export class SqlBackend implements IBackend {
     })
 
     // 4. Check for executor
-    if (!this.executor) {
+    const executor = this.executor
+    if (!executor) {
       return {
         success: false,
         statements,
@@ -484,9 +485,9 @@ export class SqlBackend implements IBackend {
       }
     }
 
-    // 5. Execute statements via executor
+    // 5. Execute statements via executor (executeMany is required for DDL execution)
     try {
-      await this.executor.executeMany(statements)
+      await executor.executeMany!(statements)
       return {
         success: true,
         statements,

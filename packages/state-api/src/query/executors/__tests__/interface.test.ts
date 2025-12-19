@@ -17,10 +17,17 @@ describe("EXEC-01: IQueryExecutor Interface Definition", () => {
   test("interface has required method signatures", () => {
     // This is a compile-time test - if this file compiles, the interface is correct
     const mockExecutor: IQueryExecutor<any> = {
+      executorType: 'local',
       select: async () => [],
       first: async () => undefined,
       count: async () => 0,
-      exists: async () => false
+      exists: async () => false,
+      insert: async () => ({ id: "1" }),
+      update: async () => undefined,
+      delete: async () => false,
+      insertMany: async () => [],
+      updateMany: async () => 0,
+      deleteMany: async () => 0,
     }
 
     expect(typeof mockExecutor.select).toBe("function")
@@ -31,6 +38,7 @@ describe("EXEC-01: IQueryExecutor Interface Definition", () => {
 
   test("select method accepts AST and options", async () => {
     const mockExecutor: IQueryExecutor<{ id: string }> = {
+      executorType: 'local',
       select: async (ast, options) => {
         // Verify parameters are passed correctly
         expect(ast).toBeDefined()
@@ -39,7 +47,13 @@ describe("EXEC-01: IQueryExecutor Interface Definition", () => {
       },
       first: async () => undefined,
       count: async () => 0,
-      exists: async () => false
+      exists: async () => false,
+      insert: async () => ({ id: "1" }),
+      update: async () => undefined,
+      delete: async () => false,
+      insertMany: async () => [],
+      updateMany: async () => 0,
+      deleteMany: async () => 0,
     }
 
     const ast = parseQuery({ id: "test" })
@@ -50,10 +64,17 @@ describe("EXEC-01: IQueryExecutor Interface Definition", () => {
     type TestEntity = { id: string; name: string }
 
     const mockExecutor: IQueryExecutor<TestEntity> = {
+      executorType: 'local',
       select: async () => [{ id: "1", name: "Test" }],
       first: async () => ({ id: "1", name: "Test" }),
       count: async () => 1,
-      exists: async () => true
+      exists: async () => true,
+      insert: async () => ({ id: "1", name: "Test" }),
+      update: async () => undefined,
+      delete: async () => false,
+      insertMany: async () => [],
+      updateMany: async () => 0,
+      deleteMany: async () => 0,
     }
 
     const items = await mockExecutor.select(parseQuery({}))
@@ -204,6 +225,7 @@ describe("EXEC-03: IQueryExecutor Mutation Interface Definition", () => {
     // This is a compile-time test - if this file compiles, the interface is correct
     // NOTE: These tests will FAIL until IQueryExecutor is extended with mutation methods
     const mockExecutor: IQueryExecutor<any> = {
+      executorType: 'local',
       // Read operations (existing)
       select: async () => [],
       first: async () => undefined,
@@ -230,6 +252,7 @@ describe("EXEC-03: IQueryExecutor Mutation Interface Definition", () => {
     type TestEntity = { id: string; name: string }
 
     const mockExecutor: IQueryExecutor<TestEntity> = {
+      executorType: 'local',
       select: async () => [],
       first: async () => undefined,
       count: async () => 0,
@@ -255,6 +278,7 @@ describe("EXEC-03: IQueryExecutor Mutation Interface Definition", () => {
     type TestEntity = { id: string; name: string }
 
     const mockExecutor: IQueryExecutor<TestEntity> = {
+      executorType: 'local',
       select: async () => [],
       first: async () => undefined,
       count: async () => 0,
@@ -278,6 +302,7 @@ describe("EXEC-03: IQueryExecutor Mutation Interface Definition", () => {
 
   test("delete method accepts id and returns Promise<boolean>", async () => {
     const mockExecutor: IQueryExecutor<any> = {
+      executorType: 'local',
       select: async () => [],
       first: async () => undefined,
       count: async () => 0,
@@ -301,6 +326,7 @@ describe("EXEC-03: IQueryExecutor Mutation Interface Definition", () => {
     type TestEntity = { id: string; name: string }
 
     const mockExecutor: IQueryExecutor<TestEntity> = {
+      executorType: 'local',
       select: async () => [],
       first: async () => undefined,
       count: async () => 0,
@@ -325,6 +351,7 @@ describe("EXEC-03: IQueryExecutor Mutation Interface Definition", () => {
 
   test("updateMany accepts AST and changes, returns Promise<number>", async () => {
     const mockExecutor: IQueryExecutor<any> = {
+      executorType: 'local',
       select: async () => [],
       first: async () => undefined,
       count: async () => 0,
@@ -348,6 +375,7 @@ describe("EXEC-03: IQueryExecutor Mutation Interface Definition", () => {
 
   test("deleteMany accepts AST and returns Promise<number>", async () => {
     const mockExecutor: IQueryExecutor<any> = {
+      executorType: 'local',
       select: async () => [],
       first: async () => undefined,
       count: async () => 0,

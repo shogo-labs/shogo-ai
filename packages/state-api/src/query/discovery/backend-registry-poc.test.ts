@@ -506,7 +506,7 @@ describe('Factory Pattern', () => {
       defaultBackend: 'postgres',
     })
 
-    expect(registry.list()).toEqual(['memory', 'postgres'])
+    expect((registry as any).list()).toEqual(['memory', 'postgres'])
     expect(registry.getDefault().name).toBe('postgres')
   })
 
@@ -514,7 +514,7 @@ describe('Factory Pattern', () => {
     const metaStore = new Map<string, SchemaMeta>()
     const registry = createBackendRegistry({ metaStore })
 
-    expect(registry.list()).toEqual([])
+    expect((registry as any).list()).toEqual([])
   })
 })
 

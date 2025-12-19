@@ -7,7 +7,7 @@
  * TDD: Tests written first to define expected behavior.
  */
 
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, jest, spyOn } from 'bun:test'
 import { BackendRegistry, createBackendRegistry } from '../registry'
 import { SqlBackend } from '../backends/sql'
 import { MemoryBackend } from '../backends/memory'
@@ -50,13 +50,13 @@ describe('BackendRegistry.executeDDL', () => {
     getMetaStore() // Triggers lazy initialization
 
     mockExecutor = {
-      execute: vi.fn().mockResolvedValue({ rows: [] }),
-      executeMany: vi.fn().mockResolvedValue(undefined),
-      beginTransaction: vi.fn().mockResolvedValue({
-        execute: vi.fn(),
-        executeMany: vi.fn(),
-        commit: vi.fn(),
-        rollback: vi.fn()
+      execute: jest.fn().mockResolvedValue({ rows: [] }),
+      executeMany: jest.fn().mockResolvedValue(undefined),
+      beginTransaction: jest.fn().mockResolvedValue({
+        execute: jest.fn(),
+        executeMany: jest.fn(),
+        commit: jest.fn(),
+        rollback: jest.fn()
       })
     }
 
@@ -142,7 +142,7 @@ describe('BackendRegistry.executeDDL', () => {
         operators: ['eq'],
         features: { sorting: false }
       },
-      execute: vi.fn()
+      execute: jest.fn()
     }
 
     registry.register('no-ddl', backendWithoutDDL as any)
@@ -174,7 +174,7 @@ describe('BackendRegistry.executeDDL', () => {
     })
 
     // Spy on executeDDL
-    const executeDDLSpy = vi.spyOn(sqlBackend, 'executeDDL')
+    const executeDDLSpy = spyOn(sqlBackend, 'executeDDL')
 
     registry.register('sql', sqlBackend)
     registry.setDefault('sql')

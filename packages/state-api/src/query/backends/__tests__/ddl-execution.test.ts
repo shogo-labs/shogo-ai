@@ -7,7 +7,7 @@
  * TDD Red Phase: These tests define expected behavior before implementation.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, jest } from 'bun:test'
 import { SqlBackend } from '../sql'
 import { MemoryBackend } from '../memory'
 import type { ISqlExecutor } from '../../execution/types'
@@ -39,8 +39,9 @@ describe('SqlBackend.executeDDL', () => {
   describe('with postgres dialect', () => {
     it('generates DDL using postgres dialect', async () => {
       const mockExecutor: ISqlExecutor = {
-        execute: vi.fn().mockResolvedValue({ rows: [] }),
-        executeMany: vi.fn().mockResolvedValue(undefined)
+        execute: jest.fn().mockResolvedValue({ rows: [] }),
+        executeMany: jest.fn().mockResolvedValue(undefined),
+        beginTransaction: jest.fn()
       }
 
       const backend = new SqlBackend({
@@ -58,8 +59,9 @@ describe('SqlBackend.executeDDL', () => {
 
     it('executes statements via backend executor', async () => {
       const mockExecutor: ISqlExecutor = {
-        execute: vi.fn().mockResolvedValue({ rows: [] }),
-        executeMany: vi.fn().mockResolvedValue(undefined)
+        execute: jest.fn().mockResolvedValue({ rows: [] }),
+        executeMany: jest.fn().mockResolvedValue(undefined),
+        beginTransaction: jest.fn()
       }
 
       const backend = new SqlBackend({
@@ -78,8 +80,9 @@ describe('SqlBackend.executeDDL', () => {
   describe('with sqlite dialect', () => {
     it('generates DDL using sqlite dialect', async () => {
       const mockExecutor: ISqlExecutor = {
-        execute: vi.fn().mockResolvedValue({ rows: [] }),
-        executeMany: vi.fn().mockResolvedValue(undefined)
+        execute: jest.fn().mockResolvedValue({ rows: [] }),
+        executeMany: jest.fn().mockResolvedValue(undefined),
+        beginTransaction: jest.fn()
       }
 
       const backend = new SqlBackend({
@@ -111,8 +114,9 @@ describe('SqlBackend.executeDDL', () => {
 
     it('returns statements even on execution failure', async () => {
       const mockExecutor: ISqlExecutor = {
-        execute: vi.fn().mockResolvedValue({ rows: [] }),
-        executeMany: vi.fn().mockRejectedValue(new Error('Connection failed'))
+        execute: jest.fn().mockResolvedValue({ rows: [] }),
+        executeMany: jest.fn().mockRejectedValue(new Error('Connection failed')),
+        beginTransaction: jest.fn()
       }
 
       const backend = new SqlBackend({

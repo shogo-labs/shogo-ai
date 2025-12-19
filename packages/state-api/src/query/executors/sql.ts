@@ -9,7 +9,7 @@
  * - Output: snake_case → camelCase (for results)
  */
 
-import type { Condition } from "../ast/types"
+import { Condition, FieldCondition, CompoundCondition } from "../ast/types"
 import type { QueryOptions, OrderByClause } from "../backends/types"
 import type { IQueryExecutor } from "./types"
 import type { SqlBackend } from "../backends/sql"
@@ -115,19 +115,15 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
       const normalizedValue = this.normalizeAstValue(originalField, (ast as any).value)
 
       // Create new condition with normalized field name and value
-      return {
-        ...ast,
-        field: normalizedField,
-        value: normalizedValue
-      } as Condition
+      return new FieldCondition((ast as any).operator, normalizedField, normalizedValue)
     }
 
     // Check if this is a compound condition (has 'value' array of conditions)
     if ('value' in ast && Array.isArray(ast.value)) {
-      return {
-        ...ast,
-        value: ast.value.map((child: Condition) => this.normalizeAstFieldNames(child))
-      } as Condition
+      return new CompoundCondition(
+        (ast as any).operator,
+        ast.value.map((child: Condition) => this.normalizeAstFieldNames(child))
+      )
     }
 
     // Return as-is if not a field or compound condition
@@ -299,7 +295,7 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     // If no columns to update, just fetch and return current state
     const columnNames = Object.keys(columns)
     if (columnNames.length === 0) {
-      return this.first({ type: "field", field: "id", operator: "eq", value: id })
+      return this.first(new FieldCondition('eq', 'id', id))
     }
 
     // Build UPDATE SQL

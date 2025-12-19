@@ -67,9 +67,10 @@ describe("backends/index.ts exports", () => {
     // Verify it's constructable (requires ISqlExecutor mock)
     const mockExecutor = {
       execute: async () => [],
+      beginTransaction: async (cb: any) => cb({ execute: async () => [] }),
       connection: {} as any
     }
-    const instance = new PostgresBackend(mockExecutor)
+    const instance = new PostgresBackend(mockExecutor as any)
     expect(instance).toBeDefined()
     expect(instance.capabilities).toBeDefined()
     expect(typeof instance.execute).toBe('function')

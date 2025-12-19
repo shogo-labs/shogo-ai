@@ -76,16 +76,16 @@ describe("domain() Full Pipeline: ArkType -> SQL Persistence", () => {
     const schema = projectDomain.enhancedSchema
 
     // Project.clientId should have x-reference-target: "Client"
-    const projectClientProp = schema.$defs.Project.properties.clientId
+    const projectClientProp = schema.$defs!.Project.properties.clientId
     expect(projectClientProp["x-reference-target"]).toBe("Client")
     expect(projectClientProp["x-reference-type"]).toBe("single")
 
     // Task.projectId should have x-reference-target: "Project"
-    const taskProjectProp = schema.$defs.Task.properties.projectId
+    const taskProjectProp = schema.$defs!.Task.properties.projectId
     expect(taskProjectProp["x-reference-target"]).toBe("Project")
 
     // Task.parentId (self-reference) should have x-reference-target: "Task"
-    const taskParentProp = schema.$defs.Task.properties.parentId
+    const taskParentProp = schema.$defs!.Task.properties.parentId
     expect(taskParentProp["x-reference-target"]).toBe("Task")
 
     // =================================================================
@@ -274,7 +274,7 @@ describe("domain() Full Pipeline: ArkType -> SQL Persistence", () => {
     })
 
     // Verify x-reference-target
-    const orderProps = orderDomain.enhancedSchema.$defs.Order.properties
+    const orderProps = orderDomain.enhancedSchema.$defs!.Order.properties
     expect(orderProps.customerId["x-reference-target"]).toBe("Customer")
 
     // Generate DDL

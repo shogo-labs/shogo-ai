@@ -65,8 +65,8 @@ describe("ArkType to Enhanced JSON Schema", () => {
 
     // When: Converting the User type
     const exported = Domain.export();
-    const userSchema = arkTypeToEnhancedJsonSchema(exported.User, "User", {
-      scope: Domain,
+    const userSchema = arkTypeToEnhancedJsonSchema(exported.User as any, "User", {
+      scope: Domain as any,
     });
 
     // Then: Reference becomes $ref
@@ -94,9 +94,9 @@ describe("ArkType to Enhanced JSON Schema", () => {
     // When: Converting
     const exported = Domain.export();
     const companySchema = arkTypeToEnhancedJsonSchema(
-      exported.Company,
+      exported.Company as any,
       "Company",
-      { scope: Domain }
+      { scope: Domain as any }
     );
 
     // Then: Array reference uses $ref in items
