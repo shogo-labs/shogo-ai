@@ -40,8 +40,9 @@ import {
 } from '@ucast/sql'
 import type { FieldCondition } from '@ucast/core'
 import { parseQuery } from '../ast'
-import type { IBackend, BackendCapabilities, QueryOptions, QueryResult } from './types'
+import type { IBackend, BackendCapabilities, QueryOptions, QueryResult, DDLGenerationOptions, DDLExecutionResult } from './types'
 import type { ISqlExecutor } from '../execution/types'
+import { generateDDL, ddlOutputToSQL, createPostgresDialect, createSqliteDialect } from '../../ddl'
 
 // ============================================================================
 // Dialect Types
@@ -425,6 +426,79 @@ export class SqlBackend implements IBackend {
       // PostgreSQL uses double quotes for identifiers
       // Escape existing quotes by doubling them
       return `"${name.replace(/"/g, '""')}"`
+    }
+  }
+
+  /**
+   * Execute DDL statements against this backend's database.
+   *
+   * @param schema - Enhanced JSON Schema with model definitions
+   * @param options - DDL generation options (ifNotExists, etc.)
+   * @returns Promise resolving to DDL execution result
+   *
+   * @remarks
+   * - Generates DDL using backend's dialect (pg or sqlite)
+   * - Executes via backend's executor if available
+   * - Returns generated statements even if execution fails
+   * - Requires executor to be configured for actual execution
+   *
+   * @example
+   * ```typescript
+   * const backend = new SqlBackend({
+   *   dialect: 'pg',
+   *   executor: new PostgresExecutor(pool)
+   * })
+   *
+   * const result = await backend.executeDDL(schema, { ifNotExists: true })
+   * if (result.success) {
+   *   console.log(`Executed ${result.executed} statements`)
+   * } else {
+   *   console.error(`DDL failed: ${result.error}`)
+   * }
+   * ```
+   */
+  async executeDDL(
+    schema: any,
+    options?: DDLGenerationOptions
+  ): Promise<DDLExecutionResult> {
+    // 1. Select dialect for DDL generation
+    const ddlDialect = this.dialect === 'sqlite'
+      ? createSqliteDialect()
+      : createPostgresDialect()
+
+    // 2. Generate DDL output from schema
+    const ddlOutput = generateDDL(schema, ddlDialect)
+
+    // 3. Convert to SQL statements
+    const statements = ddlOutputToSQL(ddlOutput, ddlDialect, {
+      ifNotExists: options?.ifNotExists ?? true
+    })
+
+    // 4. Check for executor
+    if (!this.executor) {
+      return {
+        success: false,
+        statements,
+        executed: 0,
+        error: 'No executor configured for SqlBackend - cannot execute DDL statements'
+      }
+    }
+
+    // 5. Execute statements via executor
+    try {
+      await this.executor.executeMany(statements)
+      return {
+        success: true,
+        statements,
+        executed: statements.length
+      }
+    } catch (err: any) {
+      return {
+        success: false,
+        statements,
+        executed: 0,
+        error: err.message || String(err)
+      }
     }
   }
 }

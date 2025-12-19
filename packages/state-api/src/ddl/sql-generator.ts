@@ -144,6 +144,19 @@ export function tableDefToCreateTableSQL(
     lines.push(`  PRIMARY KEY (${escapedPKColumns})`)
   }
 
+  // Add inline FOREIGN KEY constraints for SQLite
+  // (PostgreSQL uses ALTER TABLE statements instead)
+  if (dialect.name === "sqlite" && table.foreignKeys.length > 0) {
+    for (const fk of table.foreignKeys) {
+      const escapedColumn = dialect.escapeIdentifier(fk.column)
+      const escapedRefTable = dialect.escapeIdentifier(fk.referencesTable)
+      const escapedRefColumn = dialect.escapeIdentifier(fk.referencesColumn)
+      lines.push(
+        `  FOREIGN KEY (${escapedColumn}) REFERENCES ${escapedRefTable} (${escapedRefColumn}) ON DELETE ${fk.onDelete}`
+      )
+    }
+  }
+
   // Join lines with commas and wrap in CREATE TABLE
   const columnLines = lines.join(",\n")
   const ifNotExists = options?.ifNotExists ? "IF NOT EXISTS " : ""
@@ -258,17 +271,14 @@ export function ddlOutputToSQL(
     statements.push(tableDefToCreateTableSQL(junctionTable, dialect, options))
   }
 
-  // 3. Add foreign key constraints (PostgreSQL only - SQLite uses inline)
+  // 3. Add foreign key constraints (PostgreSQL only)
+  // SQLite FKs are defined inline in CREATE TABLE - no separate statements needed
   if (dialect.name === "postgresql") {
     for (const fk of ddl.foreignKeys) {
       statements.push(foreignKeyDefToSQL(fk, dialect))
     }
-  } else {
-    // SQLite: Add FK comments after junction tables
-    for (const fk of ddl.foreignKeys) {
-      statements.push(foreignKeyDefToSQL(fk, dialect))
-    }
   }
+  // SQLite: FKs already included inline in CREATE TABLE above
 
   return statements
 }

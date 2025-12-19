@@ -23,11 +23,15 @@ import {
   SqlBackend,
   MemoryBackend,
 } from "@shogo/state-api"
-// Server-only executor - import directly to avoid browser bundle issues
+// Server-only executors - import directly to avoid browser bundle issues
 import {
   BunPostgresExecutor,
   type BunPostgresExecutorOptions,
 } from "@shogo/state-api/query/execution/bun-postgres"
+import { BunSqlExecutor } from "@shogo/state-api/query/execution/bun-sql"
+import { Database } from "bun:sqlite"
+import { mkdirSync, existsSync } from "node:fs"
+import { dirname } from "node:path"
 
 // ============================================================================
 // Singleton State
@@ -40,8 +44,20 @@ import {
 let postgresExecutor: BunPostgresExecutor | null = null
 
 /**
+ * Singleton SQLite executor instance.
+ * Created when DATABASE_URL is not set (local development fallback).
+ */
+let sqliteExecutor: BunSqlExecutor | null = null
+
+/**
+ * Singleton SQLite database instance.
+ * Stored separately for cleanup on shutdown.
+ */
+let sqliteDatabase: Database | null = null
+
+/**
  * Singleton backend registry.
- * Always includes memory backend, optionally includes postgres backend.
+ * Always includes memory backend, optionally includes postgres or sqlite backend.
  */
 let globalRegistry: IBackendRegistry | null = null
 
@@ -49,6 +65,11 @@ let globalRegistry: IBackendRegistry | null = null
  * Track whether postgres was successfully initialized.
  */
 let postgresInitialized = false
+
+/**
+ * Track whether sqlite was successfully initialized.
+ */
+let sqliteInitialized = false
 
 // ============================================================================
 // Initialization Functions
@@ -81,12 +102,11 @@ export function initializePostgresBackend(): boolean {
   const databaseUrl = process.env.DATABASE_URL
 
   if (!databaseUrl) {
-    console.warn(
-      "[postgres-init] DATABASE_URL not set - PostgreSQL backend unavailable. " +
-      "Domain schemas will use memory backend only."
+    // No PostgreSQL - fall back to SQLite
+    console.log(
+      "[postgres-init] DATABASE_URL not set - falling back to SQLite backend."
     )
-    // Ensure registry exists even without postgres
-    ensureRegistry()
+    initializeSqliteBackend()
     return false
   }
 
@@ -123,7 +143,72 @@ export function initializePostgresBackend(): boolean {
       "[postgres-init] Failed to initialize PostgreSQL backend:",
       error instanceof Error ? error.message : String(error)
     )
-    // Ensure registry exists for memory-only fallback
+    // Fall back to SQLite on PostgreSQL failure
+    console.log("[postgres-init] Falling back to SQLite backend.")
+    initializeSqliteBackend()
+    return false
+  }
+}
+
+/**
+ * Initialize SQLite backend as fallback for local development.
+ *
+ * Uses SQLITE_URL environment variable if set, otherwise defaults to :memory:.
+ * SQLite is registered as "sqlite" and set as the default backend.
+ *
+ * @returns true if sqlite was initialized, false otherwise
+ */
+export function initializeSqliteBackend(): boolean {
+  // Already initialized
+  if (sqliteInitialized && sqliteExecutor) {
+    return true
+  }
+
+  try {
+    // Use SQLITE_URL env var, or default to in-memory
+    const sqliteUrl = process.env.SQLITE_URL || ":memory:"
+
+    // Parse sqlite:// URL format or use path directly
+    let dbPath = sqliteUrl
+    if (sqliteUrl.startsWith("sqlite://")) {
+      dbPath = sqliteUrl.replace("sqlite://", "")
+    }
+
+    // Create SQLite database
+    sqliteDatabase = new Database(dbPath)
+
+    // Create executor wrapping the database
+    sqliteExecutor = new BunSqlExecutor(sqliteDatabase as any)
+
+    // Create SqlBackend with SQLite dialect
+    const sqliteBackend = new SqlBackend({
+      dialect: "sqlite",
+      executor: sqliteExecutor,
+    })
+
+    // Ensure registry exists and register sqlite backend
+    ensureRegistry()
+    globalRegistry!.register("sqlite", sqliteBackend)
+
+    // Also register as "postgres" alias so schemas with x-persistence.backend: "postgres" work
+    // This enables seamless local development without changing schema files
+    globalRegistry!.register("postgres", sqliteBackend)
+
+    // Set sqlite as the default when postgres isn't available
+    // This ensures schemas without x-persistence.backend still work
+    globalRegistry!.setDefault("sqlite")
+
+    sqliteInitialized = true
+    const mode = dbPath === ":memory:" ? "in-memory" : `file: ${dbPath}`
+    console.log(`[postgres-init] SQLite backend initialized (${mode})`)
+
+    return true
+  } catch (error) {
+    console.error(
+      "[postgres-init] Failed to initialize SQLite backend:",
+      error instanceof Error ? error.message : String(error)
+    )
+    // Last resort: ensure registry exists with memory backend
     ensureRegistry()
     return false
   }
@@ -202,7 +287,16 @@ export function isPostgresAvailable(): boolean {
 // ============================================================================
 
 /**
- * Gracefully shutdown the PostgreSQL connection pool.
+ * Check if SQLite backend is available.
+ *
+ * @returns true if sqlite was successfully initialized
+ */
+export function isSqliteAvailable(): boolean {
+  return sqliteInitialized && sqliteExecutor !== null
+}
+
+/**
+ * Gracefully shutdown database connections (PostgreSQL and/or SQLite).
  *
  * Should be called during server shutdown to ensure connections are released.
  *
@@ -215,6 +309,7 @@ export function isPostgresAvailable(): boolean {
  * ```
  */
 export async function shutdownPostgres(): Promise<void> {
+  // Shutdown PostgreSQL if initialized
   if (postgresExecutor) {
     try {
       await postgresExecutor.close()
@@ -227,6 +322,23 @@ export async function shutdownPostgres(): Promise<void> {
     } finally {
       postgresExecutor = null
       postgresInitialized = false
+    }
+  }
+
+  // Shutdown SQLite if initialized
+  if (sqliteDatabase) {
+    try {
+      sqliteDatabase.close()
+      console.log("[postgres-init] SQLite database closed")
+    } catch (error) {
+      console.error(
+        "[postgres-init] Error closing SQLite database:",
+        error instanceof Error ? error.message : String(error)
+      )
+    } finally {
+      sqliteDatabase = null
+      sqliteExecutor = null
+      sqliteInitialized = false
     }
   }
 }
@@ -243,6 +355,9 @@ export async function shutdownPostgres(): Promise<void> {
  */
 export function __resetForTesting(): void {
   postgresExecutor = null
+  sqliteExecutor = null
+  sqliteDatabase = null
   globalRegistry = null
   postgresInitialized = false
+  sqliteInitialized = false
 }

@@ -40,6 +40,7 @@ const mockBackendRegistry: IBackendRegistry = {
     throw new Error("Mock backend registry")
   },
   setDefault: () => {},
+  executeDDL: async () => ({ success: true, statements: [], executed: 0 }),
 }
 
 const mockQueryValidator: IQueryValidator = {

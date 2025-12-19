@@ -211,6 +211,106 @@ describe("sql-generator", () => {
       expect(result).toContain("CREATE TABLE")
       expect(result).toMatch(/;\s*$/)
     })
+
+    test("generates SQLite CREATE TABLE with inline FOREIGN KEY constraints", () => {
+      // SQLite requires FK constraints inline in CREATE TABLE, not via ALTER TABLE
+      const table: TableDef = {
+        name: "Team",
+        columns: [
+          { name: "id", type: "TEXT", nullable: false },
+          { name: "name", type: "TEXT", nullable: false },
+          { name: "organization_id", type: "TEXT", nullable: false },
+        ],
+        primaryKey: "id",
+        foreignKeys: [
+          {
+            name: "fk_Team_organization_id",
+            table: "Team",
+            column: "organization_id",
+            referencesTable: "Organization",
+            referencesColumn: "id",
+            onDelete: "CASCADE",
+          },
+        ],
+      }
+
+      const result = tableDefToCreateTableSQL(table, sqliteDialect)
+
+      // Should include FOREIGN KEY constraint inline
+      expect(result).toContain("FOREIGN KEY")
+      expect(result).toContain('FOREIGN KEY ("organization_id")')
+      expect(result).toContain('REFERENCES "Organization" ("id")')
+      expect(result).toContain("ON DELETE CASCADE")
+
+      // All in one CREATE TABLE statement
+      expect(result).toMatch(/^CREATE TABLE/)
+      expect(result).toMatch(/;\s*$/)
+    })
+
+    test("generates SQLite CREATE TABLE with multiple inline FK constraints", () => {
+      const table: TableDef = {
+        name: "Membership",
+        columns: [
+          { name: "id", type: "TEXT", nullable: false },
+          { name: "user_id", type: "TEXT", nullable: false },
+          { name: "organization_id", type: "TEXT", nullable: true },
+          { name: "team_id", type: "TEXT", nullable: true },
+        ],
+        primaryKey: "id",
+        foreignKeys: [
+          {
+            name: "fk_Membership_organization_id",
+            table: "Membership",
+            column: "organization_id",
+            referencesTable: "Organization",
+            referencesColumn: "id",
+            onDelete: "SET NULL",
+          },
+          {
+            name: "fk_Membership_team_id",
+            table: "Membership",
+            column: "team_id",
+            referencesTable: "Team",
+            referencesColumn: "id",
+            onDelete: "SET NULL",
+          },
+        ],
+      }
+
+      const result = tableDefToCreateTableSQL(table, sqliteDialect)
+
+      // Should include both FK constraints
+      expect(result).toContain('FOREIGN KEY ("organization_id") REFERENCES "Organization" ("id") ON DELETE SET NULL')
+      expect(result).toContain('FOREIGN KEY ("team_id") REFERENCES "Team" ("id") ON DELETE SET NULL')
+    })
+
+    test("PostgreSQL CREATE TABLE does NOT include inline FK constraints", () => {
+      // PostgreSQL uses ALTER TABLE for FK constraints
+      const table: TableDef = {
+        name: "Team",
+        columns: [
+          { name: "id", type: "UUID", nullable: false },
+          { name: "organization_id", type: "UUID", nullable: false },
+        ],
+        primaryKey: "id",
+        foreignKeys: [
+          {
+            name: "fk_Team_organization_id",
+            table: "Team",
+            column: "organization_id",
+            referencesTable: "Organization",
+            referencesColumn: "id",
+            onDelete: "CASCADE",
+          },
+        ],
+      }
+
+      const result = tableDefToCreateTableSQL(table, postgresDialect)
+
+      // PostgreSQL should NOT include inline FK
+      expect(result).not.toContain("FOREIGN KEY")
+      expect(result).not.toContain("REFERENCES")
+    })
   })
 
   describe("foreignKeyDefToSQL", () => {
@@ -393,6 +493,128 @@ describe("sql-generator", () => {
 
       expect(Array.isArray(result)).toBe(true)
       expect(result).toHaveLength(0)
+    })
+
+    test("SQLite output does NOT include separate FK statements (FKs are inline)", () => {
+      // SQLite FKs must be inline in CREATE TABLE, not separate ALTER TABLE
+      const ddl: DDLOutput = {
+        tables: [
+          {
+            name: "Organization",
+            columns: [
+              { name: "id", type: "TEXT", nullable: false },
+              { name: "name", type: "TEXT", nullable: false },
+            ],
+            primaryKey: "id",
+            foreignKeys: [],
+          },
+          {
+            name: "Team",
+            columns: [
+              { name: "id", type: "TEXT", nullable: false },
+              { name: "organization_id", type: "TEXT", nullable: false },
+            ],
+            primaryKey: "id",
+            foreignKeys: [
+              {
+                name: "fk_Team_organization_id",
+                table: "Team",
+                column: "organization_id",
+                referencesTable: "Organization",
+                referencesColumn: "id",
+                onDelete: "CASCADE",
+              },
+            ],
+          },
+        ],
+        junctionTables: [],
+        foreignKeys: [
+          {
+            name: "fk_Team_organization_id",
+            table: "Team",
+            column: "organization_id",
+            referencesTable: "Organization",
+            referencesColumn: "id",
+            onDelete: "CASCADE",
+          },
+        ],
+        executionOrder: ["Organization", "Team"],
+      }
+
+      const result = ddlOutputToSQL(ddl, sqliteDialect)
+
+      // Should have exactly 2 statements (CREATE TABLE for each entity)
+      expect(result).toHaveLength(2)
+
+      // All statements should be CREATE TABLE
+      result.forEach((stmt) => {
+        expect(stmt).toMatch(/^CREATE TABLE/)
+      })
+
+      // No ALTER TABLE or FK comments
+      result.forEach((stmt) => {
+        expect(stmt).not.toContain("ALTER TABLE")
+        expect(stmt).not.toMatch(/^--/)
+      })
+
+      // FK should be inline in Team's CREATE TABLE
+      const teamStmt = result.find((s) => s.includes('"Team"'))
+      expect(teamStmt).toContain("FOREIGN KEY")
+      expect(teamStmt).toContain('REFERENCES "Organization"')
+    })
+
+    test("PostgreSQL output includes separate ALTER TABLE FK statements", () => {
+      const ddl: DDLOutput = {
+        tables: [
+          {
+            name: "Organization",
+            columns: [{ name: "id", type: "UUID", nullable: false }],
+            primaryKey: "id",
+            foreignKeys: [],
+          },
+          {
+            name: "Team",
+            columns: [
+              { name: "id", type: "UUID", nullable: false },
+              { name: "organization_id", type: "UUID", nullable: false },
+            ],
+            primaryKey: "id",
+            foreignKeys: [
+              {
+                name: "fk_Team_organization_id",
+                table: "Team",
+                column: "organization_id",
+                referencesTable: "Organization",
+                referencesColumn: "id",
+                onDelete: "CASCADE",
+              },
+            ],
+          },
+        ],
+        junctionTables: [],
+        foreignKeys: [
+          {
+            name: "fk_Team_organization_id",
+            table: "Team",
+            column: "organization_id",
+            referencesTable: "Organization",
+            referencesColumn: "id",
+            onDelete: "CASCADE",
+          },
+        ],
+        executionOrder: ["Organization", "Team"],
+      }
+
+      const result = ddlOutputToSQL(ddl, postgresDialect)
+
+      // Should have 3 statements: 2 CREATE TABLE + 1 ALTER TABLE
+      expect(result).toHaveLength(3)
+
+      // Last statement should be ALTER TABLE for FK
+      const alterStmt = result.find((s) => s.includes("ALTER TABLE"))
+      expect(alterStmt).toBeDefined()
+      expect(alterStmt).toContain("FOREIGN KEY")
+      expect(alterStmt).toContain("REFERENCES")
     })
   })
 

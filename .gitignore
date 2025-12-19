@@ -57,3 +57,4 @@ _tmp/
 # .schemas/*/data/
 .schemas/*/workspaces/
 #.schemas/index.ts
+.data/
