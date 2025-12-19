@@ -135,14 +135,15 @@ export const AIChatDemoPage = observer(function AIChatDemoPage() {
     id: selectedSessionId || undefined,
     streamProtocol: "text", // Use text stream protocol to match server's toTextStreamResponse()
     onFinish: async (message) => {
-      // Persist the assistant message to domain store
+      // Persist the assistant message to database
       if (selectedSessionId) {
-        const assistantMessage = chat.addMessage({
-          sessionId: selectedSessionId,
+        await chat.chatMessageCollection.insertOne({
+          id: crypto.randomUUID(),
+          session: selectedSessionId,
           role: "assistant",
           content: message.content,
+          createdAt: Date.now(),
         })
-        await chat.chatMessageCollection.saveOne(assistantMessage.id)
       }
     },
     onError: (error) => {
@@ -191,12 +192,17 @@ export const AIChatDemoPage = observer(function AIChatDemoPage() {
     }
 
     try {
-      const session = chat.createChatSession({ name: newSessionName.trim() })
-      await chat.chatSessionCollection.saveOne(session.id)
+      const sessionId = crypto.randomUUID()
+      await chat.chatSessionCollection.insertOne({
+        id: sessionId,
+        name: newSessionName.trim(),
+        status: "active",
+        createdAt: Date.now(),
+      })
       setNewSessionName("")
-      setSelectedSessionId(session.id)
+      setSelectedSessionId(sessionId)
       setMessages([]) // Clear AI SDK messages for new session
-      setSuccess(`Created session: ${session.name}`)
+      setSuccess(`Created session: ${newSessionName.trim()}`)
       setTimeout(() => setSuccess(null), 3000)
     } catch (err: any) {
       setLocalError(err.message || "Failed to create session")
@@ -210,13 +216,14 @@ export const AIChatDemoPage = observer(function AIChatDemoPage() {
 
     setLocalError(null)
 
-    // Persist user message to domain store
-    const userMessage = chat.addMessage({
-      sessionId: selectedSessionId,
+    // Persist user message to database
+    await chat.chatMessageCollection.insertOne({
+      id: crypto.randomUUID(),
+      session: selectedSessionId,
       role: "user",
       content: input.trim(),
+      createdAt: Date.now(),
     })
-    await chat.chatMessageCollection.saveOne(userMessage.id)
 
     // Let AI SDK handle the submission (it will stream the response)
     handleSubmit(e)
