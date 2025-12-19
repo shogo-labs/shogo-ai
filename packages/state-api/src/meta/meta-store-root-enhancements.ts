@@ -121,7 +121,7 @@ export function createRootStoreEnhancements(RootModel: any) {
           self.modelCollection.add(modelData)
 
           // Ingest properties using helper (for recursion)
-          const requiredSet = new Set(defSchema.required || [])
+          const requiredSet = new Set<string>(defSchema.required || [])
           Object.entries(defSchema.properties || {}).forEach(([propName, propSchema]) => {
             ingestProperty(self, propName, propSchema, modelId, undefined, undefined, requiredSet)
           })

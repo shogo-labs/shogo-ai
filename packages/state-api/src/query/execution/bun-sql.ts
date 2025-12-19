@@ -14,8 +14,16 @@
  * while leveraging Bun.sql's tagged template syntax for actual execution.
  */
 
-import type { SQL } from "bun:sql"
 import type { ISqlExecutor, ITransactionExecutor, Row } from "./types"
+
+/**
+ * SQL connection interface compatible with Bun's Database API.
+ * This type covers both bun:sqlite Database and bun:sql SQL instances.
+ */
+interface SQL {
+  query(sql: string): { all(...params: unknown[]): unknown[]; run(...params: unknown[]): void }
+  run(sql: string): void
+}
 
 /**
  * SQL executor implementation using Bun.sql native driver.

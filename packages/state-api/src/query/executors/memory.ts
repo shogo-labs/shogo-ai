@@ -228,7 +228,7 @@ export class MemoryQueryExecutor<T> implements IQueryExecutor<T> {
 
     // Apply changes to each
     for (const entity of matching) {
-      Object.assign(entity, changes)
+      Object.assign(entity as object, changes)
     }
 
     return matching.length

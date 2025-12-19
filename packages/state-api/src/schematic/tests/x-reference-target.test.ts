@@ -31,8 +31,8 @@ describe("x-reference-target in schematic transformation", () => {
     const enhanced = arkTypeToEnhancedJsonSchema(BusinessDomain)
 
     // User.company should have x-reference-target: "Company"
-    expect(enhanced.$defs.User.properties.company["x-reference-type"]).toBe("single")
-    expect(enhanced.$defs.User.properties.company["x-reference-target"]).toBe("Company")
+    expect(enhanced.$defs!.User.properties.company["x-reference-type"]).toBe("single")
+    expect(enhanced.$defs!.User.properties.company["x-reference-target"]).toBe("Company")
   })
 
   test("array reference has x-reference-target without []", () => {
@@ -52,8 +52,8 @@ describe("x-reference-target in schematic transformation", () => {
     const enhanced = arkTypeToEnhancedJsonSchema(BusinessDomain)
 
     // Company.employees should have x-reference-target: "User" (not "User[]")
-    expect(enhanced.$defs.Company.properties.employees["x-reference-type"]).toBe("array")
-    expect(enhanced.$defs.Company.properties.employees["x-reference-target"]).toBe("User")
+    expect(enhanced.$defs!.Company.properties.employees["x-reference-type"]).toBe("array")
+    expect(enhanced.$defs!.Company.properties.employees["x-reference-target"]).toBe("User")
   })
 
   test("self-reference has x-reference-target", () => {
@@ -69,12 +69,12 @@ describe("x-reference-target in schematic transformation", () => {
     const enhanced = arkTypeToEnhancedJsonSchema(OrgDomain)
 
     // Employee.manager should have x-reference-target: "Employee"
-    expect(enhanced.$defs.Employee.properties.manager["x-reference-type"]).toBe("single")
-    expect(enhanced.$defs.Employee.properties.manager["x-reference-target"]).toBe("Employee")
+    expect(enhanced.$defs!.Employee.properties.manager["x-reference-type"]).toBe("single")
+    expect(enhanced.$defs!.Employee.properties.manager["x-reference-target"]).toBe("Employee")
 
     // Employee.reports should have x-reference-target: "Employee"
-    expect(enhanced.$defs.Employee.properties.reports["x-reference-type"]).toBe("array")
-    expect(enhanced.$defs.Employee.properties.reports["x-reference-target"]).toBe("Employee")
+    expect(enhanced.$defs!.Employee.properties.reports["x-reference-type"]).toBe("array")
+    expect(enhanced.$defs!.Employee.properties.reports["x-reference-target"]).toBe("Employee")
   })
 
   test("optional reference has x-reference-target", () => {
@@ -93,8 +93,8 @@ describe("x-reference-target in schematic transformation", () => {
     const enhanced = arkTypeToEnhancedJsonSchema(BusinessDomain)
 
     // User.company (optional) should still have x-reference-target
-    expect(enhanced.$defs.User.properties.company["x-reference-type"]).toBe("single")
-    expect(enhanced.$defs.User.properties.company["x-reference-target"]).toBe("Company")
+    expect(enhanced.$defs!.User.properties.company["x-reference-type"]).toBe("single")
+    expect(enhanced.$defs!.User.properties.company["x-reference-target"]).toBe("Company")
   })
 
   test("multi-word entity reference has x-reference-target", () => {
@@ -113,8 +113,8 @@ describe("x-reference-target in schematic transformation", () => {
     const enhanced = arkTypeToEnhancedJsonSchema(AuthDomain)
 
     // AuthSession.user should have x-reference-target: "AuthUser"
-    expect(enhanced.$defs.AuthSession.properties.user["x-reference-type"]).toBe("single")
-    expect(enhanced.$defs.AuthSession.properties.user["x-reference-target"]).toBe("AuthUser")
+    expect(enhanced.$defs!.AuthSession.properties.user["x-reference-type"]).toBe("single")
+    expect(enhanced.$defs!.AuthSession.properties.user["x-reference-target"]).toBe("AuthUser")
   })
 })
 
@@ -136,8 +136,8 @@ describe("x-reference-target with multi-domain scopes", () => {
     })
 
     // Transform each scope separately
-    const authEnhanced = arkTypeToEnhancedJsonSchema(authScope, { domain: "auth" })
-    const cmsEnhanced = arkTypeToEnhancedJsonSchema(cmsScope, { domain: "cms" })
+    const authEnhanced = arkTypeToEnhancedJsonSchema(authScope)
+    const cmsEnhanced = arkTypeToEnhancedJsonSchema(cmsScope)
 
     // In multi-domain schemas, the target should include domain prefix
     // This test documents expected behavior - implementation may vary

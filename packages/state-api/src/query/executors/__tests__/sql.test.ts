@@ -399,7 +399,7 @@ testExecutorContract<{ id: string; name: string }>(
       name: "string"
     }
 
-    const executor = new SqlQueryExecutor(
+    const executor = new SqlQueryExecutor<{ id: string; name: string }>(
       "contract_test",
       new SqlBackend("sqlite"),
       new BunSqlExecutor(db),

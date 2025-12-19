@@ -61,8 +61,8 @@ class MockRemoteExecutor<T> implements IQueryExecutor<T> {
     return entity
   }
 
-  async update(entity: T): Promise<T | undefined> {
-    return entity
+  async update(id: string, changes: Partial<T>): Promise<T | undefined> {
+    return undefined
   }
 
   async delete(id: string): Promise<boolean> {

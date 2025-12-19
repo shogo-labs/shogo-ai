@@ -83,7 +83,7 @@ interface ExtendedQueryOptions extends QueryOptions {
  */
 export class PostgresBackend implements IBackend {
   private readonly sqlBackend: SqlBackend
-  private readonly executor: ISqlExecutor
+  readonly executor: ISqlExecutor
 
   /**
    * Declares the operators and features supported by this backend.
