@@ -4,6 +4,9 @@
   "format": "enhanced-json-schema",
   "createdAt": 1766002943778,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-persistence": {
+    "backend": "postgres"
+  },
   "$defs": {
     "ChatSession": {
       "type": "object",
@@ -65,7 +68,8 @@
           "type": "string",
           "x-arktype": "ChatSession",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "ChatSession"
         },
         "role": {
           "type": "string",
@@ -112,7 +116,8 @@
           "type": "string",
           "x-arktype": "ChatSession",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "ChatSession"
         },
         "artifactType": {
           "type": "string",
