@@ -16,6 +16,7 @@ import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
 import { getSnapshot, applySnapshot } from "mobx-state-tree"
 import { getMetaStore, getRuntimeStore } from "@shogo/state-api"
+import { getEffectiveWorkspace } from "../state"
 
 // ============================================================================
 // Type Definitions
@@ -82,6 +83,9 @@ export async function executeStoreUpdate(
 ): Promise<StoreUpdateResult> {
   const { schema, model, id, filter, changes, workspace } = args
 
+  // Normalize workspace to match schema.load caching behavior
+  const effectiveWorkspace = getEffectiveWorkspace(workspace)
+
   try {
     // 1. Find schema in meta-store
     const metaStore = getMetaStore()
@@ -111,7 +115,7 @@ export async function executeStoreUpdate(
     }
 
     // 3. Get runtime store from cache (workspace-aware caching)
-    const runtimeStore = getRuntimeStore(schemaEntity.id, workspace)
+    const runtimeStore = getRuntimeStore(schemaEntity.id, effectiveWorkspace)
     if (!runtimeStore) {
       return {
         ok: false,
