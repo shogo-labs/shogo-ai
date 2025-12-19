@@ -32,7 +32,7 @@
 
 import { types, getEnv } from 'mobx-state-tree'
 import type { IEnvironment } from '../environment/types'
-import type { QueryFilter } from '../query/ast/types'
+import type { QueryFilter, Condition } from '../query/ast/types'
 import type { OrderByClause } from '../query/backends/types'
 import type { IQueryExecutor } from '../query/executors/types'
 import { parseQuery } from '../query/ast/parser'
@@ -84,6 +84,29 @@ export interface IQueryable<T> {
    * ```
    */
   where(filter: QueryFilter): IQueryable<T>
+
+  /**
+   * Add a pre-built AST condition to the query.
+   *
+   * @param condition - AST Condition object (FieldCondition or CompoundCondition)
+   * @returns New IQueryable instance with condition applied
+   *
+   * @remarks
+   * Immutable operation - returns new instance.
+   * This bypasses filter parsing, allowing direct AST usage.
+   * Useful for MCP transport where AST is serialized/deserialized.
+   * The condition takes precedence over filters set via where().
+   *
+   * @example
+   * ```typescript
+   * import { deserializeCondition } from '@shogo/state-api'
+   *
+   * const serializedAst = { type: 'field', operator: 'eq', field: 'status', value: 'active' }
+   * const condition = deserializeCondition(serializedAst)
+   * const results = await collection.query().whereCondition(condition).toArray()
+   * ```
+   */
+  whereCondition(condition: Condition): IQueryable<T>
 
   /**
    * Set sort order for the query.
@@ -220,6 +243,8 @@ export interface IQueryable<T> {
 interface QueryBuilderState {
   /** Combined filter conditions (multiple where calls are merged) */
   filters: QueryFilter[]
+  /** Pre-built AST condition (takes precedence over filters) */
+  condition?: Condition
   /** Ordering clauses (multiple orderBy calls are accumulated) */
   ordering: OrderByClause[]
   /** Number of records to skip */
@@ -239,35 +264,43 @@ interface QueryBuilderState {
 class QueryBuilder<T> implements IQueryable<T> {
   constructor(
     private executor: IQueryExecutor<T>,
-    private state: QueryBuilderState
+    private state: QueryBuilderState,
+    private onResults?: (results: T[]) => void
   ) {}
 
   where(filter: QueryFilter): IQueryable<T> {
     return new QueryBuilder<T>(this.executor, {
       ...this.state,
       filters: [...this.state.filters, filter]
-    })
+    }, this.onResults)
+  }
+
+  whereCondition(condition: Condition): IQueryable<T> {
+    return new QueryBuilder<T>(this.executor, {
+      ...this.state,
+      condition
+    }, this.onResults)
   }
 
   orderBy(field: string, direction: 'asc' | 'desc' = 'asc'): IQueryable<T> {
     return new QueryBuilder<T>(this.executor, {
       ...this.state,
       ordering: [...this.state.ordering, { field, direction }]
-    })
+    }, this.onResults)
   }
 
   skip(count: number): IQueryable<T> {
     return new QueryBuilder<T>(this.executor, {
       ...this.state,
       skipCount: count
-    })
+    }, this.onResults)
   }
 
   take(count: number): IQueryable<T> {
     return new QueryBuilder<T>(this.executor, {
       ...this.state,
       takeCount: count
-    })
+    }, this.onResults)
   }
 
   async toArray(): Promise<T[]> {
@@ -278,7 +311,9 @@ class QueryBuilder<T> implements IQueryable<T> {
       take: this.state.takeCount
     }
 
-    return this.executor.select(ast, options)
+    const results = await this.executor.select(ast, options)
+    this.onResults?.(results)
+    return results
   }
 
   async first(): Promise<T | undefined> {
@@ -289,7 +324,9 @@ class QueryBuilder<T> implements IQueryable<T> {
       // Note: first() optimization happens in executor.first()
     }
 
-    return this.executor.first(ast, options)
+    const result = await this.executor.first(ast, options)
+    this.onResults?.(result ? [result] : [])
+    return result
   }
 
   async count(): Promise<number> {
@@ -310,10 +347,16 @@ class QueryBuilder<T> implements IQueryable<T> {
    * @returns Condition AST (or empty condition if no filters)
    *
    * @remarks
+   * Pre-built condition (from whereCondition()) takes precedence.
    * Multiple where() calls are combined with $and logic.
-   * If no filters, returns empty object (matches all).
+   * If no filters or condition, returns empty object (matches all).
    */
   private buildAST() {
+    // Pre-built condition takes precedence
+    if (this.state.condition) {
+      return this.state.condition
+    }
+
     if (this.state.filters.length === 0) {
       // Empty filter matches all items
       return parseQuery({})
@@ -358,6 +401,19 @@ class QueryBuilder<T> implements IQueryable<T> {
  */
 export const CollectionQueryable = types
   .model('CollectionQueryable', {})
+  .actions((self) => ({
+    /**
+     * Sync results from remote query into MST collection.
+     * Uses items.put() for upsert semantics (add or update by id).
+     *
+     * @param results - Array of entities from remote query
+     */
+    syncFromRemote(results: any[]) {
+      for (const item of results) {
+        ;(self as any).items.put(item)
+      }
+    }
+  }))
   .views((self) => ({
     /**
      * Create a new query builder for this collection.
@@ -371,6 +427,9 @@ export const CollectionQueryable = types
      * Resolves IQueryExecutor from environment's BackendRegistry with
      * collection reference bound for memory backends or table name bound
      * for SQL backends.
+     *
+     * For remote executors (e.g., PostgreSQL), a sync callback is registered
+     * to populate the MST collection with query results.
      *
      * @example
      * ```typescript
@@ -388,12 +447,32 @@ export const CollectionQueryable = types
       const schemaName = env.context!.schemaName
       const modelName = (self as any).modelName
 
-      // Resolve executor from registry with collection reference
+      // Guard: backendRegistry is optional in IEnvironment but required for queries
+      if (!env.services.backendRegistry) {
+        throw new Error(
+          `backendRegistry is required for query(). ` +
+          `Add backendRegistry to your environment services when creating the store.`
+        )
+      }
+
+      // Get pre-computed maps from env.context (if available)
+      // This enables createStore() to work with SQL backends without meta-store registration
+      const columnPropertyMap = (env.context as any)?.columnPropertyMaps?.[modelName]
+      const propertyTypes = (env.context as any)?.propertyTypeMaps?.[modelName]
+
+      // Resolve executor from registry with collection reference and pre-computed maps
       const executor = env.services.backendRegistry.resolve<T>(
         schemaName,
         modelName,
-        self  // Pass collection reference for memory backends
+        self,  // Pass collection reference for memory backends
+        columnPropertyMap,  // Pass pre-computed column map (bypasses meta-store lookup)
+        propertyTypes  // Pass pre-computed property types for dialect-specific conversions
       )
+
+      // Register sync callback for remote executors
+      const onResults = executor.executorType === 'remote'
+        ? (results: T[]) => (self as any).syncFromRemote(results)
+        : undefined
 
       const initialState: QueryBuilderState = {
         filters: [],
@@ -402,6 +481,6 @@ export const CollectionQueryable = types
         takeCount: undefined
       }
 
-      return new QueryBuilder<T>(executor, initialState)
+      return new QueryBuilder<T>(executor, initialState, onResults)
     }
   }))

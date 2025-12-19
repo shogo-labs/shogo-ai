@@ -12,8 +12,12 @@ import { getMetaStore, resetMetaStore } from "../bootstrap"
 import { createBackendRegistry } from "../../query/registry"
 import { MemoryBackend } from "../../query/backends/memory"
 import { MemoryQueryExecutor } from "../../query/executors/memory"
+import { NullPersistence } from "../../persistence/null"
 import { getEnv } from "mobx-state-tree"
 import type { IEnvironment } from "../../environment/types"
+
+// Shared mock persistence for all tests
+const mockPersistence = new NullPersistence()
 
 describe("Environment Dependency Injection", () => {
   beforeEach(() => {
@@ -33,6 +37,7 @@ describe("Environment Dependency Injection", () => {
 
       const env: IEnvironment = {
         services: {
+          persistence: mockPersistence,
           backendRegistry,
         },
         // No context - meta-store doesn't need it
@@ -54,7 +59,7 @@ describe("Environment Dependency Injection", () => {
       })
 
       const env: IEnvironment = {
-        services: { backendRegistry },
+        services: { persistence: mockPersistence, backendRegistry },
       }
 
       // When: Creating meta-store and accessing environment
@@ -80,7 +85,7 @@ describe("Environment Dependency Injection", () => {
       })
 
       const env: IEnvironment = {
-        services: { backendRegistry },
+        services: { persistence: mockPersistence, backendRegistry },
       }
 
       // When: Creating meta-store and loading a schema
@@ -127,7 +132,7 @@ describe("Environment Dependency Injection", () => {
       })
 
       const env: IEnvironment = {
-        services: { backendRegistry },
+        services: { persistence: mockPersistence, backendRegistry },
       }
 
       // When: Creating meta-store and loading schema
@@ -161,7 +166,7 @@ describe("Environment Dependency Injection", () => {
 
       // Pass collection for memory backend
       const mockCollection = { all: () => [], modelName: "Item" }
-      const resolvedExecutor = runtimeEnv.services.backendRegistry.resolve(
+      const resolvedExecutor = runtimeEnv.services.backendRegistry!.resolve(
         "custom-backend-test",
         "Item",
         mockCollection
@@ -180,9 +185,9 @@ describe("Environment Dependency Injection", () => {
   // ==========================================================================
   describe("Default Fallback", () => {
     test("meta-store creates default backendRegistry if not provided", async () => {
-      // Given: Environment with no backendRegistry
+      // Given: Environment with persistence but no backendRegistry
       const env: IEnvironment = {
-        services: {},
+        services: { persistence: mockPersistence },
       }
 
       // When: Creating meta-store without backendRegistry
@@ -227,6 +232,7 @@ describe("Environment Dependency Injection", () => {
       // Given: Environment with services but no context
       const env: IEnvironment = {
         services: {
+          persistence: mockPersistence,
           backendRegistry: createBackendRegistry({
             default: "memory",
             backends: { memory: new MemoryBackend() },
@@ -247,6 +253,7 @@ describe("Environment Dependency Injection", () => {
       // Given: Meta-store with backendRegistry
       const env: IEnvironment = {
         services: {
+          persistence: mockPersistence,
           backendRegistry: createBackendRegistry({
             default: "memory",
             backends: { memory: new MemoryBackend() },

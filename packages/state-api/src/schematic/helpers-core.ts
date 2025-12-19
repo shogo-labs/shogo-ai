@@ -78,6 +78,11 @@ export function enhanceArrayDefinition(
 ): void {
   if (def.items?.$ref) {
     def["x-reference-type"] = "array";
+    // Extract target from $ref (e.g., "#/$defs/User" → "User")
+    const target = def.items.$ref.replace("#/$defs/", "");
+    if (target) {
+      def["x-reference-target"] = target;
+    }
   }
 }
 
@@ -167,11 +172,13 @@ export function enhanceObjectDefinition(
       if (typeof arkPropDef === "string") {
         if (scopeAliases[arkPropDef]) {
           prop["x-reference-type"] = "single";
+          prop["x-reference-target"] = arkPropDef;
         }
         else if (arkPropDef.endsWith("[]")) {
           const entityName = arkPropDef.slice(0, -2);
           if (scopeAliases[entityName]) {
             prop["x-reference-type"] = "array";
+            prop["x-reference-target"] = entityName;
           }
         }
       }

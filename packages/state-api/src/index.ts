@@ -35,6 +35,8 @@ export * from './teams'
 // Query layer
 export * from './query'
 
+// DDL generation
+export * from './ddl'
 // Teams Multi-Tenancy layer
 export * from './teams-multi-tenancy'
 

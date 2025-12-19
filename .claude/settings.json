@@ -1,4 +1,10 @@
 {
+  "permissions": {
+    "allow": [
+      "mcp__chrome-devtools__*",
+      "mcp__wavesmith__*"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {

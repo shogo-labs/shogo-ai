@@ -127,3 +127,29 @@ export function removeRuntimeStore(schemaId: string, location?: string): boolean
   const key = buildCacheKey(schemaId, location)
   return _runtimeStores.delete(key)
 }
+
+/**
+ * Removes ALL runtime stores for a given schema ID across all workspaces.
+ *
+ * This is used during schema hot-reload to ensure no stale stores remain
+ * regardless of which workspace they were created in.
+ *
+ * @param schemaId - UUID of the schema to remove all stores for
+ * @returns Number of stores removed
+ *
+ * @example
+ * // Remove all stores for a schema (across all workspaces)
+ * const count = removeRuntimeStoresForSchema('schema-123')
+ * console.log(`Removed ${count} cached stores`)
+ */
+export function removeRuntimeStoresForSchema(schemaId: string): number {
+  let removedCount = 0
+  for (const key of _runtimeStores.keys()) {
+    // Key format: "location::schemaId" or just "schemaId"
+    if (key === schemaId || key.endsWith(`::${schemaId}`)) {
+      _runtimeStores.delete(key)
+      removedCount++
+    }
+  }
+  return removedCount
+}

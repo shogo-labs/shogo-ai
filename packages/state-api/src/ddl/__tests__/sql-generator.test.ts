@@ -13,6 +13,7 @@ import {
   tableDefToCreateTableSQL,
   foreignKeyDefToSQL,
   ddlOutputToSQL,
+  generateSQL,
 } from "../sql-generator"
 
 describe("sql-generator", () => {
@@ -392,6 +393,119 @@ describe("sql-generator", () => {
 
       expect(Array.isArray(result)).toBe(true)
       expect(result).toHaveLength(0)
+    })
+  })
+
+  // ============================================================================
+  // IF NOT EXISTS Option Tests (D2: DDL Enhancement)
+  // ============================================================================
+
+  describe("IF NOT EXISTS option", () => {
+    const simpleTable: TableDef = {
+      name: "Organization",
+      columns: [
+        { name: "id", type: "UUID", nullable: false },
+        { name: "name", type: "TEXT", nullable: false },
+      ],
+      primaryKey: "id",
+      foreignKeys: [],
+    }
+
+    describe("tableDefToCreateTableSQL", () => {
+      test("generates CREATE TABLE without IF NOT EXISTS by default", () => {
+        // Default behavior: no IF NOT EXISTS
+        const result = tableDefToCreateTableSQL(simpleTable, postgresDialect)
+
+        expect(result).toContain("CREATE TABLE")
+        expect(result).not.toContain("IF NOT EXISTS")
+      })
+
+      test("generates CREATE TABLE IF NOT EXISTS when option is enabled", () => {
+        // With ifNotExists: true
+        const result = tableDefToCreateTableSQL(simpleTable, postgresDialect, {
+          ifNotExists: true,
+        })
+
+        expect(result).toContain("CREATE TABLE IF NOT EXISTS")
+        expect(result).toContain('"Organization"')
+      })
+
+      test("generates CREATE TABLE IF NOT EXISTS for SQLite dialect", () => {
+        // Verify SQLite dialect also supports the option
+        const result = tableDefToCreateTableSQL(simpleTable, sqliteDialect, {
+          ifNotExists: true,
+        })
+
+        expect(result).toContain("CREATE TABLE IF NOT EXISTS")
+        expect(result).toContain('"Organization"')
+      })
+
+      test("ifNotExists: false behaves same as default", () => {
+        const withDefault = tableDefToCreateTableSQL(simpleTable, postgresDialect)
+        const withFalse = tableDefToCreateTableSQL(simpleTable, postgresDialect, {
+          ifNotExists: false,
+        })
+
+        expect(withDefault).toBe(withFalse)
+        expect(withFalse).not.toContain("IF NOT EXISTS")
+      })
+    })
+
+    describe("ddlOutputToSQL", () => {
+      const ddl: DDLOutput = {
+        tables: [simpleTable],
+        junctionTables: [],
+        foreignKeys: [],
+        executionOrder: ["Organization"],
+      }
+
+      test("passes ifNotExists option to all table generations", () => {
+        // With options
+        const result = ddlOutputToSQL(ddl, postgresDialect, { ifNotExists: true })
+
+        // All CREATE TABLE statements should have IF NOT EXISTS
+        const createStatements = result.filter((s) => s.includes("CREATE TABLE"))
+        expect(createStatements.length).toBeGreaterThan(0)
+        createStatements.forEach((stmt) => {
+          expect(stmt).toContain("IF NOT EXISTS")
+        })
+      })
+
+      test("generates without IF NOT EXISTS by default", () => {
+        const result = ddlOutputToSQL(ddl, postgresDialect)
+
+        const createStatements = result.filter((s) => s.includes("CREATE TABLE"))
+        createStatements.forEach((stmt) => {
+          expect(stmt).not.toContain("IF NOT EXISTS")
+        })
+      })
+    })
+
+    describe("generateSQL", () => {
+      // Note: generateSQL uses a schema, which we'll test with a simple mock
+      test("accepts options object with ifNotExists flag", () => {
+        // This test verifies the function signature accepts options
+        // Full integration is tested in sql-generator-integration.test.ts
+        const schema = {
+          $defs: {
+            TestEntity: {
+              type: "object",
+              properties: {
+                id: { type: "string", format: "uuid", "x-mst-type": "identifier" },
+                name: { type: "string" },
+              },
+              required: ["id", "name"],
+            },
+          },
+        } as any
+
+        const result = generateSQL(schema, postgresDialect, { ifNotExists: true })
+
+        expect(Array.isArray(result)).toBe(true)
+        // At least one CREATE TABLE IF NOT EXISTS statement
+        const hasIfNotExists = result.some((s) => s.includes("IF NOT EXISTS"))
+        expect(hasIfNotExists).toBe(true)
+      })
     })
   })
 })

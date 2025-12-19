@@ -36,6 +36,12 @@ export const MetaRegistry = scope({
     name: "string",
     format: "'enhanced-json-schema'",
     createdAt: "number",
+    // Schema-level persistence configuration (x-persistence extension)
+    // Cascades to models that don't have their own x-persistence
+    "xPersistence?": {
+      "backend?": "string",  // Backend identifier for query execution
+      "strategy?": "'flat' | 'entity-per-file' | 'array-per-partition'",
+    },
   },
 
   Model: {
@@ -83,6 +89,7 @@ export const MetaRegistry = scope({
 
     // Enhanced metadata (known x-* as camelCase fields)
     "xReferenceType?": "'single' | 'array'",
+    "xReferenceTarget?": "string",
     "xComputed?": "boolean",
     "xInverse?": "string",
     "xArktype?": "string",
