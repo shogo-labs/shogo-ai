@@ -14,11 +14,11 @@ import {
   resetMetaStore,
   clearRuntimeStores,
   createBackendRegistry,
-  BunSqlExecutor,
   getRuntimeStore,
   SqlBackend,
   NullPersistence,
 } from "@shogo/state-api"
+import { BunSqlExecutor } from "@shogo/state-api/query/execution/bun-sql"
 import { Database } from "bun:sqlite"
 import type { IEnvironment } from "@shogo/state-api"
 
@@ -27,6 +27,9 @@ import { executeStoreCreate } from "../store.create"
 // =============================================================================
 // Test Setup
 // =============================================================================
+
+// Use temp directory for test workspace to avoid affecting repo files
+const TEST_WORKSPACE = "/tmp/mcp-test-schemas"
 
 describe("store.create", () => {
   let testDb: Database
@@ -92,8 +95,8 @@ describe("store.create", () => {
       name: "task-schema",
     })
 
-    // Load schema to create runtime store
-    await metaStore.loadSchema(schemaEntity.name)
+    // Load schema to create runtime store (with test workspace for cache key consistency)
+    await metaStore.loadSchema(schemaEntity.name, TEST_WORKSPACE)
   })
 
   afterEach(() => {
@@ -112,6 +115,7 @@ describe("store.create", () => {
       const result = await executeStoreCreate({
         schema: "task-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: { id: "task-1", title: "Test Task", status: "pending" }
       })
 
@@ -129,6 +133,7 @@ describe("store.create", () => {
       await executeStoreCreate({
         schema: "task-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: { id: "task-1", title: "Test Task" }
       })
 
@@ -149,6 +154,7 @@ describe("store.create", () => {
       const result = await executeStoreCreate({
         schema: "task-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: [
           { id: "task-1", title: "Task One", status: "pending" },
           { id: "task-2", title: "Task Two", status: "active" },
@@ -173,6 +179,7 @@ describe("store.create", () => {
       await executeStoreCreate({
         schema: "task-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: [
           { id: "task-1", title: "Task One" },
           { id: "task-2", title: "Task Two" }
@@ -191,6 +198,7 @@ describe("store.create", () => {
       const result = await executeStoreCreate({
         schema: "task-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: []
       })
 
@@ -210,6 +218,7 @@ describe("store.create", () => {
       const result = await executeStoreCreate({
         schema: "non-existent-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: { id: "1", title: "Test" }
       })
 
@@ -221,6 +230,7 @@ describe("store.create", () => {
       const result = await executeStoreCreate({
         schema: "task-schema",
         model: "NonExistentModel",
+        workspace: TEST_WORKSPACE,
         data: { id: "1", title: "Test" }
       })
 
