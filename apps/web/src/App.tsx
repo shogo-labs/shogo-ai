@@ -39,10 +39,8 @@ const backendRegistry = createBackendRegistry({
 
 // Centralized environment configuration
 const env = createEnvironment({
-  services: {
-    persistence: new MCPPersistence(mcpService),
-    backendRegistry,
-  },
+  persistence: new MCPPersistence(mcpService),
+  backendRegistry,
   workspace: import.meta.env.VITE_WORKSPACE,
 })
 
