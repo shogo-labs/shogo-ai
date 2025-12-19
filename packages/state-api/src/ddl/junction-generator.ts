@@ -74,7 +74,8 @@ export function generateJunctionTable(
   sourceModelName: string,
   property: any,
   dialect: SqlDialect,
-  namespace?: string
+  namespace?: string,
+  allModels?: Record<string, any>
 ): TableDef | null {
   // Skip computed properties (inverse relationships)
   if (property["x-computed"] === true) {
@@ -111,23 +112,33 @@ export function generateJunctionTable(
     : baseTargetTableName
 
   // Derive column names using snake_case convention
-  const sourceColumnName = baseSourceTableName + "_id"
-  const targetColumnName = baseTargetTableName + "_id"
+  // For self-referencing relationships (source == target), use distinct prefixes
+  const isSelfReference = sourceModelName === targetModelName
+  const sourceColumnName = isSelfReference
+    ? `source_${baseSourceTableName}_id`
+    : `${baseSourceTableName}_id`
+  const targetColumnName = isSelfReference
+    ? `target_${baseTargetTableName}_id`
+    : `${baseTargetTableName}_id`
 
-  // Determine SQL type for ID columns (typically UUID for string identifiers)
-  // We assume identifiers are UUIDs (string + uuid format) as per the pattern in the codebase
-  const idType = dialect.mapType("string", "uuid")
+  // Determine SQL type for ID columns based on source/target model id formats
+  const sourceModel = allModels?.[sourceModelName]
+  const targetModel = allModels?.[targetModelName]
+  const sourceIdFormat = sourceModel?.properties?.id?.format
+  const targetIdFormat = targetModel?.properties?.id?.format
+  const sourceIdType = dialect.mapType("string", sourceIdFormat)
+  const targetIdType = dialect.mapType("string", targetIdFormat)
 
   // Create columns: both are NOT NULL
   const columns: ColumnDef[] = [
     {
       name: sourceColumnName,
-      type: idType,
+      type: sourceIdType,
       nullable: false,
     },
     {
       name: targetColumnName,
-      type: idType,
+      type: targetIdType,
       nullable: false,
     },
   ]
