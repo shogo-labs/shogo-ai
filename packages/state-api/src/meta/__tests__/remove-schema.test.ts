@@ -258,18 +258,21 @@ describe("removeSchema Runtime Store Cache Invalidation", () => {
       { name: "cached-schema" }
     )
 
+    // Capture ID before removal (accessing detached MST nodes triggers warnings)
+    const schemaId = schema.id
+
     // Simulate runtime store being cached
     const mockRuntimeStore = { taskCollection: { all: () => [] } }
-    cacheRuntimeStore(schema.id, mockRuntimeStore)
+    cacheRuntimeStore(schemaId, mockRuntimeStore)
 
     // Verify cache exists
-    expect(getRuntimeStore(schema.id)).toBe(mockRuntimeStore)
+    expect(getRuntimeStore(schemaId)).toBe(mockRuntimeStore)
 
     // When: Remove schema
     metaStore.removeSchema("cached-schema")
 
     // Then: Runtime store cache should be invalidated
-    expect(getRuntimeStore(schema.id)).toBeUndefined()
+    expect(getRuntimeStore(schemaId)).toBeUndefined()
   })
 
   test("invalidates workspace-specific runtime store cache", () => {
@@ -291,21 +294,24 @@ describe("removeSchema Runtime Store Cache Invalidation", () => {
       { name: "multi-workspace-schema" }
     )
 
+    // Capture ID before removal (accessing detached MST nodes triggers warnings)
+    const schemaId = schema.id
+
     const mockStore1 = { id: "store1" }
     const mockStore2 = { id: "store2" }
-    cacheRuntimeStore(schema.id, mockStore1, "/workspace/one")
-    cacheRuntimeStore(schema.id, mockStore2, "/workspace/two")
+    cacheRuntimeStore(schemaId, mockStore1, "/workspace/one")
+    cacheRuntimeStore(schemaId, mockStore2, "/workspace/two")
 
     // Verify both caches exist
-    expect(getRuntimeStore(schema.id, "/workspace/one")).toBe(mockStore1)
-    expect(getRuntimeStore(schema.id, "/workspace/two")).toBe(mockStore2)
+    expect(getRuntimeStore(schemaId, "/workspace/one")).toBe(mockStore1)
+    expect(getRuntimeStore(schemaId, "/workspace/two")).toBe(mockStore2)
 
     // When: Remove schema
     metaStore.removeSchema("multi-workspace-schema")
 
     // Then: All workspace-specific caches should be invalidated
-    expect(getRuntimeStore(schema.id, "/workspace/one")).toBeUndefined()
-    expect(getRuntimeStore(schema.id, "/workspace/two")).toBeUndefined()
+    expect(getRuntimeStore(schemaId, "/workspace/one")).toBeUndefined()
+    expect(getRuntimeStore(schemaId, "/workspace/two")).toBeUndefined()
   })
 
   test("does not affect other schemas' runtime store caches", () => {
@@ -342,18 +348,22 @@ describe("removeSchema Runtime Store Cache Invalidation", () => {
       { name: "schema-to-keep" }
     )
 
+    // Capture IDs before removal (accessing detached MST nodes triggers warnings)
+    const schema1Id = schema1.id
+    const schema2Id = schema2.id
+
     const mockStore1 = { id: "store1" }
     const mockStore2 = { id: "store2" }
-    cacheRuntimeStore(schema1.id, mockStore1)
-    cacheRuntimeStore(schema2.id, mockStore2)
+    cacheRuntimeStore(schema1Id, mockStore1)
+    cacheRuntimeStore(schema2Id, mockStore2)
 
     // When: Remove first schema
     metaStore.removeSchema("schema-to-remove")
 
     // Then: First schema's cache is invalidated
-    expect(getRuntimeStore(schema1.id)).toBeUndefined()
+    expect(getRuntimeStore(schema1Id)).toBeUndefined()
 
     // But second schema's cache remains
-    expect(getRuntimeStore(schema2.id)).toBe(mockStore2)
+    expect(getRuntimeStore(schema2Id)).toBe(mockStore2)
   })
 })
