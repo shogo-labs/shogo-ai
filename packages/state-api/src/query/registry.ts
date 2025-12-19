@@ -29,7 +29,7 @@
  * - Meta-store integration for reading x-persistence config
  */
 
-import type { IBackend } from './backends/types'
+import type { IBackend, DDLGenerationOptions, DDLExecutionResult } from './backends/types'
 import type { IQueryExecutor } from './executors/types'
 import { MemoryQueryExecutor } from './executors/memory'
 import { SqlQueryExecutor } from './executors/sql'
@@ -126,6 +126,28 @@ export interface IBackendRegistry {
    * @throws Error if backend not registered
    */
   setDefault(name: string): void
+
+  /**
+   * Execute DDL for a schema using resolved backend.
+   *
+   * @param schemaName - Schema name for backend resolution
+   * @param schema - Enhanced JSON Schema to create tables from
+   * @param options - DDL generation options (ifNotExists, etc.)
+   * @returns Promise resolving to DDL execution result
+   *
+   * @remarks
+   * Resolution order:
+   * 1. Schema's x-persistence.backend property
+   * 2. Registry default backend
+   * 3. Error if no backend found
+   *
+   * Delegates to resolved backend's executeDDL method.
+   */
+  executeDDL(
+    schemaName: string,
+    schema: any,
+    options?: DDLGenerationOptions
+  ): Promise<DDLExecutionResult>
 }
 
 /**
@@ -234,10 +256,10 @@ export class BackendRegistry implements IBackendRegistry {
         backend.dialect,
         propertyTypes
       )
-    } else if (typeof (backend as any).createExecutor === 'function') {
+    } else if (typeof backend.createExecutor === 'function') {
       // Remote backend with custom executor factory (e.g., MCPBackend)
       // Factory creates executor with schemaName, modelName, collection bound
-      return (backend as any).createExecutor<T>(schemaName, modelName, collection)
+      return backend.createExecutor?.<T>(schemaName, modelName, collection)
     } else {
       // Memory backend - no dialect property, no createExecutor factory
       if (!collection) {
@@ -317,6 +339,76 @@ export class BackendRegistry implements IBackendRegistry {
       )
     }
     this.defaultBackendName = name
+  }
+
+  /**
+   * Execute DDL for a schema using resolved backend.
+   *
+   * @param schemaName - Schema name (used for logging/error messages)
+   * @param schema - Enhanced JSON Schema with x-persistence.backend
+   * @param options - DDL generation options
+   * @returns Promise resolving to DDL execution result
+   *
+   * @remarks
+   * Backend resolution:
+   * 1. Read schema's x-persistence.backend property
+   * 2. Fall back to registry default backend
+   * 3. Return error if no backend found
+   *
+   * Delegates to backend.executeDDL() for dialect-specific generation and execution.
+   */
+  async executeDDL(
+    schemaName: string,
+    schema: any,
+    options?: DDLGenerationOptions
+  ): Promise<DDLExecutionResult> {
+    // 1. Resolve backend name from schema or default
+    let resolvedBackendName: string | undefined
+
+    // Check schema-level x-persistence.backend
+    if (schema && schema['x-persistence']?.backend) {
+      resolvedBackendName = schema['x-persistence'].backend
+    }
+
+    // Fall back to default backend
+    if (!resolvedBackendName && this.defaultBackendName) {
+      resolvedBackendName = this.defaultBackendName
+    }
+
+    // Error if no backend found
+    if (!resolvedBackendName) {
+      return {
+        success: false,
+        statements: [],
+        executed: 0,
+        error: `No backend found for schema "${schemaName}". ` +
+          `Set x-persistence.backend in schema or configure a default backend.`
+      }
+    }
+
+    // 2. Get the resolved backend instance
+    const backend = this.get(resolvedBackendName)
+    if (!backend) {
+      return {
+        success: false,
+        statements: [],
+        executed: 0,
+        error: `Backend "${resolvedBackendName}" not found in registry`
+      }
+    }
+
+    // 3. Check if backend supports executeDDL
+    if (typeof backend.executeDDL !== 'function') {
+      return {
+        success: false,
+        statements: [],
+        executed: 0,
+        error: `Backend "${resolvedBackendName}" does not support executeDDL()`
+      }
+    }
+
+    // 4. Delegate to backend's executeDDL
+    return backend.executeDDL(schema, options)
   }
 }
 

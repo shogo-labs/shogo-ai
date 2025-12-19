@@ -1,9 +1,0 @@
-{
-  "id": "tw-dd-002",
-  "name": "user-reference",
-  "question": "How to model the user reference from Teams domain?",
-  "decision": "Use userId (string UUID) as external reference rather than MST reference to AuthUser",
-  "rationale": "Auth and Teams are sibling domains. Avoids circular dependency. userId is resolved at service layer when needed.",
-  "session": "teams-001",
-  "createdAt": 1733700700000
-}
