@@ -23,6 +23,7 @@ import {
   generateSQL,
   createPostgresDialect,
   createSqliteDialect,
+  deriveNamespace,
 } from "@shogo/state-api"
 import { getGlobalBackendRegistry } from "../postgres-init"
 
@@ -72,12 +73,19 @@ export function registerDdlExecute(server: FastMCP) {
             ? createSqliteDialect()
             : createPostgresDialect()
 
-          const statements = generateSQL(enhancedJson, dialect, { ifNotExists: true })
+          // Derive namespace from schema name for table isolation
+          const namespace = deriveNamespace(schemaName)
+
+          const statements = generateSQL(enhancedJson, dialect, {
+            ifNotExists: true,
+            namespace,
+          })
 
           return JSON.stringify({
             ok: true,
             dryRun: true,
             schemaName,
+            namespace,
             backend: backendName || 'default',
             statements,
             statementCount: statements.length,

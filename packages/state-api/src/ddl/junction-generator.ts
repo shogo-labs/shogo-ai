@@ -16,6 +16,7 @@
 
 import type { TableDef, ColumnDef, ForeignKeyDef, SqlDialect } from "./types"
 import { toSnakeCase } from "./utils"
+import { qualifyTableName, type QualifyDialect } from "./namespace"
 
 /**
  * Generates a junction table definition for a many-to-many relationship
@@ -72,7 +73,8 @@ import { toSnakeCase } from "./utils"
 export function generateJunctionTable(
   sourceModelName: string,
   property: any,
-  dialect: SqlDialect
+  dialect: SqlDialect,
+  namespace?: string
 ): TableDef | null {
   // Skip computed properties (inverse relationships)
   if (property["x-computed"] === true) {
@@ -89,14 +91,28 @@ export function generateJunctionTable(
     return null
   }
 
-  // Derive junction table name: {source_snake_case}_{propertyName}
-  const sourceTableName = toSnakeCase(sourceModelName)
-  const targetTableName = toSnakeCase(targetModelName)
-  const junctionTableName = `${sourceTableName}_${property.name}`
+  // Determine dialect name for qualifyTableName
+  const dialectName: QualifyDialect = dialect.name === "sqlite" ? "sqlite" : "postgresql"
+
+  // Derive base table names (snake_case)
+  const baseSourceTableName = toSnakeCase(sourceModelName)
+  const baseTargetTableName = toSnakeCase(targetModelName)
+  const baseJunctionTableName = `${baseSourceTableName}_${property.name}`
+
+  // Apply namespace qualification if provided
+  const junctionTableName = namespace
+    ? qualifyTableName(namespace, baseJunctionTableName, dialectName)
+    : baseJunctionTableName
+  const sourceTableName = namespace
+    ? qualifyTableName(namespace, baseSourceTableName, dialectName)
+    : baseSourceTableName
+  const targetTableName = namespace
+    ? qualifyTableName(namespace, baseTargetTableName, dialectName)
+    : baseTargetTableName
 
   // Derive column names using snake_case convention
-  const sourceColumnName = sourceTableName + "_id"
-  const targetColumnName = targetTableName + "_id"
+  const sourceColumnName = baseSourceTableName + "_id"
+  const targetColumnName = baseTargetTableName + "_id"
 
   // Determine SQL type for ID columns (typically UUID for string identifiers)
   // We assume identifiers are UUIDs (string + uuid format) as per the pattern in the codebase
@@ -116,21 +132,29 @@ export function generateJunctionTable(
     },
   ]
 
+  // Derive FK constraint names with namespace prefix if provided
+  const fkSourceName = namespace
+    ? `fk_${namespace}_${baseJunctionTableName}_${sourceColumnName}`
+    : `fk_${baseJunctionTableName}_${sourceColumnName}`
+  const fkTargetName = namespace
+    ? `fk_${namespace}_${baseJunctionTableName}_${targetColumnName}`
+    : `fk_${baseJunctionTableName}_${targetColumnName}`
+
   // Create foreign key constraints: both use ON DELETE CASCADE
   const foreignKeys: ForeignKeyDef[] = [
     {
-      name: `fk_${junctionTableName}_${sourceColumnName}`,
+      name: fkSourceName,
       table: junctionTableName,
       column: sourceColumnName,
-      referencesTable: sourceTableName,  // snake_case
+      referencesTable: sourceTableName,
       referencesColumn: "id",
       onDelete: "CASCADE",
     },
     {
-      name: `fk_${junctionTableName}_${targetColumnName}`,
+      name: fkTargetName,
       table: junctionTableName,
       column: targetColumnName,
-      referencesTable: targetTableName,  // snake_case
+      referencesTable: targetTableName,
       referencesColumn: "id",
       onDelete: "CASCADE",
     },

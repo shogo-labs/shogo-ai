@@ -40,8 +40,9 @@ describe("store.delete Tool", () => {
     testDb = new Database(":memory:")
 
     // Create test table with snake_case columns (as DDL would create)
+    // Use namespace prefix (task-schema -> task_schema)
     testDb.run(`
-      CREATE TABLE task (
+      CREATE TABLE task_schema__task (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         status TEXT DEFAULT 'pending',
@@ -135,7 +136,7 @@ describe("store.delete Tool", () => {
       expect(result.data.title).toBe("Task One")
 
       // Then: Entity is actually deleted from database
-      const rows = testDb.query("SELECT * FROM task WHERE id = '1'").all()
+      const rows = testDb.query("SELECT * FROM task_schema__task WHERE id = '1'").all()
       expect(rows.length).toBe(0)
     })
 
@@ -170,7 +171,7 @@ describe("store.delete Tool", () => {
       expect(result.ok).toBe(true)
 
       // Other entities remain
-      const remainingRows = testDb.query("SELECT id FROM task ORDER BY id").all()
+      const remainingRows = testDb.query("SELECT id FROM task_schema__task ORDER BY id").all()
       expect(remainingRows).toEqual([{ id: "1" }, { id: "3" }])
     })
   })
@@ -295,11 +296,11 @@ describe("store.delete Tool", () => {
       } as any)
 
       // Then: All matching entities are removed
-      const pending = testDb.query("SELECT * FROM task WHERE status = 'pending'").all()
+      const pending = testDb.query("SELECT * FROM task_schema__task WHERE status = 'pending'").all()
       expect(pending).toHaveLength(0)
 
       // Other tasks remain (active, completed)
-      const remaining = testDb.query("SELECT * FROM task").all()
+      const remaining = testDb.query("SELECT * FROM task_schema__task").all()
       expect(remaining.length).toBeGreaterThan(0)
     })
 

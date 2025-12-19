@@ -33,6 +33,8 @@ import { IQueryExecutor } from '../executors'
 export interface DDLGenerationOptions {
   /** Use IF NOT EXISTS clause for tables/constraints */
   ifNotExists?: boolean
+  /** SQL namespace for table isolation (derived from schema name) */
+  namespace?: string
 }
 
 /**

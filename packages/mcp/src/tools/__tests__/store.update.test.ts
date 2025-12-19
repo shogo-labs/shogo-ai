@@ -42,9 +42,9 @@ describe("store.update", () => {
     // Create in-memory SQLite database
     testDb = new Database(":memory:")
 
-    // Create test table
+    // Create test table with namespace prefix (task-schema -> task_schema)
     testDb.run(`
-      CREATE TABLE task (
+      CREATE TABLE task_schema__task (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         status TEXT DEFAULT 'pending'
@@ -52,9 +52,9 @@ describe("store.update", () => {
     `)
 
     // Insert test data
-    testDb.run(`INSERT INTO task (id, title, status) VALUES ('task-1', 'Task One', 'pending')`)
-    testDb.run(`INSERT INTO task (id, title, status) VALUES ('task-2', 'Task Two', 'pending')`)
-    testDb.run(`INSERT INTO task (id, title, status) VALUES ('task-3', 'Task Three', 'active')`)
+    testDb.run(`INSERT INTO task_schema__task (id, title, status) VALUES ('task-1', 'Task One', 'pending')`)
+    testDb.run(`INSERT INTO task_schema__task (id, title, status) VALUES ('task-2', 'Task Two', 'pending')`)
+    testDb.run(`INSERT INTO task_schema__task (id, title, status) VALUES ('task-3', 'Task Three', 'active')`)
 
     // Create SqlBackend with SQLite dialect
     const executor = new BunSqlExecutor(testDb)
@@ -147,7 +147,7 @@ describe("store.update", () => {
       })
 
       // Then: Database is updated
-      const row = testDb.query("SELECT * FROM task WHERE id = ?").get("task-1") as any
+      const row = testDb.query("SELECT * FROM task_schema__task WHERE id = ?").get("task-1") as any
       expect(row.title).toBe("Updated Title")
     })
 
@@ -198,7 +198,7 @@ describe("store.update", () => {
       })
 
       // Then: All matching entities are updated
-      const archived = testDb.query("SELECT * FROM task WHERE status = 'archived'").all() as any[]
+      const archived = testDb.query("SELECT * FROM task_schema__task WHERE status = 'archived'").all() as any[]
       expect(archived).toHaveLength(2)
     })
 

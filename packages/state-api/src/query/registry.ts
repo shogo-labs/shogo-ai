@@ -36,6 +36,8 @@ import { SqlQueryExecutor } from './executors/sql'
 import { SqlBackend } from './backends/sql'
 import { getMetaStore } from '../meta/bootstrap'
 import { toSnakeCase } from '../ddl/utils'
+import { deriveNamespace, qualifyTableName, type QualifyDialect } from '../ddl/namespace'
+import type { DDLGenerationConfig } from '../ddl/types'
 
 /**
  * Interface for backend registry with schema-driven resolution.
@@ -246,7 +248,15 @@ export class BackendRegistry implements IBackendRegistry {
         )
       }
 
-      const tableName = toSnakeCase(modelName)
+      // Derive namespace from schema name for table isolation
+      const namespace = deriveNamespace(schemaName)
+      const baseTableName = toSnakeCase(modelName)
+
+      // Determine dialect name for qualifyTableName
+      const dialectName: QualifyDialect = backend.dialect === 'sqlite' ? 'sqlite' : 'postgresql'
+
+      // Qualify table name with namespace
+      const tableName = qualifyTableName(namespace, baseTableName, dialectName)
 
       return new SqlQueryExecutor<T>(
         tableName,
@@ -407,8 +417,11 @@ export class BackendRegistry implements IBackendRegistry {
       }
     }
 
-    // 4. Delegate to backend's executeDDL
-    return backend.executeDDL(schema, options)
+    // 4. Derive namespace from schema name for table isolation
+    const namespace = deriveNamespace(schemaName)
+
+    // 5. Delegate to backend's executeDDL with namespace
+    return backend.executeDDL(schema, { ...options, namespace })
   }
 }
 

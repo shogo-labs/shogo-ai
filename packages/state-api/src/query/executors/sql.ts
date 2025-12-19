@@ -172,11 +172,22 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
 
   /**
    * Escape table name according to dialect.
+   * Handles pre-qualified names (from namespace isolation) without double-escaping.
+   *
+   * Pre-qualified formats:
+   * - PostgreSQL: "namespace"."table" (already escaped)
+   * - SQLite: namespace__table (needs escaping)
    */
   private escapeTableName(name: string): string {
     if (this.dialect === 'sqlite') {
-      return `\`${name.replace(/`/g, '``')}\``
+      // SQLite: prefixed names use __ separator, escape the whole thing
+      return `"${name.replace(/"/g, '""')}"`
     } else {
+      // PostgreSQL: check if already a qualified name (starts with quote and contains "."")
+      if (name.startsWith('"') && name.includes('"."')) {
+        return name // Already escaped qualified name
+      }
+      // Standard escaping for simple names
       return `"${name.replace(/"/g, '""')}"`
     }
   }
@@ -268,7 +279,8 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
 
     // For SQLite (no RETURNING), fetch the inserted row
     const idColumn = this.normalizeInputField("id")
-    const selectSql = `SELECT * FROM "${this.tableName}" WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
+    const escapedTable = this.escapeTableName(this.tableName)
+    const selectSql = `SELECT * FROM ${escapedTable} WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
     const selectRows = await this.executor.execute([selectSql, [(entityWithId as any).id]])
 
     if (selectRows.length > 0) {
@@ -317,7 +329,8 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     }
 
     // For SQLite, fetch the updated row
-    const selectSql = `SELECT * FROM "${this.tableName}" WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
+    const escapedTable = this.escapeTableName(this.tableName)
+    const selectSql = `SELECT * FROM ${escapedTable} WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
     const selectRows = await this.executor.execute([selectSql, [id]])
 
     if (selectRows.length > 0) {
@@ -339,7 +352,8 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
   async delete(id: string): Promise<boolean> {
     // Check if entity exists first
     const idColumn = this.normalizeInputField("id")
-    const checkSql = `SELECT 1 FROM "${this.tableName}" WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
+    const escapedTable = this.escapeTableName(this.tableName)
+    const checkSql = `SELECT 1 FROM ${escapedTable} WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
     const exists = await this.executor.execute([checkSql, [id]])
 
     if (exists.length === 0) {
@@ -393,7 +407,8 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
         } else {
           // For SQLite, fetch the row
           const idColumn = this.normalizeInputField("id")
-          const selectSql = `SELECT * FROM "${this.tableName}" WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
+          const escapedTable = this.escapeTableName(this.tableName)
+          const selectSql = `SELECT * FROM ${escapedTable} WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
           const selectRows = await tx.execute([selectSql, [(entityWithId as any).id]])
 
           if (selectRows.length > 0) {
@@ -452,15 +467,16 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     // Build UPDATE statement with dialect-specific affected row counting
     const whereStr = adjustedWhereClause ? ` WHERE ${adjustedWhereClause}` : ""
     const params = [...Object.values(columns), ...whereParams]
+    const escapedTable = this.escapeTableName(this.tableName)
 
     if (this.dialect === "pg") {
       // PostgreSQL: Use RETURNING * and count returned rows
-      const sql = `UPDATE "${this.tableName}" SET ${setClauses}${whereStr} RETURNING *`
+      const sql = `UPDATE ${escapedTable} SET ${setClauses}${whereStr} RETURNING *`
       const rows = await this.executor.execute([sql, params])
       return rows.length
     } else {
       // SQLite: Execute UPDATE, then use changes() to get affected count
-      const sql = `UPDATE "${this.tableName}" SET ${setClauses}${whereStr}`
+      const sql = `UPDATE ${escapedTable} SET ${setClauses}${whereStr}`
       await this.executor.execute([sql, params])
       const changesResult = await this.executor.execute(["SELECT changes() as count", []])
       return (changesResult[0]?.count as number) ?? 0
@@ -479,15 +495,16 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
 
     // Build DELETE statement with dialect-specific affected row counting
     const whereStr = whereClause ? ` WHERE ${whereClause}` : ""
+    const escapedTable = this.escapeTableName(this.tableName)
 
     if (this.dialect === "pg") {
       // PostgreSQL: Use RETURNING * and count returned rows
-      const sql = `DELETE FROM "${this.tableName}"${whereStr} RETURNING *`
+      const sql = `DELETE FROM ${escapedTable}${whereStr} RETURNING *`
       const rows = await this.executor.execute([sql, whereParams])
       return rows.length
     } else {
       // SQLite: Execute DELETE, then use changes() to get affected count
-      const sql = `DELETE FROM "${this.tableName}"${whereStr}`
+      const sql = `DELETE FROM ${escapedTable}${whereStr}`
       await this.executor.execute([sql, whereParams])
       const changesResult = await this.executor.execute(["SELECT changes() as count", []])
       return (changesResult[0]?.count as number) ?? 0

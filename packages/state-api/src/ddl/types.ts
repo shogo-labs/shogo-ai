@@ -153,6 +153,42 @@ export interface DDLOutput {
   junctionTables: TableDef[]
   /** Table names in topologically sorted order for creation */
   executionOrder: string[]
+  /** Schema namespace (derived from schema name) - undefined for backward compatibility */
+  namespace?: string
+}
+
+/**
+ * Configuration for DDL generation
+ *
+ * Controls namespace isolation and other DDL generation options.
+ *
+ * @interface DDLGenerationConfig
+ * @property {string} [namespace] - SQL namespace for table isolation. When provided:
+ *   - PostgreSQL: Creates tables in "namespace"."table" format with CREATE SCHEMA
+ *   - SQLite: Prefixes tables as namespace__table
+ *   - When undefined, tables are created without namespace (backward compatible)
+ *
+ * @example
+ * ```ts
+ * // Generate DDL with namespace isolation
+ * const config: DDLGenerationConfig = { namespace: "inventory" }
+ * const ddl = generateDDL(schema, dialect, config)
+ * // PostgreSQL: CREATE TABLE "inventory"."user" ...
+ * // SQLite: CREATE TABLE inventory__user ...
+ *
+ * // Backward compatible - no namespace
+ * const ddl = generateDDL(schema, dialect)
+ * // PostgreSQL: CREATE TABLE "user" ...
+ * ```
+ */
+export interface DDLGenerationConfig {
+  /**
+   * SQL namespace for table isolation.
+   * - PostgreSQL: Creates database schema with CREATE SCHEMA IF NOT EXISTS
+   * - SQLite: Prefixes all table names with namespace__
+   * - When undefined, no namespace is applied (backward compatible)
+   */
+  namespace?: string
 }
 
 /**

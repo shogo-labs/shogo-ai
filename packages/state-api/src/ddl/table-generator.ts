@@ -25,6 +25,7 @@ import {
   inferCheckConstraint,
 } from "./constraint-builder"
 import { toSnakeCase } from "./utils"
+import { qualifyTableName, type QualifyDialect } from "./namespace"
 
 /**
  * Generates a CREATE TABLE definition for an Enhanced JSON Schema model
@@ -98,7 +99,8 @@ import { toSnakeCase } from "./utils"
 export function generateCreateTable(
   model: any,
   modelName: string,
-  dialect: SqlDialect
+  dialect: SqlDialect,
+  namespace?: string
 ): TableDef {
   // 1. Identify the primary key
   const primaryKeyProp = inferPrimaryKey(model)
@@ -108,7 +110,16 @@ export function generateCreateTable(
   const properties = model.properties || {}
   const required = model.required || []
 
-  // 3. Generate columns and foreign keys
+  // Determine dialect name for qualifyTableName
+  const dialectName: QualifyDialect = dialect.name === "sqlite" ? "sqlite" : "postgresql"
+
+  // 3. Compute table name (with namespace if provided)
+  const baseTableName = toSnakeCase(modelName)
+  const tableName = namespace
+    ? qualifyTableName(namespace, baseTableName, dialectName)
+    : baseTableName
+
+  // 4. Generate columns and foreign keys
   const columns: ColumnDef[] = []
   const foreignKeys: ForeignKeyDef[] = []
 
@@ -125,7 +136,9 @@ export function generateCreateTable(
       const fk = inferForeignKey(
         { name: propName, ...prop },
         modelName,
-        required
+        required,
+        namespace,
+        dialectName
       )
 
       if (fk) {
@@ -176,9 +189,9 @@ export function generateCreateTable(
     columns.push(column)
   }
 
-  // 4. Return TableDef structure
+  // 5. Return TableDef structure
   return {
-    name: toSnakeCase(modelName), // snake_case table name (matches query executor expectations)
+    name: tableName, // qualified or base table name
     columns,
     primaryKey: primaryKeyName,
     foreignKeys,

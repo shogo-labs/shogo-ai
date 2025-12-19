@@ -122,7 +122,9 @@ export function tableDefToCreateTableSQL(
   dialect: SqlDialect,
   options?: DDLGenerationOptions
 ): string {
-  const escapedTable = dialect.escapeIdentifier(table.name)
+  // Table name may already be qualified (e.g., "namespace"."table" for PostgreSQL or namespace__table for SQLite)
+  // We need to escape it properly without double-escaping
+  const escapedTable = escapeTableNameForDialect(table.name, dialect)
   const lines: string[] = []
 
   // Check if this is a composite primary key (junction table)
@@ -149,7 +151,7 @@ export function tableDefToCreateTableSQL(
   if (dialect.name === "sqlite" && table.foreignKeys.length > 0) {
     for (const fk of table.foreignKeys) {
       const escapedColumn = dialect.escapeIdentifier(fk.column)
-      const escapedRefTable = dialect.escapeIdentifier(fk.referencesTable)
+      const escapedRefTable = escapeTableNameForDialect(fk.referencesTable, dialect)
       const escapedRefColumn = dialect.escapeIdentifier(fk.referencesColumn)
       lines.push(
         `  FOREIGN KEY (${escapedColumn}) REFERENCES ${escapedRefTable} (${escapedRefColumn}) ON DELETE ${fk.onDelete}`
@@ -161,6 +163,29 @@ export function tableDefToCreateTableSQL(
   const columnLines = lines.join(",\n")
   const ifNotExists = options?.ifNotExists ? "IF NOT EXISTS " : ""
   return `CREATE TABLE ${ifNotExists}${escapedTable} (\n${columnLines}\n);`
+}
+
+/**
+ * Escape a table name for the given dialect, handling qualified names properly.
+ *
+ * Qualified names (already containing namespace) should not be double-escaped:
+ * - PostgreSQL: "namespace"."table" is already escaped, return as-is
+ * - SQLite: namespace__table needs backtick escaping
+ *
+ * Non-qualified names use standard escaping.
+ */
+function escapeTableNameForDialect(tableName: string, dialect: SqlDialect): string {
+  if (dialect.name === "postgresql") {
+    // Check if already a qualified PostgreSQL name (starts with quote and contains ".")
+    if (tableName.startsWith('"') && tableName.includes('"."')) {
+      return tableName // Already escaped qualified name
+    }
+    // Standard escaping for simple names
+    return dialect.escapeIdentifier(tableName)
+  } else {
+    // SQLite: qualified names use __ prefix, escape the whole thing
+    return dialect.escapeIdentifier(tableName)
+  }
 }
 
 /**
@@ -191,9 +216,9 @@ export function tableDefToCreateTableSQL(
  * ```
  */
 export function foreignKeyDefToSQL(fk: ForeignKeyDef, dialect: SqlDialect): string {
-  const escapedTable = dialect.escapeIdentifier(fk.table)
+  const escapedTable = escapeTableNameForDialect(fk.table, dialect)
   const escapedColumn = dialect.escapeIdentifier(fk.column)
-  const escapedRefTable = dialect.escapeIdentifier(fk.referencesTable)
+  const escapedRefTable = escapeTableNameForDialect(fk.referencesTable, dialect)
   const escapedRefColumn = dialect.escapeIdentifier(fk.referencesColumn)
   const escapedConstraintName = dialect.escapeIdentifier(fk.name)
 
@@ -258,6 +283,12 @@ export function ddlOutputToSQL(
 ): string[] {
   const statements: string[] = []
 
+  // 0. Create schema namespace for PostgreSQL if provided
+  if (dialect.name === "postgresql" && ddl.namespace) {
+    const ifNotExists = options?.ifNotExists ? "IF NOT EXISTS " : ""
+    statements.push(`CREATE SCHEMA ${ifNotExists}"${ddl.namespace.replace(/"/g, '""')}";`)
+  }
+
   // 1. Create entity tables in dependency order
   for (const tableName of ddl.executionOrder) {
     const table = ddl.tables.find((t) => t.name === tableName)
@@ -284,6 +315,14 @@ export function ddlOutputToSQL(
 }
 
 /**
+ * Options for generating SQL with namespace support.
+ */
+export interface GenerateSQLOptions extends DDLGenerationOptions {
+  /** SQL namespace for table isolation (derived from schema name) */
+  namespace?: string
+}
+
+/**
  * Convenience function to generate SQL from Enhanced JSON Schema
  *
  * One-step API that combines generateDDL() and ddlOutputToSQL():
@@ -294,7 +333,7 @@ export function ddlOutputToSQL(
  *
  * @param {EnhancedJsonSchema} schema - Enhanced JSON Schema to convert
  * @param {SqlDialect} dialect - Target SQL dialect
- * @param {DDLGenerationOptions} options - Optional generation options
+ * @param {GenerateSQLOptions} options - Optional generation options (ifNotExists, namespace)
  * @returns {string[]} Array of SQL statements ready for execution
  *
  * @example
@@ -309,13 +348,17 @@ export function ddlOutputToSQL(
  *
  * // With IF NOT EXISTS for idempotent execution
  * const sql = generateSQL(schema, postgres, { ifNotExists: true })
+ *
+ * // With namespace for table isolation
+ * const sql = generateSQL(schema, postgres, { ifNotExists: true, namespace: 'my_app' })
  * ```
  */
 export function generateSQL(
   schema: EnhancedJsonSchema,
   dialect: SqlDialect,
-  options?: DDLGenerationOptions
+  options?: GenerateSQLOptions
 ): string[] {
-  const ddl = generateDDL(schema, dialect)
+  // Pass namespace to generateDDL if provided
+  const ddl = generateDDL(schema, dialect, { namespace: options?.namespace })
   return ddlOutputToSQL(ddl, dialect, options)
 }

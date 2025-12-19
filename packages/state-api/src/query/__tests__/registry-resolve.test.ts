@@ -136,15 +136,15 @@ describe("REG-03: SQL backend resolution (target behavior)", () => {
     db = new Database(":memory:")
     sqlExecutor = new BunSqlExecutor(db)
 
-    // Create test table
+    // Create test table with namespace prefix (test-schema -> test_schema)
     db.run(`
-      CREATE TABLE test_model (
+      CREATE TABLE test_schema__test_model (
         id TEXT PRIMARY KEY,
         name TEXT
       )
     `)
 
-    db.run(`INSERT INTO test_model VALUES ('1', 'Test')`)
+    db.run(`INSERT INTO test_schema__test_model VALUES ('1', 'Test')`)
 
     // Register SQL backend with executor
     const sqlBackend = new SqlBackend({
@@ -165,10 +165,11 @@ describe("REG-03: SQL backend resolution (target behavior)", () => {
     expect(result).toBeInstanceOf(SqlQueryExecutor)
   })
 
-  test("sql executor has tableName derived from model name", () => {
+  test("sql executor has tableName derived from model name with namespace", () => {
     const result = registry.resolve("test-schema", "TestModel")
 
-    expect((result as any).tableName).toBe("test_model")
+    // SQLite uses namespace__table format
+    expect((result as any).tableName).toBe("test_schema__test_model")
   })
 
   test("sql executor queries without passing tableName again", async () => {
@@ -439,14 +440,33 @@ describe("REG-07: Reference property column mapping", () => {
     sqlExecutor = new BunSqlExecutor(db)
 
     // Create tables with FK columns following DDL convention
+    // Tables need namespace prefixes for each schema name used in tests
+    // Schema names are converted: "ref-insert-test" -> "ref_insert_test"
+
+    // Tables for ref-insert-test schema
     db.run(`
-      CREATE TABLE organization (
+      CREATE TABLE ref_insert_test__organization (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL
       )
     `)
     db.run(`
-      CREATE TABLE department (
+      CREATE TABLE ref_insert_test__department (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        organization_id TEXT NOT NULL
+      )
+    `)
+
+    // Tables for ref-select-test schema
+    db.run(`
+      CREATE TABLE ref_select_test__organization (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL
+      )
+    `)
+    db.run(`
+      CREATE TABLE ref_select_test__department (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         organization_id TEXT NOT NULL
@@ -671,8 +691,8 @@ describe("REG-07: Reference property column mapping", () => {
 
     metaStore.ingestEnhancedJsonSchema(schema, { name: "ref-select-test" })
 
-    // Insert directly via SQL (simulates existing data)
-    db.run(`INSERT INTO department VALUES ('dept-1', 'Engineering', 'org-1')`)
+    // Insert directly via SQL (simulates existing data) - use namespace-prefixed table
+    db.run(`INSERT INTO ref_select_test__department VALUES ('dept-1', 'Engineering', 'org-1')`)
 
     const executor = registry.resolve<{ id: string; name: string; organization: string }>(
       "ref-select-test",
