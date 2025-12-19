@@ -167,7 +167,7 @@ describe('BackendRegistry.executeDDL', () => {
     expect(result.error).toContain('executeDDL')
   })
 
-  it('passes options through to backend.executeDDL', async () => {
+  it('passes options through to backend.executeDDL with namespace', async () => {
     const sqlBackend = new SqlBackend({
       dialect: 'pg',
       executor: mockExecutor
@@ -181,7 +181,8 @@ describe('BackendRegistry.executeDDL', () => {
 
     await registry.executeDDL('test-schema', testSchema, { ifNotExists: false })
 
-    expect(executeDDLSpy).toHaveBeenCalledWith(testSchema, { ifNotExists: false })
+    // Registry derives namespace from schemaName and adds it to options
+    expect(executeDDLSpy).toHaveBeenCalledWith(testSchema, { ifNotExists: false, namespace: 'test_schema' })
   })
 
   it('reads backend from schema x-persistence.backend', async () => {

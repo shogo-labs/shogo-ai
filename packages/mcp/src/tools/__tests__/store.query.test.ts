@@ -44,8 +44,9 @@ describe("store.query Tool", () => {
     testDb = new Database(":memory:")
 
     // Create test table with snake_case columns (as DDL would create)
+    // Use namespace prefix (task-schema -> task_schema)
     testDb.run(`
-      CREATE TABLE task (
+      CREATE TABLE task_schema__task (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         status TEXT DEFAULT 'pending',

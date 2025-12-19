@@ -466,8 +466,8 @@ export class SqlBackend implements IBackend {
       ? createSqliteDialect()
       : createPostgresDialect()
 
-    // 2. Generate DDL output from schema
-    const ddlOutput = generateDDL(schema, ddlDialect)
+    // 2. Generate DDL output from schema with namespace
+    const ddlOutput = generateDDL(schema, ddlDialect, { namespace: options?.namespace })
 
     // 3. Convert to SQL statements
     const statements = ddlOutputToSQL(ddlOutput, ddlDialect, {

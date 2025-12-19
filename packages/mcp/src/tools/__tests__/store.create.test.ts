@@ -42,9 +42,9 @@ describe("store.create", () => {
     // Create in-memory SQLite database
     testDb = new Database(":memory:")
 
-    // Create test table
+    // Create test table with namespace prefix (task-schema -> task_schema)
     testDb.run(`
-      CREATE TABLE task (
+      CREATE TABLE task_schema__task (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         status TEXT DEFAULT 'pending'
@@ -138,7 +138,7 @@ describe("store.create", () => {
       })
 
       // Then: Entity exists in database
-      const row = testDb.query("SELECT * FROM task WHERE id = ?").get("task-1") as any
+      const row = testDb.query("SELECT * FROM task_schema__task WHERE id = ?").get("task-1") as any
       expect(row).toBeDefined()
       expect(row.title).toBe("Test Task")
     })
@@ -187,7 +187,7 @@ describe("store.create", () => {
       })
 
       // Then: All entities exist in database
-      const rows = testDb.query("SELECT * FROM task ORDER BY id").all() as any[]
+      const rows = testDb.query("SELECT * FROM task_schema__task ORDER BY id").all() as any[]
       expect(rows).toHaveLength(2)
       expect(rows[0].id).toBe("task-1")
       expect(rows[1].id).toBe("task-2")

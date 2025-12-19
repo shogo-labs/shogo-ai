@@ -14,10 +14,11 @@
  * @module ddl
  */
 
-import type { DDLOutput, SqlDialect, TableDef, ForeignKeyDef } from "./types"
+import type { DDLOutput, SqlDialect, TableDef, ForeignKeyDef, DDLGenerationConfig } from "./types"
 import { topologicalSort, toSnakeCase } from "./utils"
 import { generateCreateTable } from "./table-generator"
 import { generateJunctionTable } from "./junction-generator"
+import { qualifyTableName, type QualifyDialect } from "./namespace"
 
 /**
  * Generates complete DDL output from Enhanced JSON Schema
@@ -89,15 +90,22 @@ import { generateJunctionTable } from "./junction-generator"
  * // ddl.junctionTables => []
  * ```
  */
-export function generateDDL(schema: any, dialect: SqlDialect): DDLOutput {
+export function generateDDL(schema: any, dialect: SqlDialect, config?: DDLGenerationConfig): DDLOutput {
   // 1. Extract model definitions from schema (supports both definitions and $defs)
   const models = schema.definitions || schema.$defs || {}
   const modelNames = Object.keys(models)
+  const namespace = config?.namespace
+
+  // Determine dialect name for qualifyTableName
+  const dialectName: QualifyDialect = dialect.name === "sqlite" ? "sqlite" : "postgresql"
 
   // 2. Compute topological sort for table creation order
-  // Convert model names to snake_case table names for consistency
+  // Convert model names to qualified table names (with namespace if provided)
   const sortedModels = topologicalSort(models)
-  const executionOrder = sortedModels.map(toSnakeCase)
+  const executionOrder = sortedModels.map((modelName) => {
+    const baseTableName = toSnakeCase(modelName)
+    return namespace ? qualifyTableName(namespace, baseTableName, dialectName) : baseTableName
+  })
 
   // 3. Generate entity tables
   const tables: TableDef[] = []
@@ -105,7 +113,7 @@ export function generateDDL(schema: any, dialect: SqlDialect): DDLOutput {
 
   for (const modelName of modelNames) {
     const model = models[modelName]
-    const tableDef = generateCreateTable(model, modelName, dialect)
+    const tableDef = generateCreateTable(model, modelName, dialect, namespace)
 
     tables.push(tableDef)
 
@@ -129,7 +137,8 @@ export function generateDDL(schema: any, dialect: SqlDialect): DDLOutput {
       const junctionTable = generateJunctionTable(
         modelName,
         { name: propName, ...prop },
-        dialect
+        dialect,
+        namespace
       )
 
       if (junctionTable) {
@@ -152,11 +161,12 @@ export function generateDDL(schema: any, dialect: SqlDialect): DDLOutput {
     foreignKeys: allForeignKeys,
     junctionTables,
     executionOrder,
+    namespace,
   }
 }
 
 // Re-export types and utilities for convenience
-export type { DDLOutput, TableDef, ColumnDef, ForeignKeyDef, SqlDialect } from "./types"
+export type { DDLOutput, TableDef, ColumnDef, ForeignKeyDef, SqlDialect, DDLGenerationConfig } from "./types"
 export type { DDLGenerationOptions } from "./sql-generator"
 export { createPostgresDialect, createSqliteDialect } from "./dialect"
 export { topologicalSort } from "./utils"
@@ -167,3 +177,4 @@ export {
   ddlOutputToSQL,
   generateSQL,
 } from "./sql-generator"
+export { deriveNamespace, qualifyTableName, type QualifyDialect } from "./namespace"
