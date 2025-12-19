@@ -12,6 +12,7 @@ import { registerStoreCreate } from "./store.create"
 import { registerStoreGet } from "./store.get"
 import { registerStoreList } from "./store.list"
 import { registerStoreUpdate } from "./store.update"
+import { registerStoreDelete } from "./store.delete"
 import { registerStoreQuery } from "./store.query"
 
 // View tools
@@ -24,6 +25,9 @@ import { registerViewProject } from "./view.project"
 import { registerDataLoad } from "./data.load"
 import { registerDataLoadAll } from "./data.loadAll"
 
+// DDL tools
+import { registerDdlExecute } from "./ddl.execute"
+
 // Agent tools
 import { registerAgentChat } from "./agent.chat"
 
@@ -31,11 +35,12 @@ import { registerAgentChat } from "./agent.chat"
  * Register all Wavesmith MCP tools on a FastMCP server instance.
  * This is the single source of truth for tool registration.
  *
- * Total: 17 tools across 5 namespaces
+ * Total: 19 tools across 6 namespaces
  * - Schema: 4 tools (set, get, load, list)
- * - Store: 6 tools (models, create, get, list, update, query)
+ * - Store: 7 tools (models, create, get, list, update, delete, query)
  * - View: 4 tools (execute, define, delete, project)
  * - Data: 2 tools (load, loadAll)
+ * - DDL: 1 tool (execute)
  * - Agent: 1 tool (chat)
  *
  * @param server - FastMCP server instance (stdio or HTTP transport)
@@ -47,12 +52,13 @@ export function registerAllTools(server: FastMCP) {
   registerSchemaLoad(server)
   registerSchemaList(server)
 
-  // Store namespace (6 tools)
+  // Store namespace (7 tools)
   registerStoreModels(server)
   registerStoreCreate(server)
   registerStoreGet(server)
   registerStoreList(server)
   registerStoreUpdate(server)
+  registerStoreDelete(server)
   registerStoreQuery(server)
 
   // View namespace (4 tools)
@@ -64,6 +70,9 @@ export function registerAllTools(server: FastMCP) {
   // Data namespace (2 tools)
   registerDataLoad(server)
   registerDataLoadAll(server)
+
+  // DDL namespace (1 tool)
+  registerDdlExecute(server)
 
   // Agent namespace (1 tool)
   registerAgentChat(server)

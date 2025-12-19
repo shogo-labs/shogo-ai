@@ -15,7 +15,8 @@ import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
-import { SupabaseAuthService, MockAuthService, teamsDomain, teamsMultiTenancyDomain, chatDomain } from '@shogo/state-api'
+import { MCPBackend } from './query/MCPBackend'
+import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
 import { mcpService } from './services/mcpService'
 import { cn } from '@/lib/utils'
@@ -28,9 +29,20 @@ const authService = supabaseUrl && supabaseKey
   ? new SupabaseAuthService(createClient(supabaseUrl, supabaseKey))
   : new MockAuthService()
 
+// Create MCP-backed backend registry
+// Register as 'postgres' so schemas with x-persistence.backend: 'postgres' work
+const mcpBackend = new MCPBackend(mcpService, import.meta.env.VITE_WORKSPACE)
+const backendRegistry = createBackendRegistry({
+  default: 'postgres',
+  backends: { postgres: mcpBackend }
+})
+
 // Centralized environment configuration
 const env = createEnvironment({
-  persistence: new MCPPersistence(mcpService),
+  services: {
+    persistence: new MCPPersistence(mcpService),
+    backendRegistry,
+  },
   workspace: import.meta.env.VITE_WORKSPACE,
 })
 

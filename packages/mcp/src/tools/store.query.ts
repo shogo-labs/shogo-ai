@@ -15,7 +15,41 @@
 
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
-import { getMetaStore, getRuntimeStore } from "@shogo/state-api"
+import { getMetaStore, getRuntimeStore, deserializeCondition } from "@shogo/state-api"
+import type { SerializedCondition } from "@shogo/state-api"
+import { getEffectiveWorkspace } from "../state"
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Validate that an AST object has the expected structure.
+ * Valid AST must be either:
+ * - Field condition: { type: 'field', operator: string, field: string, value: any }
+ * - Compound condition: { type: 'compound', operator: string, value: SerializedCondition[] }
+ */
+function isValidAst(ast: any): ast is SerializedCondition {
+  if (!ast || typeof ast !== 'object') return false
+
+  if (ast.type === 'field') {
+    return (
+      typeof ast.operator === 'string' &&
+      typeof ast.field === 'string' &&
+      'value' in ast
+    )
+  }
+
+  if (ast.type === 'compound') {
+    return (
+      typeof ast.operator === 'string' &&
+      Array.isArray(ast.value) &&
+      ast.value.every(isValidAst)
+    )
+  }
+
+  return false
+}
 
 // ============================================================================
 // Type Definitions
@@ -28,6 +62,7 @@ const Params = t({
   schema: "string",
   model: "string",
   "filter?": "object",
+  "ast?": "object",  // Serialized AST condition (takes precedence over filter)
   "orderBy?": "object",  // { field: string, direction: 'asc' | 'desc' }
   "skip?": "number",
   "take?": "number",
@@ -42,6 +77,7 @@ export interface StoreQueryParams {
   schema: string
   model: string
   filter?: object
+  ast?: SerializedCondition  // Serialized AST condition (takes precedence over filter)
   orderBy?: { field: string; direction: "asc" | "desc" }
   skip?: number
   take?: number
@@ -91,12 +127,16 @@ export async function executeStoreQuery(
     schema,
     model,
     filter,
+    ast,
     orderBy,
     skip,
     take,
     terminal = "toArray",
     workspace,
   } = args
+
+  // Normalize workspace to match schema.load caching behavior
+  const effectiveWorkspace = getEffectiveWorkspace(workspace)
 
   try {
     // 1. Find schema in meta-store
@@ -126,8 +166,8 @@ export async function executeStoreQuery(
       }
     }
 
-    // 3. Get runtime store from cache (workspace-aware)
-    const runtimeStore = getRuntimeStore(schemaEntity.id, workspace)
+    // 3. Get runtime store from cache (workspace-aware caching)
+    const runtimeStore = getRuntimeStore(schemaEntity.id, effectiveWorkspace)
 
     if (!runtimeStore) {
       return {
@@ -156,7 +196,23 @@ export async function executeStoreQuery(
     // 5. Build query via IQueryable fluent API
     let q = collection.query()
 
-    if (filter && Object.keys(filter).length > 0) {
+    // AST takes precedence over filter
+    if (ast) {
+      // Validate AST structure
+      if (!isValidAst(ast)) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Invalid AST structure. Expected { type: 'field'|'compound', operator, ... }",
+            context: { ast },
+          },
+        }
+      }
+      // Deserialize and use pre-built AST condition
+      const condition = deserializeCondition(ast)
+      q = q.whereCondition(condition)
+    } else if (filter && Object.keys(filter).length > 0) {
       q = q.where(filter)
     }
     if (orderBy) {

@@ -1,7 +1,0 @@
-{
-  "id": "test-billing-001",
-  "stripe_customer_id": "cus_test123",
-  "tax_id": "VAT123",
-  "credits_balance": 1000,
-  "tenant_id": "test-tenant-001"
-}

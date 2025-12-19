@@ -196,16 +196,28 @@ export {
 /**
  * Database execution layer with SQL executor interface and utilities.
  * Re-exported from ./execution
+ *
+ * NOTE: Server-only executors (BunSqlExecutor, BunPostgresExecutor) are NOT
+ * exported from this barrel file to avoid bundling Bun-specific code in
+ * browser builds. Import them directly when needed:
+ *
+ * ```typescript
+ * // Server-only imports (not exported from main barrel)
+ * import { BunSqlExecutor } from '@shogo/state-api/query/execution/bun-sql'
+ * import { BunPostgresExecutor } from '@shogo/state-api/query/execution/bun-postgres'
+ * ```
  */
 export type {
   ISqlExecutor,
+  ITransactionExecutor,
   SqlExecutorConfig,
   Row
 } from './execution/types'
 
-export {
-  BunSqlExecutor
-} from './execution/bun-sql'
+// NOTE: BunSqlExecutor and BunPostgresExecutor are intentionally NOT exported
+// here to prevent them from being bundled in browser builds. They use Bun-only
+// APIs (bun:sql, Bun.SQL) that cause "Bun is not defined" errors in browsers.
+// Import directly from subpath when needed in server code.
 
 export {
   snakeToCamel,

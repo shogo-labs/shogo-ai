@@ -76,10 +76,24 @@ export const CollectionMutatable = types
     function getExecutor<T>(): IQueryExecutor<T> {
       const env = getEnv<IEnvironment>(self)
       const registry = env.services.backendRegistry
+
+      // Guard: backendRegistry is optional in IEnvironment but required for mutations
+      if (!registry) {
+        throw new Error(
+          `backendRegistry is required for collection mutations. ` +
+          `Add backendRegistry to your environment services when creating the store.`
+        )
+      }
+
       const schemaName = env.context?.schemaName ?? 'default'
       const modelName = (self as any).modelName ?? 'Unknown'
 
-      return registry.resolve<T>(schemaName, modelName, self)
+      // Get pre-computed maps from env.context (if available)
+      // This enables createStore() to work with SQL backends without meta-store registration
+      const columnPropertyMap = (env.context as any)?.columnPropertyMaps?.[modelName]
+      const propertyTypes = (env.context as any)?.propertyTypeMaps?.[modelName]
+
+      return registry.resolve<T>(schemaName, modelName, self, columnPropertyMap, propertyTypes)
     }
 
     return {

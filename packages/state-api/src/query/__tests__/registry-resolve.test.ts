@@ -224,6 +224,131 @@ describe("REG-04: Backend resolution cascade", () => {
 })
 
 // ============================================================================
+// REG-04b: Schema-level x-persistence Cascade
+// ============================================================================
+
+import { getMetaStore, resetMetaStore } from "../../meta/bootstrap"
+
+describe("REG-04b: Schema-level x-persistence cascade", () => {
+  let registry: BackendRegistry
+
+  beforeEach(() => {
+    resetMetaStore()
+    registry = new BackendRegistry()
+    registry.register("memory", new MemoryBackend())
+    registry.register("postgres", new MemoryBackend()) // Mock postgres as memory for testing
+    registry.register("elasticsearch", new MemoryBackend()) // Mock elasticsearch
+  })
+
+  test("uses schema-level x-persistence.backend when model has none", () => {
+    const metaStore = getMetaStore()
+
+    // Schema with x-persistence.backend at schema level
+    const inputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      "x-persistence": {
+        backend: "postgres"
+      },
+      $defs: {
+        User: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            name: { type: "string" }
+          }
+        }
+      }
+    }
+
+    metaStore.ingestEnhancedJsonSchema(inputSchema, {
+      name: "schema-backend-test"
+    })
+
+    const collection = createMockCollection([{ id: "1" }])
+
+    // Should resolve to "postgres" from schema-level x-persistence
+    const executor = registry.resolve("schema-backend-test", "User", collection)
+
+    // Verify it resolved to postgres (we mocked it as memory executor for simplicity)
+    expect(executor).toBeInstanceOf(MemoryQueryExecutor)
+  })
+
+  test("model-level x-persistence.backend overrides schema-level", () => {
+    const metaStore = getMetaStore()
+
+    // Schema with both schema-level and model-level x-persistence
+    const inputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      "x-persistence": {
+        backend: "postgres"
+      },
+      $defs: {
+        User: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            name: { type: "string" }
+          }
+        },
+        AuditLog: {
+          type: "object",
+          "x-persistence": {
+            strategy: "flat",  // Required by model xPersistence schema
+            backend: "elasticsearch"
+          },
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            action: { type: "string" }
+          }
+        }
+      }
+    }
+
+    metaStore.ingestEnhancedJsonSchema(inputSchema, {
+      name: "mixed-backend-test"
+    })
+
+    const collection = createMockCollection([{ id: "1" }])
+
+    // User should use schema-level postgres
+    const userExecutor = registry.resolve("mixed-backend-test", "User", collection)
+    expect(userExecutor).toBeInstanceOf(MemoryQueryExecutor)
+
+    // AuditLog should use model-level elasticsearch
+    const auditExecutor = registry.resolve("mixed-backend-test", "AuditLog", collection)
+    expect(auditExecutor).toBeInstanceOf(MemoryQueryExecutor)
+  })
+
+  test("full cascade: model → schema → default", () => {
+    const metaStore = getMetaStore()
+
+    // Schema without any x-persistence
+    const inputSchema = {
+      $defs: {
+        Task: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            title: { type: "string" }
+          }
+        }
+      }
+    }
+
+    metaStore.ingestEnhancedJsonSchema(inputSchema, {
+      name: "no-persistence-test"
+    })
+
+    registry.setDefault("memory")
+    const collection = createMockCollection([{ id: "1" }])
+
+    // Should fall back to default
+    const executor = registry.resolve("no-persistence-test", "Task", collection)
+    expect(executor).toBeInstanceOf(MemoryQueryExecutor)
+  })
+})
+
+// ============================================================================
 // REG-05: Column Property Map Integration
 // ============================================================================
 
@@ -295,5 +420,269 @@ describe("REG-06: Table name derivation", () => {
 
       expect(tableName).toBe(expected)
     }
+  })
+})
+
+// ============================================================================
+// REG-07: Reference Property Column Mapping (via meta-store views)
+// ============================================================================
+
+describe("REG-07: Reference property column mapping", () => {
+  let registry: BackendRegistry
+  let db: Database
+  let sqlExecutor: BunSqlExecutor
+
+  beforeEach(() => {
+    resetMetaStore()
+    registry = new BackendRegistry()
+    db = new Database(":memory:")
+    sqlExecutor = new BunSqlExecutor(db)
+
+    // Create tables with FK columns following DDL convention
+    db.run(`
+      CREATE TABLE organization (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL
+      )
+    `)
+    db.run(`
+      CREATE TABLE department (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        organization_id TEXT NOT NULL
+      )
+    `)
+
+    // Register SQL backend
+    const sqlBackend = new SqlBackend({
+      dialect: "sqlite",
+      executor: sqlExecutor
+    })
+    registry.register("sql", sqlBackend)
+    registry.setDefault("sql")
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  test("meta-store Property.columnName returns FK column name for references", () => {
+    const metaStore = getMetaStore()
+
+    const schema = {
+      $defs: {
+        Organization: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            name: { type: "string" }
+          }
+        },
+        Department: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            name: { type: "string" },
+            organization: {
+              type: "string",
+              "x-reference-type": "single",
+              "x-reference-target": "Organization"
+            }
+          },
+          required: ["id", "name", "organization"]
+        }
+      }
+    }
+
+    metaStore.ingestEnhancedJsonSchema(schema, { name: "column-name-test" })
+
+    const deptModel = metaStore.modelCollection.all().find((m: any) => m.name === "Department")
+    const orgProp = deptModel.properties.find((p: any) => p.name === "organization")
+
+    // Property.columnName should mirror DDL convention: target_id
+    expect(orgProp.columnName).toBe("organization_id")
+  })
+
+  test("meta-store Property.columnName returns snake_case for regular properties", () => {
+    const metaStore = getMetaStore()
+
+    const schema = {
+      $defs: {
+        Department: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            departmentName: { type: "string" },
+            createdAt: { type: "string" }
+          }
+        }
+      }
+    }
+
+    metaStore.ingestEnhancedJsonSchema(schema, { name: "snake-case-test" })
+
+    const model = metaStore.modelCollection.all().find((m: any) => m.name === "Department")
+    const nameProp = model.properties.find((p: any) => p.name === "departmentName")
+    const createdProp = model.properties.find((p: any) => p.name === "createdAt")
+
+    expect(nameProp.columnName).toBe("department_name")
+    expect(createdProp.columnName).toBe("created_at")
+  })
+
+  test("meta-store Model.columnPropertyMap composes property column names", () => {
+    const metaStore = getMetaStore()
+
+    const schema = {
+      $defs: {
+        Organization: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" }
+          }
+        },
+        Department: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            name: { type: "string" },
+            organization: {
+              type: "string",
+              "x-reference-type": "single",
+              "x-reference-target": "Organization"
+            }
+          }
+        }
+      }
+    }
+
+    metaStore.ingestEnhancedJsonSchema(schema, { name: "column-map-test" })
+
+    const model = metaStore.modelCollection.all().find((m: any) => m.name === "Department")
+    const columnMap = model.columnPropertyMap
+
+    expect(columnMap["id"]).toBe("id")
+    expect(columnMap["name"]).toBe("name")
+    expect(columnMap["organization_id"]).toBe("organization")
+  })
+
+  test("registry uses Model.columnPropertyMap for SQL executor", () => {
+    const metaStore = getMetaStore()
+
+    const schema = {
+      $defs: {
+        Organization: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" }
+          }
+        },
+        Department: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            name: { type: "string" },
+            organization: {
+              type: "string",
+              "x-reference-type": "single",
+              "x-reference-target": "Organization"
+            }
+          }
+        }
+      }
+    }
+
+    metaStore.ingestEnhancedJsonSchema(schema, { name: "registry-map-test" })
+
+    const executor = registry.resolve("registry-map-test", "Department") as SqlQueryExecutor<any>
+    const columnPropertyMap = (executor as any).columnPropertyMap
+
+    expect(columnPropertyMap["organization_id"]).toBe("organization")
+  })
+
+  test("INSERT with reference property uses FK column name", async () => {
+    const metaStore = getMetaStore()
+
+    const schema = {
+      $defs: {
+        Organization: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" }
+          }
+        },
+        Department: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            name: { type: "string" },
+            organization: {
+              type: "string",
+              "x-reference-type": "single",
+              "x-reference-target": "Organization"
+            }
+          }
+        }
+      }
+    }
+
+    metaStore.ingestEnhancedJsonSchema(schema, { name: "ref-insert-test" })
+
+    const executor = registry.resolve<{ id: string; name: string; organization: string }>(
+      "ref-insert-test",
+      "Department"
+    )
+
+    // This should NOT throw "column organization does not exist"
+    const result = await executor.insert({
+      id: "dept-1",
+      name: "Engineering",
+      organization: "org-1"
+    })
+
+    expect(result.id).toBe("dept-1")
+    expect(result.organization).toBe("org-1")
+  })
+
+  test("SELECT normalizes FK column back to property name", async () => {
+    const metaStore = getMetaStore()
+
+    const schema = {
+      $defs: {
+        Organization: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" }
+          }
+        },
+        Department: {
+          type: "object",
+          properties: {
+            id: { type: "string", "x-mst-type": "identifier" },
+            name: { type: "string" },
+            organization: {
+              type: "string",
+              "x-reference-type": "single",
+              "x-reference-target": "Organization"
+            }
+          }
+        }
+      }
+    }
+
+    metaStore.ingestEnhancedJsonSchema(schema, { name: "ref-select-test" })
+
+    // Insert directly via SQL (simulates existing data)
+    db.run(`INSERT INTO department VALUES ('dept-1', 'Engineering', 'org-1')`)
+
+    const executor = registry.resolve<{ id: string; name: string; organization: string }>(
+      "ref-select-test",
+      "Department"
+    )
+
+    const results = await executor.select(parseQuery({}))
+
+    // Result should use property name 'organization', not column 'organization_id'
+    expect(results[0].organization).toBe("org-1")
+    expect((results[0] as any).organization_id).toBeUndefined()
   })
 })

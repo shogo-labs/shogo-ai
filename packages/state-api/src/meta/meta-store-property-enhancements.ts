@@ -5,6 +5,7 @@
 
 import { getRoot } from "mobx-state-tree"
 import type { ModelField, ModelRef } from "../mcp/state"
+import { getColumnName } from "../ddl/utils"
 
 export function createPropertyEnhancements(baseModels: any) {
   return baseModels.Property.views((self: any) => ({
@@ -89,6 +90,7 @@ export function createPropertyEnhancements(baseModels: any) {
       if (self.xArktype !== undefined) prop["x-arktype"] = self.xArktype
       if (self.xMstType !== undefined) prop["x-mst-type"] = self.xMstType
       if (self.xReferenceType !== undefined) prop["x-reference-type"] = self.xReferenceType
+      if (self.xReferenceTarget !== undefined) prop["x-reference-target"] = self.xReferenceTarget
       if (self.xComputed !== undefined) prop["x-computed"] = self.xComputed
       if (self.xInverse !== undefined) prop["x-inverse"] = self.xInverse
       if (self.xOriginalName !== undefined) prop["x-original-name"] = self.xOriginalName
@@ -182,6 +184,28 @@ export function createPropertyEnhancements(baseModels: any) {
       }
 
       return refs
+    },
+
+    // === Layer 3: SQL Column Mapping ===
+
+    /**
+     * Database column name for this property.
+     *
+     * For single references: uses DDL convention `<target>_id`
+     * (mirrors constraint-builder.ts line 185)
+     *
+     * For regular properties: simple snake_case of property name
+     *
+     * @example
+     * // Reference property with x-reference-target: "Organization"
+     * property.columnName // => "organization_id"
+     *
+     * // Regular property named "departmentName"
+     * property.columnName // => "department_name"
+     */
+    get columnName(): string {
+      // Use canonical helper for column naming (single source of truth)
+      return getColumnName(self.name, self.xReferenceTarget, self.xReferenceType)
     }
   }))
 }

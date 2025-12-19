@@ -157,6 +157,7 @@ export function generateDDL(schema: any, dialect: SqlDialect): DDLOutput {
 
 // Re-export types and utilities for convenience
 export type { DDLOutput, TableDef, ColumnDef, ForeignKeyDef, SqlDialect } from "./types"
+export type { DDLGenerationOptions } from "./sql-generator"
 export { createPostgresDialect, createSqliteDialect } from "./dialect"
 export { topologicalSort } from "./utils"
 export {

@@ -91,7 +91,8 @@ export interface IEnvironment {
      * - BackendRegistry (standard implementation with Map-based storage)
      * - Created via createBackendRegistry({ default: 'memory', backends: {...} })
      *
-     * Required - all queryable collections need backend resolution capability.
+     * Optional - only needed for queryable collections. Contexts like auth
+     * or meta-store may not need query capabilities.
      *
      * @see IBackendRegistry for interface details
      * @see BackendRegistry for implementation
@@ -115,7 +116,7 @@ export interface IEnvironment {
      * }
      * ```
      */
-    backendRegistry: IBackendRegistry
+    backendRegistry?: IBackendRegistry
 
     /**
      * Query validator for schema-aware validation.

@@ -14,7 +14,7 @@
  */
 
 import type { ForeignKeyDef } from "./types"
-import { toSnakeCase } from "./utils"
+import { toSnakeCase, getColumnName } from "./utils"
 
 /**
  * Infers the primary key property from an Enhanced JSON Schema model
@@ -180,9 +180,8 @@ export function inferForeignKey(
     return null
   }
 
-  // Derive column name from target type: Organization -> organization_id
-  // This ensures consistent FK column naming regardless of property name
-  const columnName = toSnakeCase(target) + "_id"
+  // Use canonical helper for column naming (single source of truth)
+  const columnName = getColumnName(property.name, target, "single")
 
   // Use snake_case for table names (matches DDL generator and query executor)
   const tableName = toSnakeCase(modelName)

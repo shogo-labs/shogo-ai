@@ -34,10 +34,8 @@ import type { IQueryExecutor } from './executors/types'
 import { MemoryQueryExecutor } from './executors/memory'
 import { SqlQueryExecutor } from './executors/sql'
 import { SqlBackend } from './backends/sql'
-import { createColumnPropertyMap } from './execution/utils'
 import { getMetaStore } from '../meta/bootstrap'
 import { toSnakeCase } from '../ddl/utils'
-import type { Instance } from 'mobx-state-tree'
 
 /**
  * Interface for backend registry with schema-driven resolution.
@@ -93,6 +91,8 @@ export interface IBackendRegistry {
    * @param schemaName - Schema name
    * @param modelName - Model name within schema
    * @param collection - Optional collection reference (required for memory backends)
+   * @param columnPropertyMap - Optional pre-computed column→property mapping (bypasses meta-store lookup)
+   * @param propertyTypes - Optional pre-computed property→type mapping for dialect-specific conversions
    * @returns Query executor with data source bound
    * @throws Error if no backend found and no default set
    *
@@ -103,11 +103,21 @@ export interface IBackendRegistry {
    * 3. Registry default backend
    * 4. Throw error if none found
    *
+   * Column property map resolution:
+   * 1. Use provided columnPropertyMap if given (from domain().createStore())
+   * 2. Fall back to meta-store model.columnPropertyMap view
+   * 3. Fall back to empty map (simple snake_case conversion)
+   *
+   * Property types resolution:
+   * 1. Use provided propertyTypes if given (from domain().createStore())
+   * 2. Fall back to meta-store model properties
+   * 3. Fall back to empty map (no type conversions)
+   *
    * Returns IQueryExecutor (not IBackend) with data source bound:
    * - Memory backends: collection reference bound
    * - SQL backends: tableName, dialect, propertyTypes bound
    */
-  resolve<T = any>(schemaName: string, modelName: string, collection?: any): IQueryExecutor<T>
+  resolve<T = any>(schemaName: string, modelName: string, collection?: any, columnPropertyMap?: Record<string, string>, propertyTypes?: Record<string, string>): IQueryExecutor<T>
 
   /**
    * Set the default backend for fallback resolution.
@@ -141,7 +151,7 @@ export class BackendRegistry implements IBackendRegistry {
     return this.backends.has(name)
   }
 
-  resolve<T = any>(schemaName: string, modelName: string, collection?: any): IQueryExecutor<T> {
+  resolve<T = any>(schemaName: string, modelName: string, collection?: any, providedColumnPropertyMap?: Record<string, string>, providedPropertyTypes?: Record<string, string>): IQueryExecutor<T> {
     // Access meta-store for schema/model lookup
     const metaStore = getMetaStore()
     const schema = metaStore.schemaCollection.all().find((s: any) => s.name === schemaName)
@@ -163,8 +173,12 @@ export class BackendRegistry implements IBackendRegistry {
       }
 
       // 2. Check schema-level x-persistence.backend
-      // Note: Schema-level x-persistence is not currently stored in meta-store Schema entity
-      // For now, this cascade step is reserved for future enhancement
+      if (!resolvedBackendName && schema.xPersistence) {
+        const schemaBackendName = (schema.xPersistence as any).backend
+        if (schemaBackendName && typeof schemaBackendName === 'string') {
+          resolvedBackendName = schemaBackendName
+        }
+      }
     }
 
     // 3. Fall back to default backend
@@ -182,10 +196,17 @@ export class BackendRegistry implements IBackendRegistry {
       )
     }
 
-    // 5. Extract property metadata from meta-store
-    const propertyNames = this.getPropertyNames(model)
-    const propertyTypes = this.getPropertyTypes(model)
-    const columnPropertyMap = createColumnPropertyMap(propertyNames)
+    // 5. Extract property metadata - cascade: provided → meta-store → empty
+    // Property types resolution:
+    // 1. Use provided propertyTypes (from domain().createStore() via env.context)
+    // 2. Fall back to meta-store model properties
+    // 3. Fall back to empty map (no type conversions)
+    const propertyTypes = providedPropertyTypes ?? this.getPropertyTypes(model)
+    // Column property map resolution cascade:
+    // 1. Use provided map (from domain().createStore() via env.context)
+    // 2. Fall back to meta-store model.columnPropertyMap view
+    // 3. Fall back to empty map (simple snake_case conversion)
+    const columnPropertyMap = providedColumnPropertyMap ?? model?.columnPropertyMap ?? {}
 
     // 6. Get the resolved backend instance
     const backend = this.get(resolvedBackendName)
@@ -193,7 +214,7 @@ export class BackendRegistry implements IBackendRegistry {
       throw new Error(`Backend "${resolvedBackendName}" not found in registry`)
     }
 
-    // 7. Discriminate backend type via dialect property
+    // 7. Discriminate backend type via dialect property or createExecutor factory
     if (backend.dialect) {
       // SQL backend - has dialect property
       if (!backend.executor) {
@@ -213,8 +234,12 @@ export class BackendRegistry implements IBackendRegistry {
         backend.dialect,
         propertyTypes
       )
+    } else if (typeof (backend as any).createExecutor === 'function') {
+      // Remote backend with custom executor factory (e.g., MCPBackend)
+      // Factory creates executor with schemaName, modelName, collection bound
+      return (backend as any).createExecutor<T>(schemaName, modelName, collection)
     } else {
-      // Memory backend - no dialect property
+      // Memory backend - no dialect property, no createExecutor factory
       if (!collection) {
         throw new Error(
           `Memory backend "${resolvedBackendName}" requires collection reference. ` +

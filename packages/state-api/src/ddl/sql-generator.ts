@@ -18,6 +18,18 @@ import type { EnhancedJsonSchema } from "../schematic/types"
 import { generateDDL } from "./index"
 
 /**
+ * Options for DDL generation
+ */
+export interface DDLGenerationOptions {
+  /**
+   * If true, generates CREATE TABLE IF NOT EXISTS instead of CREATE TABLE.
+   * Useful for idempotent migrations that can be safely re-run.
+   * @default false
+   */
+  ifNotExists?: boolean
+}
+
+/**
  * Convert a ColumnDef to a SQL column definition string
  *
  * Generates a properly formatted column definition with type, constraints,
@@ -83,6 +95,7 @@ export function columnDefToSQL(
  *
  * @param {TableDef} table - Table definition to convert
  * @param {SqlDialect} dialect - Target SQL dialect
+ * @param {DDLGenerationOptions} options - Optional generation options
  * @returns {string} CREATE TABLE SQL statement
  *
  * @example
@@ -98,9 +111,17 @@ export function columnDefToSQL(
  * }
  * tableDefToCreateTableSQL(table, postgresDialect)
  * // => 'CREATE TABLE "User" (\n  "id" UUID PRIMARY KEY,\n  "email" TEXT NOT NULL\n);'
+ *
+ * // With IF NOT EXISTS for idempotent migrations
+ * tableDefToCreateTableSQL(table, postgresDialect, { ifNotExists: true })
+ * // => 'CREATE TABLE IF NOT EXISTS "User" (\n  "id" UUID PRIMARY KEY,\n  "email" TEXT NOT NULL\n);'
  * ```
  */
-export function tableDefToCreateTableSQL(table: TableDef, dialect: SqlDialect): string {
+export function tableDefToCreateTableSQL(
+  table: TableDef,
+  dialect: SqlDialect,
+  options?: DDLGenerationOptions
+): string {
   const escapedTable = dialect.escapeIdentifier(table.name)
   const lines: string[] = []
 
@@ -125,7 +146,8 @@ export function tableDefToCreateTableSQL(table: TableDef, dialect: SqlDialect): 
 
   // Join lines with commas and wrap in CREATE TABLE
   const columnLines = lines.join(",\n")
-  return `CREATE TABLE ${escapedTable} (\n${columnLines}\n);`
+  const ifNotExists = options?.ifNotExists ? "IF NOT EXISTS " : ""
+  return `CREATE TABLE ${ifNotExists}${escapedTable} (\n${columnLines}\n);`
 }
 
 /**
@@ -192,6 +214,7 @@ export function foreignKeyDefToSQL(fk: ForeignKeyDef, dialect: SqlDialect): stri
  *
  * @param {DDLOutput} ddl - Complete DDL output structure
  * @param {SqlDialect} dialect - Target SQL dialect
+ * @param {DDLGenerationOptions} options - Optional generation options
  * @returns {string[]} Array of SQL statements in execution order
  *
  * @example
@@ -209,22 +232,30 @@ export function foreignKeyDefToSQL(fk: ForeignKeyDef, dialect: SqlDialect): stri
  * //   'CREATE TABLE "Team_members" (...);',
  * //   'ALTER TABLE "User" ADD CONSTRAINT ... ;'
  * // ]
+ *
+ * // With IF NOT EXISTS for idempotent execution
+ * const statements = ddlOutputToSQL(ddl, postgresDialect, { ifNotExists: true })
+ * // => ['CREATE TABLE IF NOT EXISTS "Organization" (...);', ...]
  * ```
  */
-export function ddlOutputToSQL(ddl: DDLOutput, dialect: SqlDialect): string[] {
+export function ddlOutputToSQL(
+  ddl: DDLOutput,
+  dialect: SqlDialect,
+  options?: DDLGenerationOptions
+): string[] {
   const statements: string[] = []
 
   // 1. Create entity tables in dependency order
   for (const tableName of ddl.executionOrder) {
     const table = ddl.tables.find((t) => t.name === tableName)
     if (table) {
-      statements.push(tableDefToCreateTableSQL(table, dialect))
+      statements.push(tableDefToCreateTableSQL(table, dialect, options))
     }
   }
 
   // 2. Create junction tables (after all entity tables)
   for (const junctionTable of ddl.junctionTables) {
-    statements.push(tableDefToCreateTableSQL(junctionTable, dialect))
+    statements.push(tableDefToCreateTableSQL(junctionTable, dialect, options))
   }
 
   // 3. Add foreign key constraints (PostgreSQL only - SQLite uses inline)
@@ -253,6 +284,7 @@ export function ddlOutputToSQL(ddl: DDLOutput, dialect: SqlDialect): string[] {
  *
  * @param {EnhancedJsonSchema} schema - Enhanced JSON Schema to convert
  * @param {SqlDialect} dialect - Target SQL dialect
+ * @param {DDLGenerationOptions} options - Optional generation options
  * @returns {string[]} Array of SQL statements ready for execution
  *
  * @example
@@ -264,9 +296,16 @@ export function ddlOutputToSQL(ddl: DDLOutput, dialect: SqlDialect): string[] {
  * for (const statement of sql) {
  *   await db.execute(statement)
  * }
+ *
+ * // With IF NOT EXISTS for idempotent execution
+ * const sql = generateSQL(schema, postgres, { ifNotExists: true })
  * ```
  */
-export function generateSQL(schema: EnhancedJsonSchema, dialect: SqlDialect): string[] {
+export function generateSQL(
+  schema: EnhancedJsonSchema,
+  dialect: SqlDialect,
+  options?: DDLGenerationOptions
+): string[] {
   const ddl = generateDDL(schema, dialect)
-  return ddlOutputToSQL(ddl, dialect)
+  return ddlOutputToSQL(ddl, dialect, options)
 }

@@ -19,11 +19,11 @@ import {
   clearRuntimeStores,
   createBackendRegistry,
   BunSqlExecutor,
+  getRuntimeStore,
+  SqlBackend,
+  NullPersistence,
 } from "@shogo/state-api"
-// Import PostgresBackend from source to get empty WHERE clause fix
-import { PostgresBackend } from "../../../../state-api/src/query/backends/postgres"
 import { Database } from "bun:sqlite"
-import type { SQL } from "bun:sql"
 import type { IEnvironment } from "@shogo/state-api"
 
 // Import the actual executeStoreQuery function to test
@@ -51,25 +51,22 @@ describe("store.query Tool", () => {
       )
     `)
 
-    // Insert test data
-    testDb.run(`INSERT INTO task VALUES ('1', 'Task One', 'pending', 1, '2024-01-01')`)
-    testDb.run(`INSERT INTO task VALUES ('2', 'Task Two', 'active', 2, '2024-01-02')`)
-    testDb.run(`INSERT INTO task VALUES ('3', 'Task Three', 'completed', 3, '2024-01-03')`)
-    testDb.run(`INSERT INTO task VALUES ('4', 'Task Four', 'active', 1, '2024-01-04')`)
-
-    // Create PostgresBackend with BunSqlExecutor
-    const executor = new BunSqlExecutor(testDb as unknown as SQL)
-    const postgresBackend = new PostgresBackend(executor)
+    // Create SqlBackend with SQLite dialect
+    const executor = new BunSqlExecutor(testDb)
+    const sqlBackend = new SqlBackend({ dialect: "sqlite", executor })
 
     // Create BackendRegistry
     const backendRegistry = createBackendRegistry({
       default: "postgres",
-      backends: { postgres: postgresBackend },
+      backends: { postgres: sqlBackend },
     })
 
-    // Create meta-store with proper environment (Issue 2: unified IEnvironment)
+    // Create meta-store with proper environment
     testEnv = {
-      services: { backendRegistry },
+      services: {
+        persistence: new NullPersistence(),
+        backendRegistry,
+      },
     }
 
     const metaStore = getMetaStore(testEnv)
@@ -102,6 +99,14 @@ describe("store.query Tool", () => {
 
     // Load schema to create runtime store
     await metaStore.loadSchema(schemaEntity.name)
+
+    // Insert test data via collection (adds to both MST and database)
+    const runtimeStore = getRuntimeStore(schemaEntity.id)
+    const taskCollection = runtimeStore!.taskCollection
+    await taskCollection.insertOne({ id: "1", title: "Task One", status: "pending", priority: 1, createdAt: "2024-01-01" })
+    await taskCollection.insertOne({ id: "2", title: "Task Two", status: "active", priority: 2, createdAt: "2024-01-02" })
+    await taskCollection.insertOne({ id: "3", title: "Task Three", status: "completed", priority: 3, createdAt: "2024-01-03" })
+    await taskCollection.insertOne({ id: "4", title: "Task Four", status: "active", priority: 1, createdAt: "2024-01-04" })
   })
 
   afterEach(() => {
@@ -542,6 +547,175 @@ describe("store.query Tool", () => {
       // Then: Query executes successfully
       expect(result.ok).toBe(true)
       expect(result.count).toBe(4)
+    })
+  })
+
+  // ==========================================================================
+  // test-store-query-10: AST Support
+  // ==========================================================================
+  describe("AST Support", () => {
+    test("accepts serialized AST and executes query", async () => {
+      // Given: Serialized AST condition (field condition for status = 'active')
+      const ast = {
+        type: "field",
+        operator: "eq",
+        field: "status",
+        value: "active",
+      }
+
+      // When: store.query is called with ast parameter
+      const result = await executeStoreQuery({
+        schema: "task-schema",
+        model: "Task",
+        ast,
+      })
+
+      // Then: Returns matching items
+      expect(result.ok).toBe(true)
+      expect(result.count).toBe(2) // Tasks 2 and 4
+      const titles = result.items!.map((t: any) => t.title).sort()
+      expect(titles).toEqual(["Task Four", "Task Two"])
+    })
+
+    test("AST with compound AND condition works", async () => {
+      // Given: Serialized AST with compound AND condition
+      const ast = {
+        type: "compound",
+        operator: "and",
+        value: [
+          { type: "field", operator: "eq", field: "status", value: "active" },
+          { type: "field", operator: "gte", field: "priority", value: 2 },
+        ],
+      }
+
+      // When: store.query is called with compound AST
+      const result = await executeStoreQuery({
+        schema: "task-schema",
+        model: "Task",
+        ast,
+      })
+
+      // Then: Returns tasks matching all conditions
+      expect(result.ok).toBe(true)
+      expect(result.count).toBe(1) // Only Task 2 (active + priority 2)
+      expect(result.items![0].title).toBe("Task Two")
+    })
+
+    test("AST with compound OR condition works", async () => {
+      // Given: Serialized AST with compound OR condition
+      const ast = {
+        type: "compound",
+        operator: "or",
+        value: [
+          { type: "field", operator: "eq", field: "status", value: "completed" },
+          { type: "field", operator: "eq", field: "priority", value: 1 },
+        ],
+      }
+
+      // When: store.query is called with OR AST
+      const result = await executeStoreQuery({
+        schema: "task-schema",
+        model: "Task",
+        ast,
+      })
+
+      // Then: Returns tasks matching any condition
+      expect(result.ok).toBe(true)
+      expect(result.count).toBe(3) // Tasks 1, 3, 4
+      const ids = result.items!.map((t: any) => t.id).sort()
+      expect(ids).toEqual(["1", "3", "4"])
+    })
+
+    test("AST takes precedence over filter when both provided", async () => {
+      // Given: Both ast and filter provided (with different conditions)
+      const ast = {
+        type: "field",
+        operator: "eq",
+        field: "status",
+        value: "completed", // Should match Task 3
+      }
+      const filter = { status: "pending" } // Would match Task 1
+
+      // When: store.query is called with both
+      const result = await executeStoreQuery({
+        schema: "task-schema",
+        model: "Task",
+        ast,
+        filter, // Should be ignored
+      })
+
+      // Then: AST condition is used (not filter)
+      expect(result.ok).toBe(true)
+      expect(result.count).toBe(1)
+      expect(result.items![0].status).toBe("completed") // Not "pending"
+    })
+
+    test("invalid AST returns VALIDATION_ERROR", async () => {
+      // Given: Invalid AST (missing required fields)
+      const ast = {
+        type: "invalid-type",
+        operator: "eq",
+      }
+
+      // When: store.query is called with invalid AST
+      const result = await executeStoreQuery({
+        schema: "task-schema",
+        model: "Task",
+        ast,
+      })
+
+      // Then: Returns validation error
+      expect(result.ok).toBe(false)
+      expect(result.error).toBeDefined()
+      expect(result.error!.code).toBe("VALIDATION_ERROR")
+    })
+
+    test("AST with $gt operator works", async () => {
+      // Given: Serialized AST with $gt operator
+      const ast = {
+        type: "field",
+        operator: "gt",
+        field: "priority",
+        value: 1,
+      }
+
+      // When: store.query is called
+      const result = await executeStoreQuery({
+        schema: "task-schema",
+        model: "Task",
+        ast,
+      })
+
+      // Then: Returns tasks with priority > 1
+      expect(result.ok).toBe(true)
+      expect(result.count).toBe(2) // Tasks 2 and 3 (priority 2 and 3)
+      const priorities = result.items!.map((t: any) => t.priority).sort()
+      expect(priorities).toEqual([2, 3])
+    })
+
+    test("AST works with ordering and pagination", async () => {
+      // Given: AST with ordering and pagination
+      const ast = {
+        type: "field",
+        operator: "gte",
+        field: "priority",
+        value: 1, // All tasks
+      }
+
+      // When: store.query is called with orderBy and take
+      const result = await executeStoreQuery({
+        schema: "task-schema",
+        model: "Task",
+        ast,
+        orderBy: { field: "priority", direction: "desc" },
+        take: 2,
+      })
+
+      // Then: Returns top 2 by priority descending
+      expect(result.ok).toBe(true)
+      expect(result.count).toBe(2)
+      const priorities = result.items!.map((t: any) => t.priority)
+      expect(priorities).toEqual([3, 2])
     })
   })
 })

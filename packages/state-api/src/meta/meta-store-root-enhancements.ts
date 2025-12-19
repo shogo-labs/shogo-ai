@@ -8,7 +8,7 @@ import { v4 as uuidv4 } from "uuid"
 import type { IEnvironment } from "../environment/types"
 import { enhancedJsonSchemaToMST } from "../schematic/enhanced-json-schema-to-mst"
 import { buildEnhanceCollections } from "../composition/enhance-collections"
-import { getRuntimeStore, cacheRuntimeStore } from "./runtime-store-cache"
+import { getRuntimeStore, cacheRuntimeStore, removeRuntimeStoresForSchema } from "./runtime-store-cache"
 import { ingestProperty } from "./meta-helpers"
 import { getEnhancements } from "../domain/enhancement-registry"
 
@@ -49,12 +49,19 @@ export function createRootStoreEnhancements(RootModel: any) {
         }
 
         // Create Schema entity
-        const schema = self.schemaCollection.add({
+        const schemaData: any = {
           id: metadata.id || uuidv4(),
           name: metadata.name,
           format: "enhanced-json-schema",
           createdAt: metadata.createdAt || Date.now(),
-        })
+        }
+
+        // Capture schema-level x-persistence extension
+        if (enhancedSchema['x-persistence']) {
+          schemaData.xPersistence = enhancedSchema['x-persistence']
+        }
+
+        const schema = self.schemaCollection.add(schemaData)
 
         // Ingest views if provided
         if (metadata.views) {
@@ -205,6 +212,63 @@ export function createRootStoreEnhancements(RootModel: any) {
         cacheRuntimeStore(schema.id, runtimeStore, workspace)
 
         return schema
+      },
+
+      /**
+       * Removes a schema and all related entities from the meta-store.
+       *
+       * Performs cascade deletion in this order:
+       * 1. Properties (must be deleted before Models due to references)
+       * 2. ViewDefinitions (reference Schema directly)
+       * 3. Models (reference Schema)
+       * 4. Schema itself
+       *
+       * Also invalidates all cached runtime stores for this schema
+       * across all workspaces.
+       *
+       * @param schemaName - Name of the schema to remove
+       * @returns true if schema was found and removed, false if not found
+       */
+      removeSchema(schemaName: string): boolean {
+        const schema = self.findSchemaByName(schemaName)
+        if (!schema) {
+          return false
+        }
+
+        const schemaId = schema.id
+
+        // 1. Get all models for this schema
+        const modelsToRemove = self.modelCollection.all()
+          .filter((m: any) => m.schema?.id === schemaId)
+
+        // 2. Get all properties for those models
+        const modelIds = new Set(modelsToRemove.map((m: any) => m.id))
+        const propertiesToRemove = self.propertyCollection.all()
+          .filter((p: any) => modelIds.has(p.model?.id))
+
+        // 3. Get all view definitions for this schema
+        const viewsToRemove = self.viewDefinitionCollection.all()
+          .filter((v: any) => v.schema?.id === schemaId)
+
+        // 4. Delete in reverse dependency order: Properties -> Views -> Models -> Schema
+        for (const prop of propertiesToRemove) {
+          self.propertyCollection.remove(prop.id)
+        }
+
+        for (const view of viewsToRemove) {
+          self.viewDefinitionCollection.remove(view.id)
+        }
+
+        for (const model of modelsToRemove) {
+          self.modelCollection.remove(model.id)
+        }
+
+        self.schemaCollection.remove(schemaId)
+
+        // 5. Invalidate all runtime store caches for this schema (across all workspaces)
+        removeRuntimeStoresForSchema(schemaId)
+
+        return true
       }
     }))
 }
