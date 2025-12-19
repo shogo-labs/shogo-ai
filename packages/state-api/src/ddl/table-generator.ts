@@ -100,7 +100,8 @@ export function generateCreateTable(
   model: any,
   modelName: string,
   dialect: SqlDialect,
-  namespace?: string
+  namespace?: string,
+  allModels?: Record<string, any>
 ): TableDef {
   // 1. Identify the primary key
   const primaryKeyProp = inferPrimaryKey(model)
@@ -142,10 +143,14 @@ export function generateCreateTable(
       )
 
       if (fk) {
-        // Add FK column
+        // Add FK column - derive type from target model's id property
         const columnName = fk.column
+        const targetModelName = prop["x-reference-target"]
+        const targetModel = allModels?.[targetModelName]
+        const targetIdProp = targetModel?.properties?.id || { type: "string" }
+        // Use the target id's format (uuid or undefined) to determine SQL type
         const sqlType = mapPropertyType(
-          { type: "string", format: "uuid" },
+          { type: "string", format: targetIdProp.format },
           dialect
         )
         const nullable = !inferNotNull({ name: propName, ...prop }, required)

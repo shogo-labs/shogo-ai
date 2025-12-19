@@ -4,6 +4,9 @@
   "format": "enhanced-json-schema",
   "createdAt": 1765890148475,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-persistence": {
+    "backend": "postgres"
+  },
   "$defs": {
     "User": {
       "type": "object",
@@ -79,13 +82,15 @@
           "type": "string",
           "x-arktype": "User",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "User"
         },
         "tenant_id": {
           "type": "string",
           "x-arktype": "Tenant",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "Tenant"
         },
         "role": {
           "type": "string",
@@ -122,7 +127,8 @@
           "type": "string",
           "x-arktype": "Tenant",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "Tenant"
         },
         "stripe_customer_id": {
           "type": "string",
@@ -167,14 +173,16 @@
           "description": "Who controls this workspace",
           "x-arktype": "Tenant",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "Tenant"
         },
         "billing_account_id": {
           "type": "string",
           "description": "Who pays for this workspace",
           "x-arktype": "BillingAccount",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "BillingAccount"
         }
       },
       "required": [

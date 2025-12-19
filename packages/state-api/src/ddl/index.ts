@@ -113,7 +113,7 @@ export function generateDDL(schema: any, dialect: SqlDialect, config?: DDLGenera
 
   for (const modelName of modelNames) {
     const model = models[modelName]
-    const tableDef = generateCreateTable(model, modelName, dialect, namespace)
+    const tableDef = generateCreateTable(model, modelName, dialect, namespace, models)
 
     tables.push(tableDef)
 
@@ -138,7 +138,8 @@ export function generateDDL(schema: any, dialect: SqlDialect, config?: DDLGenera
         modelName,
         { name: propName, ...prop },
         dialect,
-        namespace
+        namespace,
+        models
       )
 
       if (junctionTable) {
