@@ -14,11 +14,11 @@ import {
   resetMetaStore,
   clearRuntimeStores,
   createBackendRegistry,
-  BunSqlExecutor,
   getRuntimeStore,
   SqlBackend,
   NullPersistence,
 } from "@shogo/state-api"
+import { BunSqlExecutor } from "@shogo/state-api/query/execution/bun-sql"
 import { Database } from "bun:sqlite"
 import type { IEnvironment } from "@shogo/state-api"
 
@@ -27,6 +27,9 @@ import { executeStoreUpdate } from "../store.update"
 // =============================================================================
 // Test Setup
 // =============================================================================
+
+// Use temp directory for test workspace to avoid affecting repo files
+const TEST_WORKSPACE = "/tmp/mcp-test-schemas"
 
 describe("store.update", () => {
   let testDb: Database
@@ -97,11 +100,11 @@ describe("store.update", () => {
       name: "task-schema",
     })
 
-    // Load schema to create runtime store
-    await metaStore.loadSchema(schemaEntity.name)
+    // Load schema to create runtime store (with test workspace for cache key consistency)
+    await metaStore.loadSchema(schemaEntity.name, TEST_WORKSPACE)
 
     // Load data into collection
-    const runtimeStore = getRuntimeStore(schemaEntity.id)
+    const runtimeStore = getRuntimeStore(schemaEntity.id, TEST_WORKSPACE)
     await runtimeStore!.taskCollection.loadAll()
   })
 
@@ -122,7 +125,8 @@ describe("store.update", () => {
         schema: "task-schema",
         model: "Task",
         id: "task-1",
-        changes: { title: "Updated Title", status: "active" }
+        changes: { title: "Updated Title", status: "active" },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns ok with updated data
@@ -138,7 +142,8 @@ describe("store.update", () => {
         schema: "task-schema",
         model: "Task",
         id: "task-1",
-        changes: { title: "Updated Title" }
+        changes: { title: "Updated Title" },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Database is updated
@@ -151,7 +156,8 @@ describe("store.update", () => {
         schema: "task-schema",
         model: "Task",
         id: "non-existent",
-        changes: { title: "Updated" }
+        changes: { title: "Updated" },
+        workspace: TEST_WORKSPACE,
       })
 
       expect(result.ok).toBe(false)
@@ -170,7 +176,8 @@ describe("store.update", () => {
         schema: "task-schema",
         model: "Task",
         filter: { status: "pending" },
-        changes: { status: "active" }
+        changes: { status: "active" },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns ok with count
@@ -186,7 +193,8 @@ describe("store.update", () => {
         schema: "task-schema",
         model: "Task",
         filter: { status: "pending" },
-        changes: { status: "archived" }
+        changes: { status: "archived" },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: All matching entities are updated
@@ -200,7 +208,8 @@ describe("store.update", () => {
         schema: "task-schema",
         model: "Task",
         filter: { status: "nonexistent" },
-        changes: { status: "active" }
+        changes: { status: "active" },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns count 0
@@ -219,7 +228,8 @@ describe("store.update", () => {
         schema: "non-existent-schema",
         model: "Task",
         id: "task-1",
-        changes: { title: "Updated" }
+        changes: { title: "Updated" },
+        workspace: TEST_WORKSPACE,
       })
 
       expect(result.ok).toBe(false)
@@ -231,7 +241,8 @@ describe("store.update", () => {
         schema: "task-schema",
         model: "NonExistentModel",
         id: "task-1",
-        changes: { title: "Updated" }
+        changes: { title: "Updated" },
+        workspace: TEST_WORKSPACE,
       })
 
       expect(result.ok).toBe(false)
@@ -242,7 +253,8 @@ describe("store.update", () => {
       const result = await executeStoreUpdate({
         schema: "task-schema",
         model: "Task",
-        changes: { title: "Updated" }
+        changes: { title: "Updated" },
+        workspace: TEST_WORKSPACE,
       } as any)
 
       expect(result.ok).toBe(false)
