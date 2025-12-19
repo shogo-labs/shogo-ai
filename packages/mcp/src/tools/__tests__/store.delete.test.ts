@@ -13,16 +13,19 @@ import {
   resetMetaStore,
   clearRuntimeStores,
   createBackendRegistry,
-  BunSqlExecutor,
   getRuntimeStore,
   SqlBackend,
   NullPersistence,
 } from "@shogo/state-api"
+import { BunSqlExecutor } from "@shogo/state-api/query/execution/bun-sql"
 import { Database } from "bun:sqlite"
 import type { IEnvironment } from "@shogo/state-api"
 
 // Import the actual executeStoreDelete function to test
 import { executeStoreDelete } from "../store.delete"
+
+// Use temp directory for test workspace to avoid affecting repo files
+const TEST_WORKSPACE = "/tmp/mcp-test-schemas"
 
 describe("store.delete Tool", () => {
   let testDb: Database
@@ -37,8 +40,9 @@ describe("store.delete Tool", () => {
     testDb = new Database(":memory:")
 
     // Create test table with snake_case columns (as DDL would create)
+    // Use namespace prefix (task-schema -> task_schema)
     testDb.run(`
-      CREATE TABLE task (
+      CREATE TABLE task_schema__task (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         status TEXT DEFAULT 'pending',
@@ -94,11 +98,11 @@ describe("store.delete Tool", () => {
     })
     schemaId = schemaEntity.id
 
-    // Load schema to create runtime store
-    await metaStore.loadSchema(schemaEntity.name)
+    // Load schema to create runtime store (with test workspace for cache key consistency)
+    await metaStore.loadSchema(schemaEntity.name, TEST_WORKSPACE)
 
     // Insert test data via collection (adds to both MST and database)
-    const runtimeStore = getRuntimeStore(schemaEntity.id)
+    const runtimeStore = getRuntimeStore(schemaEntity.id, TEST_WORKSPACE)
     const taskCollection = runtimeStore!.taskCollection
     await taskCollection.insertOne({ id: "1", title: "Task One", status: "pending", priority: 1, createdAt: "2024-01-01" })
     await taskCollection.insertOne({ id: "2", title: "Task Two", status: "active", priority: 2, createdAt: "2024-01-02" })
@@ -122,6 +126,7 @@ describe("store.delete Tool", () => {
         schema: "task-schema",
         model: "Task",
         id: "1",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns { ok: true, data: <deleted entity> }
@@ -131,7 +136,7 @@ describe("store.delete Tool", () => {
       expect(result.data.title).toBe("Task One")
 
       // Then: Entity is actually deleted from database
-      const rows = testDb.query("SELECT * FROM task WHERE id = '1'").all()
+      const rows = testDb.query("SELECT * FROM task_schema__task WHERE id = '1'").all()
       expect(rows.length).toBe(0)
     })
 
@@ -142,6 +147,7 @@ describe("store.delete Tool", () => {
         schema: "task-schema",
         model: "Task",
         id: "nonexistent-id",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns error with NOT_FOUND code
@@ -158,13 +164,14 @@ describe("store.delete Tool", () => {
         schema: "task-schema",
         model: "Task",
         id: "2",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Only the specified entity is deleted
       expect(result.ok).toBe(true)
 
       // Other entities remain
-      const remainingRows = testDb.query("SELECT id FROM task ORDER BY id").all()
+      const remainingRows = testDb.query("SELECT id FROM task_schema__task ORDER BY id").all()
       expect(remainingRows).toEqual([{ id: "1" }, { id: "3" }])
     })
   })
@@ -180,6 +187,7 @@ describe("store.delete Tool", () => {
         schema: "nonexistent-schema",
         model: "Task",
         id: "1",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns error with SCHEMA_NOT_FOUND code
@@ -196,6 +204,7 @@ describe("store.delete Tool", () => {
         schema: "task-schema",
         model: "NonexistentModel",
         id: "1",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns error with MODEL_NOT_FOUND code
@@ -223,6 +232,7 @@ describe("store.delete Tool", () => {
         schema: "unloaded-schema",
         model: "Note",
         id: "1",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns error with RUNTIME_STORE_NOT_FOUND code
@@ -242,7 +252,7 @@ describe("store.delete Tool", () => {
         schema: "task-schema",
         model: "Task",
         id: "1",
-        workspace: undefined, // Use default workspace
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Delete executes successfully
@@ -261,7 +271,8 @@ describe("store.delete Tool", () => {
       const result = await executeStoreDelete({
         schema: "task-schema",
         model: "Task",
-        filter: { status: "pending" }
+        filter: { status: "pending" },
+        workspace: TEST_WORKSPACE,
       } as any)
 
       // Then: Returns ok with count
@@ -273,22 +284,23 @@ describe("store.delete Tool", () => {
 
     test("all matching entities are removed from database", async () => {
       // Given: Multiple pending entities - add another via collection
-      const runtimeStore = getRuntimeStore(schemaId)
+      const runtimeStore = getRuntimeStore(schemaId, TEST_WORKSPACE)
       await runtimeStore!.taskCollection.insertOne({ id: "4", title: "Task Four", status: "pending", priority: 4, createdAt: "2024-01-04" })
 
       // When: delete called with filter
       await executeStoreDelete({
         schema: "task-schema",
         model: "Task",
-        filter: { status: "pending" }
+        filter: { status: "pending" },
+        workspace: TEST_WORKSPACE,
       } as any)
 
       // Then: All matching entities are removed
-      const pending = testDb.query("SELECT * FROM task WHERE status = 'pending'").all()
+      const pending = testDb.query("SELECT * FROM task_schema__task WHERE status = 'pending'").all()
       expect(pending).toHaveLength(0)
 
       // Other tasks remain (active, completed)
-      const remaining = testDb.query("SELECT * FROM task").all()
+      const remaining = testDb.query("SELECT * FROM task_schema__task").all()
       expect(remaining.length).toBeGreaterThan(0)
     })
 
@@ -297,7 +309,8 @@ describe("store.delete Tool", () => {
       const result = await executeStoreDelete({
         schema: "task-schema",
         model: "Task",
-        filter: { status: "nonexistent" }
+        filter: { status: "nonexistent" },
+        workspace: TEST_WORKSPACE,
       } as any)
 
       // Then: Returns count 0
@@ -308,7 +321,8 @@ describe("store.delete Tool", () => {
     test("returns VALIDATION_ERROR when neither id nor filter provided", async () => {
       const result = await executeStoreDelete({
         schema: "task-schema",
-        model: "Task"
+        model: "Task",
+        workspace: TEST_WORKSPACE,
       } as any)
 
       expect(result.ok).toBe(false)

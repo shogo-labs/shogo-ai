@@ -14,6 +14,7 @@ import {
   getPostgresExecutor,
   isPostgresAvailable,
   shutdownPostgres,
+  __resetForTesting,
 } from "../postgres-init"
 
 // Store original env to restore after tests
@@ -21,8 +22,8 @@ const originalDatabaseUrl = process.env.DATABASE_URL
 
 describe("MCP Postgres Initialization", () => {
   beforeEach(() => {
-    // Reset module state before each test (if possible)
-    // Note: Module singletons may need explicit reset function
+    // Reset module state before each test
+    __resetForTesting()
   })
 
   afterEach(() => {
@@ -43,12 +44,12 @@ describe("MCP Postgres Initialization", () => {
       expect(typeof initializePostgresBackend).toBe("function")
     })
 
-    test("returns false when DATABASE_URL is not set", () => {
+    test("returns false when DATABASE_URL is not set", async () => {
       // Given: DATABASE_URL is not set
       delete process.env.DATABASE_URL
 
       // When: initializePostgresBackend is called
-      const result = initializePostgresBackend()
+      const result = await initializePostgresBackend()
 
       // Then: Returns false (no postgres available)
       expect(result).toBe(false)
@@ -134,18 +135,18 @@ const hasPostgres = !!process.env.DATABASE_URL
 const describePostgres = hasPostgres ? describe : describe.skip
 
 describePostgres("MCP Postgres Initialization (Integration)", () => {
-  test("initializes successfully with valid DATABASE_URL", () => {
+  test("initializes successfully with valid DATABASE_URL", async () => {
     // Given: DATABASE_URL is set to valid connection
     // When: initializePostgresBackend is called
-    const result = initializePostgresBackend()
+    const result = await initializePostgresBackend()
 
     // Then: Returns true (initialization successful)
     expect(result).toBe(true)
   })
 
-  test("isPostgresAvailable returns true after initialization", () => {
+  test("isPostgresAvailable returns true after initialization", async () => {
     // Given: Postgres has been initialized
-    initializePostgresBackend()
+    await initializePostgresBackend()
 
     // When: isPostgresAvailable is called
     const available = isPostgresAvailable()
@@ -154,9 +155,9 @@ describePostgres("MCP Postgres Initialization (Integration)", () => {
     expect(available).toBe(true)
   })
 
-  test("getPostgresExecutor returns executor after initialization", () => {
+  test("getPostgresExecutor returns executor after initialization", async () => {
     // Given: Postgres has been initialized
-    initializePostgresBackend()
+    await initializePostgresBackend()
 
     // When: getPostgresExecutor is called
     const executor = getPostgresExecutor()
@@ -167,9 +168,9 @@ describePostgres("MCP Postgres Initialization (Integration)", () => {
     expect(executor?.beginTransaction).toBeDefined()
   })
 
-  test("registry includes postgres backend after initialization", () => {
+  test("registry includes postgres backend after initialization", async () => {
     // Given: Postgres has been initialized
-    initializePostgresBackend()
+    await initializePostgresBackend()
     const registry = getGlobalBackendRegistry()
 
     // Then: Postgres backend is registered
@@ -178,7 +179,7 @@ describePostgres("MCP Postgres Initialization (Integration)", () => {
 
   test("shutdownPostgres closes connection pool", async () => {
     // Given: Postgres has been initialized
-    initializePostgresBackend()
+    await initializePostgresBackend()
     expect(isPostgresAvailable()).toBe(true)
 
     // When: shutdownPostgres is called

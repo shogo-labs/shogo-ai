@@ -139,7 +139,7 @@ export function buildModel(
   const computedViews: Record<string, any> = {}
   const actions: Record<string, any> = {}
 
-  for (const [propName, propSchema] of Object.entries(entitySchema.properties || {})) {
+  for (const [propName, propSchema] of Object.entries(entitySchema.properties || {}) as [string, any][]) {
     // Skip computed properties - they'll be views
     if (propSchema["x-computed"]) {
       const targetModel = extractTargetModel(propSchema["x-arktype"])
@@ -222,7 +222,7 @@ export function buildModel(
   if (arkTypeValidator) {
     model = model.preProcessSnapshot((snapshot: any) => {
       const fieldsToValidate: string[] = []
-      for (const [propName, propSchema] of Object.entries(entitySchema.properties || {})) {
+      for (const [propName, propSchema] of Object.entries(entitySchema.properties || {}) as [string, any][]) {
         if (!propSchema["x-reference-type"] && !propSchema["x-computed"]) {
           fieldsToValidate.push(propName)
         }

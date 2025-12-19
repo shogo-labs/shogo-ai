@@ -4,7 +4,7 @@
  */
 
 import { getRoot } from "mobx-state-tree"
-import type { ModelField, ModelRef } from "../mcp/state"
+import type { ModelField, ModelRef } from "./types"
 import { getColumnName } from "../ddl/utils"
 
 export function createPropertyEnhancements(baseModels: any) {

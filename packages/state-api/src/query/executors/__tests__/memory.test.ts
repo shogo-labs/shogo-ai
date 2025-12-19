@@ -184,7 +184,7 @@ testExecutorContract<{ id: string; name: string }>(
     ]
 
     const collection = createMockCollection(testData)
-    const executor = new MemoryQueryExecutor(collection)
+    const executor = new MemoryQueryExecutor<{ id: string; name: string }>(collection)
 
     return {
       executor,

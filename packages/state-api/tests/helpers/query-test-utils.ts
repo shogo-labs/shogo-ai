@@ -12,7 +12,10 @@ import { MemoryBackend } from "../../src/query/backends/memory"
 import { SqlBackend } from "../../src/query/backends/sql"
 import { NullPersistence } from "../../src/persistence/null"
 import { teamsDomain } from "../../src/teams/domain"
-import { generateDDL, createSqliteDialect, tableDefToCreateTableSQL } from "../../src/ddl"
+import { generateDDL, createSqliteDialect, tableDefToCreateTableSQL, deriveNamespace } from "../../src/ddl"
+
+// Schema name used for all tests
+const SCHEMA_NAME = "teams-workspace"
 
 export interface TestData {
   organizations: Array<{
@@ -77,7 +80,7 @@ export function createEnvironment(options: CreateEnvironmentOptions) {
       backendRegistry: registry
     },
     context: {
-      schemaName: "teams-workspace"
+      schemaName: SCHEMA_NAME
     }
   }
 }
@@ -87,12 +90,15 @@ const sqliteDialect = createSqliteDialect()
 
 /**
  * Create tables from Enhanced JSON Schema using DDL generator.
+ * Uses namespace derived from SCHEMA_NAME for table isolation.
  *
  * @param db - SQLite database instance
  * @param schema - Enhanced JSON Schema to generate DDL from
  */
 function createTablesFromSchema(db: Database, schema: any) {
-  const ddl = generateDDL(schema, sqliteDialect)
+  // Use same namespace derivation as BackendRegistry.resolve()
+  const namespace = deriveNamespace(SCHEMA_NAME)
+  const ddl = generateDDL(schema, sqliteDialect, { namespace })
 
   // Create tables in topological order (respects FK dependencies)
   for (const tableName of ddl.executionOrder) {

@@ -36,6 +36,10 @@ class MockSqlExecutor implements ISqlExecutor {
     return this.mockResults
   }
 
+  async beginTransaction<T>(callback: (tx: { execute: (query: [string, unknown[]]) => Promise<Row[]> }) => Promise<T>): Promise<T> {
+    return callback({ execute: (query) => this.execute(query) })
+  }
+
   reset() {
     this.executedQueries = []
     this.mockResults = []

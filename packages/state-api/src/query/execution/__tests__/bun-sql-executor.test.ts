@@ -7,9 +7,14 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { Database } from "bun:sqlite"
-import type { SQL } from "bun:sql"
 import { BunSqlExecutor } from "../bun-sql"
 import type { ISqlExecutor } from "../types"
+
+// Local type for SQL connection compatibility with bun:sqlite
+type SQL = {
+  query(sql: string): { all(...params: unknown[]): unknown[]; run(...params: unknown[]): void }
+  run(sql: string): void
+}
 
 // Setup test database with sample data
 function setupTestDatabase(): Database {

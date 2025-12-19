@@ -374,9 +374,30 @@ export function entityToColumns<T extends Record<string, unknown>>(
 }
 
 /**
+ * Escape a table name for SQL, handling pre-qualified names from namespace isolation.
+ *
+ * Pre-qualified PostgreSQL names ("namespace"."table") are returned as-is.
+ * Simple names and SQLite prefixed names (namespace__table) are quoted.
+ *
+ * @param tableName - Table name (may be pre-qualified)
+ * @param dialect - SQL dialect ('pg' or 'sqlite')
+ * @returns Properly escaped table name for SQL
+ */
+function escapeTableNameForSQL(tableName: string, dialect: SqlDialect): string {
+  if (dialect === "pg") {
+    // PostgreSQL: check if already a qualified name (starts with quote and contains "."")
+    if (tableName.startsWith('"') && tableName.includes('"."')) {
+      return tableName // Already escaped qualified name
+    }
+  }
+  // All other cases: add double quotes
+  return `"${tableName.replace(/"/g, '""')}"`
+}
+
+/**
  * Build an INSERT SQL statement.
  *
- * @param tableName - Name of the table to insert into
+ * @param tableName - Name of the table to insert into (may be pre-qualified)
  * @param columns - Array of column names
  * @param dialect - SQL dialect ('pg' or 'sqlite')
  * @returns INSERT SQL string with placeholders
@@ -385,6 +406,9 @@ export function entityToColumns<T extends Record<string, unknown>>(
  * ```typescript
  * buildInsertSQL('users', ['id', 'name'], 'pg')
  * // => 'INSERT INTO "users" ("id", "name") VALUES ($1, $2) RETURNING *'
+ *
+ * buildInsertSQL('"hr"."users"', ['id', 'name'], 'pg')
+ * // => 'INSERT INTO "hr"."users" ("id", "name") VALUES ($1, $2) RETURNING *'
  *
  * buildInsertSQL('users', ['id', 'name'], 'sqlite')
  * // => 'INSERT INTO "users" ("id", "name") VALUES (?, ?)'
@@ -395,8 +419,8 @@ export function buildInsertSQL(
   columns: string[],
   dialect: SqlDialect
 ): string {
-  // Quote identifiers
-  const quotedTable = `"${tableName}"`
+  // Quote identifiers, handling pre-qualified names
+  const quotedTable = escapeTableNameForSQL(tableName, dialect)
   const quotedColumns = columns.map((col) => `"${col}"`).join(", ")
 
   // Generate placeholders based on dialect
@@ -413,7 +437,7 @@ export function buildInsertSQL(
 /**
  * Build an UPDATE SQL statement.
  *
- * @param tableName - Name of the table to update
+ * @param tableName - Name of the table to update (may be pre-qualified)
  * @param setColumns - Array of column names for SET clause
  * @param whereColumn - Column name for WHERE clause
  * @param dialect - SQL dialect ('pg' or 'sqlite')
@@ -426,6 +450,9 @@ export function buildInsertSQL(
  * ```typescript
  * buildUpdateSQL('users', ['name', 'status'], 'id', 'pg')
  * // => 'UPDATE "users" SET "name" = $1, "status" = $2 WHERE "id" = $3 RETURNING *'
+ *
+ * buildUpdateSQL('"hr"."users"', ['name', 'status'], 'id', 'pg')
+ * // => 'UPDATE "hr"."users" SET "name" = $1, "status" = $2 WHERE "id" = $3 RETURNING *'
  * ```
  */
 export function buildUpdateSQL(
@@ -434,8 +461,8 @@ export function buildUpdateSQL(
   whereColumn: string,
   dialect: SqlDialect
 ): string {
-  // Quote table name
-  const quotedTable = `"${tableName}"`
+  // Quote table name, handling pre-qualified names
+  const quotedTable = escapeTableNameForSQL(tableName, dialect)
 
   // Generate SET clause with placeholders
   const setClauses = setColumns
@@ -459,7 +486,7 @@ export function buildUpdateSQL(
 /**
  * Build a DELETE SQL statement.
  *
- * @param tableName - Name of the table to delete from
+ * @param tableName - Name of the table to delete from (may be pre-qualified)
  * @param whereColumn - Column name for WHERE clause
  * @param dialect - SQL dialect ('pg' or 'sqlite')
  * @returns DELETE SQL string with placeholder
@@ -468,6 +495,9 @@ export function buildUpdateSQL(
  * ```typescript
  * buildDeleteSQL('users', 'id', 'pg')
  * // => 'DELETE FROM "users" WHERE "id" = $1'
+ *
+ * buildDeleteSQL('"hr"."users"', 'id', 'pg')
+ * // => 'DELETE FROM "hr"."users" WHERE "id" = $1'
  *
  * buildDeleteSQL('sessions', 'token', 'sqlite')
  * // => 'DELETE FROM "sessions" WHERE "token" = ?'
@@ -478,8 +508,8 @@ export function buildDeleteSQL(
   whereColumn: string,
   dialect: SqlDialect
 ): string {
-  // Quote identifiers
-  const quotedTable = `"${tableName}"`
+  // Quote identifiers, handling pre-qualified names
+  const quotedTable = escapeTableNameForSQL(tableName, dialect)
   const placeholder = dialect === "pg" ? "$1" : "?"
 
   return `DELETE FROM ${quotedTable} WHERE "${whereColumn}" = ${placeholder}`

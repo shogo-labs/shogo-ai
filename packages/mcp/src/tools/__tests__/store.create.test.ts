@@ -14,11 +14,11 @@ import {
   resetMetaStore,
   clearRuntimeStores,
   createBackendRegistry,
-  BunSqlExecutor,
   getRuntimeStore,
   SqlBackend,
   NullPersistence,
 } from "@shogo/state-api"
+import { BunSqlExecutor } from "@shogo/state-api/query/execution/bun-sql"
 import { Database } from "bun:sqlite"
 import type { IEnvironment } from "@shogo/state-api"
 
@@ -27,6 +27,9 @@ import { executeStoreCreate } from "../store.create"
 // =============================================================================
 // Test Setup
 // =============================================================================
+
+// Use temp directory for test workspace to avoid affecting repo files
+const TEST_WORKSPACE = "/tmp/mcp-test-schemas"
 
 describe("store.create", () => {
   let testDb: Database
@@ -39,9 +42,9 @@ describe("store.create", () => {
     // Create in-memory SQLite database
     testDb = new Database(":memory:")
 
-    // Create test table
+    // Create test table with namespace prefix (task-schema -> task_schema)
     testDb.run(`
-      CREATE TABLE task (
+      CREATE TABLE task_schema__task (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         status TEXT DEFAULT 'pending'
@@ -92,8 +95,8 @@ describe("store.create", () => {
       name: "task-schema",
     })
 
-    // Load schema to create runtime store
-    await metaStore.loadSchema(schemaEntity.name)
+    // Load schema to create runtime store (with test workspace for cache key consistency)
+    await metaStore.loadSchema(schemaEntity.name, TEST_WORKSPACE)
   })
 
   afterEach(() => {
@@ -112,6 +115,7 @@ describe("store.create", () => {
       const result = await executeStoreCreate({
         schema: "task-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: { id: "task-1", title: "Test Task", status: "pending" }
       })
 
@@ -129,11 +133,12 @@ describe("store.create", () => {
       await executeStoreCreate({
         schema: "task-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: { id: "task-1", title: "Test Task" }
       })
 
       // Then: Entity exists in database
-      const row = testDb.query("SELECT * FROM task WHERE id = ?").get("task-1") as any
+      const row = testDb.query("SELECT * FROM task_schema__task WHERE id = ?").get("task-1") as any
       expect(row).toBeDefined()
       expect(row.title).toBe("Test Task")
     })
@@ -149,6 +154,7 @@ describe("store.create", () => {
       const result = await executeStoreCreate({
         schema: "task-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: [
           { id: "task-1", title: "Task One", status: "pending" },
           { id: "task-2", title: "Task Two", status: "active" },
@@ -173,6 +179,7 @@ describe("store.create", () => {
       await executeStoreCreate({
         schema: "task-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: [
           { id: "task-1", title: "Task One" },
           { id: "task-2", title: "Task Two" }
@@ -180,7 +187,7 @@ describe("store.create", () => {
       })
 
       // Then: All entities exist in database
-      const rows = testDb.query("SELECT * FROM task ORDER BY id").all() as any[]
+      const rows = testDb.query("SELECT * FROM task_schema__task ORDER BY id").all() as any[]
       expect(rows).toHaveLength(2)
       expect(rows[0].id).toBe("task-1")
       expect(rows[1].id).toBe("task-2")
@@ -191,6 +198,7 @@ describe("store.create", () => {
       const result = await executeStoreCreate({
         schema: "task-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: []
       })
 
@@ -210,6 +218,7 @@ describe("store.create", () => {
       const result = await executeStoreCreate({
         schema: "non-existent-schema",
         model: "Task",
+        workspace: TEST_WORKSPACE,
         data: { id: "1", title: "Test" }
       })
 
@@ -221,6 +230,7 @@ describe("store.create", () => {
       const result = await executeStoreCreate({
         schema: "task-schema",
         model: "NonExistentModel",
+        workspace: TEST_WORKSPACE,
         data: { id: "1", title: "Test" }
       })
 

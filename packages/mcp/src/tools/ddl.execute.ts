@@ -2,11 +2,16 @@
  * DDL Execute Tool
  *
  * MCP tool for generating and executing DDL (Data Definition Language) statements
- * from Enhanced JSON Schema. Creates database tables in PostgreSQL.
+ * from Enhanced JSON Schema. Uses BackendRegistry for automatic dialect resolution.
  *
  * Usage:
  * - dryRun: true - returns DDL statements without executing
- * - dryRun: false/omitted - executes DDL against PostgreSQL (requires DATABASE_URL)
+ * - dryRun: false/omitted - executes DDL via resolved backend (postgres/sqlite/memory)
+ *
+ * Backend Resolution:
+ * - Reads schema's x-persistence.backend property
+ * - Falls back to registry default backend
+ * - Memory backend returns success with no-op (no tables to create)
  *
  * @module mcp/tools/ddl.execute
  */
@@ -17,11 +22,10 @@ import {
   getMetaStore,
   generateSQL,
   createPostgresDialect,
+  createSqliteDialect,
+  deriveNamespace,
 } from "@shogo/state-api"
-import {
-  getPostgresExecutor,
-  isPostgresAvailable,
-} from "../postgres-init"
+import { getGlobalBackendRegistry } from "../postgres-init"
 
 const Params = t({
   schemaName: "string",
@@ -34,7 +38,7 @@ export function registerDdlExecute(server: FastMCP) {
     description:
       "Generate and execute DDL (CREATE TABLE) statements from a schema. " +
       "Use dryRun: true to preview SQL without executing. " +
-      "Requires DATABASE_URL environment variable for execution.",
+      "Automatically uses the backend configured in schema's x-persistence.backend.",
     parameters: Params,
     execute: async (args: any) => {
       const { schemaName, dryRun = false } = args as {
@@ -58,69 +62,60 @@ export function registerDdlExecute(server: FastMCP) {
           })
         }
 
-        // 2. Generate DDL from Enhanced JSON Schema
+        // 2. Get Enhanced JSON Schema for DDL generation
         const enhancedJson = schema.toEnhancedJson
-        const dialect = createPostgresDialect()
-        const statements = generateSQL(enhancedJson, dialect, { ifNotExists: true })
 
-        if (statements.length === 0) {
-          return JSON.stringify({
-            ok: false,
-            error: {
-              code: "NO_DDL_GENERATED",
-              message: `No DDL statements generated for schema '${schemaName}'. ` +
-                `Schema may have no model definitions.`,
-            },
-          })
-        }
-
-        // 3. Dry run mode - return DDL without executing
+        // 3. Dry run mode - generate DDL preview without executing
         if (dryRun) {
+          // Determine dialect from schema's x-persistence.backend
+          const backendName = enhancedJson['x-persistence']?.backend
+          const dialect = backendName === 'sqlite'
+            ? createSqliteDialect()
+            : createPostgresDialect()
+
+          // Derive namespace from schema name for table isolation
+          const namespace = deriveNamespace(schemaName)
+
+          const statements = generateSQL(enhancedJson, dialect, {
+            ifNotExists: true,
+            namespace,
+          })
+
           return JSON.stringify({
             ok: true,
             dryRun: true,
             schemaName,
+            namespace,
+            backend: backendName || 'default',
             statements,
             statementCount: statements.length,
           })
         }
 
-        // 4. Check PostgreSQL availability
-        if (!isPostgresAvailable()) {
+        // 4. Execute DDL via backend registry
+        const registry = getGlobalBackendRegistry()
+        const result = await registry.executeDDL(schemaName, enhancedJson, {
+          ifNotExists: true,
+        })
+
+        if (!result.success) {
           return JSON.stringify({
             ok: false,
             error: {
-              code: "POSTGRES_UNAVAILABLE",
-              message: "PostgreSQL not available. Set DATABASE_URL environment variable " +
-                "and ensure the MCP server was started with it. " +
-                "Use dryRun: true to preview DDL without execution.",
+              code: "DDL_EXECUTION_ERROR",
+              message: result.error || "Failed to execute DDL",
             },
           })
         }
-
-        // 5. Execute DDL statements
-        const executor = getPostgresExecutor()
-        if (!executor) {
-          return JSON.stringify({
-            ok: false,
-            error: {
-              code: "EXECUTOR_NOT_FOUND",
-              message: "PostgreSQL executor not available despite initialization.",
-            },
-          })
-        }
-
-        // Execute all statements
-        await executor.executeMany(statements)
 
         return JSON.stringify({
           ok: true,
           dryRun: false,
           schemaName,
-          statements,
-          statementCount: statements.length,
-          executed: true,
-          message: `Successfully executed ${statements.length} DDL statement(s) for schema '${schemaName}'`,
+          statements: result.statements,
+          statementCount: result.statements.length,
+          executed: result.executed,
+          message: `Successfully executed ${result.executed} DDL statement(s) for schema '${schemaName}'`,
         })
       } catch (error: any) {
         return JSON.stringify({

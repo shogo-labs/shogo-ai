@@ -18,16 +18,19 @@ import {
   resetMetaStore,
   clearRuntimeStores,
   createBackendRegistry,
-  BunSqlExecutor,
   getRuntimeStore,
   SqlBackend,
   NullPersistence,
 } from "@shogo/state-api"
+import { BunSqlExecutor } from "@shogo/state-api/query/execution/bun-sql"
 import { Database } from "bun:sqlite"
 import type { IEnvironment } from "@shogo/state-api"
 
 // Import the actual executeStoreQuery function to test
 import { executeStoreQuery } from "../store.query"
+
+// Use temp directory for test workspace to avoid affecting repo files
+const TEST_WORKSPACE = "/tmp/mcp-test-schemas"
 
 describe("store.query Tool", () => {
   let testDb: Database
@@ -41,8 +44,9 @@ describe("store.query Tool", () => {
     testDb = new Database(":memory:")
 
     // Create test table with snake_case columns (as DDL would create)
+    // Use namespace prefix (task-schema -> task_schema)
     testDb.run(`
-      CREATE TABLE task (
+      CREATE TABLE task_schema__task (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         status TEXT DEFAULT 'pending',
@@ -97,11 +101,11 @@ describe("store.query Tool", () => {
       name: "task-schema",
     })
 
-    // Load schema to create runtime store
-    await metaStore.loadSchema(schemaEntity.name)
+    // Load schema to create runtime store (with test workspace for cache key consistency)
+    await metaStore.loadSchema(schemaEntity.name, TEST_WORKSPACE)
 
     // Insert test data via collection (adds to both MST and database)
-    const runtimeStore = getRuntimeStore(schemaEntity.id)
+    const runtimeStore = getRuntimeStore(schemaEntity.id, TEST_WORKSPACE)
     const taskCollection = runtimeStore!.taskCollection
     await taskCollection.insertOne({ id: "1", title: "Task One", status: "pending", priority: 1, createdAt: "2024-01-01" })
     await taskCollection.insertOne({ id: "2", title: "Task Two", status: "active", priority: 2, createdAt: "2024-01-02" })
@@ -128,6 +132,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "Task",
         filter: { status: "active" },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns { ok: true, count, items }
@@ -147,6 +152,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "Task",
         filter: { priority: { $gt: 1 } },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns tasks with priority > 1
@@ -164,6 +170,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "Task",
         filter: { status: { $in: ["pending", "completed"] } },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns tasks with matching statuses
@@ -188,6 +195,7 @@ describe("store.query Tool", () => {
         filter: {
           $and: [{ status: "active" }, { priority: { $gte: 2 } }],
         },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns tasks matching all conditions
@@ -206,6 +214,7 @@ describe("store.query Tool", () => {
         filter: {
           $or: [{ status: "completed" }, { priority: 1 }],
         },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns tasks matching any condition
@@ -229,6 +238,7 @@ describe("store.query Tool", () => {
         model: "Task",
         filter: {},
         orderBy: { field: "priority", direction: "asc" },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns all tasks ordered by priority ascending
@@ -245,6 +255,7 @@ describe("store.query Tool", () => {
         model: "Task",
         filter: {},
         orderBy: { field: "createdAt", direction: "desc" },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns all tasks ordered by createdAt descending
@@ -268,6 +279,7 @@ describe("store.query Tool", () => {
         filter: {},
         orderBy: { field: "id", direction: "asc" },
         skip: 2,
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Skips first 2 tasks
@@ -288,6 +300,7 @@ describe("store.query Tool", () => {
         filter: {},
         orderBy: { field: "id", direction: "asc" },
         take: 2,
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns only first 2 tasks
@@ -308,6 +321,7 @@ describe("store.query Tool", () => {
         orderBy: { field: "id", direction: "asc" },
         skip: 1,
         take: 2,
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns page 2 (items 2-3)
@@ -331,6 +345,7 @@ describe("store.query Tool", () => {
         model: "Task",
         filter: { status: "active" },
         terminal: "toArray",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns array of items
@@ -349,6 +364,7 @@ describe("store.query Tool", () => {
         filter: { status: "active" },
         orderBy: { field: "priority", direction: "asc" },
         terminal: "first",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns single item (or empty array if not found)
@@ -366,6 +382,7 @@ describe("store.query Tool", () => {
         model: "Task",
         filter: { status: "archived" }, // No tasks with this status
         terminal: "first",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns empty array
@@ -382,6 +399,7 @@ describe("store.query Tool", () => {
         model: "Task",
         filter: { status: "active" },
         terminal: "count",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns count (not items array)
@@ -398,6 +416,7 @@ describe("store.query Tool", () => {
         model: "Task",
         filter: { status: "active" },
         terminal: "any",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns count: 1 when items exist
@@ -410,6 +429,7 @@ describe("store.query Tool", () => {
         model: "Task",
         filter: { status: "archived" },
         terminal: "any",
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns count: 0 when no items
@@ -431,6 +451,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "Task",
         filter: { id: "1" },
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returned items have camelCase keys
@@ -457,6 +478,7 @@ describe("store.query Tool", () => {
         schema: "nonexistent-schema",
         model: "Task",
         filter: {},
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns error with SCHEMA_NOT_FOUND code
@@ -473,6 +495,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "NonexistentModel",
         filter: {},
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns error with MODEL_NOT_FOUND code
@@ -500,6 +523,7 @@ describe("store.query Tool", () => {
         schema: "unloaded-schema",
         model: "Note",
         filter: {},
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns error with RUNTIME_STORE_NOT_FOUND code
@@ -519,6 +543,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "Task",
         filter: { status: "pending" },
+        workspace: TEST_WORKSPACE,
         // No terminal specified
       })
 
@@ -541,7 +566,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "Task",
         filter: {},
-        workspace: undefined, // Use default workspace
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Query executes successfully
@@ -568,6 +593,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "Task",
         ast,
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns matching items
@@ -593,6 +619,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "Task",
         ast,
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns tasks matching all conditions
@@ -617,6 +644,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "Task",
         ast,
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns tasks matching any condition
@@ -642,6 +670,7 @@ describe("store.query Tool", () => {
         model: "Task",
         ast,
         filter, // Should be ignored
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: AST condition is used (not filter)
@@ -662,6 +691,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "Task",
         ast,
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns validation error
@@ -684,6 +714,7 @@ describe("store.query Tool", () => {
         schema: "task-schema",
         model: "Task",
         ast,
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns tasks with priority > 1
@@ -709,6 +740,7 @@ describe("store.query Tool", () => {
         ast,
         orderBy: { field: "priority", direction: "desc" },
         take: 2,
+        workspace: TEST_WORKSPACE,
       })
 
       // Then: Returns top 2 by priority descending

@@ -4,6 +4,9 @@
   "format": "enhanced-json-schema",
   "createdAt": 1765197911179,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-persistence": {
+    "backend": "postgres"
+  },
   "$defs": {
     "FeatureSession": {
       "type": "object",
@@ -96,7 +99,8 @@
           "type": "string",
           "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "FeatureSession"
         },
         "name": {
           "type": "string",
@@ -139,7 +143,8 @@
           "type": "string",
           "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "FeatureSession"
         },
         "name": {
           "type": "string",
@@ -182,7 +187,8 @@
           "type": "string",
           "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "FeatureSession"
         },
         "initialAssessment": {
           "type": "string",
@@ -231,7 +237,8 @@
           "type": "string",
           "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "FeatureSession"
         },
         "name": {
           "type": "string",
@@ -283,7 +290,8 @@
           "type": "string",
           "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "FeatureSession"
         },
         "name": {
           "type": "string",
@@ -319,7 +327,8 @@
           "description": "The analysis finding that identified this point",
           "x-arktype": "AnalysisFinding",
           "x-mst-type": "maybe-reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "AnalysisFinding"
         },
         "isGenerated": {
           "type": "boolean",
@@ -350,14 +359,16 @@
           "type": "string",
           "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "FeatureSession"
         },
         "requirement": {
           "type": "string",
           "description": "Optional link to requirement for traceability",
           "x-arktype": "Requirement",
           "x-mst-type": "maybe-reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "Requirement"
         },
         "name": {
           "type": "string",
@@ -408,7 +419,8 @@
           "type": "string",
           "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "FeatureSession"
         },
         "name": {
           "type": "string",
@@ -419,14 +431,16 @@
           "description": "The integration point this task addresses",
           "x-arktype": "IntegrationPoint",
           "x-mst-type": "maybe-reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "IntegrationPoint"
         },
         "requirement": {
           "type": "string",
           "description": "Reference to Requirement for traceability",
           "x-arktype": "Requirement",
           "x-mst-type": "maybe-reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "Requirement"
         },
         "description": {
           "type": "string",
@@ -443,7 +457,8 @@
           "items": { "type": "string" },
           "x-mst-type": "reference",
           "x-reference-type": "array",
-          "x-arktype": "ImplementationTask"
+          "x-arktype": "ImplementationTask",
+          "x-reference-target": "ImplementationTask"
         },
         "status": {
           "type": "string",
@@ -479,14 +494,16 @@
           "description": "The implementation task this test validates",
           "x-arktype": "ImplementationTask",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "ImplementationTask"
         },
         "requirement": {
           "type": "string",
           "description": "Reference to Requirement for traceability",
           "x-arktype": "Requirement",
           "x-mst-type": "maybe-reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "Requirement"
         },
         "scenario": {
           "type": "string",
@@ -540,7 +557,8 @@
           "type": "string",
           "x-arktype": "FeatureSession",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "FeatureSession"
         },
         "status": {
           "type": "string",
@@ -594,14 +612,16 @@
           "description": "Reference to ImplementationRun",
           "x-arktype": "ImplementationRun",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "ImplementationRun"
         },
         "task": {
           "type": "string",
           "description": "Reference to ImplementationTask",
           "x-arktype": "ImplementationTask",
           "x-mst-type": "reference",
-          "x-reference-type": "single"
+          "x-reference-type": "single",
+          "x-reference-target": "ImplementationTask"
         },
         "status": {
           "type": "string",

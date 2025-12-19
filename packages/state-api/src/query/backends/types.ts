@@ -21,6 +21,35 @@
 
 import type { Condition } from '../ast/types'
 import type { ISqlExecutor } from '../execution/types'
+import { IQueryExecutor } from '../executors'
+
+// ============================================================================
+// DDL Execution Types
+// ============================================================================
+
+/**
+ * Options for DDL generation.
+ */
+export interface DDLGenerationOptions {
+  /** Use IF NOT EXISTS clause for tables/constraints */
+  ifNotExists?: boolean
+  /** SQL namespace for table isolation (derived from schema name) */
+  namespace?: string
+}
+
+/**
+ * Result of DDL execution.
+ */
+export interface DDLExecutionResult {
+  /** Whether execution succeeded */
+  success: boolean
+  /** SQL statements generated */
+  statements: string[]
+  /** Number of statements executed */
+  executed: number
+  /** Error message if execution failed */
+  error?: string
+}
 
 // ============================================================================
 // Backend Capabilities
@@ -246,4 +275,24 @@ export interface IBackend {
    * Used by BackendRegistry to create SqlQueryExecutor.
    */
   executor?: ISqlExecutor
+
+  /**
+   * Optional: Create a query executor for the given schema and model.
+   * Create a query executor for the given schema and model.
+   * Used by BackendRegistry to create SqlQueryExecutor.
+   */
+  createExecutor?<T>(schemaName: string, modelName: string, collection: any): IQueryExecutor<T>
+
+  /**
+   * Optional: Execute DDL statements against this backend.
+   *
+   * @param schema - Enhanced JSON Schema to create tables from
+   * @param options - DDL generation options (ifNotExists, etc.)
+   * @returns Promise resolving to execution result
+   *
+   * @remarks
+   * - SQL backends: Generate DDL using backend's dialect, execute via executor
+   * - Memory backends: No-op (returns success immediately, no tables to create)
+   */
+  executeDDL?(schema: any, options?: DDLGenerationOptions): Promise<DDLExecutionResult>
 }
