@@ -232,9 +232,8 @@ describe("SupabaseAuthService onAuthStateChange wraps Supabase listener", () => 
     })
 
     // Simulate Supabase calling the callback
-    if (supabaseCallback) {
-      supabaseCallback("SIGNED_IN", mockSupabaseSession)
-    }
+    // Use non-null assertion since the mock assigned the callback
+    supabaseCallback!("SIGNED_IN", mockSupabaseSession)
 
     expect(receivedSessions.length).toBe(1)
     expect(receivedSessions[0]?.accessToken).toBe("supabase-access-token")

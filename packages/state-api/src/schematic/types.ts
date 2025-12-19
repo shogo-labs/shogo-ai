@@ -43,10 +43,13 @@ export interface EnhancedJsonSchema {
   // Enhanced properties
   "x-arktype"?: string;
   "x-reference-type"?: "single" | "array";
+  "x-reference-target"?: string;
   "x-computed"?: boolean;
   "x-inverse"?: string;
   "x-original-name"?: string;
   "x-mst-type"?: "identifier" | "reference" | "maybe-reference";
+  "x-persistence"?: Record<string, any>;
+  "x-domain"?: string;
 }
 
 // ============================================================================

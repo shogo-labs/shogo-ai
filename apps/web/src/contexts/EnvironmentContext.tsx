@@ -32,10 +32,18 @@ import type { IEnvironment } from "@shogo/state-api"
 /**
  * Configuration for createEnvironment factory.
  *
- * Extends IEnvironment['services'] directly - takes persistence, backendRegistry,
- * auth, queryValidator as top-level fields. Adds workspace which maps to context.location.
+ * Takes services as top-level fields for a cleaner API.
+ * Adds workspace which maps to context.location.
  */
-export interface EnvironmentConfig extends IEnvironment {
+export interface EnvironmentConfig {
+  /** Required: Persistence service for data storage */
+  persistence: IEnvironment["services"]["persistence"]
+  /** Optional: Backend registry for query execution */
+  backendRegistry?: IEnvironment["services"]["backendRegistry"]
+  /** Optional: Auth service */
+  auth?: IEnvironment["services"]["auth"]
+  /** Optional: Query validator */
+  queryValidator?: IEnvironment["services"]["queryValidator"]
   /** Optional: Workspace/location for data isolation (maps to context.location) */
   workspace?: string
 }
@@ -47,7 +55,7 @@ export interface EnvironmentConfig extends IEnvironment {
 /**
  * Create an IEnvironment from configuration options.
  *
- * @param config - Environment configuration (services + workspace)
+ * @param config - Environment configuration (services as top-level fields + workspace)
  * @returns IEnvironment suitable for MST stores
  *
  * @example
@@ -60,9 +68,14 @@ export interface EnvironmentConfig extends IEnvironment {
  * ```
  */
 export function createEnvironment(config: EnvironmentConfig): IEnvironment {
-  const { workspace, services } = config
+  const { persistence, backendRegistry, auth, queryValidator, workspace } = config
   return {
-    services,
+    services: {
+      persistence,
+      backendRegistry,
+      auth,
+      queryValidator,
+    },
     context: {
       schemaName: "default",
       location: workspace,

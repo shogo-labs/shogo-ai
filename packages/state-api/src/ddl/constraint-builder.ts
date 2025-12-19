@@ -15,6 +15,7 @@
 
 import type { ForeignKeyDef } from "./types"
 import { toSnakeCase, getColumnName } from "./utils"
+import { qualifyTableName, type QualifyDialect } from "./namespace"
 
 /**
  * Infers the primary key property from an Enhanced JSON Schema model
@@ -151,7 +152,9 @@ export function inferNotNull(property: any, required: string[]): boolean {
 export function inferForeignKey(
   property: any,
   modelName: string,
-  required: string[]
+  required: string[],
+  namespace?: string,
+  dialectName?: QualifyDialect
 ): ForeignKeyDef | null {
   // Skip computed properties (inverse relationships)
   if (property["x-computed"] === true) {
@@ -183,12 +186,23 @@ export function inferForeignKey(
   // Use canonical helper for column naming (single source of truth)
   const columnName = getColumnName(property.name, target, "single")
 
-  // Use snake_case for table names (matches DDL generator and query executor)
-  const tableName = toSnakeCase(modelName)
-  const referencesTableName = toSnakeCase(target)
+  // Use snake_case for base table names
+  const baseTableName = toSnakeCase(modelName)
+  const baseReferencesTableName = toSnakeCase(target)
 
-  // Derive constraint name: fk_{table}_{column}
-  const constraintName = `fk_${tableName}_${columnName}`
+  // Apply namespace qualification if provided
+  const dialect = dialectName ?? "postgresql"
+  const tableName = namespace
+    ? qualifyTableName(namespace, baseTableName, dialect)
+    : baseTableName
+  const referencesTableName = namespace
+    ? qualifyTableName(namespace, baseReferencesTableName, dialect)
+    : baseReferencesTableName
+
+  // Derive constraint name: fk_{namespace}_{table}_{column} or fk_{table}_{column}
+  const constraintName = namespace
+    ? `fk_${namespace}_${baseTableName}_${columnName}`
+    : `fk_${baseTableName}_${columnName}`
 
   // Determine ON DELETE behavior
   const isRequired = required.includes(property.name)

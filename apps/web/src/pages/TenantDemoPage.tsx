@@ -161,7 +161,7 @@ export const TenantDemoPage = observer(function TenantDemoPage() {
     e.preventDefault()
     setError(null)
     try {
-      multiTenancy.userCollection.add({
+      await multiTenancy.userCollection.insertOne({
         id: crypto.randomUUID(),
         name: userName,
         email: userEmail,
@@ -177,7 +177,7 @@ export const TenantDemoPage = observer(function TenantDemoPage() {
     e.preventDefault()
     setError(null)
     try {
-      multiTenancy.tenantCollection.add({
+      await multiTenancy.tenantCollection.insertOne({
         id: crypto.randomUUID(),
         name: tenantName,
         sso_settings: tenantSso || undefined,
@@ -197,7 +197,7 @@ export const TenantDemoPage = observer(function TenantDemoPage() {
       return
     }
     try {
-      multiTenancy.tenantMemberCollection.add({
+      await multiTenancy.tenantMemberCollection.insertOne({
         id: crypto.randomUUID(),
         user_id: memberId,
         tenant_id: memberTenant,
@@ -219,7 +219,7 @@ export const TenantDemoPage = observer(function TenantDemoPage() {
       return
     }
     try {
-      multiTenancy.billingAccountCollection.add({
+      await multiTenancy.billingAccountCollection.insertOne({
         id: crypto.randomUUID(),
         tenant_id: billingTenant,
         stripe_customer_id: billingStripeId || undefined,
@@ -243,7 +243,7 @@ export const TenantDemoPage = observer(function TenantDemoPage() {
       return
     }
     try {
-      multiTenancy.workspaceCollection.add({
+      await multiTenancy.workspaceCollection.insertOne({
         id: crypto.randomUUID(),
         name: workspaceName,
         tenant_id: workspaceTenant,

@@ -14,7 +14,7 @@ import { Database } from "bun:sqlite"
 import { BunSqlExecutor } from "../../src/query/execution/bun-sql"
 import { teamsDomain } from "../../src/teams/domain"
 import type { IQueryable } from "../../src/composition/queryable"
-import { generateDDL, createSqliteDialect, tableDefToCreateTableSQL } from "../../src/ddl"
+import { generateDDL, createSqliteDialect, tableDefToCreateTableSQL, deriveNamespace } from "../../src/ddl"
 
 // Test utilities (to be implemented)
 import {
@@ -25,12 +25,17 @@ import {
 
 // Cache dialect instance for direct SQL tests
 const sqliteDialect = createSqliteDialect()
+// Schema name must match what createEnvironment uses
+const SCHEMA_NAME = "teams-workspace"
 
 /**
  * Create tables from Enhanced JSON Schema using DDL generator.
+ * Uses namespace for table isolation.
  */
 function createTablesFromSchema(db: Database) {
-  const ddl = generateDDL(teamsDomain.enhancedSchema, sqliteDialect)
+  // Use same namespace derivation as BackendRegistry.resolve()
+  const namespace = deriveNamespace(SCHEMA_NAME)
+  const ddl = generateDDL(teamsDomain.enhancedSchema, sqliteDialect, { namespace })
   for (const tableName of ddl.executionOrder) {
     const table = ddl.tables.find(t => t.name === tableName)
     if (table) {

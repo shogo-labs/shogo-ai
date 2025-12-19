@@ -4,7 +4,7 @@
  */
 
 import { getRoot, getSnapshot } from "mobx-state-tree"
-import type { ModelDescriptor } from "../mcp/state"
+import type { ModelDescriptor } from "./types"
 import { camelCase } from "../utils/string"
 
 export function createModelEnhancements(baseModels: any) {

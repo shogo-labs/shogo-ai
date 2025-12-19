@@ -82,16 +82,16 @@ describe("domain() -> DDL Integration", () => {
       const schema = teamsDomain.enhancedSchema
 
       // Team.organizationId -> x-reference-target: "Organization"
-      const teamOrgProp = schema.$defs.Team.properties.organizationId
+      const teamOrgProp = schema.$defs!.Team.properties.organizationId
       expect(teamOrgProp["x-reference-target"]).toBe("Organization")
       expect(teamOrgProp["x-reference-type"]).toBe("single")
 
       // Team.parentId -> x-reference-target: "Team"
-      const teamParentProp = schema.$defs.Team.properties.parentId
+      const teamParentProp = schema.$defs!.Team.properties.parentId
       expect(teamParentProp["x-reference-target"]).toBe("Team")
 
       // App.teamId -> x-reference-target: "Team"
-      const appTeamProp = schema.$defs.App.properties.teamId
+      const appTeamProp = schema.$defs!.App.properties.teamId
       expect(appTeamProp["x-reference-target"]).toBe("Team")
     })
   })

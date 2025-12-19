@@ -12,12 +12,16 @@ import { createBackendRegistry } from "../../query/registry"
 import { SqlBackend } from "../../query/backends/sql"
 import { NullPersistence } from "../../persistence/null"
 import { teamsDomain } from "../../teams/domain"
-import { generateDDL, createSqliteDialect, tableDefToCreateTableSQL } from "../../ddl"
+import { generateDDL, createSqliteDialect, tableDefToCreateTableSQL, deriveNamespace } from "../../ddl"
 
 const sqliteDialect = createSqliteDialect()
+// Schema name must match what createSqlEnvironment uses
+const SCHEMA_NAME = "teams-workspace"
 
 function createTablesFromSchema(db: Database) {
-  const ddl = generateDDL(teamsDomain.enhancedSchema, sqliteDialect)
+  // Use same namespace derivation as BackendRegistry.resolve()
+  const namespace = deriveNamespace(SCHEMA_NAME)
+  const ddl = generateDDL(teamsDomain.enhancedSchema, sqliteDialect, { namespace })
   for (const tableName of ddl.executionOrder) {
     const table = ddl.tables.find((t) => t.name === tableName)
     if (table) {
@@ -85,8 +89,8 @@ describe("domain() SQL CRUD with Column Mapping", () => {
         createdAt: Date.now(),
       })
 
-      // Verify SQL table has snake_case column
-      const result = db.prepare("SELECT organization_id FROM team WHERE id = ?").get(teamId) as any
+      // Verify SQL table has snake_case column (use namespace-prefixed table name)
+      const result = db.prepare("SELECT organization_id FROM teams_workspace__team WHERE id = ?").get(teamId) as any
       expect(result.organization_id).toBe(orgId)
     })
 
@@ -118,7 +122,7 @@ describe("domain() SQL CRUD with Column Mapping", () => {
       })
 
       // Verify both FK columns
-      const result = db.prepare("SELECT organization_id, team_id FROM membership WHERE id = ?").get(memId) as any
+      const result = db.prepare("SELECT organization_id, team_id FROM teams_workspace__membership WHERE id = ?").get(memId) as any
       expect(result.organization_id).toBe(orgId)
       expect(result.team_id).toBe(teamId)
     })
@@ -126,14 +130,14 @@ describe("domain() SQL CRUD with Column Mapping", () => {
 
   describe("SELECT normalizes snake_case to camelCase", () => {
     test("Team query returns organizationId not organization_id", async () => {
-      // Seed via raw SQL with snake_case
-      db.run("INSERT INTO organization (id, name, slug, created_at) VALUES (?, ?, ?, ?)", [
+      // Seed via raw SQL with snake_case (use namespace-prefixed table names)
+      db.run("INSERT INTO teams_workspace__organization (id, name, slug, created_at) VALUES (?, ?, ?, ?)", [
         orgId,
         "Acme",
         "acme",
         Date.now(),
       ])
-      db.run("INSERT INTO team (id, name, organization_id, created_at) VALUES (?, ?, ?, ?)", [
+      db.run("INSERT INTO teams_workspace__team (id, name, organization_id, created_at) VALUES (?, ?, ?, ?)", [
         teamId,
         "Engineering",
         orgId,
@@ -150,20 +154,20 @@ describe("domain() SQL CRUD with Column Mapping", () => {
     test("Membership query returns teamId and organizationId", async () => {
       const memId = crypto.randomUUID()
 
-      db.run("INSERT INTO organization (id, name, slug, created_at) VALUES (?, ?, ?, ?)", [
+      db.run("INSERT INTO teams_workspace__organization (id, name, slug, created_at) VALUES (?, ?, ?, ?)", [
         orgId,
         "Acme",
         "acme",
         Date.now(),
       ])
-      db.run("INSERT INTO team (id, name, organization_id, created_at) VALUES (?, ?, ?, ?)", [
+      db.run("INSERT INTO teams_workspace__team (id, name, organization_id, created_at) VALUES (?, ?, ?, ?)", [
         teamId,
         "Engineering",
         orgId,
         Date.now(),
       ])
       db.run(
-        "INSERT INTO membership (id, user_id, role, organization_id, team_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO teams_workspace__membership (id, user_id, role, organization_id, team_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         [memId, "user-alice", "admin", orgId, teamId, Date.now()]
       )
 
@@ -206,7 +210,7 @@ describe("domain() SQL CRUD with Column Mapping", () => {
       })
 
       // Verify SQL has team_id column
-      const sqlResult = db.prepare("SELECT team_id FROM team WHERE id = ?").get(childTeamId) as any
+      const sqlResult = db.prepare("SELECT team_id FROM teams_workspace__team WHERE id = ?").get(childTeamId) as any
       expect(sqlResult.team_id).toBe(parentTeamId)
 
       // Query returns parentId (camelCase)

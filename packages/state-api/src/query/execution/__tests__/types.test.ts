@@ -26,7 +26,8 @@ describe("execution-types", () => {
       const mockExecutor: ISqlExecutor = {
         execute: async ([sql, params]: [string, unknown[]]) => {
           return [] as Row[]
-        }
+        },
+        beginTransaction: async (cb) => cb({ execute: async () => [] })
       }
 
       expect(mockExecutor).toBeDefined()
@@ -39,7 +40,8 @@ describe("execution-types", () => {
           expect(sql).toBeTypeOf("string")
           expect(Array.isArray(params)).toBe(true)
           return [] as Row[]
-        }
+        },
+        beginTransaction: async (cb) => cb({ execute: async () => [] })
       }
 
       await mockExecutor.execute(["SELECT * FROM users WHERE id = $1", [1]])
@@ -49,7 +51,8 @@ describe("execution-types", () => {
       const mockExecutor: ISqlExecutor = {
         execute: async ([sql, params]: [string, unknown[]]) => {
           return [{ id: 1, name: "test" }] as Row[]
-        }
+        },
+        beginTransaction: async (cb) => cb({ execute: async () => [] })
       }
 
       const result = await mockExecutor.execute(["SELECT * FROM users", []])

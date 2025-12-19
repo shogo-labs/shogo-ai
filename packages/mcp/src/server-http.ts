@@ -1,9 +1,14 @@
 import { FastMCP } from "fastmcp"
+import { join } from "node:path"
 import { registerAllTools } from "./tools/registry"
-import { initializePostgresBackend, isPostgresAvailable } from "./postgres-init"
+import { initializePostgresBackend, isPostgresAvailable, isSqliteAvailable } from "./postgres-init"
+import { initializeDomainSchemas } from "./ddl-init"
 
 // Initialize PostgreSQL backend from DATABASE_URL (if available)
-initializePostgresBackend()
+await initializePostgresBackend()
+
+// Initialize DDL for domain schemas with postgres backend
+await initializeDomainSchemas(join(import.meta.dir, "../../../.schemas"))
 
 // Wavesmith MCP with HTTP/SSE transport
 const server = new FastMCP({
@@ -28,4 +33,4 @@ server.start({
 console.log("Wavesmith MCP HTTP server running on http://localhost:3100")
 console.log("HTTP Stream endpoint: http://localhost:3100/mcp")
 console.log("SSE endpoint: http://localhost:3100/sse")
-console.log(`PostgreSQL backend: ${isPostgresAvailable() ? "connected" : "unavailable (memory only)"}`)
+console.log(`SQL backend: ${isPostgresAvailable() ? "postgres" : isSqliteAvailable() ? "sqlite" : "memory only"}`)

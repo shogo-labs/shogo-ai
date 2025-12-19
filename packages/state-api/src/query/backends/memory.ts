@@ -32,7 +32,9 @@ import type {
   BackendCapabilities,
   QueryOptions,
   QueryResult,
-  OrderByClause
+  OrderByClause,
+  DDLGenerationOptions,
+  DDLExecutionResult
 } from './types'
 
 // ============================================================================
@@ -253,5 +255,29 @@ export class MemoryBackend implements IBackend {
    */
   private getNestedValue(obj: any, path: string): any {
     return path.split('.').reduce((current, part) => current?.[part], obj)
+  }
+
+  /**
+   * Execute DDL against memory backend (no-op).
+   *
+   * @param _schema - Schema (ignored for memory backend)
+   * @param _options - Options (ignored for memory backend)
+   * @returns Promise resolving to success with empty statements
+   *
+   * @remarks
+   * Memory backend has no persistent storage, so DDL is a no-op.
+   * Always returns success with empty statements array.
+   * This enables consistent backend interface regardless of storage type.
+   */
+  async executeDDL(
+    _schema: any,
+    _options?: DDLGenerationOptions
+  ): Promise<DDLExecutionResult> {
+    // Memory backend has no tables to create - always succeeds as no-op
+    return {
+      success: true,
+      statements: [],
+      executed: 0
+    }
   }
 }

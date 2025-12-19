@@ -15,7 +15,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { Database } from "bun:sqlite"
 import { scope } from "arktype"
 import { domain } from "../domain"
-import { generateDDL, createSqliteDialect, tableDefToCreateTableSQL } from "../../ddl"
+import { generateDDL, createSqliteDialect, tableDefToCreateTableSQL, deriveNamespace } from "../../ddl"
 import { BunSqlExecutor } from "../../query/execution/bun-sql"
 import { createBackendRegistry } from "../../query/registry"
 import { SqlBackend } from "../../query/backends/sql"
@@ -76,32 +76,33 @@ describe("domain() Full Pipeline: ArkType -> SQL Persistence", () => {
     const schema = projectDomain.enhancedSchema
 
     // Project.clientId should have x-reference-target: "Client"
-    const projectClientProp = schema.$defs.Project.properties.clientId
+    const projectClientProp = schema.$defs!.Project.properties.clientId
     expect(projectClientProp["x-reference-target"]).toBe("Client")
     expect(projectClientProp["x-reference-type"]).toBe("single")
 
     // Task.projectId should have x-reference-target: "Project"
-    const taskProjectProp = schema.$defs.Task.properties.projectId
+    const taskProjectProp = schema.$defs!.Task.properties.projectId
     expect(taskProjectProp["x-reference-target"]).toBe("Project")
 
     // Task.parentId (self-reference) should have x-reference-target: "Task"
-    const taskParentProp = schema.$defs.Task.properties.parentId
+    const taskParentProp = schema.$defs!.Task.properties.parentId
     expect(taskParentProp["x-reference-target"]).toBe("Task")
 
     // =================================================================
     // Step 4: Generate DDL and verify FK columns
     // =================================================================
-    const ddl = generateDDL(schema, sqliteDialect)
+    const namespace = deriveNamespace("project-tracker")
+    const ddl = generateDDL(schema, sqliteDialect, { namespace })
 
-    // Project table should have client_id FK column
-    const projectTable = ddl.tables.find((t) => t.name === "project")
+    // Project table should have client_id FK column (namespace-prefixed)
+    const projectTable = ddl.tables.find((t) => t.name === "project_tracker__project")
     expect(projectTable).toBeDefined()
     const clientColumn = projectTable!.columns.find((c) => c.name === "client_id")
     expect(clientColumn).toBeDefined()
     expect(clientColumn!.nullable).toBe(false) // required reference
 
     // Task table should have project_id and task_id (self-ref) FK columns
-    const taskTable = ddl.tables.find((t) => t.name === "task")
+    const taskTable = ddl.tables.find((t) => t.name === "project_tracker__task")
     expect(taskTable).toBeDefined()
     const projectColumn = taskTable!.columns.find((c) => c.name === "project_id")
     expect(projectColumn).toBeDefined()
@@ -274,12 +275,13 @@ describe("domain() Full Pipeline: ArkType -> SQL Persistence", () => {
     })
 
     // Verify x-reference-target
-    const orderProps = orderDomain.enhancedSchema.$defs.Order.properties
+    const orderProps = orderDomain.enhancedSchema.$defs!.Order.properties
     expect(orderProps.customerId["x-reference-target"]).toBe("Customer")
 
-    // Generate DDL
-    const ddl = generateDDL(orderDomain.enhancedSchema, sqliteDialect)
-    const orderTable = ddl.tables.find((t) => t.name === "order")
+    // Generate DDL with namespace
+    const namespace = deriveNamespace("order-system")
+    const ddl = generateDDL(orderDomain.enhancedSchema, sqliteDialect, { namespace })
+    const orderTable = ddl.tables.find((t) => t.name === "order_system__order")
     const customerColumn = orderTable!.columns.find((c) => c.name === "customer_id")
     expect(customerColumn!.nullable).toBe(true) // optional = nullable
 

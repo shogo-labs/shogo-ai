@@ -1,9 +1,0 @@
-{
-  "id": "tw-req-007",
-  "name": "audit-logging",
-  "description": "Audit logging for membership changes, permission modifications, and sensitive org actions",
-  "priority": "should",
-  "status": "proposed",
-  "session": "teams-001",
-  "createdAt": 1733700700000
-}

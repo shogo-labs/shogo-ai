@@ -95,7 +95,7 @@ describeWithPostgres("teamsDomain PostgreSQL E2E Integration", () => {
 
     for (const [sql, params] of cleanupQueries) {
       try {
-        await executor.execute([sql, params as any[]])
+        await executor.execute([sql as string, params as any[]])
       } catch {
         // Ignore cleanup errors
       }
@@ -164,7 +164,7 @@ describeWithPostgres("teamsDomain PostgreSQL E2E Integration", () => {
         .toArray()
 
       expect(teams.length).toBeGreaterThanOrEqual(1)
-      expect(teams.some(t => t.id === testIds.team)).toBe(true)
+      expect(teams.some((t: any) => t.id === testIds.team)).toBe(true)
     })
 
     test("self-reference parentId works for nested teams", async () => {
@@ -225,7 +225,7 @@ describeWithPostgres("teamsDomain PostgreSQL E2E Integration", () => {
         .where({ role: "owner" })
         .toArray()
 
-      expect(owners.some(m => m.id === testIds.membership)).toBe(true)
+      expect(owners.some((m: any) => m.id === testIds.membership)).toBe(true)
     })
   })
 
@@ -249,7 +249,7 @@ describeWithPostgres("teamsDomain PostgreSQL E2E Integration", () => {
         .where({ teamId: testIds.team })
         .toArray()
 
-      expect(apps.some(a => a.id === testIds.app)).toBe(true)
+      expect(apps.some((a: any) => a.id === testIds.app)).toBe(true)
     })
   })
 
@@ -284,7 +284,7 @@ describeWithPostgres("teamsDomain PostgreSQL E2E Integration", () => {
         .where({ status: "accepted" })
         .toArray()
 
-      expect(accepted.some(i => i.id === testIds.invitation)).toBe(true)
+      expect(accepted.some((i: any) => i.id === testIds.invitation)).toBe(true)
     })
   })
 

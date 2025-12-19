@@ -4,7 +4,7 @@
  */
 
 import { getRoot } from "mobx-state-tree"
-import type { ModelDescriptor } from "../mcp/state"
+import type { ModelDescriptor } from "./types"
 import { getRuntimeStore } from "./runtime-store-cache"
 
 export function createSchemaEnhancements(baseModels: any) {
