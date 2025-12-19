@@ -67,12 +67,14 @@
         "organizationId": {
           "type": "string",
           "x-arktype": "Organization",
+          "x-reference-target": "Organization",
           "x-mst-type": "reference",
           "x-reference-type": "single"
         },
         "parentId": {
           "type": "string",
           "x-arktype": "Team",
+          "x-reference-target": "Team",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single"
         },
@@ -117,12 +119,14 @@
         "organizationId": {
           "type": "string",
           "x-arktype": "Organization",
+          "x-reference-target": "Organization",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single"
         },
         "teamId": {
           "type": "string",
           "x-arktype": "Team",
+          "x-reference-target": "Team",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single"
         },
@@ -161,6 +165,7 @@
         "teamId": {
           "type": "string",
           "x-arktype": "Team",
+          "x-reference-target": "Team",
           "x-mst-type": "reference",
           "x-reference-type": "single"
         },
@@ -205,12 +210,14 @@
         "organizationId": {
           "type": "string",
           "x-arktype": "Organization",
+          "x-reference-target": "Organization",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single"
         },
         "teamId": {
           "type": "string",
           "x-arktype": "Team",
+          "x-reference-target": "Team",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single"
         },

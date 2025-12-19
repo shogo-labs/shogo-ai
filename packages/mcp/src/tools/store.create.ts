@@ -16,6 +16,7 @@ import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
 import { getSnapshot } from "mobx-state-tree"
 import { getMetaStore, getRuntimeStore } from "@shogo/state-api"
+import { getEffectiveWorkspace } from "../state"
 
 // ============================================================================
 // Type Definitions
@@ -78,10 +79,15 @@ export async function executeStoreCreate(
 ): Promise<StoreCreateResult> {
   const { schema, model, data, workspace } = args
 
+  // Normalize workspace to match schema.load caching behavior
+  const effectiveWorkspace = getEffectiveWorkspace(workspace)
+  console.log('[store.create] workspace:', workspace, '-> effectiveWorkspace:', effectiveWorkspace)
+
   try {
     // 1. Find schema in meta-store
     const metaStore = getMetaStore()
     const schemaEntity = metaStore.findSchemaByName(schema)
+    console.log('[store.create] schemaEntity:', schemaEntity?.id, 'for schema:', schema)
 
     if (!schemaEntity) {
       return {
@@ -107,13 +113,15 @@ export async function executeStoreCreate(
     }
 
     // 3. Get runtime store from cache (workspace-aware caching)
-    const runtimeStore = getRuntimeStore(schemaEntity.id, workspace)
+    console.log('[store.create] Getting runtime store for schema:', schemaEntity.id, 'with workspace:', effectiveWorkspace)
+    const runtimeStore = getRuntimeStore(schemaEntity.id, effectiveWorkspace)
+    console.log('[store.create] Runtime store found:', !!runtimeStore)
     if (!runtimeStore) {
       return {
         ok: false,
         error: {
           code: "RUNTIME_STORE_NOT_FOUND",
-          message: `Runtime store not found for schema ${schemaEntity.id}`
+          message: `Runtime store not found for schema ${schemaEntity.id}. Call schema.load first with workspace=${effectiveWorkspace}`
         }
       }
     }

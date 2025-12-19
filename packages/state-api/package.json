@@ -6,7 +6,18 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./query/execution/bun-postgres": {
+      "import": "./src/query/execution/bun-postgres.ts",
+      "types": "./src/query/execution/bun-postgres.ts"
+    },
+    "./query/execution/bun-sql": {
+      "import": "./src/query/execution/bun-sql.ts",
+      "types": "./src/query/execution/bun-sql.ts"
+    }
   },
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target node && tsc --emitDeclarationOnly --outDir dist",

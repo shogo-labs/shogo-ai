@@ -72,6 +72,7 @@ export function registerSchemaLoad(server: FastMCP) {
         const runtimeStore = createStore(env)
 
         // 6. Cache runtime store (with workspace for proper isolation)
+        console.log('[schema.load] Caching runtime store for schema:', schema.id, 'with workspace:', effectiveWorkspace)
         cacheRuntimeStore(schema.id, runtimeStore, effectiveWorkspace)
 
         // 7. Build response using schema views

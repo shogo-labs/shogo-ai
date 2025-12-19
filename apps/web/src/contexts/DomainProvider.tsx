@@ -126,7 +126,8 @@ export function DomainProvider<T extends DomainsMap>({
         }
       }
 
-      // Then load persisted data for each store
+      // Then load persisted data for each store using query() API
+      // This uses the backend registry (PostgreSQL) and auto-syncs to MST
       for (const [key, store] of Object.entries(stores)) {
         try {
           // Find all collections (properties ending with "Collection")
@@ -136,8 +137,11 @@ export function DomainProvider<T extends DomainsMap>({
 
           for (const collectionName of collectionNames) {
             const collection = store[collectionName]
-            if (collection?.loadAll && typeof collection.loadAll === "function") {
-              await collection.loadAll()
+            // Use query().toArray() which routes through backendRegistry
+            // Remote executors auto-sync results to MST via syncFromRemote callback
+            if (collection?.query && typeof collection.query === "function") {
+              const items = await collection.query().toArray()
+              console.log(`[DomainProvider] Loaded ${items.length} items into ${collectionName}`)
             }
           }
         } catch (err) {

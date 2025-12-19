@@ -17,6 +17,7 @@ import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
 import { getMetaStore, getRuntimeStore, deserializeCondition } from "@shogo/state-api"
 import type { SerializedCondition } from "@shogo/state-api"
+import { getEffectiveWorkspace } from "../state"
 
 // ============================================================================
 // Helper Functions
@@ -134,6 +135,9 @@ export async function executeStoreQuery(
     workspace,
   } = args
 
+  // Normalize workspace to match schema.load caching behavior
+  const effectiveWorkspace = getEffectiveWorkspace(workspace)
+
   try {
     // 1. Find schema in meta-store
     const metaStore = getMetaStore()
@@ -163,7 +167,7 @@ export async function executeStoreQuery(
     }
 
     // 3. Get runtime store from cache (workspace-aware caching)
-    const runtimeStore = getRuntimeStore(schemaEntity.id, workspace)
+    const runtimeStore = getRuntimeStore(schemaEntity.id, effectiveWorkspace)
 
     if (!runtimeStore) {
       return {

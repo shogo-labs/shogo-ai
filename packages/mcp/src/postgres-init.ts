@@ -18,13 +18,16 @@
  */
 
 import {
-  BunPostgresExecutor,
-  type BunPostgresExecutorOptions,
   createBackendRegistry,
   type IBackendRegistry,
   SqlBackend,
   MemoryBackend,
 } from "@shogo/state-api"
+// Server-only executor - import directly to avoid browser bundle issues
+import {
+  BunPostgresExecutor,
+  type BunPostgresExecutorOptions,
+} from "@shogo/state-api/query/execution/bun-postgres"
 
 // ============================================================================
 // Singleton State
