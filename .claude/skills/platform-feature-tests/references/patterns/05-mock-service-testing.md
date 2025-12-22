@@ -244,8 +244,8 @@ Understanding when to use mocks vs real implementations is critical for proper t
 
 | Feature Type | Unit Test Setup | Proof-of-Work Setup |
 |--------------|-----------------|---------------------|
-| External Service | `MockService` + `NullPersistence` | Real provider + `MCPPersistence` |
-| Internal Domain | `NullPersistence` only | `MCPPersistence` (browser demos) |
+| External Service | `MockService` + `backendRegistry: memory` | Real provider + `backendRegistry: postgres` |
+| Internal Domain | `backendRegistry: memory` only | `backendRegistry: postgres` (browser demos) |
 
 ### Key Principle
 

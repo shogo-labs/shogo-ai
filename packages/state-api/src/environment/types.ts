@@ -16,6 +16,8 @@ import type { IPersistenceService } from '../persistence/types'
 import type { IAuthService } from '../auth/types'
 import type { IBackendRegistry } from '../query/registry'
 import type { IQueryValidator } from '../query/validation/types'
+import type { ColumnPropertyMap, PropertyTypeMap } from '../query/execution/utils'
+import type { ArrayReferenceMaps } from '../ddl/utils'
 
 /**
  * Environment structure for runtime MST stores.
@@ -201,6 +203,36 @@ export interface IEnvironment {
      * that should work for any use case (not just app-builder).
      */
     location?: string
+
+    /**
+     * Pre-computed column-to-property maps by model name.
+     *
+     * Injected by domain().createStore() to enable SQL backends to correctly
+     * map snake_case column names back to camelCase property names.
+     *
+     * Optional - only needed for SQL backends via domain().createStore().
+     */
+    columnPropertyMaps?: Record<string, ColumnPropertyMap>
+
+    /**
+     * Pre-computed property type maps by model name.
+     *
+     * Injected by domain().createStore() to enable dialect-specific
+     * type conversions (e.g., boolean to 0/1 for SQLite).
+     *
+     * Optional - only needed for SQL backends via domain().createStore().
+     */
+    propertyTypeMaps?: Record<string, PropertyTypeMap>
+
+    /**
+     * Pre-computed array reference metadata maps by model name.
+     *
+     * Injected by domain().createStore() to enable SqlQueryExecutor
+     * to hydrate array references from junction tables.
+     *
+     * Optional - only needed for schemas with array references.
+     */
+    arrayReferenceMaps?: ArrayReferenceMaps
   }
 }
 

@@ -31,11 +31,31 @@ Transform integration points into implementation tasks with acceptance criteria.
 
 ```javascript
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
-requirements = store.list("Requirement", "platform-features", { session: session.id })
-findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
-integrationPoints = store.list("IntegrationPoint", "platform-features", { session: session.id })
+
+session = store.query({
+  model: "FeatureSession",
+  schema: "platform-features",
+  filter: { name: "..." },
+  terminal: "first"
+})
+
+requirements = store.query({
+  model: "Requirement",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+findings = store.query({
+  model: "AnalysisFinding",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+integrationPoints = store.query({
+  model: "IntegrationPoint",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
 ```
 
 Present summary:
@@ -56,10 +76,12 @@ Ready to create implementation tasks?
 
 | Archetype | MUST have | MUST NOT have |
 |-----------|-----------|---------------|
-| Domain | enhancement-hooks, collection-persistable | service-interface |
+| Domain | enhancement-hooks | service-interface |
 | Service | service-interface, mock-testing, environment-extension | (none) |
 | Hybrid | All of above | (none) |
 | Infrastructure | service-interface, mixin-composition | enhancement-hooks |
+
+**Note**: Persistence is automatic via the SQL backend - no manual `collection-persistable` pattern needed.
 
 **If pattern mismatch detected:**
 ```
@@ -384,8 +406,8 @@ store.create("ImplementationTask", "platform-features", {
     "enhancements.rootStore adds domain actions and views",
     "All hooks spread base: { ...models, EnhancedModel: models.Model.views(...) }",
 
-    // Persistence (auto-composed)
-    "CollectionPersistable auto-composed (do NOT manually compose)",
+    // Persistence (auto-included via SQL backend)
+    "Persistence methods (insertOne, updateOne, deleteOne, query) auto-included via domain() API",
 
     // Reference integrity (REQUIRED)
     "Tests verify reference fields resolve to entity instances (not just ID strings)",
@@ -401,7 +423,7 @@ store.create("ImplementationTask", "platform-features", {
 - ❌ "Create {Domain}Mixin" task → would create mixin.ts with hand-coded MST
 - ❌ "Create enhancement hooks" task → would create separate hooks.ts
 - ❌ "Create {Domain}Context" task → DomainProvider handles React integration
-- ❌ Manual CollectionPersistable composition → auto-composed by domain()
+- ❌ Manual persistence composition → persistence auto-included via domain()
 - ❌ Factory function export (`createXStore`) → export named domain result (`xDomain`)
 
 **Single domain.ts contains:**
@@ -438,8 +460,8 @@ store.create("ImplementationTask", "platform-features", {
     "Includes loading states and error handling",
 
     // Persistence
-    "Uses MCPPersistence for client-side persistence (NOT NullPersistence)",
-    "Data survives page refresh (proves MCP → Wavesmith → disk pipeline)",
+    "Domain uses SQL backend (postgres/sqlite) configured via x-persistence.backend",
+    "Data survives page refresh (proves persistence to database)",
 
     // Routing
     "Accessible at /{feature}-demo route"
@@ -452,13 +474,14 @@ store.create("ImplementationTask", "platform-features", {
 
 **When required**: All features should include this task. For Service/Hybrid archetypes, include real service credentials proof. For Domain archetype, prove local persistence works end-to-end.
 
-**Persistence layer by context:**
+**Persistence backend:**
 
-| Context | Persistence | Reason |
-|---------|-------------|--------|
-| Client-side demos (apps/web) | MCPPersistence | No direct filesystem; proves MCP integration |
-| Server/CLI contexts | FilesystemPersistence | Direct fs access available |
-| Unit tests | NullPersistence | Fast, isolated, no side effects |
+All contexts use the same SQL backend abstraction. The system automatically selects the appropriate backend:
+- PostgreSQL (default, if available)
+- SQLite (durable fallback)
+- SQLite in-memory (final fallback)
+
+Configure via `x-persistence.backend: "postgres"` in schema root.
 
 ## References
 

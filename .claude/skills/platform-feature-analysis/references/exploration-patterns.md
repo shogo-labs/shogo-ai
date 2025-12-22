@@ -58,10 +58,11 @@ src/
 **Patterns to look for**:
 - Schema-to-MST transformation pipeline
 - Meta-registry patterns
-- Persistence provider interface
-- Collection mixins
+- Query execution layer (SQL backend abstraction)
+- DDL generation from schemas
 - **Service interface pattern** - `I{Domain}Service` in `types.ts`
-- **Domain store pattern** - `createStoreFromScope` in `domain.ts`
+- **Domain store pattern** - `domain()` API in `domain.ts`
+- **Persistence config** - `x-persistence.backend: "postgres"` in schema.json
 
 **Key files**:
 ```
@@ -72,9 +73,11 @@ src/
 ├── meta/
 │   ├── meta-registry.ts    # Schema introspection
 │   └── meta-store.ts       # Meta-store factory
-└── persistence/
-    ├── types.ts            # Provider interface
-    └── filesystem.ts       # FS implementation
+├── query/
+│   ├── backends/           # Memory, SQL backend implementations
+│   └── registry.ts         # Backend resolution
+└── ddl/
+    └── index.ts            # SQL DDL generation from schema
 ```
 
 **Test patterns**: `tests/*.test.ts` - Integration tests with real schemas

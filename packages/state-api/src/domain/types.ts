@@ -74,6 +74,20 @@ export interface DomainConfig {
    * @default true
    */
   persistence?: boolean
+
+  /**
+   * Auto-compose CollectionQueryable on all collections.
+   * Enables .query() method for IQueryable builder pattern.
+   * @default true
+   */
+  queryable?: boolean
+
+  /**
+   * Auto-compose CollectionMutatable on all collections.
+   * Enables insertOne, updateOne, deleteOne with backend writes.
+   * @default true
+   */
+  mutatable?: boolean
 }
 
 /**

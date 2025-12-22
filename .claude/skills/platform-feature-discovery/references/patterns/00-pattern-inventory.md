@@ -223,17 +223,27 @@ User.company (persisted) ←→ Company.employees (computed from User.company)
 
 #### Pattern 12: Collection Persistence
 
-**Methods added by CollectionPersistable mixin**:
-- `loadAll()` - Load entire collection
-- `loadById(id)` - Load single entity
-- `saveAll()` - Save entire collection
-- `saveOne(id)` - Save single entity
+**Mutation methods** (SQL backends handle persistence automatically):
+- `insertOne(data)` - Insert single entity, returns created entity
+- `insertMany(data[])` - Insert multiple entities
+- `updateOne(id, changes)` - Update single entity by ID
+- `updateMany(filter, changes)` - Update all matching entities
+- `deleteOne(id)` - Delete single entity by ID
+- `deleteMany(filter)` - Delete all matching entities
 
-#### Pattern 13: Multi-Domain Composition
+**Query methods**:
+- `query()` - Fluent query builder with MongoDB-style filters
+- Supports: `.where()`, `.orderBy()`, `.skip()`, `.take()`, `.first()`, `.toArray()`
 
-**Input**: `createStoreFromScope({ auth: AuthDomain, inventory: InventoryDomain })`
+#### Pattern 13: Domain Store Creation
 
-**Result**: Namespaced collections (`store.auth.userCollection`, `store.inventory.productCollection`)
+**Input**: Use the `domain()` API for each domain:
+```typescript
+export const authDomain = domain({ name: 'auth', from: AuthDomain, enhancements: {...} })
+export const inventoryDomain = domain({ name: 'inventory', from: InventoryDomain, enhancements: {...} })
+```
+
+**Result**: Each domain has its own store with collections (e.g., `authDomain.store.userCollection`)
 
 ---
 
@@ -247,11 +257,11 @@ User.company (persisted) ←→ Company.employees (computed from User.company)
 - Custom hook (`useAuthStore()`)
 - `observer()` wrapper for reactive components
 
-#### Pattern 15: Mixin Composition
+#### Pattern 15: Collection Behaviors
 
-**Usage**: `types.compose(BaseCollection, CollectionPersistable).named('MyCollection')`
+Collections automatically include persistence, query, and mutation capabilities via the `domain()` API. Manual mixin composition is no longer needed for standard use cases.
 
-**Available mixins**: CollectionPersistable (others TBD: cacheable, auditable, versioned)
+**Auto-included behaviors**: Persistence (SQL backends), Query (MongoDB-style), Mutations (insertOne/Many, etc.)
 
 #### Pattern 16: View System
 

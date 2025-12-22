@@ -67,17 +67,51 @@ This skill operates in two modes based on user request:
 ```javascript
 // Load session context and all implementation artifacts
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
-requirements = store.list("Requirement", "platform-features", { session: session.id })
-tasks = store.list("ImplementationTask", "platform-features", { session: session.id })
-testSpecs = store.list("TestSpecification", "platform-features", { task: tasks.map(t => t.id) })
-integrationPoints = store.list("IntegrationPoint", "platform-features", { session: session.id })
-findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
+
+session = store.query({
+  model: "FeatureSession",
+  schema: "platform-features",
+  filter: { name: "..." },
+  terminal: "first"
+})
+
+requirements = store.query({
+  model: "Requirement",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+tasks = store.query({
+  model: "ImplementationTask",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+testSpecs = store.query({
+  model: "TestSpecification",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+integrationPoints = store.query({
+  model: "IntegrationPoint",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+findings = store.query({
+  model: "AnalysisFinding",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
 
 // Load domain schema if exists
 if (session.schemaName) {
   schema.load(session.schemaName)
+
+  // Execute DDL to ensure database tables exist
+  // Required before store.create operations will work
+  ddl.execute({ schemaName: session.schemaName })
 }
 ```
 
@@ -106,10 +140,12 @@ Ready to begin implementation?
 
 **Check for existing run:**
 ```javascript
-const existingRun = store.list("ImplementationRun", "platform-features", {
-  session: session.id,
-  status: "in_progress"
-})[0]
+const existingRun = store.query({
+  model: "ImplementationRun",
+  schema: "platform-features",
+  filter: { session: session.id, status: "in_progress" },
+  terminal: "first"
+})
 
 if (existingRun) {
   // Resume capability
@@ -199,11 +235,11 @@ Proceed with parallel execution? (yes/no)
 **NEVER hand-code MST models.** Always use the schematic pipeline:
 
 1. Domain entities defined in ArkType scope (translate from design phase schema)
-2. `domain()` generates MST models + collections + root store with auto-composed CollectionPersistable
+2. `domain()` generates MST models + collections + root store with auto-included persistence methods
 3. Enhancements add domain behavior:
    - `models`: Computed views on entities
    - `collections`: Query methods
-   - `rootStore`: Domain actions, CRUD operations
+   - `rootStore`: Domain actions using `insertOne()`, `updateOne()`, `deleteOne()`
 
 ### The domain.ts Pattern
 
@@ -221,12 +257,13 @@ See [domain-pattern.md](references/domain-pattern.md) for the full template and 
 ❌ Don't use `types.model()` directly for domain entities
 ❌ Don't create standalone `hooks.ts` applied to manual models
 ❌ Don't define MST models inline in React contexts
-❌ Don't manually compose CollectionPersistable (it's auto-composed)
+❌ Don't manually compose persistence (it's auto-included via `domain()`)
 ❌ Don't create custom context/provider per domain (use DomainProvider)
 
 ✅ Always use `domain()` with inline enhancements
 ✅ Let the schematic pipeline generate MST boilerplate
 ✅ Add behavior via enhancements, not manual composition
+✅ Use `insertOne()`, `updateOne()`, `deleteOne()` for persistence
 ✅ Use `useDomains()` hook for React access
 
 ---
@@ -490,18 +527,17 @@ list_network_requests // Should show calls to real endpoints (not localhost mock
 **Internal Domain Features** (workspace management, project tracking, etc.):
 
 ```javascript
-// Use evaluate_script to verify real persistence
-evaluate_script: "window.__persistence?.constructor?.name !== 'NullPersistence'"
+// Use evaluate_script to verify persistence works
+evaluate_script: "typeof window.__store?.productCollection?.insertOne === 'function'"
 ```
 
 1. Page renders without errors
-2. Real persistence service (`MCPPersistence` for browser-side demos)
-3. **NOT** `NullPersistence` (mocks are for unit tests only)
-4. Data round-trips through save/load cycle:
+2. SQL backend configured (postgres/sqlite) via `x-persistence.backend`
+3. Data round-trips through create/query cycle:
    - Create entity via UI (`click`, `fill_form`)
    - `navigate_page` to same URL (refresh)
    - `wait_for` entity still visible
-5. CRUD operations persist to disk and reload correctly
+4. CRUD operations persist to database and reload correctly
 
 **Step 4: Interaction Verification**
 
@@ -547,12 +583,12 @@ Repeat Steps 2-4 against the preview server to catch build-only issues.
 
 | Context | Persistence | Service Layer | Verification |
 |---------|-------------|---------------|--------------|
-| Unit tests | `NullPersistence` | `MockService` | `bun test` |
-| Proof-of-work | `MCPPersistence` (browser) | Real provider | Chrome DevTools MCP |
+| Unit tests | In-memory (isolated) | `MockService` | `bun test` |
+| Proof-of-work | SQL backend (postgres/sqlite) | Real provider | Chrome DevTools MCP |
 
-**What NullPersistence is for:**
-- Unit tests only (fast, isolated, no file I/O)
-- **Never** in proof-of-work pages
+**Unit test isolation:**
+- Tests use in-memory store (no database I/O)
+- Fast, isolated, deterministic
 - **Never** for validating feature integration
 
 **If Browser Tests Fail**
@@ -628,9 +664,19 @@ This mode is triggered when:
 ```javascript
 // Load session context
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
-tasks = store.list("ImplementationTask", "platform-features", { session: session.id })
+
+session = store.query({
+  model: "FeatureSession",
+  schema: "platform-features",
+  filter: { name: "..." },
+  terminal: "first"
+})
+
+tasks = store.query({
+  model: "ImplementationTask",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
 
 // Identify which task to execute
 // Extract task ID from user request or agent instruction
@@ -644,12 +690,18 @@ if (!task) {
 }
 
 // Load related entities for this task only
-const testSpecs = store.list("TestSpecification", "platform-features", {
-  task: task.id
+const testSpecs = store.query({
+  model: "TestSpecification",
+  schema: "platform-features",
+  filter: { task: task.id }
 })
-const integrationPoint = store.list("IntegrationPoint", "platform-features", {
-  task: task.id
-})[0]
+
+const integrationPoint = store.query({
+  model: "IntegrationPoint",
+  schema: "platform-features",
+  filter: { task: task.id },
+  terminal: "first"
+})
 ```
 
 Present task context:
@@ -965,10 +1017,12 @@ Simply complete the task and exit. The orchestrator will:
 The skill can resume from any point using `ImplementationRun` state:
 
 ```javascript
-const existingRun = store.list("ImplementationRun", "platform-features", {
-  session: session.id,
-  status: "in_progress"
-})[0]
+const existingRun = store.query({
+  model: "ImplementationRun",
+  schema: "platform-features",
+  filter: { session: session.id, status: "in_progress" },
+  terminal: "first"
+})
 
 if (existingRun) {
   const completedIds = new Set(existingRun.completedTasks)

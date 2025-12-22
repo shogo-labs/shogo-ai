@@ -28,7 +28,11 @@ Transform discovery requirements into Enhanced JSON Schema for Wavesmith, inform
 3. Load associated Requirements
 4. **Check for Analysis Findings**:
    ```javascript
-   findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
+   findings = store.query({
+     model: "AnalysisFinding",
+     schema: "platform-features",
+     filter: { session: session.id }
+   })
    ```
 5. Present summary:
    ```
@@ -72,7 +76,7 @@ All domain entities use the collection pattern. What might seem like a "singleto
 ```json
 "AppSettings": {
   "properties": {
-    "id": { "type": "string", "x-mst-type": "identifier" },
+    "id": { "type": "string", "x-mst-type": "identifier", "format": "uuid" },
     "theme": { "type": "string", "enum": ["light", "dark"] },
     "locale": { "type": "string" }
   }
@@ -128,7 +132,7 @@ External services own their data. We don't duplicate it. But we DO need local st
 ```json
 "WeatherReading": {
   "properties": {
-    "id": { "type": "string", "x-mst-type": "identifier" },
+    "id": { "type": "string", "x-mst-type": "identifier", "format": "uuid" },
     "locationId": { "type": "string", "description": "External weather API location" },
     "temperatureCelsius": { "type": "number" },
     "conditions": { "type": "string" },
@@ -219,43 +223,6 @@ Relationships:
 Does this capture the domain correctly?
 ```
 
-### Phase 2a: Persistence Layout Inference
-
-**Automatically apply persistence config based on entity relationships.**
-
-For each entity, apply these rules:
-
-| Condition | `nested` value | Rationale |
-|-----------|----------------|-----------|
-| Has required single reference | `true` | Child nests under parent |
-| All references optional/polymorphic | `false` | Cannot determine parent path |
-| No parent references | `false` | Root entity |
-| Has optional self-reference | No additional nesting | Logical hierarchy only (e.g., Team→Team) |
-
-**Inference algorithm:**
-1. Identify all entities with `x-reference-type: "single"` fields
-2. For each entity:
-   - If any single ref is REQUIRED (`x-mst-type: "reference"`) → `nested: true`
-   - If all single refs are OPTIONAL (`x-mst-type: "maybe-reference"`) → `nested: false`
-   - If no single refs → `nested: false` (root entity)
-3. Set `displayKey` to first human-readable field (name, title, slug, or id)
-
-**Self-reference handling:**
-Optional self-references (e.g., Team.parentId → Team for sub-teams) represent **logical hierarchy**, not physical storage hierarchy. They do NOT add nesting levels.
-
-Example: Team nests under Organization (required ref), but sub-teams stay flat within the Team collection:
-```
-Organization/
-└── acme-corp/
-    ├── _index.json
-    └── Team/
-        ├── engineering.json     (parentId: null)
-        ├── platform.json        (parentId: engineering)
-        └── qa.json              (parentId: engineering)
-```
-
-**Always output explicit config** — every entity gets `nested: true` or `nested: false`, never implicit.
-
 ### Phase 3: Schema Generation + Coverage + Validation
 
 **Autonomous phase** - Generate schema, verify coverage, validate structure.
@@ -277,33 +244,17 @@ When designing entities, consider how they'll flow through the schematic pipelin
 3. If gaps found, extend schema (add fields, entities, or relationships)
 4. Add status/error fields to primary entities if processing workflows exist
 5. **Validate all reference fields** against checklist (CRITICAL - see [schema-patterns.md](references/schema-patterns.md)):
-   - [ ] Every reference has `type: "string"` + `x-arktype` + `x-reference-type` + `x-mst-type`
+   - [ ] Every reference has `type: "string"` + `x-arktype` + `x-reference-target` + `x-reference-type` + `x-mst-type`
    - [ ] Every computed array has `items.$ref` + `x-arktype` + `x-computed` + `x-inverse`
    - [ ] NO fields have spurious `enum: []`
-6. **Validate all entities** have `x-persistence` config:
-   - [ ] Root entities: `strategy: "entity-per-file"` + `displayKey`
-   - [ ] Child entities: add `nested: true`
-   - [ ] Multi-ref entities: add `partitionKey`
-7. **Persistence Configuration Audit** (before schema.set):
-
-   | Check | Criteria | Action |
-   |-------|----------|--------|
-   | Required refs nested | Entity with required single ref has `nested: true` | Flag for review |
-   | Polymorphic refs flat | Entity with all-optional refs has `nested: false` | Flag for review |
-   | Root entities flat | Entity with no parent ref has `nested: false` | Auto-correct |
-   | DisplayKey set | All entities have `displayKey` for human-readable filenames | Flag for review |
-   | Explicit nested | Every entity has explicit `nested: true` or `nested: false` | Auto-add via inference |
-
-   **Audit output format:**
+6. **Add persistence configuration** to schema root:
+   ```json
+   "x-persistence": {
+     "backend": "postgres"
+   }
    ```
-   Persistence Configuration Audit:
-   ✅ Product: root entity, nested=false, displayKey=sku
-   ✅ Warehouse: root entity, nested=false, displayKey=name
-   ✅ StockLevel: required refs (product, warehouse), nested=true, partitionKey=product
-   ⚠️ Category: required ref (parent) but nested=false — correcting to nested=true
-   ```
-
-8. Register via `schema.set`
+   Note: System automatically falls back to SQLite (durable) then memory-only SQLite if PostgreSQL unavailable.
+7. Register via `schema.set`
 
 **Coverage check format**:
 ```
@@ -316,58 +267,27 @@ When designing entities, consider how they'll flow through the schematic pipelin
 **Validation check format**:
 ```
 Reference Field Validation:
-✅ Product.category: type + x-arktype + x-reference-type + x-mst-type
-✅ StockLevel.product: type + x-arktype + x-reference-type + x-mst-type
-✅ StockLevel.warehouse: type + x-arktype + x-reference-type + x-mst-type
+✅ Product.category: type + x-arktype + x-reference-target + x-reference-type + x-mst-type
+✅ StockLevel.product: type + x-arktype + x-reference-target + x-reference-type + x-mst-type
+✅ StockLevel.warehouse: type + x-arktype + x-reference-target + x-reference-type + x-mst-type
 
-Persistence Validation:
-✅ Product: x-persistence with displayKey="sku"
-✅ Warehouse: x-persistence with displayKey="name"
-✅ StockLevel: x-persistence with nested=true, partitionKey="product"
+Persistence Configuration:
+✅ Schema root has x-persistence.backend: "postgres"
 ```
-
-### Phase 3b: Persistence Layout Review Gate
-
-**Present layout summary for human approval before proceeding to runtime testing.**
-
-```
-Persistence Layout Review
-
-Root Entities:
-- Product (displayKey: sku)
-- Warehouse (displayKey: name)
-
-Nested Under Parent:
-- StockLevel → Product (displayKey: id, partitionKey: product)
-- Category → Category (displayKey: name, self-referential hierarchy)
-
-Flat (Polymorphic):
-- (none in this schema)
-
-Resulting Disk Structure:
-.schemas/{name}/data/
-├── Product/
-│   └── {sku}/
-│       ├── _index.json
-│       └── StockLevel/
-│           └── {id}.json
-├── Warehouse/
-│   └── {name}.json
-└── Category/
-    └── {name}.json
-
-Any concerns with this layout? [Proceed] [Adjust]
-```
-
-If user chooses "Adjust", capture specific overrides before continuing.
 
 ### Phase 4: Runtime Testing (CRITICAL)
 
 **Validation checklists are NOT testing.** You MUST verify the schema actually works by executing operations.
 
 1. **Register schema** via `schema.set`
-2. **Load and test** via `schema.load` - verify MST generation succeeds
-3. **Create test entities** for EACH entity type:
+2. **Execute DDL** via `ddl.execute` to provision database tables:
+   ```javascript
+   // After schema.set, create tables in the SQL backend
+   ddl.execute({ schemaName: session.name })
+   ```
+   This generates and runs CREATE TABLE statements based on the schema. Required before store operations will work.
+3. **Load and test** via `schema.load` - verify MST generation succeeds
+4. **Create test entities** for EACH entity type:
    ```javascript
    // Test each entity type - failures here reveal schema issues
    schema.load(session.name)
@@ -386,23 +306,28 @@ If user chooses "Adjust", capture specific overrides before continuing.
      // ... required fields
    })
 
-   // Test list + filter
-   store.list("ChildEntity", session.name, { parentRef: rootEntityId })
+   // Test query + filter
+   store.query({
+     model: "ChildEntity",
+     schema: session.name,
+     filter: { parentRef: rootEntityId }
+   })
    ```
 
-4. **Verify operations succeed** - If any fail:
+5. **Verify operations succeed** - If any fail:
    - Check error message for clues
-   - Common issues: missing x-extensions, invalid nested persistence config
+   - Common issues: missing x-extensions, DDL not executed, missing x-reference-target
    - Fix schema and re-test until ALL operations pass
 
-5. **Clean up test data** or leave for inspection
+6. **Clean up test data** or leave for inspection
 
 **Common Runtime Errors and Fixes:**
 
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `A view member should either be a function or getter` | Schematic layer issue with computed views | Check x-computed arrays have correct structure |
-| `Cannot determine parent path for nested entity` | Nested persistence with all optional references | Remove `nested: true` from polymorphic entities |
+| `relation "tablename" does not exist` | DDL not executed | Run `ddl.execute({ schemaName })` after schema.set |
+| `foreign key violation` | Missing x-reference-target | Add `x-reference-target: "EntityName"` to reference fields |
 | `Reference target not found` | Missing or incorrect x-arktype | Verify x-arktype matches exact entity name |
 
 ### Phase 5: Validate & Handoff
@@ -452,10 +377,25 @@ If user chooses "Adjust", capture specific overrides before continuing.
 ```javascript
 // Phase 1: Load context
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("FeatureSession", "platform-features", { name: "auth-layer" })[0]
-requirements = store.list("Requirement", "platform-features", { session: session.id })
-findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
+
+session = store.query({
+  model: "FeatureSession",
+  schema: "platform-features",
+  filter: { name: "auth-layer" },
+  terminal: "first"
+})
+
+requirements = store.query({
+  model: "Requirement",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+findings = store.query({
+  model: "AnalysisFinding",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
 
 // Phase 3: Register schema
 schema.set({
@@ -465,6 +405,10 @@ schema.set({
 })
 
 // Phase 4: Runtime Testing (MUST DO)
+// First execute DDL to create tables
+ddl.execute({ schemaName: session.name })
+
+// Then load schema for MST generation
 schema.load(session.name)  // Should succeed if schema is valid
 
 // Test each entity type - discover issues BEFORE handoff
@@ -481,8 +425,12 @@ store.create("ChildEntity", session.name, {
   createdAt: Date.now()
 })
 
-// Test list + filter
-store.list("ChildEntity", session.name, { parentRef: testRootId })
+// Test query + filter
+store.query({
+  model: "ChildEntity",
+  schema: session.name,
+  filter: { parentRef: testRootId }
+})
 
 // Phase 5: Update session (only after tests pass)
 store.update(session.id, "FeatureSession", "platform-features", {

@@ -15,7 +15,7 @@ import type { EnhancedJsonSchema } from "../schematic/types"
 import { buildEnhanceCollections } from "../composition/enhance-collections"
 import { registerEnhancements } from "./enhancement-registry"
 import { getRuntimeStore, cacheRuntimeStore } from "../meta/runtime-store-cache"
-import { computeColumnPropertyMaps, computePropertyTypeMaps } from "../ddl/utils"
+import { computeColumnPropertyMaps, computePropertyTypeMaps, computeArrayReferenceMaps } from "../ddl/utils"
 import type { DomainConfig, DomainResult } from "./types"
 import { isScope, isEnhancedJsonSchema } from "./types"
 
@@ -37,8 +37,11 @@ export function domain(config: DomainConfig): DomainResult {
     )
   }
 
-  // Determine if persistence should be enabled (default: true)
-  const enablePersistence = config.persistence !== false
+  // Determine which collection mixins should be enabled
+  // Defaults match buildEnhanceCollections for backward compatibility
+  const enablePersistence = config.persistence !== false  // default: true
+  const enableQueryable = config.queryable !== false      // default: true
+  const enableMutatable = config.mutatable !== false      // default: true
 
   // Convert input to Enhanced JSON Schema (interchange format)
   let enhancedSchema: EnhancedJsonSchema
@@ -67,14 +70,20 @@ export function domain(config: DomainConfig): DomainResult {
     validateReferences: false,
     arkTypeScope,
     enhanceModels: config.enhancements?.models,
-    enhanceCollections: buildEnhanceCollections(config.enhancements?.collections, enablePersistence),
+    enhanceCollections: buildEnhanceCollections(
+      config.enhancements?.collections,
+      enablePersistence,
+      enableQueryable,
+      enableMutatable
+    ),
     enhanceRootStore: config.enhancements?.rootStore,
   })
 
-  // Pre-compute column property maps and property type maps for SQL backend support
+  // Pre-compute column property maps, property type maps, and array reference maps
   // This enables createStore() to work with SQL backends without meta-store registration
   const columnPropertyMaps = computeColumnPropertyMaps(enhancedSchema)
   const propertyTypeMaps = computePropertyTypeMaps(enhancedSchema)
+  const arrayReferenceMaps = computeArrayReferenceMaps(enhancedSchema)
 
   // Create the store factory (delegates to conversion result)
   const createStore = (env?: any): IAnyStateTreeNode => {
@@ -86,6 +95,7 @@ export function domain(config: DomainConfig): DomainResult {
         ...env.context,
         columnPropertyMaps,
         propertyTypeMaps,
+        arrayReferenceMaps,
       },
     } : undefined
 

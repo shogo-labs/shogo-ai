@@ -48,13 +48,22 @@ The app sets up both providers once in `App.tsx`:
 // App.tsx
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
-import { teamsDomain } from '@shogo/state-api'
+import { teamsDomain, createBackendRegistry } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
+import { MCPBackend } from './query/MCPBackend'
 import { mcpService } from './services/mcp'
+
+// Create MCP-backed backend registry for SQL query execution
+const mcpBackend = new MCPBackend(mcpService, import.meta.env.VITE_WORKSPACE)
+const backendRegistry = createBackendRegistry({
+  default: 'postgres',
+  backends: { postgres: mcpBackend }
+})
 
 // Create environment with services
 const env = createEnvironment({
-  persistence: new MCPPersistence(mcpService),
+  persistence: new MCPPersistence(mcpService),  // For schema loading
+  backendRegistry,  // For SQL query execution
   workspace: import.meta.env.VITE_WORKSPACE,
 })
 
@@ -182,8 +191,8 @@ store.create("ImplementationTask", "platform-features", {
     "Shows domain actions from enhancements.rootStore",
 
     // Persistence
-    "Data survives page refresh (loadAll hydration)",
-    "Uses MCPPersistence (NOT NullPersistence)",
+    "Data survives page refresh (SQL backend hydration via query().toArray())",
+    "Environment includes backendRegistry with MCPBackend",
 
     // Routing
     "Accessible at /{domain}-demo route"
@@ -202,7 +211,7 @@ The provider handles:
 
 1. **Store Creation**: Creates store from each domain result with environment injection
 2. **Collection Discovery**: Finds all `*Collection` properties on the root store
-3. **Auto Loading**: Calls `loadAll()` on each collection on mount
+3. **Auto Loading**: Calls `query().toArray()` on each collection on mount (uses backendRegistry)
 4. **Stable References**: Uses `useRef` to maintain single store instances
 
 ```tsx
@@ -229,16 +238,21 @@ function DomainProvider<T extends Record<string, DomainResult>>({
     }
   }
 
-  // Auto-load all collections on mount
+  // Auto-load all collections on mount using query() API
   useEffect(() => {
-    for (const store of storesRef.current!.values()) {
-      // Find all *Collection properties and call loadAll()
-      for (const key of Object.keys(store)) {
-        if (key.endsWith('Collection') && store[key].loadAll) {
-          store[key].loadAll()
+    const loadCollections = async () => {
+      for (const store of storesRef.current!.values()) {
+        // Find all *Collection properties and call query().toArray()
+        for (const key of Object.keys(store)) {
+          if (key.endsWith('Collection') && store[key].query) {
+            // query().toArray() routes through backendRegistry
+            // Results auto-sync to MST via syncFromRemote callback
+            await store[key].query().toArray()
+          }
         }
       }
     }
+    loadCollections()
   }, [])
 
   return (
@@ -296,31 +310,40 @@ const Dashboard = observer(function Dashboard() {
 })
 ```
 
-### ❌ Using NullPersistence in Demo Pages
+### ❌ Missing Backend Registry in Demo Pages
 
 ```tsx
-// BAD: Data doesn't persist
+// BAD: No query execution - data won't load/save via SQL
 const env = createEnvironment({
-  persistence: new NullPersistence(),  // Data lost on refresh!
+  persistence: new MCPPersistence(mcpService),
+  // Missing backendRegistry!
 })
 
-// GOOD: Use MCPPersistence for demos
+// GOOD: Include backendRegistry for SQL operations
+const mcpBackend = new MCPBackend(mcpService, workspace)
+const backendRegistry = createBackendRegistry({
+  default: 'postgres',
+  backends: { postgres: mcpBackend }
+})
+
 const env = createEnvironment({
-  persistence: new MCPPersistence(mcpService),  // Data survives refresh
+  persistence: new MCPPersistence(mcpService),  // For schema loading
+  backendRegistry,  // For SQL query execution
+  workspace,
 })
 ```
 
 ---
 
-## Persistence Layer by Context
+## Backend Configuration by Context
 
-| Context | Persistence | Reason |
-|---------|-------------|--------|
-| Client-side demos (`apps/web`) | `MCPPersistence` | No direct filesystem; proves MCP integration |
-| Server/CLI contexts | `FilesystemPersistence` | Direct fs access available |
-| Unit tests | `NullPersistence` | Fast, isolated, no side effects |
+| Context | Backend Registry | Reason |
+|---------|-----------------|--------|
+| Client-side demos (`apps/web`) | `MCPBackend` registered as 'postgres' | Routes SQL to MCP server |
+| Server/CLI contexts | `PostgresExecutor` or `SqliteExecutor` | Direct database access |
+| Unit tests | `createBackendRegistry({ default: 'memory' })` | Fast, isolated, in-memory |
 
-**Client demos MUST use MCPPersistence** to prove the full persistence pipeline works.
+**Client demos MUST configure backendRegistry** to prove the full SQL persistence pipeline works.
 
 ---
 
@@ -332,6 +355,6 @@ Before considering React integration complete:
 - [ ] NO custom context/provider created for this domain
 - [ ] Components use `useDomains()` hook to access store
 - [ ] Components wrapped with `observer()` for reactivity
-- [ ] Demo uses `MCPPersistence` (not `NullPersistence`)
-- [ ] Data survives page refresh (verifies persistence pipeline)
+- [ ] Environment includes `backendRegistry` (with MCPBackend for demos)
+- [ ] Data survives page refresh (verifies SQL persistence pipeline)
 - [ ] Route added for demo page (`/{domain}-demo`)

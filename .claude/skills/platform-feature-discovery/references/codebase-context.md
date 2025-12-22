@@ -22,9 +22,12 @@ shogo-ai/
 
 **Key Areas**:
 - `src/schematic/` - ArkType → Enhanced JSON Schema → MST transformation
-- `src/meta/` - Meta-store system (Schema, Model, Property entities)
-- `src/persistence/` - Isomorphic persistence (filesystem, null, custom)
-- `src/composition/` - MST mixins for collections
+- `src/meta/` - Meta-store system (Schema, Model, Property entities) and runtime introspection
+- `src/query/` - Query execution layer with pluggable backends (Memory, SQL/PostgreSQL)
+- `src/ddl/` - SQL DDL generation from Enhanced JSON Schema with dialect support
+- `src/composition/` - MST mixins for collections (queryable, persistable, mutatable)
+- `src/persistence/` - File-system persistence adapters (used for local dev/testing)
+- `src/domain/` - Domain-driven design utilities and domain definitions
 
 **When Affected**: New entity types, schema extensions, persistence changes, store behaviors
 
@@ -71,11 +74,10 @@ shogo-ai/
 **Structure**:
 ```
 .schemas/{name}/
-├── schema.json           # Schema definition
-└── data/                 # Persisted entities
-    ├── {Model}.json
-    └── ...
+└── schema.json           # Schema definition (Enhanced JSON Schema)
 ```
+
+**Note**: Data is persisted to SQL backends (postgres/sqlite), not as JSON files. The `.schemas/` directory contains only schema definitions.
 
 **When Affected**: New domain schemas, schema modifications
 

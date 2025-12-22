@@ -4,7 +4,9 @@
 
 ## Concept
 
-MST stores need access to services (persistence, email, payments, etc.) but shouldn't import them directly. The environment pattern provides:
+MST stores need access to services (email, payments, external APIs, etc.) but shouldn't import them directly. The environment pattern provides:
+
+> **Note**: Persistence to the SQL backend is auto-injected by the `domain()` API. You only need to extend the environment for custom domain services (external APIs, providers). Basic CRUD operations use the built-in `insertOne()`, `updateOne()`, `deleteOne()`, `query()` methods without manual environment wiring.
 
 1. Type-safe service injection at store creation
 2. Access to services within MST actions via `getEnv()`
@@ -61,11 +63,11 @@ When exploring for this pattern, search for:
 // environment/types.ts (existing)
 export interface IEnvironment {
   services: {
-    persistence: IPersistenceService
+    // SQL backend persistence is auto-injected
+    // Add custom domain services here
   }
   context: {
     schemaName: string
-    location?: string
   }
 }
 ```
@@ -110,12 +112,11 @@ import type { IEmailEnvironment } from '../environment/types'
 // Application bootstrap
 const env: IEmailEnvironment = {
   services: {
-    persistence,
+    // Persistence is auto-injected by domain()
     email: emailService
   },
   context: {
-    schemaName: 'my-app',
-    location: './data'
+    schemaName: 'my-app'
   }
 }
 

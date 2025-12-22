@@ -424,6 +424,10 @@ export class SqlBackend implements IBackend {
       return `\`${name.replace(/`/g, '``')}\``
     } else {
       // PostgreSQL uses double quotes for identifiers
+      // Check if already a qualified name like "schema"."table" (from qualifyTableName)
+      if (name.startsWith('"') && name.includes('"."')) {
+        return name // Already escaped qualified name
+      }
       // Escape existing quotes by doubling them
       return `"${name.replace(/"/g, '""')}"`
     }

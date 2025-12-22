@@ -13,6 +13,64 @@ import type { EnhancedJsonSchema } from "../../schematic/types"
 describe("sql-generator integration", () => {
   const postgresDialect = createPostgresDialect()
 
+  /**
+   * Test Specification: test-sql-gen-object-jsonb
+   * Scenario: Object type properties generate JSONB columns in PostgreSQL
+   *
+   * Given: Schema with a property of type "object" with nested properties
+   * When: generateSQL is called with PostgreSQL dialect
+   * Then: The object property column uses JSONB type (not TEXT)
+   *
+   * This is a regression test for the object→JSONB mapping issue where
+   * object types were falling through to the default TEXT mapping.
+   */
+  test("object type properties generate JSONB columns", () => {
+    const schemaWithObjectProp: any = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      definitions: {
+        Session: {
+          type: "object",
+          properties: {
+            id: {
+              type: "string",
+              "x-mst-type": "identifier",
+            },
+            name: {
+              type: "string",
+            },
+            // Object type with nested properties - should map to JSONB
+            metadata: {
+              type: "object",
+              description: "Arbitrary metadata object",
+              properties: {
+                source: { type: "string" },
+                tags: { type: "array", items: { type: "string" } },
+              },
+            },
+            // Array type - should also map to JSONB
+            labels: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+          required: ["id", "name"],
+        },
+      },
+    }
+
+    const result = generateSQL(schemaWithObjectProp, postgresDialect)
+
+    // Find the CREATE TABLE statement
+    const createTable = result.find((s) => s.includes('CREATE TABLE "session"'))
+    expect(createTable).toBeDefined()
+
+    // Object property should be JSONB, not TEXT
+    expect(createTable).toContain('"metadata" JSONB')
+
+    // Array property should also be JSONB
+    expect(createTable).toContain('"labels" JSONB')
+  })
+
   // Simplified Teams domain schema for testing
   const teamsSchema: any = {
     $schema: "https://json-schema.org/draft/2020-12/schema",

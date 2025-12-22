@@ -30,12 +30,22 @@
  * ```
  */
 
-import { types, getEnv } from 'mobx-state-tree'
+import { types, getEnv, getRoot, flow } from 'mobx-state-tree'
 import type { IEnvironment } from '../environment/types'
+import type { ArrayReferenceMetadata } from '../ddl/utils'
 import type { QueryFilter, Condition } from '../query/ast/types'
 import type { OrderByClause } from '../query/backends/types'
 import type { IQueryExecutor } from '../query/executors/types'
 import { parseQuery } from '../query/ast/parser'
+
+/**
+ * Convert PascalCase model name to camelCase collection name.
+ * e.g., "User" -> "userCollection", "ImplementationTask" -> "implementationTaskCollection"
+ */
+function toCollectionName(modelName: string): string {
+  const camel = modelName.charAt(0).toLowerCase() + modelName.slice(1)
+  return `${camel}Collection`
+}
 
 // ============================================================================
 // IQueryable Interface
@@ -265,7 +275,7 @@ class QueryBuilder<T> implements IQueryable<T> {
   constructor(
     private executor: IQueryExecutor<T>,
     private state: QueryBuilderState,
-    private onResults?: (results: T[]) => void
+    private onResults?: (results: T[]) => void | Promise<void>
   ) {}
 
   where(filter: QueryFilter): IQueryable<T> {
@@ -312,7 +322,7 @@ class QueryBuilder<T> implements IQueryable<T> {
     }
 
     const results = await this.executor.select(ast, options)
-    this.onResults?.(results)
+    await this.onResults?.(results)
     return results
   }
 
@@ -405,14 +415,69 @@ export const CollectionQueryable = types
     /**
      * Sync results from remote query into MST collection.
      * Uses items.put() for upsert semantics (add or update by id).
+     * Auto-populates referenced entities from array references.
      *
      * @param results - Array of entities from remote query
      */
-    syncFromRemote(results: any[]) {
+    syncFromRemote: flow(function* syncFromRemote(results: any[]) {
+      // Sync items to collection
       for (const item of results) {
         ;(self as any).items.put(item)
       }
-    }
+
+      // Auto-populate referenced entities
+      const env = getEnv<IEnvironment>(self)
+      const modelName = (self as any).modelName
+      const arrayRefMaps = (env.context as any)?.arrayReferenceMaps?.[modelName] as
+        Record<string, ArrayReferenceMetadata> | undefined
+
+      if (!arrayRefMaps || Object.keys(arrayRefMaps).length === 0) {
+        return
+      }
+
+      // Collect all referenced IDs grouped by target model
+      const idsByTargetModel = new Map<string, Set<string>>()
+
+      for (const entity of results) {
+        for (const [propName, meta] of Object.entries(arrayRefMaps)) {
+          const ids = entity[propName] as string[] | undefined
+          if (!ids || ids.length === 0) continue
+
+          if (!idsByTargetModel.has(meta.targetModel)) {
+            idsByTargetModel.set(meta.targetModel, new Set())
+          }
+          const idSet = idsByTargetModel.get(meta.targetModel)!
+          for (const id of ids) {
+            idSet.add(id)
+          }
+        }
+      }
+
+      // Fetch missing entities from each target collection
+      const root = getRoot(self) as any
+
+      for (const [targetModel, allIds] of idsByTargetModel) {
+        const collectionName = toCollectionName(targetModel)
+        const targetCollection = root[collectionName]
+
+        if (!targetCollection?.query) {
+          // Target collection doesn't support queries - skip
+          continue
+        }
+
+        // Filter out already-loaded IDs
+        const missingIds = [...allIds].filter(id => !targetCollection.get?.(id))
+
+        if (missingIds.length === 0) {
+          continue
+        }
+
+        // Batch query for missing entities
+        yield targetCollection.query()
+          .where({ id: { $in: missingIds } })
+          .toArray()
+      }
+    })
   }))
   .views((self) => ({
     /**
@@ -459,6 +524,7 @@ export const CollectionQueryable = types
       // This enables createStore() to work with SQL backends without meta-store registration
       const columnPropertyMap = (env.context as any)?.columnPropertyMaps?.[modelName]
       const propertyTypes = (env.context as any)?.propertyTypeMaps?.[modelName]
+      const arrayReferences = (env.context as any)?.arrayReferenceMaps?.[modelName]
 
       // Resolve executor from registry with collection reference and pre-computed maps
       const executor = env.services.backendRegistry.resolve<T>(
@@ -466,7 +532,8 @@ export const CollectionQueryable = types
         modelName,
         self,  // Pass collection reference for memory backends
         columnPropertyMap,  // Pass pre-computed column map (bypasses meta-store lookup)
-        propertyTypes  // Pass pre-computed property types for dialect-specific conversions
+        propertyTypes,  // Pass pre-computed property types for dialect-specific conversions
+        arrayReferences  // Pass array reference metadata for junction table hydration
       )
 
       // Register sync callback for remote executors

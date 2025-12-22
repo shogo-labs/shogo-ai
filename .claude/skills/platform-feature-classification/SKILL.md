@@ -36,11 +36,33 @@ Validate and finalize feature archetype using evidence-based decision framework.
 
 ```javascript
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
-requirements = store.list("Requirement", "platform-features", { session: session.id })
-findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
-classificationEvidence = findings.filter(f => f.type === "classification_evidence")
+
+// Query session by name
+session = store.query({
+  model: "FeatureSession",
+  schema: "platform-features",
+  filter: { name: "..." },
+  terminal: "first"
+})
+
+// Query related entities
+requirements = store.query({
+  model: "Requirement",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+findings = store.query({
+  model: "AnalysisFinding",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+classificationEvidence = store.query({
+  model: "AnalysisFinding",
+  schema: "platform-features",
+  filter: { session: session.id, type: "classification_evidence" }
+})
 ```
 
 Present summary:
@@ -69,7 +91,7 @@ Use the decision framework to validate the archetype. See [decision-framework.md
 |--------|---------------|-------------------|
 | YES, and only external data | **Service** | External API endpoint, provider, credentials |
 | YES, plus local domain entities | **Hybrid** | External API + local MST entities + sync pattern |
-| NO, all data is local | **Domain** | Local MST operations, CollectionPersistable |
+| NO, all data is local | **Domain** | Local MST operations, SQL backend persistence |
 | NO, cross-cutting concern | **Infrastructure** | Used by multiple features, no domain entities |
 
 **Check evidence against criteria:**
@@ -88,7 +110,7 @@ Service criteria:
 Domain criteria:
 - [ ] All data operations local? {yes/no}
 - [ ] No external API calls? {yes/no}
-- [ ] Persistence via MST/CollectionPersistable? {yes/no}
+- [ ] Local persistence via SQL backend? {yes/no}
 
 Based on evidence: {archetype} is {confirmed/not supported}
 ```
@@ -122,7 +144,7 @@ store.create("ClassificationDecision", "platform-features", {
     providerMentioned: false,
     credentialRequired: false,
     localDataOperations: true,
-    collectionPersistable: true
+    localPersistence: true
   },
   rationale: "Feature manages local entities. References to external IDs are " +
              "foreign keys, not API calls. No external service integration required.",
@@ -139,7 +161,7 @@ store.create("ClassificationDecision", "platform-features", {
 // Pattern assignment by archetype
 const patternMap = {
   service: ["service-interface", "environment-extension", "mock-testing", "enhancement-hooks"],
-  domain: ["enhancement-hooks", "collection-persistable"],
+  domain: ["enhancement-hooks"],  // Persistence is automatic via domain() + SQL backend
   hybrid: ["service-interface", "environment-extension", "mock-testing", "enhancement-hooks", "provider-sync"],
   infrastructure: ["service-interface", "environment-extension", "mixin-composition"]
 }
@@ -156,7 +178,7 @@ store.update(session.id, "FeatureSession", "platform-features", {
 
 | Archetype | Patterns | Task Count |
 |-----------|----------|------------|
-| Domain | enhancement-hooks, collection-persistable | ~4 |
+| Domain | enhancement-hooks | ~3 |
 | Service | service-interface, environment-extension, mock-testing, enhancement-hooks | ~7 |
 | Hybrid | All service + domain + provider-sync | ~7+ |
 | Infrastructure | service-interface, environment-extension, mixin-composition | ~5-6 |
@@ -229,10 +251,25 @@ Ready for platform-feature-design to create schema.
 ```javascript
 // Phase 1: Load context
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
-requirements = store.list("Requirement", "platform-features", { session: session.id })
-findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
+
+session = store.query({
+  model: "FeatureSession",
+  schema: "platform-features",
+  filter: { name: "..." },
+  terminal: "first"
+})
+
+requirements = store.query({
+  model: "Requirement",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+findings = store.query({
+  model: "AnalysisFinding",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
 
 // Phase 3: Record decision
 store.create("ClassificationDecision", "platform-features", {...})
@@ -240,7 +277,7 @@ store.create("ClassificationDecision", "platform-features", {...})
 // Phase 4: Update session
 store.update(session.id, "FeatureSession", "platform-features", {
   featureArchetype: "domain",
-  applicablePatterns: ["enhancement-hooks", "collection-persistable"],
+  applicablePatterns: ["enhancement-hooks"],
   status: "design",
   updatedAt: Date.now()
 })
