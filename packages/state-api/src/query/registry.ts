@@ -95,6 +95,7 @@ export interface IBackendRegistry {
    * @param collection - Optional collection reference (required for memory backends)
    * @param columnPropertyMap - Optional pre-computed column→property mapping (bypasses meta-store lookup)
    * @param propertyTypes - Optional pre-computed property→type mapping for dialect-specific conversions
+   * @param arrayReferences - Optional array reference metadata for junction table hydration
    * @returns Query executor with data source bound
    * @throws Error if no backend found and no default set
    *
@@ -117,9 +118,9 @@ export interface IBackendRegistry {
    *
    * Returns IQueryExecutor (not IBackend) with data source bound:
    * - Memory backends: collection reference bound
-   * - SQL backends: tableName, dialect, propertyTypes bound
+   * - SQL backends: tableName, dialect, propertyTypes, arrayReferences bound
    */
-  resolve<T = any>(schemaName: string, modelName: string, collection?: any, columnPropertyMap?: Record<string, string>, propertyTypes?: Record<string, string>): IQueryExecutor<T>
+  resolve<T = any>(schemaName: string, modelName: string, collection?: any, columnPropertyMap?: Record<string, string>, propertyTypes?: Record<string, string>, arrayReferences?: Record<string, any>): IQueryExecutor<T>
 
   /**
    * Set the default backend for fallback resolution.
@@ -175,7 +176,7 @@ export class BackendRegistry implements IBackendRegistry {
     return this.backends.has(name)
   }
 
-  resolve<T = any>(schemaName: string, modelName: string, collection?: any, providedColumnPropertyMap?: Record<string, string>, providedPropertyTypes?: Record<string, string>): IQueryExecutor<T> {
+  resolve<T = any>(schemaName: string, modelName: string, collection?: any, providedColumnPropertyMap?: Record<string, string>, providedPropertyTypes?: Record<string, string>, providedArrayReferences?: Record<string, any>): IQueryExecutor<T> {
     // Access meta-store for schema/model lookup
     const metaStore = getMetaStore()
     const schema = metaStore.schemaCollection.all().find((s: any) => s.name === schemaName)
@@ -264,7 +265,8 @@ export class BackendRegistry implements IBackendRegistry {
         backend.executor,
         columnPropertyMap,
         backend.dialect,
-        propertyTypes
+        propertyTypes,
+        providedArrayReferences
       )
     } else if (typeof backend.createExecutor === 'function') {
       // Remote backend with custom executor factory (e.g., MCPBackend)

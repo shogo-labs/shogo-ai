@@ -24,11 +24,12 @@ import {
   buildDeleteSQL,
   createPropertyColumnMap,
 } from "../execution/utils"
-import { toSnakeCase } from "../../ddl/utils"
+import { toSnakeCase, type ArrayReferenceMetadata } from "../../ddl/utils"
 
 export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
   readonly executorType = 'remote' as const
   private propertyColumnMap: Map<string, string> // camelCase → snake_case (derived)
+  private namespace?: string // Extracted from qualified table name
 
   constructor(
     private tableName: string,
@@ -36,10 +37,45 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     private executor: ISqlExecutor,
     private columnPropertyMap: ColumnPropertyMap, // snake_case → camelCase (provided)
     private dialect: SqlDialect,
-    private propertyTypes: PropertyTypeMap
+    private propertyTypes: PropertyTypeMap,
+    private arrayReferences?: Record<string, ArrayReferenceMetadata>
   ) {
     // Derive inverse map for input normalization
     this.propertyColumnMap = this.invertMap(columnPropertyMap)
+    // Extract namespace from qualified table name for junction table queries
+    this.namespace = this.extractNamespace(tableName)
+  }
+
+  /**
+   * Extract namespace from a qualified table name.
+   * PostgreSQL: "namespace"."table" → "namespace"
+   * SQLite: namespace__table → namespace
+   */
+  private extractNamespace(tableName: string): string | undefined {
+    if (this.dialect === 'pg') {
+      // PostgreSQL: "namespace"."table" format
+      const match = tableName.match(/^"([^"]+)"\./)
+      return match ? match[1] : undefined
+    } else {
+      // SQLite: namespace__table format
+      const parts = tableName.replace(/"/g, '').split('__')
+      return parts.length > 1 ? parts[0] : undefined
+    }
+  }
+
+  /**
+   * Qualify a junction table name with the namespace.
+   */
+  private qualifyJunctionTable(junctionTable: string): string {
+    if (!this.namespace) {
+      return `"${junctionTable}"`
+    }
+
+    if (this.dialect === 'pg') {
+      return `"${this.namespace}"."${junctionTable}"`
+    } else {
+      return `"${this.namespace}__${junctionTable}"`
+    }
   }
 
   async select(ast: Condition, options?: QueryOptions): Promise<T[]> {
@@ -61,12 +97,15 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     const rows = await this.executor.execute([fullSql, params])
 
     // Normalize output: convert snake_case columns to camelCase properties with type conversion
-    return normalizeRowsWithTypes(
+    const entities = normalizeRowsWithTypes(
       rows,
       this.columnPropertyMap,
       this.dialect,
       this.propertyTypes
     ) as T[]
+
+    // Hydrate array references from junction tables
+    return this.hydrateArrayReferences(entities)
   }
 
   async first(ast: Condition, options?: QueryOptions): Promise<T | undefined> {
@@ -101,6 +140,82 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     // Execute and check if any rows returned
     const rows = await this.executor.execute([sql, params])
     return rows.length > 0
+  }
+
+  // ==========================================================================
+  // Array Reference Hydration
+  // ==========================================================================
+
+  /**
+   * Get related IDs from a junction table for a specific entity and relation.
+   *
+   * @param entityId - The source entity ID
+   * @param relationName - The property name of the array reference
+   * @returns Array of target entity IDs
+   * @throws Error if relation name is not in arrayReferences metadata
+   */
+  async getRelatedIds(entityId: string, relationName: string): Promise<string[]> {
+    const meta = this.arrayReferences?.[relationName]
+    if (!meta) {
+      throw new Error(`Unknown array relation: ${relationName}`)
+    }
+
+    const placeholder = this.dialect === 'pg' ? '$1' : '?'
+    const qualifiedTable = this.qualifyJunctionTable(meta.junctionTable)
+    const sql = `SELECT "${meta.targetColumn}" FROM ${qualifiedTable} WHERE "${meta.sourceColumn}" = ${placeholder}`
+    const rows = await this.executor.execute([sql, [entityId]])
+
+    return rows.map(r => r[meta.targetColumn] as string)
+  }
+
+  /**
+   * Hydrate array reference properties by querying junction tables.
+   * Batches queries by collecting all entity IDs and querying once per relation.
+   *
+   * @param entities - Entities to hydrate
+   * @returns Entities with array reference properties populated
+   */
+  private async hydrateArrayReferences(entities: T[]): Promise<T[]> {
+    // Skip if no array references metadata or no entities
+    if (!this.arrayReferences || Object.keys(this.arrayReferences).length === 0 || entities.length === 0) {
+      return entities
+    }
+
+    // Collect all entity IDs
+    const entityIds = entities.map(e => (e as any).id).filter(Boolean)
+    if (entityIds.length === 0) {
+      return entities
+    }
+
+    // Hydrate each array reference property
+    for (const [propName, meta] of Object.entries(this.arrayReferences)) {
+      // Batch query junction table for all entity IDs
+      const placeholders = entityIds.map((_, i) =>
+        this.dialect === 'pg' ? `$${i + 1}` : '?'
+      ).join(', ')
+
+      const qualifiedTable = this.qualifyJunctionTable(meta.junctionTable)
+      const sql = `SELECT "${meta.sourceColumn}", "${meta.targetColumn}" FROM ${qualifiedTable} WHERE "${meta.sourceColumn}" IN (${placeholders})`
+      const rows = await this.executor.execute([sql, entityIds])
+
+      // Group target IDs by source ID
+      const relMap = new Map<string, string[]>()
+      for (const row of rows) {
+        const sourceId = row[meta.sourceColumn] as string
+        const targetId = row[meta.targetColumn] as string
+        if (!relMap.has(sourceId)) {
+          relMap.set(sourceId, [])
+        }
+        relMap.get(sourceId)!.push(targetId)
+      }
+
+      // Attach to entities
+      for (const entity of entities) {
+        (entity as any)[propName] = relMap.get((entity as any).id) ?? []
+      }
+    }
+
+    return entities
   }
 
   /**
@@ -250,14 +365,19 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
 
   /**
    * Insert a new entity into the database.
+   * Handles array references by writing to junction tables.
    */
   async insert(entity: Partial<T>): Promise<T> {
     // Generate ID if not provided
     const entityWithId = this.ensureId(entity)
 
-    // Convert camelCase properties to snake_case columns
+    // Extract array reference values before building columns
+    const arrayRefValues = this.extractArrayReferenceValues(entityWithId)
+
+    // Convert camelCase properties to snake_case columns (excluding array refs)
     const propertyColumnMapObj = this.getPropertyColumnMapObject()
-    const columns = entityToColumns(entityWithId, propertyColumnMapObj)
+    const entityWithoutArrayRefs = this.removeArrayReferenceProperties(entityWithId)
+    const columns = entityToColumns(entityWithoutArrayRefs, propertyColumnMapObj)
 
     // Build INSERT SQL
     const columnNames = Object.keys(columns)
@@ -265,81 +385,84 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     const params = Object.values(columns)
 
     // Execute INSERT
-    const rows = await this.executor.execute([sql, params])
+    await this.executor.execute([sql, params])
 
-    // For PostgreSQL with RETURNING, we get the row back
-    if (rows.length > 0) {
-      return normalizeRowWithTypes(
-        rows[0],
-        this.columnPropertyMap,
-        this.dialect,
-        this.propertyTypes
-      ) as T
-    }
+    // Insert junction table rows for array references
+    await this.insertJunctionRows((entityWithId as any).id, arrayRefValues)
 
-    // For SQLite (no RETURNING), fetch the inserted row
+    // Fetch and hydrate the inserted entity
     const idColumn = this.normalizeInputField("id")
     const escapedTable = this.escapeTableName(this.tableName)
     const selectSql = `SELECT * FROM ${escapedTable} WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
     const selectRows = await this.executor.execute([selectSql, [(entityWithId as any).id]])
 
     if (selectRows.length > 0) {
-      return normalizeRowWithTypes(
+      const normalized = normalizeRowWithTypes(
         selectRows[0],
         this.columnPropertyMap,
         this.dialect,
         this.propertyTypes
       ) as T
+      // Hydrate array references
+      const hydrated = await this.hydrateArrayReferences([normalized])
+      return hydrated[0]
     }
 
-    // Return the entity with ID as fallback
-    return entityWithId as T
+    // Fallback: return entity with array refs attached
+    return { ...entityWithId, ...Object.fromEntries(
+      Object.entries(arrayRefValues).map(([k, v]) => [k, v ?? []])
+    ) } as T
   }
 
   /**
    * Update an existing entity by ID.
+   * Handles array references by replacing junction table rows.
    */
   async update(id: string, changes: Partial<T>): Promise<T | undefined> {
-    // Convert camelCase properties to snake_case columns
-    const propertyColumnMapObj = this.getPropertyColumnMapObject()
-    const columns = entityToColumns(changes, propertyColumnMapObj)
+    // Extract array reference values before building columns
+    const arrayRefValues = this.extractArrayReferenceValues(changes)
+    const hasArrayRefChanges = Object.keys(arrayRefValues).length > 0
 
-    // If no columns to update, just fetch and return current state
+    // Convert camelCase properties to snake_case columns (excluding array refs)
+    const propertyColumnMapObj = this.getPropertyColumnMapObject()
+    const changesWithoutArrayRefs = this.removeArrayReferenceProperties(changes)
+    const columns = entityToColumns(changesWithoutArrayRefs, propertyColumnMapObj)
+
+    // If no columns to update (only array refs or empty), handle specially
     const columnNames = Object.keys(columns)
-    if (columnNames.length === 0) {
+    if (columnNames.length === 0 && !hasArrayRefChanges) {
       return this.first(new FieldCondition('eq', 'id', id))
     }
 
-    // Build UPDATE SQL
+    // Update main table if there are column changes
+    if (columnNames.length > 0) {
+      const idColumn = this.normalizeInputField("id")
+      const sql = buildUpdateSQL(this.tableName, columnNames, idColumn, this.dialect)
+      const params = [...Object.values(columns), id]
+      await this.executor.execute([sql, params])
+    }
+
+    // Update junction tables for array reference changes
+    if (hasArrayRefChanges) {
+      await this.replaceJunctionRows(id, arrayRefValues)
+    }
+
+    // Fetch and hydrate the updated entity
     const idColumn = this.normalizeInputField("id")
-    const sql = buildUpdateSQL(this.tableName, columnNames, idColumn, this.dialect)
-    const params = [...Object.values(columns), id]
+    const escapedTable = this.escapeTableName(this.tableName)
+    const selectSql = `SELECT * FROM ${escapedTable} WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
+    const rows = await this.executor.execute([selectSql, [id]])
 
-    // Execute UPDATE
-    const rows = await this.executor.execute([sql, params])
-
-    // For PostgreSQL with RETURNING
     if (rows.length > 0) {
-      return normalizeRowWithTypes(
+      const normalized = normalizeRowWithTypes(
         rows[0],
         this.columnPropertyMap,
         this.dialect,
         this.propertyTypes
       ) as T
-    }
-
-    // For SQLite, fetch the updated row
-    const escapedTable = this.escapeTableName(this.tableName)
-    const selectSql = `SELECT * FROM ${escapedTable} WHERE "${idColumn}" = ${this.dialect === "pg" ? "$1" : "?"}`
-    const selectRows = await this.executor.execute([selectSql, [id]])
-
-    if (selectRows.length > 0) {
-      return normalizeRowWithTypes(
-        selectRows[0],
-        this.columnPropertyMap,
-        this.dialect,
-        this.propertyTypes
-      ) as T
+      // Hydrate array references
+      const hydrated = await this.hydrateArrayReferences([normalized])
+      return hydrated[0]
     }
 
     // Entity not found
@@ -545,6 +668,109 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
       obj[prop] = col
     }
     return obj
+  }
+
+  // ==========================================================================
+  // Array Reference Mutation Helpers
+  // ==========================================================================
+
+  /**
+   * Extract array reference values from an entity.
+   * Returns a map of property name → array of target IDs.
+   */
+  private extractArrayReferenceValues(entity: Partial<T>): Record<string, string[] | undefined> {
+    if (!this.arrayReferences) {
+      return {}
+    }
+
+    const values: Record<string, string[] | undefined> = {}
+    for (const propName of Object.keys(this.arrayReferences)) {
+      if (propName in (entity as any)) {
+        values[propName] = (entity as any)[propName]
+      }
+    }
+    return values
+  }
+
+  /**
+   * Remove array reference properties from an entity.
+   * Returns a new entity without array reference properties.
+   */
+  private removeArrayReferenceProperties(entity: Partial<T>): Partial<T> {
+    if (!this.arrayReferences) {
+      return entity
+    }
+
+    const result = { ...entity } as any
+    for (const propName of Object.keys(this.arrayReferences)) {
+      delete result[propName]
+    }
+    return result as Partial<T>
+  }
+
+  /**
+   * Insert junction table rows for array reference values.
+   */
+  private async insertJunctionRows(
+    entityId: string,
+    arrayRefValues: Record<string, string[] | undefined>
+  ): Promise<void> {
+    if (!this.arrayReferences) {
+      return
+    }
+
+    for (const [propName, targetIds] of Object.entries(arrayRefValues)) {
+      const meta = this.arrayReferences[propName]
+      if (!meta || !targetIds || targetIds.length === 0) {
+        continue
+      }
+
+      // Insert each junction row
+      const qualifiedTable = this.qualifyJunctionTable(meta.junctionTable)
+      for (const targetId of targetIds) {
+        const placeholder1 = this.dialect === 'pg' ? '$1' : '?'
+        const placeholder2 = this.dialect === 'pg' ? '$2' : '?'
+        const sql = `INSERT INTO ${qualifiedTable} ("${meta.sourceColumn}", "${meta.targetColumn}") VALUES (${placeholder1}, ${placeholder2})`
+        await this.executor.execute([sql, [entityId, targetId]])
+      }
+    }
+  }
+
+  /**
+   * Replace junction table rows for array reference values.
+   * Deletes existing rows and inserts new ones.
+   */
+  private async replaceJunctionRows(
+    entityId: string,
+    arrayRefValues: Record<string, string[] | undefined>
+  ): Promise<void> {
+    if (!this.arrayReferences) {
+      return
+    }
+
+    for (const [propName, targetIds] of Object.entries(arrayRefValues)) {
+      const meta = this.arrayReferences[propName]
+      if (!meta) {
+        continue
+      }
+
+      const qualifiedTable = this.qualifyJunctionTable(meta.junctionTable)
+
+      // Delete existing junction rows
+      const deletePlaceholder = this.dialect === 'pg' ? '$1' : '?'
+      const deleteSql = `DELETE FROM ${qualifiedTable} WHERE "${meta.sourceColumn}" = ${deletePlaceholder}`
+      await this.executor.execute([deleteSql, [entityId]])
+
+      // Insert new junction rows
+      if (targetIds && targetIds.length > 0) {
+        for (const targetId of targetIds) {
+          const placeholder1 = this.dialect === 'pg' ? '$1' : '?'
+          const placeholder2 = this.dialect === 'pg' ? '$2' : '?'
+          const sql = `INSERT INTO ${qualifiedTable} ("${meta.sourceColumn}", "${meta.targetColumn}") VALUES (${placeholder1}, ${placeholder2})`
+          await this.executor.execute([sql, [entityId, targetId]])
+        }
+      }
+    }
   }
 }
 
