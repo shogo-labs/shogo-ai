@@ -51,8 +51,9 @@ Each enhancement hook supports the complete MST composition API:
 |-------------|---------|---------|
 | `.views(self => ({}))` | Query methods, aggregations | `findBySku()`, `inStock`, `totalValue` |
 | `.actions(self => ({}))` | Batch operations | `importBatch()`, `clearAll()` |
-| `types.compose(Collection, CollectionPersistable)` | Add persistence | File-based persistence mixin |
 | `types.compose(Collection, CustomMixin)` | Add behaviors | Auditing, caching mixins |
+
+**Note**: Persistence capabilities (`insertOne`, `updateOne`, `deleteOne`, `query`) are auto-included via the `domain()` API. No manual mixin composition needed.
 
 ### enhanceRootStore (Store Level)
 
@@ -72,7 +73,7 @@ Each enhancement hook supports the complete MST composition API:
 ```
 Schema Definition (ArkType Scope)
         ↓
-createStoreFromScope(scope, options)
+domain({ name, from, enhancements })
         ↓
 ┌───────────────────────────────────┐
 │ 1. enhanceModels(models)          │  ← Add views to entities
@@ -80,7 +81,7 @@ createStoreFromScope(scope, options)
 └───────────────────────────────────┘
         ↓
 ┌───────────────────────────────────┐
-│ 2. enhanceCollections(collections)│  ← Add methods, compose mixins
+│ 2. enhanceCollections(collections)│  ← Add query methods
 │    Returns: modified collections  │
 └───────────────────────────────────┘
         ↓
@@ -89,7 +90,7 @@ createStoreFromScope(scope, options)
 │    Returns: enhanced root model   │
 └───────────────────────────────────┘
         ↓
-{ models, collectionModels, RootStoreModel, createStore }
+{ Domain, createStore }
 ```
 
 ### Component Breakdown
@@ -159,11 +160,8 @@ enhanceCollections: (baseCollections) => ({
     }
   })),
 
-  // Compose with persistence mixin
-  OrderCollection: types.compose(
-    baseCollections.OrderCollection,
-    CollectionPersistable
-  ).named('OrderCollection')
+  // Pass through unchanged - persistence is auto-included
+  OrderCollection: baseCollections.OrderCollection
 })
 ```
 
@@ -304,40 +302,47 @@ import { stripeClient } from '@stripe/stripe-js'
 
 ---
 
-## CollectionPersistable Mixin
+## Collection Persistence (Auto-Included)
 
-For collections that need file-based persistence, compose with `CollectionPersistable`:
+The `domain()` API automatically includes persistence capabilities on all collections. No manual mixin composition is needed.
 
-```typescript
-import { types } from 'mobx-state-tree'
-import { CollectionPersistable } from '@shogo/state-api'
-
-enhanceCollections: (baseCollections) => ({
-  ProductCollection: types.compose(
-    baseCollections.ProductCollection,
-    CollectionPersistable
-  ).named('ProductCollection'),
-
-  // Non-persistable collections pass through unchanged
-  TempItemCollection: baseCollections.TempItemCollection
-})
-```
-
-**What CollectionPersistable provides:**
+**What collections automatically provide:**
 
 | Member | Type | Description |
 |--------|------|-------------|
-| `loadAll()` | action | Load entire collection from persistence service |
-| `loadById(id)` | action | Load single entity by ID and add to collection |
-| `saveAll()` | action | Save entire collection to persistence |
-| `saveOne(id)` | action | Save single entity by ID |
-| `persistenceContext` | view | Derives `{ schemaName, modelName, location }` from environment |
+| `insertOne(data)` | action | Create a new entity and persist to database |
+| `insertMany(items)` | action | Batch create entities |
+| `updateOne(id, changes)` | action | Update entity by ID |
+| `updateMany(filter, changes)` | action | Batch update matching entities |
+| `deleteOne(id)` | action | Delete entity by ID |
+| `deleteMany(filter)` | action | Batch delete matching entities |
+| `query()` | method | Fluent query builder with `.where()`, `.orderBy()`, `.take()` |
 
-**Requirements for collections to use CollectionPersistable:**
-- Must have `items` map property
-- Must have `modelName` view (auto-generated collections have this)
-- Must have `add(item)` action
-- Environment must provide `persistence` service and `schemaName` context
+**Example usage in actions:**
+
+```typescript
+enhanceRootStore: (RootModel) => RootModel
+  .actions(self => ({
+    async createProduct(data: ProductInput) {
+      // insertOne returns the created entity
+      return await self.productCollection.insertOne({
+        id: crypto.randomUUID(),
+        ...data,
+        createdAt: Date.now()
+      })
+    },
+
+    async updateProductPrice(id: string, newPrice: number) {
+      await self.productCollection.updateOne(id, { priceInCents: newPrice })
+    },
+
+    async archiveOldProducts(cutoffDate: number) {
+      await self.productCollection.updateMany(
+        { createdAt: { $lt: cutoffDate } },
+        { status: 'archived' }
+      )
+    }
+  }))
 
 ---
 
@@ -353,8 +358,8 @@ enhanceRootStore: (RootModel) => RootModel
   .actions(self => ({
     async initialize() {
       const env = getEnv<IEnvironment>(self)
-      // Access persistence service
-      await self.productCollection.loadAll()
+      // Load data via query API (uses backendRegistry)
+      await self.productCollection.query().toArray()
       return { success: true }
     }
   }))
@@ -390,16 +395,18 @@ export interface IInventoryEnvironment extends IEnvironment {
 
 ## Initialization Pattern
 
-Store initialization using CollectionPersistable:
+Store initialization loads data from the SQL backend:
 
 ```typescript
 enhanceRootStore: (RootModel) => RootModel
   .actions(self => ({
     async initialize(): Promise<{ success: boolean; error?: { message: string } }> {
       try {
-        // Load all persistable collections
-        await self.productCollection.loadAll()
-        await self.warehouseCollection.loadAll()
+        // Query initial data from SQL backend
+        const products = await self.productCollection.query().toArray()
+        const warehouses = await self.warehouseCollection.query().toArray()
+
+        // Data is now in MST store and reactive
         return { success: true }
       } catch (err) {
         return { success: false, error: { message: String(err) } }
@@ -407,6 +414,8 @@ enhanceRootStore: (RootModel) => RootModel
     }
   }))
 ```
+
+**Note**: The `query()` method returns data from the SQL backend and hydrates the MST store. Subsequent access via `self.productCollection.all()` returns the in-memory MST data.
 
 ---
 
@@ -482,22 +491,20 @@ enhanceCollections:
       - inStock           # All products with quantity > 0
       - lowStock          # Products with quantity < threshold
       - byWarehouse(warehouseId: string)
-    compose:
-      - CollectionPersistable
+    # Persistence auto-included via domain()
 
   StockMovementCollection:
     views:
       - forProduct(productId: string)
       - recent(hours: number)
-    compose:
-      - CollectionPersistable
+    # Persistence auto-included via domain()
 
 enhanceRootStore:
   views:
     - totalInventoryValue   # Sum of all product values
     - lowStockCount         # Count of low-stock products
   actions:
-    - initialize()          # Load all collections
+    - initialize()          # Query initial data from SQL backend
     - recordMovement(productId, type, quantity)
 ```
 
@@ -506,13 +513,16 @@ enhanceRootStore:
 ```typescript
 // packages/state-api/src/inventory/domain.ts
 
-import { types, getEnv } from 'mobx-state-tree'
-import { enhancedJsonSchemaToMST, CollectionPersistable } from '@shogo/state-api'
+import { getEnv } from 'mobx-state-tree'
+import { domain } from '@shogo/state-api'
 import type { IEnvironment } from '@shogo/state-api'
+import { inventoryScope } from './scope'  // ArkType scope
 
-export function createInventoryStore(schema: any) {
-  return enhancedJsonSchemaToMST(schema, {
-    enhanceModels: (baseModels) => ({
+export const inventoryDomain = domain({
+  name: 'inventory',
+  from: inventoryScope,
+  enhancements: {
+    models: (baseModels) => ({
       Product: baseModels.Product
         .views(self => ({
           get displayPrice() {
@@ -547,45 +557,37 @@ export function createInventoryStore(schema: any) {
       }))
     }),
 
-    enhanceCollections: (baseCollections) => ({
-      ProductCollection: types.compose(
-        baseCollections.ProductCollection.views(self => ({
-          findBySku(sku: string) {
-            return self.all().find(p => p.sku === sku)
-          },
-          get inStock() {
-            return self.all().filter(p => p.isInStock)
-          },
-          get lowStock() {
-            return self.all().filter(p => p.stockStatus === 'low-stock')
-          },
-          byWarehouse(warehouseId: string) {
-            return self.all().filter(p => p.warehouseId === warehouseId)
-          }
-        })),
-        CollectionPersistable
-      ).named('ProductCollection'),
+    collections: (baseCollections) => ({
+      ProductCollection: baseCollections.ProductCollection.views(self => ({
+        findBySku(sku: string) {
+          return self.all().find(p => p.sku === sku)
+        },
+        get inStock() {
+          return self.all().filter(p => p.isInStock)
+        },
+        get lowStock() {
+          return self.all().filter(p => p.stockStatus === 'low-stock')
+        },
+        byWarehouse(warehouseId: string) {
+          return self.all().filter(p => p.warehouseId === warehouseId)
+        }
+      })),
 
-      WarehouseCollection: types.compose(
-        baseCollections.WarehouseCollection,
-        CollectionPersistable
-      ).named('WarehouseCollection'),
+      // Pass through - persistence is auto-included
+      WarehouseCollection: baseCollections.WarehouseCollection,
 
-      StockMovementCollection: types.compose(
-        baseCollections.StockMovementCollection.views(self => ({
-          forProduct(productId: string) {
-            return self.all().filter(m => m.productId === productId)
-          },
-          recent(hours: number) {
-            const cutoff = Date.now() - hours * 60 * 60 * 1000
-            return self.all().filter(m => m.timestamp >= cutoff)
-          }
-        })),
-        CollectionPersistable
-      ).named('StockMovementCollection')
+      StockMovementCollection: baseCollections.StockMovementCollection.views(self => ({
+        forProduct(productId: string) {
+          return self.all().filter(m => m.productId === productId)
+        },
+        recent(hours: number) {
+          const cutoff = Date.now() - hours * 60 * 60 * 1000
+          return self.all().filter(m => m.timestamp >= cutoff)
+        }
+      }))
     }),
 
-    enhanceRootStore: (RootModel) => RootModel
+    rootStore: (RootModel) => RootModel
       .views(self => ({
         get totalInventoryValue() {
           return self.productCollection.all().reduce(
@@ -599,21 +601,22 @@ export function createInventoryStore(schema: any) {
       .actions(self => ({
         async initialize() {
           try {
-            await self.productCollection.loadAll()
-            await self.warehouseCollection.loadAll()
-            await self.stockMovementCollection.loadAll()
+            // Query initial data from SQL backend
+            await self.productCollection.query().toArray()
+            await self.warehouseCollection.query().toArray()
+            await self.stockMovementCollection.query().toArray()
             return { success: true }
           } catch (err) {
             return { success: false, error: { message: String(err) } }
           }
         },
 
-        recordMovement(productId: string, type: 'in' | 'out' | 'adjustment', quantity: number) {
+        async recordMovement(productId: string, type: 'in' | 'out' | 'adjustment', quantity: number) {
           const product = self.productCollection.get(productId)
           if (!product) throw new Error(`Product not found: ${productId}`)
 
-          // Record movement
-          self.stockMovementCollection.add({
+          // Record movement via insertOne (persists to SQL)
+          await self.stockMovementCollection.insertOne({
             id: crypto.randomUUID(),
             productId,
             type,
@@ -626,8 +629,11 @@ export function createInventoryStore(schema: any) {
           product.adjustQuantity(delta)
         }
       }))
-  })
-}
+  }
+})
+
+// Export for DomainProvider integration
+export const { createStore } = inventoryDomain
 ```
 
 ---
@@ -636,12 +642,14 @@ export function createInventoryStore(schema: any) {
 
 Before considering this pattern complete:
 
-- [ ] enhanceModels returns all models (enhanced or pass-through)
+- [ ] `domain()` call uses correct `name`, `from`, `enhancements` structure
+- [ ] `enhancements.models` returns all models (enhanced or pass-through)
+- [ ] `enhancements.collections` returns all collections (enhanced or pass-through)
 - [ ] Views are pure (no side effects)
 - [ ] Actions use `getEnv<T>()` for service access
 - [ ] Complex views are layered for clarity
 - [ ] Internal actions are prefixed with underscore
-- [ ] createDomainStore exports the factory function
-- [ ] Collections needing persistence use `CollectionPersistable` mixin
+- [ ] Named export follows pattern: `export const { createStore } = {name}Domain`
 - [ ] `initialize()` returns `{ success, error? }` structure
-- [ ] Persistable collections call `loadAll()` in initialize
+- [ ] `initialize()` calls `query().toArray()` to hydrate MST from SQL backend
+- [ ] Mutations use `insertOne()`, `updateOne()`, `deleteOne()` for persistence

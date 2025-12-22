@@ -15,7 +15,7 @@ Each hook supports the **full MST composition API**: views, actions, volatile st
 **CRITICAL**: All hooks are defined inline in a single `domain()` call in `domain.ts`. Never create separate `mixin.ts` or `hooks.ts` files.
 
 **Key Benefits**:
-- CollectionPersistable is **auto-composed** on all collections (unless `persistence: false`)
+- Persistence methods (`insertOne`, `updateOne`, `deleteOne`, `query`) auto-included on all collections
 - Named domain export (`{domain}Domain`) integrates directly with `DomainProvider`
 - No factory function boilerplate required
 
@@ -64,8 +64,8 @@ store.create("ImplementationTask", "platform-features", {
     "enhancements.collections adds query methods: {list}",
     "enhancements.rootStore adds domain actions and views",
 
-    // Persistence (auto-composed)
-    "CollectionPersistable auto-composed (default behavior)"
+    // Persistence (auto-included)
+    "Persistence methods (insertOne, updateOne, deleteOne, query) auto-included"
   ],
   dependencies: [],  // Domain archetype has no service dependencies
   status: "planned",
@@ -101,7 +101,7 @@ Each enhancement hook supports the complete MST composition API:
 | `.views(self => ({}))` | Query methods, aggregations | `findBySku()`, `inStock`, `totalValue` |
 | `.actions(self => ({}))` | Batch operations | `importBatch()`, `clearAll()` |
 
-**Note**: CollectionPersistable is **auto-composed** by `domain()` — you don't need to manually compose it.
+**Note**: Persistence methods (`insertOne`, `updateOne`, `deleteOne`, `query`) are **auto-included** by `domain()` — no manual composition needed.
 
 ### enhancements.rootStore (Store Level)
 
@@ -129,7 +129,7 @@ domain({ name, from, enhancements })
 └───────────────────────────────────┘
         ↓
 ┌───────────────────────────────────┐
-│ 2. Auto: CollectionPersistable    │  ← Persistence auto-composed
+│ 2. Auto: Persistence methods      │  ← insertOne, updateOne, etc.
 └───────────────────────────────────┘
         ↓
 ┌───────────────────────────────────┐
@@ -231,11 +231,11 @@ enhancements: {
     }))
     .actions((self: any) => ({
       async createProduct(data: { name: string; sku: string; priceInCents: number }) {
-        const product = self.productCollection.create({
+        // insertOne creates and persists to SQL backend
+        const product = await self.productCollection.insertOne({
           id: crypto.randomUUID(),
           ...data,
         })
-        await self.productCollection.saveOne(product.id)
         return product
       },
     })),
@@ -311,21 +311,20 @@ export const inventoryDomain = domain({
       }))
       .actions((self: any) => ({
         async createProduct(data: { name: string; sku: string; priceInCents: number; quantity: number; categoryId?: string }) {
-          const product = self.productCollection.create({
+          // insertOne creates and persists to SQL backend
+          const product = await self.productCollection.insertOne({
             id: crypto.randomUUID(),
             ...data,
             category: data.categoryId,
           })
-          await self.productCollection.saveOne(product.id)
           return product
         },
         async deleteProduct(id: string) {
-          self.productCollection.remove(id)
-          await self.productCollection.saveAll()
+          await self.productCollection.deleteOne(id)
         },
       })),
   },
-  // CollectionPersistable auto-composed by default
+  // Persistence methods (insertOne, updateOne, deleteOne, query) auto-included
 })
 ```
 
@@ -360,7 +359,7 @@ models: (models) => ({
 })
 ```
 
-### ❌ Manual CollectionPersistable Composition
+### ❌ Manual Persistence Composition
 
 ```typescript
 // BAD: Manual persistence composition
@@ -368,7 +367,7 @@ collections: (collections) => ({
   ...collections,
   ProductCollection: types.compose(
     collections.ProductCollection,
-    CollectionPersistable  // Unnecessary - auto-composed!
+    SomePersistenceMixin  // Unnecessary - auto-included!
   )
 })
 
@@ -452,7 +451,7 @@ Before considering this pattern complete:
 - [ ] domain.name matches schema name from design skill exactly
 - [ ] enhancements.models returns all models (spread + enhanced)
 - [ ] Views are pure (no side effects)
-- [ ] CollectionPersistable is auto-composed (don't manually add)
+- [ ] Persistence methods auto-included (don't manually compose)
 - [ ] Named domain export (`{domain}Domain`) for DomainProvider integration
 - [ ] No separate mixin.ts, hooks.ts, or context files
 
@@ -476,29 +475,28 @@ packages/state-api/src/{domain}/
 
 ### Actions Use Collection Persistence Directly
 
-For internal features, root store actions use `CollectionPersistable` methods (auto-composed):
+For internal features, root store actions use auto-included persistence methods:
 
 ```typescript
 rootStore: (RootModel) => RootModel
   .actions((self: any) => ({
     async createWorkspace(name: string) {
-      const workspace = self.workspaceCollection.create({
+      // insertOne creates and persists to SQL backend
+      const workspace = await self.workspaceCollection.insertOne({
         id: crypto.randomUUID(),
         name,
         createdAt: Date.now()
       })
-      // Persist via auto-composed CollectionPersistable
-      await self.workspaceCollection.saveOne(workspace.id)
       return workspace
     },
 
     async loadAllWorkspaces() {
-      await self.workspaceCollection.loadAll()
+      // query().toArray() hydrates MST from SQL backend
+      await self.workspaceCollection.query().toArray()
     },
 
     async deleteWorkspace(id: string) {
-      self.workspaceCollection.remove(id)
-      await self.workspaceCollection.saveAll()
+      await self.workspaceCollection.deleteOne(id)
     }
   }))
 ```
@@ -516,8 +514,8 @@ store.create("ImplementationTask", "platform-features", {
     "domain.ts exports const {domain}Domain = domain({ name, from, enhancements })",
     "domain.name MUST match schema name from design skill",
     "enhancements.models adds computed views: {list}",
-    "enhancements.collections adds query methods (persistence auto-composed)",
-    "enhancements.rootStore adds CRUD actions using collection persistence methods",
+    "enhancements.collections adds query methods (persistence auto-included)",
+    "enhancements.rootStore adds CRUD actions using insertOne/updateOne/deleteOne",
     "NO IService interface - pure domain store"
   ],
   dependencies: [],  // No service-interface or environment dependencies

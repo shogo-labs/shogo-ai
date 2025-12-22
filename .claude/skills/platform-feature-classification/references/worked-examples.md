@@ -17,7 +17,7 @@ uncertainties: ["does it call external API or just store data locally?"]
 
 **Classification Evidence from Analysis:**
 - `classification_evidence`: "No external API calls found in requirements"
-- `classification_evidence`: "Stock levels stored via CollectionPersistable"
+- `classification_evidence`: "Stock levels stored locally via SQL backend"
 - `classification_evidence`: "Warehouse IDs are foreign keys, not fetched from API"
 - `pattern`: "Similar local-only features use enhancement-hooks pattern"
 
@@ -36,7 +36,7 @@ Result: DOMAIN
 **Evidence Checklist:**
 - [x] All data operations local
 - [x] No external API calls
-- [x] Persistence via CollectionPersistable
+- [x] Local persistence via SQL backend
 - [x] References are just stored IDs
 
 **Correction**: Hybrid → Domain
@@ -44,9 +44,8 @@ Result: DOMAIN
 
 **Pattern Assignment:**
 - enhancement-hooks
-- collection-persistable
 
-**Task Count**: 4 (domain store, exports, context, demo)
+**Task Count**: 3 (domain store, exports, demo)
 
 ---
 
@@ -233,10 +232,9 @@ Result: DOMAIN (corrected from Hybrid)
 
 **Pattern Assignment:**
 - enhancement-hooks
-- collection-persistable
 - (NO service-interface)
 
-**Task Count**: 4 (not 7)
+**Task Count**: 3 (not 7)
 
 ---
 

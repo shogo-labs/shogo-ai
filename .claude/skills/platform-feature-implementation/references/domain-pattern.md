@@ -7,7 +7,7 @@ The golden path for implementing domain logic in Shogo. This pattern ensures all
 **Schema defines structure. Enhancements add behavior.**
 
 - ArkType scope defines entity shapes and relationships
-- `domain()` generates MST models, collections, and root store with **auto-composed persistence**
+- `domain()` generates MST models, collections, and root store with **auto-included persistence methods**
 - Enhancement hooks add computed views, queries, and domain actions
 
 ## File Structure
@@ -96,7 +96,7 @@ export const InventoryDomain = scope({
 // 2. DOMAIN RESULT
 // ============================================================
 // CRITICAL: name MUST match the schema name from design skill
-// This ensures persistence loads from correct .schemas/{name}/data/ directory
+// This ensures persistence loads from correct schema tables in the SQL backend
 
 export const inventoryDomain = domain({
   name: 'inventory',  // Must match schema name exactly
@@ -130,7 +130,7 @@ export const inventoryDomain = domain({
 
     // --------------------------------------------------------
     // collections: Add query methods
-    // NOTE: CollectionPersistable is AUTO-COMPOSED - don't add manually!
+    // NOTE: Persistence methods (insertOne, updateOne, deleteOne, query) are auto-included
     // --------------------------------------------------------
     collections: (collections) => ({
       ...collections,
@@ -175,37 +175,29 @@ export const inventoryDomain = domain({
           },
         }))
         .actions((self: any) => ({
-          // CRUD using auto-composed CollectionPersistable
+          // CRUD using auto-included persistence methods
           async createProduct(data: { sku: string; name: string; priceInCents: number; categoryId?: string }) {
-            const product = self.productCollection.create({
+            // insertOne creates and persists to SQL backend
+            const product = await self.productCollection.insertOne({
               id: crypto.randomUUID(),
               ...data,
               category: data.categoryId,
               createdAt: Date.now(),
             })
-            await self.productCollection.saveOne(product.id)
             return product
           },
 
           async updateProduct(id: string, changes: Partial<{ name: string; priceInCents: number }>) {
-            const product = self.productCollection.get(id)
-            if (product) {
-              for (const [key, value] of Object.entries(changes)) {
-                product[key] = value
-              }
-              await self.productCollection.saveOne(id)
-            }
-            return product
+            await self.productCollection.updateOne(id, changes)
+            return self.productCollection.get(id)
           },
 
           async deleteProduct(id: string) {
-            self.productCollection.remove(id)
-            await self.productCollection.saveAll()
+            await self.productCollection.deleteOne(id)
           },
         })),
   },
-  // CollectionPersistable auto-composed by default
-  // Use `persistence: false` only if you explicitly don't want persistence
+  // Persistence methods (insertOne, updateOne, deleteOne, query) auto-included by default
 })
 
 // ============================================================
@@ -239,10 +231,13 @@ The design phase creates Enhanced JSON Schema. Translate to ArkType:
 | `"x-mst-type": "identifier"` | `id: 'string.uuid'` (first field, validates UUID) |
 | `"x-reference-type": "single"` | `product: 'Product'` (entity name only) |
 | `"x-reference-type": "array"` | `tags: 'Tag[]'` (entity name with `[]`) |
+| `"x-reference-target": "EntityName"` | Not used in ArkType (DDL generation only) |
 | `"default": value` | `'type = value'` (e.g., `'boolean = true'`) |
 | `"x-computed": true` | Include the array - system auto-detects computed inverses |
 
 **Reference syntax key insight**: The system detects references by checking if the type name exists as another entity in the scope. You don't use `.id` suffix - just the entity name. MST handles ID↔instance translation automatically at runtime.
+
+**DDL Note**: The `x-reference-target` extension in Enhanced JSON Schema is used by `ddl.execute` to generate foreign key constraints. It's not needed in ArkType since ArkType handles MST reference resolution, not SQL schema generation.
 
 ### Identifier Format
 
@@ -294,28 +289,35 @@ export const UserDomain = scope({
 | `types.model('Product', { id: types.identifier, ... })` | `scope({ Product: { id: 'string.uuid', ... } })` |
 | `createStoreFromScope(Scope, { ... })` | `domain({ name, from: Scope, enhancements: { ... } })` |
 | Creating `mixin.ts` or `hooks.ts` files | Put all enhancements in single `domain()` call |
-| Manual `CollectionPersistable` composition | Rely on auto-composition (it's the default!) |
+| Manual persistence composition | Rely on auto-included persistence methods |
+| `saveOne()`, `saveAll()`, `loadAll()` | Use `insertOne()`, `updateOne()`, `deleteOne()`, `query()` |
 | `export function createXStore()` | `export const xDomain = domain({ ... })` |
 | Custom context per domain | Use shared `DomainProvider` + `useDomains()` |
-| NullPersistence in demo pages | Use `MCPPersistence` for client demos |
 
 ---
 
 ## Testing the Domain
 
+Unit tests use in-memory backend for fast, isolated testing. The backend registry resolves to `MemoryQueryExecutor` when configured with `backend: "memory"`.
+
 ```typescript
 // __tests__/domain.test.ts
 import { describe, test, expect, beforeEach } from 'bun:test'
 import { inventoryDomain } from '../domain'
-import { NullPersistence } from '../../persistence/null'
+import { NullPersistence, createBackendRegistry, resetMetaStore, clearRuntimeStores } from '@shogo/state-api'
 
 describe('InventoryDomain', () => {
   let store: any
 
   beforeEach(() => {
+    // Reset state between tests
+    resetMetaStore()
+    clearRuntimeStores()
+
     const env = {
       services: {
         persistence: new NullPersistence(),
+        backendRegistry: createBackendRegistry({ default: 'memory' }),
       },
       context: {
         schemaName: 'test-inventory',
@@ -347,12 +349,13 @@ describe('InventoryDomain', () => {
   })
 
   test('reference resolution works', async () => {
-    const category = store.categoryCollection.create({
+    // Use insertOne for creating entities with persistence
+    const category = await store.categoryCollection.insertOne({
       id: crypto.randomUUID(),
       name: 'Electronics',
     })
 
-    const product = store.productCollection.create({
+    const product = await store.productCollection.insertOne({
       id: crypto.randomUUID(),
       sku: 'SKU-001',
       name: 'Widget',
@@ -434,8 +437,8 @@ export const InventoryDemoPage = observer(function InventoryDemoPage() {
 ### Key Points
 
 - **No custom context** — just add to DomainProvider domains map
-- **No manual loading** — DomainProvider calls loadAll() on mount
-- **MCPPersistence for demos** — proves full persistence pipeline works
+- **No manual loading** — DomainProvider initializes stores on mount
+- **SQL backend for demos** — proves full persistence pipeline works (postgres/sqlite)
 - **observer() required** — for MobX reactivity
 
 ---
@@ -470,14 +473,13 @@ export const paymentDomain = domain({
           const env = getEnv<IEnvironment>(self)
           const result = await env.services.payment.charge({ amount, method })
 
-          // Sync result to local state
-          const transaction = self.transactionCollection.create({
+          // Sync result to local state via insertOne
+          const transaction = await self.transactionCollection.insertOne({
             id: result.id,
             amount: result.amount,
             status: result.status,
             processedAt: Date.now(),
           })
-          await self.transactionCollection.saveOne(transaction.id)
 
           return transaction
         },

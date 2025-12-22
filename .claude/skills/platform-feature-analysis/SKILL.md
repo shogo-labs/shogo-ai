@@ -48,7 +48,7 @@ Domain logic is NEVER "web-app specific". This is a **core architectural princip
 **Always goes to `packages/state-api/src/{domain}/`:**
 - Service interfaces (`I{Domain}Service`)
 - Service implementations (`{provider}.ts`, `mock.ts`)
-- Domain store (`domain.ts` with `createStoreFromScope`)
+- Domain store (`domain.ts` with `domain()` API)
 - Domain types and entities
 
 **Always goes to `apps/web/src/`:**
@@ -77,9 +77,19 @@ Use when session status = `discovery`
 
 ```javascript
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
-requirements = store.list("Requirement", "platform-features", { session: session.id })
+
+session = store.query({
+  model: "FeatureSession",
+  schema: "platform-features",
+  filter: { name: "..." },
+  terminal: "first"
+})
+
+requirements = store.query({
+  model: "Requirement",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
 ```
 
 Present summary:
@@ -113,7 +123,7 @@ For each affected package, explore to understand:
 |---------|------------------|-------------------|
 | Service Interface | `interface I{X}Service`, domain types | `src/{domain}/types.ts` |
 | Environment Extension | `I{X}Environment extends IEnvironment` | `src/environment/types.ts` |
-| Collection Persistence | `CollectionPersistable` mixin usage | `src/{domain}/domain.ts` |
+| Collection Persistence | Auto-included via `domain()` API (SQL backends) | `src/{domain}/domain.ts` |
 | Enhancement Hooks | `enhanceModels`, `enhanceCollections` | `src/{domain}/hooks.ts` |
 
 See pattern references for full structure details:
@@ -233,10 +243,25 @@ Use when session status = `testing`
 
 ```javascript
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
-findings = store.list("AnalysisFinding", "platform-features", { session: session.id })
-integrationPoints = store.list("IntegrationPoint", "platform-features", { session: session.id })
+
+session = store.query({
+  model: "FeatureSession",
+  schema: "platform-features",
+  filter: { name: "..." },
+  terminal: "first"
+})
+
+findings = store.query({
+  model: "AnalysisFinding",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+integrationPoints = store.query({
+  model: "IntegrationPoint",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
 ```
 
 Present summary:
