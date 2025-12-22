@@ -94,7 +94,7 @@ Extract requirements from intent. For each requirement:
 - **should** - Important, expected behavior
 - **could** - Nice to have, can defer
 
-Create Requirement entities:
+Create Requirement entities (single):
 ```
 store.create("Requirement", "platform-features", {
   id: uuid(),
@@ -106,6 +106,16 @@ store.create("Requirement", "platform-features", {
   createdAt: Date.now()
 })
 ```
+
+Or batch create (more efficient for multiple requirements):
+```
+store.create("Requirement", "platform-features", [
+  { id: "req-001", session: sessionId, name: "feature-a", description: "...", priority: "must", status: "proposed", createdAt: Date.now() },
+  { id: "req-002", session: sessionId, name: "feature-b", description: "...", priority: "should", status: "proposed", createdAt: Date.now() },
+  { id: "req-003", session: sessionId, name: "feature-c", description: "...", priority: "could", status: "proposed", createdAt: Date.now() }
+])
+```
+**Important**: Pass the array directly, NOT as a JSON string.
 
 Typical count: 3-5 for simple features, 5-7 for complex ones.
 
