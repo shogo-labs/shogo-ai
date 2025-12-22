@@ -210,7 +210,10 @@ export async function executeStoreCreate(
 export function registerStoreCreate(server: FastMCP) {
   server.addTool({
     name: "store.create",
-    description: "Create entity instances. Single (data: object) or batch (data: array).",
+    description:
+      "Create entity instances. " +
+      "Single: data is an object {id, ...}. " +
+      "Batch: data is an array [{id, ...}, {id, ...}] (pass array directly, NOT as JSON string).",
     parameters: Params,
     execute: async (args: StoreCreateParams) => {
       const result = await executeStoreCreate(args)
