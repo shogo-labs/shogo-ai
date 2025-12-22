@@ -24,6 +24,7 @@ import type { SqlDialect } from "./types"
  * - number → DOUBLE PRECISION
  * - boolean → BOOLEAN
  * - array → JSONB
+ * - object → JSONB
  *
  * @class PostgresDialect
  * @implements {SqlDialect}
@@ -65,6 +66,9 @@ class PostgresDialect implements SqlDialect {
     // Handle arrays (stored as JSONB in PostgreSQL)
     if (jsonType === "array") return "JSONB"
 
+    // Handle objects (stored as JSONB in PostgreSQL)
+    if (jsonType === "object") return "JSONB"
+
     // Default fallback
     return "TEXT"
   }
@@ -103,6 +107,7 @@ class PostgresDialect implements SqlDialect {
  * - number → REAL
  * - boolean → INTEGER (0 = false, 1 = true)
  * - array → TEXT (stored as JSON string)
+ * - object → TEXT (stored as JSON string)
  *
  * @class SqliteDialect
  * @implements {SqlDialect}
@@ -139,6 +144,9 @@ class SqliteDialect implements SqlDialect {
 
     // Arrays stored as JSON TEXT
     if (jsonType === "array") return "TEXT"
+
+    // Objects stored as JSON TEXT
+    if (jsonType === "object") return "TEXT"
 
     // Default fallback
     return "TEXT"

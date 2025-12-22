@@ -1,12 +1,12 @@
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
-import { getMetaStore } from "@shogo/state-api"
-import { cacheRuntimeStore } from "@shogo/state-api"
-import { enhancedJsonSchemaToMST } from "@shogo/state-api"
-import { loadSchema } from "@shogo/state-api"
-import { buildEnhanceCollections } from "@shogo/state-api"
-import { FileSystemPersistence } from "@shogo/state-api"
-import type { IEnvironment } from "@shogo/state-api"
+import {
+  getMetaStore,
+  cacheRuntimeStore,
+  loadSchema,
+  domain,
+  FileSystemPersistence
+} from "@shogo/state-api"
 import { getEffectiveWorkspace } from "../state"
 import { getGlobalBackendRegistry } from "../postgres-init"
 
@@ -43,33 +43,28 @@ export function registerSchemaLoad(server: FastMCP) {
         const { metadata, enhanced } = await loadSchema(name, effectiveWorkspace)
         const schema = metaStore.ingestEnhancedJsonSchema(enhanced, metadata)
 
-        // 3. Generate fresh runtime store
+        // 3. Create domain from enhanced schema
+        // domain() computes and injects all SQL metadata (columnPropertyMaps,
+        // propertyTypeMaps, arrayReferenceMaps) into the environment automatically
+        // All collection mixins enabled by default (persistence, queryable, mutatable)
         const enhancedWithMetadata = schema.toEnhancedJson
-        const { createStore } = enhancedJsonSchemaToMST(enhancedWithMetadata, {
-          generateActions: true,
-          validateReferences: false,
-
-          // Enhance collections with all mixins:
-          // - CollectionPersistable (file persistence)
-          // - CollectionQueryable (IQueryable with MST sync for remote backends)
-          // - CollectionMutatable (insertOne, updateOne, deleteOne with backend writes)
-          enhanceCollections: buildEnhanceCollections(undefined, true, true, true)
+        const d = domain({
+          name: schema.name,
+          from: enhancedWithMetadata
         })
 
-        // 4. Create environment with persistence service and backend registry
-        const env: IEnvironment = {
+        // 4. Create runtime store with environment
+        // domain().createStore() handles injecting SQL metadata maps
+        const runtimeStore = d.createStore({
           services: {
             persistence: new FileSystemPersistence(),
             backendRegistry: getGlobalBackendRegistry()
           },
           context: {
-            schemaName: schema.name,  // Use string name instead of entity
+            schemaName: schema.name,
             location: effectiveWorkspace
           }
-        }
-
-        // 5. Create runtime store with environment
-        const runtimeStore = createStore(env)
+        })
 
         // 6. Cache runtime store (with workspace for proper isolation)
         console.log('[schema.load] Caching runtime store for schema:', schema.id, 'with workspace:', effectiveWorkspace)

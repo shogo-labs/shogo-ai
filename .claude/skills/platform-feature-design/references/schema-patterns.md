@@ -35,7 +35,8 @@
 |-----------|--------|---------|
 | `x-mst-type` | `"identifier"`, `"reference"`, `"maybe-reference"` | MST type mapping |
 | `x-reference-type` | `"single"`, `"array"` | Reference cardinality - activates reference detection |
-| `x-arktype` | Entity name (e.g., `"User"`, `"User[]"`) | Target model for reference resolution |
+| `x-arktype` | Entity name (e.g., `"User"`, `"User[]"`) | Target model for MST reference resolution |
+| `x-reference-target` | Entity name (e.g., `"User"`) | Target entity for DDL foreign key generation |
 | `x-computed` | `true` | Marks computed/inverse fields (not persisted) |
 | `x-inverse` | Property name | Source field for computed inverse arrays |
 
@@ -48,7 +49,8 @@
 | Extension | Required? | Purpose |
 |-----------|-----------|---------|
 | `type: "string"` | YES | MST stores references as string IDs |
-| `x-arktype` | YES | Target entity name - used by schematic pipeline |
+| `x-arktype` | YES | Target entity name - used by MST schematic pipeline |
+| `x-reference-target` | YES | Target entity name - used by DDL generator for foreign keys |
 | `x-reference-type` | YES | `"single"` or `"array"` - activates reference detection |
 | `x-mst-type` | YES | `"reference"` or `"maybe-reference"` for optional refs |
 
@@ -58,6 +60,7 @@
 "user": {
   "type": "string",
   "x-arktype": "User",
+  "x-reference-target": "User",
   "x-mst-type": "reference",
   "x-reference-type": "single"
 }
@@ -69,6 +72,7 @@
 "reviewer": {
   "type": "string",
   "x-arktype": "User",
+  "x-reference-target": "User",
   "x-mst-type": "maybe-reference",
   "x-reference-type": "single"
 }
@@ -81,6 +85,7 @@
   "type": "array",
   "items": { "type": "string" },
   "x-arktype": "Tag[]",
+  "x-reference-target": "Tag",
   "x-mst-type": "reference",
   "x-reference-type": "array"
 }
@@ -108,7 +113,8 @@ Computed arrays are populated automatically from the inverse side of a relations
 Before finalizing schema, verify EVERY reference field has:
 
 - [ ] `"type": "string"` (or `"type": "array"` with `"items": { "type": "string" }` for arrays)
-- [ ] `"x-arktype": "EntityName"` (or `"EntityName[]"` for arrays)
+- [ ] `"x-arktype": "EntityName"` (or `"EntityName[]"` for arrays) - for MST
+- [ ] `"x-reference-target": "EntityName"` - for DDL foreign key generation
 - [ ] `"x-reference-type": "single"` or `"array"`
 - [ ] `"x-mst-type": "reference"` or `"maybe-reference"` (for optional refs)
 - [ ] NO spurious `"enum": []` - remove if present
@@ -126,6 +132,7 @@ Before finalizing schema, verify EVERY reference field has:
 "organization": {
   "type": "string",
   "x-arktype": "Organization",
+  "x-reference-target": "Organization",
   "x-mst-type": "reference",
   "x-reference-type": "single"
 }
@@ -270,166 +277,37 @@ This ensures:
 
 ## Persistence Configuration (x-persistence)
 
-The `x-persistence` extension controls how entities are stored on disk.
+The `x-persistence` extension configures the SQL backend for entity storage.
 
-### Sensible Defaults
+### Backend Configuration
 
-**For most features, use:**
-- Single domain root entity (e.g., `Workspace`, `Project`, `Organization`)
-- `strategy: "entity-per-file"` with `displayKey` set to a sluggable field
-- `nested: true` for child entities
-- `partitionKey` as discriminator when entity has multiple parent references
+**All schemas use a simple backend declaration at the schema root level:**
 
-### Configuration Options
-
-| Option | Purpose | Default Recommendation |
-|--------|---------|------------------------|
-| `strategy` | File organization | `"entity-per-file"` |
-| `displayKey` | Human-readable filenames | Name/title field |
-| `nested` | Folder hierarchy under parent | `true` for children with REQUIRED parent ref |
-| `partitionKey` | Disambiguate multiple refs | First single reference |
-
-### Nested Persistence Rules (CRITICAL)
-
-**`nested: true` requires at least one REQUIRED reference** to determine the parent path.
-
-| Entity Type | Can Use `nested: true`? | Why |
-|-------------|-------------------------|-----|
-| Child with required parent ref | ✅ YES | Parent path is deterministic |
-| Polymorphic with all optional refs | ❌ NO | Cannot determine which parent to nest under |
-| Entity with multiple required refs | ✅ YES with `partitionKey` | partitionKey picks which ref is the parent |
-
-**Polymorphic entities** (e.g., Membership that can belong to Org OR Team OR App):
 ```json
-// ❌ WRONG - all refs are maybe-reference, no deterministic parent
-"Membership": {
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "inventory",
   "x-persistence": {
-    "strategy": "entity-per-file",
-    "nested": true,
-    "partitionKey": "organization"
+    "backend": "postgres"
   },
-  "properties": {
-    "organization": { "x-mst-type": "maybe-reference", ... },
-    "team": { "x-mst-type": "maybe-reference", ... },
-    "app": { "x-mst-type": "maybe-reference", ... }
-  }
-}
-
-// ✅ CORRECT - flat storage for polymorphic entities
-"Membership": {
-  "x-persistence": {
-    "strategy": "entity-per-file",
-    "displayKey": "id"
-  },
-  "properties": {
-    "organization": { "x-mst-type": "maybe-reference", ... },
-    "team": { "x-mst-type": "maybe-reference", ... },
-    "app": { "x-mst-type": "maybe-reference", ... }
+  "$defs": {
+    "Product": { ... },
+    "Warehouse": { ... }
   }
 }
 ```
 
-### displayKey Selection
+**Note**: The system automatically handles fallback: postgres → sqlite (durable) → sqlite (memory). You don't need to configure fallback behavior.
 
-Choose a field that is:
-- **Unique** within scope (or mostly unique)
-- **Human-readable** (not UUID)
-- **Slug-safe** (auto-sanitized, but cleaner is better)
+### What You Don't Need to Configure
 
-Common choices: `name`, `title`, `slug`, `identifier`
+The SQL backend handles these concerns automatically:
+- Table creation (via DDL execution)
+- Entity storage and retrieval
+- Reference resolution
+- Query filtering and ordering
 
-**Why displayKey matters**: Creates navigable folder structures and git-friendly file names instead of UUID-based paths.
-
-### Standard Patterns
-
-**Root entity** (top-level container):
-```json
-"Workspace": {
-  "type": "object",
-  "x-persistence": {
-    "strategy": "entity-per-file",
-    "displayKey": "name"
-  },
-  "properties": {
-    "id": { "type": "string", "format": "uuid", "x-mst-type": "identifier" },
-    "name": { "type": "string" }
-  }
-}
-```
-
-**Nested child** (belongs to parent):
-```json
-"Project": {
-  "type": "object",
-  "x-persistence": {
-    "strategy": "entity-per-file",
-    "displayKey": "name",
-    "nested": true
-  },
-  "properties": {
-    "id": { "type": "string", "format": "uuid", "x-mst-type": "identifier" },
-    "name": { "type": "string" },
-    "workspace": {
-      "type": "string",
-      "x-arktype": "Workspace",
-      "x-mst-type": "reference",
-      "x-reference-type": "single"
-    }
-  }
-}
-```
-
-**Multi-ref entity** (needs partitionKey to disambiguate):
-```json
-"TaskExecution": {
-  "type": "object",
-  "x-persistence": {
-    "strategy": "entity-per-file",
-    "partitionKey": "run",
-    "nested": true
-  },
-  "properties": {
-    "run": {
-      "type": "string",
-      "x-arktype": "ImplementationRun",
-      "x-mst-type": "reference",
-      "x-reference-type": "single"
-    },
-    "task": {
-      "type": "string",
-      "x-arktype": "ImplementationTask",
-      "x-mst-type": "reference",
-      "x-reference-type": "single"
-    }
-  }
-}
-```
-
-### Resulting Disk Layout
-
-With nested persistence and displayKey, you get human-navigable structures:
-
-```
-.schemas/{schema}/data/
-├── Workspace/
-│   └── my-project/
-│       ├── _index.json           # Workspace entity (has nested children)
-│       └── Project/
-│           ├── backend-api.json  # Project entity
-│           └── frontend-app.json
-```
-
-**`_index.json` convention**: When a parent entity has nested children, the parent uses `_index.json` instead of `{name}.json` to allow the child folder to exist alongside.
-
-### Strategy Comparison
-
-| Strategy | When to Use |
-|----------|-------------|
-| `entity-per-file` | Most features - one file per entity, git-friendly |
-| `array-per-partition` | High-volume entities always queried by same key |
-| `flat` | Legacy/simple schemas with few entities |
-
-**Default**: Always start with `entity-per-file` + `displayKey` + `nested: true`.
+**No entity-level persistence config is needed.** The old `strategy`, `displayKey`, `nested`, and `partitionKey` options are no longer used.
 
 ---
 
@@ -441,11 +319,6 @@ This example demonstrates ALL required patterns correctly applied:
 "Order": {
   "type": "object",
   "description": "A customer order",
-  "x-persistence": {
-    "strategy": "entity-per-file",
-    "displayKey": "orderNumber",
-    "nested": true
-  },
   "properties": {
     "id": {
       "type": "string",
@@ -459,6 +332,7 @@ This example demonstrates ALL required patterns correctly applied:
     "customer": {
       "type": "string",
       "x-arktype": "Customer",
+      "x-reference-target": "Customer",
       "x-mst-type": "reference",
       "x-reference-type": "single"
     },
@@ -466,6 +340,7 @@ This example demonstrates ALL required patterns correctly applied:
       "type": "string",
       "description": "Optional staff member handling this order",
       "x-arktype": "User",
+      "x-reference-target": "User",
       "x-mst-type": "maybe-reference",
       "x-reference-type": "single"
     },
@@ -492,9 +367,8 @@ This example demonstrates ALL required patterns correctly applied:
 
 **Key patterns demonstrated:**
 - `id` with `x-mst-type: "identifier"` and `format: "uuid"`
-- Required reference (`customer`) with all 4 required extensions
-- Optional reference (`assignee`) with `x-mst-type: "maybe-reference"`
+- Required reference (`customer`) with all 5 required extensions (including `x-reference-target` for DDL)
+- Optional reference (`assignee`) with `x-mst-type: "maybe-reference"` and `x-reference-target`
 - Enum field (`status`) with actual values, NOT empty `enum: []`
 - Computed inverse array (`lineItems`) with `x-arktype`, `x-computed`, and `x-inverse`
-- `x-persistence` with `strategy`, `displayKey`, and `nested`
 - No spurious `enum: []` on any property

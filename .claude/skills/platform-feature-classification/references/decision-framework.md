@@ -53,7 +53,7 @@ Example INVALID evidence:
 |-----------|------------------|
 | Local data operations | All CRUD happens via MST mutations |
 | No external API | Requirements don't mention external service calls |
-| MST persistence | CollectionPersistable or equivalent for storage |
+| Local persistence | Data stored locally via SQL backend (automatic with domain()) |
 | Foreign keys acceptable | References to external IDs (user IDs) are stored, not fetched |
 
 **Key distinction**: Storing `userId: string` is NOT calling an external API.
@@ -180,8 +180,8 @@ const patternMap = {
     "enhancement-hooks"      // Domain logic in store
   ],
   domain: [
-    "enhancement-hooks",     // Domain logic in store
-    "collection-persistable" // Direct MST persistence
+    "enhancement-hooks"      // Domain logic in store
+    // Persistence is automatic via domain() + SQL backend
     // NO service-interface - this is key!
   ],
   hybrid: [

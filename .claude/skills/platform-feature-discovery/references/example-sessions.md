@@ -155,7 +155,7 @@ Summary provided. This feature may not need a new schema (localStorage is suffic
 | must | Delete entity by ID from specified model/schema |
 | must | Return success/failure status |
 | must | Handle non-existent entity gracefully |
-| should | Persist deletion (remove from .json file) |
+| should | Persist deletion to database |
 | could | Support batch delete by filter |
 
 **Requirements Created**: 5 entities linked to session
