@@ -199,6 +199,7 @@ function escapeTableNameForDialect(tableName: string, dialect: SqlDialect): stri
  *
  * @param {ForeignKeyDef} fk - Foreign key definition to convert
  * @param {SqlDialect} dialect - Target SQL dialect
+ * @param {DDLGenerationOptions} options - Optional generation options
  * @returns {string} ALTER TABLE statement (PostgreSQL) or comment (SQLite)
  *
  * @example
@@ -213,9 +214,17 @@ function escapeTableNameForDialect(tableName: string, dialect: SqlDialect): stri
  * }
  * foreignKeyDefToSQL(fk, postgresDialect)
  * // => 'ALTER TABLE "users" ADD CONSTRAINT "fk_users_org_id" FOREIGN KEY ("organization_id") REFERENCES "organizations" ("id") ON DELETE CASCADE;'
+ *
+ * // With ifNotExists for idempotent execution
+ * foreignKeyDefToSQL(fk, postgresDialect, { ifNotExists: true })
+ * // => 'DO $$ BEGIN ALTER TABLE ... ADD CONSTRAINT ...; EXCEPTION WHEN duplicate_object THEN NULL; END $$;'
  * ```
  */
-export function foreignKeyDefToSQL(fk: ForeignKeyDef, dialect: SqlDialect): string {
+export function foreignKeyDefToSQL(
+  fk: ForeignKeyDef,
+  dialect: SqlDialect,
+  options?: DDLGenerationOptions
+): string {
   const escapedTable = escapeTableNameForDialect(fk.table, dialect)
   const escapedColumn = dialect.escapeIdentifier(fk.column)
   const escapedRefTable = escapeTableNameForDialect(fk.referencesTable, dialect)
@@ -224,13 +233,22 @@ export function foreignKeyDefToSQL(fk: ForeignKeyDef, dialect: SqlDialect): stri
 
   if (dialect.name === "postgresql") {
     // PostgreSQL: ALTER TABLE with named constraint
-    return (
+    const alterStatement =
       `ALTER TABLE ${escapedTable} ` +
       `ADD CONSTRAINT ${escapedConstraintName} ` +
       `FOREIGN KEY (${escapedColumn}) ` +
       `REFERENCES ${escapedRefTable} (${escapedRefColumn}) ` +
-      `ON DELETE ${fk.onDelete};`
-    )
+      `ON DELETE ${fk.onDelete}`
+
+    if (options?.ifNotExists) {
+      // Wrap in DO block with exception handler for idempotent execution
+      return (
+        `DO $$ BEGIN ${alterStatement}; ` +
+        `EXCEPTION WHEN duplicate_object THEN NULL; END $$;`
+      )
+    }
+
+    return `${alterStatement};`
   } else {
     // SQLite: Inline FK comment (FKs must be in CREATE TABLE for SQLite)
     return (
@@ -306,7 +324,7 @@ export function ddlOutputToSQL(
   // SQLite FKs are defined inline in CREATE TABLE - no separate statements needed
   if (dialect.name === "postgresql") {
     for (const fk of ddl.foreignKeys) {
-      statements.push(foreignKeyDefToSQL(fk, dialect))
+      statements.push(foreignKeyDefToSQL(fk, dialect, options))
     }
   }
   // SQLite: FKs already included inline in CREATE TABLE above
