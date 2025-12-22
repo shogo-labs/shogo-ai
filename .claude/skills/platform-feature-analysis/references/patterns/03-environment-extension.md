@@ -4,12 +4,14 @@
 
 ## Concept
 
-MST stores need access to services (persistence, email, payments, etc.) but shouldn't import them directly. The environment pattern provides:
+MST stores need access to services (email, payments, external APIs, etc.) but shouldn't import them directly. The environment pattern provides:
 
 1. Type-safe service injection at store creation
 2. Access to services within MST actions via `getEnv()`
 3. Swappable implementations (production vs. test)
 4. Clear dependency declaration
+
+> **Note**: Persistence services are auto-injected by the SQL backend system. You only need to extend the environment for custom domain services (external APIs, providers). Basic CRUD operations use the built-in `insertOne()`, `updateOne()`, `deleteOne()`, `query()` methods without manual environment wiring.
 
 ---
 

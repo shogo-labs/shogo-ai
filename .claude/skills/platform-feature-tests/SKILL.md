@@ -29,10 +29,25 @@ Transform implementation tasks into test specifications.
 
 ```javascript
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("FeatureSession", "platform-features", { name: "..." })[0]
-requirements = store.list("Requirement", "platform-features", { session: session.id })
-tasks = store.list("ImplementationTask", "platform-features", { session: session.id })
+
+session = store.query({
+  model: "FeatureSession",
+  schema: "platform-features",
+  filter: { name: "..." },
+  terminal: "first"
+})
+
+requirements = store.query({
+  model: "Requirement",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
+
+tasks = store.query({
+  model: "ImplementationTask",
+  schema: "platform-features",
+  filter: { session: session.id }
+})
 ```
 
 Present summary:

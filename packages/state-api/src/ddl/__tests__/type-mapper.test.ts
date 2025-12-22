@@ -99,6 +99,45 @@ describe("type-mapper", () => {
   })
 
   /**
+   * Test Specification: test-type-mapper-004
+   * Scenario: Map object type to JSONB or TEXT
+   *
+   * Given: Property with type: 'object' (with or without nested properties)
+   * When: mapPropertyType is called
+   * Then: Returns 'JSONB' for PostgreSQL
+   *       Returns 'TEXT' for SQLite
+   */
+  describe("Map object type to JSONB or TEXT", () => {
+    test("returns JSONB for PostgreSQL", () => {
+      const property = {
+        type: "object",
+        properties: {
+          foo: { type: "string" }
+        }
+      }
+      const dialect = createPostgresDialect()
+
+      const result = mapPropertyType(property, dialect)
+
+      expect(result).toBe("JSONB")
+    })
+
+    test("returns TEXT for SQLite", () => {
+      const property = {
+        type: "object",
+        properties: {
+          foo: { type: "string" }
+        }
+      }
+      const dialect = createSqliteDialect()
+
+      const result = mapPropertyType(property, dialect)
+
+      expect(result).toBe("TEXT")
+    })
+  })
+
+  /**
    * Additional acceptance criteria tests
    */
   describe("Additional type mappings", () => {

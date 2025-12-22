@@ -82,7 +82,7 @@ Before diving into implementation, skills must classify what *kind* of feature i
 - Pattern 1: Service Interface (always)
 - Pattern 2: Environment Extension (always)
 - Pattern 4: Mock Service Testing (always)
-- Mixin Composition (Pattern 15, if adding behaviors)
+- Custom collection behaviors via domain() enhancements (if needed)
 
 ---
 
@@ -244,19 +244,19 @@ The most critical distinction is whether a feature calls **external APIs** or op
 ### Internal Domain Feature (pure MST, NO service layer)
 
 - All data is local to the application
-- Source of truth is MST store + persistence
+- Source of truth is MST store + SQL persistence (postgres/sqlite)
 - Operations are direct MST mutations
-- `CollectionPersistable` mixin handles save/load
+- Persistence is automatic via SQL backends (no manual mixin needed)
 - Examples: workspace/team management, project tracking, content management
 
-**Pattern**: Create domain store with enhancement hooks only. NO `IService` interface needed—actions mutate MST directly and use `CollectionPersistable` for persistence.
+**Pattern**: Create domain store with `domain()` API and enhancement hooks. NO `IService` interface needed—actions mutate MST directly and persistence happens automatically via configured SQL backend.
 
 ### Decision Rule
 
 ```
 Does this feature's CORE DATA live in an external system?
 ├── Yes → External Service pattern (IService + provider implementations)
-└── No  → Internal Domain pattern (MST store + CollectionPersistable only)
+└── No  → Internal Domain pattern (MST store + SQL backend persistence)
 ```
 
 **Critical distinction**: The question is about where the feature's *own data* lives, NOT whether it references other entities.
@@ -289,7 +289,7 @@ Don't classify a feature as "Hybrid" or "Service" just because it *references* e
 - User sessions managed by Supabase Auth → External Service (sessions live externally)
 
 ### Unnecessary Service Layer
-Don't create service interfaces (e.g., `I{Domain}Service`) for features that are purely local. If all data lives in MST and persists via `CollectionPersistable`, a service interface adds complexity without benefit.
+Don't create service interfaces (e.g., `I{Domain}Service`) for features that are purely local. If all data lives in MST and persists via SQL backends, a service interface adds complexity without benefit.
 
 ---
 

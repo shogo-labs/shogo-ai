@@ -248,7 +248,7 @@ describe("{scenario}", () => {
 |----------------|--------------|
 | "user calls signup" | `await service.signup(...)` |
 | "user clicks button" | `fireEvent.click(button)` |
-| "store loads data" | `await store.loadAll()` |
+| "store loads data" | `await collection.query().toArray()` |
 | "entity is updated" | `entity.update({...})` |
 
 ### Then → Assertion

@@ -188,7 +188,7 @@ describe('PaymentDomain', () => {
 ```
 Given: DomainProvider wraps component
 When: Component mounts
-Then: DomainProvider triggers loadAll() on collections
+Then: DomainProvider triggers query().toArray() on collections
 Then: Loading indicator visible until data loaded
 ```
 

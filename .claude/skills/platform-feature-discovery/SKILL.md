@@ -174,8 +174,12 @@ store.create("Requirement", "platform-features", {...})
 // Update session
 store.update(sessionId, "FeatureSession", "platform-features", {...})
 
-// Query existing (if resuming)
-store.list("FeatureSession", "platform-features", { name: "auth" })
+// Query existing (if resuming) - uses MongoDB-style filters
+store.query({
+  model: "FeatureSession",
+  schema: "platform-features",
+  filter: { name: "auth" }
+})
 ```
 
 ## References
