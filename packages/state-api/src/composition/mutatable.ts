@@ -92,8 +92,9 @@ export const CollectionMutatable = types
       // This enables createStore() to work with SQL backends without meta-store registration
       const columnPropertyMap = (env.context as any)?.columnPropertyMaps?.[modelName]
       const propertyTypes = (env.context as any)?.propertyTypeMaps?.[modelName]
+      const arrayReferences = (env.context as any)?.arrayReferenceMaps?.[modelName]
 
-      return registry.resolve<T>(schemaName, modelName, self, columnPropertyMap, propertyTypes)
+      return registry.resolve<T>(schemaName, modelName, self, columnPropertyMap, propertyTypes, arrayReferences)
     }
 
     return {

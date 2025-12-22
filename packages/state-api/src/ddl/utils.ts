@@ -291,3 +291,119 @@ export function computePropertyTypeMaps(
 
   return result
 }
+
+/**
+ * Metadata for an array reference property, used for junction table hydration.
+ */
+export interface ArrayReferenceMetadata {
+  /** Junction table name (e.g., "team_members") */
+  junctionTable: string
+  /** Source column in junction table (e.g., "team_id" or "source_category_id" for self-refs) */
+  sourceColumn: string
+  /** Target column in junction table (e.g., "user_id" or "target_category_id" for self-refs) */
+  targetColumn: string
+  /** Target model name (e.g., "User") */
+  targetModel: string
+  /** True if source and target models are the same */
+  isSelfReference: boolean
+}
+
+/**
+ * Map of model names to their array reference properties.
+ * Structure: { ModelName: { propName: ArrayReferenceMetadata } }
+ */
+export type ArrayReferenceMaps = Record<string, Record<string, ArrayReferenceMetadata>>
+
+/**
+ * Computes array reference metadata for all models in an Enhanced JSON Schema.
+ *
+ * Returns a nested map: { ModelName: { propName: ArrayReferenceMetadata, ... }, ... }
+ *
+ * Used by domain() to pre-compute metadata that enables SqlQueryExecutor to
+ * hydrate array reference properties by querying junction tables.
+ *
+ * @param schema - Enhanced JSON Schema with $defs or definitions
+ * @returns Record mapping model names to their array reference metadata
+ *
+ * @example
+ * ```ts
+ * const schema = {
+ *   $defs: {
+ *     Team: {
+ *       properties: {
+ *         id: { type: "string" },
+ *         members: {
+ *           type: "array",
+ *           "x-reference-type": "array",
+ *           "x-reference-target": "User"
+ *         }
+ *       }
+ *     }
+ *   }
+ * }
+ *
+ * const maps = computeArrayReferenceMaps(schema)
+ * // maps.Team.members = {
+ * //   junctionTable: "team_members",
+ * //   sourceColumn: "team_id",
+ * //   targetColumn: "user_id",
+ * //   targetModel: "User",
+ * //   isSelfReference: false
+ * // }
+ * ```
+ */
+export function computeArrayReferenceMaps(schema: any): ArrayReferenceMaps {
+  const models = schema.$defs || schema.definitions || {}
+  const result: ArrayReferenceMaps = {}
+
+  for (const [modelName, modelDef] of Object.entries(models)) {
+    const model = modelDef as any
+    const arrayRefMap: Record<string, ArrayReferenceMetadata> = {}
+
+    if (model.properties) {
+      for (const [propName, propDef] of Object.entries(model.properties)) {
+        const prop = propDef as any
+
+        // Only process array references that are not computed (inverse relationships)
+        if (
+          prop["x-reference-type"] === "array" &&
+          prop["x-reference-target"] &&
+          !prop["x-computed"]
+        ) {
+          const targetModel = prop["x-reference-target"]
+          const isSelfReference = modelName === targetModel
+
+          // Compute junction table name: {source_snake_case}_{property_name}
+          const sourceSnake = toSnakeCase(modelName)
+          const junctionTable = `${sourceSnake}_${toSnakeCase(propName)}`
+
+          // Compute column names
+          // Self-references use source_/target_ prefixes to disambiguate
+          const targetSnake = toSnakeCase(targetModel)
+          let sourceColumn: string
+          let targetColumn: string
+
+          if (isSelfReference) {
+            sourceColumn = `source_${sourceSnake}_id`
+            targetColumn = `target_${targetSnake}_id`
+          } else {
+            sourceColumn = `${sourceSnake}_id`
+            targetColumn = `${targetSnake}_id`
+          }
+
+          arrayRefMap[propName] = {
+            junctionTable,
+            sourceColumn,
+            targetColumn,
+            targetModel,
+            isSelfReference
+          }
+        }
+      }
+    }
+
+    result[modelName] = arrayRefMap
+  }
+
+  return result
+}
