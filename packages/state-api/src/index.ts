@@ -49,5 +49,8 @@ export * from './favorites'
 // Studio Core layer
 export * from './studio-core'
 
+// Platform Features layer
+export * from './platform-features'
+
 // Utilities
 export * from './utils'
