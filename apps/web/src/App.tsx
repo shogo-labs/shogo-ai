@@ -11,12 +11,13 @@ import { TenantDemoPage } from './pages/TenantDemoPage'
 import { PlatformFeaturesPage } from './pages/PlatformFeaturesPage'
 import { AIChatDemoPage } from './pages/AIChatDemoPage'
 import { FeatureControlPlanePage } from './pages/FeatureControlPlanePage'
+import { StudioCoreDemoPage } from './pages/StudioCoreDemoPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { MCPBackend } from './query/MCPBackend'
-import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain } from '@shogo/state-api'
+import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
 import { mcpService } from './services/mcpService'
 import { cn } from '@/lib/utils'
@@ -49,6 +50,7 @@ const domains = {
   teams: teamsDomain,
   multiTenancy: teamsMultiTenancyDomain,
   chat: chatDomain,
+  studioCore: studioCoreDomain,
 } as const
 
 function Navigation() {
@@ -67,6 +69,7 @@ function Navigation() {
       <NavLink to="/feature-control-plane" current={location.pathname}>Feature Control Plane</NavLink>
       <NavLink to="/platform-features" current={location.pathname}>Platform Features</NavLink>
       <NavLink to="/ai-chat-demo" current={location.pathname}>AI Chat Demo</NavLink>
+      <NavLink to="/studio-core-demo" current={location.pathname}>Studio Core Demo</NavLink>
     </nav>
   )
 }
@@ -108,6 +111,7 @@ function App() {
                 <Route path="/feature-control-plane" element={<FeatureControlPlanePage />} />
                 <Route path="/platform-features" element={<PlatformFeaturesPage />} />
                 <Route path="/ai-chat-demo" element={<AIChatDemoPage />} />
+                <Route path="/studio-core-demo" element={<StudioCoreDemoPage />} />
               </Routes>
             </AuthProvider>
           </WavesmithMetaStoreProvider>

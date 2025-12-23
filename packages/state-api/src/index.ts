@@ -46,5 +46,8 @@ export * from './chat'
 // Favorites layer
 export * from './favorites'
 
+// Studio Core layer
+export * from './studio-core'
+
 // Utilities
 export * from './utils'
