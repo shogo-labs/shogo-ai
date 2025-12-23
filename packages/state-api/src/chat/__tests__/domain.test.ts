@@ -599,3 +599,201 @@ describe("domain.name matches schema name exactly", () => {
     expect(chatDomain.models.CreatedArtifact).toBeDefined()
   })
 })
+
+// ============================================================
+// Test 11: ChatSession supports optional project and createdBy fields (task-sc-003)
+// ============================================================
+describe("ChatSession supports optional project and createdBy fields", () => {
+  let env: IEnvironment
+  let store: any
+
+  beforeEach(() => {
+    env = createTestEnv()
+    store = chatDomain.createStore(env)
+  })
+
+  test("ChatSession accepts optional project field", () => {
+    const session = store.chatSessionCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Project Chat",
+      status: "active",
+      createdAt: Date.now(),
+      project: "project-123",
+    })
+
+    expect(session.project).toBe("project-123")
+  })
+
+  test("ChatSession accepts optional createdBy field", () => {
+    const session = store.chatSessionCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "User Chat",
+      status: "active",
+      createdAt: Date.now(),
+      createdBy: "user-456",
+    })
+
+    expect(session.createdBy).toBe("user-456")
+  })
+
+  test("ChatSession works without project and createdBy fields (backward compat)", () => {
+    const session = store.chatSessionCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Legacy Chat",
+      status: "active",
+      createdAt: Date.now(),
+    })
+
+    expect(session.project).toBeUndefined()
+    expect(session.createdBy).toBeUndefined()
+    expect(session.name).toBe("Legacy Chat")
+  })
+
+  test("ChatSession accepts both project and createdBy together", () => {
+    const session = store.chatSessionCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Full Context Chat",
+      status: "active",
+      createdAt: Date.now(),
+      project: "project-123",
+      createdBy: "user-456",
+    })
+
+    expect(session.project).toBe("project-123")
+    expect(session.createdBy).toBe("user-456")
+  })
+})
+
+// ============================================================
+// Test 12: chatSessionCollection.findByProject query method (task-sc-003)
+// ============================================================
+describe("chatSessionCollection.findByProject query method", () => {
+  let env: IEnvironment
+  let store: any
+
+  beforeEach(() => {
+    env = createTestEnv()
+    store = chatDomain.createStore(env)
+  })
+
+  test("Returns only sessions with matching project", () => {
+    store.chatSessionCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Project A Chat 1",
+      status: "active",
+      createdAt: Date.now(),
+      project: "project-a",
+    })
+
+    store.chatSessionCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      name: "Project A Chat 2",
+      status: "active",
+      createdAt: Date.now(),
+      project: "project-a",
+    })
+
+    store.chatSessionCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440003",
+      name: "Project B Chat",
+      status: "active",
+      createdAt: Date.now(),
+      project: "project-b",
+    })
+
+    const projectASessions = store.chatSessionCollection.findByProject("project-a")
+    expect(projectASessions).toHaveLength(2)
+    expect(projectASessions.every((s: any) => s.project === "project-a")).toBe(true)
+  })
+
+  test("Returns empty array when no sessions match project", () => {
+    store.chatSessionCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Project A Chat",
+      status: "active",
+      createdAt: Date.now(),
+      project: "project-a",
+    })
+
+    const projectCSessions = store.chatSessionCollection.findByProject("project-c")
+    expect(projectCSessions).toHaveLength(0)
+  })
+
+  test("Handles sessions without project field gracefully", () => {
+    store.chatSessionCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Legacy Chat",
+      status: "active",
+      createdAt: Date.now(),
+    })
+
+    store.chatSessionCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      name: "Project Chat",
+      status: "active",
+      createdAt: Date.now(),
+      project: "project-a",
+    })
+
+    const projectASessions = store.chatSessionCollection.findByProject("project-a")
+    expect(projectASessions).toHaveLength(1)
+    expect(projectASessions[0].name).toBe("Project Chat")
+  })
+})
+
+// ============================================================
+// Test 13: createChatSession accepts optional project and createdBy params (task-sc-003)
+// ============================================================
+describe("createChatSession accepts optional project and createdBy params", () => {
+  let env: IEnvironment
+  let store: any
+
+  beforeEach(() => {
+    env = createTestEnv()
+    store = chatDomain.createStore(env)
+  })
+
+  test("Creates session with project parameter", () => {
+    const session = store.createChatSession({
+      name: "Project Chat",
+      project: "project-123",
+    })
+
+    expect(session.project).toBe("project-123")
+    expect(session.name).toBe("Project Chat")
+    expect(session.status).toBe("active")
+  })
+
+  test("Creates session with createdBy parameter", () => {
+    const session = store.createChatSession({
+      name: "User Chat",
+      createdBy: "user-456",
+    })
+
+    expect(session.createdBy).toBe("user-456")
+    expect(session.name).toBe("User Chat")
+    expect(session.status).toBe("active")
+  })
+
+  test("Creates session with both project and createdBy parameters", () => {
+    const session = store.createChatSession({
+      name: "Full Context Chat",
+      project: "project-123",
+      createdBy: "user-456",
+    })
+
+    expect(session.project).toBe("project-123")
+    expect(session.createdBy).toBe("user-456")
+    expect(session.name).toBe("Full Context Chat")
+  })
+
+  test("Creates session without project and createdBy (backward compat)", () => {
+    const session = store.createChatSession({
+      name: "Simple Chat",
+    })
+
+    expect(session.project).toBeUndefined()
+    expect(session.createdBy).toBeUndefined()
+    expect(session.name).toBe("Simple Chat")
+  })
+})

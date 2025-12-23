@@ -24,6 +24,8 @@ export const ChatDomain = scope({
     name: "string",
     "claudeSessionId?": "string", // Session ID from Claude for multi-turn
     "featureSessionId?": "string", // Links to platform-features FeatureSession
+    "project?": "string", // Loose ref to Project.id
+    "createdBy?": "string", // Loose ref to AuthUser.id
     status: "'active' | 'completed' | 'error'",
     createdAt: "number",
     "updatedAt?": "number",
@@ -135,6 +137,13 @@ export const chatDomain = domain({
         findByFeatureSessionId(featureSessionId: string): any | undefined {
           return self.all().find((s: any) => s.featureSessionId === featureSessionId)
         },
+
+        /**
+         * Find all sessions for a project
+         */
+        findByProject(projectId: string): any[] {
+          return self.all().filter((s: any) => s.project === projectId)
+        },
       })),
 
       ChatMessageCollection: collections.ChatMessageCollection.views((self: any) => ({
@@ -174,12 +183,20 @@ export const chatDomain = domain({
         /**
          * Create a new chat session
          */
-        createChatSession(params: { name: string; claudeSessionId?: string; featureSessionId?: string }) {
+        createChatSession(params: {
+          name: string;
+          claudeSessionId?: string;
+          featureSessionId?: string;
+          project?: string;
+          createdBy?: string;
+        }) {
           const session = self.chatSessionCollection.add({
             id: uuidv4(),
             name: params.name,
             claudeSessionId: params.claudeSessionId,
             featureSessionId: params.featureSessionId,
+            project: params.project,
+            createdBy: params.createdBy,
             status: "active",
             createdAt: Date.now(),
           })

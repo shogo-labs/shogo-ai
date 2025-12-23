@@ -28,6 +28,14 @@
           "type": "string",
           "description": "Session ID from Claude Code for multi-turn context"
         },
+        "project": {
+          "type": "string",
+          "description": "Loose ref to Project.id"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Loose ref to AuthUser.id"
+        },
         "status": {
           "type": "string",
           "enum": [
