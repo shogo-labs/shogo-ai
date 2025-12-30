@@ -366,8 +366,10 @@ export const platformFeaturesDomain = domain({
 
         /**
          * Find sessions by project
+         * Returns empty array if projectId is null/undefined
          */
-        findByProject(projectId: string): any[] {
+        findByProject(projectId: string | null | undefined): any[] {
+          if (projectId == null) return []
           return self.all().filter((s: any) => s.project === projectId)
         },
 
