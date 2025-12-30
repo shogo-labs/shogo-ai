@@ -60,3 +60,6 @@ _tmp/
 !.data/
 .data/*
 !.data/.gitkeep
+
+# Git worktrees (managed by git-gtr)
+.worktrees/

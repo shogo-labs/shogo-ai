@@ -4,6 +4,9 @@ import { registerAllTools } from "./tools/registry"
 import { initializePostgresBackend, isPostgresAvailable, isSqliteAvailable } from "./postgres-init"
 import { initializeDomainSchemas } from "./ddl-init"
 
+// Port configuration from environment (supports multi-worktree isolation)
+const MCP_PORT = parseInt(process.env.MCP_PORT || '3100', 10)
+
 // Initialize PostgreSQL backend from DATABASE_URL (if available)
 await initializePostgresBackend()
 
@@ -23,14 +26,14 @@ registerAllTools(server)
 server.start({
   transportType: "httpStream",
   httpStream: {
-    port: 3100,
+    port: MCP_PORT,
     endpoint: "/mcp",
     // Stateful mode (default) - enables session tracking for streaming notifications
     // Client must include mcp-session-id header on subsequent requests
   },
 })
 
-console.log("Wavesmith MCP HTTP server running on http://localhost:3100")
-console.log("HTTP Stream endpoint: http://localhost:3100/mcp")
-console.log("SSE endpoint: http://localhost:3100/sse")
+console.log(`Wavesmith MCP HTTP server running on http://localhost:${MCP_PORT}`)
+console.log(`HTTP Stream endpoint: http://localhost:${MCP_PORT}/mcp`)
+console.log(`SSE endpoint: http://localhost:${MCP_PORT}/sse`)
 console.log(`SQL backend: ${isPostgresAvailable() ? "postgres" : isSqliteAvailable() ? "sqlite" : "memory only"}`)
