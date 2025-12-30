@@ -6,15 +6,19 @@ import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
+// Port configuration from environment (supports multi-worktree isolation)
+const VITE_PORT = parseInt(process.env.VITE_PORT || '3000', 10)
+const API_PORT = parseInt(process.env.API_PORT || '8002', 10)
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   root: __dirname, // Serve from the client directory
   server: {
-    port: 3000,
+    port: VITE_PORT,
     proxy: {
       '/api': {
-        target: 'http://localhost:8002',
+        target: `http://localhost:${API_PORT}`,
         changeOrigin: true,
       },
     },
