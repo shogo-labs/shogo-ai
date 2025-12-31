@@ -88,9 +88,6 @@ import mcpService from '../../services/mcpService.ts?raw'
 import indexTsx from './sandpack-files/index.tsx?raw'
 import appTsx from './sandpack-files/App-HostDemo.tsx?raw'
 
-// Import workspace schemas from backend-generated index
-import { workspaceSchemas } from '../../../../../.schemas/index'
-
 /**
  * Transform @shogo/state-api imports to /src paths for Sandpack virtual filesystem.
  *
@@ -109,13 +106,10 @@ export function WavesmithMetaDemo() {
   // Callback handler for new schema generation
   const handleSchemaGenerated = useCallback((schemaName: string) => {
     console.log(`✨ Schema generated: ${schemaName}`)
-    console.log('✅ Backend updated index.ts - HMR will refresh automatically')
   }, [])
 
   // Build virtual filesystem
   console.log('📦 Building Sandpack files object...')
-  console.log('📦 Workspace schemas count:', Object.keys(workspaceSchemas).length)
-  console.log('📦 Workspace schema keys:', Object.keys(workspaceSchemas))
 
   const files = {
     // Wavesmith source files - mirrors real disk structure at /src/
@@ -177,14 +171,6 @@ export function WavesmithMetaDemo() {
     // Demo application
     '/index.tsx': indexTsx,
     '/App.tsx': appTsx,
-
-    // Workspace schemas - map to /workspace/ prefix for Sandpack
-    ...Object.fromEntries(
-      Object.entries(workspaceSchemas).map(([path, content]) => [
-        `/.schemas/${path}`,  // Maps "task-management/schema.json" to "/workspace/task-management/schema.json"
-        content
-      ])
-    ),
   }
 
   console.log('📦 Total files in Sandpack:', Object.keys(files).length)
