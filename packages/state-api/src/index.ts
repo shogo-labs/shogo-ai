@@ -29,6 +29,9 @@ export * from './persistence'
 // Auth layer
 export * from './auth'
 
+// BetterAuth layer
+export * from './better-auth'
+
 // Teams layer
 export * from './teams'
 
@@ -45,6 +48,12 @@ export * from './chat'
 
 // Favorites layer
 export * from './favorites'
+
+// Studio Core layer
+export * from './studio-core'
+
+// Platform Features layer
+export * from './platform-features'
 
 // Utilities
 export * from './utils'

@@ -24,6 +24,7 @@ import { registerViewProject } from "./view.project"
 // Data tools
 import { registerDataLoad } from "./data.load"
 import { registerDataLoadAll } from "./data.loadAll"
+import { registerDataBootstrap } from "./data.bootstrap"
 
 // DDL tools
 import { registerDdlExecute } from "./ddl.execute"
@@ -35,11 +36,11 @@ import { registerAgentChat } from "./agent.chat"
  * Register all Wavesmith MCP tools on a FastMCP server instance.
  * This is the single source of truth for tool registration.
  *
- * Total: 19 tools across 6 namespaces
+ * Total: 20 tools across 6 namespaces
  * - Schema: 4 tools (set, get, load, list)
  * - Store: 7 tools (models, create, get, list, update, delete, query)
  * - View: 4 tools (execute, define, delete, project)
- * - Data: 2 tools (load, loadAll)
+ * - Data: 3 tools (load, loadAll, bootstrap)
  * - DDL: 1 tool (execute)
  * - Agent: 1 tool (chat)
  *
@@ -67,9 +68,10 @@ export function registerAllTools(server: FastMCP) {
   registerViewDelete(server)
   registerViewProject(server)
 
-  // Data namespace (2 tools)
+  // Data namespace (3 tools)
   registerDataLoad(server)
   registerDataLoadAll(server)
+  registerDataBootstrap(server)
 
   // DDL namespace (1 tool)
   registerDdlExecute(server)

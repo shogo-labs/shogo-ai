@@ -1,0 +1,17 @@
+[copy]
+  # Copy env files to new worktrees
+  include = .env.local
+  include = .env.test.local
+  include = apps/web/.env.local
+
+  # Exclude secrets that shouldn't be auto-copied
+  exclude = **/*.pem
+  exclude = **/*.key
+
+[hooks]
+  # Install dependencies and build
+  postCreate = bun install
+  postCreate = bun run build
+
+[defaults]
+  ai = claude
