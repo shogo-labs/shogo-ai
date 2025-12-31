@@ -151,6 +151,31 @@ export interface IBackendRegistry {
     schema: any,
     options?: DDLGenerationOptions
   ): Promise<DDLExecutionResult>
+
+  /**
+   * Get all schema names that have x-persistence.bootstrap: true.
+   *
+   * @returns Array of schema names that are marked for bootstrap
+   *
+   * @remarks
+   * Bootstrap schemas are auto-initialized during registry.initialize().
+   * These are typically system schemas like 'system-migrations' that
+   * must exist before other schemas can be migrated.
+   */
+  getBootstrapSchemas(): string[]
+
+  /**
+   * Initialize the registry by executing DDL for all bootstrap schemas.
+   *
+   * @returns Promise that resolves when all bootstrap schemas are initialized
+   * @throws Error if any bootstrap schema DDL fails
+   *
+   * @remarks
+   * Uses ifNotExists: true for idempotency - safe to call multiple times.
+   * Bootstrap schemas are those with x-persistence.bootstrap: true.
+   * Must be called after registering backends and setting default.
+   */
+  initialize(): Promise<void>
 }
 
 /**
@@ -424,6 +449,75 @@ export class BackendRegistry implements IBackendRegistry {
 
     // 5. Delegate to backend's executeDDL with namespace
     return backend.executeDDL(schema, { ...options, namespace })
+  }
+
+  /**
+   * Get all schema names that have x-persistence.bootstrap: true.
+   *
+   * @returns Array of schema names that are marked for bootstrap
+   *
+   * @remarks
+   * Queries the meta-store for all schemas and filters those with
+   * x-persistence.bootstrap === true. These schemas are used by
+   * initialize() for auto-DDL during registry startup.
+   */
+  getBootstrapSchemas(): string[] {
+    const metaStore = getMetaStore()
+    const schemas = metaStore.schemaCollection.all()
+
+    return schemas
+      .filter((schema: any) => {
+        const xPersistence = schema.xPersistence
+        return xPersistence && xPersistence.bootstrap === true
+      })
+      .map((schema: any) => schema.name)
+  }
+
+  /**
+   * Initialize the registry by executing DDL for all bootstrap schemas.
+   *
+   * @returns Promise that resolves when all bootstrap schemas are initialized
+   * @throws Error if any bootstrap schema DDL fails
+   *
+   * @remarks
+   * Uses ifNotExists: true for idempotency - safe to call multiple times.
+   * Bootstrap schemas are executed in order they appear in meta-store.
+   * Each bootstrap schema's Enhanced JSON Schema is retrieved via toEnhancedJson getter.
+   */
+  async initialize(): Promise<void> {
+    const bootstrapSchemaNames = this.getBootstrapSchemas()
+
+    // Early return if no bootstrap schemas
+    if (bootstrapSchemaNames.length === 0) {
+      return
+    }
+
+    const metaStore = getMetaStore()
+
+    // Execute DDL for each bootstrap schema
+    for (const schemaName of bootstrapSchemaNames) {
+      const schemaEntity = metaStore.schemaCollection.all().find(
+        (s: any) => s.name === schemaName
+      )
+
+      if (!schemaEntity) {
+        throw new Error(`Bootstrap schema "${schemaName}" not found in meta-store`)
+      }
+
+      // Get Enhanced JSON Schema via MST computed getter (no parentheses - it's a getter, not a method)
+      const enhancedSchema = schemaEntity.toEnhancedJson
+
+      // Execute DDL with ifNotExists: true for idempotency
+      const result = await this.executeDDL(schemaName, enhancedSchema, {
+        ifNotExists: true
+      })
+
+      if (!result.success) {
+        throw new Error(
+          `Failed to initialize bootstrap schema "${schemaName}": ${result.error}`
+        )
+      }
+    }
   }
 }
 

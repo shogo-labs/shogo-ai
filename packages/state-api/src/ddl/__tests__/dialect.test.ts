@@ -112,3 +112,86 @@ describe("SQLite dialect", () => {
     expect(dialect.name).toBe("sqlite")
   })
 })
+
+// ============================================================================
+// Migration Capability Tests (task-mig-004-dialect)
+// ============================================================================
+
+import { MigrationOperation } from "../migration-types"
+
+describe("Migration Capabilities", () => {
+  describe("Both dialects support ADD COLUMN", () => {
+    test("PostgresDialect.supportsAddColumn is true", () => {
+      const dialect = createPostgresDialect()
+      expect(dialect.supportsAddColumn).toBe(true)
+    })
+
+    test("SqliteDialect.supportsAddColumn is true", () => {
+      const dialect = createSqliteDialect()
+      expect(dialect.supportsAddColumn).toBe(true)
+    })
+  })
+
+  describe("DROP COLUMN support differs by dialect", () => {
+    test("PostgresDialect.supportsDropColumn is true", () => {
+      const dialect = createPostgresDialect()
+      expect(dialect.supportsDropColumn).toBe(true)
+    })
+
+    test("SqliteDialect.supportsDropColumn is false", () => {
+      const dialect = createSqliteDialect()
+      expect(dialect.supportsDropColumn).toBe(false)
+    })
+  })
+
+  describe("ALTER COLUMN TYPE support differs by dialect", () => {
+    test("PostgresDialect.supportsAlterColumnType is true", () => {
+      const dialect = createPostgresDialect()
+      expect(dialect.supportsAlterColumnType).toBe(true)
+    })
+
+    test("SqliteDialect.supportsAlterColumnType is false", () => {
+      const dialect = createSqliteDialect()
+      expect(dialect.supportsAlterColumnType).toBe(false)
+    })
+  })
+
+  describe("PostgresDialect never requires table recreation", () => {
+    test("requiresTableRecreation returns false for ADD_COLUMN", () => {
+      const dialect = createPostgresDialect()
+      expect(dialect.requiresTableRecreation(MigrationOperation.ADD_COLUMN)).toBe(false)
+    })
+
+    test("requiresTableRecreation returns false for DROP_COLUMN", () => {
+      const dialect = createPostgresDialect()
+      expect(dialect.requiresTableRecreation(MigrationOperation.DROP_COLUMN)).toBe(false)
+    })
+
+    test("requiresTableRecreation returns false for CREATE_TABLE", () => {
+      const dialect = createPostgresDialect()
+      expect(dialect.requiresTableRecreation(MigrationOperation.CREATE_TABLE)).toBe(false)
+    })
+  })
+
+  describe("SqliteDialect requires table recreation for unsupported operations", () => {
+    test("requiresTableRecreation returns true for DROP_COLUMN", () => {
+      const dialect = createSqliteDialect()
+      expect(dialect.requiresTableRecreation(MigrationOperation.DROP_COLUMN)).toBe(true)
+    })
+
+    test("requiresTableRecreation returns true for RECREATE_TABLE", () => {
+      const dialect = createSqliteDialect()
+      expect(dialect.requiresTableRecreation(MigrationOperation.RECREATE_TABLE)).toBe(true)
+    })
+
+    test("requiresTableRecreation returns false for ADD_COLUMN", () => {
+      const dialect = createSqliteDialect()
+      expect(dialect.requiresTableRecreation(MigrationOperation.ADD_COLUMN)).toBe(false)
+    })
+
+    test("requiresTableRecreation returns false for CREATE_TABLE", () => {
+      const dialect = createSqliteDialect()
+      expect(dialect.requiresTableRecreation(MigrationOperation.CREATE_TABLE)).toBe(false)
+    })
+  })
+})

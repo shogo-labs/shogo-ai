@@ -36,6 +36,7 @@ export function createSchemaEnhancements(baseModels: any) {
     get toEnhancedJson(): any {
       const enhancedSchema: any = {
         $schema: "https://json-schema.org/draft/2020-12/schema",
+        $id: self.name,  // Preserve schema identity for round-trip
         $defs: {}
       }
 
