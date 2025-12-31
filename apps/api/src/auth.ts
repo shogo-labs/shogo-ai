@@ -4,7 +4,7 @@
  *
  * Configures Better Auth with:
  * - PostgreSQL database via pg Pool from DATABASE_URL
- * - Custom model names with better_auth_tables schema
+ * - Custom model names with better_auth schema
  * - Field mappings for snake_case columns
  * - Email/password authentication (no email verification required)
  * - JWT sessions with 7-day expiry
@@ -29,7 +29,7 @@ export const auth = betterAuth({
 
   // User model configuration with schema-qualified name and field mappings
   user: {
-    modelName: "better_auth_tables.user",
+    modelName: "better_auth.user",
     fields: {
       emailVerified: "email_verified",
       createdAt: "created_at",
@@ -39,7 +39,7 @@ export const auth = betterAuth({
 
   // Session model configuration with field mappings
   session: {
-    modelName: "better_auth_tables.session",
+    modelName: "better_auth.session",
     fields: {
       userId: "user_id",
       expiresAt: "expires_at",
@@ -54,7 +54,7 @@ export const auth = betterAuth({
 
   // Account model configuration with field mappings for OAuth providers
   account: {
-    modelName: "better_auth_tables.account",
+    modelName: "better_auth.account",
     fields: {
       userId: "user_id",
       accountId: "account_id",
@@ -71,7 +71,7 @@ export const auth = betterAuth({
 
   // Verification model configuration for email verification tokens
   verification: {
-    modelName: "better_auth_tables.verification",
+    modelName: "better_auth.verification",
     fields: {
       expiresAt: "expires_at",
       createdAt: "created_at",
