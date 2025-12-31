@@ -76,6 +76,10 @@
         },
         "updatedAt": {
           "type": "number"
+        },
+        "project": {
+          "type": "string",
+          "description": "Loose ref to Project.id"
         }
       },
       "required": ["id", "name", "intent", "status", "createdAt"],

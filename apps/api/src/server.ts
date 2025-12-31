@@ -4,6 +4,11 @@ import { streamText } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
+import { auth } from './auth'
+
+// Port configuration from environment (supports multi-worktree isolation)
+const API_PORT = parseInt(process.env.API_PORT || '8002', 10)
+const VITE_PORT = parseInt(process.env.VITE_PORT || '3000', 10)
 
 // Compute project root from this file's location
 // This file is at: apps/api/src/server.ts
@@ -53,11 +58,15 @@ const claudeCode = createClaudeCode({
 
 const app = new Hono()
 
-// Enable CORS for development
+// Enable CORS for development (dynamic based on VITE_PORT)
 app.use('/*', cors({
-  origin: 'http://localhost:3000',
+  origin: `http://localhost:${VITE_PORT}`,
   credentials: true,
 }))
+
+// Better Auth handler - mounted BEFORE other /api/* routes
+// Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
+app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
 // Health check
 app.get('/api/health', (c) => c.json({ ok: true }))
@@ -109,13 +118,13 @@ Be concise and practical. Show tool results when relevant.`
   }
 })
 
-// Start server on port 8002
-const port = 8002
-console.log(`🚀 API server running on http://localhost:${port}`)
-console.log(`   Chat endpoint: POST http://localhost:${port}/api/chat`)
+// Start server
+console.log(`🚀 API server running on http://localhost:${API_PORT}`)
+console.log(`   Chat endpoint: POST http://localhost:${API_PORT}/api/chat`)
+console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 
 export default {
-  port,
+  port: API_PORT,
   fetch: app.fetch,
 }
 

@@ -1,0 +1,339 @@
+{
+  "id": "732dc6a0-d15d-49c1-89b3-aede2dee7874",
+  "name": "studio-core",
+  "format": "enhanced-json-schema",
+  "createdAt": 1766436475705,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Organization": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "slug",
+        "nested": false
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "description": {
+          "type": "string"
+        },
+        "ssoSettings": {
+          "type": "object",
+          "description": "Opaque JSON for future SSO provider configs"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "slug",
+        "createdAt"
+      ],
+      "x-original-name": "Organization"
+    },
+    "Team": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "organization": {
+          "type": "string",
+          "x-arktype": "Organization",
+          "x-mst-type": "reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Organization"
+        },
+        "parent": {
+          "type": "string",
+          "x-arktype": "Team",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Team"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "organization",
+        "createdAt"
+      ],
+      "x-original-name": "Team"
+    },
+    "Project": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "organization": {
+          "type": "string",
+          "x-arktype": "Organization",
+          "x-mst-type": "reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Organization"
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "starter",
+            "pro",
+            "enterprise",
+            "internal"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "active",
+            "archived"
+          ]
+        },
+        "schemas": {
+          "type": "array",
+          "description": "Array of schema names this project uses"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Loose string ref to AuthUser.id"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "organization",
+        "tier",
+        "status",
+        "createdAt"
+      ],
+      "x-original-name": "Project"
+    },
+    "Member": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "id",
+        "nested": false
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Loose string ref to AuthUser.id"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "owner",
+            "admin",
+            "member",
+            "viewer"
+          ]
+        },
+        "organization": {
+          "type": "string",
+          "x-arktype": "Organization",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Organization"
+        },
+        "team": {
+          "type": "string",
+          "x-arktype": "Team",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Team"
+        },
+        "project": {
+          "type": "string",
+          "x-arktype": "Project",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Project"
+        },
+        "isBillingAdmin": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "role",
+        "createdAt"
+      ],
+      "x-original-name": "Member"
+    },
+    "BillingAccount": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "id",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "organization": {
+          "type": "string",
+          "x-arktype": "Organization",
+          "x-mst-type": "reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Organization"
+        },
+        "stripeCustomerId": {
+          "type": "string"
+        },
+        "taxId": {
+          "type": "string"
+        },
+        "creditsBalance": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "organization",
+        "createdAt"
+      ],
+      "x-original-name": "BillingAccount"
+    },
+    "Invitation": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "email",
+        "nested": false
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "owner",
+            "admin",
+            "member",
+            "viewer"
+          ]
+        },
+        "organization": {
+          "type": "string",
+          "x-arktype": "Organization",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Organization"
+        },
+        "team": {
+          "type": "string",
+          "x-arktype": "Team",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Team"
+        },
+        "project": {
+          "type": "string",
+          "x-arktype": "Project",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Project"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "accepted",
+            "declined",
+            "expired"
+          ]
+        },
+        "expiresAt": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "role",
+        "status",
+        "expiresAt",
+        "createdAt"
+      ],
+      "x-original-name": "Invitation"
+    }
+  },
+  "x-persistence": {
+    "backend": "postgres"
+  }
+}
