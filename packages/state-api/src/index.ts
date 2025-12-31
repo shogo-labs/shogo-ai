@@ -29,6 +29,9 @@ export * from './persistence'
 // Auth layer
 export * from './auth'
 
+// BetterAuth layer
+export * from './better-auth'
+
 // Teams layer
 export * from './teams'
 

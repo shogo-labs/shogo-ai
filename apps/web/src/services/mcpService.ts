@@ -21,7 +21,7 @@ export interface MCPResponse<T = any> {
 }
 
 export class MCPService {
-  private baseUrl = 'http://localhost:3100/mcp'
+  private baseUrl = `http://localhost:${import.meta.env.VITE_MCP_PORT || '3100'}/mcp`
   private requestId = 0
   private mcpSessionId: string | null = null  // Track MCP session for stateful mode
   private sseReader: ReadableStreamDefaultReader<Uint8Array> | null = null
@@ -67,37 +67,37 @@ export class MCPService {
     const decoder = new TextDecoder()
     let buffer = ''
 
-    // Process SSE stream in background (async IIFE)
-    ;(async () => {
-      try {
-        while (this.sseReader) {
-          const { done, value } = await this.sseReader.read()
-          if (done) break
+      // Process SSE stream in background (async IIFE)
+      ; (async () => {
+        try {
+          while (this.sseReader) {
+            const { done, value } = await this.sseReader.read()
+            if (done) break
 
-          buffer += decoder.decode(value, { stream: true })
-          const events = buffer.split('\n\n')
-          buffer = events.pop() || ''
+            buffer += decoder.decode(value, { stream: true })
+            const events = buffer.split('\n\n')
+            buffer = events.pop() || ''
 
-          for (const event of events) {
-            if (!event.trim()) continue
-            const lines = event.split('\n')
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                try {
-                  const data = JSON.parse(line.slice(6))
-                  // Route streaming notifications to handler
-                  if (data.method === 'notifications/tool/streamContent') {
-                    this.notificationHandler?.(data)
-                  }
-                } catch (e) { /* skip non-JSON */ }
+            for (const event of events) {
+              if (!event.trim()) continue
+              const lines = event.split('\n')
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  try {
+                    const data = JSON.parse(line.slice(6))
+                    // Route streaming notifications to handler
+                    if (data.method === 'notifications/tool/streamContent') {
+                      this.notificationHandler?.(data)
+                    }
+                  } catch (e) { /* skip non-JSON */ }
+                }
               }
             }
           }
+        } catch (e) {
+          console.debug('SSE listener ended:', e)
         }
-      } catch (e) {
-        console.debug('SSE listener ended:', e)
-      }
-    })()
+      })()
   }
 
   stopSSEListener(): void {

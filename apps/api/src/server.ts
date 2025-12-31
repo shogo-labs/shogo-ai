@@ -4,6 +4,7 @@ import { streamText } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
+import { auth } from './auth'
 
 // Port configuration from environment (supports multi-worktree isolation)
 const API_PORT = parseInt(process.env.API_PORT || '8002', 10)
@@ -62,6 +63,10 @@ app.use('/*', cors({
   origin: `http://localhost:${VITE_PORT}`,
   credentials: true,
 }))
+
+// Better Auth handler - mounted BEFORE other /api/* routes
+// Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
+app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
 // Health check
 app.get('/api/health', (c) => c.json({ ok: true }))
