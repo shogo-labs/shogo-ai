@@ -52,14 +52,6 @@ export async function saveSchema(schema: any, templates?: Record<string, string>
 
   await writeJson(`${dir}/schema.json`, schemaFile)
 
-  // Update schema index
-  try {
-    await updateSchemaIndex(baseDir)
-  } catch (error) {
-    console.error('Failed to update schema index:', error)
-    // Don't fail the save operation if index update fails
-  }
-
   return dir
 }
 
@@ -131,39 +123,4 @@ export async function listSchemas(workspace?: string): Promise<Array<{
   }
 
   return schemas
-}
-
-/**
- * Generate TypeScript index file with all workspace schemas
- * Creates .schemas/index.ts with schema content as exported constant
- */
-export async function updateSchemaIndex(baseDir: string = '.schemas'): Promise<void> {
-  const schemas = await listSchemas()
-
-  // Build schema content map (keyed by relative file path)
-  const schemaMap: Record<string, string> = {}
-
-  for (const schema of schemas) {
-    try {
-      const schemaFile = await readJson(`${schema.path}/schema.json`)
-      const relativePath = `${schema.name}/schema.json`
-      schemaMap[relativePath] = JSON.stringify(schemaFile, null, 2)
-    } catch (error) {
-      console.error(`Failed to read schema ${schema.name}:`, error)
-    }
-  }
-
-  // Generate TypeScript file content
-  const timestamp = new Date().toISOString()
-  const content = `// Auto-generated schema index - do not edit manually
-// Generated: ${timestamp}
-// Schemas: ${schemas.length}
-
-export const workspaceSchemas: Record<string, string> = ${JSON.stringify(schemaMap, null, 2)}
-`
-
-  const indexPath = `${baseDir}/index.ts`
-  await fs.writeFile(indexPath, content, 'utf-8')
-
-  console.log(`✅ Updated schema index: ${indexPath} (${schemas.length} schemas)`)
 }
