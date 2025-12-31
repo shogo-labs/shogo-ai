@@ -41,6 +41,7 @@ export const MetaRegistry = scope({
     "xPersistence?": {
       "backend?": "string",  // Backend identifier for query execution
       "strategy?": "'flat' | 'entity-per-file' | 'array-per-partition'",
+      "bootstrap?": "boolean",  // If true, DDL auto-runs during BackendRegistry.initialize()
     },
   },
 

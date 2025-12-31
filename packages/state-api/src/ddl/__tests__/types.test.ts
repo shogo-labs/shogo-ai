@@ -129,6 +129,10 @@ describe("SqlDialect interface structure", () => {
       mapType: (jsonType: string, format?: string) => "TEXT",
       supportsForeignKeys: true,
       supportsCheckConstraints: true,
+      supportsAddColumn: true,
+      supportsDropColumn: true,
+      supportsAlterColumnType: true,
+      requiresTableRecreation: () => false,
     }
 
     expect(mockDialect).toHaveProperty("name")

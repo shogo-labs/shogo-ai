@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "system-migrations",
+  "title": "System Migrations Schema",
+  "description": "Tracks applied database migrations for schema evolution",
+  "type": "object",
+  "x-persistence": {
+    "bootstrap": true,
+    "backend": "postgres"
+  },
+  "$defs": {
+    "MigrationRecord": {
+      "type": "object",
+      "title": "MigrationRecord",
+      "description": "Records an applied migration for tracking and preventing re-execution",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier",
+          "x-arktype": "string.uuid",
+          "description": "Unique identifier for the migration record"
+        },
+        "schemaName": {
+          "type": "string",
+          "description": "Name of the schema that was migrated"
+        },
+        "version": {
+          "type": "integer",
+          "description": "Schema version number after migration"
+        },
+        "checksum": {
+          "type": "string",
+          "description": "Hash of the schema content for drift detection"
+        },
+        "appliedAt": {
+          "type": "number",
+          "description": "Unix timestamp when migration was applied"
+        },
+        "statements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "SQL statements executed in this migration"
+        },
+        "success": {
+          "type": "boolean",
+          "description": "Whether the migration completed successfully"
+        },
+        "errorMessage": {
+          "type": "string",
+          "description": "Error message if migration failed"
+        }
+      },
+      "required": [
+        "id",
+        "schemaName",
+        "version",
+        "checksum",
+        "appliedAt",
+        "success"
+      ]
+    }
+  },
+  "version": 1
+}

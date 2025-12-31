@@ -168,6 +168,23 @@ export function generateDDL(schema: any, dialect: SqlDialect, config?: DDLGenera
 
 // Re-export types and utilities for convenience
 export type { DDLOutput, TableDef, ColumnDef, ForeignKeyDef, SqlDialect, DDLGenerationConfig } from "./types"
+
+// Re-export migration types
+export type {
+  SchemaDiff,
+  ModelDiff,
+  ColumnModification,
+  MigrationOutput,
+  MigrationOperationDef,
+  MigrationRecord,
+} from "./migration-types"
+export { MigrationOperation } from "./migration-types"
+
+// Re-export diff detection
+export { compareSchemas } from "./diff"
+
+// Re-export migration generator
+export { generateMigration, migrationOutputToSQL, type MigrationConfig } from "./migration-generator"
 export type { DDLGenerationOptions } from "./sql-generator"
 export { createPostgresDialect, createSqliteDialect } from "./dialect"
 export { topologicalSort } from "./utils"
@@ -179,3 +196,12 @@ export {
   generateSQL,
 } from "./sql-generator"
 export { deriveNamespace, qualifyTableName, type QualifyDialect } from "./namespace"
+
+// Re-export migration tracker functions
+export {
+  getAppliedMigrations,
+  getLatestMigration,
+  isMigrationApplied,
+  recordMigration,
+  computeSchemaChecksum,
+} from "./migration-tracker"
