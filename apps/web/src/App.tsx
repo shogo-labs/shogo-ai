@@ -6,6 +6,7 @@ import { Unit2Page } from './pages/Unit2Page'
 import { Unit3Page } from './pages/Unit3Page'
 import { LegacyTestsPage } from './pages/LegacyTestsPage'
 import { AuthDemoPage } from './pages/AuthDemoPage'
+import { BetterAuthDemoPage } from './pages/BetterAuthDemoPage'
 import { TeamsDemoPage } from './pages/TeamsDemoPage'
 import { TenantDemoPage } from './pages/TenantDemoPage'
 import { PlatformFeaturesPage } from './pages/PlatformFeaturesPage'
@@ -18,7 +19,7 @@ import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentCo
 import { DomainProvider } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { MCPBackend } from './query/MCPBackend'
-import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, platformFeaturesDomain } from '@shogo/state-api'
+import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, platformFeaturesDomain, betterAuthDomain, BetterAuthService } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
 import { mcpService } from './services/mcpService'
 import { cn } from '@/lib/utils'
@@ -31,6 +32,11 @@ const authService = supabaseUrl && supabaseKey
   ? new SupabaseAuthService(createClient(supabaseUrl, supabaseKey))
   : new MockAuthService()
 
+// BetterAuth configuration
+// Uses VITE_BETTER_AUTH_URL or falls back to current origin for same-origin API
+const betterAuthUrl = import.meta.env.VITE_BETTER_AUTH_URL || ''
+const betterAuthService = new BetterAuthService({ baseUrl: betterAuthUrl })
+
 // Create MCP-backed backend registry
 // Register as 'postgres' so schemas with x-persistence.backend: 'postgres' work
 const mcpBackend = new MCPBackend(mcpService, import.meta.env.VITE_WORKSPACE)
@@ -40,19 +46,23 @@ const backendRegistry = createBackendRegistry({
 })
 
 // Centralized environment configuration
+// Note: auth service is used by betterAuthDomain for authentication
 const env = createEnvironment({
   persistence: new MCPPersistence(mcpService),
   backendRegistry,
+  auth: betterAuthService,
   workspace: import.meta.env.VITE_WORKSPACE,
 })
 
 // Domain configuration - keys become property names in useDomains()
+// Access via: const { teams, auth, chat, ... } = useDomains()
 const domains = {
   teams: teamsDomain,
   multiTenancy: teamsMultiTenancyDomain,
   chat: chatDomain,
   studioCore: studioCoreDomain,
   platformFeatures: platformFeaturesDomain,
+  auth: betterAuthDomain,
 } as const
 
 function Navigation() {
@@ -66,6 +76,7 @@ function Navigation() {
       <NavLink to="/unit3" current={location.pathname}>Unit 3: App Builder</NavLink>
       <NavLink to="/legacy-tests" current={location.pathname}>Legacy Tests</NavLink>
       <NavLink to="/auth-demo" current={location.pathname}>Auth Demo</NavLink>
+      <NavLink to="/better-auth-demo" current={location.pathname}>Better Auth Demo</NavLink>
       <NavLink to="/teams-demo" current={location.pathname}>Teams Demo</NavLink>
       <NavLink to="/tenant-demo" current={location.pathname}>Tenant Demo</NavLink>
       <NavLink to="/feature-control-plane" current={location.pathname}>Feature Control Plane</NavLink>
@@ -109,6 +120,7 @@ function App() {
                 <Route path="/unit3" element={<Unit3Page />} />
                 <Route path="/legacy-tests" element={<LegacyTestsPage />} />
                 <Route path="/auth-demo" element={<AuthDemoPage />} />
+                <Route path="/better-auth-demo" element={<BetterAuthDemoPage />} />
                 <Route path="/teams-demo" element={<TeamsDemoPage />} />
                 <Route path="/tenant-demo" element={<TenantDemoPage />} />
                 <Route path="/feature-control-plane" element={<FeatureControlPlanePage />} />

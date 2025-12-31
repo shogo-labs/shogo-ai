@@ -12,11 +12,13 @@
     "@shogo/state-api": "workspace:*",
     "ai": "^5.0.115",
     "ai-sdk-provider-claude-code": "^2.2.4",
-    "hono": "^4.7.10"
+    "better-auth": "^1.2.8",
+    "hono": "^4.7.10",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/pg": "^8.16.0",
     "typescript": "^5.7.2"
   }
 }
-
