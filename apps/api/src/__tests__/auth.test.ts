@@ -4,7 +4,7 @@
  *
  * Tests verify that the Better Auth server is configured correctly with:
  * - PostgreSQL database via pg Pool
- * - Custom model names with better_auth_tables schema
+ * - Custom model names with better_auth schema
  * - Field mappings for snake_case columns
  * - Email/password authentication
  * - JWT sessions with 7-day expiry
@@ -49,8 +49,8 @@ describe("Better Auth Server Configuration", () => {
 
   // test-ba-006-02: User model configuration
   describe("User Model Configuration", () => {
-    test("user modelName is 'better_auth_tables.user'", () => {
-      expect(auth.options.user?.modelName).toBe("better_auth_tables.user")
+    test("user modelName is 'better_auth.user'", () => {
+      expect(auth.options.user?.modelName).toBe("better_auth.user")
     })
 
     test("emailVerified field maps to email_verified", () => {
@@ -68,8 +68,8 @@ describe("Better Auth Server Configuration", () => {
 
   // test-ba-006-03: Session model configuration
   describe("Session Model Configuration", () => {
-    test("session modelName is 'better_auth_tables.session'", () => {
-      expect(auth.options.session?.modelName).toBe("better_auth_tables.session")
+    test("session modelName is 'better_auth.session'", () => {
+      expect(auth.options.session?.modelName).toBe("better_auth.session")
     })
 
     test("userId field maps to user_id", () => {
@@ -99,8 +99,8 @@ describe("Better Auth Server Configuration", () => {
 
   // test-ba-006-04: Account model configuration
   describe("Account Model Configuration", () => {
-    test("account modelName is 'better_auth_tables.account'", () => {
-      expect(auth.options.account?.modelName).toBe("better_auth_tables.account")
+    test("account modelName is 'better_auth.account'", () => {
+      expect(auth.options.account?.modelName).toBe("better_auth.account")
     })
 
     test("userId field maps to user_id", () => {
@@ -142,8 +142,8 @@ describe("Better Auth Server Configuration", () => {
 
   // test-ba-006-05: Verification model configuration
   describe("Verification Model Configuration", () => {
-    test("verification modelName is 'better_auth_tables.verification'", () => {
-      expect(auth.options.verification?.modelName).toBe("better_auth_tables.verification")
+    test("verification modelName is 'better_auth.verification'", () => {
+      expect(auth.options.verification?.modelName).toBe("better_auth.verification")
     })
 
     test("expiresAt field maps to expires_at", () => {

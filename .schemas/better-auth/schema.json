@@ -1,6 +1,6 @@
 {
   "id": "5fb779e3-aca4-4058-bbad-a61fe773c54c",
-  "name": "better-auth-tables",
+  "name": "better-auth",
   "format": "enhanced-json-schema",
   "createdAt": 1767158466659,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
