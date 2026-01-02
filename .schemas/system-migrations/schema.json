@@ -12,6 +12,7 @@
     "MigrationRecord": {
       "type": "object",
       "title": "MigrationRecord",
+      "x-original-name": "MigrationRecord",
       "description": "Records an applied migration for tracking and preventing re-execution",
       "properties": {
         "id": {

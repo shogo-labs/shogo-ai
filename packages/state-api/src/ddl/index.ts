@@ -205,3 +205,13 @@ export {
   recordMigration,
   computeSchemaChecksum,
 } from "./migration-tracker"
+
+// Re-export orchestrator
+export {
+  ensureSchemaSynced,
+  type SchemaSyncResult,
+  type SchemaSyncResultBootstrap,
+  type SchemaSyncResultCreated,
+  type SchemaSyncResultUnchanged,
+  type SchemaSyncResultMigrated,
+} from "./orchestrator"
