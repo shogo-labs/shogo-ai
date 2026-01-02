@@ -38,6 +38,7 @@ import { getMetaStore } from '../meta/bootstrap'
 import { toSnakeCase } from '../ddl/utils'
 import { deriveNamespace, qualifyTableName, type QualifyDialect } from '../ddl/namespace'
 import type { DDLGenerationConfig } from '../ddl/types'
+import { ensureSchemaSynced, type SchemaSyncResult } from '../ddl/orchestrator'
 
 /**
  * Interface for backend registry with schema-driven resolution.
@@ -176,6 +177,44 @@ export interface IBackendRegistry {
    * Must be called after registering backends and setting default.
    */
   initialize(): Promise<void>
+
+  /**
+   * Synchronize a schema with the database using the migration orchestrator.
+   *
+   * @param schemaName - Schema name for tracking and backend resolution
+   * @param schema - Enhanced JSON Schema with x-persistence metadata
+   * @returns Promise resolving to SchemaSyncResult with action taken
+   *
+   * @remarks
+   * This is the recommended method for schema synchronization. It:
+   * 1. Handles bootstrap schemas (skips migration tracking)
+   * 2. Detects fresh deploys (creates tables, records v1 migration)
+   * 3. Detects unchanged schemas (checksum matches)
+   * 4. Runs migrations when schemas have changed
+   *
+   * Delegates to ensureSchemaSynced() from ddl/orchestrator.
+   *
+   * @example
+   * ```typescript
+   * const result = await registry.syncSchema("user-schema", userSchema)
+   *
+   * switch (result.action) {
+   *   case "bootstrap":
+   *     console.log("Bootstrap schema initialized")
+   *     break
+   *   case "created":
+   *     console.log(`Schema created at v${result.version}`)
+   *     break
+   *   case "unchanged":
+   *     console.log(`Schema unchanged at v${result.version}`)
+   *     break
+   *   case "migrated":
+   *     console.log(`Migrated from v${result.fromVersion} to v${result.toVersion}`)
+   *     break
+   * }
+   * ```
+   */
+  syncSchema(schemaName: string, schema: any): Promise<SchemaSyncResult>
 }
 
 /**
@@ -518,6 +557,24 @@ export class BackendRegistry implements IBackendRegistry {
         )
       }
     }
+  }
+
+  /**
+   * Synchronize a schema with the database using the migration orchestrator.
+   *
+   * @param schemaName - Schema name for tracking and backend resolution
+   * @param schema - Enhanced JSON Schema with x-persistence metadata
+   * @returns Promise resolving to SchemaSyncResult with action taken
+   *
+   * @remarks
+   * Delegates to ensureSchemaSynced() which handles:
+   * 1. Bootstrap schemas (skips migration tracking, returns { action: "bootstrap" })
+   * 2. Fresh deploys (creates tables, records v1 migration, returns { action: "created" })
+   * 3. Unchanged schemas (checksum matches, returns { action: "unchanged" })
+   * 4. Migrations (runs ALTER statements, returns { action: "migrated" })
+   */
+  async syncSchema(schemaName: string, schema: any): Promise<SchemaSyncResult> {
+    return ensureSchemaSynced(schemaName, schema, this)
   }
 }
 

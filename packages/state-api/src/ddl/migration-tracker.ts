@@ -10,6 +10,7 @@
 
 import { getMetaStore } from "../meta/bootstrap"
 import type { MigrationRecord } from "./migration-types"
+import type { BackendRegistry } from "../query/registry"
 
 /**
  * Get the system-migrations runtime store.
@@ -44,6 +45,7 @@ function getSystemMigrationsStore(): any | null {
  * @returns Array of MigrationRecord objects, ordered by version
  *
  * @remarks
+ * Uses query() to fetch from SQL database (not just MST memory).
  * Returns empty array if:
  * - system-migrations store is not initialized
  * - No migrations exist for the schema
@@ -57,18 +59,13 @@ export async function getAppliedMigrations(schemaName: string): Promise<Migratio
   }
 
   try {
-    // Use the collection's forSchema view if available, otherwise filter manually
     const collection = store.migrationRecordCollection
 
-    if (typeof collection.forSchema === "function") {
-      return collection.forSchema(schemaName)
-    }
-
-    // Fallback: manual filter and sort
-    return collection
-      .all()
-      .filter((r: any) => r.schemaName === schemaName)
-      .sort((a: any, b: any) => a.version - b.version)
+    // Query SQL directly (not MST memory) for all migrations
+    return await collection.query()
+      .where({ schemaName })
+      .orderBy("version", "asc")
+      .toArray()
   } catch {
     return []
   }
@@ -79,6 +76,10 @@ export async function getAppliedMigrations(schemaName: string): Promise<Migratio
  *
  * @param schemaName - Name of the schema to get latest migration for
  * @returns Latest MigrationRecord or null if none exist
+ *
+ * @remarks
+ * Uses query() to fetch from SQL database (not just MST memory).
+ * This ensures migrations are found on server restart.
  */
 export async function getLatestMigration(schemaName: string): Promise<MigrationRecord | null> {
   const store = getSystemMigrationsStore()
@@ -90,17 +91,14 @@ export async function getLatestMigration(schemaName: string): Promise<MigrationR
   try {
     const collection = store.migrationRecordCollection
 
-    if (typeof collection.latestForSchema === "function") {
-      return collection.latestForSchema(schemaName) ?? null
-    }
+    // Query SQL directly (not MST memory) to find latest migration
+    // This ensures idempotency across server restarts
+    const result = await collection.query()
+      .where({ schemaName })
+      .orderBy("version", "desc")
+      .first()
 
-    // Fallback: manual filter and find max
-    const migrations = collection
-      .all()
-      .filter((r: any) => r.schemaName === schemaName)
-      .sort((a: any, b: any) => b.version - a.version)
-
-    return migrations[0] ?? null
+    return result ?? null
   } catch {
     return null
   }
@@ -112,6 +110,9 @@ export async function getLatestMigration(schemaName: string): Promise<MigrationR
  * @param schemaName - Name of the schema
  * @param version - Version number to check
  * @returns True if version has been applied, false otherwise
+ *
+ * @remarks
+ * Uses query() to check SQL database (not just MST memory).
  */
 export async function isMigrationApplied(schemaName: string, version: number): Promise<boolean> {
   const store = getSystemMigrationsStore()
@@ -123,14 +124,10 @@ export async function isMigrationApplied(schemaName: string, version: number): P
   try {
     const collection = store.migrationRecordCollection
 
-    if (typeof collection.hasVersion === "function") {
-      return collection.hasVersion(schemaName, version)
-    }
-
-    // Fallback: manual check
-    return collection
-      .all()
-      .some((r: any) => r.schemaName === schemaName && r.version === version)
+    // Query SQL directly (not MST memory) to check if version exists
+    return await collection.query()
+      .where({ schemaName, version })
+      .any()
   } catch {
     return false
   }
@@ -161,9 +158,12 @@ export async function recordMigration(record: Omit<MigrationRecord, "id"> & { id
   const recordWithId = {
     ...record,
     id: record.id ?? crypto.randomUUID(),
+    // Serialize statements array to JSON for SQL TEXT storage
+    statements: record.statements ? JSON.stringify(record.statements) : undefined,
   }
 
-  store.migrationRecordCollection.add(recordWithId)
+  // Use insertOne() to persist to SQL (via CollectionMutatable mixin)
+  await store.migrationRecordCollection.insertOne(recordWithId)
 }
 
 /**
