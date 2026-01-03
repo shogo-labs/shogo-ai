@@ -81,23 +81,22 @@ export function EntityDataPanel({ featureSessionId }: EntityDataPanelProps) {
 
       // Ensure schema is loaded first
       await mcpService.callTool("schema.load", { name: "platform-features" })
-      await mcpService.callTool("data.loadAll", { schemaName: "platform-features" })
 
       // Load all entities and filter client-side by session
       const [reqResult, findResult, decResult, taskResult] = await Promise.all([
-        mcpService.callTool("store.list", {
+        mcpService.callTool("store.query", {
           schema: "platform-features",
           model: "Requirement",
         }),
-        mcpService.callTool("store.list", {
+        mcpService.callTool("store.query", {
           schema: "platform-features",
           model: "AnalysisFinding",
         }),
-        mcpService.callTool("store.list", {
+        mcpService.callTool("store.query", {
           schema: "platform-features",
           model: "DesignDecision",
         }),
-        mcpService.callTool("store.list", {
+        mcpService.callTool("store.query", {
           schema: "platform-features",
           model: "ImplementationTask",
         }),

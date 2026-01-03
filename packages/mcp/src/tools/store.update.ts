@@ -8,13 +8,11 @@
  *
  * Tool Requirements:
  * - Tool name: 'store.update'
- * - Uses CollectionMutatable.updateOne/updateMany when available
- * - Falls back to applySnapshot + saveAll for legacy collections
+ * - Uses CollectionMutatable.updateOne/updateMany
  */
 
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
-import { getSnapshot, applySnapshot } from "mobx-state-tree"
 import { getMetaStore, getRuntimeStore } from "@shogo/state-api"
 import { getEffectiveWorkspace } from "../state"
 
@@ -157,29 +155,10 @@ export async function executeStoreUpdate(
 
     if (isBatchMode) {
       // Batch mode: update all matching entities
-      if (typeof collection.updateMany === 'function') {
-        const count = await collection.updateMany(filter, changes)
-        return {
-          ok: true,
-          count
-        }
-      }
-
-      // Fallback: query + loop update
-      const matches = collection.all().filter((entity: any) => {
-        return Object.entries(filter as object).every(([key, value]) => entity[key] === value)
-      })
-
-      for (const entity of matches) {
-        const currentSnapshot = getSnapshot(entity) as Record<string, any>
-        const updatedSnapshot = { ...currentSnapshot, ...(changes as Record<string, any>) }
-        applySnapshot(entity, updatedSnapshot)
-      }
-      await collection.saveAll()
-
+      const count = await collection.updateMany(filter, changes)
       return {
         ok: true,
-        count: matches.length
+        count
       }
     }
 
@@ -195,26 +174,8 @@ export async function executeStoreUpdate(
     }
 
     // Single mode: update by id
-    if (typeof collection.updateOne === 'function') {
-      const updated = await collection.updateOne(id, changes)
-      if (!updated) {
-        return {
-          ok: false,
-          error: {
-            code: "NOT_FOUND",
-            message: `Entity with id '${id}' not found in model '${model}'`
-          }
-        }
-      }
-      return {
-        ok: true,
-        data: updated
-      }
-    }
-
-    // Fallback for collections without CollectionMutatable mixin
-    const instance = collection.get(id)
-    if (!instance) {
+    const updated = await collection.updateOne(id, changes)
+    if (!updated) {
       return {
         ok: false,
         error: {
@@ -223,15 +184,9 @@ export async function executeStoreUpdate(
         }
       }
     }
-
-    const currentSnapshot = getSnapshot(instance) as Record<string, any>
-    const updatedSnapshot = { ...currentSnapshot, ...(changes as Record<string, any>) }
-    applySnapshot(instance, updatedSnapshot)
-    await collection.saveAll()
-
     return {
       ok: true,
-      data: getSnapshot(instance)
+      data: updated
     }
   } catch (error: any) {
     return {

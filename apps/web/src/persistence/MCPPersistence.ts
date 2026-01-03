@@ -66,7 +66,7 @@ export class MCPPersistence implements IPersistenceService {
 
   /**
    * Load a schema by name via MCP.
-   * First triggers schema.load (server-side caching), then retrieves payload via schema.get.
+   * Uses schema.load which creates the runtime store server-side.
    */
   async loadSchema(name: string, location?: string): Promise<{
     metadata: { name: string; id?: string; views?: Record<string, any> }
@@ -74,10 +74,11 @@ export class MCPPersistence implements IPersistenceService {
   } | null> {
     await this.ensureInitialized()
     try {
-      // First load schema (triggers server-side caching and returns metadata)
+      // Load schema (triggers server-side caching and returns metadata)
       const loadResult = await this.mcp.callTool<{
         ok: boolean
         schemaId?: string
+        models?: any[]
         error?: { message: string }
       }>('schema.load', { name, workspace: location })
 
@@ -86,27 +87,14 @@ export class MCPPersistence implements IPersistenceService {
         return null
       }
 
-      // Then get the full schema payload
-      const getResult = await this.mcp.callTool<{
-        ok: boolean
-        format?: string
-        payload?: any
-        views?: Record<string, any>
-        error?: { message: string }
-      }>('schema.get', { name })
-
-      if (!getResult?.ok || !getResult.payload) {
-        console.warn('[MCPPersistence] schema.get failed:', getResult?.error?.message)
-        return null
-      }
-
+      // Return metadata from load result
+      // Note: Full schema payload is available server-side via meta-store
       return {
         metadata: {
           name,
-          id: loadResult.schemaId,
-          views: getResult.views
+          id: loadResult.schemaId
         },
-        enhanced: getResult.payload
+        enhanced: { models: loadResult.models }
       }
     } catch (error: any) {
       console.error('[MCPPersistence] loadSchema error:', error.message)
@@ -135,7 +123,7 @@ export class MCPPersistence implements IPersistenceService {
   // === Data operations ===
 
   /**
-   * Load a collection via MCP store.list tool.
+   * Load a collection via MCP store.query tool.
    * Transforms the array response into MST collection format { items: { [id]: entity } }.
    * Passes filter through for partition pushdown optimization.
    */
@@ -146,7 +134,7 @@ export class MCPPersistence implements IPersistenceService {
         ok: boolean
         items?: any[]
         error?: { message: string }
-      }>('store.list', {
+      }>('store.query', {
         schema: ctx.schemaName,
         model: ctx.modelName,
         workspace: ctx.location,

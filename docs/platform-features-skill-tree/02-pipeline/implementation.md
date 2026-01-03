@@ -522,7 +522,7 @@ Every feature MUST have a `domain.ts` that exports:
 The skill tracks progress via `ImplementationRun` entity:
 
 ```javascript
-const existingRun = store.list("ImplementationRun", "platform-feature-spec", {
+const existingRun = store.query("ImplementationRun", "platform-feature-spec", {
   sessionId: session.id,
   status: "in_progress"
 })[0]
