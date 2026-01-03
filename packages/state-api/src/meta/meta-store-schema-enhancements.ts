@@ -8,7 +8,16 @@ import type { ModelDescriptor } from "./types"
 import { getRuntimeStore } from "./runtime-store-cache"
 
 export function createSchemaEnhancements(baseModels: any) {
-  return baseModels.Schema.views((self: any) => ({
+  return baseModels.Schema
+    .actions((self: any) => ({
+      /**
+       * Update the content checksum (called when schema content changes)
+       */
+      setContentChecksum(checksum: string) {
+        self.contentChecksum = checksum
+      }
+    }))
+    .views((self: any) => ({
     // === Layer 1: Relationship Views (cached/memoized) ===
 
     /**

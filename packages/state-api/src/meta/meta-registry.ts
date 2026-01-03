@@ -36,6 +36,8 @@ export const MetaRegistry = scope({
     name: "string",
     format: "'enhanced-json-schema'",
     createdAt: "number",
+    // Content checksum for detecting schema changes (used by ingestEnhancedJsonSchema)
+    "contentChecksum?": "string",
     // Schema-level persistence configuration (x-persistence extension)
     // Cascades to models that don't have their own x-persistence
     "xPersistence?": {

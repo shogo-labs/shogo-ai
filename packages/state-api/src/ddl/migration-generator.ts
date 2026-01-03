@@ -14,6 +14,7 @@ import type {
 } from "./migration-types"
 import { MigrationOperation } from "./migration-types"
 import { toSnakeCase } from "./utils"
+import type { QualifyDialect } from "./namespace"
 
 // ============================================================================
 // Configuration Types
@@ -48,9 +49,25 @@ export function generateMigration(
   const operations: MigrationOperationDef[] = []
   const warnings: string[] = []
 
+  // Helper to get qualified table name (namespace prefix applied when namespace is provided)
+  // Returns UNESCAPED name - escaping happens in migrationOutputToSQL
+  const dialectName: QualifyDialect = dialect.name === "postgresql" || dialect.name === "postgres"
+    ? "postgresql"
+    : "sqlite"
+  const qualify = (modelName: string): string => {
+    const base = toSnakeCase(modelName)
+    if (!config.namespace) return base
+    // For SQLite: namespace__table (underscore separator)
+    // For PostgreSQL: namespace.table (dot separator, escaping happens later)
+    if (dialectName === "postgresql") {
+      return `${config.namespace}.${base}`
+    }
+    return `${config.namespace}__${base}`
+  }
+
   // Process added models (CREATE_TABLE)
   for (const modelName of diff.addedModels) {
-    const tableName = toSnakeCase(modelName)
+    const tableName = qualify(modelName)
     operations.push({
       type: MigrationOperation.CREATE_TABLE,
       tableName,
@@ -60,7 +77,7 @@ export function generateMigration(
 
   // Process removed models (DROP_TABLE with warning)
   for (const modelName of diff.removedModels) {
-    const tableName = toSnakeCase(modelName)
+    const tableName = qualify(modelName)
     operations.push({
       type: MigrationOperation.DROP_TABLE,
       tableName,
@@ -70,7 +87,7 @@ export function generateMigration(
 
   // Process modified models (column changes)
   for (const modelDiff of diff.modifiedModels) {
-    const tableName = toSnakeCase(modelDiff.modelName)
+    const tableName = qualify(modelDiff.modelName)
 
     // Check if any operation requires table recreation
     const needsRecreation = (
@@ -158,6 +175,31 @@ export function generateMigration(
 // ============================================================================
 
 /**
+ * Escapes a qualified table name for the given dialect.
+ *
+ * For PostgreSQL qualified names like "namespace.table", escapes each part separately:
+ * - Input: "my_schema.user" → Output: "my_schema"."user"
+ *
+ * For SQLite or unqualified names, just wraps in quotes:
+ * - Input: "my_schema__user" → Output: "my_schema__user"
+ * - Input: "user" → Output: "user"
+ */
+function escapeTableName(tableName: string, dialect: SqlDialect): string {
+  // Check if this is a PostgreSQL-style qualified name (namespace.table)
+  // PostgreSQL names use dot separator, SQLite uses double-underscore
+  if (
+    (dialect.name === "postgresql" || dialect.name === "postgres") &&
+    tableName.includes(".") &&
+    !tableName.startsWith('"') // Not already escaped
+  ) {
+    const [namespace, table] = tableName.split(".")
+    return `${dialect.escapeIdentifier(namespace)}.${dialect.escapeIdentifier(table)}`
+  }
+  // Otherwise just escape as a single identifier
+  return dialect.escapeIdentifier(tableName)
+}
+
+/**
  * Converts migration operations to SQL statements.
  *
  * @param output - Migration output from generateMigration()
@@ -185,7 +227,7 @@ export function migrationOutputToSQL(
 
       case MigrationOperation.DROP_TABLE:
         statements.push(
-          `DROP TABLE ${dialect.escapeIdentifier(op.tableName)}`
+          `DROP TABLE ${escapeTableName(op.tableName, dialect)}`
         )
         break
 
@@ -223,7 +265,7 @@ function generateAddColumnSQL(
   column: ColumnDef,
   dialect: SqlDialect
 ): string {
-  const escapedTable = dialect.escapeIdentifier(tableName)
+  const escapedTable = escapeTableName(tableName, dialect)
   const escapedColumn = dialect.escapeIdentifier(column.name)
   const type = column.type
 
@@ -248,7 +290,7 @@ function generateDropColumnSQL(
   columnName: string,
   dialect: SqlDialect
 ): string {
-  const escapedTable = dialect.escapeIdentifier(tableName)
+  const escapedTable = escapeTableName(tableName, dialect)
   const escapedColumn = dialect.escapeIdentifier(columnName)
 
   return `ALTER TABLE ${escapedTable} DROP COLUMN ${escapedColumn}`
@@ -268,8 +310,8 @@ function generateRecreateTableSQL(
   dialect: SqlDialect
 ): string[] {
   const statements: string[] = []
-  const escapedTable = dialect.escapeIdentifier(tableName)
-  const tempTable = dialect.escapeIdentifier(`${tableName}_new`)
+  const escapedTable = escapeTableName(tableName, dialect)
+  const tempTable = escapeTableName(`${tableName}_new`, dialect)
 
   // Step 1: CREATE TABLE temp with new schema
   const columnDefs = columns.map((col) => {
@@ -300,7 +342,7 @@ function generateRecreateTableSQL(
   statements.push(`DROP TABLE ${escapedTable}`)
 
   // Step 4: RENAME temp to original
-  statements.push(`ALTER TABLE ${tempTable} RENAME TO ${dialect.escapeIdentifier(tableName)}`)
+  statements.push(`ALTER TABLE ${tempTable} RENAME TO ${escapeTableName(tableName, dialect)}`)
 
   return statements
 }

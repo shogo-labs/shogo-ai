@@ -14,11 +14,13 @@ import { getLatestMigration, recordMigration, computeSchemaChecksum } from "./mi
 import { compareSchemas } from "./diff"
 import { generateMigration, migrationOutputToSQL } from "./migration-generator"
 import { createSqliteDialect, createPostgresDialect } from "./dialect"
+import { deriveNamespace } from "./namespace"
 import type { BackendRegistry } from "../query/registry"
 import { getMetaStore } from "../meta/bootstrap"
 import { cacheRuntimeStore } from "../meta/runtime-store-cache"
 import { domain } from "../domain/domain"
 import { NullPersistence } from "../persistence/null"
+import { getSchemaSnapshot } from "../persistence/schema-io"
 
 // ============================================================================
 // Schema Sync Result Types (Discriminated Union)
@@ -168,13 +170,15 @@ export async function ensureSchemaSynced(
   // We need to get the old schema to compute diff
   // For now, we'll use the fact that we have the new schema and need to generate migration SQL
   const oldSchema = await reconstructSchemaFromMigration(schemaName, latest.version)
-  const dialect = getDialect(schema)
+  const dialect = getDialect(schema, registry)
   const diff = compareSchemas(oldSchema, schema)
 
-  // Generate migration operations
+  // Generate migration operations with namespace for table name prefixing
+  const namespace = deriveNamespace(schemaName)
   const migrationOutput = generateMigration(diff, dialect, {
     schemaName,
     version: latest.version + 1,
+    namespace,
   })
 
   // Convert to SQL statements
@@ -207,48 +211,64 @@ export async function ensureSchemaSynced(
 // ============================================================================
 
 /**
- * Gets the appropriate SQL dialect based on schema's x-persistence.backend.
+ * Gets the appropriate SQL dialect from the registry's actual backend.
+ *
+ * This uses the ACTUAL runtime backend's dialect, not the schema's declared backend.
+ * This is critical because a schema may declare "postgres" but the runtime may fall
+ * back to SQLite if DATABASE_URL is not set. In that case, the SQLite backend is
+ * registered under both "sqlite" AND "postgres" names.
+ *
+ * @param schema - Enhanced JSON Schema with x-persistence metadata
+ * @param registry - Backend registry to look up actual backend
+ * @returns SQL dialect matching the runtime backend
  */
-function getDialect(schema: any) {
-  const backend = schema["x-persistence"]?.backend
-  if (backend === "postgresql" || backend === "postgres") {
+function getDialect(schema: any, registry: BackendRegistry) {
+  // Get the backend registered under the schema's declared backend name
+  // This works because when DATABASE_URL is not set, SQLite is registered
+  // under both "sqlite" AND "postgres" names (see postgres-init.ts)
+  const backendName = schema["x-persistence"]?.backend
+  const backend = backendName ? registry.get(backendName) : undefined
+
+  // Use the ACTUAL backend's dialect property
+  if (backend?.dialect === "sqlite") {
+    return createSqliteDialect()
+  }
+  if (backend?.dialect === "pg" || backend?.dialect === "postgres" || backend?.dialect === "postgresql") {
     return createPostgresDialect()
   }
+
+  // Fallback: if no backend found, use schema's declared backend
+  if (backendName === "postgresql" || backendName === "postgres") {
+    return createPostgresDialect()
+  }
+
   // Default to SQLite
   return createSqliteDialect()
 }
 
 /**
- * Reconstructs the old schema from migration history.
+ * Reconstructs the old schema from filesystem history.
  *
- * This is a simplified approach - in a real implementation, we might:
- * 1. Store the full schema JSON in migration records
- * 2. Apply migration operations in reverse to reconstruct
- * 3. Use schema versioning in a separate table
+ * Uses the schema versioning system in schema-io.ts which automatically
+ * saves snapshots to .schemas/{schemaName}/history/v{N}.json before
+ * each schema update.
  *
- * For now, we look up the schema from meta-store (which has the current version).
- * This means diff detection works by comparing current meta-store state.
+ * @param schemaName - Name of the schema
+ * @param version - Version number to retrieve
+ * @returns Schema at the specified version, or empty schema if not found
  */
 async function reconstructSchemaFromMigration(
   schemaName: string,
   version: number
 ): Promise<any> {
-  // Get the schema entity from meta-store
-  const metaStore = getMetaStore()
-  const schemaEntity = metaStore.schemaCollection.all().find(
-    (s: any) => s.name === schemaName
-  )
-
-  if (!schemaEntity) {
-    // Return empty schema - diff will treat all current models as added
+  try {
+    const snapshot = await getSchemaSnapshot(schemaName, version)
+    return snapshot.schema
+  } catch {
+    // Version not found in history - return empty for full table creation
+    // This handles first migration where no history exists yet
     return { $defs: {} }
   }
-
-  // Get the previous schema state
-  // Note: In a production system, we'd store full schema snapshots
-  // For now, return empty to trigger full migration generation
-  // The migration generator will handle this as "add all columns"
-  return { $defs: {} }
 }
 
 /**

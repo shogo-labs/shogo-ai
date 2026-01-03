@@ -360,3 +360,179 @@ describe("DDL barrel exports", () => {
     expect(typeof toSql).toBe("function")
   })
 })
+
+describe("namespace handling in migrations", () => {
+  describe("generateMigration applies namespace to table names", () => {
+    test("PostgreSQL: uses namespace.table format for ALTER TABLE", () => {
+      const oldSchema = createSchema({
+        User: { id: { type: "string" }, name: { type: "string" } },
+      })
+      const newSchema = createSchema({
+        User: { id: { type: "string" }, name: { type: "string" }, email: { type: "string" } },
+      })
+      const diff = compareSchemas(oldSchema, newSchema)
+      const dialect = createPostgresDialect()
+
+      const output = generateMigration(diff, dialect, {
+        schemaName: "my-schema",
+        namespace: "my_schema",
+        version: 2,
+      })
+
+      // Expect operations to use namespaced table name (unescaped - escaping in SQL generation)
+      const addColumnOps = output.operations.filter(
+        (op) => op.type === MigrationOperation.ADD_COLUMN
+      )
+      expect(addColumnOps.length).toBeGreaterThan(0)
+      // PostgreSQL format: namespace.table (dot separator)
+      expect(addColumnOps[0].tableName).toBe("my_schema.user")
+    })
+
+    test("SQLite: uses namespace__table format for ALTER TABLE", () => {
+      const oldSchema = createSchema({
+        User: { id: { type: "string" }, name: { type: "string" } },
+      })
+      const newSchema = createSchema({
+        User: { id: { type: "string" }, name: { type: "string" }, email: { type: "string" } },
+      })
+      const diff = compareSchemas(oldSchema, newSchema)
+      const dialect = createSqliteDialect()
+
+      const output = generateMigration(diff, dialect, {
+        schemaName: "my-schema",
+        namespace: "my_schema",
+        version: 2,
+      })
+
+      // Expect operations to use namespaced table name
+      const addColumnOps = output.operations.filter(
+        (op) => op.type === MigrationOperation.ADD_COLUMN
+      )
+      expect(addColumnOps.length).toBeGreaterThan(0)
+      // SQLite format: namespace__table
+      expect(addColumnOps[0].tableName).toBe("my_schema__user")
+    })
+
+    test("CREATE_TABLE uses namespaced table name", () => {
+      const oldSchema = createSchema({
+        User: { id: { type: "string" } },
+      })
+      const newSchema = createSchema({
+        User: { id: { type: "string" } },
+        Post: { id: { type: "string" }, title: { type: "string" } },
+      })
+      const diff = compareSchemas(oldSchema, newSchema)
+      const dialect = createSqliteDialect()
+
+      const output = generateMigration(diff, dialect, {
+        schemaName: "test-schema",
+        namespace: "test_schema",
+        version: 2,
+      })
+
+      const createTableOps = output.operations.filter(
+        (op) => op.type === MigrationOperation.CREATE_TABLE
+      )
+      expect(createTableOps.length).toBeGreaterThan(0)
+      expect(createTableOps[0].tableName).toBe("test_schema__post")
+    })
+
+    test("DROP_TABLE uses namespaced table name", () => {
+      const oldSchema = createSchema({
+        User: { id: { type: "string" } },
+        LegacyModel: { id: { type: "string" } },
+      })
+      const newSchema = createSchema({
+        User: { id: { type: "string" } },
+      })
+      const diff = compareSchemas(oldSchema, newSchema)
+      const dialect = createPostgresDialect()
+
+      const output = generateMigration(diff, dialect, {
+        schemaName: "app-schema",
+        namespace: "app_schema",
+        version: 2,
+      })
+
+      const dropTableOps = output.operations.filter(
+        (op) => op.type === MigrationOperation.DROP_TABLE
+      )
+      expect(dropTableOps.length).toBeGreaterThan(0)
+      // PostgreSQL format: namespace.table (dot separator, unescaped)
+      expect(dropTableOps[0].tableName).toBe("app_schema.legacy_model")
+    })
+
+    test("RECREATE_TABLE uses namespaced table name for SQLite", () => {
+      const oldSchema = createSchema({
+        User: { id: { type: "string" }, name: { type: "string" }, status: { type: "string" } },
+      })
+      const newSchema = createSchema({
+        User: { id: { type: "string" }, name: { type: "string" } },
+      })
+      const diff = compareSchemas(oldSchema, newSchema)
+      const dialect = createSqliteDialect()
+
+      const output = generateMigration(diff, dialect, {
+        schemaName: "my-app",
+        namespace: "my_app",
+        version: 2,
+      })
+
+      const recreateOps = output.operations.filter(
+        (op) => op.type === MigrationOperation.RECREATE_TABLE
+      )
+      expect(recreateOps.length).toBeGreaterThan(0)
+      expect(recreateOps[0].tableName).toBe("my_app__user")
+    })
+  })
+
+  describe("migrationOutputToSQL escapes namespaced table names correctly", () => {
+    test("PostgreSQL: escapes namespace.table as separate identifiers", () => {
+      const output: MigrationOutput = {
+        version: 2,
+        schemaName: "test",
+        diff: { addedModels: [], removedModels: [], modifiedModels: [], hasChanges: true },
+        operations: [
+          {
+            type: MigrationOperation.ADD_COLUMN,
+            tableName: "my_schema.user", // unescaped namespace.table
+            column: { name: "email", type: "TEXT", nullable: false },
+          },
+        ],
+        warnings: [],
+      }
+      const dialect = createPostgresDialect()
+
+      const statements = migrationOutputToSQL(output, dialect)
+
+      // Should escape as "my_schema"."user" (each part separately)
+      const alterStatement = statements.find((s) => s.includes("ALTER TABLE"))
+      expect(alterStatement).toBeDefined()
+      expect(alterStatement).toContain('"my_schema"."user"')
+    })
+
+    test("SQLite: escapes namespace__table as single identifier", () => {
+      const output: MigrationOutput = {
+        version: 2,
+        schemaName: "test",
+        diff: { addedModels: [], removedModels: [], modifiedModels: [], hasChanges: true },
+        operations: [
+          {
+            type: MigrationOperation.ADD_COLUMN,
+            tableName: "my_schema__user", // underscore-separated
+            column: { name: "email", type: "TEXT", nullable: true },
+          },
+        ],
+        warnings: [],
+      }
+      const dialect = createSqliteDialect()
+
+      const statements = migrationOutputToSQL(output, dialect)
+
+      // Should escape as "my_schema__user" (single identifier)
+      const alterStatement = statements.find((s) => s.includes("ALTER TABLE"))
+      expect(alterStatement).toBeDefined()
+      expect(alterStatement).toContain('"my_schema__user"')
+    })
+  })
+})
