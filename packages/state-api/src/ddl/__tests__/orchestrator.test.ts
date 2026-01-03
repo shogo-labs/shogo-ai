@@ -9,7 +9,7 @@
  * - REQ-DDL-MIG-005: Orchestrate schema synchronization
  */
 
-import { describe, test, expect, beforeEach } from "bun:test"
+import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { Database } from "bun:sqlite"
 import { resetMetaStore, getMetaStore, clearRuntimeStores } from "../../meta/bootstrap"
 import { BunSqlExecutor } from "../../query/execution/bun-sql"
@@ -318,6 +318,169 @@ describe("Orchestrator exports", () => {
  * NOT setting up the system-migrations runtime store manually. This ensures
  * we test that ensureSchemaSynced does the initialization itself.
  */
+/**
+ * Schema Evolution with Filesystem History Tests
+ *
+ * These tests verify that schema evolution uses the filesystem history
+ * (history/v{N}.json) to compute proper diffs and generate ALTER TABLE
+ * statements instead of CREATE TABLE placeholders.
+ */
+describe("Schema evolution with filesystem history", () => {
+  let db: Database
+  let registry: BackendRegistry
+  const TEST_SCHEMA_NAME = "orchestrator-history-test"
+  const TEST_WORKSPACE = `${process.cwd()}/.schemas`
+
+  // Helper to create mock schema entity for saveSchema
+  function createMockSchemaEntity(name: string, defs: Record<string, any>) {
+    return {
+      id: `schema-${name}-${Date.now()}`,
+      name,
+      format: "enhanced-json-schema",
+      createdAt: Date.now(),
+      toEnhancedJson: {
+        $schema: "http://json-schema.org/draft-07/schema#",
+        $defs: defs,
+        "x-persistence": { backend: "sql" },
+      },
+    }
+  }
+
+  beforeEach(async () => {
+    resetMetaStore()
+    clearRuntimeStores()
+
+    // Create fresh in-memory SQLite database
+    db = new Database(":memory:")
+    const executor = new BunSqlExecutor(db)
+    const backend = new SqlBackend({ dialect: "sqlite", executor })
+
+    registry = new BackendRegistry()
+    registry.register("sql", backend)
+    registry.setDefault("sql")
+
+    // Bootstrap system-migrations
+    await ensureSchemaSynced("system-migrations", systemMigrationsSchema, registry)
+
+    // Clean up any previous test artifacts
+    const fs = await import("fs/promises")
+    try {
+      await fs.rm(`${TEST_WORKSPACE}/${TEST_SCHEMA_NAME}`, { recursive: true, force: true })
+    } catch {
+      // Ignore if doesn't exist
+    }
+  })
+
+  afterEach(async () => {
+    // Clean up test schema directory
+    const fs = await import("fs/promises")
+    try {
+      await fs.rm(`${TEST_WORKSPACE}/${TEST_SCHEMA_NAME}`, { recursive: true, force: true })
+    } catch {
+      // Ignore cleanup errors
+    }
+  })
+
+  test("should generate ALTER TABLE ADD COLUMN when schema evolves with history", async () => {
+    const fs = await import("fs/promises")
+    const { saveSchema } = await import("../../persistence/schema-io")
+
+    // V1 schema: User with id, name
+    const userDefsV1 = {
+      User: {
+        type: "object",
+        "x-original-name": "User",
+        properties: {
+          id: { type: "string", "x-mst-type": "identifier" },
+          name: { type: "string" },
+        },
+        required: ["id", "name"],
+      },
+    }
+
+    // V2 schema: User with id, name, email (added column)
+    const userDefsV2 = {
+      User: {
+        type: "object",
+        "x-original-name": "User",
+        properties: {
+          id: { type: "string", "x-mst-type": "identifier" },
+          name: { type: "string" },
+          email: { type: "string" }, // Added column
+        },
+        required: ["id", "name"],
+      },
+    }
+
+    // Step 1: Save v1 schema to filesystem
+    const schemaEntityV1 = createMockSchemaEntity(TEST_SCHEMA_NAME, userDefsV1)
+    await saveSchema(schemaEntityV1, undefined, TEST_WORKSPACE)
+
+    // Step 2: Save v2 schema (this creates history/v1.json)
+    const schemaEntityV2 = createMockSchemaEntity(TEST_SCHEMA_NAME, userDefsV2)
+    await saveSchema(schemaEntityV2, undefined, TEST_WORKSPACE)
+
+    // Verify history/v1.json was created
+    const historyExists = await fs.stat(`${TEST_WORKSPACE}/${TEST_SCHEMA_NAME}/history/v1.json`)
+      .then(() => true)
+      .catch(() => false)
+    expect(historyExists).toBe(true)
+
+    // Step 3: Load v1 schema and run initial sync (creates v1 migration with CREATE TABLE)
+    const schemaV1 = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      $id: TEST_SCHEMA_NAME,
+      "x-persistence": { backend: "sql" },
+      $defs: userDefsV1,
+    }
+    getMetaStore().ingestEnhancedJsonSchema(schemaV1, { name: TEST_SCHEMA_NAME })
+    const v1Result = await ensureSchemaSynced(TEST_SCHEMA_NAME, schemaV1, registry)
+
+    // Debug: Verify v1 sync created the table
+    expect(v1Result.action).toBe("created")
+    if (v1Result.action === "created") {
+      expect(v1Result.statements.some(s => s.includes("CREATE TABLE"))).toBe(true)
+    }
+
+    // Step 4: Sync with v2 schema (should trigger migration)
+    // With namespace handling fixed, migrations now generate proper namespaced table names
+    const schemaV2 = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      $id: TEST_SCHEMA_NAME,
+      "x-persistence": { backend: "sql" },
+      $defs: userDefsV2,
+    }
+    const result = await ensureSchemaSynced(TEST_SCHEMA_NAME, schemaV2, registry)
+
+    // Assert: Should be a migration
+    expect(result.action).toBe("migrated")
+
+    if (result.action === "migrated") {
+      expect(result.fromVersion).toBe(1)
+      expect(result.toVersion).toBe(2)
+
+      // KEY ASSERTION: Should contain ALTER TABLE ADD COLUMN, NOT CREATE TABLE placeholder
+      const hasAlterTable = result.statements.some(
+        (stmt) => stmt.includes("ALTER TABLE") && stmt.includes("ADD COLUMN") && stmt.includes("email")
+      )
+      const hasCreateTablePlaceholder = result.statements.some(
+        (stmt) => stmt.includes("-- CREATE TABLE") && stmt.includes("requires model definition")
+      )
+
+      // This assertion verifies Bug #3 is fixed:
+      // reconstructSchemaFromMigration now reads from filesystem history
+      expect(hasAlterTable).toBe(true)
+      expect(hasCreateTablePlaceholder).toBe(false)
+
+      // Verify the column was actually added (using namespaced table name)
+      const namespacedTable = "orchestrator_history_test__user"
+      const tableInfo = db.query(`PRAGMA table_info('${namespacedTable}')`).all() as Array<{ name: string }>
+      const columnNames = tableInfo.map((col) => col.name)
+      expect(columnNames).toContain("email")
+    }
+  })
+})
+
 describe("Bootstrap self-initialization", () => {
   let db: Database
   let registry: BackendRegistry

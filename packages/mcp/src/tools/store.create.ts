@@ -176,16 +176,16 @@ export async function executeStoreCreate(
         id: (instance as any).id,
         data: instance
       }
-    }
+    } else {
+      // Fallback for collections without CollectionMutatable mixin
+      const instance = collection.add(data)
+      await collection.saveAll()
 
-    // Fallback for collections without CollectionMutatable mixin
-    const instance = collection.add(data)
-    await collection.saveAll()
-
-    return {
-      ok: true,
-      id: instance.id,
-      data: getSnapshot(instance)
+      return {
+        ok: true,
+        id: instance.id,
+        data: getSnapshot(instance)
+      }
     }
   } catch (error: any) {
     return {

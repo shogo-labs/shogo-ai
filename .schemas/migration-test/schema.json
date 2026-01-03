@@ -1,0 +1,88 @@
+{
+  "id": "12f1a24e-3800-459f-8912-d8797f10f25f",
+  "name": "migration-test",
+  "format": "enhanced-json-schema",
+  "createdAt": 1767337637483,
+  "version": 4,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "migration-test",
+  "$defs": {
+    "Project": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "x-original-name": "Project"
+    },
+    "User": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "email": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "email"
+      ],
+      "x-original-name": "User"
+    },
+    "Task": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "title": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer"
+        },
+        "project": {
+          "type": "string",
+          "x-mst-type": "reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Project"
+        },
+        "assignee": {
+          "type": "string",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "User"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "status",
+        "project"
+      ],
+      "x-original-name": "Task"
+    }
+  },
+  "x-persistence": {
+    "backend": "postgres"
+  }
+}
