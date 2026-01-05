@@ -26,6 +26,7 @@ import {
 } from "./constraint-builder"
 import { toSnakeCase } from "./utils"
 import { qualifyTableName, type QualifyDialect } from "./namespace"
+import { jsonDefaultToSql } from "./diff"
 
 /**
  * Generates a CREATE TABLE definition for an Enhanced JSON Schema model
@@ -185,6 +186,10 @@ export function generateCreateTable(
       name: columnName,
       type: sqlType,
       nullable,
+    }
+
+    if (prop.default !== undefined) {
+      column.defaultValue = jsonDefaultToSql(prop.default, prop.type)
     }
 
     if (checkConstraint) {

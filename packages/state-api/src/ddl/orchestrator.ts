@@ -20,7 +20,7 @@ import { getMetaStore } from "../meta/bootstrap"
 import { cacheRuntimeStore } from "../meta/runtime-store-cache"
 import { domain } from "../domain/domain"
 import { NullPersistence } from "../persistence/null"
-import { getSchemaSnapshot } from "../persistence/schema-io"
+import { getSchemaSnapshot, saveSchemaSnapshot } from "../persistence/schema-io"
 
 // ============================================================================
 // Schema Sync Result Types (Discriminated Union)
@@ -151,6 +151,9 @@ export async function ensureSchemaSynced(
       success: true,
     })
 
+    // Save v1 schema snapshot for future migrations
+    await saveSchemaSnapshot(schemaName, 1, schema)
+
     return {
       action: "created",
       version: 1,
@@ -197,6 +200,9 @@ export async function ensureSchemaSynced(
     statements,
     success: true,
   })
+
+  // Save vN schema snapshot for future migrations
+  await saveSchemaSnapshot(schemaName, newVersion, schema)
 
   return {
     action: "migrated",
@@ -287,8 +293,15 @@ async function executeMigrationStatements(
     throw new Error(`Cannot execute migration: backend "${backendName}" not found or has no executor`)
   }
 
-  // Filter out comments and use executeMany for DDL-style statements
-  const filteredStatements = statements.filter(stmt => !stmt.startsWith("--"))
+  // Filter out comments
+  let filteredStatements = statements.filter(stmt => !stmt.startsWith("--"))
+
+  // For postgres, also filter out BEGIN/COMMIT (postgres.js handles transactions via sql.begin())
+  if (backend.dialect === "pg") {
+    filteredStatements = filteredStatements.filter(stmt =>
+      stmt !== "BEGIN" && stmt !== "COMMIT"
+    )
+  }
 
   // Use executeMany if available (preferred for DDL statements)
   if (typeof backend.executor.executeMany === "function") {

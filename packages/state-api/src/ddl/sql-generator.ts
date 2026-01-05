@@ -74,6 +74,11 @@ export function columnDefToSQL(
     parts.push("NOT NULL")
   }
 
+  // DEFAULT value
+  if (column.defaultValue !== undefined) {
+    parts.push(`DEFAULT ${column.defaultValue}`)
+  }
+
   // CHECK constraint
   if (column.checkConstraint) {
     parts.push(`CHECK (${column.checkConstraint})`)

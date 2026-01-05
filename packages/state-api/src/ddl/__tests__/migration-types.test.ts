@@ -23,6 +23,7 @@ describe("migration-types.ts", () => {
       // Create a valid SchemaDiff to verify structure compiles
       const diff: SchemaDiff = {
         addedModels: ["User", "Post"],
+        addedModelDefs: {},
         removedModels: ["OldModel"],
         modifiedModels: [],
         hasChanges: true,
@@ -37,6 +38,7 @@ describe("migration-types.ts", () => {
     test("addedModels is string[]", () => {
       const diff: SchemaDiff = {
         addedModels: ["Model1", "Model2"],
+        addedModelDefs: {},
         removedModels: [],
         modifiedModels: [],
         hasChanges: true,
@@ -47,6 +49,7 @@ describe("migration-types.ts", () => {
     test("removedModels is string[]", () => {
       const diff: SchemaDiff = {
         addedModels: [],
+        addedModelDefs: {},
         removedModels: ["OldModel"],
         modifiedModels: [],
         hasChanges: true,
@@ -63,6 +66,7 @@ describe("migration-types.ts", () => {
       }
       const diff: SchemaDiff = {
         addedModels: [],
+        addedModelDefs: {},
         removedModels: [],
         modifiedModels: [modelDiff],
         hasChanges: true,
@@ -174,6 +178,7 @@ describe("migration-types.ts", () => {
         schemaName: "user-schema",
         diff: {
           addedModels: [],
+          addedModelDefs: {},
           removedModels: [],
           modifiedModels: [],
           hasChanges: false,

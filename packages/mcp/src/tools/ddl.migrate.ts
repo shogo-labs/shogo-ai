@@ -29,6 +29,7 @@ import {
   getLatestMigration,
   recordMigration,
   computeSchemaChecksum,
+  getSchemaSnapshot,
   MigrationOperation,
   type SchemaDiff,
   type MigrationOutput,
@@ -99,11 +100,17 @@ export function registerDdlMigrate(server: FastMCP) {
           })
         }
 
-        // 5. For now, we can't compare to old schema without snapshots
-        // Generate a diff based on what we know about the current schema
-        // In a full implementation, we'd retrieve the old schema snapshot
-        // For MVP, we'll indicate migration is needed but can't auto-generate
+        // 5. Get old schema from file snapshot at the recorded version
         const nextVersion = latestMigration.version + 1
+        let oldSchema: Record<string, any> = { $defs: {} }
+        try {
+          const oldSnapshot = await getSchemaSnapshot(schemaName, latestMigration.version)
+          oldSchema = oldSnapshot?.schema || { $defs: {} }
+        } catch (e) {
+          // If snapshot is missing, log warning but continue with empty schema
+          // This allows recovery when history files are deleted
+          console.warn(`Could not load schema snapshot v${latestMigration.version} for ${schemaName}:`, e)
+        }
 
         // 6. Determine dialect from schema's x-persistence.backend
         const backendName = currentSchema["x-persistence"]?.backend
@@ -111,9 +118,8 @@ export function registerDdlMigrate(server: FastMCP) {
           backendName === "sqlite" ? createSqliteDialect() : createPostgresDialect()
         const namespace = deriveNamespace(schemaName)
 
-        // 7. Build diff - for MVP, we'll use empty oldDefs to trigger ADD operations
-        // This requires schema version snapshots for proper old vs new comparison
-        const diff: SchemaDiff = compareSchemas({}, currentSchema.$defs || {})
+        // 7. Build diff - compare old snapshot to current schema (pass full schemas)
+        const diff: SchemaDiff = compareSchemas(oldSchema, currentSchema)
 
         // Check if there are any changes
         const hasChanges =
@@ -193,11 +199,19 @@ export function registerDdlMigrate(server: FastMCP) {
         }
 
         // Execute migration statements
+        // Filter out BEGIN/COMMIT for postgres (postgres.js handles transactions via sql.begin())
+        let filteredStatements = statements.filter(stmt => !stmt.startsWith("--"))
+        if (backend.dialect === "pg") {
+          filteredStatements = filteredStatements.filter(stmt =>
+            stmt !== "BEGIN" && stmt !== "COMMIT"
+          )
+        }
+
         let executed = 0
         try {
-          if (statements.length > 0 && backend.executor.executeMany) {
-            await backend.executor.executeMany(statements)
-            executed = statements.length
+          if (filteredStatements.length > 0 && backend.executor.executeMany) {
+            await backend.executor.executeMany(filteredStatements)
+            executed = filteredStatements.length
           }
         } catch (execError: any) {
           // Record failed migration

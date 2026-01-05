@@ -242,6 +242,35 @@ describe("diff.ts - compareSchemas()", () => {
     })
   })
 
+  describe("addedModelDefs included for new models", () => {
+    test("provides full model definition for added models", () => {
+      const oldSchema = createSchema({ User: { id: { type: "string" } } })
+      const newSchema = createSchema({
+        User: { id: { type: "string" } },
+        Post: { id: { type: "string" }, title: { type: "string" } },
+      })
+
+      const diff = compareSchemas(oldSchema, newSchema)
+
+      expect(diff.addedModelDefs).toBeDefined()
+      expect(diff.addedModelDefs!["Post"]).toBeDefined()
+      expect(diff.addedModelDefs!["Post"].properties.id).toBeDefined()
+      expect(diff.addedModelDefs!["Post"].properties.title).toBeDefined()
+    })
+
+    test("addedModelDefs is empty object when no models added", () => {
+      const oldSchema = createSchema({ User: { id: { type: "string" } } })
+      const newSchema = createSchema({
+        User: { id: { type: "string" }, email: { type: "string" } },
+      })
+
+      const diff = compareSchemas(oldSchema, newSchema)
+
+      expect(diff.addedModelDefs).toBeDefined()
+      expect(Object.keys(diff.addedModelDefs!)).toHaveLength(0)
+    })
+  })
+
   describe("compareSchemas exported from ddl barrel", () => {
     test("function is accessible from ddl index", async () => {
       const { compareSchemas: importedFn } = await import("../index")

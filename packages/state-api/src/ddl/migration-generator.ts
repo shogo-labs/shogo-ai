@@ -15,6 +15,7 @@ import type {
 import { MigrationOperation } from "./migration-types"
 import { toSnakeCase } from "./utils"
 import type { QualifyDialect } from "./namespace"
+import { propertyToColumnDef } from "./diff"
 
 // ============================================================================
 // Configuration Types
@@ -68,10 +69,21 @@ export function generateMigration(
   // Process added models (CREATE_TABLE)
   for (const modelName of diff.addedModels) {
     const tableName = qualify(modelName)
+    const modelDef = diff.addedModelDefs?.[modelName]
+    const columns: ColumnDef[] = []
+
+    // Extract column definitions from model properties
+    if (modelDef?.properties) {
+      const required = new Set(modelDef.required || [])
+      for (const [propName, propDef] of Object.entries(modelDef.properties)) {
+        columns.push(propertyToColumnDef(propName, propDef as any, required.has(propName)))
+      }
+    }
+
     operations.push({
       type: MigrationOperation.CREATE_TABLE,
       tableName,
-      modelDef: modelName, // Store model name for later lookup
+      columns,
     })
   }
 
@@ -200,6 +212,29 @@ function escapeTableName(tableName: string, dialect: SqlDialect): string {
 }
 
 /**
+ * Generates CREATE TABLE SQL statement for a new model.
+ *
+ * @param tableName - Table name (may include namespace)
+ * @param columns - Column definitions for the table
+ * @param dialect - SQL dialect for formatting
+ * @returns CREATE TABLE SQL statement
+ */
+function generateCreateTableSQL(
+  tableName: string,
+  columns: ColumnDef[],
+  dialect: SqlDialect
+): string {
+  const escapedTable = escapeTableName(tableName, dialect)
+  const columnDefs = columns.map((col) => {
+    const parts = [dialect.escapeIdentifier(col.name), col.type]
+    if (!col.nullable) parts.push("NOT NULL")
+    if (col.defaultValue) parts.push(`DEFAULT ${col.defaultValue}`)
+    return parts.join(" ")
+  })
+  return `CREATE TABLE ${escapedTable} (\n  ${columnDefs.join(",\n  ")}\n)`
+}
+
+/**
  * Converts migration operations to SQL statements.
  *
  * @param output - Migration output from generateMigration()
@@ -218,11 +253,9 @@ export function migrationOutputToSQL(
   for (const op of output.operations) {
     switch (op.type) {
       case MigrationOperation.CREATE_TABLE:
-        // For CREATE_TABLE, we need to generate the full CREATE TABLE statement
-        // This is handled separately since we need the model definition
-        statements.push(
-          `-- CREATE TABLE ${op.tableName} (requires model definition)`
-        )
+        if (op.columns && op.columns.length > 0) {
+          statements.push(generateCreateTableSQL(op.tableName, op.columns, dialect))
+        }
         break
 
       case MigrationOperation.DROP_TABLE:

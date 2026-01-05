@@ -44,6 +44,8 @@ import type { ColumnDef } from "./types"
 export interface SchemaDiff {
   /** Models present in new schema but not old */
   addedModels: string[]
+  /** Full model definitions for added models (keyed by model name) */
+  addedModelDefs: Record<string, any>
   /** Models present in old schema but not new */
   removedModels: string[]
   /** Models that exist in both but have column changes */
