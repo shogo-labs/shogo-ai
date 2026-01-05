@@ -8,13 +8,11 @@
  *
  * Tool Requirements:
  * - Tool name: 'store.create'
- * - Uses CollectionMutatable.insertOne/insertMany when available
- * - Falls back to collection.add + saveAll for legacy collections
+ * - Uses CollectionMutatable.insertOne/insertMany
  */
 
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
-import { getSnapshot } from "mobx-state-tree"
 import { getMetaStore, getRuntimeStore } from "@shogo/state-api"
 import { getEffectiveWorkspace } from "../state"
 
@@ -144,23 +142,7 @@ export async function executeStoreCreate(
 
     if (isBatch) {
       // Batch mode: data is an array
-      if (typeof collection.insertMany === 'function') {
-        const instances = await collection.insertMany(data as object[])
-        return {
-          ok: true,
-          count: instances.length,
-          items: instances
-        }
-      }
-
-      // Fallback for collections without insertMany
-      const instances = []
-      for (const item of data as object[]) {
-        const instance = collection.add(item)
-        instances.push(getSnapshot(instance))
-      }
-      await collection.saveAll()
-
+      const instances = await collection.insertMany(data as object[])
       return {
         ok: true,
         count: instances.length,
@@ -169,23 +151,11 @@ export async function executeStoreCreate(
     }
 
     // Single mode: data is an object
-    if (typeof collection.insertOne === 'function') {
-      const instance = await collection.insertOne(data)
-      return {
-        ok: true,
-        id: (instance as any).id,
-        data: instance
-      }
-    }
-
-    // Fallback for collections without CollectionMutatable mixin
-    const instance = collection.add(data)
-    await collection.saveAll()
-
+    const instance = await collection.insertOne(data)
     return {
       ok: true,
-      id: instance.id,
-      data: getSnapshot(instance)
+      id: (instance as any).id,
+      data: instance
     }
   } catch (error: any) {
     return {

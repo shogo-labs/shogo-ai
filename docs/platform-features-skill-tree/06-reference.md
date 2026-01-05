@@ -63,7 +63,7 @@ discovery → design → integration → testing → complete
 
 ```javascript
 schema.load("platform-features")
-data.loadAll("platform-features")
+store.query("platform-features")
 ```
 
 ### CRUD Operations
@@ -74,7 +74,7 @@ store.create("Entity", "schema", { ...data })
 
 // Read
 store.get("id", "Entity", "schema")
-store.list("Entity", "schema", { filter: "value" })
+store.query("Entity", "schema", { filter: "value" })
 
 // Update
 store.update("id", "Entity", "schema", { field: "newValue" })
@@ -83,7 +83,7 @@ store.update("id", "Entity", "schema", { field: "newValue" })
 ### Find Session
 
 ```javascript
-session = store.list("PlatformFeatureSession", "platform-features", { name: "feature-name" })[0]
+session = store.query("PlatformFeatureSession", "platform-features", { name: "feature-name" })[0]
 ```
 
 ---
@@ -176,8 +176,8 @@ WRITE test → RUN test → VERIFY RED → IMPLEMENT → RUN test → VERIFY GRE
 
 ```javascript
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("PlatformFeatureSession", "platform-features", { name: "NAME" })[0]
+store.query("platform-features")
+session = store.query("PlatformFeatureSession", "platform-features", { name: "NAME" })[0]
 console.log(session.status)
 ```
 
@@ -185,8 +185,8 @@ console.log(session.status)
 
 ```javascript
 schema.load("platform-feature-spec")
-data.loadAll("platform-feature-spec")
-tasks = store.list("ImplementationTask", "platform-feature-spec", { sessionId: "ID" })
+store.query("platform-feature-spec")
+tasks = store.query("ImplementationTask", "platform-feature-spec", { sessionId: "ID" })
 console.log({
   planned: tasks.filter(t => t.status === "planned").length,
   complete: tasks.filter(t => t.status === "complete").length,
@@ -197,7 +197,7 @@ console.log({
 ### Resume Implementation
 
 ```javascript
-existingRun = store.list("ImplementationRun", "platform-feature-spec", {
+existingRun = store.query("ImplementationRun", "platform-feature-spec", {
   sessionId: "ID",
   status: "in_progress"
 })[0]
