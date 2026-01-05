@@ -275,7 +275,7 @@ schema.set({
 })
 
 // Get schema definition
-schema.get("platform-features")
+schema.load("platform-features")
 
 // List all schemas
 schema.list()
@@ -285,10 +285,10 @@ schema.list()
 
 ```javascript
 // Load all data for a schema
-data.loadAll("platform-features")
+store.query("platform-features")
 
 // Load single collection
-data.load("Requirement", "platform-features")
+store.query("Requirement", "platform-features")
 ```
 
 ### Store Operations
@@ -307,7 +307,7 @@ store.create("Requirement", "platform-features", {
 store.get("req-001", "Requirement", "platform-features")
 
 // List entities (with optional filter)
-store.list("Requirement", "platform-features", { session: "auth-layer" })
+store.query("Requirement", "platform-features", { session: "auth-layer" })
 
 // Update entity
 store.update("req-001", "Requirement", "platform-features", {
@@ -358,12 +358,12 @@ store.create("Requirement", "platform-features", {
 ```javascript
 // Load context
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("PlatformFeatureSession", "platform-features", { name: "auth-layer" })[0]
+store.query("platform-features")
+session = store.query("PlatformFeatureSession", "platform-features", { name: "auth-layer" })[0]
 
 // Load spec schema for findings
 schema.load("platform-feature-spec")
-data.loadAll("platform-feature-spec")
+store.query("platform-feature-spec")
 
 // Create findings
 store.create("AnalysisFinding", "platform-feature-spec", {
@@ -393,8 +393,8 @@ store.create("IntegrationPoint", "platform-feature-spec", {
 ```javascript
 // Load context
 schema.load("platform-features")
-data.loadAll("platform-features")
-session = store.list("PlatformFeatureSession", "platform-features", { name: "auth-layer" })[0]
+store.query("platform-features")
+session = store.query("PlatformFeatureSession", "platform-features", { name: "auth-layer" })[0]
 
 // Create domain schema
 schema.set({
@@ -463,22 +463,22 @@ To inspect current state at any point:
 ```javascript
 // What sessions exist?
 schema.load("platform-features")
-data.loadAll("platform-features")
-sessions = store.list("PlatformFeatureSession", "platform-features")
+store.query("platform-features")
+sessions = store.query("PlatformFeatureSession", "platform-features")
 
 // What requirements for this session?
-requirements = store.list("Requirement", "platform-features", { session: "auth-layer" })
+requirements = store.query("Requirement", "platform-features", { session: "auth-layer" })
 
 // What design decisions?
-decisions = store.list("DesignDecision", "platform-features", { session: "auth-layer" })
+decisions = store.query("DesignDecision", "platform-features", { session: "auth-layer" })
 
 // What analysis findings?
 schema.load("platform-feature-spec")
-data.loadAll("platform-feature-spec")
-findings = store.list("AnalysisFinding", "platform-feature-spec", { sessionId: "auth-layer" })
+store.query("platform-feature-spec")
+findings = store.query("AnalysisFinding", "platform-feature-spec", { sessionId: "auth-layer" })
 
 // What tasks and their status?
-tasks = store.list("ImplementationTask", "platform-feature-spec", { sessionId: "auth-layer" })
+tasks = store.query("ImplementationTask", "platform-feature-spec", { sessionId: "auth-layer" })
 ```
 
 ---
