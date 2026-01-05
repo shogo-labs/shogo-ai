@@ -44,15 +44,15 @@ describe("MCP Registry", () => {
     expect(typeof registerAllTools).toBe("function")
   })
 
-  test("tool count reflects store tools", () => {
+  test("tool count reflects current tool set", () => {
     // Given: MCP registry.ts file exists
     // When: Header comment is inspected
-    // Then: Comment reflects correct tool count (7 store tools now)
+    // Then: Comment reflects correct tool count (19 tools after bootstrap removal)
 
     const registryPath = join(__dirname, "../registry.ts")
     const registryContent = readFileSync(registryPath, "utf-8")
 
-    // Verify tool count comment (19 tools total)
+    // Verify tool count comment (19 tools total after removing bootstrap)
     expect(registryContent).toMatch(/Total:\s*19\s*tools/i)
 
     // Verify namespace count (6 namespaces)
@@ -62,6 +62,11 @@ describe("MCP Registry", () => {
     expect(registryContent).toContain("Store: 7 tools")
     expect(registryContent).toContain("query")
     expect(registryContent).toContain("delete")
+
+    // Verify Data namespace mentions 2 tools (load, loadAll) - bootstrap removed
+    expect(registryContent).toContain("Data: 2 tools")
+    expect(registryContent).toContain("load")
+    expect(registryContent).toContain("loadAll")
   })
 
   test("db.query has been removed from registry", () => {
@@ -72,5 +77,22 @@ describe("MCP Registry", () => {
     // DB tools section and registerDbQuery should be gone
     expect(registryContent).not.toContain('registerDbQuery')
     expect(registryContent).not.toContain('db.query')
+  })
+
+  test("data.bootstrap has been removed from registry", () => {
+    // Given: MCP registry.ts file exists
+    // When: The registry is inspected
+    // Then: data.bootstrap is NOT in the list of available tools
+
+    const registryPath = join(__dirname, "../registry.ts")
+    const registryContent = readFileSync(registryPath, "utf-8")
+
+    // Verify bootstrap import and registration are removed
+    expect(registryContent).not.toContain('registerDataBootstrap')
+    expect(registryContent).not.toContain('data.bootstrap')
+
+    // Verify data.load and data.loadAll still exist
+    expect(registryContent).toContain('registerDataLoad')
+    expect(registryContent).toContain('registerDataLoadAll')
   })
 })
