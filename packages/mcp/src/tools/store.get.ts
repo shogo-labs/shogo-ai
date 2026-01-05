@@ -81,7 +81,7 @@ export function registerStoreGet(server: FastMCP) {
             ok: false,
             error: {
               code: "NOT_FOUND",
-              message: `Entity with id '${id}' not found in model '${model}'. If data hasn't been loaded, use data.load first.`
+              message: `Entity with id '${id}' not found in model '${model}'. Use store.query to load and query data.`
             }
           })
         }
