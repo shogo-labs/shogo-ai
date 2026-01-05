@@ -13,6 +13,7 @@
 import { getLatestMigration, recordMigration, computeSchemaChecksum } from "./migration-tracker"
 import { compareSchemas } from "./diff"
 import { generateMigration, migrationOutputToSQL } from "./migration-generator"
+import type { MigrationOutput, SchemaDiff } from "./migration-types"
 import { createSqliteDialect, createPostgresDialect } from "./dialect"
 import { deriveNamespace } from "./namespace"
 import type { BackendRegistry } from "../query/registry"
@@ -21,6 +22,22 @@ import { cacheRuntimeStore } from "../meta/runtime-store-cache"
 import { domain } from "../domain/domain"
 import { NullPersistence } from "../persistence/null"
 import { getSchemaSnapshot, saveSchemaSnapshot } from "../persistence/schema-io"
+
+// ============================================================================
+// Options Types
+// ============================================================================
+
+/**
+ * Options for schema synchronization.
+ */
+export interface SchemaSyncOptions {
+  /**
+   * If true, returns migration SQL without executing or recording.
+   * Useful for previewing migrations before applying them.
+   * @default false
+   */
+  dryRun?: boolean
+}
 
 // ============================================================================
 // Schema Sync Result Types (Discriminated Union)
@@ -63,8 +80,14 @@ export interface SchemaSyncResultMigrated {
   fromVersion: number
   /** New schema version after migration */
   toVersion: number
-  /** SQL statements that were executed */
+  /** SQL statements that were executed (or would be executed in dryRun mode) */
   statements: string[]
+  /** True if this was a dry run (SQL not executed) */
+  dryRun?: boolean
+  /** Schema diff for reporting (added/removed/modified models) */
+  diff?: SchemaDiff
+  /** Migration output containing operations for warning generation */
+  migrationOutput?: MigrationOutput
 }
 
 /**
@@ -117,7 +140,8 @@ export type SchemaSyncResult =
 export async function ensureSchemaSynced(
   schemaName: string,
   schema: any,
-  registry: BackendRegistry
+  registry: BackendRegistry,
+  options?: SchemaSyncOptions
 ): Promise<SchemaSyncResult> {
   // 1. Bootstrap case - skip self-checking to avoid circular dependency
   // Bootstrap schemas are auto-initialized during registry.initialize()
@@ -187,6 +211,19 @@ export async function ensureSchemaSynced(
   // Convert to SQL statements
   const statements = migrationOutputToSQL(migrationOutput, dialect)
 
+  // DRY RUN: Return result without executing SQL or recording migration
+  if (options?.dryRun) {
+    return {
+      action: "migrated",
+      fromVersion: latest.version,
+      toVersion: latest.version + 1,
+      statements,
+      dryRun: true,
+      diff,
+      migrationOutput,
+    }
+  }
+
   // Execute migration statements
   await executeMigrationStatements(statements, registry, schema)
 
@@ -209,6 +246,8 @@ export async function ensureSchemaSynced(
     fromVersion: latest.version,
     toVersion: newVersion,
     statements,
+    diff,
+    migrationOutput,
   }
 }
 
