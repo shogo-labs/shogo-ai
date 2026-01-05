@@ -376,12 +376,12 @@ export function PlatformFeaturesPage() {
         decisionsData,
         integrationPointsData,
       ] = await Promise.all([
-        mcpService.callTool("store.list", { schema: "platform-features", model: "FeatureSession" }),
-        mcpService.callTool("store.list", { schema: "platform-features", model: "Requirement" }),
-        mcpService.callTool("store.list", { schema: "platform-features", model: "AnalysisFinding" }),
-        mcpService.callTool("store.list", { schema: "platform-features", model: "ImplementationTask" }),
-        mcpService.callTool("store.list", { schema: "platform-features", model: "DesignDecision" }),
-        mcpService.callTool("store.list", { schema: "platform-features", model: "IntegrationPoint" }),
+        mcpService.callTool("store.query", { schema: "platform-features", model: "FeatureSession" }),
+        mcpService.callTool("store.query", { schema: "platform-features", model: "Requirement" }),
+        mcpService.callTool("store.query", { schema: "platform-features", model: "AnalysisFinding" }),
+        mcpService.callTool("store.query", { schema: "platform-features", model: "ImplementationTask" }),
+        mcpService.callTool("store.query", { schema: "platform-features", model: "DesignDecision" }),
+        mcpService.callTool("store.query", { schema: "platform-features", model: "IntegrationPoint" }),
       ])
 
       setSessions(sessionsData.items || [])

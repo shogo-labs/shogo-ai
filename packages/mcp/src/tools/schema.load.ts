@@ -77,7 +77,7 @@ export function registerSchemaLoad(server: FastMCP) {
           ok: true,
           schemaId: schema.id,
           models,
-          loadedCollections: [],  // No auto-loading - use data.loadAll instead
+          loadedCollections: [],  // No auto-loading - use store.query to load data
           reloaded: wasReloaded  // true if schema existed before and was replaced
         })
       } catch (error: any) {
