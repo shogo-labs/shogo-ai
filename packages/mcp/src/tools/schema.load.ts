@@ -18,7 +18,7 @@ const Params = t({
 export function registerSchemaLoad(server: FastMCP) {
   server.addTool({
     name: "schema.load",
-    description: "Load a saved schema from disk and create runtime store. Always reloads from disk (hot-reload semantics). Data loading is separate - use data.loadAll.",
+    description: "Load a saved schema from disk and create runtime store. Always reloads from disk (hot-reload semantics). Use store.query to retrieve data.",
     parameters: Params,
     execute: async (args: any) => {
       const { name, workspace } = args as { name: string; workspace?: string }
@@ -77,7 +77,7 @@ export function registerSchemaLoad(server: FastMCP) {
           ok: true,
           schemaId: schema.id,
           models,
-          loadedCollections: [],  // No auto-loading - use data.loadAll instead
+          loadedCollections: [],  // No auto-loading - use store.query to load data
           reloaded: wasReloaded  // true if schema existed before and was replaced
         })
       } catch (error: any) {

@@ -264,12 +264,6 @@ export class MCPService {
     })
   }
 
-  async getSchema(schemaName: string): Promise<any> {
-    return this.callTool('schema.get', {
-      name: schemaName
-    })
-  }
-
   async chat(message: string, sessionId?: string): Promise<{
     ok: boolean
     sessionId?: string

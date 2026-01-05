@@ -39,10 +39,9 @@ export function FeatureSessionSelector({
 
       // Load schema first
       await mcpService.callTool("schema.load", { name: "platform-features" })
-      await mcpService.callTool("data.loadAll", { schemaName: "platform-features" })
 
       // Query all feature sessions
-      const result = await mcpService.callTool("store.list", {
+      const result = await mcpService.callTool("store.query", {
         schema: "platform-features",
         model: "FeatureSession",
       })

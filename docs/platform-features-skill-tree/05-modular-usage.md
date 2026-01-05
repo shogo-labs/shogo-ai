@@ -47,10 +47,10 @@ To resume work, first find your session:
 
 ```javascript
 schema.load("platform-features")
-data.loadAll("platform-features")
+store.query("platform-features")
 
 // List all sessions
-sessions = store.list("PlatformFeatureSession", "platform-features")
+sessions = store.query("PlatformFeatureSession", "platform-features")
 
 // Filter by status
 inProgress = sessions.filter(s => s.status !== "complete")
@@ -65,23 +65,23 @@ See what's been completed:
 
 ```javascript
 // Requirements
-requirements = store.list("Requirement", "platform-features", { session: sessionId })
+requirements = store.query("Requirement", "platform-features", { session: sessionId })
 console.log(`Requirements: ${requirements.length}`)
 
 // Design decisions
-decisions = store.list("DesignDecision", "platform-features", { session: sessionId })
+decisions = store.query("DesignDecision", "platform-features", { session: sessionId })
 console.log(`Decisions: ${decisions.length}`)
 
 // Load spec schema
 schema.load("platform-feature-spec")
-data.loadAll("platform-feature-spec")
+store.query("platform-feature-spec")
 
 // Analysis findings
-findings = store.list("AnalysisFinding", "platform-feature-spec", { sessionId })
+findings = store.query("AnalysisFinding", "platform-feature-spec", { sessionId })
 console.log(`Findings: ${findings.length}`)
 
 // Tasks
-tasks = store.list("ImplementationTask", "platform-feature-spec", { sessionId })
+tasks = store.query("ImplementationTask", "platform-feature-spec", { sessionId })
 byStatus = {
   planned: tasks.filter(t => t.status === "planned").length,
   in_progress: tasks.filter(t => t.status === "in_progress").length,
@@ -175,9 +175,9 @@ Implementation tracks progress via `ImplementationRun`:
 ```javascript
 // Check for existing run
 schema.load("platform-feature-spec")
-data.loadAll("platform-feature-spec")
+store.query("platform-feature-spec")
 
-existingRun = store.list("ImplementationRun", "platform-feature-spec", {
+existingRun = store.query("ImplementationRun", "platform-feature-spec", {
   sessionId,
   status: "in_progress"
 })[0]
@@ -217,13 +217,13 @@ When tasks fail repeatedly:
 
 ```javascript
 // Check blocked tasks
-blocked = store.list("ImplementationTask", "platform-feature-spec", {
+blocked = store.query("ImplementationTask", "platform-feature-spec", {
   sessionId,
   status: "blocked"
 })
 
 // Each blocked task has execution history
-executions = store.list("TaskExecution", "platform-feature-spec", {
+executions = store.query("TaskExecution", "platform-feature-spec", {
   taskId: blocked[0].id
 })
 
@@ -256,7 +256,7 @@ Design decisions inform later skills. To revise:
 
 ```javascript
 // Find existing decision
-decisions = store.list("DesignDecision", "platform-features", {
+decisions = store.query("DesignDecision", "platform-features", {
   session: sessionId
 })
 
@@ -290,28 +290,28 @@ Comprehensive session inspection:
 ```javascript
 // 1. Load both schemas
 schema.load("platform-features")
-data.loadAll("platform-features")
+store.query("platform-features")
 schema.load("platform-feature-spec")
-data.loadAll("platform-feature-spec")
+store.query("platform-feature-spec")
 
 // 2. Get session
-session = store.list("PlatformFeatureSession", "platform-features", { name: "auth-layer" })[0]
+session = store.query("PlatformFeatureSession", "platform-features", { name: "auth-layer" })[0]
 
 // 3. Discovery artifacts
-requirements = store.list("Requirement", "platform-features", { session: session.id })
-decisions = store.list("DesignDecision", "platform-features", { session: session.id })
+requirements = store.query("Requirement", "platform-features", { session: session.id })
+decisions = store.query("DesignDecision", "platform-features", { session: session.id })
 
 // 4. Analysis artifacts
-findings = store.list("AnalysisFinding", "platform-feature-spec", { sessionId: session.id })
-integrationPoints = store.list("IntegrationPoint", "platform-feature-spec", { sessionId: session.id })
+findings = store.query("AnalysisFinding", "platform-feature-spec", { sessionId: session.id })
+integrationPoints = store.query("IntegrationPoint", "platform-feature-spec", { sessionId: session.id })
 
 // 5. Spec artifacts
-tasks = store.list("ImplementationTask", "platform-feature-spec", { sessionId: session.id })
-testSpecs = store.list("TestSpecification", "platform-feature-spec", { sessionId: session.id })
+tasks = store.query("ImplementationTask", "platform-feature-spec", { sessionId: session.id })
+testSpecs = store.query("TestSpecification", "platform-feature-spec", { sessionId: session.id })
 
 // 6. Execution artifacts
-runs = store.list("ImplementationRun", "platform-feature-spec", { sessionId: session.id })
-executions = store.list("TaskExecution", "platform-feature-spec")
+runs = store.query("ImplementationRun", "platform-feature-spec", { sessionId: session.id })
+executions = store.query("TaskExecution", "platform-feature-spec")
   .filter(e => runs.some(r => r.id === e.runId))
 
 // Summary
