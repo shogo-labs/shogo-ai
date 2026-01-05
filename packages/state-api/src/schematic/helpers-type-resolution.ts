@@ -53,6 +53,13 @@ resolveTypeDefinitionImpl = function(
   allDefs: Record<string, any>,
   visited: Set<string>
 ): any {
+  // Handle 'unknown' type or empty definition (for JSON Schema default values that can be any type)
+  // This is used by meta-store Property entity for const/default fields
+  // An empty {} in JSON Schema means "any value" which MST represents as frozen()
+  if (Object.keys(def).length === 0 || def["x-arktype"] === "unknown") {
+    return types.frozen()
+  }
+
   // Arrays
   if (def.type === "array") {
     // Handle regular arrays with items
@@ -109,6 +116,13 @@ resolveTypeDefinitionImpl = function(
 
     case "boolean":
       return types.boolean
+  }
+
+  // Handle 'unknown' type (for JSON Schema default values that can be any type)
+  // This is used by meta-store Property entity for const/default fields
+  // Check both x-arktype annotation and absence of type (JSON Schema for 'any' value)
+  if (def["x-arktype"] === "unknown" || def.type === undefined) {
+    return types.frozen()
   }
 
   // Special handling for UUID
