@@ -531,3 +531,109 @@ describe("Bootstrap self-initialization", () => {
     }
   })
 })
+
+describe("dryRun mode", () => {
+  let db: Database
+  let registry: BackendRegistry
+
+  beforeEach(async () => {
+    resetMetaStore()
+    clearRuntimeStores()
+
+    db = new Database(":memory:")
+    const executor = new BunSqlExecutor(db)
+    const backend = new SqlBackend({ dialect: "sqlite", executor })
+
+    registry = new BackendRegistry()
+    registry.register("sql", backend)
+    registry.setDefault("sql")
+
+    // Bootstrap system-migrations
+    await ensureSchemaSynced("system-migrations", systemMigrationsSchema, registry)
+  })
+
+  test("dryRun returns migrated result without executing SQL", async () => {
+    // Given: Schema at v1
+    getMetaStore().ingestEnhancedJsonSchema(userSchemaV1, { name: "user-schema" })
+    await ensureSchemaSynced("user-schema", userSchemaV1, registry)
+
+    // When: Call with dryRun: true for v2
+    const result = await ensureSchemaSynced("user-schema", userSchemaV2, registry, { dryRun: true })
+
+    // Then: Returns migrated with dryRun flag
+    expect(result.action).toBe("migrated")
+    if (result.action === "migrated") {
+      expect(result.dryRun).toBe(true)
+      expect(result.fromVersion).toBe(1)
+      expect(result.toVersion).toBe(2)
+      expect(result.statements.length).toBeGreaterThan(0)
+    }
+
+    // And: No v2 migration was recorded (still only v1)
+    const migrationsStore = getMetaStore().schemaCollection.all().find(
+      (s: any) => s.name === "system-migrations"
+    )?.runtimeStore
+
+    const migrations = migrationsStore?.migrationRecordCollection.all().filter(
+      (r: any) => r.schemaName === "user-schema"
+    )
+    expect(migrations?.length).toBe(1) // Only v1 exists
+    expect(migrations?.[0].version).toBe(1)
+  })
+
+  test("dryRun includes diff and migrationOutput for reporting", async () => {
+    // Given: Schema at v1
+    getMetaStore().ingestEnhancedJsonSchema(userSchemaV1, { name: "user-schema" })
+    await ensureSchemaSynced("user-schema", userSchemaV1, registry)
+
+    // When: Call with dryRun: true for v2
+    const result = await ensureSchemaSynced("user-schema", userSchemaV2, registry, { dryRun: true })
+
+    // Then: Includes diff for reporting
+    expect(result.action).toBe("migrated")
+    if (result.action === "migrated") {
+      expect(result.diff).toBeDefined()
+      expect(result.diff?.modifiedModels).toBeDefined()
+      expect(result.diff?.modifiedModels.length).toBeGreaterThan(0)
+
+      // And: Includes migrationOutput for warning generation
+      expect(result.migrationOutput).toBeDefined()
+      expect(result.migrationOutput?.operations).toBeDefined()
+    }
+  })
+
+  test("dryRun does not modify database tables", async () => {
+    // Given: Schema at v1 with User table created
+    getMetaStore().ingestEnhancedJsonSchema(userSchemaV1, { name: "user-schema" })
+    await ensureSchemaSynced("user-schema", userSchemaV1, registry)
+
+    // Verify 'age' column does NOT exist yet
+    const tableInfoBefore = db.query(`PRAGMA table_info('user_schema__user')`).all() as Array<{ name: string }>
+    const columnsBefore = tableInfoBefore.map((col) => col.name)
+    expect(columnsBefore).not.toContain("age")
+
+    // When: Call with dryRun: true for v2 (adds 'age' column)
+    await ensureSchemaSynced("user-schema", userSchemaV2, registry, { dryRun: true })
+
+    // Then: 'age' column still does NOT exist (DDL not executed)
+    const tableInfoAfter = db.query(`PRAGMA table_info('user_schema__user')`).all() as Array<{ name: string }>
+    const columnsAfter = tableInfoAfter.map((col) => col.name)
+    expect(columnsAfter).not.toContain("age")
+  })
+
+  test("non-dryRun still includes diff and migrationOutput", async () => {
+    // Given: Schema at v1
+    getMetaStore().ingestEnhancedJsonSchema(userSchemaV1, { name: "user-schema" })
+    await ensureSchemaSynced("user-schema", userSchemaV1, registry)
+
+    // When: Normal migration (no dryRun)
+    const result = await ensureSchemaSynced("user-schema", userSchemaV2, registry)
+
+    // Then: Still includes diff and migrationOutput for consistency
+    expect(result.action).toBe("migrated")
+    if (result.action === "migrated") {
+      expect(result.diff).toBeDefined()
+      expect(result.migrationOutput).toBeDefined()
+    }
+  })
+})

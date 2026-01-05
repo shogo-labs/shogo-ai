@@ -209,6 +209,7 @@ export {
 // Re-export orchestrator
 export {
   ensureSchemaSynced,
+  type SchemaSyncOptions,
   type SchemaSyncResult,
   type SchemaSyncResultBootstrap,
   type SchemaSyncResultCreated,

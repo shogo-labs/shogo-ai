@@ -38,7 +38,7 @@ import { getMetaStore } from '../meta/bootstrap'
 import { toSnakeCase } from '../ddl/utils'
 import { deriveNamespace, qualifyTableName, type QualifyDialect } from '../ddl/namespace'
 import type { DDLGenerationConfig } from '../ddl/types'
-import { ensureSchemaSynced, type SchemaSyncResult } from '../ddl/orchestrator'
+import { ensureSchemaSynced, type SchemaSyncResult, type SchemaSyncOptions } from '../ddl/orchestrator'
 
 /**
  * Interface for backend registry with schema-driven resolution.
@@ -214,7 +214,7 @@ export interface IBackendRegistry {
    * }
    * ```
    */
-  syncSchema(schemaName: string, schema: any): Promise<SchemaSyncResult>
+  syncSchema(schemaName: string, schema: any, options?: SchemaSyncOptions): Promise<SchemaSyncResult>
 }
 
 /**
@@ -573,8 +573,8 @@ export class BackendRegistry implements IBackendRegistry {
    * 3. Unchanged schemas (checksum matches, returns { action: "unchanged" })
    * 4. Migrations (runs ALTER statements, returns { action: "migrated" })
    */
-  async syncSchema(schemaName: string, schema: any): Promise<SchemaSyncResult> {
-    return ensureSchemaSynced(schemaName, schema, this)
+  async syncSchema(schemaName: string, schema: any, options?: SchemaSyncOptions): Promise<SchemaSyncResult> {
+    return ensureSchemaSynced(schemaName, schema, this, options)
   }
 }
 
