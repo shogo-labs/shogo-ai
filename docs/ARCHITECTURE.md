@@ -147,7 +147,7 @@ The `MCPPersistence` adapter implements `IPersistenceService` by calling MCP too
 ```typescript
 class MCPPersistence implements IPersistenceService {
   async loadCollection(ctx) {
-    return this.mcp.callTool('store.list', {
+    return this.mcp.callTool('store.query', {
       schema: ctx.schemaName,
       model: ctx.modelName
     })

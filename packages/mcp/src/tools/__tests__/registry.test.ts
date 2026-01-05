@@ -47,19 +47,19 @@ describe("MCP Registry", () => {
   test("tool count reflects store tools", () => {
     // Given: MCP registry.ts file exists
     // When: Header comment is inspected
-    // Then: Comment reflects correct tool count (7 store tools now)
+    // Then: Comment reflects correct tool count (5 store tools now)
 
     const registryPath = join(__dirname, "../registry.ts")
     const registryContent = readFileSync(registryPath, "utf-8")
 
-    // Verify tool count comment (19 tools total)
-    expect(registryContent).toMatch(/Total:\s*19\s*tools/i)
+    // Verify tool count comment (16 tools total)
+    expect(registryContent).toMatch(/Total:\s*16\s*tools/i)
 
     // Verify namespace count (6 namespaces)
     expect(registryContent).toMatch(/6\s*namespaces/i)
 
-    // Verify Store namespace mentions 7 tools (including query, delete)
-    expect(registryContent).toContain("Store: 7 tools")
+    // Verify Store namespace mentions 5 tools (create, get, update, delete, query)
+    expect(registryContent).toContain("Store: 5 tools")
     expect(registryContent).toContain("query")
     expect(registryContent).toContain("delete")
   })

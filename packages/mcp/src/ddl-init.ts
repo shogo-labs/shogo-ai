@@ -28,7 +28,9 @@ import type { SchemaSyncResult } from "@shogo/state-api"
 
 interface SchemaInfo {
   name: string
-  schema: Record<string, unknown>
+  schema: Record<string, unknown> & {
+    "x-persistence"?: { backend?: string; namespace?: string }
+  }
   path: string
 }
 

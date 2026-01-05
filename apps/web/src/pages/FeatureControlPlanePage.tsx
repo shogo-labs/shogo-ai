@@ -95,9 +95,6 @@ export const FeatureControlPlanePage = observer(
       try {
         // Load schema first
         await mcpService.callTool("schema.load", { name: "platform-features" })
-        await mcpService.callTool("data.loadAll", {
-          schemaName: "platform-features",
-        })
 
         // Create new feature session
         const result = await mcpService.callTool("store.create", {
