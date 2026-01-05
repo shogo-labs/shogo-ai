@@ -38,11 +38,13 @@ export function compareSchemas(oldSchema: any, newSchema: any): SchemaDiff {
   const oldModelNames = new Set(Object.keys(oldDefs))
   const newModelNames = new Set(Object.keys(newDefs))
 
-  // Detect added models
+  // Detect added models and store their full definitions
   const addedModels: string[] = []
+  const addedModelDefs: Record<string, any> = {}
   for (const name of newModelNames) {
     if (!oldModelNames.has(name)) {
       addedModels.push(name)
+      addedModelDefs[name] = newDefs[name]
     }
   }
 
@@ -73,6 +75,7 @@ export function compareSchemas(oldSchema: any, newSchema: any): SchemaDiff {
 
   return {
     addedModels,
+    addedModelDefs,
     removedModels,
     modifiedModels,
     hasChanges,
@@ -218,7 +221,7 @@ function compareColumns(
  * @param isRequired - Whether the property is in the required array
  * @returns ColumnDef for the property
  */
-function propertyToColumnDef(name: string, prop: any, isRequired: boolean): ColumnDef {
+export function propertyToColumnDef(name: string, prop: any, isRequired: boolean): ColumnDef {
   // Map JSON Schema type to SQL type (simplified)
   let sqlType = "TEXT"
   switch (prop.type) {
@@ -267,7 +270,7 @@ function propertyToColumnDef(name: string, prop: any, isRequired: boolean): Colu
  * @param jsonType - The JSON Schema type of the property
  * @returns SQL-escaped default value string
  */
-function jsonDefaultToSql(value: any, jsonType?: string): string {
+export function jsonDefaultToSql(value: any, jsonType?: string): string {
   if (value === null) {
     return "NULL"
   }

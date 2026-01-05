@@ -199,6 +199,29 @@ export async function getSchemaVersion(name: string, workspace?: string): Promis
 }
 
 /**
+ * Saves a schema snapshot for a specific version.
+ * Used by the orchestrator to record schema state at migration time.
+ *
+ * @param name - Schema name
+ * @param version - Version number
+ * @param schema - The schema content to save
+ * @param workspace - Optional workspace directory (defaults to .schemas)
+ */
+export async function saveSchemaSnapshot(
+  name: string,
+  version: number,
+  schema: any,
+  workspace?: string
+): Promise<void> {
+  const baseDir = workspace || '.schemas'
+  const dir = `${baseDir}/${name}`
+  const historyDir = `${dir}/history`
+
+  await ensureDir(historyDir)
+  await writeJson(`${historyDir}/v${version}.json`, schema)
+}
+
+/**
  * Gets a specific historical version of a schema.
  *
  * @param name - Schema name

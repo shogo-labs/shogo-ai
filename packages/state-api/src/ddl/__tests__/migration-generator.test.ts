@@ -197,7 +197,7 @@ describe("migration-generator.ts - migrationOutputToSQL()", () => {
       const output: MigrationOutput = {
         version: 2,
         schemaName: "test",
-        diff: { addedModels: [], removedModels: [], modifiedModels: [], hasChanges: true },
+        diff: { addedModels: [], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
         operations: [
           {
             type: MigrationOperation.ADD_COLUMN,
@@ -223,7 +223,7 @@ describe("migration-generator.ts - migrationOutputToSQL()", () => {
       const output: MigrationOutput = {
         version: 2,
         schemaName: "test",
-        diff: { addedModels: [], removedModels: [], modifiedModels: [], hasChanges: true },
+        diff: { addedModels: [], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
         operations: [
           {
             type: MigrationOperation.ADD_COLUMN,
@@ -247,7 +247,7 @@ describe("migration-generator.ts - migrationOutputToSQL()", () => {
       const output: MigrationOutput = {
         version: 2,
         schemaName: "test",
-        diff: { addedModels: [], removedModels: [], modifiedModels: [], hasChanges: true },
+        diff: { addedModels: [], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
         operations: [
           {
             type: MigrationOperation.DROP_COLUMN,
@@ -271,7 +271,7 @@ describe("migration-generator.ts - migrationOutputToSQL()", () => {
       const output: MigrationOutput = {
         version: 2,
         schemaName: "test",
-        diff: { addedModels: [], removedModels: [], modifiedModels: [], hasChanges: true },
+        diff: { addedModels: [], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
         operations: [
           {
             type: MigrationOperation.RECREATE_TABLE,
@@ -304,7 +304,7 @@ describe("migration-generator.ts - migrationOutputToSQL()", () => {
       const output: MigrationOutput = {
         version: 2,
         schemaName: "test",
-        diff: { addedModels: [], removedModels: [], modifiedModels: [], hasChanges: true },
+        diff: { addedModels: [], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
         operations: [
           {
             type: MigrationOperation.RECREATE_TABLE,
@@ -333,7 +333,7 @@ describe("migration-generator.ts - migrationOutputToSQL()", () => {
       const output: MigrationOutput = {
         version: 2,
         schemaName: "test",
-        diff: { addedModels: [], removedModels: [], modifiedModels: [], hasChanges: true },
+        diff: { addedModels: [], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
         operations: [
           {
             type: MigrationOperation.ADD_COLUMN,
@@ -349,6 +349,95 @@ describe("migration-generator.ts - migrationOutputToSQL()", () => {
 
       expect(statements[0]).toMatch(/^BEGIN/i)
       expect(statements[statements.length - 1]).toMatch(/^COMMIT/i)
+    })
+  })
+
+  describe("CREATE_TABLE SQL generation for added models", () => {
+    test("generates CREATE TABLE with columns for new model", () => {
+      const oldSchema = createSchema({
+        User: { id: { type: "string" } },
+      })
+      const newSchema = createSchema({
+        User: { id: { type: "string" } },
+        Post: { id: { type: "string" }, title: { type: "string" }, views: { type: "integer" } },
+      }, { Post: ["id", "title"] })
+      const diff = compareSchemas(oldSchema, newSchema)
+      const dialect = createPostgresDialect()
+
+      const output = generateMigration(diff, dialect, { schemaName: "test", version: 2 })
+      const statements = migrationOutputToSQL(output, dialect)
+
+      // Should generate actual CREATE TABLE, not a comment
+      const createStmt = statements.find(s => s.includes("CREATE TABLE") && !s.startsWith("--"))
+      expect(createStmt).toBeDefined()
+      expect(createStmt).toContain('"post"')
+      expect(createStmt).toContain('"id"')
+      expect(createStmt).toContain('"title"')
+      expect(createStmt).toContain('"views"')
+      expect(createStmt).toContain("NOT NULL")
+    })
+
+    test("generates CREATE TABLE with reference as TEXT column", () => {
+      const oldSchema = createSchema({ Task: { id: { type: "string" } } })
+      const newSchema = {
+        $schema: "http://json-schema.org/draft-07/schema#",
+        $defs: {
+          Task: { type: "object", properties: { id: { type: "string" } } },
+          Comment: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              text: { type: "string" },
+              task: { $ref: "#/$defs/Task", "x-mst-type": "reference" },
+            },
+            required: ["id", "text", "task"],
+          },
+        },
+      }
+      const diff = compareSchemas(oldSchema, newSchema)
+      const statements = migrationOutputToSQL(
+        generateMigration(diff, createPostgresDialect(), { schemaName: "test", version: 2 }),
+        createPostgresDialect()
+      )
+
+      const createStmt = statements.find(s => s.includes("CREATE TABLE") && s.includes("comment"))
+      expect(createStmt).toBeDefined()
+      expect(createStmt).toContain('"task"')
+      expect(createStmt).toContain("TEXT")
+    })
+
+    test("generates CREATE TABLE with default values", () => {
+      const oldSchema = createSchema({})
+      const newSchema = createSchema({
+        Item: { id: { type: "string" }, status: { type: "string", default: "pending" } },
+      })
+      const diff = compareSchemas(oldSchema, newSchema)
+      const statements = migrationOutputToSQL(
+        generateMigration(diff, createPostgresDialect(), { schemaName: "test", version: 1 }),
+        createPostgresDialect()
+      )
+
+      const createStmt = statements.find(s => s.includes("CREATE TABLE"))
+      expect(createStmt).toContain("DEFAULT 'pending'")
+    })
+
+    test("generates CREATE TABLE with namespace prefix for PostgreSQL", () => {
+      const oldSchema = createSchema({})
+      const newSchema = createSchema({
+        Item: { id: { type: "string" }, name: { type: "string" } },
+      })
+      const diff = compareSchemas(oldSchema, newSchema)
+      const dialect = createPostgresDialect()
+
+      const output = generateMigration(diff, dialect, {
+        schemaName: "test",
+        version: 1,
+        namespace: "my_ns",
+      })
+      const statements = migrationOutputToSQL(output, dialect)
+
+      const createStmt = statements.find(s => s.includes("CREATE TABLE"))
+      expect(createStmt).toContain('"my_ns"."item"')
     })
   })
 })
@@ -491,7 +580,7 @@ describe("namespace handling in migrations", () => {
       const output: MigrationOutput = {
         version: 2,
         schemaName: "test",
-        diff: { addedModels: [], removedModels: [], modifiedModels: [], hasChanges: true },
+        diff: { addedModels: [], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
         operations: [
           {
             type: MigrationOperation.ADD_COLUMN,
@@ -515,7 +604,7 @@ describe("namespace handling in migrations", () => {
       const output: MigrationOutput = {
         version: 2,
         schemaName: "test",
-        diff: { addedModels: [], removedModels: [], modifiedModels: [], hasChanges: true },
+        diff: { addedModels: [], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
         operations: [
           {
             type: MigrationOperation.ADD_COLUMN,
