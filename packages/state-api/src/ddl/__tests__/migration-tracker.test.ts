@@ -14,7 +14,8 @@ import { resetMetaStore, getMetaStore, clearRuntimeStores, cacheRuntimeStore } f
 import { BunSqlExecutor } from "../../query/execution/bun-sql"
 import { SqlBackend } from "../../query/backends/sql"
 import { BackendRegistry } from "../../query/registry"
-import { enhancedJsonSchemaToMST } from "../../schematic/enhanced-json-schema-to-mst"
+import { domain } from "../../domain/domain"
+import { NullPersistence } from "../../persistence/null"
 import {
   getAppliedMigrations,
   getLatestMigration,
@@ -77,11 +78,21 @@ describe("Migration Tracker", () => {
     await registry.initialize()
 
     // Create and cache runtime store for system-migrations
-    // This is what loadSchema would do, but we do it manually for tests
-    const { createStore } = enhancedJsonSchemaToMST(systemMigrationsSchema, {
-      generateActions: true,
+    // Use domain() for proper mixin composition (matches production setup)
+    const d = domain({
+      name: "system-migrations",
+      from: systemMigrationsSchema
     })
-    const runtimeStore = createStore()
+
+    const runtimeStore = d.createStore({
+      services: {
+        persistence: new NullPersistence(),
+        backendRegistry: registry
+      },
+      context: {
+        schemaName: "system-migrations"
+      }
+    })
     cacheRuntimeStore(schemaEntity.id, runtimeStore)
   })
 
@@ -91,32 +102,33 @@ describe("Migration Tracker", () => {
       const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
       const store = schemaEntity?.runtimeStore
 
-      // Seed test data
-      store.migrationRecordCollection.add({
+      // Seed test data (use insertOne to persist to SQL backend)
+      // Note: statements array must be JSON-serialized for SQL TEXT storage
+      await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
         version: 2,
         checksum: "abc222",
         appliedAt: 2000,
-        statements: [],
+        statements: JSON.stringify([]),
         success: true,
       })
-      store.migrationRecordCollection.add({
+      await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
         version: 1,
         checksum: "abc111",
         appliedAt: 1000,
-        statements: [],
+        statements: JSON.stringify([]),
         success: true,
       })
-      store.migrationRecordCollection.add({
+      await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
         version: 3,
         checksum: "abc333",
         appliedAt: 3000,
-        statements: [],
+        statements: JSON.stringify([]),
         success: true,
       })
 
@@ -147,31 +159,31 @@ describe("Migration Tracker", () => {
       const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
       const store = schemaEntity?.runtimeStore
 
-      store.migrationRecordCollection.add({
+      await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
         version: 1,
         checksum: "abc111",
         appliedAt: 1000,
-        statements: [],
+        statements: JSON.stringify([]),
         success: true,
       })
-      store.migrationRecordCollection.add({
+      await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
         version: 3,
         checksum: "abc333",
         appliedAt: 3000,
-        statements: [],
+        statements: JSON.stringify([]),
         success: true,
       })
-      store.migrationRecordCollection.add({
+      await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
         version: 2,
         checksum: "abc222",
         appliedAt: 2000,
-        statements: [],
+        statements: JSON.stringify([]),
         success: true,
       })
 
@@ -201,13 +213,13 @@ describe("Migration Tracker", () => {
       const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
       const store = schemaEntity?.runtimeStore
 
-      store.migrationRecordCollection.add({
+      await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
         version: 2,
         checksum: "abc222",
         appliedAt: 2000,
-        statements: [],
+        statements: JSON.stringify([]),
         success: true,
       })
 
@@ -223,13 +235,13 @@ describe("Migration Tracker", () => {
       const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
       const store = schemaEntity?.runtimeStore
 
-      store.migrationRecordCollection.add({
+      await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
         version: 1,
         checksum: "abc111",
         appliedAt: 1000,
-        statements: [],
+        statements: JSON.stringify([]),
         success: true,
       })
 
