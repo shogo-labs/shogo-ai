@@ -6,16 +6,19 @@
  * @module ddl/migration-generator
  */
 
-import type { SqlDialect, ColumnDef } from "./types"
+import type { SqlDialect, ColumnDef, ForeignKeyDef } from "./types"
 import type {
   SchemaDiff,
   MigrationOutput,
   MigrationOperationDef,
 } from "./migration-types"
 import { MigrationOperation } from "./migration-types"
-import { toSnakeCase } from "./utils"
+import { toSnakeCase, escapeTableName } from "./utils"
 import type { QualifyDialect } from "./namespace"
-import { propertyToColumnDef } from "./diff"
+import { propertyToColumnDef, jsonDefaultToSql } from "./diff"
+import { inferPrimaryKey, inferNotNull, inferForeignKey } from "./constraint-builder"
+import { mapPropertyType } from "./type-mapper"
+import { foreignKeyDefToSQL } from "./sql-generator"
 
 // ============================================================================
 // Configuration Types
@@ -40,12 +43,14 @@ export interface MigrationConfig {
  * @param diff - Schema diff from compareSchemas()
  * @param dialect - SQL dialect for determining operation types
  * @param config - Migration configuration
+ * @param newSchema - Optional full schema for FK target lookups (includes existing models)
  * @returns MigrationOutput with operations and warnings
  */
 export function generateMigration(
   diff: SchemaDiff,
   dialect: SqlDialect,
-  config: MigrationConfig
+  config: MigrationConfig,
+  newSchema?: any
 ): MigrationOutput {
   const operations: MigrationOperationDef[] = []
   const warnings: string[] = []
@@ -67,16 +72,90 @@ export function generateMigration(
   }
 
   // Process added models (CREATE_TABLE)
+  // Build a map of ALL model defs from newSchema (includes existing + added) for FK target lookups
+  const allModelDefs: Record<string, any> = {
+    ...(newSchema?.$defs || {}),
+    ...diff.addedModelDefs, // Override with added defs (for safety)
+  }
+
   for (const modelName of diff.addedModels) {
     const tableName = qualify(modelName)
     const modelDef = diff.addedModelDefs?.[modelName]
     const columns: ColumnDef[] = []
+    const foreignKeys: ForeignKeyDef[] = []
+    let primaryKeyName = "id"
 
-    // Extract column definitions from model properties
     if (modelDef?.properties) {
-      const required = new Set(modelDef.required || [])
+      const required = modelDef.required || []
+
+      // Infer primary key using constraint-builder
+      try {
+        const pkProp = inferPrimaryKey(modelDef)
+        primaryKeyName = toSnakeCase(pkProp.name)
+      } catch {
+        // No identifier found - default to 'id'
+      }
+
       for (const [propName, propDef] of Object.entries(modelDef.properties)) {
-        columns.push(propertyToColumnDef(propName, propDef as any, required.has(propName)))
+        const prop = propDef as any
+
+        // Skip computed properties (inverse references)
+        if (prop["x-computed"] === true) continue
+
+        // Handle single reference properties (foreign keys)
+        if (prop["x-reference-type"] === "single") {
+          const fk = inferForeignKey(
+            { name: propName, ...prop },
+            modelName,
+            required,
+            config.namespace,
+            dialectName
+          )
+
+          if (fk) {
+            // Update FK table name with proper namespace/qualification
+            fk.table = tableName
+
+            // Derive FK column type from target model's identifier
+            const targetModelName = prop["x-reference-target"]
+            const targetModel = allModelDefs[targetModelName]
+            const targetIdProp = targetModel?.properties?.id || { type: "string" }
+            const sqlType = mapPropertyType(
+              { type: "string", format: targetIdProp.format },
+              dialect
+            )
+            const nullable = !inferNotNull({ name: propName, ...prop }, required)
+
+            columns.push({
+              name: fk.column,
+              type: sqlType,
+              nullable,
+            })
+            foreignKeys.push(fk)
+          }
+          continue
+        }
+
+        // Skip array references (junction tables handled separately)
+        if (prop["x-reference-type"] === "array") continue
+
+        // Regular column - use mapPropertyType for proper dialect type mapping
+        const columnName = toSnakeCase(propName)
+        const sqlType = mapPropertyType(prop, dialect)
+        const nullable = !inferNotNull({ name: propName, ...prop }, required)
+
+        const column: ColumnDef = {
+          name: columnName,
+          type: sqlType,
+          nullable,
+        }
+
+        // Handle default values
+        if (prop.default !== undefined) {
+          column.defaultValue = jsonDefaultToSql(prop.default, prop.type)
+        }
+
+        columns.push(column)
       }
     }
 
@@ -84,6 +163,8 @@ export function generateMigration(
       type: MigrationOperation.CREATE_TABLE,
       tableName,
       columns,
+      primaryKey: primaryKeyName,
+      foreignKeys,
     })
   }
 
@@ -187,51 +268,49 @@ export function generateMigration(
 // ============================================================================
 
 /**
- * Escapes a qualified table name for the given dialect.
- *
- * For PostgreSQL qualified names like "namespace.table", escapes each part separately:
- * - Input: "my_schema.user" → Output: "my_schema"."user"
- *
- * For SQLite or unqualified names, just wraps in quotes:
- * - Input: "my_schema__user" → Output: "my_schema__user"
- * - Input: "user" → Output: "user"
- */
-function escapeTableName(tableName: string, dialect: SqlDialect): string {
-  // Check if this is a PostgreSQL-style qualified name (namespace.table)
-  // PostgreSQL names use dot separator, SQLite uses double-underscore
-  if (
-    (dialect.name === "postgresql" || dialect.name === "postgres") &&
-    tableName.includes(".") &&
-    !tableName.startsWith('"') // Not already escaped
-  ) {
-    const [namespace, table] = tableName.split(".")
-    return `${dialect.escapeIdentifier(namespace)}.${dialect.escapeIdentifier(table)}`
-  }
-  // Otherwise just escape as a single identifier
-  return dialect.escapeIdentifier(tableName)
-}
-
-/**
  * Generates CREATE TABLE SQL statement for a new model.
  *
- * @param tableName - Table name (may include namespace)
- * @param columns - Column definitions for the table
+ * @param op - Migration operation with table name, columns, primaryKey, and foreignKeys
  * @param dialect - SQL dialect for formatting
  * @returns CREATE TABLE SQL statement
  */
 function generateCreateTableSQL(
-  tableName: string,
-  columns: ColumnDef[],
+  op: MigrationOperationDef,
   dialect: SqlDialect
 ): string {
-  const escapedTable = escapeTableName(tableName, dialect)
-  const columnDefs = columns.map((col) => {
+  const escapedTable = escapeTableName(op.tableName, dialect)
+  const columns = op.columns || []
+  const primaryKey = op.primaryKey || "id"
+  const foreignKeys = op.foreignKeys || []
+  const lines: string[] = []
+
+  for (const col of columns) {
+    const isPK = col.name === primaryKey
     const parts = [dialect.escapeIdentifier(col.name), col.type]
-    if (!col.nullable) parts.push("NOT NULL")
+
+    if (isPK) {
+      parts.push("PRIMARY KEY")
+    } else if (!col.nullable) {
+      parts.push("NOT NULL")
+    }
+
     if (col.defaultValue) parts.push(`DEFAULT ${col.defaultValue}`)
-    return parts.join(" ")
-  })
-  return `CREATE TABLE ${escapedTable} (\n  ${columnDefs.join(",\n  ")}\n)`
+    lines.push(`  ${parts.join(" ")}`)
+  }
+
+  // SQLite: inline foreign keys in CREATE TABLE
+  if (dialect.name === "sqlite" && foreignKeys.length > 0) {
+    for (const fk of foreignKeys) {
+      const escapedColumn = dialect.escapeIdentifier(fk.column)
+      const escapedRefTable = escapeTableName(fk.referencesTable, dialect)
+      const escapedRefColumn = dialect.escapeIdentifier(fk.referencesColumn)
+      lines.push(
+        `  FOREIGN KEY (${escapedColumn}) REFERENCES ${escapedRefTable} (${escapedRefColumn}) ON DELETE ${fk.onDelete}`
+      )
+    }
+  }
+
+  return `CREATE TABLE ${escapedTable} (\n${lines.join(",\n")}\n)`
 }
 
 /**
@@ -246,6 +325,7 @@ export function migrationOutputToSQL(
   dialect: SqlDialect
 ): string[] {
   const statements: string[] = []
+  const postgresqlForeignKeys: ForeignKeyDef[] = [] // Collect FKs for PostgreSQL ALTER TABLE
 
   // Transaction start
   statements.push("BEGIN")
@@ -254,7 +334,12 @@ export function migrationOutputToSQL(
     switch (op.type) {
       case MigrationOperation.CREATE_TABLE:
         if (op.columns && op.columns.length > 0) {
-          statements.push(generateCreateTableSQL(op.tableName, op.columns, dialect))
+          statements.push(generateCreateTableSQL(op, dialect))
+
+          // PostgreSQL: collect FKs for ALTER TABLE statements (emitted after all CREATE TABLEs)
+          if ((dialect.name === "postgresql" || dialect.name === "postgres") && op.foreignKeys?.length) {
+            postgresqlForeignKeys.push(...op.foreignKeys)
+          }
         }
         break
 
@@ -281,6 +366,13 @@ export function migrationOutputToSQL(
           statements.push(...generateRecreateTableSQL(op.tableName, op.columns, dialect))
         }
         break
+    }
+  }
+
+  // PostgreSQL: Add FK constraints via ALTER TABLE (after all CREATE TABLEs)
+  if (dialect.name === "postgresql" || dialect.name === "postgres") {
+    for (const fk of postgresqlForeignKeys) {
+      statements.push(foreignKeyDefToSQL(fk, dialect))
     }
   }
 
