@@ -86,6 +86,7 @@ export const MetaRegistry = scope({
     "pattern?": "string",
     "enum?": "string[]",
     "const?": "unknown",
+    "default?": "unknown",  // JSON Schema default value (any type)
 
     // References
     "$ref?": "string",

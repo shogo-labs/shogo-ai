@@ -246,10 +246,54 @@ function propertyToColumnDef(name: string, prop: any, isRequired: boolean): Colu
       break
   }
 
+  // Convert JSON Schema default to SQL default value
+  let defaultValue: string | undefined
+  if (prop.default !== undefined) {
+    defaultValue = jsonDefaultToSql(prop.default, prop.type)
+  }
+
   return {
-    name,
+    name: toSnakeCase(name),
     type: sqlType,
     nullable: !isRequired,
-    ...(prop.default !== undefined && { default: prop.default }),
+    ...(defaultValue !== undefined && { defaultValue }),
+  }
+}
+
+/**
+ * Converts a JSON Schema default value to a SQL-escaped default value string.
+ *
+ * @param value - The JSON default value
+ * @param jsonType - The JSON Schema type of the property
+ * @returns SQL-escaped default value string
+ */
+function jsonDefaultToSql(value: any, jsonType?: string): string {
+  if (value === null) {
+    return "NULL"
+  }
+
+  switch (jsonType) {
+    case "string":
+      // Escape single quotes and wrap in quotes
+      return `'${String(value).replace(/'/g, "''")}'`
+    case "integer":
+    case "number":
+      return String(value)
+    case "boolean":
+      // SQLite uses 0/1 for boolean
+      return value ? "1" : "0"
+    default:
+      // For unknown types, try to infer from value type
+      if (typeof value === "string") {
+        return `'${value.replace(/'/g, "''")}'`
+      }
+      if (typeof value === "number") {
+        return String(value)
+      }
+      if (typeof value === "boolean") {
+        return value ? "1" : "0"
+      }
+      // For objects/arrays, use JSON
+      return `'${JSON.stringify(value).replace(/'/g, "''")}'`
   }
 }
