@@ -206,7 +206,7 @@ export async function ensureSchemaSynced(
     schemaName,
     version: latest.version + 1,
     namespace,
-  })
+  }, schema) // Pass full schema for FK target lookups
 
   // Convert to SQL statements
   const statements = migrationOutputToSQL(migrationOutput, dialect)

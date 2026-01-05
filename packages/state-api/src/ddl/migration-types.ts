@@ -8,7 +8,7 @@
  * @module ddl/migration-types
  */
 
-import type { ColumnDef } from "./types"
+import type { ColumnDef, ForeignKeyDef } from "./types"
 
 // ============================================================================
 // Schema Diff Types
@@ -173,10 +173,14 @@ export interface MigrationOperationDef {
   column?: ColumnDef
   /** Column name (for DROP_COLUMN) */
   columnName?: string
-  /** All columns for table recreation (for RECREATE_TABLE) */
+  /** All columns for table recreation (for RECREATE_TABLE and CREATE_TABLE) */
   columns?: ColumnDef[]
-  /** Model definition (for CREATE_TABLE) */
+  /** Model definition (for CREATE_TABLE) - DEPRECATED, use columns/primaryKey/foreignKeys */
   modelDef?: any
+  /** Primary key column name (for CREATE_TABLE) */
+  primaryKey?: string
+  /** Foreign key definitions (for CREATE_TABLE) */
+  foreignKeys?: ForeignKeyDef[]
 }
 
 // ============================================================================

@@ -442,6 +442,201 @@ describe("migration-generator.ts - migrationOutputToSQL()", () => {
   })
 })
 
+describe("CREATE_TABLE with PK/FK constraints", () => {
+  test("generates PRIMARY KEY constraint for identifier property", () => {
+    const oldSchema = createSchema({})
+    const newSchema = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      $defs: {
+        User: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid", "x-mst-type": "identifier" },
+            name: { type: "string" },
+          },
+          required: ["id", "name"],
+        },
+      },
+    }
+    const diff = compareSchemas(oldSchema, newSchema)
+    const dialect = createPostgresDialect()
+
+    const output = generateMigration(diff, dialect, { schemaName: "test", version: 1 })
+    const statements = migrationOutputToSQL(output, dialect)
+
+    const createStmt = statements.find(s => s.includes("CREATE TABLE") && !s.startsWith("--"))
+    expect(createStmt).toBeDefined()
+    expect(createStmt).toContain("PRIMARY KEY")
+  })
+
+  test("generates FK constraint for single reference (PostgreSQL)", () => {
+    const oldSchema = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      $defs: {
+        Organization: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid", "x-mst-type": "identifier" },
+            name: { type: "string" },
+          },
+          required: ["id"],
+        },
+      },
+    }
+    const newSchema = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      $defs: {
+        Organization: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid", "x-mst-type": "identifier" },
+            name: { type: "string" },
+          },
+          required: ["id"],
+        },
+        Team: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid", "x-mst-type": "identifier" },
+            name: { type: "string" },
+            organizationId: {
+              "x-reference-type": "single",
+              "x-reference-target": "Organization",
+            },
+          },
+          required: ["id", "name", "organizationId"],
+        },
+      },
+    }
+    const diff = compareSchemas(oldSchema, newSchema)
+    const dialect = createPostgresDialect()
+
+    const output = generateMigration(diff, dialect, { schemaName: "test", version: 2 })
+    const statements = migrationOutputToSQL(output, dialect)
+
+    // PostgreSQL should have ALTER TABLE for FK
+    expect(statements.some(s => s.includes("ADD CONSTRAINT") && s.includes("FOREIGN KEY"))).toBe(true)
+  })
+
+  test("generates inline FK for SQLite", () => {
+    const oldSchema = createSchema({})
+    const newSchema = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      $defs: {
+        Organization: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid", "x-mst-type": "identifier" },
+          },
+          required: ["id"],
+        },
+        Team: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid", "x-mst-type": "identifier" },
+            organizationId: {
+              "x-reference-type": "single",
+              "x-reference-target": "Organization",
+            },
+          },
+          required: ["id", "organizationId"],
+        },
+      },
+    }
+    const diff = compareSchemas(oldSchema, newSchema)
+    const dialect = createSqliteDialect()
+
+    const output = generateMigration(diff, dialect, { schemaName: "test", version: 1 })
+    const statements = migrationOutputToSQL(output, dialect)
+
+    // SQLite should have inline FK in CREATE TABLE
+    const createTeamStmt = statements.find(s => s.includes("CREATE TABLE") && s.includes("team"))
+    expect(createTeamStmt).toBeDefined()
+    expect(createTeamStmt).toContain("FOREIGN KEY")
+    expect(createTeamStmt).toContain("REFERENCES")
+  })
+
+  test("uses UUID type for FK columns referencing UUID identifiers", () => {
+    const oldSchema = createSchema({})
+    const newSchema = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      $defs: {
+        Org: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid", "x-mst-type": "identifier" },
+          },
+          required: ["id"],
+        },
+        User: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid", "x-mst-type": "identifier" },
+            orgId: {
+              "x-reference-type": "single",
+              "x-reference-target": "Org",
+            },
+          },
+          required: ["id", "orgId"],
+        },
+      },
+    }
+    const diff = compareSchemas(oldSchema, newSchema)
+    const dialect = createPostgresDialect()
+
+    const output = generateMigration(diff, dialect, { schemaName: "test", version: 1 })
+    const statements = migrationOutputToSQL(output, dialect)
+
+    const createUserStmt = statements.find(s => s.includes("CREATE TABLE") && s.includes("user"))
+    expect(createUserStmt).toBeDefined()
+    // FK column should be UUID, not TEXT
+    expect(createUserStmt).toMatch(/"org_id"\s+UUID/i)
+  })
+
+  test("uses UUID type for FK to EXISTING model with UUID identifier", () => {
+    // Simulate: Task already exists (in oldSchema), Comment added (in newSchema)
+    const oldSchema = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      $defs: {
+        Task: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid", "x-mst-type": "identifier" },
+            title: { type: "string" },
+          },
+          required: ["id", "title"],
+        },
+      },
+    }
+    const newSchema = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      $defs: {
+        Task: oldSchema.$defs.Task, // Existing model
+        Comment: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid", "x-mst-type": "identifier" },
+            text: { type: "string" },
+            taskId: { "x-reference-type": "single", "x-reference-target": "Task" },
+          },
+          required: ["id", "text", "taskId"],
+        },
+      },
+    }
+    const diff = compareSchemas(oldSchema, newSchema)
+    const dialect = createPostgresDialect()
+
+    // Pass newSchema as 4th param so FK can lookup existing Task model
+    const output = generateMigration(diff, dialect, { schemaName: "test", version: 2 }, newSchema)
+    const statements = migrationOutputToSQL(output, dialect)
+
+    const createCommentStmt = statements.find(s => s.includes("CREATE TABLE") && s.includes("comment"))
+    expect(createCommentStmt).toBeDefined()
+    // FK column should be UUID (from existing Task.id), not TEXT
+    expect(createCommentStmt).toMatch(/"task_id"\s+UUID/i)
+  })
+})
+
 describe("DDL barrel exports", () => {
   test("generateMigration and migrationOutputToSQL exported from index", async () => {
     const { generateMigration: gen, migrationOutputToSQL: toSql } = await import("../index")

@@ -16,6 +16,7 @@
 import type { ColumnDef, TableDef, ForeignKeyDef, DDLOutput, SqlDialect } from "./types"
 import type { EnhancedJsonSchema } from "../schematic/types"
 import { generateDDL } from "./index"
+import { escapeTableName } from "./utils"
 
 /**
  * Options for DDL generation
@@ -129,7 +130,7 @@ export function tableDefToCreateTableSQL(
 ): string {
   // Table name may already be qualified (e.g., "namespace"."table" for PostgreSQL or namespace__table for SQLite)
   // We need to escape it properly without double-escaping
-  const escapedTable = escapeTableNameForDialect(table.name, dialect)
+  const escapedTable = escapeTableName(table.name, dialect)
   const lines: string[] = []
 
   // Check if this is a composite primary key (junction table)
@@ -156,7 +157,7 @@ export function tableDefToCreateTableSQL(
   if (dialect.name === "sqlite" && table.foreignKeys.length > 0) {
     for (const fk of table.foreignKeys) {
       const escapedColumn = dialect.escapeIdentifier(fk.column)
-      const escapedRefTable = escapeTableNameForDialect(fk.referencesTable, dialect)
+      const escapedRefTable = escapeTableName(fk.referencesTable, dialect)
       const escapedRefColumn = dialect.escapeIdentifier(fk.referencesColumn)
       lines.push(
         `  FOREIGN KEY (${escapedColumn}) REFERENCES ${escapedRefTable} (${escapedRefColumn}) ON DELETE ${fk.onDelete}`
@@ -168,29 +169,6 @@ export function tableDefToCreateTableSQL(
   const columnLines = lines.join(",\n")
   const ifNotExists = options?.ifNotExists ? "IF NOT EXISTS " : ""
   return `CREATE TABLE ${ifNotExists}${escapedTable} (\n${columnLines}\n);`
-}
-
-/**
- * Escape a table name for the given dialect, handling qualified names properly.
- *
- * Qualified names (already containing namespace) should not be double-escaped:
- * - PostgreSQL: "namespace"."table" is already escaped, return as-is
- * - SQLite: namespace__table needs backtick escaping
- *
- * Non-qualified names use standard escaping.
- */
-function escapeTableNameForDialect(tableName: string, dialect: SqlDialect): string {
-  if (dialect.name === "postgresql") {
-    // Check if already a qualified PostgreSQL name (starts with quote and contains ".")
-    if (tableName.startsWith('"') && tableName.includes('"."')) {
-      return tableName // Already escaped qualified name
-    }
-    // Standard escaping for simple names
-    return dialect.escapeIdentifier(tableName)
-  } else {
-    // SQLite: qualified names use __ prefix, escape the whole thing
-    return dialect.escapeIdentifier(tableName)
-  }
 }
 
 /**
@@ -230,9 +208,9 @@ export function foreignKeyDefToSQL(
   dialect: SqlDialect,
   options?: DDLGenerationOptions
 ): string {
-  const escapedTable = escapeTableNameForDialect(fk.table, dialect)
+  const escapedTable = escapeTableName(fk.table, dialect)
   const escapedColumn = dialect.escapeIdentifier(fk.column)
-  const escapedRefTable = escapeTableNameForDialect(fk.referencesTable, dialect)
+  const escapedRefTable = escapeTableName(fk.referencesTable, dialect)
   const escapedRefColumn = dialect.escapeIdentifier(fk.referencesColumn)
   const escapedConstraintName = dialect.escapeIdentifier(fk.name)
 
