@@ -1,6 +1,6 @@
 /**
  * WorkspaceLayout - Main workspace layout component
- * Tasks: task-2-2-004, task-2-3a-009, task-2-4-005
+ * Tasks: task-2-2-004, task-2-3a-009, task-2-4-005, task-3-1-007
  *
  * Renders the workspace layout with sidebar + content in a flex row.
  * This is the "smart" component that connects useWorkspaceData() hook to UI.
@@ -26,6 +26,12 @@
  * - ChatPanel wraps PhaseContentPanel with ChatContextProvider
  * - ChatPanel manages collapse/expand and width persistence
  *
+ * Per design-3-1-realtime-polling (task-3-1-007):
+ * - useFeaturePolling called when feature is selected
+ * - Polling paused during active chat streaming to avoid conflicts
+ * - isPolling indicator visible in sidebar (subtle badge)
+ * - refresh function passed to ChatPanel for smart triggers
+ *
  * Per design-2-2-component-hierarchy:
  * - This is the "smart" component that connects hooks to UI
  * - Child components receive data as props, don't call hooks directly
@@ -33,13 +39,17 @@
  * CLEAN BREAK: This file lives in /components/app/workspace/, zero imports from /components/Studio/
  */
 
-import { useState } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { Outlet } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { useWorkspaceData } from "./hooks"
 import { useWorkspaceNavigation } from "./hooks"
+import { useFeaturePolling } from "@/hooks/useFeaturePolling"
+import { useToast } from "@/hooks/use-toast"
+import { ToastAction } from "@/components/ui/toast"
 import { PhaseContentPanel } from "../stepper"
 import { ChatPanel } from "../chat/ChatPanel"
+import { RefreshCw } from "lucide-react"
 
 /**
  * WorkspaceLayout component
@@ -71,6 +81,52 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // isOpen state passed to modal, onClose callback to close it
   const [isModalOpen, setIsModalOpen] = useState(false)
 
+  // Chat streaming state - tracked here to coordinate with polling (task-3-1-007)
+  // When chat is actively streaming, polling should be paused to avoid race conditions
+  const [isChatStreaming, setIsChatStreaming] = useState(false)
+
+  // Feature polling hook (task-3-1-007)
+  // Polls platform-features domain data when a feature is selected
+  // Disabled during chat streaming to avoid conflicts with smart query triggers
+  const { isPolling, lastRefresh, refresh, error: pollingError } = useFeaturePolling({
+    featureId,
+    enabled: !!featureId && !isChatStreaming,
+  })
+
+  // Callback for ChatPanel to report streaming state changes
+  const handleStreamingChange = useCallback((streaming: boolean) => {
+    setIsChatStreaming(streaming)
+  }, [])
+
+  // Toast hook for error notifications (task-3-1-009)
+  const { toast } = useToast()
+
+  // Track previous error to avoid duplicate toasts
+  const prevErrorRef = useRef<Error | null>(null)
+
+  // Show error toast when polling fails (task-3-1-009)
+  // Uses useEffect to react to pollingError changes and show toast with retry action
+  useEffect(() => {
+    // Only show toast if there's a new error (not the same error instance)
+    if (pollingError && pollingError !== prevErrorRef.current) {
+      prevErrorRef.current = pollingError
+      toast({
+        variant: "destructive",
+        title: "Refresh failed",
+        description: pollingError.message || "Could not refresh feature data. Please try again.",
+        action: (
+          <ToastAction altText="Retry" onClick={() => refresh()}>
+            Retry
+          </ToastAction>
+        ),
+        duration: 6000, // Auto-dismiss after 6 seconds
+      })
+    } else if (!pollingError) {
+      // Clear the previous error ref when error is resolved
+      prevErrorRef.current = null
+    }
+  }, [pollingError, refresh, toast])
+
   // Handlers for modal - onClose callback pattern
   const handleOpenModal = () => setIsModalOpen(true)
   const onClose = () => setIsModalOpen(false)
@@ -84,6 +140,29 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       >
         {/* FeatureSidebar placeholder - actual component in task-2-2-005 */}
         <div className="p-4">
+          {/* Polling status indicator (task-3-1-007) */}
+          {featureId && (
+            <div className="flex items-center justify-between mb-3 text-xs text-muted-foreground">
+              <span>Features</span>
+              <div className="flex items-center gap-1.5">
+                {isPolling && (
+                  <RefreshCw
+                    className="h-3 w-3 animate-spin"
+                    data-testid="polling-indicator"
+                    aria-label="Syncing data"
+                  />
+                )}
+                {lastRefresh && (
+                  <span
+                    className="text-[10px] opacity-60"
+                    title={`Last refresh: ${new Date(lastRefresh).toLocaleTimeString()}`}
+                  >
+                    {new Date(lastRefresh).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
           <div className="text-sm text-muted-foreground">
             {/* Features grouped by phase will go here */}
             {Object.entries(featuresByPhase).map(([phase, phaseFeatures]) => (
@@ -116,27 +195,36 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       </aside>
 
       {/* Content area - flexible width with padding and scroll */}
-      {/* When feature selected: flex row with gap for side-by-side layout (task-2-4-005) */}
+      {/* When feature selected: flex row layout, ChatPanel handles internal side-by-side */}
       <div
-        className={`flex-1 overflow-auto p-6 ${featureId ? "flex flex-row gap-4" : ""}`}
+        className={`flex-1 min-w-0 overflow-hidden p-6 ${featureId ? "flex" : ""}`}
         data-testid="workspace-content"
       >
         {featureId && currentFeature ? (
           // Feature selected with data - render PhaseContentPanel with ChatPanel (task-2-4-005)
+          // ChatPanel takes full width and handles internal flex layout
+          // Polling integration (task-3-1-007): pass refresh for smart triggers, track streaming state
+          // Loading states (task-3-1-008): pass isPolling for subtle loading overlay
           <ChatPanel
             featureId={featureId}
             featureName={currentFeature.name}
+            className="flex-1 min-w-0"
+            onRefresh={refresh}
+            onStreamingChange={handleStreamingChange}
+            isPolling={isPolling}
           >
-            <div className="flex-1 min-w-0 overflow-auto">
-              <PhaseContentPanel feature={currentFeature} />
-            </div>
+            <PhaseContentPanel feature={currentFeature} />
           </ChatPanel>
         ) : featureId ? (
           // Feature ID in URL but no data yet - render Outlet as fallback with ChatPanel
           <ChatPanel
             featureId={featureId}
+            className="flex-1 min-w-0"
+            onRefresh={refresh}
+            onStreamingChange={handleStreamingChange}
+            isPolling={isPolling}
           >
-            <div className="flex-1 min-w-0" data-testid="feature-outlet">
+            <div data-testid="feature-outlet">
               <Outlet />
             </div>
           </ChatPanel>
