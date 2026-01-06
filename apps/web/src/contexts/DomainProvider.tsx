@@ -103,7 +103,6 @@ export function DomainProvider<T extends DomainsMap>({
     }
 
     storesRef.current = stores
-    console.log(`[DomainProvider] Created stores for: ${Object.keys(stores).join(", ")}`)
   }
 
   // Load schemas and persisted data on mount
@@ -119,7 +118,6 @@ export function DomainProvider<T extends DomainsMap>({
         for (const [key, domain] of Object.entries(domains)) {
           try {
             await persistence.loadSchema(domain.name, env.context?.location)
-            console.log(`[DomainProvider] Loaded schema for "${key}" (${domain.name})`)
           } catch (err) {
             console.error(`[DomainProvider] Failed to load schema for "${key}":`, err)
           }
@@ -140,8 +138,7 @@ export function DomainProvider<T extends DomainsMap>({
             // Use query().toArray() which routes through backendRegistry
             // Remote executors auto-sync results to MST via syncFromRemote callback
             if (collection?.query && typeof collection.query === "function") {
-              const items = await collection.query().toArray()
-              console.log(`[DomainProvider] Loaded ${items.length} items into ${collectionName}`)
+              await collection.query().toArray()
             }
           }
         } catch (err) {

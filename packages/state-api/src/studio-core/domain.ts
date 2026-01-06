@@ -33,6 +33,7 @@ export const StudioCoreDomain = scope({
     "description?": "string",
     "ssoSettings?": "unknown", // Opaque JSON for SSO configs
     createdAt: "number",
+    "updatedAt?": "number",
   },
 
   Team: {
@@ -42,6 +43,7 @@ export const StudioCoreDomain = scope({
     organization: "Organization", // Reference to Organization
     "parent?": "Team", // Optional self-reference for nested hierarchy
     createdAt: "number",
+    "updatedAt?": "number",
   },
 
   Project: {
@@ -54,6 +56,7 @@ export const StudioCoreDomain = scope({
     "schemas?": "string[]", // Array of schema names
     "createdBy?": "string", // Loose string ref to AuthUser.id
     createdAt: "number",
+    "updatedAt?": "number",
   },
 
   Member: {
@@ -65,6 +68,7 @@ export const StudioCoreDomain = scope({
     "project?": "Project",
     "isBillingAdmin?": "boolean",
     createdAt: "number",
+    "updatedAt?": "number",
   },
 
   BillingAccount: {
@@ -74,6 +78,7 @@ export const StudioCoreDomain = scope({
     "taxId?": "string",
     "creditsBalance?": "number",
     createdAt: "number",
+    "updatedAt?": "number",
   },
 
   Invitation: {
@@ -84,8 +89,10 @@ export const StudioCoreDomain = scope({
     "team?": "Team",
     "project?": "Project",
     status: "'pending' | 'accepted' | 'declined' | 'expired'",
+    "invitedBy?": "string", // Loose string ref to userId who sent invitation
     expiresAt: "number",
     createdAt: "number",
+    "updatedAt?": "number",
   },
 })
 

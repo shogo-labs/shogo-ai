@@ -21,5 +21,8 @@
   "devDependencies": {
     "turbo": "^2.6.3",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.15"
   }
 }
