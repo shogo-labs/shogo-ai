@@ -18,9 +18,6 @@ import { registerViewDefine } from "./view.define"
 import { registerViewDelete } from "./view.delete"
 import { registerViewProject } from "./view.project"
 
-// Data tools
-import { registerDataBootstrap } from "./data.bootstrap"
-
 // DDL tools
 import { registerDdlExecute } from "./ddl.execute"
 import { registerDdlMigrate } from "./ddl.migrate"
@@ -60,9 +57,6 @@ export function registerAllTools(server: FastMCP) {
   registerViewDefine(server)
   registerViewDelete(server)
   registerViewProject(server)
-
-  // Data namespace (1 tool)
-  registerDataBootstrap(server)
 
   // DDL namespace (2 tools)
   registerDdlExecute(server)

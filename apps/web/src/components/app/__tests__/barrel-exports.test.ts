@@ -152,3 +152,54 @@ describe("barrel exports - sub-directory barrels", () => {
     expect(shared.SplashScreen).toBeDefined()
   })
 })
+
+/**
+ * Session 2.2 - Workspace exports via app barrel
+ * Per test-2-2-008-006: app/index.ts includes workspace exports
+ */
+describe("barrel exports - workspace components via app barrel (Session 2.2)", () => {
+  test("app/index.ts includes export * from './workspace'", async () => {
+    const barrel = await import("@/components/app")
+    const exportedNames = Object.keys(barrel)
+
+    // Workspace components should be re-exported via app barrel
+    expect(exportedNames).toContain("OrgSwitcher")
+    expect(exportedNames).toContain("ProjectSelector")
+    expect(exportedNames).toContain("WorkspaceLayout")
+  })
+
+  test("all workspace components accessible via @/components/app", async () => {
+    const barrel = await import("@/components/app")
+    const exportedNames = Object.keys(barrel)
+
+    // Workspace components
+    expect(exportedNames).toContain("OrgSwitcher")
+    expect(exportedNames).toContain("ProjectSelector")
+    expect(exportedNames).toContain("WorkspaceLayout")
+
+    // Sidebar components
+    expect(exportedNames).toContain("FeatureSidebar")
+    expect(exportedNames).toContain("FeatureGroup")
+    expect(exportedNames).toContain("FeatureItem")
+    expect(exportedNames).toContain("SidebarSearch")
+    expect(exportedNames).toContain("NewFeatureButton")
+
+    // Dashboard components
+    expect(exportedNames).toContain("ProjectDashboard")
+    expect(exportedNames).toContain("StatsCards")
+
+    // Modal components
+    expect(exportedNames).toContain("NewFeatureModal")
+
+    // Hooks
+    expect(exportedNames).toContain("useWorkspaceNavigation")
+    expect(exportedNames).toContain("useWorkspaceData")
+  })
+
+  test("workspace/index.ts exports all workspace components", async () => {
+    const workspace = await import("@/components/app/workspace")
+    expect(workspace.OrgSwitcher).toBeDefined()
+    expect(workspace.ProjectSelector).toBeDefined()
+    expect(workspace.WorkspaceLayout).toBeDefined()
+  })
+})
