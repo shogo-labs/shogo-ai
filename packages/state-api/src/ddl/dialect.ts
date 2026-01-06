@@ -34,6 +34,19 @@ class PostgresDialect implements SqlDialect {
   readonly supportsForeignKeys = true
   readonly supportsCheckConstraints = true
 
+  // Migration capability properties
+  readonly supportsAddColumn = true
+  readonly supportsDropColumn = true
+  readonly supportsAlterColumnType = true
+
+  /**
+   * PostgreSQL supports all ALTER TABLE operations directly.
+   * No table recreation is ever needed.
+   */
+  requiresTableRecreation(operation: string): boolean {
+    return false
+  }
+
   /**
    * Maps JSON Schema types to PostgreSQL SQL types
    *
@@ -116,6 +129,30 @@ class SqliteDialect implements SqlDialect {
   readonly name = "sqlite"
   readonly supportsForeignKeys = true
   readonly supportsCheckConstraints = true
+
+  // Migration capability properties
+  // SQLite has limited ALTER TABLE support
+  readonly supportsAddColumn = true  // SQLite supports ADD COLUMN
+  readonly supportsDropColumn = false // SQLite doesn't support DROP COLUMN directly
+  readonly supportsAlterColumnType = false // SQLite doesn't support ALTER COLUMN TYPE
+
+  /**
+   * SQLite has limited ALTER TABLE support.
+   * Operations like DROP COLUMN, type changes, and constraint changes
+   * require the 4-step table recreation pattern:
+   * 1. CREATE TABLE temp_* with new schema
+   * 2. INSERT INTO temp_* SELECT ... FROM original
+   * 3. DROP TABLE original
+   * 4. ALTER TABLE temp_* RENAME TO original
+   */
+  requiresTableRecreation(operation: string): boolean {
+    // Operations that require table recreation in SQLite
+    const recreationRequired = [
+      "DROP_COLUMN",
+      "RECREATE_TABLE",
+    ]
+    return recreationRequired.includes(operation)
+  }
 
   /**
    * Maps JSON Schema types to SQLite SQL types

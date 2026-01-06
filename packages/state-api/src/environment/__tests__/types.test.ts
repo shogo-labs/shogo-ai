@@ -41,6 +41,9 @@ const mockBackendRegistry: IBackendRegistry = {
   },
   setDefault: () => {},
   executeDDL: async () => ({ success: true, statements: [], executed: 0 }),
+  getBootstrapSchemas: () => [],
+  initialize: async () => {},
+  syncSchema: async () => ({ action: "bootstrap" as const }),
 }
 
 const mockQueryValidator: IQueryValidator = {

@@ -181,9 +181,14 @@ export function buildModel(
     } else {
       // Regular data property
       const propType = resolvePropertyType(propName, propSchema, allDefs, new Set())
-      dataProps[propName] = required.has(propName)
-        ? propType
-        : types.maybe(propType)
+      if (required.has(propName)) {
+        dataProps[propName] = propType
+      } else if (propSchema.default !== undefined) {
+        // Use types.optional with JSON Schema default value
+        dataProps[propName] = types.optional(propType, propSchema.default)
+      } else {
+        dataProps[propName] = types.maybe(propType)
+      }
 
       const capitalizedName = propName.charAt(0).toUpperCase() + propName.slice(1)
       actions[`set${capitalizedName}`] = function (value: any) {

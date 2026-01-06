@@ -46,9 +46,6 @@ export * from './teams-multi-tenancy'
 // Chat layer (AI SDK integration)
 export * from './chat'
 
-// Favorites layer
-export * from './favorites'
-
 // Studio Core layer
 export * from './studio-core'
 

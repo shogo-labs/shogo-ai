@@ -8,8 +8,7 @@
  *
  * Tool Requirements:
  * - Tool name: 'store.delete'
- * - Uses CollectionMutatable.deleteOne/deleteMany when available
- * - Falls back to collection.remove + saveAll for legacy collections
+ * - Uses CollectionMutatable.deleteOne/deleteMany
  */
 
 import { type as t } from "arktype"
@@ -144,27 +143,10 @@ export async function executeStoreDelete(
 
     if (isBatchMode) {
       // Batch mode: delete all matching entities
-      if (typeof collection.deleteMany === 'function') {
-        const count = await collection.deleteMany(filter)
-        return {
-          ok: true,
-          count
-        }
-      }
-
-      // Fallback: query + loop delete
-      const matches = collection.all().filter((entity: any) => {
-        return Object.entries(filter as object).every(([key, value]) => entity[key] === value)
-      })
-
-      for (const entity of matches) {
-        collection.remove(entity)
-      }
-      await collection.saveAll()
-
+      const count = await collection.deleteMany(filter)
       return {
         ok: true,
-        count: matches.length
+        count
       }
     }
 
@@ -195,28 +177,17 @@ export async function executeStoreDelete(
     // Capture data before deletion
     const deletedData = getSnapshot(entity)
 
-    // 7. Delete instance using CollectionMutatable.deleteOne when available
-    if (typeof collection.deleteOne === 'function') {
-      const deleted = await collection.deleteOne(id)
-      if (!deleted) {
-        return {
-          ok: false,
-          error: {
-            code: "DELETE_FAILED",
-            message: `Failed to delete entity with id '${id}'`
-          }
+    // 7. Delete instance using CollectionMutatable.deleteOne
+    const deleted = await collection.deleteOne(id)
+    if (!deleted) {
+      return {
+        ok: false,
+        error: {
+          code: "DELETE_FAILED",
+          message: `Failed to delete entity with id '${id}'`
         }
       }
-      return {
-        ok: true,
-        data: deletedData
-      }
     }
-
-    // Fallback for collections without CollectionMutatable mixin
-    collection.remove(entity)
-    await collection.saveAll()
-
     return {
       ok: true,
       data: deletedData

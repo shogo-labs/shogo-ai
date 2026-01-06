@@ -2,15 +2,12 @@ import { FastMCP } from "fastmcp"
 
 // Schema tools
 import { registerSchemaSet } from "./schema.set"
-import { registerSchemaGet } from "./schema.get"
 import { registerSchemaLoad } from "./schema.load"
 import { registerSchemaList } from "./schema.list"
 
 // Store tools
-import { registerStoreModels } from "./store.models"
 import { registerStoreCreate } from "./store.create"
 import { registerStoreGet } from "./store.get"
-import { registerStoreList } from "./store.list"
 import { registerStoreUpdate } from "./store.update"
 import { registerStoreDelete } from "./store.delete"
 import { registerStoreQuery } from "./store.query"
@@ -22,11 +19,11 @@ import { registerViewDelete } from "./view.delete"
 import { registerViewProject } from "./view.project"
 
 // Data tools
-import { registerDataLoad } from "./data.load"
-import { registerDataLoadAll } from "./data.loadAll"
+import { registerDataBootstrap } from "./data.bootstrap"
 
 // DDL tools
 import { registerDdlExecute } from "./ddl.execute"
+import { registerDdlMigrate } from "./ddl.migrate"
 
 // Agent tools
 import { registerAgentChat } from "./agent.chat"
@@ -35,28 +32,25 @@ import { registerAgentChat } from "./agent.chat"
  * Register all Wavesmith MCP tools on a FastMCP server instance.
  * This is the single source of truth for tool registration.
  *
- * Total: 19 tools across 6 namespaces
- * - Schema: 4 tools (set, get, load, list)
- * - Store: 7 tools (models, create, get, list, update, delete, query)
+ * Total: 16 tools across 6 namespaces
+ * - Schema: 3 tools (set, load, list)
+ * - Store: 5 tools (create, get, update, delete, query)
  * - View: 4 tools (execute, define, delete, project)
- * - Data: 2 tools (load, loadAll)
- * - DDL: 1 tool (execute)
+ * - Data: 1 tool (bootstrap)
+ * - DDL: 2 tools (execute, migrate)
  * - Agent: 1 tool (chat)
  *
  * @param server - FastMCP server instance (stdio or HTTP transport)
  */
 export function registerAllTools(server: FastMCP) {
-  // Schema namespace (4 tools)
+  // Schema namespace (3 tools)
   registerSchemaSet(server)
-  registerSchemaGet(server)
   registerSchemaLoad(server)
   registerSchemaList(server)
 
-  // Store namespace (7 tools)
-  registerStoreModels(server)
+  // Store namespace (5 tools)
   registerStoreCreate(server)
   registerStoreGet(server)
-  registerStoreList(server)
   registerStoreUpdate(server)
   registerStoreDelete(server)
   registerStoreQuery(server)
@@ -67,12 +61,12 @@ export function registerAllTools(server: FastMCP) {
   registerViewDelete(server)
   registerViewProject(server)
 
-  // Data namespace (2 tools)
-  registerDataLoad(server)
-  registerDataLoadAll(server)
+  // Data namespace (1 tool)
+  registerDataBootstrap(server)
 
-  // DDL namespace (1 tool)
+  // DDL namespace (2 tools)
   registerDdlExecute(server)
+  registerDdlMigrate(server)
 
   // Agent namespace (1 tool)
   registerAgentChat(server)
