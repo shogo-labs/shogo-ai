@@ -1,19 +1,20 @@
 /**
  * RequirementCard Component
- * Task: task-2-3b-002
+ * Task: task-2-3b-002, task-discovery-view
  *
- * Displays a requirement with priority badge using CVA variants.
+ * Displays a requirement with priority badge using schema-driven PropertyRenderer.
  *
  * Props:
  * - requirement: Requirement object with id, name, description, priority, status
  *
  * Per design-2-3b-component-hierarchy:
  * - Built in /components/app/shared/ for reuse across phase views
- * - CVA pattern matching FeatureItem.statusBadgeVariants
+ * - Uses PropertyRenderer for schema-driven badge rendering
  */
 
-import { cva, type VariantProps } from "class-variance-authority"
+import { cva } from "class-variance-authority"
 import { cn } from "@/lib/utils"
+import { PropertyRenderer, type PropertyMetadata } from "@/components/rendering"
 
 /**
  * Priority type for requirement
@@ -40,7 +41,7 @@ export interface RequirementCardProps {
 }
 
 /**
- * CVA variants for priority badge styling
+ * CVA variants for priority badge styling (legacy, kept for backward compatibility)
  * Maps requirement priority to visual styling
  * Pattern: must=red, should=amber, could=blue
  */
@@ -61,25 +62,22 @@ export const priorityBadgeVariants = cva(
 )
 
 /**
- * Get display label for priority
+ * PropertyMetadata for priority field - matches schema annotation
  */
-function getPriorityLabel(priority: RequirementPriority): string {
-  const labels: Record<RequirementPriority, string> = {
-    must: "Must",
-    should: "Should",
-    could: "Could",
-  }
-  return labels[priority] || priority
+const priorityPropertyMeta: PropertyMetadata = {
+  name: "priority",
+  type: "string",
+  enum: ["must", "should", "could"],
+  xRenderer: "priority-badge",
 }
 
 /**
  * RequirementCard Component
  *
  * Displays a single requirement with name, description, and priority badge.
+ * Uses PropertyRenderer for schema-driven badge rendering.
  */
 export function RequirementCard({ requirement }: RequirementCardProps) {
-  const priorityKey = requirement.priority as VariantProps<typeof priorityBadgeVariants>["priority"]
-
   return (
     <div
       data-testid={`requirement-card-${requirement.id}`}
@@ -97,9 +95,10 @@ export function RequirementCard({ requirement }: RequirementCardProps) {
             {requirement.description}
           </p>
         </div>
-        <span className={priorityBadgeVariants({ priority: priorityKey })}>
-          {getPriorityLabel(requirement.priority)}
-        </span>
+        <PropertyRenderer
+          property={priorityPropertyMeta}
+          value={requirement.priority}
+        />
       </div>
     </div>
   )

@@ -33,3 +33,9 @@ export * from "./displays"
 
 // Default registry factory
 export { createDefaultRegistry } from "./defaultRegistry"
+
+// Studio registry factory (includes domain renderers)
+export { createStudioRegistry } from "./studioRegistry"
+
+// Domain-specific renderers and variants
+export * from "./displays/domain"
