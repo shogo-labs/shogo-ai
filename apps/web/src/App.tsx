@@ -27,6 +27,7 @@ import { MCPBackend } from './query/MCPBackend'
 import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, BetterAuthService } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
 import { mcpService } from './services/mcpService'
+import { Toaster } from '@/components/ui/toaster'
 import { cn } from '@/lib/utils'
 
 // Initialize auth service - use Supabase if configured, otherwise mock
@@ -159,6 +160,7 @@ function App() {
             </WavesmithMetaStoreProvider>
           </DomainProvider>
         </EnvironmentProvider>
+        <Toaster />
       </BrowserRouter>
     </NuqsAdapter>
   )

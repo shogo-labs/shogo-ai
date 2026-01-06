@@ -38,7 +38,7 @@ export const DesignDecisionsList = observer(function DesignDecisionsList({
     ?.all()
     .filter(
       (d: any) =>
-        d.session === featureId && d.name !== "enhancement-hooks-plan"
+        d.session?.id === featureId && d.name !== "enhancement-hooks-plan"
     )
     .sort((a: any, b: any) => (a.createdAt ?? 0) - (b.createdAt ?? 0)) ?? []
 

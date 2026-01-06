@@ -13,7 +13,6 @@
 import {
   getSmoothStepPath,
   EdgeLabelRenderer,
-  MarkerType,
   type EdgeProps,
 } from "@xyflow/react"
 import { cn } from "@/lib/utils"
@@ -37,6 +36,7 @@ export function ReferenceEdge({
   targetPosition,
   data,
   style,
+  markerEnd,
 }: EdgeProps<ReferenceEdgeData>) {
   const { label, isOptional } = data || { label: "", isOptional: false }
 
@@ -56,7 +56,7 @@ export function ReferenceEdge({
     : "hsl(var(--primary))"
 
   // Stroke style based on optionality
-  const strokeStyle = isOptional ? "4" : undefined
+  const strokeDasharray = isOptional ? "4" : undefined
 
   return (
     <>
@@ -68,13 +68,14 @@ export function ReferenceEdge({
           isOptional ? "stroke-muted-foreground" : "stroke-primary"
         )}
         d={edgePath}
+        fill="none"
         style={{
           ...style,
           strokeWidth: 2,
           stroke: strokeColor,
-          strokeDasharray: strokeStyle,
+          strokeDasharray,
         }}
-        markerEnd={`url(#${MarkerType.ArrowClosed})`}
+        markerEnd={markerEnd as string}
       />
       {label && (
         <EdgeLabelRenderer>
