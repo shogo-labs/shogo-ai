@@ -54,16 +54,7 @@ export const TestingView = observer(function TestingView({
   feature,
 }: TestingViewProps) {
   // Access platform-features domain for tasks and specs
-  const { platformFeatures } = useDomains<{
-    platformFeatures: {
-      implementationTaskCollection: {
-        findBySession: (sessionId: string) => Array<{ id: string; name: string }>
-      }
-      testSpecificationCollection: {
-        findByTask: (taskId: string) => TestSpec[]
-      }
-    }
-  }>()
+  const { platformFeatures } = useDomains()
 
   // Fetch tasks for this feature session
   const tasks = platformFeatures?.implementationTaskCollection?.findBySession?.(feature.id) ?? []

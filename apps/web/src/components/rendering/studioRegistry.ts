@@ -18,6 +18,7 @@ import {
   RunStatusBadge,
   ExecutionStatusBadge,
   TestCaseStatusBadge,
+  TaskRenderer,
 } from "./displays/domain"
 
 /**
@@ -106,6 +107,14 @@ export function createStudioRegistry() {
     id: "test-case-status-badge",
     matches: (meta) => meta.xRenderer === "test-case-status-badge",
     component: TestCaseStatusBadge,
+    priority: 200,
+  })
+
+  // Entity-level renderer for ImplementationTask
+  registry.register({
+    id: "implementation-task",
+    matches: (meta) => meta.xRenderer === "implementation-task",
+    component: TaskRenderer,
     priority: 200,
   })
 

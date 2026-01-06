@@ -58,13 +58,7 @@ export const DiscoveryView = observer(function DiscoveryView({
   feature,
 }: DiscoveryViewProps) {
   // Access platform-features domain for requirements
-  const { platformFeatures } = useDomains<{
-    platformFeatures: {
-      requirementCollection: {
-        findBySession: (sessionId: string) => Requirement[]
-      }
-    }
-  }>()
+  const { platformFeatures } = useDomains()
 
   // Fetch requirements for this feature session
   const requirements = platformFeatures?.requirementCollection?.findBySession?.(feature.id) ?? []

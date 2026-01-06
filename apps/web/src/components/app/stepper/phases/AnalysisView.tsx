@@ -77,13 +77,7 @@ export const AnalysisView = observer(function AnalysisView({
   feature,
 }: AnalysisViewProps) {
   // Access platform-features domain for findings
-  const { platformFeatures } = useDomains<{
-    platformFeatures: {
-      analysisFindingCollection: {
-        findBySession: (sessionId: string) => Finding[]
-      }
-    }
-  }>()
+  const { platformFeatures } = useDomains()
 
   // Fetch findings for this feature session
   const findings = platformFeatures?.analysisFindingCollection?.findBySession?.(feature.id) ?? []
