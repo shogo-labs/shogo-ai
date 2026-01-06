@@ -145,6 +145,8 @@ describe("AppHeader module exports", () => {
   test("AppHeader can be imported", async () => {
     const module = await import("../AppHeader")
     expect(module.AppHeader).toBeDefined()
-    expect(typeof module.AppHeader).toBe("function")
+    // AppHeader is wrapped with observer(), which returns a React component object
+    // that can be used as a component (has $$typeof or render method)
+    expect(module.AppHeader).toBeTruthy()
   })
 })

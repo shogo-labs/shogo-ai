@@ -50,7 +50,8 @@ describe("barrel exports - layout components", () => {
   test("AppHeader can be imported from @/components/app", async () => {
     const { AppHeader } = await import("@/components/app")
     expect(AppHeader).toBeDefined()
-    expect(typeof AppHeader).toBe("function")
+    // AppHeader is wrapped with observer(), use isValidComponent helper
+    expect(isValidComponent(AppHeader)).toBe(true)
   })
 })
 
@@ -201,5 +202,120 @@ describe("barrel exports - workspace components via app barrel (Session 2.2)", (
     expect(workspace.OrgSwitcher).toBeDefined()
     expect(workspace.ProjectSelector).toBeDefined()
     expect(workspace.WorkspaceLayout).toBeDefined()
+  })
+})
+
+/**
+ * Session 2.3A - Stepper exports via app barrel
+ * Per test-2-3a-010-01 through test-2-3a-010-14
+ */
+describe("barrel exports - stepper components via app barrel (Session 2.3A)", () => {
+  // test-2-3a-010-01: SkillStepper export
+  test("SkillStepper can be imported from @/components/app", async () => {
+    const barrel = await import("@/components/app")
+    expect(barrel.SkillStepper).toBeDefined()
+    expect(typeof barrel.SkillStepper).toBe("function")
+  })
+
+  // test-2-3a-010-02: PhaseNode export
+  test("PhaseNode can be imported from @/components/app", async () => {
+    const barrel = await import("@/components/app")
+    expect(barrel.PhaseNode).toBeDefined()
+    expect(typeof barrel.PhaseNode).toBe("function")
+  })
+
+  // test-2-3a-010-03: PhaseConnector export
+  test("PhaseConnector can be imported from @/components/app", async () => {
+    const barrel = await import("@/components/app")
+    expect(barrel.PhaseConnector).toBeDefined()
+    expect(typeof barrel.PhaseConnector).toBe("function")
+  })
+
+  // test-2-3a-010-04: PhaseContentPanel export
+  test("PhaseContentPanel can be imported from @/components/app", async () => {
+    const barrel = await import("@/components/app")
+    expect(barrel.PhaseContentPanel).toBeDefined()
+    expect(typeof barrel.PhaseContentPanel).toBe("function")
+  })
+
+  // test-2-3a-010-05: EmptyPhaseContent export
+  test("EmptyPhaseContent can be imported from @/components/app", async () => {
+    const barrel = await import("@/components/app")
+    expect(barrel.EmptyPhaseContent).toBeDefined()
+    expect(typeof barrel.EmptyPhaseContent).toBe("function")
+  })
+
+  // test-2-3a-010-06: BlockedPhaseIndicator export
+  test("BlockedPhaseIndicator can be imported from @/components/app", async () => {
+    const barrel = await import("@/components/app")
+    expect(barrel.BlockedPhaseIndicator).toBeDefined()
+    expect(typeof barrel.BlockedPhaseIndicator).toBe("function")
+  })
+
+  // test-2-3a-010-07: RunPhaseButton export
+  test("RunPhaseButton can be imported from @/components/app", async () => {
+    const barrel = await import("@/components/app")
+    expect(barrel.RunPhaseButton).toBeDefined()
+    expect(typeof barrel.RunPhaseButton).toBe("function")
+  })
+
+  // test-2-3a-010-08: usePhaseNavigation hook export
+  test("usePhaseNavigation can be imported from @/components/app", async () => {
+    const barrel = await import("@/components/app")
+    expect(barrel.usePhaseNavigation).toBeDefined()
+    expect(typeof barrel.usePhaseNavigation).toBe("function")
+  })
+
+  // test-2-3a-010-11: app/index.ts re-exports stepper
+  test("app/index.ts includes export * from './stepper'", async () => {
+    const barrel = await import("@/components/app")
+    const exportedNames = Object.keys(barrel)
+
+    // Stepper components should be re-exported via app barrel
+    expect(exportedNames).toContain("SkillStepper")
+    expect(exportedNames).toContain("PhaseNode")
+    expect(exportedNames).toContain("PhaseConnector")
+    expect(exportedNames).toContain("PhaseContentPanel")
+    expect(exportedNames).toContain("EmptyPhaseContent")
+    expect(exportedNames).toContain("BlockedPhaseIndicator")
+    expect(exportedNames).toContain("RunPhaseButton")
+    expect(exportedNames).toContain("usePhaseNavigation")
+  })
+
+  test("all stepper exports accessible via @/components/app", async () => {
+    const barrel = await import("@/components/app")
+    const exportedNames = Object.keys(barrel)
+
+    // Stepper components
+    expect(exportedNames).toContain("SkillStepper")
+    expect(exportedNames).toContain("PhaseNode")
+    expect(exportedNames).toContain("phaseNodeVariants")
+    expect(exportedNames).toContain("PhaseConnector")
+    expect(exportedNames).toContain("PhaseContentPanel")
+    expect(exportedNames).toContain("EmptyPhaseContent")
+    expect(exportedNames).toContain("BlockedPhaseIndicator")
+    expect(exportedNames).toContain("RunPhaseButton")
+
+    // Hooks
+    expect(exportedNames).toContain("usePhaseNavigation")
+
+    // Utilities
+    expect(exportedNames).toContain("getPhaseStatus")
+    expect(exportedNames).toContain("PHASE_CONFIG")
+    expect(exportedNames).toContain("StatusOrder")
+  })
+
+  test("stepper/index.ts exports all stepper components", async () => {
+    const stepper = await import("@/components/app/stepper")
+    expect(stepper.SkillStepper).toBeDefined()
+    expect(stepper.PhaseNode).toBeDefined()
+    expect(stepper.PhaseConnector).toBeDefined()
+    expect(stepper.PhaseContentPanel).toBeDefined()
+    expect(stepper.EmptyPhaseContent).toBeDefined()
+    expect(stepper.BlockedPhaseIndicator).toBeDefined()
+    expect(stepper.RunPhaseButton).toBeDefined()
+    expect(stepper.usePhaseNavigation).toBeDefined()
+    expect(stepper.getPhaseStatus).toBeDefined()
+    expect(stepper.PHASE_CONFIG).toBeDefined()
   })
 })
