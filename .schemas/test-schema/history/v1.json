@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "test-schema",
+  "x-persistence": {
+    "backend": "sql"
+  },
+  "$defs": {
+    "TestEntity": {
+      "type": "object",
+      "x-original-name": "TestEntity",
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    }
+  }
+}
