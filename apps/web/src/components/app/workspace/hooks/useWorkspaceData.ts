@@ -10,11 +10,14 @@
  * - Components receive derived data, don't call domains directly
  * - orgs derived from memberCollection.findByUserId()
  * - features grouped by StatusToPhase map into featuresByPhase
+ *
+ * Note: This hook relies on MobX observer reactivity. Components using this
+ * hook should be wrapped with observer() to automatically re-render when
+ * accessed MST observables change. useMemo is intentionally NOT used as it
+ * would break MobX's automatic dependency tracking.
  */
 
-import { useMemo } from "react"
 import { useDomains } from "../../../../contexts/DomainProvider"
-import { useAuth } from "../../../../contexts/AuthContext"
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation"
 import { StatusToPhase } from "@shogo/state-api"
 
@@ -81,23 +84,21 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Get URL state
   const { org: orgSlug, projectId, featureId } = useWorkspaceNavigation()
 
-  // Get domains
-  const { studioCore, platformFeatures } = useDomains<{
+  // Get domains (including auth for currentUser)
+  const { studioCore, platformFeatures, auth } = useDomains<{
     studioCore: any
     platformFeatures: any
+    auth: any
   }>()
 
-  // Get current user
-  const auth = useAuth()
+  // Get current user from betterAuthDomain (synced with session)
   const userId = auth?.currentUser?.id
 
   // Derive organizations from member collection
   // Per finding-2-2-004: memberCollection.findByUserId(userId) -> derive orgs from member.organization refs
-  const orgs = useMemo(() => {
-    if (!userId || !studioCore?.memberCollection) {
-      return []
-    }
-
+  // Note: No useMemo - MobX observer tracks MST observable access automatically
+  let orgs: any[] = []
+  if (userId && studioCore?.memberCollection) {
     try {
       const members = studioCore.memberCollection.findByUserId(userId)
       // Get unique organizations from members that have organization refs
@@ -107,78 +108,59 @@ export function useWorkspaceData(): WorkspaceDataState {
           orgMap.set(member.organization.id, member.organization)
         }
       }
-      return Array.from(orgMap.values())
+      orgs = Array.from(orgMap.values())
     } catch {
-      return []
+      orgs = []
     }
-  }, [userId, studioCore?.memberCollection])
+  }
 
   // Find current organization by slug
-  const currentOrg = useMemo(() => {
-    if (!orgSlug) return undefined
-    return orgs.find((org: any) => org.slug === orgSlug)
-  }, [orgSlug, orgs])
+  const currentOrg = orgSlug ? orgs.find((org: any) => org.slug === orgSlug) : undefined
 
   // Get projects for current organization
-  const projects = useMemo(() => {
-    if (!currentOrg?.id || !studioCore?.projectCollection) {
-      return []
-    }
-
+  let projects: any[] = []
+  if (currentOrg?.id && studioCore?.projectCollection) {
     try {
-      return studioCore.projectCollection.findByOrganization(currentOrg.id)
+      projects = studioCore.projectCollection.findByOrganization(currentOrg.id)
     } catch {
-      return []
+      projects = []
     }
-  }, [currentOrg?.id, studioCore?.projectCollection])
+  }
 
   // Find current project by ID
-  const currentProject = useMemo(() => {
-    if (!projectId) return undefined
-    return projects.find((p: any) => p.id === projectId)
-  }, [projectId, projects])
+  const currentProject = projectId ? projects.find((p: any) => p.id === projectId) : undefined
 
   // Get features for current project
   // Per finding-2-2-005: featureSessionCollection.findByProject(projectId)
-  const features = useMemo(() => {
-    if (!projectId || !platformFeatures?.featureSessionCollection) {
-      return []
-    }
-
+  let features: any[] = []
+  if (projectId && platformFeatures?.featureSessionCollection) {
     try {
-      return platformFeatures.featureSessionCollection.findByProject(projectId)
+      features = platformFeatures.featureSessionCollection.findByProject(projectId)
     } catch {
-      return []
+      features = []
     }
-  }, [projectId, platformFeatures?.featureSessionCollection])
+  }
 
   // Find current feature by ID
-  const currentFeature = useMemo(() => {
-    if (!featureId) return undefined
-    return features.find((f: any) => f.id === featureId)
-  }, [featureId, features])
+  const currentFeature = featureId ? features.find((f: any) => f.id === featureId) : undefined
 
   // Group features by phase using StatusToPhase map
-  const featuresByPhase = useMemo(() => {
-    const grouped: Record<string, any[]> = {
-      discovery: [],
-      design: [],
-      build: [],
-      deploy: [],
-    }
+  const featuresByPhase: Record<string, any[]> = {
+    discovery: [],
+    design: [],
+    build: [],
+    deploy: [],
+  }
 
-    for (const feature of features) {
-      const phase = StatusToPhase[feature.status] || "discovery"
-      if (grouped[phase]) {
-        grouped[phase].push(feature)
-      } else {
-        // For phases not in our standard list, add to discovery
-        grouped.discovery.push(feature)
-      }
+  for (const feature of features) {
+    const phase = StatusToPhase[feature.status] || "discovery"
+    if (featuresByPhase[phase]) {
+      featuresByPhase[phase].push(feature)
+    } else {
+      // For phases not in our standard list, add to discovery
+      featuresByPhase.discovery.push(feature)
     }
-
-    return grouped
-  }, [features])
+  }
 
   // Determine loading state
   // For now, we're not doing async loading, so isLoading is always false

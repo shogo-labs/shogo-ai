@@ -13,8 +13,13 @@
  * - bg-card background color
  * - Uses Tailwind flex layout: flex items-center
  * - OrgSwitcher and ProjectSelector use useWorkspaceNavigation/useWorkspaceData hooks
+ *
+ * IMPORTANT: This component MUST be wrapped with observer() because useWorkspaceData
+ * accesses MST observables (memberCollection, etc). Without observer(), the component
+ * won't re-render when the async data loads in DomainProvider.
  */
 
+import { observer } from "mobx-react-lite"
 import { ThemeToggle } from "../shared/ThemeToggle"
 import { UserMenu } from "../shared/UserMenu"
 import { OrgSwitcher, ProjectSelector } from "../workspace"
@@ -25,8 +30,10 @@ import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
  *
  * Renders the main application header bar with logo, org/project selectors,
  * theme toggle, and user menu.
+ *
+ * Wrapped with observer() to react to MST observable changes from useWorkspaceData.
  */
-export function AppHeader() {
+export const AppHeader = observer(function AppHeader() {
   // Get navigation functions from URL state
   const { setOrg, setProjectId } = useWorkspaceNavigation()
 
@@ -75,4 +82,4 @@ export function AppHeader() {
       </div>
     </header>
   )
-}
+})
