@@ -169,9 +169,9 @@ export const TaskExecutionRow = observer(function TaskExecutionRow({
   const statusKey = execution.status as VariantProps<typeof executionStatusVariants>["status"]
   const StatusIcon = getStatusIcon(execution.status)
 
-  // Calculate duration if completed
+  // Calculate duration if completed (guard against negative values from data corruption)
   const duration = execution.completedAt
-    ? execution.completedAt - execution.startedAt
+    ? Math.max(0, execution.completedAt - execution.startedAt)
     : null
 
   const hasFailed = execution.status === "failed" && execution.errorMessage

@@ -51,6 +51,7 @@ export interface ChatMessage {
  * - messages: Array of messages in the current session
  * - sendMessage: Function to send a new message
  * - isLoading: Whether a message is currently being processed
+ * - isPolling: Whether data is being refreshed via polling (task-3-1-008)
  * - error: Current error state (null if none)
  */
 export interface ChatContextValue {
@@ -65,6 +66,9 @@ export interface ChatContextValue {
 
   /** Whether the chat is currently processing a message */
   isLoading: boolean
+
+  /** Whether data is being refreshed via polling (task-3-1-008) */
+  isPolling?: boolean
 
   /** Current error state, or null if no error */
   error: string | null

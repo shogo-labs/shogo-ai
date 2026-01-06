@@ -1,6 +1,6 @@
 /**
  * ChatPanel - Smart component that integrates useChat hook with studio-chat domain
- * Task: task-2-4-004
+ * Tasks: task-2-4-004, task-3-1-004
  *
  * Integrates AI SDK useChat hook for streaming chat, composes child components,
  * handles message persistence to studio-chat domain, and provides chat state to context.
@@ -14,6 +14,7 @@
  * - Collapse/expand with manual resize
  * - localStorage persistence for collapse state and width
  * - Error display with Retry button
+ * - Smart query triggers: Detects tool calls in onFinish and triggers targeted data refreshes (task-3-1-004)
  */
 
 import { useState, useEffect, useRef, useCallback } from "react"
@@ -44,6 +45,14 @@ export interface ChatPanelProps {
   children?: React.ReactNode
   /** Optional class name */
   className?: string
+  /** Callback to trigger schema data refetch (for schema.set/schema.load tool calls) */
+  onSchemaRefresh?: () => void
+  /** Callback to manually trigger a data refresh (from useFeaturePolling) - task-3-1-007 */
+  onRefresh?: () => Promise<void>
+  /** Callback to notify parent when streaming state changes - task-3-1-007 */
+  onStreamingChange?: (isStreaming: boolean) => void
+  /** Whether data is being refreshed via polling - task-3-1-008 */
+  isPolling?: boolean
 }
 
 // ============================================================
@@ -132,6 +141,125 @@ function mapToolCallState(state: string | undefined): ToolCallState {
 }
 
 // ============================================================
+// Smart Query Trigger Mapping (task-3-1-004)
+// ============================================================
+
+/**
+ * Maps model names from store.create tool calls to collection names for refresh.
+ * Per design-3-1-003: store.create with specific models triggers that collection refresh.
+ */
+const MODEL_TO_COLLECTION_MAP: Record<string, string> = {
+  // Core feature entities
+  Requirement: "requirementCollection",
+  AnalysisFinding: "analysisFindingCollection",
+  DesignDecision: "designDecisionCollection",
+  ImplementationTask: "implementationTaskCollection",
+  TestSpecification: "testSpecificationCollection",
+  // Implementation phase entities
+  ImplementationRun: "implementationRunCollection",
+  TaskExecution: "taskExecutionCollection",
+  // Feature session
+  FeatureSession: "featureSessionCollection",
+}
+
+/**
+ * Determines which collections to refresh based on a tool call.
+ * Returns collection names that should be refreshed via query().toArray().
+ *
+ * @param toolCall - Extracted tool call from AI message
+ * @returns Array of collection names to refresh
+ */
+function getCollectionsToRefresh(toolCall: ExtractedToolCall): string[] {
+  const { toolName, args } = toolCall
+  const collections: string[] = []
+
+  // Handle MCP tool naming: "mcp__wavesmith__store_create" -> "store_create"
+  const normalizedToolName = toolName.includes("__")
+    ? toolName.split("__").pop() || toolName
+    : toolName
+
+  switch (normalizedToolName) {
+    case "store_create": {
+      // store.create with model -> refresh that collection
+      const model = args?.model as string | undefined
+      if (model && MODEL_TO_COLLECTION_MAP[model]) {
+        collections.push(MODEL_TO_COLLECTION_MAP[model])
+      }
+      break
+    }
+
+    case "store_update": {
+      // store.update with model -> refresh that collection
+      const model = args?.model as string | undefined
+      if (model && MODEL_TO_COLLECTION_MAP[model]) {
+        collections.push(MODEL_TO_COLLECTION_MAP[model])
+      }
+      break
+    }
+
+    case "store_delete": {
+      // store.delete with model -> refresh that collection
+      const model = args?.model as string | undefined
+      if (model && MODEL_TO_COLLECTION_MAP[model]) {
+        collections.push(MODEL_TO_COLLECTION_MAP[model])
+      }
+      break
+    }
+
+    // Note: schema_set and schema_load are handled separately via onSchemaRefresh callback
+    default:
+      break
+  }
+
+  return collections
+}
+
+/**
+ * Checks if a tool call requires schema refresh.
+ * Schema operations (schema.set, schema.load) need to trigger useSchemaData refetch.
+ */
+function requiresSchemaRefresh(toolCall: ExtractedToolCall): boolean {
+  const { toolName } = toolCall
+
+  // Handle MCP tool naming
+  const normalizedToolName = toolName.includes("__")
+    ? toolName.split("__").pop() || toolName
+    : toolName
+
+  return normalizedToolName === "schema_set" || normalizedToolName === "schema_load"
+}
+
+/**
+ * Triggers collection refreshes for the given collection names.
+ * Uses same query().toArray() pattern as useFeaturePolling for consistency.
+ */
+async function refreshCollections(
+  platformFeatures: any,
+  collectionNames: string[]
+): Promise<void> {
+  if (!platformFeatures || collectionNames.length === 0) {
+    return
+  }
+
+  // Deduplicate collection names
+  const uniqueCollections = [...new Set(collectionNames)]
+
+  // Refresh all collections in parallel
+  const refreshPromises = uniqueCollections.map(async (collectionName) => {
+    const collection = platformFeatures[collectionName]
+    if (collection?.query && typeof collection.query === "function") {
+      try {
+        await collection.query().toArray()
+      } catch (err) {
+        console.warn(`[ChatPanel] Failed to refresh ${collectionName}:`, err)
+      }
+    }
+  })
+
+  await Promise.all(refreshPromises)
+}
+
+// ============================================================
 // Component
 // ============================================================
 
@@ -140,8 +268,16 @@ export const ChatPanel = observer(function ChatPanel({
   featureName,
   children,
   className,
+  onSchemaRefresh,
+  onRefresh,
+  onStreamingChange,
+  isPolling,
 }: ChatPanelProps) {
-  const { studioChat } = useDomains()
+  // Access domains for chat persistence and smart refresh
+  const { studioChat, platformFeatures } = useDomains<{
+    studioChat: any
+    platformFeatures: any
+  }>()
 
   // Panel state
   const [isCollapsed, setIsCollapsed] = useState(() => getStoredCollapsed())
@@ -214,6 +350,53 @@ export const ChatPanel = observer(function ChatPanel({
             result: toolCall.result,
           })
         }
+
+        // Smart Query Triggers (task-3-1-004)
+        // After streaming completes, detect tool calls and trigger targeted data refreshes
+        if (toolCalls.length > 0) {
+          // Collect all collections that need refreshing
+          const collectionsToRefresh: string[] = []
+          let needsSchemaRefresh = false
+
+          for (const toolCall of toolCalls) {
+            // Only process successful tool calls
+            if (toolCall.state !== "output-available") {
+              continue
+            }
+
+            // Check for schema refresh needs
+            if (requiresSchemaRefresh(toolCall)) {
+              needsSchemaRefresh = true
+            }
+
+            // Collect collections to refresh
+            const collections = getCollectionsToRefresh(toolCall)
+            collectionsToRefresh.push(...collections)
+          }
+
+          // Trigger schema refresh if needed (via callback prop)
+          if (needsSchemaRefresh && onSchemaRefresh) {
+            onSchemaRefresh()
+          }
+
+          // Trigger collection refreshes in parallel
+          if (collectionsToRefresh.length > 0) {
+            refreshCollections(platformFeatures, collectionsToRefresh).catch((err) => {
+              console.warn("[ChatPanel] Smart refresh failed:", err)
+            })
+          }
+
+          // Also trigger full refresh via onRefresh callback (task-3-1-007)
+          // This ensures all collections are refreshed after tool calls complete
+          if (onRefresh) {
+            // Small delay to let smart triggers complete first
+            setTimeout(() => {
+              onRefresh().catch((err) => {
+                console.warn("[ChatPanel] onRefresh callback failed:", err)
+              })
+            }, 500)
+          }
+        }
       }
     },
   })
@@ -236,6 +419,12 @@ export const ChatPanel = observer(function ChatPanel({
       setMessages([])
     }
   }, [currentSessionId, studioChat.chatMessageCollection, setMessages])
+
+  // Notify parent of streaming state changes (task-3-1-007)
+  // This allows WorkspaceLayout to pause polling during active streaming
+  useEffect(() => {
+    onStreamingChange?.(isLoading)
+  }, [isLoading, onStreamingChange])
 
   // Handle message submission
   const handleSendMessage = useCallback(
@@ -336,6 +525,7 @@ export const ChatPanel = observer(function ChatPanel({
     messages: messageListMessages,
     sendMessage: handleSendMessage,
     isLoading,
+    isPolling, // task-3-1-008: Pass polling state to context for LoadingOverlay
     error: error?.message ?? null,
   }
 
@@ -343,12 +533,13 @@ export const ChatPanel = observer(function ChatPanel({
   if (isCollapsed) {
     return (
       <div className={cn("flex h-full", className)}>
-        <ExpandTab onExpand={handleToggleCollapse} />
+        {/* Children take remaining space when collapsed */}
         {children && (
           <ChatContextProvider value={contextValue}>
-            {children}
+            <div className="flex-1 min-w-0 overflow-hidden">{children}</div>
           </ChatContextProvider>
         )}
+        <ExpandTab onExpand={handleToggleCollapse} />
       </div>
     )
   }
@@ -364,13 +555,13 @@ export const ChatPanel = observer(function ChatPanel({
       {/* Main content with ChatContextProvider */}
       {children && (
         <ChatContextProvider value={contextValue}>
-          <div className="flex-1">{children}</div>
+          <div className="flex-1 min-w-0 overflow-hidden">{children}</div>
         </ChatContextProvider>
       )}
 
-      {/* Chat Panel */}
+      {/* Chat Panel - shrink-0 prevents flexbox from shrinking below specified width */}
       <div
-        className="flex flex-col border-l border-border bg-background relative"
+        className="flex flex-col border-l border-border bg-background relative shrink-0"
         style={{ width: `${width}px` }}
       >
         {/* Resize Handle */}

@@ -1,6 +1,6 @@
 /**
  * PhaseContentPanel Component
- * Tasks: task-2-3a-008, task-2-3b-011, task-2-3d-phase-content-panel
+ * Tasks: task-2-3a-008, task-2-3b-011, task-2-3d-phase-content-panel, task-3-1-008
  *
  * Smart component that uses usePhaseNavigation hook and renders SkillStepper
  * plus content area. This is the data-fetching boundary per design-2-3a-component-hierarchy.
@@ -18,6 +18,10 @@
  * - Zero imports from /components/Studio/
  *
  * Session 2.3D: Added SpecView, TestingView, ImplementationView, CompleteView
+ *
+ * Session 3.1 (task-3-1-008): Added LoadingOverlay for subtle loading states
+ * - Uses isPolling from ChatContext to show loading indicator during data refresh
+ * - Optimistic rendering - existing content visible while refreshing
  */
 
 import { useMemo } from "react"
@@ -25,8 +29,10 @@ import { cn } from "@/lib/utils"
 import { SkillStepper } from "./SkillStepper"
 import { EmptyPhaseContent } from "./EmptyStates"
 import { BlockedPhaseIndicator } from "./EmptyStates"
+import { LoadingOverlay } from "./LoadingOverlay"
 import { usePhaseNavigation } from "./hooks/usePhaseNavigation"
 import { getPhaseStatus, PHASE_CONFIG } from "./phaseUtils"
+import { useChatContextSafe } from "../chat/ChatContext"
 // Phase view components (Session 2.3B, 2.3C, 2.3D)
 import { DiscoveryView, AnalysisView, ClassificationView, DesignView } from "./phases"
 import { SpecView } from "./phases/spec/SpecView"
@@ -81,6 +87,11 @@ export interface PhaseContentPanelProps {
 export function PhaseContentPanel({ feature }: PhaseContentPanelProps) {
   // Use the phase navigation hook with feature status
   const { phase, setPhase, phases } = usePhaseNavigation(feature.status)
+
+  // Get polling state from ChatContext for loading overlay (task-3-1-008)
+  // Uses safe version to gracefully handle missing context
+  const chatContext = useChatContextSafe()
+  const isPolling = chatContext?.isPolling ?? false
 
   // Find the selected phase's status from phases array
   const selectedPhaseStatus = useMemo(() => {
@@ -173,27 +184,26 @@ export function PhaseContentPanel({ feature }: PhaseContentPanelProps) {
       />
 
       {/* Content area below with flex-1 for fill */}
-      <div
-        data-testid="phase-content-area"
-        className={cn(
-          "flex-1 overflow-auto",
-          "bg-card rounded-lg border p-4"
-        )}
-      >
-        {/* Placeholder header showing current phase */}
-        <div className="mb-4">
-          <h2 className="text-lg font-semibold text-foreground">
-            Phase: {phaseLabel}
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            {/* Extension Point: 2.3B/C/D will replace with actual phase content */}
-            Phase content placeholder - will be replaced in future sessions.
-          </p>
-        </div>
+      {/* LoadingOverlay provides subtle loading indicator during data refresh (task-3-1-008) */}
+      <LoadingOverlay isLoading={isPolling} className="flex-1 overflow-auto min-h-0">
+        <div
+          data-testid="phase-content-area"
+          className={cn(
+            "h-full overflow-auto",
+            "bg-card rounded-lg border p-4"
+          )}
+        >
+          {/* Header showing current phase */}
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-foreground">
+              Phase: {phaseLabel}
+            </h2>
+          </div>
 
-        {/* Phase-specific content */}
-        {renderPhaseContent()}
-      </div>
+          {/* Phase-specific content */}
+          {renderPhaseContent()}
+        </div>
+      </LoadingOverlay>
     </div>
   )
 }
