@@ -99,6 +99,7 @@ export const MetaRegistry = scope({
     "xArktype?": "string",
     "xMstType?": "string",
     "xOriginalName?": "string",
+    "xRenderer?": "string",
 
     // Required tracking
     "required?": "boolean",

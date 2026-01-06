@@ -95,6 +95,7 @@ export function createPropertyEnhancements(baseModels: any) {
       if (self.xComputed !== undefined) prop["x-computed"] = self.xComputed
       if (self.xInverse !== undefined) prop["x-inverse"] = self.xInverse
       if (self.xOriginalName !== undefined) prop["x-original-name"] = self.xOriginalName
+      if (self.xRenderer !== undefined) prop["x-renderer"] = self.xRenderer
 
       // Reconstruct nested structure using cached views
 
