@@ -200,33 +200,36 @@ Analysis Verification:
 ```
 Execution Plan: {total} tasks across {n} dependency levels
 
-Level 0 ({count} task{s}):
+Level 0 (1 task):
   → [task-001] Create core interfaces and types
 
-Level 1 ({count} tasks - PARALLEL):
+Level 1 (2 tasks - PARALLEL):
   → [task-002] Implement service interface
   → [task-003] Add utility functions
 
-Level 2 ({count} tasks - PARALLEL):
+Level 2 (2 tasks - PARALLEL):
   → [task-004] Implement provider A (depends: task-002)
   → [task-005] Implement provider B (depends: task-002)
 
-Level 3 ({count} task{s}):
+Level 3 (1 task):
   → [task-006] Wire up integration (depends: task-004, task-005)
 
-Level 4 ({count} task{s}):
+Level 4 (1 task):
   → [task-007] Add integration tests (depends: task-006)
 
-Estimated speedup: ~40% (7 sequential → 4 parallel levels)
-
-Proceed with parallel execution? (yes/no)
+Proceed? (yes/no)
 ```
 
 **Wait for user approval** before proceeding to Phase 4.
 
 **Note**: Mark levels with 2+ tasks as "PARALLEL" in the output.
 
-**CRITICAL TRANSITION**: After user approves, you MUST proceed to Phase 4 (Orchestrated TDD Execution). **Do NOT execute TDD yourself**. Instead, spawn subagents using the Task tool, and instruct each subagent to invoke this skill in single-task mode.
+**CRITICAL TRANSITION**: After user approves, you MUST proceed to Phase 4 (Orchestrated TDD Execution).
+
+**Do NOT execute TDD yourself - ALWAYS spawn subagents**, even for single-task levels. This is required for:
+1. **Context isolation**: Each task runs in a clean context window, keeping the orchestrator lean
+2. **Consistent execution**: Same pattern regardless of task count
+3. **Error containment**: Task failures don't corrupt orchestrator state
 
 ---
 
@@ -371,6 +374,32 @@ Description: {task.description}
 Focus exclusively on task-003."
   run_in_background: false
 ```
+
+**Concrete example - Level 0 with 1 task (STILL uses subagent):**
+
+Even when a level has only ONE task, you MUST spawn a subagent:
+
+```
+Tool: Task
+Parameters:
+  description: "Implement task-001"
+  subagent_type: "general-purpose"
+  prompt: "Implement task task-001 for the ddl-generator feature using TDD.
+
+Instructions:
+1. Invoke the /platform-feature-implementation skill by typing: /platform-feature-implementation
+2. When the skill asks what to implement, respond with: 'implement task-001 only'
+3. The skill will guide you through TDD for this task
+4. Follow all TDD guidelines (RED → GREEN cycle)
+
+Task: Create core interfaces and types
+Description: {task.description}
+
+Focus exclusively on task-001."
+  run_in_background: false
+```
+
+**Why single-task levels still need subagents:** The goal is context isolation, not parallelization. The subagent does the TDD work in its own context window, keeping the orchestrator lean. Without this, the orchestrator accumulates file reads, test outputs, and implementation details that bloat its context.
 
 **You spawn these agents by making actual Task tool calls**, not by writing JavaScript code.
 

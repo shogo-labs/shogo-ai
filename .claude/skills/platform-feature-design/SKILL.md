@@ -17,7 +17,7 @@ Transform discovery requirements into Enhanced JSON Schema for Wavesmith, inform
 
 - **Schema** via `schema.set`
 - **DesignDecision entities** recording key choices
-- **Updated session** with schemaName and status="integration"
+- **Updated session** with schemaName and status="spec"
 
 ## Workflow
 
@@ -366,7 +366,7 @@ Persistence Configuration:
    ```
    store.update(session.id, "FeatureSession", "platform-features", {
      schemaName: session.name,
-     status: "integration",
+     status: "spec",
      updatedAt: Date.now()
    })
    ```
@@ -435,7 +435,7 @@ store.query({
 // Phase 5: Update session (only after tests pass)
 store.update(session.id, "FeatureSession", "platform-features", {
   schemaName: session.name,
-  status: "integration"
+  status: "spec"
 })
 
 // Record decisions
