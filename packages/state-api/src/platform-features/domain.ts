@@ -370,7 +370,14 @@ export const platformFeaturesDomain = domain({
          */
         findByProject(projectId: string | null | undefined): any[] {
           if (projectId == null) return []
-          return self.all().filter((s: any) => s.project === projectId)
+          // Legacy fallback: features without a project are treated as belonging to shogo-platform
+          // This allows existing data (created before project field was added) to appear
+          // TODO: Remove this fallback once schema migrations are implemented and data is backfilled
+          const SHOGO_PLATFORM_ID = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e"
+          return self.all().filter((s: any) =>
+            s.project === projectId ||
+            (projectId === SHOGO_PLATFORM_ID && !s.project)
+          )
         },
 
         /**
