@@ -20,6 +20,7 @@ import {
   isSqliteAvailable,
   getGlobalBackendRegistry,
 } from "./postgres-init"
+import type { SchemaSyncResult } from "@shogo/state-api"
 
 // ============================================================================
 // Types
@@ -27,7 +28,9 @@ import {
 
 interface SchemaInfo {
   name: string
-  schema: Record<string, unknown>
+  schema: Record<string, unknown> & {
+    "x-persistence"?: { backend?: string; namespace?: string }
+  }
   path: string
 }
 
@@ -39,20 +42,25 @@ interface SchemaInfo {
  * Initialize DDL for domain schemas with postgres backend.
  *
  * Scans the schemas directory for schemas configured with
- * `x-persistence.backend: "postgres"` and executes DDL to ensure
- * tables exist before the server accepts connections.
+ * `x-persistence.backend: "postgres"` and syncs schema DDL using
+ * the migration-aware syncSchema method.
  *
  * @param schemasDir - Path to the .schemas directory
  *
  * @remarks
  * - Requires SQL backend to be initialized first (postgres or sqlite)
- * - Uses `ifNotExists: true` for idempotent table creation
- * - Logs warnings on failure but does not throw
+ * - Uses syncSchema for migration-aware DDL synchronization
+ * - Logs action taken for each schema: bootstrap, created, unchanged, or migrated
+ * - Logs errors on failure but does not throw
  *
  * @example
  * ```ts
  * await initializePostgresBackend()
  * await initializeDomainSchemas(join(import.meta.dir, "../../../.schemas"))
+ * // Output:
+ * // [ddl-init]   [created] my-schema (v1)
+ * // [ddl-init]   [unchanged] other-schema
+ * // [ddl-init]   [migrated] evolved-schema (v2)
  * ```
  */
 export async function initializeDomainSchemas(schemasDir: string): Promise<void> {
@@ -85,16 +93,26 @@ export async function initializeDomainSchemas(schemasDir: string): Promise<void>
 
     for (const { name, schema } of postgresSchemas) {
       try {
-        const result = await registry.executeDDL(name, schema, { ifNotExists: true })
+        const result: SchemaSyncResult = await registry.syncSchema(name, schema)
 
-        if (result.success) {
-          console.log(`[ddl-init] ✓ ${name}: ${result.executed} table(s)`)
-        } else {
-          console.warn(`[ddl-init] ⚠ ${name}: ${result.error}`)
+        // Log based on action
+        switch (result.action) {
+          case "bootstrap":
+            console.log(`[ddl-init]   [bootstrap] ${name}`)
+            break
+          case "created":
+            console.log(`[ddl-init]   [created] ${name} (v${result.version})`)
+            break
+          case "unchanged":
+            console.log(`[ddl-init]   [unchanged] ${name}`)
+            break
+          case "migrated":
+            console.log(`[ddl-init]   [migrated] ${name} (v${result.toVersion})`)
+            break
         }
       } catch (error) {
-        console.warn(
-          `[ddl-init] ⚠ ${name}: ${error instanceof Error ? error.message : String(error)}`
+        console.error(
+          `[ddl-init]   [error] ${name}: ${error instanceof Error ? error.message : String(error)}`
         )
       }
     }

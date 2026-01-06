@@ -203,6 +203,10 @@ export interface DDLGenerationConfig {
  * @property {function} mapType - Maps JSON Schema types to SQL types with optional format handling
  * @property {boolean} supportsForeignKeys - Whether dialect supports FOREIGN KEY constraints
  * @property {boolean} supportsCheckConstraints - Whether dialect supports CHECK constraints
+ * @property {boolean} supportsAddColumn - Whether dialect supports ALTER TABLE ADD COLUMN
+ * @property {boolean} supportsDropColumn - Whether dialect supports ALTER TABLE DROP COLUMN
+ * @property {boolean} supportsAlterColumnType - Whether dialect supports ALTER COLUMN TYPE
+ * @property {function} requiresTableRecreation - Checks if an operation requires table recreation
  *
  * @example
  * ```ts
@@ -215,7 +219,11 @@ export interface DDLGenerationConfig {
  *     return "TEXT"
  *   },
  *   supportsForeignKeys: true,
- *   supportsCheckConstraints: true
+ *   supportsCheckConstraints: true,
+ *   supportsAddColumn: true,
+ *   supportsDropColumn: true,
+ *   supportsAlterColumnType: true,
+ *   requiresTableRecreation: (op) => false
  * }
  * ```
  */
@@ -258,4 +266,38 @@ export interface SqlDialect {
 
   /** Whether dialect supports CHECK constraints */
   supportsCheckConstraints: boolean
+
+  // ============================================================================
+  // Migration Capability Properties
+  // ============================================================================
+
+  /** Whether dialect supports ALTER TABLE ADD COLUMN */
+  supportsAddColumn: boolean
+
+  /** Whether dialect supports ALTER TABLE DROP COLUMN directly */
+  supportsDropColumn: boolean
+
+  /** Whether dialect supports ALTER COLUMN TYPE directly */
+  supportsAlterColumnType: boolean
+
+  /**
+   * Checks if a migration operation requires table recreation.
+   *
+   * SQLite doesn't support many ALTER TABLE operations directly.
+   * For unsupported operations, the table must be recreated using
+   * the 4-step pattern: CREATE temp, INSERT, DROP, RENAME.
+   *
+   * @param {string} operation - Migration operation type
+   * @returns {boolean} True if operation requires table recreation
+   *
+   * @example
+   * ```ts
+   * // PostgreSQL: supports direct ALTER TABLE
+   * postgres.requiresTableRecreation("DROP_COLUMN") // => false
+   *
+   * // SQLite: requires recreation for DROP COLUMN
+   * sqlite.requiresTableRecreation("DROP_COLUMN") // => true
+   * ```
+   */
+  requiresTableRecreation(operation: string): boolean
 }

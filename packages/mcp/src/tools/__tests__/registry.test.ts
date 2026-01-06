@@ -52,8 +52,8 @@ describe("MCP Registry", () => {
     const registryPath = join(__dirname, "../registry.ts")
     const registryContent = readFileSync(registryPath, "utf-8")
 
-    // Verify tool count comment (15 tools total)
-    expect(registryContent).toMatch(/Total:\s*15\s*tools/i)
+    // Verify tool count comment (16 tools total)
+    expect(registryContent).toMatch(/Total:\s*16\s*tools/i)
 
     // Verify namespace count (6 namespaces)
     expect(registryContent).toMatch(/6\s*namespaces/i)

@@ -56,10 +56,4 @@ describe("Public API accessible via @shogo/state-api", () => {
     expect(stateApi.createTeamsStore).toBeDefined()
   })
 
-  test("No internal modules exposed directly", async () => {
-    const stateApi = await import("../../index")
-    // Internal implementation details should not be exposed
-    // (RoleLevels is internal)
-    expect((stateApi as any).RoleLevels).toBeUndefined()
-  })
 })

@@ -92,30 +92,50 @@ export function registerDdlExecute(server: FastMCP) {
           })
         }
 
-        // 4. Execute DDL via backend registry
+        // 4. Execute DDL via syncSchema (handles migration recording)
         const registry = getGlobalBackendRegistry()
-        const result = await registry.executeDDL(schemaName, enhancedJson, {
-          ifNotExists: true,
-        })
+        const syncResult = await registry.syncSchema(schemaName, enhancedJson)
 
-        if (!result.success) {
-          return JSON.stringify({
-            ok: false,
-            error: {
-              code: "DDL_EXECUTION_ERROR",
-              message: result.error || "Failed to execute DDL",
-            },
-          })
+        // Format response based on sync result action
+        const getVersion = () => {
+          switch (syncResult.action) {
+            case "created": return syncResult.version
+            case "migrated": return syncResult.toVersion
+            case "unchanged": return syncResult.version
+            default: return undefined
+          }
+        }
+
+        const getStatements = () => {
+          if (syncResult.action === "created" || syncResult.action === "migrated") {
+            return syncResult.statements
+          }
+          return []
+        }
+
+        const getMessage = () => {
+          switch (syncResult.action) {
+            case "bootstrap":
+              return `Bootstrap schema '${schemaName}' initialized`
+            case "created":
+              return `Schema '${schemaName}' created (v${syncResult.version})`
+            case "unchanged":
+              return `Schema '${schemaName}' unchanged (v${syncResult.version})`
+            case "migrated":
+              return `Schema '${schemaName}' migrated from v${syncResult.fromVersion} to v${syncResult.toVersion}`
+          }
         }
 
         return JSON.stringify({
           ok: true,
           dryRun: false,
           schemaName,
-          statements: result.statements,
-          statementCount: result.statements.length,
-          executed: result.executed,
-          message: `Successfully executed ${result.executed} DDL statement(s) for schema '${schemaName}'`,
+          action: syncResult.action,
+          version: getVersion(),
+          statements: getStatements(),
+          statementCount: getStatements().length,
+          executed: getStatements().length,
+          message: getMessage(),
         })
       } catch (error: any) {
         return JSON.stringify({

@@ -36,11 +36,14 @@ export const MetaRegistry = scope({
     name: "string",
     format: "'enhanced-json-schema'",
     createdAt: "number",
+    // Content checksum for detecting schema changes (used by ingestEnhancedJsonSchema)
+    "contentChecksum?": "string",
     // Schema-level persistence configuration (x-persistence extension)
     // Cascades to models that don't have their own x-persistence
     "xPersistence?": {
       "backend?": "string",  // Backend identifier for query execution
       "strategy?": "'flat' | 'entity-per-file' | 'array-per-partition'",
+      "bootstrap?": "boolean",  // If true, DDL auto-runs during BackendRegistry.initialize()
     },
   },
 
@@ -83,6 +86,7 @@ export const MetaRegistry = scope({
     "pattern?": "string",
     "enum?": "string[]",
     "const?": "unknown",
+    "default?": "unknown",  // JSON Schema default value (any type)
 
     // References
     "$ref?": "string",

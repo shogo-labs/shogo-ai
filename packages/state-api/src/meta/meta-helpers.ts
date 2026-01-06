@@ -63,6 +63,7 @@ export function ingestProperty(
   if (propSchema.pattern !== undefined) propertyData.pattern = propSchema.pattern
   if (propSchema.enum !== undefined) propertyData.enum = propSchema.enum
   if (propSchema.const !== undefined) propertyData.const = propSchema.const
+  if (propSchema.default !== undefined) propertyData.default = propSchema.default
 
   // Extract $ref
   if (propSchema.$ref !== undefined) propertyData.$ref = propSchema.$ref

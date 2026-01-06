@@ -18,6 +18,7 @@ import { StudioHeader } from "../components/Studio/StudioHeader"
 import { DashboardView } from "../components/Studio/DashboardView"
 import { SchemaView } from "../components/Studio/SchemaView"
 import { ChatView } from "../components/Studio/ChatView"
+import { NewFeatureModal } from "../components/Studio/NewFeatureModal"
 
 // Types
 type StudioView = "dashboard" | "schema" | "chat"
@@ -61,20 +62,33 @@ function savePreferences(prefs: StudioPreferences) {
 }
 
 export const StudioPage = observer(function StudioPage() {
-  const { platformFeatures, chat, studioCore } = useDomains()
+  const domains = useDomains()
+  const { platformFeatures, chat, studioCore } = domains
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
 
   // URL-based state
+  const projectId = searchParams.get("project")
   const featureId = searchParams.get("feature")
   const view = (searchParams.get("view") as StudioView) || "dashboard"
 
   // Local UI state
   const [preferences, setPreferences] = useState<StudioPreferences>(loadPreferences)
   const [searchQuery, setSearchQuery] = useState("")
+  const [isNewFeatureModalOpen, setIsNewFeatureModalOpen] = useState(false)
 
-  // Get all features from store
-  const allFeatures = platformFeatures.featureSessionCollection.all()
+  // Get all projects
+  const allProjects = studioCore.projectCollection.all()
+
+  // Get selected project
+  const selectedProject = projectId
+    ? studioCore.projectCollection.get(projectId)
+    : null
+
+  // Get features filtered by selected project
+  const allFeatures = projectId
+    ? platformFeatures.featureSessionCollection.findByProject(projectId)
+    : []
 
   // Group features by phase
   const groupedFeatures = useMemo(() => {
@@ -103,6 +117,15 @@ export const StudioPage = observer(function StudioPage() {
   const linkedChatSession = selectedFeature
     ? chat.chatSessionCollection.findByFeatureSessionId(selectedFeature.id)
     : null
+
+  // Handle project selection
+  const handleProjectSelect = useCallback((id: string) => {
+    const params = new URLSearchParams(searchParams)
+    params.set("project", id)
+    // Clear feature selection when project changes (feature may not belong to new project)
+    params.delete("feature")
+    navigate(`/studio?${params.toString()}`)
+  }, [navigate, searchParams])
 
   // Handle feature selection
   const handleFeatureSelect = useCallback((id: string) => {
@@ -142,9 +165,30 @@ export const StudioPage = observer(function StudioPage() {
     updatePreferences({ sidebarWidth: width })
   }, [updatePreferences])
 
-  // Auto-select first feature if none selected
+  // Handle new feature modal
+  const handleNewFeature = useCallback(() => {
+    setIsNewFeatureModalOpen(true)
+  }, [])
+
+  const handleNewFeatureClose = useCallback(() => {
+    setIsNewFeatureModalOpen(false)
+  }, [])
+
+  const handleFeatureCreated = useCallback((feature: any) => {
+    // Select the newly created feature
+    handleFeatureSelect(feature.id)
+  }, [handleFeatureSelect])
+
+  // Auto-select first project if none selected
   useEffect(() => {
-    if (!featureId && allFeatures.length > 0) {
+    if (!projectId && allProjects.length > 0) {
+      handleProjectSelect(allProjects[0].id)
+    }
+  }, [projectId, allProjects, handleProjectSelect])
+
+  // Auto-select first feature if none selected (only when project is selected)
+  useEffect(() => {
+    if (projectId && !featureId && allFeatures.length > 0) {
       // Prefer in-progress, then discovery, then completed
       const first =
         groupedFeatures.inProgress[0] ||
@@ -154,7 +198,7 @@ export const StudioPage = observer(function StudioPage() {
         handleFeatureSelect(first.id)
       }
     }
-  }, [featureId, allFeatures, groupedFeatures, handleFeatureSelect])
+  }, [projectId, featureId, allFeatures, groupedFeatures, handleFeatureSelect])
 
   // Apply theme class to document
   useEffect(() => {
@@ -166,6 +210,33 @@ export const StudioPage = observer(function StudioPage() {
 
   // Render current view
   const renderView = () => {
+    // No projects exist
+    if (allProjects.length === 0) {
+      return (
+        <div className="studio-empty-state">
+          <h2>No Projects</h2>
+          <p>Create a project first to start building features.</p>
+          <a
+            href="/studio-core-demo"
+            className="studio-link"
+          >
+            Go to Studio Core Demo to create a project
+          </a>
+        </div>
+      )
+    }
+
+    // No project selected
+    if (!selectedProject) {
+      return (
+        <div className="studio-empty-state">
+          <h2>Select a Project</h2>
+          <p>Choose a project from the dropdown above to view its features.</p>
+        </div>
+      )
+    }
+
+    // No feature selected
     if (!selectedFeature) {
       return (
         <div className="studio-empty-state">
@@ -215,6 +286,9 @@ export const StudioPage = observer(function StudioPage() {
         theme={preferences.theme}
         onViewChange={handleViewChange}
         onThemeToggle={toggleTheme}
+        projects={allProjects}
+        selectedProject={selectedProject}
+        onProjectSelect={handleProjectSelect}
       />
 
       <StudioLayout
@@ -229,11 +303,24 @@ export const StudioPage = observer(function StudioPage() {
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onFeatureSelect={handleFeatureSelect}
+            onNewFeature={handleNewFeature}
+            selectedProjectId={projectId}
           />
         }
       >
         {renderView()}
       </StudioLayout>
+
+      {/* New Feature Modal */}
+      {projectId && (
+        <NewFeatureModal
+          isOpen={isNewFeatureModalOpen}
+          onClose={handleNewFeatureClose}
+          projectId={projectId}
+          onFeatureCreated={handleFeatureCreated}
+          domains={domains}
+        />
+      )}
     </div>
   )
 })
@@ -291,5 +378,22 @@ const studioStyles = `
   .studio-empty-state p {
     margin: 0;
     font-size: 0.875rem;
+  }
+
+  .studio-link {
+    display: inline-block;
+    margin-top: 1rem;
+    padding: 0.5rem 1rem;
+    background: var(--studio-accent);
+    color: white;
+    text-decoration: none;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: background 0.2s;
+  }
+
+  .studio-link:hover {
+    background: var(--studio-accent-hover);
   }
 `
