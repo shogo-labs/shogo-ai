@@ -1,19 +1,81 @@
 @import "tailwindcss";
 
-/* Custom CSS variables for theming */
+/*
+ * Theme CSS Variables (shadcn pattern)
+ *
+ * Light theme is :root (default)
+ * Dark theme is .dark (applied to document.documentElement)
+ * Theme is initialized in main.tsx BEFORE React renders to prevent flash
+ */
+
+/* Light theme variables (default) */
+:root {
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  --card: #ffffff;
+  --card-foreground: #0a0a0a;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --ring: #2563eb;
+  --radius: 0.5rem;
+}
+
+/* Dark theme variables */
+.dark {
+  --background: #121212;
+  --foreground: rgba(255, 255, 255, 0.87);
+  --card: #1e1e1e;
+  --card-foreground: rgba(255, 255, 255, 0.87);
+  --popover: #1e1e1e;
+  --popover-foreground: rgba(255, 255, 255, 0.87);
+  --primary: #2196f3;
+  --primary-foreground: #ffffff;
+  --secondary: #333333;
+  --secondary-foreground: #ffffff;
+  --muted: #2a2a2a;
+  --muted-foreground: rgba(255, 255, 255, 0.6);
+  --accent: #333333;
+  --accent-foreground: #ffffff;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #333333;
+  --input: #333333;
+  --ring: #2196f3;
+}
+
+/* Tailwind v4 theme layer - maps CSS variables to Tailwind utilities */
 @theme {
-  --color-background: #121212;
-  --color-foreground: rgba(255, 255, 255, 0.87);
-  --color-card: #1e1e1e;
-  --color-card-foreground: rgba(255, 255, 255, 0.87);
-  --color-primary: #2196f3;
-  --color-primary-foreground: #ffffff;
-  --color-secondary: #333333;
-  --color-secondary-foreground: #ffffff;
-  --color-muted: #2a2a2a;
-  --color-muted-foreground: rgba(255, 255, 255, 0.6);
-  --color-border: #333333;
-  --color-ring: #2196f3;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
   --radius-sm: 0.25rem;
   --radius-md: 0.375rem;
   --radius-lg: 0.5rem;
@@ -30,13 +92,18 @@ body {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color-scheme: dark;
+  color-scheme: light dark;
   color: var(--color-foreground);
   background-color: var(--color-background);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Dark mode color-scheme adjustment */
+.dark body {
+  color-scheme: dark;
 }
 
 #root {

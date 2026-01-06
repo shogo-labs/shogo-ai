@@ -23,3 +23,10 @@ export {
   type BootstrapData,
   type BootstrapResult,
 } from './bootstrap'
+
+// Seed IDs for deterministic bootstrap operations
+export {
+  SHOGO_ORG_ID,
+  PLATFORM_PROJECT_ID,
+  SHOGO_DEFAULT_TEAM_ID,
+} from './seeds/ids'

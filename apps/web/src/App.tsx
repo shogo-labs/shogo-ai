@@ -1,5 +1,8 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
+import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { createClient } from '@supabase/supabase-js'
+import { AuthGate, AppShell } from '@/components/app'
+import { WorkspaceLayout } from '@/components/app/workspace'
 import { HomePage } from './pages/HomePage'
 import { Unit1Page } from './pages/Unit1Page'
 import { Unit2Page } from './pages/Unit2Page'
@@ -13,13 +16,14 @@ import { PlatformFeaturesPage } from './pages/PlatformFeaturesPage'
 import { AIChatDemoPage } from './pages/AIChatDemoPage'
 import { FeatureControlPlanePage } from './pages/FeatureControlPlanePage'
 import { StudioCoreDemoPage } from './pages/StudioCoreDemoPage'
+import { StudioChatDemoPage } from './pages/StudioChatDemoPage'
 import { StudioPage } from './pages/StudioPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { MCPBackend } from './query/MCPBackend'
-import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, platformFeaturesDomain, betterAuthDomain, BetterAuthService } from '@shogo/state-api'
+import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, BetterAuthService } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
 import { mcpService } from './services/mcpService'
 import { cn } from '@/lib/utils'
@@ -61,12 +65,18 @@ const domains = {
   multiTenancy: teamsMultiTenancyDomain,
   chat: chatDomain,
   studioCore: studioCoreDomain,
+  studioChat: studioChatDomain,
   platformFeatures: platformFeaturesDomain,
   auth: betterAuthDomain,
 } as const
 
 function Navigation() {
   const location = useLocation()
+
+  // Don't show demo navigation on /app routes - Studio App has its own layout
+  if (location.pathname.startsWith('/app')) {
+    return null
+  }
 
   return (
     <nav className="px-8 py-4 bg-card border-b-2 border-border flex gap-3 items-center flex-wrap">
@@ -83,6 +93,7 @@ function Navigation() {
       <NavLink to="/platform-features" current={location.pathname}>Platform Features</NavLink>
       <NavLink to="/ai-chat-demo" current={location.pathname}>AI Chat Demo</NavLink>
       <NavLink to="/studio-core-demo" current={location.pathname}>Studio Core Demo</NavLink>
+      <NavLink to="/studio-chat-demo" current={location.pathname}>Studio Chat Demo</NavLink>
       <NavLink to="/studio" current={location.pathname}>Studio</NavLink>
     </nav>
   )
@@ -107,33 +118,46 @@ function NavLink({ to, current, children }: { to: string; current: string; child
 
 function App() {
   return (
-    <BrowserRouter>
-      <EnvironmentProvider env={env}>
-        <DomainProvider domains={domains}>
-          <WavesmithMetaStoreProvider>
-            <AuthProvider authService={authService}>
-              <Navigation />
-              <Routes>
-                <Route path="/" element={<HomePage />} />
-                <Route path="/unit1" element={<Unit1Page />} />
-                <Route path="/unit2" element={<Unit2Page />} />
-                <Route path="/unit3" element={<Unit3Page />} />
-                <Route path="/legacy-tests" element={<LegacyTestsPage />} />
-                <Route path="/auth-demo" element={<AuthDemoPage />} />
-                <Route path="/better-auth-demo" element={<BetterAuthDemoPage />} />
-                <Route path="/teams-demo" element={<TeamsDemoPage />} />
-                <Route path="/tenant-demo" element={<TenantDemoPage />} />
-                <Route path="/feature-control-plane" element={<FeatureControlPlanePage />} />
-                <Route path="/platform-features" element={<PlatformFeaturesPage />} />
-                <Route path="/ai-chat-demo" element={<AIChatDemoPage />} />
-                <Route path="/studio-core-demo" element={<StudioCoreDemoPage />} />
-                <Route path="/studio" element={<StudioPage />} />
-              </Routes>
-            </AuthProvider>
-          </WavesmithMetaStoreProvider>
-        </DomainProvider>
-      </EnvironmentProvider>
-    </BrowserRouter>
+    <NuqsAdapter>
+      <BrowserRouter>
+        <EnvironmentProvider env={env}>
+          <DomainProvider domains={domains}>
+            <WavesmithMetaStoreProvider>
+              <AuthProvider authService={authService}>
+                <Navigation />
+                <Routes>
+                  <Route path="/" element={<HomePage />} />
+                  <Route path="/unit1" element={<Unit1Page />} />
+                  <Route path="/unit2" element={<Unit2Page />} />
+                  <Route path="/unit3" element={<Unit3Page />} />
+                  <Route path="/legacy-tests" element={<LegacyTestsPage />} />
+                  <Route path="/auth-demo" element={<AuthDemoPage />} />
+                  <Route path="/better-auth-demo" element={<BetterAuthDemoPage />} />
+                  <Route path="/teams-demo" element={<TeamsDemoPage />} />
+                  <Route path="/tenant-demo" element={<TenantDemoPage />} />
+                  <Route path="/feature-control-plane" element={<FeatureControlPlanePage />} />
+                  <Route path="/platform-features" element={<PlatformFeaturesPage />} />
+                  <Route path="/ai-chat-demo" element={<AIChatDemoPage />} />
+                  <Route path="/studio-core-demo" element={<StudioCoreDemoPage />} />
+                  <Route path="/studio-chat-demo" element={<StudioChatDemoPage />} />
+                  <Route path="/studio" element={<StudioPage />} />
+                  {/* Protected /app route - Session 2.1 Studio App */}
+                  <Route path="/app/*" element={
+                    <AuthGate>
+                      <AppShell />
+                    </AuthGate>
+                  }>
+                    {/* WorkspaceLayout as index route (task-2-2-004) */}
+                    <Route index element={<WorkspaceLayout />} />
+                    {/* Future nested routes go here (Session 2.2+) */}
+                  </Route>
+                </Routes>
+              </AuthProvider>
+            </WavesmithMetaStoreProvider>
+          </DomainProvider>
+        </EnvironmentProvider>
+      </BrowserRouter>
+    </NuqsAdapter>
   )
 }
 

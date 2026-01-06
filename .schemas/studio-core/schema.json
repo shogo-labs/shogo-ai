@@ -1,8 +1,8 @@
 {
-  "id": "732dc6a0-d15d-49c1-89b3-aede2dee7874",
+  "id": "b83de179-8e15-4f6d-a02c-a8b69faa39ff",
   "name": "studio-core",
   "format": "enhanced-json-schema",
-  "createdAt": 1766436475705,
+  "createdAt": 1767399249034,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "Organization": {
@@ -34,6 +34,9 @@
           "description": "Opaque JSON for future SSO provider configs"
         },
         "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
           "type": "number"
         }
       },
@@ -80,6 +83,9 @@
           "x-reference-target": "Team"
         },
         "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
           "type": "number"
         }
       },
@@ -145,6 +151,9 @@
         },
         "createdAt": {
           "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
         }
       },
       "required": [
@@ -209,6 +218,9 @@
         },
         "createdAt": {
           "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
         }
       },
       "required": [
@@ -249,6 +261,9 @@
           "type": "number"
         },
         "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
           "type": "number"
         }
       },
@@ -315,10 +330,17 @@
             "expired"
           ]
         },
+        "invitedBy": {
+          "type": "string",
+          "description": "Loose string ref to userId who sent invitation"
+        },
         "expiresAt": {
           "type": "number"
         },
         "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
           "type": "number"
         }
       },
