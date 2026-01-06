@@ -85,6 +85,7 @@ export function createPropertyEnhancements(baseModels: any) {
       if (self.pattern !== undefined) prop.pattern = self.pattern
       if (self.enum !== undefined && self.enum.length > 0) prop.enum = self.enum
       if (self.const !== undefined) prop.const = self.const
+      if (self.default !== undefined) prop.default = self.default
 
       // x-* extensions (camelCase → kebab-case)
       if (self.xArktype !== undefined) prop["x-arktype"] = self.xArktype

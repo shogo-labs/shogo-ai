@@ -90,7 +90,8 @@ describe("DDL Initialization", () => {
   let tempDir: string
   let consoleLogSpy: ReturnType<typeof spyOn>
   let consoleWarnSpy: ReturnType<typeof spyOn>
-  let mockRegistry: { executeDDL: ReturnType<typeof mock> }
+  let consoleErrorSpy: ReturnType<typeof spyOn>
+  let mockRegistry: { syncSchema: ReturnType<typeof mock> }
 
   beforeEach(() => {
     tempDir = createTempSchemasDir()
@@ -98,14 +99,15 @@ describe("DDL Initialization", () => {
     // Capture console output
     consoleLogSpy = spyOn(console, "log").mockImplementation(() => {})
     consoleWarnSpy = spyOn(console, "warn").mockImplementation(() => {})
+    consoleErrorSpy = spyOn(console, "error").mockImplementation(() => {})
 
-    // Create mock registry
+    // Create mock registry with syncSchema (replaces old executeDDL)
     mockRegistry = {
-      executeDDL: mock(() =>
+      syncSchema: mock(() =>
         Promise.resolve({
-          success: true,
+          action: "created",
+          version: 1,
           statements: ["CREATE TABLE test"],
-          executed: 1,
         })
       ),
     }
@@ -115,6 +117,7 @@ describe("DDL Initialization", () => {
     cleanupTempDir(tempDir)
     consoleLogSpy.mockRestore()
     consoleWarnSpy.mockRestore()
+    consoleErrorSpy.mockRestore()
     // Restore postgres-init mocks
     postgresAvailableSpy?.mockRestore()
     sqliteAvailableSpy?.mockRestore()
@@ -137,7 +140,7 @@ describe("DDL Initialization", () => {
       await initializeDomainSchemas(tempDir)
 
       // Then: No DDL execution attempted
-      expect(mockRegistry.executeDDL).not.toHaveBeenCalled()
+      expect(mockRegistry.syncSchema).not.toHaveBeenCalled()
 
       // And: Log indicates skip
       expect(consoleLogSpy).toHaveBeenCalledWith(
@@ -160,10 +163,10 @@ describe("DDL Initialization", () => {
       await initializeDomainSchemas(tempDir)
 
       // Then: Only postgres-backend schemas trigger DDL
-      expect(mockRegistry.executeDDL).toHaveBeenCalledTimes(2)
+      expect(mockRegistry.syncSchema).toHaveBeenCalledTimes(2)
     })
 
-    test("executes DDL with ifNotExists option", async () => {
+    test("calls syncSchema for each postgres schema", async () => {
       // Given: SQL backend is available
       postgresAvailableSpy = spyOn(postgresInit, "isPostgresAvailable").mockReturnValue(true)
       sqliteAvailableSpy = spyOn(postgresInit, "isSqliteAvailable").mockReturnValue(false)
@@ -176,11 +179,10 @@ describe("DDL Initialization", () => {
       // When: initializeDomainSchemas is called
       await initializeDomainSchemas(tempDir)
 
-      // Then: DDL executed with correct options
-      expect(mockRegistry.executeDDL).toHaveBeenCalledWith(
+      // Then: syncSchema called with schema name and content
+      expect(mockRegistry.syncSchema).toHaveBeenCalledWith(
         "test-schema",
-        expect.objectContaining({ name: "test-schema" }),
-        { ifNotExists: true }
+        expect.objectContaining({ name: "test-schema" })
       )
     })
 
@@ -210,19 +212,14 @@ describe("DDL Initialization", () => {
       sqliteAvailableSpy = spyOn(postgresInit, "isSqliteAvailable").mockReturnValue(false)
 
       const failingMockRegistry = {
-        executeDDL: mock((name: string) => {
+        syncSchema: mock((name: string) => {
           if (name === "failing-schema") {
-            return Promise.resolve({
-              success: false,
-              statements: [],
-              executed: 0,
-              error: "Test error",
-            })
+            return Promise.reject(new Error("Test error"))
           }
           return Promise.resolve({
-            success: true,
+            action: "created",
+            version: 1,
             statements: ["CREATE TABLE test"],
-            executed: 1,
           })
         }),
       }
@@ -236,10 +233,10 @@ describe("DDL Initialization", () => {
       await initializeDomainSchemas(tempDir)
 
       // Then: Both schemas were processed
-      expect(failingMockRegistry.executeDDL).toHaveBeenCalledTimes(2)
+      expect(failingMockRegistry.syncSchema).toHaveBeenCalledTimes(2)
 
-      // And: Warning logged for failure
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
+      // And: Error logged for failure
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
         expect.stringContaining("failing-schema")
       )
     })
@@ -276,7 +273,7 @@ describe("DDL Initialization", () => {
       await initializeDomainSchemas(tempDir)
 
       // Then: Valid schema is still processed
-      expect(mockRegistry.executeDDL).toHaveBeenCalledTimes(1)
+      expect(mockRegistry.syncSchema).toHaveBeenCalledTimes(1)
 
       // And: No crash occurred
     })

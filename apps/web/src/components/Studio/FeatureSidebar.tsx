@@ -23,6 +23,8 @@ interface FeatureSidebarProps {
   searchQuery: string
   onSearchChange: (query: string) => void
   onFeatureSelect: (id: string) => void
+  onNewFeature?: () => void
+  selectedProjectId: string | null
 }
 
 export function FeatureSidebar({
@@ -31,6 +33,8 @@ export function FeatureSidebar({
   searchQuery,
   onSearchChange,
   onFeatureSelect,
+  onNewFeature,
+  selectedProjectId,
 }: FeatureSidebarProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
     new Set(["inProgress", "discovery"])
@@ -149,29 +153,46 @@ export function FeatureSidebar({
 
       {/* Feature groups */}
       <div className="sidebar-groups">
-        {renderGroup(
-          "inProgress",
-          "In Progress",
-          features.inProgress,
-          "No features in progress"
-        )}
-        {renderGroup(
-          "discovery",
-          "Discovery",
-          features.discovery,
-          "No features in discovery"
-        )}
-        {renderGroup(
-          "completed",
-          "Completed",
-          features.completed,
-          "No completed features"
+        {!selectedProjectId ? (
+          <div className="sidebar-empty-state">
+            <p>Select a project to view features</p>
+          </div>
+        ) : totalCount === 0 ? (
+          <div className="sidebar-empty-state">
+            <p>No features yet</p>
+            <p className="sidebar-empty-hint">Create your first feature to get started</p>
+          </div>
+        ) : (
+          <>
+            {renderGroup(
+              "inProgress",
+              "In Progress",
+              features.inProgress,
+              "No features in progress"
+            )}
+            {renderGroup(
+              "discovery",
+              "Discovery",
+              features.discovery,
+              "No features in discovery"
+            )}
+            {renderGroup(
+              "completed",
+              "Completed",
+              features.completed,
+              "No completed features"
+            )}
+          </>
         )}
       </div>
 
       {/* New feature button */}
       <div className="sidebar-footer">
-        <button className="sidebar-new-btn" disabled>
+        <button
+          className="sidebar-new-btn"
+          onClick={onNewFeature}
+          disabled={!selectedProjectId || !onNewFeature}
+        >
           + New Feature
         </button>
       </div>
@@ -410,5 +431,26 @@ const sidebarStyles = `
   .sidebar-new-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .sidebar-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem 1rem;
+    text-align: center;
+    color: var(--studio-text-muted);
+  }
+
+  .sidebar-empty-state p {
+    margin: 0;
+    font-size: 0.875rem;
+  }
+
+  .sidebar-empty-hint {
+    margin-top: 0.5rem !important;
+    font-size: 0.75rem !important;
+    opacity: 0.7;
   }
 `

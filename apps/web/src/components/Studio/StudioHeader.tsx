@@ -1,5 +1,5 @@
 /**
- * StudioHeader - Top header with feature selector, view tabs, and theme toggle
+ * StudioHeader - Top header with project selector, feature display, view tabs, and theme toggle
  */
 
 interface StudioHeaderProps {
@@ -8,6 +8,9 @@ interface StudioHeaderProps {
   theme: "dark" | "light"
   onViewChange: (view: "dashboard" | "schema" | "chat") => void
   onThemeToggle: () => void
+  projects: any[]
+  selectedProject: any | null
+  onProjectSelect: (id: string) => void
 }
 
 export function StudioHeader({
@@ -16,6 +19,9 @@ export function StudioHeader({
   theme,
   onViewChange,
   onThemeToggle,
+  projects,
+  selectedProject,
+  onProjectSelect,
 }: StudioHeaderProps) {
   const tabs = [
     { id: "dashboard" as const, label: "Dashboard" },
@@ -23,14 +29,72 @@ export function StudioHeader({
     { id: "chat" as const, label: "Chat" },
   ]
 
+  // Get tier display info
+  const getTierInfo = (tier: string) => {
+    switch (tier) {
+      case "enterprise":
+        return { label: "ENT", className: "tier-enterprise" }
+      case "pro":
+        return { label: "PRO", className: "tier-pro" }
+      case "internal":
+        return { label: "INT", className: "tier-internal" }
+      default:
+        return { label: "STR", className: "tier-starter" }
+    }
+  }
+
+  // Get status display info
+  const getStatusInfo = (status: string) => {
+    switch (status) {
+      case "active":
+        return { color: "#22c55e", title: "Active" }
+      case "archived":
+        return { color: "#71717a", title: "Archived" }
+      default:
+        return { color: "#f59e0b", title: "Draft" }
+    }
+  }
+
   return (
     <header className="studio-header">
       <style>{headerStyles}</style>
 
-      {/* Left: Feature info */}
+      {/* Left: Project selector and feature info */}
       <div className="header-left">
         <div className="header-project">
-          <span className="project-badge">shogo-platform</span>
+          <select
+            className="project-selector"
+            value={selectedProject?.id || ""}
+            onChange={(e) => onProjectSelect(e.target.value)}
+          >
+            {projects.length === 0 ? (
+              <option value="">No projects</option>
+            ) : (
+              <>
+                <option value="" disabled>Select project...</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </>
+            )}
+          </select>
+
+          {selectedProject && (
+            <>
+              <span
+                className={`tier-badge ${getTierInfo(selectedProject.tier).className}`}
+              >
+                {getTierInfo(selectedProject.tier).label}
+              </span>
+              <span
+                className="status-indicator"
+                style={{ background: getStatusInfo(selectedProject.status).color }}
+                title={getStatusInfo(selectedProject.status).title}
+              />
+            </>
+          )}
         </div>
 
         {feature && (
@@ -38,8 +102,8 @@ export function StudioHeader({
             <span className="header-divider">/</span>
             <div className="header-feature">
               <span className="feature-badge">{feature.name}</span>
-              <span className={`phase-badge phase-${feature.phase}`}>
-                {feature.phase}
+              <span className={`phase-badge phase-${feature.status}`}>
+                {feature.status}
               </span>
             </div>
           </>
@@ -94,15 +158,49 @@ const headerStyles = `
   .header-project {
     display: flex;
     align-items: center;
+    gap: 0.5rem;
   }
 
-  .project-badge {
-    font-size: 0.75rem;
+  .project-selector {
+    font-size: 0.875rem;
     font-weight: 500;
-    color: var(--studio-text-muted);
+    color: var(--studio-text);
     background: var(--studio-bg-card);
-    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--studio-border);
+    padding: 0.375rem 0.75rem;
+    border-radius: 6px;
+    cursor: pointer;
+    min-width: 150px;
+  }
+
+  .project-selector:hover {
+    border-color: var(--studio-text-muted);
+  }
+
+  .project-selector:focus {
+    outline: none;
+    border-color: var(--studio-accent);
+  }
+
+  .tier-badge {
+    font-size: 0.625rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 0.125rem 0.375rem;
     border-radius: 4px;
+    letter-spacing: 0.05em;
+  }
+
+  .tier-enterprise { background: #7c3aed30; color: #a78bfa; }
+  .tier-pro { background: #3b82f630; color: #60a5fa; }
+  .tier-internal { background: #f59e0b30; color: #fbbf24; }
+  .tier-starter { background: #71717a30; color: #a1a1aa; }
+
+  .status-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
   }
 
   .header-divider {
@@ -131,9 +229,13 @@ const headerStyles = `
   }
 
   .phase-badge.phase-discovery { background: #7c3aed30; color: #a78bfa; }
+  .phase-badge.phase-analysis { background: #8b5cf630; color: #c4b5fd; }
+  .phase-badge.phase-classification { background: #6366f130; color: #a5b4fc; }
   .phase-badge.phase-design { background: #f59e0b30; color: #fbbf24; }
-  .phase-badge.phase-build { background: #22c55e30; color: #4ade80; }
-  .phase-badge.phase-deploy { background: #3b82f630; color: #60a5fa; }
+  .phase-badge.phase-spec { background: #f9731630; color: #fb923c; }
+  .phase-badge.phase-testing { background: #ef444430; color: #f87171; }
+  .phase-badge.phase-implementation { background: #22c55e30; color: #4ade80; }
+  .phase-badge.phase-complete { background: #3b82f630; color: #60a5fa; }
 
   .header-tabs {
     display: flex;

@@ -352,6 +352,43 @@ export type ArrayReferenceMaps = Record<string, Record<string, ArrayReferenceMet
  * // }
  * ```
  */
+/**
+ * Escape a table name for the given SQL dialect, handling qualified names properly.
+ *
+ * For PostgreSQL qualified names like "namespace.table", escapes each part separately:
+ * - Input: "my_schema.user" → Output: "my_schema"."user"
+ *
+ * For SQLite or unqualified names, just wraps in quotes:
+ * - Input: "my_schema__user" → Output: "my_schema__user"
+ * - Input: "user" → Output: "user"
+ *
+ * @param tableName - Table name (may include namespace)
+ * @param dialect - SQL dialect with escapeIdentifier method
+ * @returns Properly escaped table name for SQL
+ */
+export function escapeTableName(
+  tableName: string,
+  dialect: { name: string; escapeIdentifier: (id: string) => string }
+): string {
+  // Already escaped (starts with quote) - return as-is to avoid double-escaping
+  // This handles names that come from qualifyTableName() which pre-escapes for PostgreSQL
+  if (tableName.startsWith('"')) {
+    return tableName
+  }
+
+  // PostgreSQL-style unescaped qualified name (namespace.table) - escape each part
+  if (
+    (dialect.name === "postgresql" || dialect.name === "postgres") &&
+    tableName.includes(".")
+  ) {
+    const [namespace, table] = tableName.split(".")
+    return `${dialect.escapeIdentifier(namespace)}.${dialect.escapeIdentifier(table)}`
+  }
+
+  // Regular identifier - escape normally
+  return dialect.escapeIdentifier(tableName)
+}
+
 export function computeArrayReferenceMaps(schema: any): ArrayReferenceMaps {
   const models = schema.$defs || schema.definitions || {}
   const result: ArrayReferenceMaps = {}

@@ -264,6 +264,14 @@ export function normalizeRowWithTypes<T extends Record<string, unknown>>(
       // SQLite stores boolean as INTEGER (0/1)
       // Only convert if value is actually 0 or 1 (not null/undefined)
       normalized[propName] = value === 1 || value === true
+    } else if (propType === 'array' && typeof value === 'string') {
+      // JSON-encoded arrays stored in TEXT columns need parsing
+      try {
+        normalized[propName] = JSON.parse(value)
+      } catch {
+        // If parse fails, pass through as-is
+        normalized[propName] = value
+      }
     } else if (value === null) {
       // Convert SQL NULL to undefined for MST compatibility
       // MST expects undefined for missing optional fields, not null

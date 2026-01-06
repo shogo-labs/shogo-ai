@@ -11,6 +11,7 @@ import { buildEnhanceCollections } from "../composition/enhance-collections"
 import { getRuntimeStore, cacheRuntimeStore, removeRuntimeStoresForSchema } from "./runtime-store-cache"
 import { ingestProperty } from "./meta-helpers"
 import { getEnhancements } from "../domain/enhancement-registry"
+import { computeSchemaChecksum } from "../ddl/migration-tracker"
 
 export function createRootStoreEnhancements(RootModel: any) {
   return RootModel
@@ -38,13 +39,21 @@ export function createRootStoreEnhancements(RootModel: any) {
         enhancedSchema: any,
         metadata: { id?: string; name: string; createdAt?: number; views?: Record<string, any> }
       ) {
-        // Check if schema with this name already exists (idempotency for React StrictMode)
+        // Compute content checksum for change detection
+        const incomingChecksum = computeSchemaChecksum(enhancedSchema)
+
+        // Check if schema with this name already exists
         const existingSchema = self.findSchemaByName(metadata.name)
         if (existingSchema) {
-          console.log('[meta-store] Schema already exists:', metadata.name)
-          console.log('[meta-store] Existing schema ID:', existingSchema.id, 'models:', existingSchema.models?.length)
-          console.log('[meta-store] Incoming metadata ID:', metadata.id)
-          // Return existing to avoid duplicates - the IDs should match if from same source
+          // Check if content is IDENTICAL (true idempotent call - React StrictMode safe)
+          if (existingSchema.contentChecksum === incomingChecksum) {
+            console.log('[meta-store] Schema unchanged (idempotent):', metadata.name)
+            return existingSchema
+          }
+
+          // Content differs - UPDATE the existing schema
+          console.log('[meta-store] Schema content changed, updating:', metadata.name)
+          self.updateSchemaContent(existingSchema.id, enhancedSchema, incomingChecksum, metadata.views)
           return existingSchema
         }
 
@@ -54,6 +63,7 @@ export function createRootStoreEnhancements(RootModel: any) {
           name: metadata.name,
           format: "enhanced-json-schema",
           createdAt: metadata.createdAt || Date.now(),
+          contentChecksum: incomingChecksum,
         }
 
         // Capture schema-level x-persistence extension
@@ -128,6 +138,128 @@ export function createRootStoreEnhancements(RootModel: any) {
         })
 
         return schema
+      },
+
+      /**
+       * Updates schema content when checksum differs.
+       *
+       * Performs cascade update:
+       * 1. Delete old properties and models
+       * 2. Update schema checksum
+       * 3. Re-ingest new models/properties
+       * 4. Update views
+       * 5. Invalidate runtime store cache
+       *
+       * @param schemaId - ID of the schema to update
+       * @param enhancedSchema - New schema content
+       * @param newChecksum - Computed checksum of new content
+       * @param views - Optional view definitions
+       */
+      updateSchemaContent(
+        schemaId: string,
+        enhancedSchema: any,
+        newChecksum: string,
+        views?: Record<string, any>
+      ) {
+        const schema = self.schemaCollection.get(schemaId)
+        if (!schema) return
+
+        // 1. Get models/properties to remove (like removeSchema pattern)
+        const modelsToRemove = self.modelCollection.all()
+          .filter((m: any) => m.schema?.id === schemaId)
+        const modelIds = new Set(modelsToRemove.map((m: any) => m.id))
+        const propertiesToRemove = self.propertyCollection.all()
+          .filter((p: any) => modelIds.has(p.model?.id))
+
+        // Get existing views to remove
+        const viewsToRemove = self.viewDefinitionCollection.all()
+          .filter((v: any) => v.schema?.id === schemaId)
+
+        // 2. Delete old properties, views, and models
+        for (const prop of propertiesToRemove) {
+          self.propertyCollection.remove(prop.id)
+        }
+        for (const view of viewsToRemove) {
+          self.viewDefinitionCollection.remove(view.id)
+        }
+        for (const model of modelsToRemove) {
+          self.modelCollection.remove(model.id)
+        }
+
+        // 3. Update schema checksum
+        schema.setContentChecksum(newChecksum)
+
+        // 4. Update schema-level x-persistence if changed
+        if (enhancedSchema['x-persistence']) {
+          schema.xPersistence = enhancedSchema['x-persistence']
+        }
+
+        // 5. Re-ingest views if provided
+        if (views) {
+          Object.entries(views).forEach(([viewName, viewDef]: [string, any]) => {
+            self.viewDefinitionCollection.add({
+              id: uuidv4(),
+              schema: schemaId,
+              name: viewName,
+              type: viewDef.type,
+              ...(viewDef.collection && { collection: viewDef.collection }),
+              ...(viewDef.filter && { filter: viewDef.filter }),
+              ...(viewDef.select && { select: viewDef.select }),
+              ...(viewDef.dataSource && { dataSource: viewDef.dataSource }),
+              ...(viewDef.template && { template: viewDef.template }),
+            })
+          })
+        }
+
+        // 6. Re-ingest new models/properties (same logic as ingestEnhancedJsonSchema)
+        let defs = enhancedSchema.$defs || {}
+
+        // Handle single-type schemas (no $defs but has properties)
+        if (Object.keys(defs).length === 0 && enhancedSchema.type === "object" && enhancedSchema.properties) {
+          const typeName = enhancedSchema["x-original-name"] || "Model"
+          defs = {
+            [typeName]: {
+              type: "object",
+              properties: enhancedSchema.properties,
+              required: enhancedSchema.required,
+              description: enhancedSchema.description
+            }
+          }
+        }
+
+        // Parse $defs into Model/Property entities
+        Object.entries(defs).forEach(([defKey, defSchema]: [string, any]) => {
+          // Extract domain if present (e.g., "auth.User" → domain="auth", name="User")
+          const [possibleDomain, possibleName] = defKey.includes('.')
+            ? defKey.split('.')
+            : [undefined, defKey]
+
+          const modelId = uuidv4()
+          const modelData: any = {
+            id: modelId,
+            schema: schemaId,
+            name: possibleName || defKey,
+          }
+
+          if (possibleDomain) modelData.domain = possibleDomain
+          if (defSchema.description) modelData.description = defSchema.description
+
+          // Capture x-persistence extension for partitioned storage
+          if (defSchema['x-persistence']) {
+            modelData.xPersistence = defSchema['x-persistence']
+          }
+
+          self.modelCollection.add(modelData)
+
+          // Ingest properties using helper (for recursion)
+          const requiredSet = new Set<string>(defSchema.required || [])
+          Object.entries(defSchema.properties || {}).forEach(([propName, propSchema]) => {
+            ingestProperty(self, propName, propSchema, modelId, undefined, undefined, requiredSet)
+          })
+        })
+
+        // 7. Invalidate runtime store cache for this schema
+        removeRuntimeStoresForSchema(schemaId)
       },
 
       /**
