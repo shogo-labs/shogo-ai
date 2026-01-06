@@ -19,6 +19,7 @@
     "@radix-ui/react-separator": "^1.1.8",
     "@radix-ui/react-slot": "^1.2.4",
     "@radix-ui/react-tabs": "^1.1.13",
+    "@radix-ui/react-toast": "^1.2.15",
     "@shogo/state-api": "workspace:*",
     "@supabase/supabase-js": "^2.86.2",
     "@xyflow/react": "^12.10.0",

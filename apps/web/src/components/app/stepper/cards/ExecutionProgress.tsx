@@ -115,10 +115,10 @@ export const ExecutionProgress = observer(function ExecutionProgress({
   const completedCount = run.completedTasks?.length || 0
   const progress = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0
 
-  // Calculate elapsed time
+  // Calculate elapsed time (guard against negative values from data corruption)
   const elapsed = useMemo(() => {
     const endTime = run.completedAt || Date.now()
-    return endTime - run.startedAt
+    return Math.max(0, endTime - run.startedAt)
   }, [run.startedAt, run.completedAt])
 
   return (

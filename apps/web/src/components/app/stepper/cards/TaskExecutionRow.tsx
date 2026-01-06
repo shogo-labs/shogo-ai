@@ -126,9 +126,9 @@ export const TaskExecutionRow = observer(function TaskExecutionRow({
 }: TaskExecutionRowProps) {
   const [isErrorExpanded, setIsErrorExpanded] = useState(false)
 
-  // Calculate duration if completed
+  // Calculate duration if completed (guard against negative values from data corruption)
   const duration = execution.completedAt
-    ? execution.completedAt - execution.startedAt
+    ? Math.max(0, execution.completedAt - execution.startedAt)
     : null
 
   const hasFailed = execution.status === "failed" && execution.errorMessage
