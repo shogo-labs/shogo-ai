@@ -21,7 +21,7 @@ Transform implementation tasks into test specifications.
 ## Output
 
 - `TestSpecification` entities in Given/When/Then format
-- Session status updated to "complete"
+- Session status updated to "testing" (triggers analysis verify mode next)
 
 ## Workflow
 
@@ -132,7 +132,7 @@ Any gaps or additional tests needed?
 1. Update session:
 ```javascript
 store.update(session.id, "FeatureSession", "platform-features", {
-  status: "complete",
+  status: "testing",
   updatedAt: Date.now()
 })
 ```
@@ -144,7 +144,7 @@ Test Specifications Complete
 Total tests: {count}
 By type: {unit}, {integration}, {acceptance}
 
-The platform feature is fully specified:
+Artifacts created:
 - Requirements: {count}
 - Design decisions: {count}
 - Analysis findings: {count}
@@ -152,7 +152,7 @@ The platform feature is fully specified:
 - Implementation tasks: {count}
 - Test specifications: {count}
 
-Ready for implementation.
+Next: Analysis (verify mode) to validate spec alignment before implementation.
 ```
 
 ## Test Type Guidelines
