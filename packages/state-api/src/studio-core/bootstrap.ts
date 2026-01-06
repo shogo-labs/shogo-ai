@@ -8,9 +8,11 @@
  * - Links existing FeatureSessions to project
  *
  * Can be run idempotently - checks for existing data before creating.
+ * Uses deterministic seed IDs for idempotent operations.
  */
 
 import { v4 as uuidv4 } from "uuid"
+import { SHOGO_ORG_ID, PLATFORM_PROJECT_ID } from "./seeds/ids"
 
 /**
  * Bootstrap data interface
@@ -65,18 +67,14 @@ export function bootstrapStudioCore(
   store: any,
   userId: string = "bootstrap-user"
 ): BootstrapResult {
-  // Check if already bootstrapped
-  const existingOrg = store.organizationCollection
-    .all()
-    .find((org: any) => org.slug === "shogo")
+  // Check if already bootstrapped using deterministic ID
+  const existingOrg = store.organizationCollection.get(SHOGO_ORG_ID)
 
   if (existingOrg) {
     console.log("Bootstrap already complete - organization 'shogo' exists")
 
-    // Find the project
-    const existingProject = store.projectCollection
-      .all()
-      .find((p: any) => p.name === "shogo-platform" && p.organization?.id === existingOrg.id)
+    // Find the project using deterministic ID
+    const existingProject = store.projectCollection.get(PLATFORM_PROJECT_ID)
 
     // Find the member
     const existingMember = store.memberCollection
@@ -93,10 +91,9 @@ export function bootstrapStudioCore(
 
   console.log("Starting studio-core bootstrap...")
 
-  // Create Shogo organization
-  const orgId = uuidv4()
+  // Create Shogo organization using deterministic ID
   const organization = store.organizationCollection.add({
-    id: orgId,
+    id: SHOGO_ORG_ID,
     name: "Shogo",
     slug: "shogo",
     description: "Shogo AI Platform",
@@ -104,13 +101,12 @@ export function bootstrapStudioCore(
   })
   console.log(`Created organization: ${organization.name} (${organization.id})`)
 
-  // Create shogo-platform project
-  const projectId = uuidv4()
+  // Create shogo-platform project using deterministic ID
   const project = store.projectCollection.add({
-    id: projectId,
+    id: PLATFORM_PROJECT_ID,
     name: "shogo-platform",
     description: "Internal Shogo AI platform development",
-    organization: orgId,
+    organization: SHOGO_ORG_ID,
     tier: "internal",
     status: "active",
     schemas: ["platform-features", "studio-core"],
@@ -124,7 +120,7 @@ export function bootstrapStudioCore(
     id: memberId,
     userId,
     role: "owner",
-    organization: orgId,
+    organization: SHOGO_ORG_ID,
     createdAt: Date.now(),
   })
   console.log(`Created member: ${member.userId} as ${member.role} (${member.id})`)
