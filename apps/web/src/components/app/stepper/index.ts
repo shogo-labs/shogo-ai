@@ -32,6 +32,9 @@ export type { EmptyPhaseContentProps, BlockedPhaseIndicatorProps } from "./Empty
 export { RunPhaseButton } from "./RunPhaseButton"
 export type { RunPhaseButtonProps } from "./RunPhaseButton"
 
+export { LoadingOverlay } from "./LoadingOverlay"
+export type { LoadingOverlayProps } from "./LoadingOverlay"
+
 // Hooks
 export { usePhaseNavigation } from "./hooks/usePhaseNavigation"
 export type { StepperPhase, UsePhaseNavigationResult } from "./hooks/usePhaseNavigation"

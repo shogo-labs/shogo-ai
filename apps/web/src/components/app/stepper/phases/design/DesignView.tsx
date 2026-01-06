@@ -124,7 +124,7 @@ export const DesignView = observer(function DesignView({
           <TabsTrigger value="hooks">Hooks Plan</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="schema" className="flex-1 mt-4">
+        <TabsContent value="schema" className="flex-1 mt-4 h-[500px] min-h-[400px]">
           {renderSchemaContent()}
         </TabsContent>
 

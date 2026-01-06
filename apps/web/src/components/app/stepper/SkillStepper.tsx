@@ -1,17 +1,18 @@
 /**
  * SkillStepper Component
- * Task: task-2-3a-007
+ * Task: task-3-1-001 (redesign from task-2-3a-007)
  *
  * Horizontal stepper composing PhaseNode + PhaseConnector for all 8 phases.
  * Receives phases data and selected phase from parent (PhaseContentPanel).
  *
+ * Per design-3-1-001:
+ * - Uses flex-row with items-start for aligned tops of variable-height stacks
+ * - PhaseNodes are vertical stacks (circle above label)
+ * - Connectors positioned at circle vertical center
+ *
  * Per vault 04-skill-workflow.md:
  * - 8-phase pipeline: Discovery -> Analysis -> Classification -> Design -> Spec -> Implementation -> Testing -> Complete
  * - Visual legend: Current (filled), Complete (checkmark), Future (outline)
- *
- * Per design-2-3a-component-hierarchy:
- * - Receives data from PhaseContentPanel (smart component)
- * - Purely presentational - renders based on props
  *
  * Per design-2-3a-clean-break:
  * - Built fresh in /components/app/stepper/
@@ -39,8 +40,10 @@ export interface SkillStepperProps {
 /**
  * SkillStepper Component
  *
- * Renders a horizontal stepper with 8 PhaseNodes and 7 PhaseConnectors.
- * Shows phase progression and allows phase selection.
+ * Per design-3-1-001:
+ * Renders a horizontal stepper with 8 PhaseNodes (vertical stacks) and 7 PhaseConnectors.
+ * Uses items-start to align tops of variable-height node stacks.
+ * Phases are scannable at a glance - current phase and progress immediately identifiable.
  */
 export function SkillStepper({
   phases,
@@ -51,7 +54,8 @@ export function SkillStepper({
     <div
       data-testid="skill-stepper"
       className={cn(
-        "flex items-center gap-1 p-4 overflow-x-auto",
+        // items-start aligns tops of variable-height PhaseNode stacks
+        "flex flex-row items-start gap-1 p-4 overflow-x-auto",
         "bg-card rounded-lg border"
       )}
     >

@@ -12,7 +12,7 @@
  */
 
 import dagre from "dagre"
-import type { Node, Edge } from "@xyflow/react"
+import { MarkerType, type Node, type Edge } from "@xyflow/react"
 import type { SchemaModel, SchemaField } from "../hooks/useSchemaData"
 
 /**
@@ -136,14 +136,24 @@ export function transformSchemaToGraph(models: SchemaModel[]): TransformResult {
     for (const field of referenceFields) {
       const targetModel = inferTargetModel(field, models)
       if (targetModel && modelNames.has(targetModel)) {
+        const isOptional = isOptionalReference(field)
         edges.push({
           id: `${model.name}-${field.name}-${targetModel}`,
           source: model.name,
           target: targetModel,
           type: "reference",
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: isOptional ? "hsl(var(--muted-foreground))" : "hsl(var(--primary))",
+          },
+          style: {
+            stroke: isOptional ? "hsl(var(--muted-foreground))" : "hsl(var(--primary))",
+            strokeWidth: 2,
+            strokeDasharray: isOptional ? "4" : undefined,
+          },
           data: {
             label: field.name,
-            isOptional: isOptionalReference(field),
+            isOptional,
           },
         })
       }
