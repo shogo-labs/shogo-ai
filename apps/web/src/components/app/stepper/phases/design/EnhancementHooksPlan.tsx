@@ -37,7 +37,7 @@ export interface EnhancementHooksPlanProps {
 export const EnhancementHooksPlan = observer(function EnhancementHooksPlan({
   featureId,
 }: EnhancementHooksPlanProps) {
-  const { platformFeatures } = useDomains<{ platformFeatures: any }>()
+  const { platformFeatures } = useDomains()
 
   // Query for the enhancement-hooks-plan decision specifically
   const hooksPlan = platformFeatures?.designDecisionCollection

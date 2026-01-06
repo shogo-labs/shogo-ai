@@ -30,7 +30,7 @@ export interface DesignDecisionsListProps {
 export const DesignDecisionsList = observer(function DesignDecisionsList({
   featureId,
 }: DesignDecisionsListProps) {
-  const { platformFeatures } = useDomains<{ platformFeatures: any }>()
+  const { platformFeatures } = useDomains()
 
   // Query design decisions for this feature session
   // Filter out enhancement-hooks-plan (shown in separate tab)

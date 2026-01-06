@@ -13,16 +13,17 @@
  * - Built in /components/app/stepper/cards/
  * - Wrapped with observer() for MobX reactivity
  *
- * Per design-2-3d-cva-variants:
- * - runStatusVariants: in_progress=blue, blocked=amber, complete=green, failed=red
+ * Per Phase 2 integration:
+ * - Uses PropertyRenderer for run status badge
  */
 
 import { useMemo } from "react"
 import { observer } from "mobx-react-lite"
 import { cva, type VariantProps } from "class-variance-authority"
-import { Play, CheckCircle, AlertCircle, Clock, XCircle } from "lucide-react"
+import { Clock } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
+import { PropertyRenderer } from "@/components/rendering"
 
 /**
  * Run status type - matches ImplementationRun entity
@@ -76,36 +77,6 @@ export const runStatusVariants = cva(
 )
 
 /**
- * Get display label for run status
- */
-function getStatusLabel(status: RunStatus): string {
-  const labels: Record<RunStatus, string> = {
-    in_progress: "In Progress",
-    blocked: "Blocked",
-    complete: "Complete",
-    failed: "Failed",
-  }
-  return labels[status] || status
-}
-
-/**
- * Get status icon component
- */
-function getStatusIcon(status: RunStatus) {
-  switch (status) {
-    case "complete":
-      return CheckCircle
-    case "failed":
-      return XCircle
-    case "blocked":
-      return AlertCircle
-    case "in_progress":
-    default:
-      return Play
-  }
-}
-
-/**
  * Format duration in human-readable format
  */
 function formatDuration(ms: number): string {
@@ -141,9 +112,6 @@ export const ExecutionProgress = observer(function ExecutionProgress({
     return null
   }
 
-  const statusKey = run.status as VariantProps<typeof runStatusVariants>["status"]
-  const StatusIcon = getStatusIcon(run.status)
-
   const completedCount = run.completedTasks?.length || 0
   const progress = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0
 
@@ -161,10 +129,15 @@ export const ExecutionProgress = observer(function ExecutionProgress({
       <CardContent className="p-4 space-y-3">
         {/* Header row: Status badge + elapsed time */}
         <div className="flex items-center justify-between">
-          <span className={runStatusVariants({ status: statusKey })}>
-            <StatusIcon className="h-3 w-3" />
-            {getStatusLabel(run.status)}
-          </span>
+          {/* Use PropertyRenderer for run status badge */}
+          <PropertyRenderer
+            value={run.status}
+            property={{
+              name: "status",
+              type: "string",
+              xRenderer: "run-status-badge",
+            }}
+          />
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <Clock className="h-3 w-3" />
             {formatDuration(elapsed)}

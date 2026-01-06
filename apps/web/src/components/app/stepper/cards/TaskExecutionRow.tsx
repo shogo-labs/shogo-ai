@@ -13,9 +13,8 @@
  * - Built in /components/app/stepper/cards/
  * - Wrapped with observer() for MobX reactivity
  *
- * Per design-2-3d-cva-variants (TDD cycle):
- * - pending=gray, test_written=amber, test_failing=orange
- * - implementing=blue, test_passing=green, failed=red
+ * Per Phase 2 integration:
+ * - Uses PropertyRenderer for execution status badge
  */
 
 import { useState } from "react"
@@ -28,13 +27,9 @@ import {
   ChevronDown,
   ChevronRight,
   RotateCcw,
-  CheckCircle,
-  AlertCircle,
-  Loader2,
-  PenTool,
-  Play
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { PropertyRenderer } from "@/components/rendering"
 
 /**
  * Execution status type - matches TaskExecution entity
@@ -96,42 +91,6 @@ export const executionStatusVariants = cva(
 )
 
 /**
- * Get display label for execution status
- */
-function getStatusLabel(status: ExecutionStatus): string {
-  const labels: Record<ExecutionStatus, string> = {
-    pending: "Pending",
-    test_written: "Test Written",
-    test_failing: "Test Failing",
-    implementing: "Implementing",
-    test_passing: "Test Passing",
-    failed: "Failed",
-  }
-  return labels[status] || status
-}
-
-/**
- * Get status icon component
- */
-function getStatusIcon(status: ExecutionStatus) {
-  switch (status) {
-    case "test_passing":
-      return CheckCircle
-    case "failed":
-      return AlertCircle
-    case "implementing":
-      return Loader2
-    case "test_written":
-      return PenTool
-    case "test_failing":
-      return Play
-    case "pending":
-    default:
-      return Clock
-  }
-}
-
-/**
  * Format duration in human-readable format
  */
 function formatDuration(ms: number): string {
@@ -166,8 +125,6 @@ export const TaskExecutionRow = observer(function TaskExecutionRow({
   taskName,
 }: TaskExecutionRowProps) {
   const [isErrorExpanded, setIsErrorExpanded] = useState(false)
-  const statusKey = execution.status as VariantProps<typeof executionStatusVariants>["status"]
-  const StatusIcon = getStatusIcon(execution.status)
 
   // Calculate duration if completed
   const duration = execution.completedAt
@@ -188,10 +145,15 @@ export const TaskExecutionRow = observer(function TaskExecutionRow({
       <div className="flex items-center justify-between gap-4">
         {/* Left: Task name and status */}
         <div className="flex-1 min-w-0 flex items-center gap-3">
-          <span className={executionStatusVariants({ status: statusKey })}>
-            <StatusIcon className="h-3 w-3" />
-            {getStatusLabel(execution.status)}
-          </span>
+          {/* Use PropertyRenderer for execution status badge */}
+          <PropertyRenderer
+            value={execution.status}
+            property={{
+              name: "status",
+              type: "string",
+              xRenderer: "execution-status-badge",
+            }}
+          />
           <span className="text-sm font-medium text-foreground truncate">
             {taskName}
           </span>
