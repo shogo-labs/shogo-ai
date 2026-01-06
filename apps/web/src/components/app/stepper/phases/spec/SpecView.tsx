@@ -15,8 +15,9 @@
 
 import { observer } from "mobx-react-lite"
 import { useDomains } from "@/contexts/DomainProvider"
-import { TaskCard, type Task } from "../../cards"
+import { type Task } from "../../cards"
 import { EmptyPhaseContent } from "../../EmptyStates"
+import { PropertyRenderer } from "@/components/rendering"
 
 /**
  * Feature type for SpecView
@@ -57,13 +58,7 @@ export const SpecView = observer(function SpecView({
   feature,
 }: SpecViewProps) {
   // Access platform-features domain for tasks
-  const { platformFeatures } = useDomains<{
-    platformFeatures: {
-      implementationTaskCollection: {
-        findBySession: (sessionId: string) => Task[]
-      }
-    }
-  }>()
+  const { platformFeatures } = useDomains()
 
   // Fetch tasks for this feature session
   const tasks = platformFeatures?.implementationTaskCollection?.findBySession?.(feature.id) ?? []
@@ -99,7 +94,15 @@ export const SpecView = observer(function SpecView({
       ) : (
         <div className="space-y-4">
           {sortedTasks.map((task: Task) => (
-            <TaskCard key={task.id} task={task} />
+            <PropertyRenderer
+              key={task.id}
+              value={task}
+              property={{
+                name: "task",
+                type: "object",
+                xRenderer: "implementation-task",
+              }}
+            />
           ))}
         </div>
       )}

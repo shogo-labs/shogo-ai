@@ -18,6 +18,7 @@ import { FeatureControlPlanePage } from './pages/FeatureControlPlanePage'
 import { StudioCoreDemoPage } from './pages/StudioCoreDemoPage'
 import { StudioChatDemoPage } from './pages/StudioChatDemoPage'
 import { StudioPage } from './pages/StudioPage'
+import { RenderingDemoPage } from './pages/RenderingDemoPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
@@ -96,6 +97,7 @@ function Navigation() {
       <NavLink to="/studio-core-demo" current={location.pathname}>Studio Core Demo</NavLink>
       <NavLink to="/studio-chat-demo" current={location.pathname}>Studio Chat Demo</NavLink>
       <NavLink to="/studio" current={location.pathname}>Studio</NavLink>
+      <NavLink to="/rendering-demo" current={location.pathname}>Rendering Demo</NavLink>
     </nav>
   )
 }
@@ -142,6 +144,7 @@ function App() {
                   <Route path="/studio-core-demo" element={<StudioCoreDemoPage />} />
                   <Route path="/studio-chat-demo" element={<StudioChatDemoPage />} />
                   <Route path="/studio" element={<StudioPage />} />
+                  <Route path="/rendering-demo" element={<RenderingDemoPage />} />
                   {/* Protected /app route - Session 2.1 Studio App */}
                   <Route path="/app/*" element={
                     <AuthGate>
