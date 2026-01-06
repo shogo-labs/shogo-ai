@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
 import { createClient } from '@supabase/supabase-js'
+import { AuthGate, AppShell } from '@/components/app'
 import { HomePage } from './pages/HomePage'
 import { Unit1Page } from './pages/Unit1Page'
 import { Unit2Page } from './pages/Unit2Page'
@@ -70,6 +71,11 @@ const domains = {
 function Navigation() {
   const location = useLocation()
 
+  // Don't show demo navigation on /app routes - Studio App has its own layout
+  if (location.pathname.startsWith('/app')) {
+    return null
+  }
+
   return (
     <nav className="px-8 py-4 bg-card border-b-2 border-border flex gap-3 items-center flex-wrap">
       <NavLink to="/" current={location.pathname}>Home</NavLink>
@@ -132,6 +138,14 @@ function App() {
                 <Route path="/studio-core-demo" element={<StudioCoreDemoPage />} />
                 <Route path="/studio-chat-demo" element={<StudioChatDemoPage />} />
                 <Route path="/studio" element={<StudioPage />} />
+                {/* Protected /app route - Session 2.1 Studio App */}
+                <Route path="/app/*" element={
+                  <AuthGate>
+                    <AppShell />
+                  </AuthGate>
+                }>
+                  {/* Future nested routes go here (Session 2.2+) */}
+                </Route>
               </Routes>
             </AuthProvider>
           </WavesmithMetaStoreProvider>
