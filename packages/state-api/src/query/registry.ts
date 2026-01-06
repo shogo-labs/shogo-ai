@@ -38,6 +38,7 @@ import { getMetaStore } from '../meta/bootstrap'
 import { toSnakeCase } from '../ddl/utils'
 import { deriveNamespace, qualifyTableName, type QualifyDialect } from '../ddl/namespace'
 import type { DDLGenerationConfig } from '../ddl/types'
+import { ensureSchemaSynced, type SchemaSyncResult, type SchemaSyncOptions } from '../ddl/orchestrator'
 
 /**
  * Interface for backend registry with schema-driven resolution.
@@ -151,6 +152,69 @@ export interface IBackendRegistry {
     schema: any,
     options?: DDLGenerationOptions
   ): Promise<DDLExecutionResult>
+
+  /**
+   * Get all schema names that have x-persistence.bootstrap: true.
+   *
+   * @returns Array of schema names that are marked for bootstrap
+   *
+   * @remarks
+   * Bootstrap schemas are auto-initialized during registry.initialize().
+   * These are typically system schemas like 'system-migrations' that
+   * must exist before other schemas can be migrated.
+   */
+  getBootstrapSchemas(): string[]
+
+  /**
+   * Initialize the registry by executing DDL for all bootstrap schemas.
+   *
+   * @returns Promise that resolves when all bootstrap schemas are initialized
+   * @throws Error if any bootstrap schema DDL fails
+   *
+   * @remarks
+   * Uses ifNotExists: true for idempotency - safe to call multiple times.
+   * Bootstrap schemas are those with x-persistence.bootstrap: true.
+   * Must be called after registering backends and setting default.
+   */
+  initialize(): Promise<void>
+
+  /**
+   * Synchronize a schema with the database using the migration orchestrator.
+   *
+   * @param schemaName - Schema name for tracking and backend resolution
+   * @param schema - Enhanced JSON Schema with x-persistence metadata
+   * @returns Promise resolving to SchemaSyncResult with action taken
+   *
+   * @remarks
+   * This is the recommended method for schema synchronization. It:
+   * 1. Handles bootstrap schemas (skips migration tracking)
+   * 2. Detects fresh deploys (creates tables, records v1 migration)
+   * 3. Detects unchanged schemas (checksum matches)
+   * 4. Runs migrations when schemas have changed
+   *
+   * Delegates to ensureSchemaSynced() from ddl/orchestrator.
+   *
+   * @example
+   * ```typescript
+   * const result = await registry.syncSchema("user-schema", userSchema)
+   *
+   * switch (result.action) {
+   *   case "bootstrap":
+   *     console.log("Bootstrap schema initialized")
+   *     break
+   *   case "created":
+   *     console.log(`Schema created at v${result.version}`)
+   *     break
+   *   case "unchanged":
+   *     console.log(`Schema unchanged at v${result.version}`)
+   *     break
+   *   case "migrated":
+   *     console.log(`Migrated from v${result.fromVersion} to v${result.toVersion}`)
+   *     break
+   * }
+   * ```
+   */
+  syncSchema(schemaName: string, schema: any, options?: SchemaSyncOptions): Promise<SchemaSyncResult>
 }
 
 /**
@@ -424,6 +488,93 @@ export class BackendRegistry implements IBackendRegistry {
 
     // 5. Delegate to backend's executeDDL with namespace
     return backend.executeDDL(schema, { ...options, namespace })
+  }
+
+  /**
+   * Get all schema names that have x-persistence.bootstrap: true.
+   *
+   * @returns Array of schema names that are marked for bootstrap
+   *
+   * @remarks
+   * Queries the meta-store for all schemas and filters those with
+   * x-persistence.bootstrap === true. These schemas are used by
+   * initialize() for auto-DDL during registry startup.
+   */
+  getBootstrapSchemas(): string[] {
+    const metaStore = getMetaStore()
+    const schemas = metaStore.schemaCollection.all()
+
+    return schemas
+      .filter((schema: any) => {
+        const xPersistence = schema.xPersistence
+        return xPersistence && xPersistence.bootstrap === true
+      })
+      .map((schema: any) => schema.name)
+  }
+
+  /**
+   * Initialize the registry by executing DDL for all bootstrap schemas.
+   *
+   * @returns Promise that resolves when all bootstrap schemas are initialized
+   * @throws Error if any bootstrap schema DDL fails
+   *
+   * @remarks
+   * Uses ifNotExists: true for idempotency - safe to call multiple times.
+   * Bootstrap schemas are executed in order they appear in meta-store.
+   * Each bootstrap schema's Enhanced JSON Schema is retrieved via toEnhancedJson getter.
+   */
+  async initialize(): Promise<void> {
+    const bootstrapSchemaNames = this.getBootstrapSchemas()
+
+    // Early return if no bootstrap schemas
+    if (bootstrapSchemaNames.length === 0) {
+      return
+    }
+
+    const metaStore = getMetaStore()
+
+    // Execute DDL for each bootstrap schema
+    for (const schemaName of bootstrapSchemaNames) {
+      const schemaEntity = metaStore.schemaCollection.all().find(
+        (s: any) => s.name === schemaName
+      )
+
+      if (!schemaEntity) {
+        throw new Error(`Bootstrap schema "${schemaName}" not found in meta-store`)
+      }
+
+      // Get Enhanced JSON Schema via MST computed getter (no parentheses - it's a getter, not a method)
+      const enhancedSchema = schemaEntity.toEnhancedJson
+
+      // Execute DDL with ifNotExists: true for idempotency
+      const result = await this.executeDDL(schemaName, enhancedSchema, {
+        ifNotExists: true
+      })
+
+      if (!result.success) {
+        throw new Error(
+          `Failed to initialize bootstrap schema "${schemaName}": ${result.error}`
+        )
+      }
+    }
+  }
+
+  /**
+   * Synchronize a schema with the database using the migration orchestrator.
+   *
+   * @param schemaName - Schema name for tracking and backend resolution
+   * @param schema - Enhanced JSON Schema with x-persistence metadata
+   * @returns Promise resolving to SchemaSyncResult with action taken
+   *
+   * @remarks
+   * Delegates to ensureSchemaSynced() which handles:
+   * 1. Bootstrap schemas (skips migration tracking, returns { action: "bootstrap" })
+   * 2. Fresh deploys (creates tables, records v1 migration, returns { action: "created" })
+   * 3. Unchanged schemas (checksum matches, returns { action: "unchanged" })
+   * 4. Migrations (runs ALTER statements, returns { action: "migrated" })
+   */
+  async syncSchema(schemaName: string, schema: any, options?: SchemaSyncOptions): Promise<SchemaSyncResult> {
+    return ensureSchemaSynced(schemaName, schema, this, options)
   }
 }
 

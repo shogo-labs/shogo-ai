@@ -1,15 +1,16 @@
 # Wavesmith MCP Tools Reference
 
-Complete reference for all 16 MCP tools across 5 namespaces.
+Complete reference for all 15 MCP tools across 6 namespaces.
 
 ## Overview
 
 | Namespace | Tools | Purpose |
 |-----------|-------|---------|
-| `schema.*` | 4 | Schema lifecycle management |
-| `store.*` | 5 | Entity CRUD operations |
+| `schema.*` | 3 | Schema lifecycle management |
+| `store.*` | 5 | Entity CRUD and query operations |
 | `view.*` | 4 | Queries and template projection |
-| `data.*` | 2 | Bulk data loading |
+| `data.*` | 1 | Bootstrap initial data |
+| `ddl.*` | 1 | Database schema generation |
 | `agent.*` | 1 | Conversational interface |
 
 **Server**: `wavesmith-mcp` v0.0.1 via FastMCP
@@ -36,16 +37,6 @@ Set the active schema and rebuild in-memory models.
 
 **Returns**: `{ ok: true, schemaId, path, models }` or error
 
-### schema.get
-
-Get a schema by name.
-
-| Parameter | Type | Required |
-|-----------|------|----------|
-| `name` | string | Yes |
-
-**Returns**: `{ ok: true, format, payload }` or error
-
 ### schema.load
 
 Load a saved schema from disk and create/reuse runtime store.
@@ -55,7 +46,7 @@ Load a saved schema from disk and create/reuse runtime store.
 | `name` | string | Yes |
 | `workspace` | string | No |
 
-**Returns**: `{ ok: true, schemaId, models, loadedCollections, cached }` or error
+**Returns**: `{ ok: true, schemaId, models, reloaded }` or error
 
 ### schema.list
 
@@ -69,28 +60,20 @@ List all saved schemas.
 
 ## Store Namespace
 
-### store.models
-
-List model descriptors for a schema.
-
-| Parameter | Type | Required |
-|-----------|------|----------|
-| `schemaName` | string | Yes |
-
-**Returns**: `{ ok: true, models }` or error
-
 ### store.create
 
-Create a new entity instance.
+Create entity instances. Supports single and batch operations.
 
-| Parameter | Type | Required |
-|-----------|------|----------|
-| `schema` | string | Yes |
-| `model` | string | Yes |
-| `data` | object | Yes |
-| `workspace` | string | No |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `schema` | string | Yes | Schema name |
+| `model` | string | Yes | Model name |
+| `data` | object \| object[] | Yes | Single object or array for batch |
+| `workspace` | string | No | Workspace directory |
 
-**Returns**: `{ ok: true, id, data }` or error
+**Returns**:
+- Single: `{ ok: true, id, data }`
+- Batch: `{ ok: true, count, items }`
 
 ### store.get
 
@@ -105,32 +88,56 @@ Retrieve an entity by ID.
 
 **Returns**: `{ ok: true, data }` or error
 
-### store.list
+### store.query
 
-List all entities of a model type.
+Query entities with MongoDB-style filters. Supports operators like `$gt`, `$lt`, `$in`, `$and`, `$or`.
 
-| Parameter | Type | Required |
-|-----------|------|----------|
-| `schema` | string | Yes |
-| `model` | string | Yes |
-| `filter` | object | No |
-| `workspace` | string | No |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `schema` | string | Yes | Schema name |
+| `model` | string | Yes | Model name |
+| `filter` | object | No | MongoDB-style filter object |
+| `ast` | object | No | Serialized AST condition (advanced) |
+| `orderBy` | `{ field, direction }` | No | Sort order |
+| `skip` | number | No | Pagination offset |
+| `take` | number | No | Pagination limit |
+| `terminal` | `'toArray'` \| `'first'` \| `'count'` \| `'any'` | No | Terminal operation (default: toArray) |
+| `workspace` | string | No | Workspace directory |
 
 **Returns**: `{ ok: true, count, items }` or error
 
 ### store.update
 
-Update an entity's properties.
+Update entity instances. Supports single and batch operations.
 
-| Parameter | Type | Required |
-|-----------|------|----------|
-| `schema` | string | Yes |
-| `model` | string | Yes |
-| `id` | string | Yes |
-| `changes` | object | Yes |
-| `workspace` | string | No |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `schema` | string | Yes | Schema name |
+| `model` | string | Yes | Model name |
+| `id` | string | No | Entity ID (single mode) |
+| `filter` | object | No | Filter for batch mode |
+| `changes` | object | Yes | Properties to update |
+| `workspace` | string | No | Workspace directory |
 
-**Returns**: `{ ok: true, data }` or error
+**Returns**:
+- Single: `{ ok: true, data }`
+- Batch: `{ ok: true, count }`
+
+### store.delete
+
+Delete entity instances. Supports single and batch operations.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `schema` | string | Yes | Schema name |
+| `model` | string | Yes | Model name |
+| `id` | string | No | Entity ID (single mode) |
+| `filter` | object | No | Filter for batch mode |
+| `workspace` | string | No | Workspace directory |
+
+**Returns**:
+- Single: `{ ok: true, data }`
+- Batch: `{ ok: true, count }`
 
 ---
 
@@ -194,28 +201,32 @@ Execute a view and write result to file.
 
 ## Data Namespace
 
-### data.load
+### data.bootstrap
 
-Load a single collection from disk.
-
-| Parameter | Type | Required |
-|-----------|------|----------|
-| `schema` | string | Yes |
-| `model` | string | Yes |
-| `workspace` | string | No |
-
-**Returns**: `{ ok: true, model, collectionName, count, message }` or error
-
-### data.loadAll
-
-Load all collections for a schema.
+Bootstrap studio-core with initial data (organization, project, member).
 
 | Parameter | Type | Required |
 |-----------|------|----------|
-| `schemaName` | string | Yes |
+| `userId` | string | No |
 | `workspace` | string | No |
+| `linkFeatureSessions` | boolean | No |
 
-**Returns**: `{ ok: true, schemaName, collections, totalEntities, summary, message }` or error
+**Returns**: `{ ok: true, ... }` or error
+
+---
+
+## DDL Namespace
+
+### ddl.execute
+
+Generate and execute DDL (CREATE TABLE) statements from a schema.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `schemaName` | string | Yes | Schema to generate DDL for |
+| `dryRun` | boolean | No | Preview SQL without executing |
+
+**Returns**: `{ ok: true, statements, executed }` or error
 
 ---
 
@@ -248,6 +259,7 @@ Pass `sessionId` from previous response to continue conversations.
 | `VALIDATION_ERROR` | Data failed MST validation |
 | `SCHEMA_PARSE_ERROR` | Invalid schema payload |
 | `VIEW_EXECUTION_ERROR` | View failed to execute |
+| `QUERY_EXECUTION_ERROR` | Query failed to execute |
 
 ---
 
@@ -278,8 +290,12 @@ mcp__wavesmith__store_create({
   data: { title: "My first task" }
 })
 
-// 3. List entities
-mcp__wavesmith__store_list({ schema: "my-app", model: "Task" })
+// 3. Query entities
+mcp__wavesmith__store_query({
+  schema: "my-app",
+  model: "Task",
+  filter: { title: { $regex: "first" } }
+})
 ```
 
 ---

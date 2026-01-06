@@ -260,10 +260,31 @@ export function normalizeRowWithTypes<T extends Record<string, unknown>>(
     // Apply type conversion if needed
     const propType = propertyTypes[propName]
 
-    if (propType === 'boolean' && dialect === 'sqlite' && value !== null && value !== undefined) {
+    if (
+      (propType === "array" || propType === "object") &&
+      value !== null &&
+      value !== undefined &&
+      typeof value === "string"
+    ) {
+      // Parse JSON strings back to arrays/objects
+      try {
+        normalized[propName] = JSON.parse(value)
+      } catch {
+        // Preserve original value if JSON parsing fails
+        normalized[propName] = value
+      }
+    } else if (propType === "boolean" && dialect === "sqlite" && value !== null && value !== undefined) {
       // SQLite stores boolean as INTEGER (0/1)
       // Only convert if value is actually 0 or 1 (not null/undefined)
       normalized[propName] = value === 1 || value === true
+    } else if (propType === 'array' && typeof value === 'string') {
+      // JSON-encoded arrays stored in TEXT columns need parsing
+      try {
+        normalized[propName] = JSON.parse(value)
+      } catch {
+        // If parse fails, pass through as-is
+        normalized[propName] = value
+      }
     } else if (value === null) {
       // Convert SQL NULL to undefined for MST compatibility
       // MST expects undefined for missing optional fields, not null
@@ -367,7 +388,13 @@ export function entityToColumns<T extends Record<string, unknown>>(
 
     // Get column name from mapping or generate via toSnakeCase
     const columnName = propertyColumnMap?.[propName] ?? toSnakeCase(propName)
-    columns[columnName] = value
+
+    // Serialize arrays and plain objects to JSON for SQL storage
+    // Exclude Date objects which should pass through unchanged
+    const needsJsonSerialization =
+      Array.isArray(value) ||
+      (value !== null && typeof value === "object" && !(value instanceof Date))
+    columns[columnName] = needsJsonSerialization ? JSON.stringify(value) : value
   }
 
   return columns
