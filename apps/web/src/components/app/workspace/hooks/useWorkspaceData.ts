@@ -85,11 +85,7 @@ export function useWorkspaceData(): WorkspaceDataState {
   const { org: orgSlug, projectId, featureId } = useWorkspaceNavigation()
 
   // Get domains (including auth for currentUser)
-  const { studioCore, platformFeatures, auth } = useDomains<{
-    studioCore: any
-    platformFeatures: any
-    auth: any
-  }>()
+  const { studioCore, platformFeatures, auth } = useDomains()
 
   // Get current user from betterAuthDomain (synced with session)
   const userId = auth?.currentUser?.id

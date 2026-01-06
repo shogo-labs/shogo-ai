@@ -2,18 +2,19 @@
  * FindingCard Component
  * Task: task-2-3b-003
  *
- * Displays an analysis finding with type badge using CVA variants.
+ * Displays an analysis finding with type badge using PropertyRenderer.
  *
  * Props:
  * - finding: AnalysisFinding object with id, name, type, description, location, recommendation
  *
  * Per design-2-3b-component-hierarchy:
  * - Built in /components/app/shared/ for reuse across phase views
- * - CVA pattern matching FeatureItem.statusBadgeVariants
+ * - Uses PropertyRenderer for finding type badge (Phase 2 integration)
  */
 
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
+import { PropertyRenderer } from "@/components/rendering"
 
 /**
  * Finding type enum - matches AnalysisFinding entity
@@ -85,10 +86,9 @@ function getTypeLabel(type: FindingType): string {
  * FindingCard Component
  *
  * Displays a single finding with name, type badge, description, location, and optional recommendation.
+ * Uses PropertyRenderer for the finding type badge (Phase 2 integration).
  */
 export function FindingCard({ finding }: FindingCardProps) {
-  const typeKey = finding.type as VariantProps<typeof findingTypeBadgeVariants>["type"]
-
   return (
     <div
       data-testid={`finding-card-${finding.id}`}
@@ -109,9 +109,15 @@ export function FindingCard({ finding }: FindingCardProps) {
             {finding.location}
           </p>
         </div>
-        <span className={findingTypeBadgeVariants({ type: typeKey })}>
-          {getTypeLabel(finding.type)}
-        </span>
+        {/* Use PropertyRenderer for finding type badge */}
+        <PropertyRenderer
+          value={finding.type}
+          property={{
+            name: "type",
+            type: "string",
+            xRenderer: "finding-type-badge",
+          }}
+        />
       </div>
 
       {finding.recommendation && (

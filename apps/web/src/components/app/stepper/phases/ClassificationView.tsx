@@ -17,11 +17,11 @@ import { observer } from "mobx-react-lite"
 import { useDomains } from "@/contexts/DomainProvider"
 import { cn } from "@/lib/utils"
 import {
-  ArchetypeBadge,
   PatternChips,
   EvidenceChecklist,
   type FeatureArchetype,
 } from "../../shared"
+import { PropertyRenderer } from "@/components/rendering"
 
 /**
  * Classification decision type
@@ -68,13 +68,7 @@ export const ClassificationView = observer(function ClassificationView({
   feature,
 }: ClassificationViewProps) {
   // Access platform-features domain for classification decision
-  const { platformFeatures } = useDomains<{
-    platformFeatures: {
-      classificationDecisionCollection: {
-        all: () => ClassificationDecision[]
-      }
-    }
-  }>()
+  const { platformFeatures } = useDomains()
 
   // Fetch classification decision for this feature session
   // Note: Using inline filter as classificationDecisionCollection lacks findBySession
@@ -104,7 +98,15 @@ export const ClassificationView = observer(function ClassificationView({
               Validated Archetype
             </h3>
             <div className="flex items-center gap-3">
-              <ArchetypeBadge archetype={decision.validatedArchetype} size="md" />
+              {/* Use PropertyRenderer for archetype badge */}
+              <PropertyRenderer
+                value={decision.validatedArchetype}
+                property={{
+                  name: "validatedArchetype",
+                  type: "string",
+                  xRenderer: "archetype-badge",
+                }}
+              />
               {hasCorrection && (
                 <span className="text-sm text-muted-foreground">
                   (corrected from{" "}
