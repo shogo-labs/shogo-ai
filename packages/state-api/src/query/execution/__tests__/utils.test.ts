@@ -412,6 +412,7 @@ import {
   buildUpdateSQL,
   buildDeleteSQL,
   createPropertyColumnMap,
+  normalizeRowWithTypes,
 } from "../utils"
 
 describe("createPropertyColumnMap (inverse of createColumnPropertyMap)", () => {
@@ -512,6 +513,172 @@ describe("entityToColumns", () => {
 
   test("handles empty entity", () => {
     expect(entityToColumns({})).toEqual({})
+  })
+})
+
+// ============================================================================
+// Array/Object JSON Serialization Tests
+// ============================================================================
+
+describe("entityToColumns - JSON serialization", () => {
+  /**
+   * Test Spec: test-json-serialize-01
+   * Scenario: Arrays are serialized to JSON strings for SQL storage
+   */
+  test("serializes array values to JSON strings", () => {
+    // Given: Entity with array properties
+    const entity = {
+      id: "123",
+      tags: ["alpha", "beta"],
+      applicablePatterns: ["enhancement-hooks"],
+    }
+
+    // When: entityToColumns is called
+    const result = entityToColumns(entity)
+
+    // Then: Array values are JSON-serialized strings
+    expect(result.tags).toBe('["alpha","beta"]')
+    expect(result.applicable_patterns).toBe('["enhancement-hooks"]')
+    expect(typeof result.tags).toBe("string")
+  })
+
+  test("handles empty arrays", () => {
+    const entity = { id: "123", tags: [] }
+    const result = entityToColumns(entity)
+    expect(result.tags).toBe("[]")
+  })
+
+  test("handles nested arrays", () => {
+    const entity = { id: "123", matrix: [[1, 2], [3, 4]] }
+    const result = entityToColumns(entity)
+    expect(result.matrix).toBe("[[1,2],[3,4]]")
+  })
+
+  /**
+   * Test Spec: test-json-serialize-02
+   * Scenario: Objects are serialized to JSON strings for SQL storage
+   */
+  test("serializes object values to JSON strings", () => {
+    const entity = {
+      id: "123",
+      metadata: { key: "value", nested: { deep: true } },
+      initialAssessment: { complexity: "high" },
+    }
+    const result = entityToColumns(entity)
+    expect(result.metadata).toBe('{"key":"value","nested":{"deep":true}}')
+    expect(result.initial_assessment).toBe('{"complexity":"high"}')
+    expect(typeof result.metadata).toBe("string")
+  })
+
+  test("handles empty objects", () => {
+    const entity = { id: "123", metadata: {} }
+    const result = entityToColumns(entity)
+    expect(result.metadata).toBe("{}")
+  })
+
+  test("does NOT serialize Date objects", () => {
+    const date = new Date("2024-01-01T00:00:00Z")
+    const entity = { id: "123", createdAt: date }
+    const result = entityToColumns(entity)
+    // Date should pass through unchanged (not JSON-serialized)
+    expect(result.created_at).toBe(date)
+  })
+})
+
+describe("normalizeRowWithTypes - JSON deserialization", () => {
+  /**
+   * Test Spec: test-json-deserialize-01
+   * Scenario: JSON strings are parsed back to arrays when propType is array
+   */
+  test("parses JSON strings back to arrays when propType is array", () => {
+    // Given: Row from database with JSON string
+    const row = {
+      id: "123",
+      tags: '["alpha","beta"]',
+      applicable_patterns: '["enhancement-hooks"]',
+    }
+    const columnPropertyMap = {
+      id: "id",
+      tags: "tags",
+      applicable_patterns: "applicablePatterns",
+    }
+    const propertyTypes = {
+      id: "string",
+      tags: "array",
+      applicablePatterns: "array",
+    }
+
+    // When: normalizeRowWithTypes is called
+    const result = normalizeRowWithTypes(row, columnPropertyMap, "sqlite", propertyTypes)
+
+    // Then: Array fields are parsed back to arrays
+    expect(result.tags).toEqual(["alpha", "beta"])
+    expect(result.applicablePatterns).toEqual(["enhancement-hooks"])
+    expect(Array.isArray(result.tags)).toBe(true)
+  })
+
+  test("handles empty array JSON", () => {
+    const row = { tags: "[]" }
+    const columnPropertyMap = { tags: "tags" }
+    const propertyTypes = { tags: "array" }
+
+    const result = normalizeRowWithTypes(row, columnPropertyMap, "sqlite", propertyTypes)
+    expect(result.tags).toEqual([])
+  })
+
+  test("handles null array fields", () => {
+    const row = { tags: null }
+    const columnPropertyMap = { tags: "tags" }
+    const propertyTypes = { tags: "array" }
+
+    const result = normalizeRowWithTypes(row, columnPropertyMap, "sqlite", propertyTypes)
+    expect(result.tags).toBeUndefined()
+  })
+
+  test("handles malformed JSON gracefully", () => {
+    const row = { tags: "not valid json" }
+    const columnPropertyMap = { tags: "tags" }
+    const propertyTypes = { tags: "array" }
+
+    const result = normalizeRowWithTypes(row, columnPropertyMap, "sqlite", propertyTypes)
+    // Should preserve original value on parse failure
+    expect(result.tags).toBe("not valid json")
+  })
+
+  /**
+   * Test Spec: test-json-deserialize-02
+   * Scenario: JSON strings are parsed back to objects when propType is object
+   */
+  test("parses JSON strings back to objects when propType is object", () => {
+    const row = {
+      id: "123",
+      metadata: '{"key":"value","nested":{"deep":true}}',
+      initial_assessment: '{"complexity":"high"}',
+    }
+    const columnPropertyMap = {
+      id: "id",
+      metadata: "metadata",
+      initial_assessment: "initialAssessment",
+    }
+    const propertyTypes = {
+      id: "string",
+      metadata: "object",
+      initialAssessment: "object",
+    }
+
+    const result = normalizeRowWithTypes(row, columnPropertyMap, "sqlite", propertyTypes)
+    expect(result.metadata).toEqual({ key: "value", nested: { deep: true } })
+    expect(result.initialAssessment).toEqual({ complexity: "high" })
+    expect(typeof result.metadata).toBe("object")
+  })
+
+  test("handles empty object JSON", () => {
+    const row = { metadata: "{}" }
+    const columnPropertyMap = { metadata: "metadata" }
+    const propertyTypes = { metadata: "object" }
+
+    const result = normalizeRowWithTypes(row, columnPropertyMap, "sqlite", propertyTypes)
+    expect(result.metadata).toEqual({})
   })
 })
 
