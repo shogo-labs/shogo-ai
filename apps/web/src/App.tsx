@@ -14,6 +14,7 @@ import { AIChatDemoPage } from './pages/AIChatDemoPage'
 import { FeatureControlPlanePage } from './pages/FeatureControlPlanePage'
 import { StudioCoreDemoPage } from './pages/StudioCoreDemoPage'
 import { StudioPage } from './pages/StudioPage'
+import { RenderingDemoPage } from './pages/RenderingDemoPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
@@ -84,6 +85,7 @@ function Navigation() {
       <NavLink to="/ai-chat-demo" current={location.pathname}>AI Chat Demo</NavLink>
       <NavLink to="/studio-core-demo" current={location.pathname}>Studio Core Demo</NavLink>
       <NavLink to="/studio" current={location.pathname}>Studio</NavLink>
+      <NavLink to="/rendering-demo" current={location.pathname}>Rendering Demo</NavLink>
     </nav>
   )
 }
@@ -128,6 +130,7 @@ function App() {
                 <Route path="/ai-chat-demo" element={<AIChatDemoPage />} />
                 <Route path="/studio-core-demo" element={<StudioCoreDemoPage />} />
                 <Route path="/studio" element={<StudioPage />} />
+                <Route path="/rendering-demo" element={<RenderingDemoPage />} />
               </Routes>
             </AuthProvider>
           </WavesmithMetaStoreProvider>
