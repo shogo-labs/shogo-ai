@@ -600,6 +600,78 @@ describe("test-2-2-004-006: WorkspaceLayout manages NewFeatureModal open state",
 })
 
 // ============================================================
+// Task cpbi-004: Phase Prop Threading Tests
+// ============================================================
+
+// ============================================================
+// Test cpbi-004-a: WorkspaceLayout uses usePhaseNavigation hook
+// ============================================================
+
+describe("test-cpbi-004-a: WorkspaceLayout uses usePhaseNavigation hook", () => {
+  test("usePhaseNavigation is imported from stepper hooks", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should import usePhaseNavigation from stepper hooks
+    expect(componentSource).toMatch(/import.*usePhaseNavigation.*from/)
+  })
+
+  test("usePhaseNavigation hook is called within WorkspaceLayout", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should call usePhaseNavigation hook
+    expect(componentSource).toMatch(/usePhaseNavigation\s*\(/)
+  })
+
+  test("phase is destructured from usePhaseNavigation result", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should destructure phase from usePhaseNavigation
+    expect(componentSource).toMatch(/\{\s*phase[^}]*\}\s*=\s*usePhaseNavigation/)
+  })
+})
+
+// ============================================================
+// Test cpbi-004-d: Phase prop updates when navigation changes
+// (Source-based verification that phase is passed to ChatPanel)
+// ============================================================
+
+describe("test-cpbi-004-d: Phase prop is passed from WorkspaceLayout to ChatPanel", () => {
+  test("ChatPanel receives phase prop in JSX", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // ChatPanel should receive phase prop
+    expect(componentSource).toMatch(/<ChatPanel[^>]*phase=/)
+  })
+
+  test("phase prop value is {phase} from hook result", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // phase prop should be passed the phase value from hook
+    expect(componentSource).toMatch(/phase=\{phase\}/)
+  })
+})
+
+// ============================================================
 // Test 8: Clean break - WorkspaceLayout in /components/app/workspace/
 // (test-2-2-004-008)
 // ============================================================
