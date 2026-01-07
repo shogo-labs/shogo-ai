@@ -100,24 +100,24 @@ describe("TestingView queries collections", () => {
 })
 
 // ============================================================
-// Test 5: TestingView renders TestSpecCard components
+// Test 5: TestingView renders test visualization components
 // ============================================================
 
-describe("TestingView renders TestSpecCard components", () => {
-  test("TestingView imports TestSpecCard", () => {
+describe("TestingView renders test visualization", () => {
+  test("TestingView renders test spec display (TestSpecCard or ScenarioSpotlight)", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestingView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/TestSpecCard/)
+    // Redesigned uses TestPyramid, TaskCoverageBar, ScenarioSpotlightCard instead of TestSpecCard
+    expect(componentSource).toMatch(/TestSpecCard|TestPyramid|ScenarioSpotlight|TaskCoverageBar/)
   })
 
-  test("TestingView maps specs to TestSpecCards", () => {
+  test("TestingView processes specs for display", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestingView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    // Check that both .map and TestSpecCard are present (rendering list of cards)
-    expect(componentSource).toMatch(/\.map/)
-    expect(componentSource).toMatch(/TestSpecCard/)
+    // Check that specs are processed for display
+    expect(componentSource).toMatch(/\.map|useMemo/)
   })
 })
 

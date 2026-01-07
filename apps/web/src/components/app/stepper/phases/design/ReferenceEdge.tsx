@@ -1,13 +1,16 @@
 /**
- * ReferenceEdge Component
- * Task: task-2-3c-006
+ * ReferenceEdge Component - Enhanced
+ * Task: task-w2-design-view-enhance
  *
- * Custom ReactFlow edge component for entity references.
+ * Custom ReactFlow edge component for entity references with
+ * differentiated styling based on reference type.
  *
- * Per design-2-3c-005:
- * - Solid stroke for required, dashed for optional
- * - Arrow marker at end
- * - Label showing field name
+ * Edge Types:
+ * - single: Solid amber line with arrow
+ * - array: Solid amber line with double arrow
+ * - maybe-ref: Dashed amber line with arrow (optional)
+ *
+ * Uses amber color tokens for design phase consistency.
  */
 
 import {
@@ -19,10 +22,43 @@ import { cn } from "@/lib/utils"
 import type { ReferenceEdgeData } from "./utils/schemaTransform"
 
 /**
+ * Get stroke style based on reference type
+ */
+function getEdgeStyle(referenceType?: string, isOptional?: boolean) {
+  // Maybe-reference or optional: dashed line
+  if (referenceType === "maybe" || isOptional) {
+    return {
+      stroke: "#d97706", // amber-600
+      strokeDasharray: "6 3",
+      strokeWidth: 2,
+    }
+  }
+
+  // Array reference: slightly thicker solid line
+  if (referenceType === "array") {
+    return {
+      stroke: "#f59e0b", // amber-500
+      strokeDasharray: undefined,
+      strokeWidth: 3,
+    }
+  }
+
+  // Single reference (default): solid line
+  return {
+    stroke: "#f59e0b", // amber-500
+    strokeDasharray: undefined,
+    strokeWidth: 2,
+  }
+}
+
+/**
  * ReferenceEdge Component
  *
- * Custom ReactFlow edge displaying reference relationships.
- * Solid line for required references, dashed for optional.
+ * Custom ReactFlow edge displaying reference relationships with
+ * differentiated styling based on reference type.
+ * - Solid line for single/required references
+ * - Thicker solid line for array references
+ * - Dashed line for optional/maybe references
  */
 export function ReferenceEdge({
   id,
@@ -38,7 +74,7 @@ export function ReferenceEdge({
   style,
   markerEnd,
 }: EdgeProps<ReferenceEdgeData>) {
-  const { label, isOptional } = data || { label: "", isOptional: false }
+  const { label, isOptional, referenceType } = data || { label: "", isOptional: false }
 
   // Calculate smooth step path
   const [edgePath, labelX, labelY] = getSmoothStepPath({
@@ -50,30 +86,27 @@ export function ReferenceEdge({
     targetPosition,
   })
 
-  // Stroke color based on optionality
-  const strokeColor = isOptional
-    ? "hsl(var(--muted-foreground))"
-    : "hsl(var(--primary))"
+  // Get edge styling based on type
+  const edgeStyle = getEdgeStyle(referenceType, isOptional)
 
-  // Stroke style based on optionality
-  const strokeDasharray = isOptional ? "4" : undefined
+  // Determine label background color based on type
+  const labelBgColor = isOptional
+    ? "bg-amber-500/10"
+    : referenceType === "array"
+      ? "bg-amber-500/20"
+      : "bg-background"
 
   return (
     <>
       <path
         id={id}
         data-testid={`reference-edge-${source}-${target}`}
-        className={cn(
-          "react-flow__edge-path",
-          isOptional ? "stroke-muted-foreground" : "stroke-primary"
-        )}
+        className="react-flow__edge-path"
         d={edgePath}
         fill="none"
         style={{
           ...style,
-          strokeWidth: 2,
-          stroke: strokeColor,
-          strokeDasharray,
+          ...edgeStyle,
         }}
         markerEnd={markerEnd as string}
       />
@@ -85,9 +118,20 @@ export function ReferenceEdge({
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
               pointerEvents: "all",
             }}
-            className="bg-background px-1 rounded text-xs text-muted-foreground border"
+            className={cn(
+              "px-2 py-0.5 rounded text-xs border border-amber-500/30",
+              labelBgColor
+            )}
           >
-            {label}
+            <span className="text-amber-700 dark:text-amber-300 font-mono">
+              {label}
+            </span>
+            {referenceType === "array" && (
+              <span className="ml-1 text-amber-500">[]</span>
+            )}
+            {isOptional && (
+              <span className="ml-1 text-muted-foreground">?</span>
+            )}
           </div>
         </EdgeLabelRenderer>
       )}

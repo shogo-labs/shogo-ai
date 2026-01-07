@@ -53,10 +53,10 @@ describe("DesignView (task-2-3c-012)", () => {
     expect(source).toMatch(/<SchemaGraph/)
   })
 
-  test("imports and uses DesignDecisionsList component", () => {
+  test("imports and uses DecisionTimeline component (replaced DesignDecisionsList)", () => {
     const source = fs.readFileSync(componentPath, "utf-8")
-    expect(source).toMatch(/import.*DesignDecisionsList/)
-    expect(source).toMatch(/<DesignDecisionsList/)
+    expect(source).toMatch(/import.*DecisionTimeline/)
+    expect(source).toMatch(/<DecisionTimeline/)
   })
 
   test("imports and uses EnhancementHooksPlan component", () => {
@@ -115,7 +115,7 @@ describe("DesignView (task-2-3c-012)", () => {
     expect(source).toMatch(/onSelectEntity/)
   })
 
-  test("passes feature.id to DesignDecisionsList", () => {
+  test("passes feature.id to DecisionTimeline", () => {
     const source = fs.readFileSync(componentPath, "utf-8")
     expect(source).toMatch(/featureId/)
   })

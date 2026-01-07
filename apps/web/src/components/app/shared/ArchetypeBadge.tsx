@@ -28,7 +28,7 @@ export interface ArchetypeBadgeProps {
   /** Feature archetype to display */
   archetype: FeatureArchetype
   /** Size variant */
-  size?: "sm" | "md"
+  size?: "sm" | "md" | "lg"
 }
 
 /**
@@ -49,6 +49,7 @@ export const archetypeBadgeVariants = cva(
       size: {
         sm: "px-2 py-0.5 text-xs",
         md: "px-3 py-1 text-sm",
+        lg: "px-4 py-1.5 text-base",
       },
     },
     defaultVariants: {

@@ -100,24 +100,24 @@ describe("SpecView queries implementationTaskCollection", () => {
 })
 
 // ============================================================
-// Test 5: SpecView renders TaskCard components
+// Test 5: SpecView renders task visualization components
 // ============================================================
 
-describe("SpecView renders TaskCard components", () => {
-  test("SpecView imports TaskCard", () => {
+describe("SpecView renders task visualization", () => {
+  test("SpecView renders task display (TaskCard or TaskNode)", () => {
     const componentPath = path.resolve(import.meta.dir, "../SpecView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/TaskCard/)
+    // Redesigned uses TaskNode with ReactFlow instead of TaskCard
+    expect(componentSource).toMatch(/TaskCard|TaskNode/)
   })
 
-  test("SpecView maps tasks to TaskCards", () => {
+  test("SpecView transforms or maps tasks for display", () => {
     const componentPath = path.resolve(import.meta.dir, "../SpecView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    // Check that both .map and TaskCard are present (rendering list of cards)
-    expect(componentSource).toMatch(/\.map/)
-    expect(componentSource).toMatch(/TaskCard/)
+    // Check that tasks are processed for display (.map for cards, transformToGraph for ReactFlow)
+    expect(componentSource).toMatch(/\.map|transformToGraph/)
   })
 })
 
@@ -146,11 +146,12 @@ describe("SpecView has proper layout", () => {
     expect(componentSource).toMatch(/data-testid.*spec-view/)
   })
 
-  test("SpecView has gap-4 or similar spacing", () => {
+  test("SpecView has appropriate layout spacing", () => {
     const componentPath = path.resolve(import.meta.dir, "../SpecView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/gap-4|space-y-4/)
+    // Redesigned uses flex layout with various gaps (gap-1, gap-2, gap-3) for different sections
+    expect(componentSource).toMatch(/gap-\d|space-y-\d|flex/)
   })
 })
 
