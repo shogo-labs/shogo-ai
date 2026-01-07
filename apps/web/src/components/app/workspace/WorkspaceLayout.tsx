@@ -1,6 +1,6 @@
 /**
  * WorkspaceLayout - Main workspace layout component
- * Tasks: task-2-2-004, task-2-3a-009, task-2-4-005, task-3-1-007
+ * Tasks: task-2-2-004, task-2-3a-009, task-2-4-005, task-3-1-007, task-cpbi-004
  *
  * Renders the workspace layout with sidebar + content in a flex row.
  * This is the "smart" component that connects useWorkspaceData() hook to UI.
@@ -44,6 +44,7 @@ import { Outlet } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { useWorkspaceData } from "./hooks"
 import { useWorkspaceNavigation } from "./hooks"
+import { usePhaseNavigation } from "../stepper/hooks/usePhaseNavigation"
 import { useFeaturePolling } from "@/hooks/useFeaturePolling"
 import { useToast } from "@/hooks/use-toast"
 import { ToastAction } from "@/components/ui/toast"
@@ -76,6 +77,10 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
 
   // Get navigation state for conditional rendering
   const { featureId, projectId, setFeatureId } = useWorkspaceNavigation()
+
+  // Get phase navigation state (task-cpbi-004)
+  // Pass feature status as fallback when feature is loaded, otherwise "discovery"
+  const { phase } = usePhaseNavigation(currentFeature?.status ?? "discovery")
 
   // Modal state for NewFeatureModal
   // isOpen state passed to modal, onClose callback to close it
@@ -205,9 +210,11 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
           // ChatPanel takes full width and handles internal flex layout
           // Polling integration (task-3-1-007): pass refresh for smart triggers, track streaming state
           // Loading states (task-3-1-008): pass isPolling for subtle loading overlay
+          // Phase prop threading (task-cpbi-004): pass phase from usePhaseNavigation
           <ChatPanel
             featureId={featureId}
             featureName={currentFeature.name}
+            phase={phase}
             className="flex-1 min-w-0"
             onRefresh={refresh}
             onStreamingChange={handleStreamingChange}
@@ -219,6 +226,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
           // Feature ID in URL but no data yet - render Outlet as fallback with ChatPanel
           <ChatPanel
             featureId={featureId}
+            phase={phase}
             className="flex-1 min-w-0"
             onRefresh={refresh}
             onStreamingChange={handleStreamingChange}
