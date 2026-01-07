@@ -50,6 +50,7 @@ export interface EnhancedJsonSchema {
   "x-mst-type"?: "identifier" | "reference" | "maybe-reference";
   "x-persistence"?: Record<string, any>;
   "x-domain"?: string;
+  "x-renderer"?: string;
 }
 
 // ============================================================================

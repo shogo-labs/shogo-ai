@@ -76,6 +76,7 @@ export function ingestProperty(
   if (propSchema["x-computed"] !== undefined) propertyData.xComputed = propSchema["x-computed"]
   if (propSchema["x-inverse"] !== undefined) propertyData.xInverse = propSchema["x-inverse"]
   if (propSchema["x-original-name"] !== undefined) propertyData.xOriginalName = propSchema["x-original-name"]
+  if (propSchema["x-renderer"] !== undefined) propertyData.xRenderer = propSchema["x-renderer"]
 
   // Track required (exclude computed properties)
   if (requiredSet && requiredSet.has(propName) && !propSchema["x-computed"]) {

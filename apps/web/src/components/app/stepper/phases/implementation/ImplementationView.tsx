@@ -58,20 +58,7 @@ export const ImplementationView = observer(function ImplementationView({
   feature,
 }: ImplementationViewProps) {
   // Access platform-features domain
-  const { platformFeatures } = useDomains<{
-    platformFeatures: {
-      implementationTaskCollection: {
-        findBySession: (sessionId: string) => TaskRef[]
-        get: (id: string) => TaskRef | undefined
-      }
-      implementationRunCollection: {
-        findLatestBySession: (sessionId: string) => ImplementationRun | undefined
-      }
-      taskExecutionCollection: {
-        findByRun: (runId: string) => TaskExecution[]
-      }
-    }
-  }>()
+  const { platformFeatures } = useDomains()
 
   // Fetch tasks for count
   const tasks = platformFeatures?.implementationTaskCollection?.findBySession?.(feature.id) ?? []
