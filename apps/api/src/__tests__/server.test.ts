@@ -11,6 +11,8 @@
 
 import { describe, test, expect, beforeAll, mock } from "bun:test"
 import { Hono } from "hono"
+import { PHASE_PROMPTS, isPhase, type Phase } from "../prompts/phase-prompts"
+import { buildSystemPrompt, BASE_SYSTEM_PROMPT } from "../server"
 
 describe("Better Auth Handler Mounting (task-ba-007)", () => {
   let serverModule: any
@@ -127,6 +129,161 @@ describe("Better Auth Handler Mounting (task-ba-007)", () => {
       const res = await server.fetch(req)
       // Should not be 404 - route should be matched by wildcard
       expect(res.status).not.toBe(404)
+    })
+  })
+})
+
+/**
+ * Tests for Dynamic System Prompt Injection (task-cpbi-007)
+ *
+ * Tests verify that the /api/chat route correctly:
+ * - Extracts phase from request body
+ * - Constructs phase-specific system prompt
+ * - Preserves base Wavesmith tool prompt
+ * - Falls back to generic prompt when phase is null/undefined
+ * - Includes skill invocation guidance
+ */
+describe("Dynamic System Prompt Injection (task-cpbi-007)", () => {
+  let serverModule: any
+
+  beforeAll(async () => {
+    try {
+      serverModule = await import("../server")
+    } catch (error) {
+      serverModule = null
+    }
+  })
+
+  // test-cpbi-007-a: API extracts phase from request body
+  describe("Phase Extraction", () => {
+    test("buildSystemPrompt accepts phase parameter", () => {
+      // Verify the function exists and accepts a phase parameter
+      expect(buildSystemPrompt).toBeDefined()
+      expect(typeof buildSystemPrompt).toBe("function")
+
+      // Test with a valid phase
+      const result = buildSystemPrompt("discovery")
+      expect(typeof result).toBe("string")
+      expect(result.length).toBeGreaterThan(0)
+    })
+
+    test("buildSystemPrompt handles valid phases", () => {
+      const phases: Phase[] = ["discovery", "analysis", "classification", "design", "spec", "testing", "implementation", "complete"]
+
+      for (const phase of phases) {
+        const result = buildSystemPrompt(phase)
+        expect(result).toContain(PHASE_PROMPTS[phase])
+      }
+    })
+  })
+
+  // test-cpbi-007-b: System prompt includes phase-specific guidance
+  describe("Phase-Specific Guidance", () => {
+    test("discovery phase includes discovery guidance", () => {
+      const prompt = buildSystemPrompt("discovery")
+      expect(prompt).toContain("Discovery Phase")
+      expect(prompt).toContain("/platform-feature-discovery")
+    })
+
+    test("analysis phase includes analysis guidance", () => {
+      const prompt = buildSystemPrompt("analysis")
+      expect(prompt).toContain("Analysis Phase")
+      expect(prompt).toContain("/platform-feature-analysis")
+    })
+
+    test("implementation phase includes implementation guidance", () => {
+      const prompt = buildSystemPrompt("implementation")
+      expect(prompt).toContain("Implementation Phase")
+      expect(prompt).toContain("/platform-feature-implementation")
+    })
+  })
+
+  // test-cpbi-007-c: Base Wavesmith tool prompt is preserved and augmented
+  describe("Base Prompt Preservation", () => {
+    test("base prompt is always included", () => {
+      // Test with a phase
+      const withPhase = buildSystemPrompt("discovery")
+      expect(withPhase).toContain(BASE_SYSTEM_PROMPT)
+
+      // Test without a phase
+      const withoutPhase = buildSystemPrompt(null)
+      expect(withoutPhase).toContain(BASE_SYSTEM_PROMPT)
+    })
+
+    test("base prompt includes Wavesmith tool information", () => {
+      expect(BASE_SYSTEM_PROMPT).toContain("Wavesmith")
+      expect(BASE_SYSTEM_PROMPT).toContain("schema")
+      expect(BASE_SYSTEM_PROMPT).toContain("store")
+    })
+
+    test("phase prompt is appended after base prompt", () => {
+      const prompt = buildSystemPrompt("discovery")
+      const baseIndex = prompt.indexOf(BASE_SYSTEM_PROMPT)
+      const phaseIndex = prompt.indexOf("Discovery Phase")
+
+      expect(baseIndex).toBeGreaterThanOrEqual(0)
+      expect(phaseIndex).toBeGreaterThan(baseIndex)
+    })
+  })
+
+  // test-cpbi-007-d: Falls back to generic prompt when phase is null
+  describe("Generic Fallback", () => {
+    test("returns base prompt when phase is null", () => {
+      const prompt = buildSystemPrompt(null)
+      expect(prompt).toBe(BASE_SYSTEM_PROMPT)
+    })
+
+    test("returns base prompt when phase is undefined", () => {
+      const prompt = buildSystemPrompt(undefined)
+      expect(prompt).toBe(BASE_SYSTEM_PROMPT)
+    })
+
+    test("returns base prompt for invalid phase string", () => {
+      const prompt = buildSystemPrompt("invalid-phase" as any)
+      expect(prompt).toBe(BASE_SYSTEM_PROMPT)
+    })
+
+    test("returns base prompt for empty string", () => {
+      const prompt = buildSystemPrompt("" as any)
+      expect(prompt).toBe(BASE_SYSTEM_PROMPT)
+    })
+  })
+
+  // test-cpbi-007-e: Skill invocation guidance included in prompt
+  describe("Skill Invocation Guidance", () => {
+    test("discovery prompt includes skill command", () => {
+      const prompt = buildSystemPrompt("discovery")
+      expect(prompt).toContain("/platform-feature-discovery")
+    })
+
+    test("analysis prompt includes skill command", () => {
+      const prompt = buildSystemPrompt("analysis")
+      expect(prompt).toContain("/platform-feature-analysis")
+    })
+
+    test("classification prompt includes skill command", () => {
+      const prompt = buildSystemPrompt("classification")
+      expect(prompt).toContain("/platform-feature-classification")
+    })
+
+    test("design prompt includes skill command", () => {
+      const prompt = buildSystemPrompt("design")
+      expect(prompt).toContain("/platform-feature-design")
+    })
+
+    test("spec prompt includes skill command", () => {
+      const prompt = buildSystemPrompt("spec")
+      expect(prompt).toContain("/platform-feature-spec")
+    })
+
+    test("testing prompt includes skill command", () => {
+      const prompt = buildSystemPrompt("testing")
+      expect(prompt).toContain("/platform-feature-tests")
+    })
+
+    test("implementation prompt includes skill command", () => {
+      const prompt = buildSystemPrompt("implementation")
+      expect(prompt).toContain("/platform-feature-implementation")
     })
   })
 })
