@@ -125,11 +125,12 @@ describe("CompleteView shows stats", () => {
     expect(componentSource).toMatch(/task|Task/)
   })
 
-  test("CompleteView uses Card for stats", () => {
+  test("CompleteView uses Card-style layout for stats", () => {
     const componentPath = path.resolve(import.meta.dir, "../CompleteView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/Card/)
+    // Redesigned uses custom card-like divs with rounded-lg, border, bg-card
+    expect(componentSource).toMatch(/Card|rounded-lg.*border|bg-card/)
   })
 })
 

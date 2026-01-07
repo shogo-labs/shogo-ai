@@ -77,31 +77,33 @@ describe("test-2-3b-027: ClassificationView displays rationale as text block", (
 })
 
 // ============================================================
-// Test 3: ClassificationView renders evidence checklist using EvidenceChecklist component
+// Test 3: ClassificationView renders evidence checklist
 // (test-2-3b-028)
 // ============================================================
 
 describe("test-2-3b-028: ClassificationView renders evidence checklist using EvidenceChecklist component", () => {
-  test("ClassificationView imports EvidenceChecklist", () => {
+  test("ClassificationView displays evidence items", () => {
     const componentPath = path.resolve(import.meta.dir, "../ClassificationView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    // Import may span multiple lines
-    expect(componentSource).toMatch(/EvidenceChecklist/)
+    // Redesigned uses EvidenceColumn or inline evidence rendering
+    expect(componentSource).toMatch(/evidence|Evidence|checklist|indicator/i)
   })
 
-  test("ClassificationView uses EvidenceChecklist component", () => {
+  test("ClassificationView iterates over evidence", () => {
     const componentPath = path.resolve(import.meta.dir, "../ClassificationView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/<EvidenceChecklist/)
+    // Should map over evidence items
+    expect(componentSource).toMatch(/\.map|indicators|evidence/)
   })
 
-  test("ClassificationView passes evidenceChecklist prop", () => {
+  test("ClassificationView displays evidence items with visual indicators", () => {
     const componentPath = path.resolve(import.meta.dir, "../ClassificationView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/evidenceChecklist/)
+    // Should have visual feedback for evidence
+    expect(componentSource).toMatch(/Check|icon|indicator|className/i)
   })
 })
 

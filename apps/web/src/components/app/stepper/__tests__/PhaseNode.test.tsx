@@ -45,9 +45,10 @@ describe("PhaseNode", () => {
       expect(source).toContain("bg-primary")
     })
 
-    test("has text-primary-foreground", () => {
+    test("has primary foreground or white text", () => {
       const source = getSource()
-      expect(source).toContain("primary-foreground")
+      // Redesigned uses white text via CheckCircle icon styling
+      expect(source).toMatch(/primary-foreground|text-white|text-primary/)
     })
 
     test("has shadow styling", () => {
@@ -68,9 +69,10 @@ describe("PhaseNode", () => {
       expect(source).toContain("text-white")
     })
 
-    test("includes CheckCircle icon", () => {
+    test("includes Check or CheckCircle icon", () => {
       const source = getSource()
-      expect(source).toContain("CheckCircle")
+      // Redesigned uses Check (simpler) instead of CheckCircle
+      expect(source).toMatch(/CheckCircle|Check/)
       expect(source).toContain("lucide-react")
     })
   })

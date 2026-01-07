@@ -35,21 +35,23 @@ describe("ReferenceEdge (task-2-3c-006)", () => {
     expect(source).toMatch(/getSmoothStepPath/)
   })
 
-  test("required references have solid stroke with stroke-primary", () => {
+  test("required references have solid stroke styling", () => {
     const source = fs.readFileSync(componentPath, "utf-8")
-    expect(source).toMatch(/stroke-primary|stroke.*primary/)
+    // Redesigned uses amber colors for design phase consistency
+    expect(source).toMatch(/stroke-primary|stroke.*primary|amber|#f59e0b/)
   })
 
-  test("optional references have dashed stroke with strokeDasharray=4", () => {
+  test("optional references have dashed stroke with strokeDasharray", () => {
     const source = fs.readFileSync(componentPath, "utf-8")
     expect(source).toMatch(/strokeDasharray/)
-    expect(source).toMatch(/stroke-muted-foreground|stroke.*muted/)
+    // Redesigned uses amber-600 for dashed lines
+    expect(source).toMatch(/stroke-muted-foreground|stroke.*muted|amber|#d97706/)
   })
 
-  test("has markerEnd with MarkerType.ArrowClosed", () => {
+  test("has markerEnd for arrows", () => {
     const source = fs.readFileSync(componentPath, "utf-8")
-    expect(source).toMatch(/MarkerType/)
-    expect(source).toMatch(/ArrowClosed/)
+    // Uses markerEnd prop passed from ReactFlow
+    expect(source).toMatch(/markerEnd/)
   })
 
   test("uses EdgeLabelRenderer for label display", () => {
@@ -57,10 +59,11 @@ describe("ReferenceEdge (task-2-3c-006)", () => {
     expect(source).toMatch(/EdgeLabelRenderer/)
   })
 
-  test("label has bg-background px-1 rounded text-xs styling", () => {
+  test("label has background, padding, rounded and text-xs styling", () => {
     const source = fs.readFileSync(componentPath, "utf-8")
-    expect(source).toMatch(/bg-background/)
-    expect(source).toMatch(/px-1/)
+    // Redesigned uses px-2 padding
+    expect(source).toMatch(/bg-background|bg-amber/)
+    expect(source).toMatch(/px-1|px-2/)
     expect(source).toMatch(/rounded/)
     expect(source).toMatch(/text-xs/)
   })

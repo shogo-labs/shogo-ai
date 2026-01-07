@@ -20,6 +20,12 @@ import {
   TestCaseStatusBadge,
   TaskRenderer,
 } from "./displays/domain"
+import {
+  ProgressBar,
+  DataCard,
+  GraphNode,
+  StatusIndicator,
+} from "./displays/visualization"
 
 /**
  * Creates a registry with default renderers plus Studio domain renderers.
@@ -115,6 +121,35 @@ export function createStudioRegistry() {
     id: "implementation-task",
     matches: (meta) => meta.xRenderer === "implementation-task",
     component: TaskRenderer,
+    priority: 200,
+  })
+
+  // Visualization primitive renderers (priority 200)
+  registry.register({
+    id: "progress-bar",
+    matches: (meta) => meta.xRenderer === "progress-bar",
+    component: ProgressBar,
+    priority: 200,
+  })
+
+  registry.register({
+    id: "data-card",
+    matches: (meta) => meta.xRenderer === "data-card",
+    component: DataCard,
+    priority: 200,
+  })
+
+  registry.register({
+    id: "graph-node",
+    matches: (meta) => meta.xRenderer === "graph-node",
+    component: GraphNode,
+    priority: 200,
+  })
+
+  registry.register({
+    id: "status-indicator",
+    matches: (meta) => meta.xRenderer === "status-indicator",
+    component: StatusIndicator,
     priority: 200,
   })
 

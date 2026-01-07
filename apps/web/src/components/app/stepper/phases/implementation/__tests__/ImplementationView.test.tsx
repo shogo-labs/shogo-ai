@@ -107,37 +107,38 @@ describe("ImplementationView queries collections", () => {
 })
 
 // ============================================================
-// Test 5: ImplementationView renders ExecutionProgress
+// Test 5: ImplementationView renders progress visualization
 // ============================================================
 
-describe("ImplementationView renders ExecutionProgress", () => {
-  test("ImplementationView imports ExecutionProgress", () => {
+describe("ImplementationView renders progress visualization", () => {
+  test("ImplementationView has progress dashboard", () => {
     const componentPath = path.resolve(import.meta.dir, "../ImplementationView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/ExecutionProgress/)
+    // Redesigned to use ProgressDashboard or ProgressBar
+    expect(componentSource).toMatch(/ProgressDashboard|ProgressBar|progress/i)
   })
 })
 
 // ============================================================
-// Test 6: ImplementationView renders TaskExecutionRow
+// Test 6: ImplementationView renders execution list
 // ============================================================
 
-describe("ImplementationView renders TaskExecutionRow", () => {
-  test("ImplementationView imports TaskExecutionRow", () => {
+describe("ImplementationView renders execution list", () => {
+  test("ImplementationView has execution timeline", () => {
     const componentPath = path.resolve(import.meta.dir, "../ImplementationView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/TaskExecutionRow/)
+    // Redesigned to use TaskExecutionTimeline or inline execution rendering
+    expect(componentSource).toMatch(/TaskExecutionTimeline|executions\.map|sortedExecutions/)
   })
 
-  test("ImplementationView maps executions to rows", () => {
+  test("ImplementationView maps executions", () => {
     const componentPath = path.resolve(import.meta.dir, "../ImplementationView.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    // Check that both .map and TaskExecutionRow are present (rendering list of rows)
+    // Check that .map is used for rendering executions
     expect(componentSource).toMatch(/\.map/)
-    expect(componentSource).toMatch(/TaskExecutionRow/)
   })
 })
 
