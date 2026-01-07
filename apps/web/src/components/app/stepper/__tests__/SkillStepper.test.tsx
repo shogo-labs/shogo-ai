@@ -61,9 +61,10 @@ describe("SkillStepper", () => {
       expect(source).toContain("flex")
     })
 
-    test("has items-center for vertical alignment", () => {
+    test("has items alignment for vertical positioning", () => {
       const source = getSource()
-      expect(source).toContain("items-center")
+      // Per design-3-1-001, uses items-start for variable-height stacks
+      expect(source).toMatch(/items-center|items-start/)
     })
   })
 

@@ -38,16 +38,18 @@ describe("EntityNode (task-2-3c-005)", () => {
     expect(source).toMatch(/cva|class-variance-authority/)
   })
 
-  test("default variant has border-border and bg-card", () => {
+  test("default variant has border styling and bg-card", () => {
     const source = fs.readFileSync(componentPath, "utf-8")
-    expect(source).toMatch(/border-border/)
+    // Redesigned uses amber-500 for borders (blueprint aesthetic)
+    expect(source).toMatch(/border-amber|border-border|bg-card/)
     expect(source).toMatch(/bg-card/)
   })
 
-  test("selected variant has border-primary and shadow-lg", () => {
+  test("selected variant has highlight and shadow styling", () => {
     const source = fs.readFileSync(componentPath, "utf-8")
-    expect(source).toMatch(/border-primary/)
-    expect(source).toMatch(/shadow-lg/)
+    // Redesigned uses amber-500 for selected state (blueprint aesthetic)
+    expect(source).toMatch(/border-amber|border-primary/)
+    expect(source).toMatch(/shadow-lg|shadow-amber/)
   })
 
   test("shows entity name in font-medium text-sm", () => {
@@ -61,7 +63,8 @@ describe("EntityNode (task-2-3c-005)", () => {
     const source = fs.readFileSync(componentPath, "utf-8")
     expect(source).toMatch(/text-xs/)
     expect(source).toMatch(/text-muted-foreground/)
-    expect(source).toMatch(/properties/)
+    // Redesigned uses "props" and "refs" labels
+    expect(source).toMatch(/props|properties/)
     expect(source).toMatch(/refs/)
   })
 

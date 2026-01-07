@@ -60,8 +60,9 @@ describe("PhaseConnector", () => {
   describe("test-2-3a-004-04: is vertically centered", () => {
     test("has vertical centering styles", () => {
       const source = getSource()
-      // Has self-center for flex vertical alignment
-      expect(source).toContain("self-center")
+      // Per design-3-1-001: uses mt-4 (16px) to position at center of 32px circles
+      // Or self-center for flex vertical alignment
+      expect(source).toMatch(/self-center|mt-4/)
     })
   })
 
