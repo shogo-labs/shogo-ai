@@ -1,6 +1,6 @@
 /**
  * ChatPanel - Smart component that integrates useChat hook with studio-chat domain
- * Tasks: task-2-4-004, task-3-1-004
+ * Tasks: task-2-4-004, task-3-1-004, task-cpbi-004, task-cpbi-005
  *
  * Integrates AI SDK useChat hook for streaming chat, composes child components,
  * handles message persistence to studio-chat domain, and provides chat state to context.
@@ -41,6 +41,8 @@ export interface ChatPanelProps {
   featureId: string | null
   /** Feature session name for display */
   featureName?: string
+  /** Current phase from WorkspaceLayout navigation (task-cpbi-004) */
+  phase: string | null
   /** Children to render inside ChatContextProvider */
   children?: React.ReactNode
   /** Optional class name */
@@ -266,6 +268,7 @@ async function refreshCollections(
 export const ChatPanel = observer(function ChatPanel({
   featureId,
   featureName,
+  phase,
   children,
   className,
   onSchemaRefresh,
@@ -288,27 +291,42 @@ export const ChatPanel = observer(function ChatPanel({
   // Chat session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
 
-  // Find or create chat session for feature
+  // Find or create chat session for feature and phase (task-cpbi-005)
+  // Session is uniquely identified by (featureId, phase) tuple
   useEffect(() => {
     if (!featureId) {
       setCurrentSessionId(null)
       return
     }
 
-    // Find existing session for this feature
-    const sessions = studioChat.chatSessionCollection.findByFeature?.(featureId) ?? []
-    if (sessions.length > 0) {
-      setCurrentSessionId(sessions[0].id)
-    } else {
-      // Auto-create session
-      const newSession = studioChat.createChatSession({
-        inferredName: featureName || `Chat for ${featureId}`,
-        contextType: "feature",
-        contextId: featureId,
-      })
-      setCurrentSessionId(newSession.id)
+    // Use async IIFE for await support in useEffect
+    const loadOrCreateSession = async () => {
+      // Find existing session for this feature AND phase
+      const existingSession = studioChat.chatSessionCollection.findByFeatureAndPhase?.(featureId, phase)
+      if (existingSession) {
+        setCurrentSessionId(existingSession.id)
+      } else if (phase) {
+        // Auto-create session with phase (async per task-cpbi-002)
+        const newSession = await studioChat.createChatSession({
+          inferredName: `${featureName || featureId} - ${phase}`,
+          contextType: "feature",
+          contextId: featureId,
+          phase: phase,
+        })
+        setCurrentSessionId(newSession.id)
+      } else {
+        // No phase provided, create session without phase
+        const newSession = await studioChat.createChatSession({
+          inferredName: featureName || `Chat for ${featureId}`,
+          contextType: "feature",
+          contextId: featureId,
+        })
+        setCurrentSessionId(newSession.id)
+      }
     }
-  }, [featureId, featureName, studioChat])
+
+    loadOrCreateSession()
+  }, [featureId, featureName, phase, studioChat])
 
   // Get current session
   const currentSession = currentSessionId
@@ -318,27 +336,38 @@ export const ChatPanel = observer(function ChatPanel({
   // AI SDK useChat hook
   const {
     messages,
-    input,
-    setInput,
-    handleSubmit: useChatHandleSubmit,
+    append,  // Use append() for direct message sending - avoids race condition
     isLoading,
     error,
     setMessages,
     reload,
+    stop,  // Used by idle timeout to force-complete hung streams
   } = useChat({
     api: "/api/chat",
     id: currentSessionId || undefined,
+    body: { featureId, phase }, // task-cpbi-005: Include context for API
     streamProtocol: "text",
-    onFinish: async (message) => {
+    onError: (err) => {
+      // Critical: Handle errors to ensure isLoading gets cleared
+      // Without this handler, errors leave isLoading=true indefinitely
+      console.error("[ChatPanel] Stream error:", err)
+    },
+    onFinish: (message) => {
+      console.log("[ChatPanel] onFinish called - stream complete", { messageLength: message.content.length })
       // Persist assistant message in onFinish callback
+      // NOTE: All persistence operations are fire-and-forget to prevent hanging
+      // if backend is slow. The UI already shows the message, persistence is just logging.
       if (currentSessionId) {
+        // Fire-and-forget: persist assistant message
         studioChat.addMessage({
           sessionId: currentSessionId,
           role: "assistant",
           content: message.content,
+        }).catch((err) => {
+          console.warn("[ChatPanel] Failed to persist assistant message:", err)
         })
 
-        // Record tool calls from the message
+        // Record tool calls from the message (fire-and-forget)
         const toolCalls = extractToolCalls(message)
         for (const toolCall of toolCalls) {
           studioChat.recordToolCall({
@@ -348,6 +377,8 @@ export const ChatPanel = observer(function ChatPanel({
                     toolCall.state === "output-error" ? "error" : "executing",
             args: toolCall.args || {},
             result: toolCall.result,
+          }).catch((err) => {
+            console.warn("[ChatPanel] Failed to record tool call:", err)
           })
         }
 
@@ -379,7 +410,9 @@ export const ChatPanel = observer(function ChatPanel({
             onSchemaRefresh()
           }
 
-          // Trigger collection refreshes in parallel
+          // Trigger collection refreshes in parallel (fire-and-forget)
+          // NOTE: No await to prevent onFinish from hanging if collection queries
+          // take too long. Smart refresh is background data sync.
           if (collectionsToRefresh.length > 0) {
             refreshCollections(platformFeatures, collectionsToRefresh).catch((err) => {
               console.warn("[ChatPanel] Smart refresh failed:", err)
@@ -388,18 +421,64 @@ export const ChatPanel = observer(function ChatPanel({
 
           // Also trigger full refresh via onRefresh callback (task-3-1-007)
           // This ensures all collections are refreshed after tool calls complete
+          // NOTE: Fire-and-forget (no await) to prevent onFinish from hanging
+          // if collection queries take too long. The refresh is just a background
+          // data sync and shouldn't block the streaming completion.
           if (onRefresh) {
-            // Small delay to let smart triggers complete first
-            setTimeout(() => {
-              onRefresh().catch((err) => {
-                console.warn("[ChatPanel] onRefresh callback failed:", err)
-              })
-            }, 500)
+            onRefresh().catch((err) => {
+              console.warn("[ChatPanel] onRefresh callback failed:", err)
+            })
           }
         }
       }
     },
   })
+
+  // Idle timeout to force-complete hung streams
+  // When Claude Code invokes skills/tools, the stream can hang indefinitely
+  // because onFinish never fires. This detects idle state and calls stop().
+  const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastMessageContentRef = useRef<string>("")
+  const IDLE_TIMEOUT_MS = 90000 // 90 seconds of no new content = consider complete
+
+  useEffect(() => {
+    // Get current content to track changes
+    const currentContent = messages.map(m => m.content).join("")
+
+    if (isLoading) {
+      // Clear existing timeout
+      if (idleTimeoutRef.current) {
+        clearTimeout(idleTimeoutRef.current)
+      }
+
+      // Check if content changed
+      if (currentContent !== lastMessageContentRef.current) {
+        lastMessageContentRef.current = currentContent
+        console.log("[ChatPanel] Stream activity detected, resetting idle timer")
+      }
+
+      // Set new timeout
+      idleTimeoutRef.current = setTimeout(() => {
+        if (isLoading) {
+          console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
+          stop()
+        }
+      }, IDLE_TIMEOUT_MS)
+    } else {
+      // Not loading - clear timeout
+      if (idleTimeoutRef.current) {
+        clearTimeout(idleTimeoutRef.current)
+        idleTimeoutRef.current = null
+      }
+      lastMessageContentRef.current = ""
+    }
+
+    return () => {
+      if (idleTimeoutRef.current) {
+        clearTimeout(idleTimeoutRef.current)
+      }
+    }
+  }, [isLoading, messages, stop])
 
   // Load persisted messages when session changes
   useEffect(() => {
@@ -426,27 +505,49 @@ export const ChatPanel = observer(function ChatPanel({
     onStreamingChange?.(isLoading)
   }, [isLoading, onStreamingChange])
 
-  // Handle message submission
+  // Handle message submission using append() to avoid race condition
+  // The old pattern used setInput() + handleSubmit() but setInput is async
+  // and handleSubmit would read stale "" input state, losing the message
   const handleSendMessage = useCallback(
-    (content: string) => {
-      if (!currentSessionId || !content.trim()) return
+    async (content: string) => {
+      console.log("[ChatPanel] handleSendMessage called", {
+        content: content?.slice(0, 50),
+        currentSessionId,
+        hasContent: !!content?.trim()
+      })
 
-      // Persist user message BEFORE calling handleSubmit (optimistic)
+      if (!currentSessionId) {
+        console.warn("[ChatPanel] No session ID - message will be lost!", { content: content?.slice(0, 50) })
+        return
+      }
+
+      if (!content.trim()) {
+        console.warn("[ChatPanel] Empty content - ignoring")
+        return
+      }
+
+      const trimmedContent = content.trim()
+
+      // Persist user message to local store (fire-and-forget)
       studioChat.addMessage({
         sessionId: currentSessionId,
         role: "user",
-        content: content.trim(),
-      })
+        content: trimmedContent,
+      }).catch((err) => console.warn("[ChatPanel] Failed to persist user message:", err))
 
-      // Set input and submit
-      setInput(content)
-      // Trigger submit via form event simulation
-      const form = document.createElement("form")
-      const event = new Event("submit", { bubbles: true, cancelable: true })
-      Object.defineProperty(event, "preventDefault", { value: () => {} })
-      useChatHandleSubmit(event as any)
+      // Send to API using append() - content is passed directly, no race condition!
+      console.log("[ChatPanel] Calling append()", { contentLength: trimmedContent.length })
+      try {
+        await append({
+          role: "user",
+          content: trimmedContent,
+        })
+        console.log("[ChatPanel] append() completed successfully")
+      } catch (err) {
+        console.error("[ChatPanel] Failed to send message:", err)
+      }
     },
-    [currentSessionId, studioChat, setInput, useChatHandleSubmit]
+    [currentSessionId, studioChat, append]
   )
 
   // Handle form submit from ChatInput

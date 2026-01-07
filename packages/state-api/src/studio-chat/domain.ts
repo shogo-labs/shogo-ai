@@ -41,8 +41,8 @@ export const StudioChatDomain = scope({
     "messageId?": "string", // Optional reference to message that triggered this
     toolName: "string",
     status: "'streaming' | 'executing' | 'complete' | 'error'",
-    argsJson: "string", // JSON-stringified tool arguments
-    "resultJson?": "string", // JSON-stringified tool result
+    "args?": "unknown", // Tool arguments (any type)
+    "result?": "unknown", // Tool result (any type)
     "duration?": "number", // Execution duration in ms
     createdAt: "number",
   },
@@ -65,29 +65,33 @@ export const studioChatDomain = domain({
     models: (models) => ({
       ...models,
 
-      // ToolCallLog: Computed views to parse JSON fields
       ToolCallLog: models.ToolCallLog.views((self: any) => ({
         /**
-         * Parsed args object
+         * Extract namespace from tool name (e.g., 'store' from 'store.create')
          */
-        get args(): unknown {
-          try {
-            return JSON.parse(self.argsJson)
-          } catch {
-            return {}
-          }
+        get toolNamespace(): string {
+          const parts = self.toolName.split(".")
+          return parts.length > 1 ? parts[0] : self.toolName
         },
 
         /**
-         * Parsed result object
+         * Returns true when status is 'complete'
          */
-        get result(): unknown {
-          if (!self.resultJson) return undefined
-          try {
-            return JSON.parse(self.resultJson)
-          } catch {
-            return undefined
-          }
+        get isSuccess(): boolean {
+          return self.status === "complete"
+        },
+
+        /**
+         * Concise metadata string for collapsed view
+         */
+        get summaryLine(): string {
+          const args = self.args as Record<string, unknown> | undefined
+          const model = args?.model as string | undefined
+          const schema = args?.schema as string | undefined
+
+          if (model) return `${self.toolName}: ${model}`
+          if (schema) return `${self.toolName}: ${schema}`
+          return self.toolName
         },
       })),
 
@@ -149,6 +153,20 @@ export const studioChatDomain = domain({
         },
 
         /**
+         * Find session for specific feature and phase
+         */
+        findByFeatureAndPhase(featureId: string, phase: string): any {
+          return self
+            .all()
+            .find(
+              (s: any) =>
+                s.contextType === "feature" &&
+                s.contextId === featureId &&
+                s.phase === phase
+            ) ?? null
+        },
+
+        /**
          * Find all sessions of a given context type
          */
         findByContextType(contextType: "feature" | "project" | "general"): any[] {
@@ -186,14 +204,16 @@ export const studioChatDomain = domain({
          * Create a chat session with context type validation.
          * - feature/project require contextId
          * - general must not have contextId
+         *
+         * Uses async insertOne for backend persistence.
          */
-        createChatSession(data: {
+        async createChatSession(data: {
           name?: string
           inferredName: string
           contextType: "feature" | "project" | "general"
           contextId?: string
           phase?: string
-        }): any {
+        }): Promise<any> {
           // Validation: feature/project require contextId
           if (
             (data.contextType === "feature" || data.contextType === "project") &&
@@ -212,7 +232,7 @@ export const studioChatDomain = domain({
           }
 
           const now = Date.now()
-          return self.chatSessionCollection.add({
+          return await self.chatSessionCollection.insertOne({
             id: uuidv4(),
             name: data.name,
             inferredName: data.inferredName,
@@ -225,13 +245,15 @@ export const studioChatDomain = domain({
         },
 
         /**
-         * Add a message to a session and update lastActiveAt
+         * Add a message to a session and update lastActiveAt.
+         *
+         * Uses async insertOne for backend persistence.
          */
-        addMessage(data: {
+        async addMessage(data: {
           sessionId: string
           role: "user" | "assistant"
           content: string
-        }): any {
+        }): Promise<any> {
           const session = self.chatSessionCollection.get(data.sessionId)
           if (!session) {
             throw new Error(`ChatSession with id '${data.sessionId}' not found`)
@@ -239,11 +261,13 @@ export const studioChatDomain = domain({
 
           const now = Date.now()
 
-          // Update session's lastActiveAt
-          session.lastActiveAt = now
+          // Update session's lastActiveAt using updateOne for backend persistence
+          await self.chatSessionCollection.updateOne(data.sessionId, {
+            lastActiveAt: now,
+          })
 
-          // Create the message
-          return self.chatMessageCollection.add({
+          // Create the message using insertOne for backend persistence
+          return await self.chatMessageCollection.insertOne({
             id: uuidv4(),
             session: data.sessionId,
             role: data.role,
@@ -253,9 +277,11 @@ export const studioChatDomain = domain({
         },
 
         /**
-         * Record a tool call for a session
+         * Record a tool call for a session.
+         *
+         * Uses async insertOne for backend persistence.
          */
-        recordToolCall(data: {
+        async recordToolCall(data: {
           sessionId: string
           messageId?: string
           toolName: string
@@ -263,20 +289,20 @@ export const studioChatDomain = domain({
           args: unknown
           result?: unknown
           duration?: number
-        }): any {
+        }): Promise<any> {
           const session = self.chatSessionCollection.get(data.sessionId)
           if (!session) {
             throw new Error(`ChatSession with id '${data.sessionId}' not found`)
           }
 
-          return self.toolCallLogCollection.add({
+          return await self.toolCallLogCollection.insertOne({
             id: uuidv4(),
             chatSession: data.sessionId,
             messageId: data.messageId,
             toolName: data.toolName,
             status: data.status,
-            argsJson: JSON.stringify(data.args),
-            resultJson: data.result !== undefined ? JSON.stringify(data.result) : undefined,
+            args: data.args,
+            result: data.result,
             duration: data.duration,
             createdAt: Date.now(),
           })

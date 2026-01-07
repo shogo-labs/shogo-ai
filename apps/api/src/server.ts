@@ -5,6 +5,7 @@ import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { auth } from './auth'
+import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
 
 // Port configuration from environment (supports multi-worktree isolation)
 const API_PORT = parseInt(process.env.API_PORT || '8002', 10)
@@ -34,27 +35,109 @@ const claudeCode = createClaudeCode({
         args: ['run', 'packages/mcp/src/server.ts'],
       },
     },
-    // Allow MCP tools and file operations
+    // Allow MCP tools, file operations, and skill invocation
     allowedTools: [
+      // File operations
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
-      // Wavesmith MCP tools
+      // Skill and agent tools (required for /platform-feature-* skills)
+      'Skill', 'Task', 'Bash', 'TodoWrite',
+      // Wavesmith MCP tools - Schema
       'mcp__wavesmith__schema_set',
       'mcp__wavesmith__schema_get',
       'mcp__wavesmith__schema_list',
       'mcp__wavesmith__schema_load',
+      // Wavesmith MCP tools - Store
       'mcp__wavesmith__store_create',
       'mcp__wavesmith__store_list',
       'mcp__wavesmith__store_get',
       'mcp__wavesmith__store_update',
       'mcp__wavesmith__store_query',
       'mcp__wavesmith__store_models',
+      'mcp__wavesmith__store_delete',
+      // Wavesmith MCP tools - Views
+      'mcp__wavesmith__view_execute',
+      'mcp__wavesmith__view_define',
+      'mcp__wavesmith__view_project',
+      // Wavesmith MCP tools - Data & DDL
       'mcp__wavesmith__data_load',
       'mcp__wavesmith__data_loadAll',
+      'mcp__wavesmith__ddl_execute',
+      'mcp__wavesmith__ddl_migrate',
+      // Chrome DevTools MCP - Navigation & Pages
+      'mcp__chrome-devtools__navigate_page',
+      'mcp__chrome-devtools__new_page',
+      'mcp__chrome-devtools__close_page',
+      'mcp__chrome-devtools__select_page',
+      'mcp__chrome-devtools__list_pages',
+      'mcp__chrome-devtools__wait_for',
+      'mcp__chrome-devtools__resize_page',
+      // Chrome DevTools MCP - Input & Interaction
+      'mcp__chrome-devtools__click',
+      'mcp__chrome-devtools__fill',
+      'mcp__chrome-devtools__fill_form',
+      'mcp__chrome-devtools__hover',
+      'mcp__chrome-devtools__press_key',
+      'mcp__chrome-devtools__drag',
+      'mcp__chrome-devtools__upload_file',
+      'mcp__chrome-devtools__handle_dialog',
+      // Chrome DevTools MCP - Inspection & Debugging
+      'mcp__chrome-devtools__take_screenshot',
+      'mcp__chrome-devtools__take_snapshot',
+      'mcp__chrome-devtools__evaluate_script',
+      'mcp__chrome-devtools__list_console_messages',
+      'mcp__chrome-devtools__get_console_message',
+      // Chrome DevTools MCP - Network
+      'mcp__chrome-devtools__list_network_requests',
+      'mcp__chrome-devtools__get_network_request',
+      'mcp__chrome-devtools__emulate',
+      // Chrome DevTools MCP - Performance
+      'mcp__chrome-devtools__performance_start_trace',
+      'mcp__chrome-devtools__performance_stop_trace',
+      'mcp__chrome-devtools__performance_analyze_insight',
     ],
     // Bypass permission prompts for non-interactive API use
     permissionMode: 'bypassPermissions',
   },
 })
+
+/**
+ * Base system prompt for the Wavesmith app builder assistant.
+ * This prompt is always included and provides context about available MCP tools.
+ */
+export const BASE_SYSTEM_PROMPT = `You are a Wavesmith app builder assistant running in the shogo-ai project at ${PROJECT_ROOT}.
+
+You have access to the Wavesmith MCP server with these tools:
+- schema_set, schema_get, schema_list, schema_load - Manage JSON schemas
+- store_create, store_list, store_get, store_update, store_query - CRUD operations on entities
+- store_models - List available models in a schema
+- data_load, data_loadAll - Load data from persistence
+
+You can help users:
+- Design and create data schemas for their applications
+- Create and manage entity instances
+- Query and update data
+- Explain data modeling concepts and best practices
+
+When users ask to create schemas or data, use the appropriate MCP tools.
+Be concise and practical. Show tool results when relevant.`
+
+/**
+ * Build a dynamic system prompt based on the current pipeline phase.
+ *
+ * @param phase - The current pipeline phase, or null/undefined for generic prompt
+ * @returns The complete system prompt with base prompt and optional phase-specific guidance
+ */
+export function buildSystemPrompt(phase: Phase | null | undefined): string {
+  // Always start with the base Wavesmith tool prompt
+  let systemPrompt = BASE_SYSTEM_PROMPT
+
+  // Add phase-specific guidance if a valid phase is provided
+  if (phase && isPhase(phase)) {
+    systemPrompt = `${BASE_SYSTEM_PROMPT}\n\n${PHASE_PROMPTS[phase]}`
+  }
+
+  return systemPrompt
+}
 
 const app = new Hono()
 
@@ -79,25 +162,10 @@ app.get('/api/health', (c) => c.json({ ok: true }))
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages } = await c.req.json()
+    const { messages, phase } = await c.req.json()
 
-    // System prompt for the assistant - includes awareness of MCP tools
-    const systemPrompt = `You are a Wavesmith app builder assistant running in the shogo-ai project at ${PROJECT_ROOT}.
-
-You have access to the Wavesmith MCP server with these tools:
-- schema_set, schema_get, schema_list, schema_load - Manage JSON schemas
-- store_create, store_list, store_get, store_update, store_query - CRUD operations on entities
-- store_models - List available models in a schema
-- data_load, data_loadAll - Load data from persistence
-
-You can help users:
-- Design and create data schemas for their applications
-- Create and manage entity instances
-- Query and update data
-- Explain data modeling concepts and best practices
-
-When users ask to create schemas or data, use the appropriate MCP tools.
-Be concise and practical. Show tool results when relevant.`
+    // Build dynamic system prompt based on current pipeline phase
+    const systemPrompt = buildSystemPrompt(phase)
 
     const result = streamText({
       model: claudeCode('sonnet'),
