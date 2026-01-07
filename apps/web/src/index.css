@@ -30,6 +30,23 @@
   --input: #e4e4e7;
   --ring: #2563eb;
   --radius: 0.5rem;
+
+  /* Phase Colors - Orchestrated Precision Design System */
+  --phase-discovery: #3b82f6;      /* blue-500 */
+  --phase-analysis: #8b5cf6;       /* violet-500 */
+  --phase-classification: #ec4899; /* pink-500 */
+  --phase-design: #f59e0b;         /* amber-500 */
+  --phase-spec: #10b981;           /* emerald-500 */
+  --phase-testing: #06b6d4;        /* cyan-500 */
+  --phase-implementation: #ef4444; /* red-500 */
+  --phase-complete: #22c55e;       /* green-500 */
+
+  /* Semantic Status Colors */
+  --status-pending: #71717a;       /* gray-500 */
+  --status-active: #3b82f6;        /* blue-500 */
+  --status-success: #22c55e;       /* green-500 */
+  --status-error: #ef4444;         /* red-500 */
+  --status-warning: #f59e0b;       /* amber-500 */
 }
 
 /* Dark theme variables */
@@ -53,6 +70,23 @@
   --border: #333333;
   --input: #333333;
   --ring: #2196f3;
+
+  /* Phase Colors - Dark Mode (brighter for contrast) */
+  --phase-discovery: #60a5fa;      /* blue-400 */
+  --phase-analysis: #a78bfa;       /* violet-400 */
+  --phase-classification: #f472b6; /* pink-400 */
+  --phase-design: #fbbf24;         /* amber-400 */
+  --phase-spec: #34d399;           /* emerald-400 */
+  --phase-testing: #22d3ee;        /* cyan-400 */
+  --phase-implementation: #f87171; /* red-400 */
+  --phase-complete: #4ade80;       /* green-400 */
+
+  /* Semantic Status Colors - Dark Mode */
+  --status-pending: #a1a1aa;       /* gray-400 */
+  --status-active: #60a5fa;        /* blue-400 */
+  --status-success: #4ade80;       /* green-400 */
+  --status-error: #f87171;         /* red-400 */
+  --status-warning: #fbbf24;       /* amber-400 */
 }
 
 /* Tailwind v4 theme layer - maps CSS variables to Tailwind utilities */
@@ -79,6 +113,23 @@
   --radius-sm: 0.25rem;
   --radius-md: 0.375rem;
   --radius-lg: 0.5rem;
+
+  /* Phase Color Utilities - use as bg-phase-discovery, text-phase-discovery, etc. */
+  --color-phase-discovery: var(--phase-discovery);
+  --color-phase-analysis: var(--phase-analysis);
+  --color-phase-classification: var(--phase-classification);
+  --color-phase-design: var(--phase-design);
+  --color-phase-spec: var(--phase-spec);
+  --color-phase-testing: var(--phase-testing);
+  --color-phase-implementation: var(--phase-implementation);
+  --color-phase-complete: var(--phase-complete);
+
+  /* Status Color Utilities - use as bg-status-success, text-status-error, etc. */
+  --color-status-pending: var(--status-pending);
+  --color-status-active: var(--status-active);
+  --color-status-success: var(--status-success);
+  --color-status-error: var(--status-error);
+  --color-status-warning: var(--status-warning);
 }
 
 /* Base styles */
@@ -109,4 +160,60 @@ body {
 #root {
   max-width: 1280px;
   margin: 0 auto;
+}
+
+/*
+ * Accessibility Utilities
+ * Task: task-w3-keyboard-navigation
+ */
+
+/* Screen reader only - visually hidden but accessible */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Focus visible utilities for keyboard navigation */
+.focus-ring-phase-discovery {
+  --tw-ring-color: var(--phase-discovery);
+}
+.focus-ring-phase-analysis {
+  --tw-ring-color: var(--phase-analysis);
+}
+.focus-ring-phase-classification {
+  --tw-ring-color: var(--phase-classification);
+}
+.focus-ring-phase-design {
+  --tw-ring-color: var(--phase-design);
+}
+.focus-ring-phase-spec {
+  --tw-ring-color: var(--phase-spec);
+}
+.focus-ring-phase-testing {
+  --tw-ring-color: var(--phase-testing);
+}
+.focus-ring-phase-implementation {
+  --tw-ring-color: var(--phase-implementation);
+}
+.focus-ring-phase-complete {
+  --tw-ring-color: var(--phase-complete);
+}
+
+/* Default focus-visible styles with phase color support */
+[data-focused="true"] {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--ring);
+}
+
+/* Keyboard focus indicator for interactive elements */
+.keyboard-focusable:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--ring);
 }
