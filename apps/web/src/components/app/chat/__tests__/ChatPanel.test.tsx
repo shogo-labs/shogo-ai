@@ -431,7 +431,8 @@ describe("test-2-4-004-014: ChatPanel uses useDomains().studioChat for domain ac
     const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
     const source = fs.readFileSync(componentPath, "utf-8")
     expect(source).toMatch(/studioChat/)
-    expect(source).toMatch(/useDomains\s*\(\s*\)/)
+    // Match both useDomains() and useDomains<{...}>() with generic type params
+    expect(source).toMatch(/useDomains\s*(<[^>]+>)?\s*\(\s*\)/)
   })
 })
 
@@ -444,5 +445,221 @@ describe("ChatPanel module exports", () => {
     const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
     const source = fs.readFileSync(componentPath, "utf-8")
     expect(source).toMatch(/export\s+(function|const)\s+ChatPanel/)
+  })
+})
+
+// ============================================================
+// Task cpbi-004: Phase Prop Threading Tests
+// ============================================================
+
+// ============================================================
+// Test cpbi-004-b: ChatPanel receives phase as prop
+// ============================================================
+
+describe("test-cpbi-004-b: ChatPanel receives phase as prop", () => {
+  test("ChatPanel accepts phase in props destructuring", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // ChatPanel should destructure phase from props
+    // Look for phase in the function parameter destructuring
+    expect(source).toMatch(/function\s+ChatPanel\s*\(\s*\{[\s\S]*phase[\s\S]*\}/)
+  })
+
+  test("phase prop is available for use within component", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have phase in props destructuring pattern
+    expect(source).toMatch(/\{\s*[\s\S]*phase[\s\S]*\}\s*:\s*ChatPanelProps/)
+  })
+})
+
+// ============================================================
+// Test cpbi-004-c: ChatPanelProps type includes phase prop
+// ============================================================
+
+describe("test-cpbi-004-c: ChatPanelProps type includes phase prop", () => {
+  test("ChatPanelProps interface includes phase property", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // ChatPanelProps should have phase: string | null property
+    expect(source).toMatch(/interface\s+ChatPanelProps[\s\S]*phase\s*:\s*string\s*\|\s*null/)
+  })
+
+  test("phase prop has type string | null", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // The phase property should be typed as string | null
+    expect(source).toMatch(/phase\s*:\s*string\s*\|\s*null/)
+  })
+
+  test("phase prop has descriptive JSDoc comment", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have a comment describing the phase prop (either JSDoc or inline)
+    // Look for phase mentioned in a comment near the interface
+    expect(source).toMatch(/\/\*\*[\s\S]*phase[\s\S]*\*\/[\s\S]*phase\s*:/)
+  })
+})
+
+// ============================================================
+// Task cpbi-005: Phase-Bound Session Lifecycle Tests
+// ============================================================
+
+// ============================================================
+// Test cpbi-005-a: ChatPanel auto-loads existing session for feature and phase
+// ============================================================
+
+describe("test-cpbi-005-a: ChatPanel auto-loads existing session for feature and phase", () => {
+  test("useEffect uses findByFeatureAndPhase to lookup existing session", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // Should call findByFeatureAndPhase instead of just findByFeature
+    expect(source).toMatch(/findByFeatureAndPhase\s*\?\.\s*\(/)
+  })
+
+  test("findByFeatureAndPhase is called with featureId and phase arguments", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // Should pass both featureId and phase to the lookup
+    expect(source).toMatch(/findByFeatureAndPhase\s*\?\.\s*\(\s*featureId\s*,\s*phase\s*\)/)
+  })
+
+  test("Sets currentSessionId when existing session is found", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // Should set session ID from existingSession
+    expect(source).toMatch(/setCurrentSessionId\s*\(\s*existingSession\.id\s*\)/)
+  })
+})
+
+// ============================================================
+// Test cpbi-005-b: ChatPanel auto-creates new session when none exists
+// ============================================================
+
+describe("test-cpbi-005-b: ChatPanel auto-creates new session when none exists", () => {
+  test("createChatSession is called with phase parameter", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // Should pass phase to createChatSession
+    expect(source).toMatch(/createChatSession\s*\(\s*\{[\s\S]*phase\s*[:=]/)
+  })
+
+  test("Session creation is awaited (async pattern)", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // Should use await with createChatSession
+    expect(source).toMatch(/await\s+studioChat\.createChatSession/)
+  })
+
+  test("New session includes phase in inferredName for identification", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // InferredName should include phase for identification
+    // Pattern like: `${featureName} - ${phase}` or similar
+    expect(source).toMatch(/inferredName:.*\$\{.*phase.*\}|inferredName:.*phase/)
+  })
+})
+
+// ============================================================
+// Test cpbi-005-c: Session switches when phase changes
+// ============================================================
+
+describe("test-cpbi-005-c: Session switches when phase changes", () => {
+  test("phase is in the useEffect dependency array", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // Find the session management useEffect - it should have phase in dependencies
+    // The useEffect for session management should include phase in the dependency array
+    // Pattern: useEffect(..., [..., phase, ...])
+    // Look for the dependency array that contains phase along with featureId
+    expect(source).toMatch(/useEffect\s*\(\s*(?:async\s*)?\(\s*\)\s*=>\s*\{[\s\S]*?findByFeatureAndPhase[\s\S]*?\}\s*,\s*\[[^\]]*phase[^\]]*\]/)
+  })
+
+  test("useEffect contains both featureId and phase in dependencies", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // Dependency array should have both featureId and phase
+    expect(source).toMatch(/\[\s*[^\]]*featureId[^\]]*phase[^\]]*\]|\[\s*[^\]]*phase[^\]]*featureId[^\]]*\]/)
+  })
+})
+
+// ============================================================
+// Test cpbi-005-d: useChat body includes featureId and phase for API context
+// ============================================================
+
+describe("test-cpbi-005-d: useChat body includes featureId and phase for API context", () => {
+  test("useChat configuration includes body parameter", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // useChat should have a body property in its configuration
+    expect(source).toMatch(/useChat\s*\(\s*\{[\s\S]*body\s*:/)
+  })
+
+  test("body includes featureId", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // body should include featureId
+    expect(source).toMatch(/body\s*:\s*\{[\s\S]*featureId[\s\S]*\}/)
+  })
+
+  test("body includes phase", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // body should include phase
+    expect(source).toMatch(/body\s*:\s*\{[\s\S]*phase[\s\S]*\}/)
+  })
+})
+
+// ============================================================
+// Test cpbi-005-e: Multiple phases maintain independent message histories
+// ============================================================
+
+describe("test-cpbi-005-e: Multiple phases maintain independent message histories", () => {
+  test("Session lookup uses phase for uniqueness (not just featureId)", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // Should use findByFeatureAndPhase, NOT findByFeature for session lookup
+    // This ensures each phase gets its own session
+    expect(source).toMatch(/findByFeatureAndPhase/)
+    // And should NOT be using the old findByFeature pattern for primary lookup
+    expect(source).not.toMatch(/findByFeature\s*\?\.\s*\(\s*featureId\s*\)\s*\?\?\s*\[\]/)
+  })
+
+  test("New session creation includes phase field", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // createChatSession call should include phase: phase in the object
+    expect(source).toMatch(/createChatSession\s*\(\s*\{[\s\S]*phase\s*:\s*phase[\s\S]*\}/)
+  })
+
+  test("Phase changes trigger session switch (different session per phase)", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // The combination of:
+    // 1. findByFeatureAndPhase for lookup
+    // 2. phase in dependency array
+    // Ensures different phases get different sessions
+    // Already verified in previous tests, but confirm both patterns exist
+    expect(source).toMatch(/findByFeatureAndPhase/)
+    expect(source).toMatch(/\[\s*[^\]]*phase[^\]]*\]/)
   })
 })
