@@ -89,19 +89,7 @@ export const CompleteView = observer(function CompleteView({
   feature,
 }: CompleteViewProps) {
   // Access platform-features domain for stats
-  const { platformFeatures } = useDomains<{
-    platformFeatures: {
-      implementationTaskCollection: {
-        findBySession: (sessionId: string) => any[]
-      }
-      testSpecificationCollection: {
-        all: () => any[]
-      }
-      implementationRunCollection: {
-        findBySession: (sessionId: string) => any[]
-      }
-    }
-  }>()
+  const { platformFeatures } = useDomains()
 
   // Check if feature is complete
   const isComplete = feature.status === "complete"

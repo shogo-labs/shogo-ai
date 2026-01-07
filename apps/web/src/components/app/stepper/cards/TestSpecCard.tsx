@@ -12,8 +12,8 @@
  * - Built in /components/app/stepper/cards/
  * - Wrapped with observer() for MobX reactivity
  *
- * Per design-2-3d-cva-variants:
- * - testTypeVariants: unit=blue, integration=purple, acceptance=green
+ * Per Phase 2 integration:
+ * - Uses PropertyRenderer for testType badge
  */
 
 import { observer } from "mobx-react-lite"
@@ -21,6 +21,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { FileCode } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
+import { PropertyRenderer } from "@/components/rendering"
 
 /**
  * Test type enum - matches TestSpecification entity
@@ -91,8 +92,6 @@ function getTypeLabel(type: TestType): string {
 export const TestSpecCard = observer(function TestSpecCard({
   spec,
 }: TestSpecCardProps) {
-  const typeKey = spec.testType as VariantProps<typeof testTypeVariants>["type"]
-
   return (
     <Card
       data-testid={`test-spec-card-${spec.id}`}
@@ -108,9 +107,15 @@ export const TestSpecCard = observer(function TestSpecCard({
               {spec.scenario}
             </h4>
           </div>
-          <span className={testTypeVariants({ type: typeKey })}>
-            {getTypeLabel(spec.testType)}
-          </span>
+          {/* Use PropertyRenderer for test type badge */}
+          <PropertyRenderer
+            value={spec.testType}
+            property={{
+              name: "testType",
+              type: "string",
+              xRenderer: "test-type-badge",
+            }}
+          />
         </div>
 
         {/* Target file path */}
