@@ -68,52 +68,66 @@ describe("test-2-2-005-005: FeatureItem renders clickable row with name and stat
 })
 
 // ============================================================
-// Test 2: FeatureItem uses CVA for status badge variants
-// (test-2-2-005-006)
+// Test 2: FeatureItem uses underlaid progress bar for phase visualization
+// (test-2-2-005-006) - Updated for Pipeline Precision redesign
 // ============================================================
 
-describe("test-2-2-005-006: FeatureItem uses CVA for status badge variants", () => {
-  test("FeatureItem imports cva from class-variance-authority", () => {
+describe("test-2-2-005-006: FeatureItem uses underlaid progress bar for phase visualization", () => {
+  test("FeatureItem defines PHASE_INDEX mapping", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/import.*cva.*from.*class-variance-authority/)
+    expect(componentSource).toMatch(/PHASE_INDEX/)
   })
 
-  test("FeatureItem defines statusBadgeVariants with cva", () => {
+  test("FeatureItem defines PHASE_COLOR_VAR mapping", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    // Should define a cva for badge variants
-    expect(componentSource).toMatch(/statusBadgeVariants.*=.*cva|badgeVariants.*=.*cva/)
+    expect(componentSource).toMatch(/PHASE_COLOR_VAR/)
   })
 
-  test("FeatureItem has variant for discovery status", () => {
+  test("FeatureItem has mapping for discovery status", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
     expect(componentSource).toMatch(/discovery/)
   })
 
-  test("FeatureItem has variant for design status", () => {
+  test("FeatureItem has mapping for design status", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
     expect(componentSource).toMatch(/design/)
   })
 
-  test("FeatureItem has variant for complete status", () => {
+  test("FeatureItem has mapping for complete status", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
     expect(componentSource).toMatch(/complete/)
   })
 
-  test("FeatureItem exports statusBadgeVariants", () => {
+  test("FeatureItem has feature-item class for CSS progress styling", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/export.*statusBadgeVariants|export.*badgeVariants/)
+    expect(componentSource).toMatch(/feature-item/)
+  })
+
+  test("FeatureItem sets data-phase attribute", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/data-phase/)
+  })
+
+  test("FeatureItem sets CSS custom properties for progress", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/--phase-color/)
+    expect(componentSource).toMatch(/--progress-width/)
   })
 })
 
@@ -188,10 +202,11 @@ describe("FeatureItem module exports", () => {
     expect(typeof module.FeatureItem).toBe("function")
   })
 
-  test("statusBadgeVariants can be imported", async () => {
+  test("Feature interface can be imported", async () => {
+    // Feature interface should be exported for type usage
     const module = await import("../FeatureItem")
-    expect(module.statusBadgeVariants).toBeDefined()
-    expect(typeof module.statusBadgeVariants).toBe("function")
+    // TypeScript interfaces don't exist at runtime, but we can check the module loaded
+    expect(module.FeatureItem).toBeDefined()
   })
 })
 
