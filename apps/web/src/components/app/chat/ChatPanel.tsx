@@ -143,6 +143,35 @@ function mapToolCallState(state: string | undefined): ToolCallState {
 }
 
 // ============================================================
+// CC Session ID Extraction Helper (task-cc-session-threading)
+// ============================================================
+
+/**
+ * Regex to match the trailing CC session ID marker appended by the server.
+ * Format: \n<!-- CC_SESSION:uuid -->
+ */
+const CC_SESSION_MARKER_REGEX = /\n<!-- CC_SESSION:([a-f0-9-]+) -->$/
+
+/**
+ * Extracts and strips the CC session ID marker from message content.
+ * The server appends this marker after streaming completes so the client
+ * can capture the session ID for future resume requests.
+ *
+ * @param content - Raw message content from stream
+ * @returns Object with cleanContent (marker stripped) and optional ccSessionId
+ */
+function extractCcSessionId(content: string): { cleanContent: string; ccSessionId?: string } {
+  const match = content.match(CC_SESSION_MARKER_REGEX)
+  if (match) {
+    return {
+      cleanContent: content.replace(CC_SESSION_MARKER_REGEX, ""),
+      ccSessionId: match[1],
+    }
+  }
+  return { cleanContent: content }
+}
+
+// ============================================================
 // Smart Query Trigger Mapping (task-3-1-004)
 // ============================================================
 
@@ -291,6 +320,10 @@ export const ChatPanel = observer(function ChatPanel({
   // Chat session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
 
+  // Claude Code session ID for continuity (task-cc-chatpanel-integration)
+  // Initialized from existing session's claudeCodeSessionId on load
+  const [ccSessionId, setCcSessionId] = useState<string | undefined>(undefined)
+
   // Find or create chat session for feature and phase (task-cpbi-005)
   // Session is uniquely identified by (featureId, phase) tuple
   useEffect(() => {
@@ -333,6 +366,17 @@ export const ChatPanel = observer(function ChatPanel({
     ? studioChat.chatSessionCollection.get(currentSessionId)
     : null
 
+  // Initialize ccSessionId from existing session (task-cc-chatpanel-integration)
+  // This ensures session continuity when reloading the page or switching sessions
+  useEffect(() => {
+    if (currentSession?.claudeCodeSessionId) {
+      setCcSessionId(currentSession.claudeCodeSessionId)
+    } else {
+      // Clear ccSessionId when switching to a new session without one
+      setCcSessionId(undefined)
+    }
+  }, [currentSession?.claudeCodeSessionId])
+
   // AI SDK useChat hook
   const {
     messages,
@@ -345,8 +389,8 @@ export const ChatPanel = observer(function ChatPanel({
   } = useChat({
     api: "/api/chat",
     id: currentSessionId || undefined,
-    body: { featureId, phase }, // task-cpbi-005: Include context for API
-    streamProtocol: "text",
+    body: { featureId, phase, ccSessionId }, // task-cpbi-005 + task-cc-chatpanel-integration: Include context and session ID for API
+    streamProtocol: "text", // Required for toTextStreamResponse() compatibility
     onError: (err) => {
       // Critical: Handle errors to ensure isLoading gets cleared
       // Without this handler, errors leave isLoading=true indefinitely
@@ -354,15 +398,36 @@ export const ChatPanel = observer(function ChatPanel({
     },
     onFinish: (message) => {
       console.log("[ChatPanel] onFinish called - stream complete", { messageLength: message.content.length })
+
+      // Extract CC session ID from trailing marker (task-cc-session-threading)
+      // Server appends <!-- CC_SESSION:uuid --> after stream content
+      const { cleanContent, ccSessionId: extractedCcSessionId } = extractCcSessionId(message.content)
+
+      // Update local state and persist CC session ID if extracted
+      if (extractedCcSessionId) {
+        console.log("[ChatPanel] Extracted CC session ID:", extractedCcSessionId)
+        setCcSessionId(extractedCcSessionId)
+
+        // Persist to domain for reload continuity (fire-and-forget)
+        if (currentSessionId) {
+          studioChat.chatSessionCollection.updateOne(currentSessionId, {
+            claudeCodeSessionId: extractedCcSessionId,
+          }).catch((err: unknown) => {
+            console.warn("[ChatPanel] Failed to persist CC session ID:", err)
+          })
+        }
+      }
+
       // Persist assistant message in onFinish callback
       // NOTE: All persistence operations are fire-and-forget to prevent hanging
       // if backend is slow. The UI already shows the message, persistence is just logging.
+      // NOTE: Use cleanContent (marker stripped) for persistence
       if (currentSessionId) {
-        // Fire-and-forget: persist assistant message
+        // Fire-and-forget: persist assistant message with clean content
         studioChat.addMessage({
           sessionId: currentSessionId,
           role: "assistant",
-          content: message.content,
+          content: cleanContent,
         }).catch((err) => {
           console.warn("[ChatPanel] Failed to persist assistant message:", err)
         })
@@ -701,7 +766,10 @@ export const ChatPanel = observer(function ChatPanel({
                       : "bg-muted text-foreground mr-auto"
                   )}
                 >
-                  <div className="whitespace-pre-wrap break-words">{message.content}</div>
+                  {/* Strip CC session marker from displayed content */}
+                  <div className="whitespace-pre-wrap break-words">
+                    {extractCcSessionId(message.content).cleanContent}
+                  </div>
                 </div>
               </div>
 
