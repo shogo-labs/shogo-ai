@@ -1,11 +1,41 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText } from 'ai'
+import { streamText, type ModelMessage } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { auth } from './auth'
 import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
+
+/**
+ * Convert UIMessage format (from @ai-sdk/react v3) to CoreMessage format (for streamText).
+ *
+ * UIMessage uses `parts` array: { parts: [{ type: "text", text: "..." }], role, id }
+ * CoreMessage uses `content` string: { role, content: "..." }
+ *
+ * chat-session-sync-fix: Required because v3 sendMessage() sends UIMessage format,
+ * but streamText() expects CoreMessage format.
+ */
+function convertUIMessagesToCoreMessages(messages: any[]): ModelMessage[] {
+  return messages.map((msg) => {
+    // If message already has content string (CoreMessage format), pass through
+    if (typeof msg.content === 'string') {
+      return { role: msg.role, content: msg.content }
+    }
+
+    // If message has parts array (UIMessage format), extract text content
+    if (Array.isArray(msg.parts)) {
+      const textContent = msg.parts
+        .filter((part: any) => part.type === 'text')
+        .map((part: any) => part.text)
+        .join('')
+      return { role: msg.role, content: textContent }
+    }
+
+    // Fallback: return as-is (may fail validation, but better than silent data loss)
+    return { role: msg.role, content: msg.content ?? '' }
+  })
+}
 
 // Port configuration from environment (supports multi-worktree isolation)
 const API_PORT = parseInt(process.env.API_PORT || '8002', 10)
@@ -176,54 +206,30 @@ app.post('/api/chat', async (c) => {
     // This enables session continuity in Claude Code
     const modelSettings = ccSessionId ? { resume: ccSessionId } : {}
 
-    // When resuming a CC session, only send NEW messages - CC already has the history!
-    // The AI SDK useChat pattern sends full message array, but CC loads prior context
-    // from its session files. Sending duplicates causes confusion/hangs.
-    let effectiveMessages = messages
-    if (ccSessionId && messages.length > 0) {
-      // Find the last user message (the new one being sent)
-      const lastUserIndex = messages.map((m: any) => m.role).lastIndexOf('user')
-      if (lastUserIndex >= 0) {
-        // Only send from the last user message onward
-        effectiveMessages = messages.slice(lastUserIndex)
-      }
-    }
+    // chat-session-sync-fix: Convert UIMessage format to CoreMessage format
+    // v3 @ai-sdk/react sends UIMessage with parts array, but streamText expects CoreMessage with content string
+    const coreMessages = convertUIMessagesToCoreMessages(messages)
 
+    // chat-session-sync-fix: Send FULL message history every time
+    // Claude Code handles deduplication internally via its session files
+    // Old message-filtering logic was removed in favor of passing full array
     const result = streamText({
-      model: claudeCode('sonnet', modelSettings),
+      // Type assertion for ai-sdk-provider-claude-code compatibility with ai@6
+      model: claudeCode('sonnet', modelSettings) as Parameters<typeof streamText>[0]['model'],
       system: systemPrompt,
-      messages: effectiveMessages,
+      messages: coreMessages,
     })
 
-    // Create custom stream that appends CC session ID marker after content
-    // This allows the client to extract the session ID for future resume
-    const encoder = new TextEncoder()
-    const customStream = new ReadableStream({
-      async start(controller) {
-        try {
-          // Forward all text chunks from the AI stream
-          for await (const chunk of result.textStream) {
-            controller.enqueue(encoder.encode(chunk))
-          }
-
-          // After stream completes, get the CC session ID from provider metadata
-          const metadata = await result.providerMetadata
-          const newCcSessionId = metadata?.['claude-code']?.sessionId as string | undefined
-
-          // Append session ID marker if available (for client extraction)
-          if (newCcSessionId) {
-            controller.enqueue(encoder.encode(`\n<!-- CC_SESSION:${newCcSessionId} -->`))
-          }
-
-          controller.close()
-        } catch (err) {
-          controller.error(err)
-        }
+    // chat-session-sync-fix: Use toUIMessageStreamResponse() with messageMetadata callback
+    // This enables real-time tool call visibility in the client via message.parts
+    // Session ID flows through stream metadata (not blocking header extraction)
+    return result.toUIMessageStreamResponse({
+      messageMetadata: ({ part }) => {
+        // Extract session ID from providerMetadata when available
+        // Type assertion needed as TextStreamPart types don't include providerMetadata
+        const sessionId = ((part as any).providerMetadata as Record<string, Record<string, unknown>> | undefined)?.['claude-code']?.sessionId
+        return sessionId ? { ccSessionId: sessionId as string } : undefined
       },
-    })
-
-    return new Response(customStream, {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     })
   } catch (error: any) {
     console.error('[/api/chat] Error:', error)

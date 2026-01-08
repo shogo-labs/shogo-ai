@@ -406,6 +406,85 @@ describe("/api/chat CC Session Resume (task-cc-api-endpoint)", () => {
 })
 
 /**
+ * Tests for AI SDK v6 UIMessage Stream (chat-session-sync-fix)
+ *
+ * Verifies v6 streaming behavior:
+ * - Non-blocking stream (no await on providerMetadata before returning)
+ * - messageMetadata callback for session ID extraction
+ * - Stream returns immediately without buffering
+ */
+describe("AI SDK v6 UIMessage Stream (chat-session-sync-fix)", () => {
+  // spec-v6-001: Stream is non-blocking (no await on providerMetadata)
+  describe("spec-v6-001: Non-blocking stream", () => {
+    test("server.ts does NOT await providerMetadata before toUIMessageStreamResponse", async () => {
+      const fs = await import("fs")
+      const path = await import("path")
+      const serverPath = path.resolve(import.meta.dir, "../server.ts")
+      const source = fs.readFileSync(serverPath, "utf-8")
+
+      // OLD PATTERN (BROKEN): await result.providerMetadata before returning stream
+      // This blocks until stream completes, then tries to return already-consumed stream
+      // Pattern: "const metadata = await result.providerMetadata"
+      // Pattern: "await result.providerMetadata" followed by "toUIMessageStreamResponse"
+      expect(source).not.toMatch(/await\s+result\.providerMetadata[\s\S]{0,200}toUIMessageStreamResponse/)
+    })
+
+    test("server.ts returns stream immediately without blocking await", async () => {
+      const fs = await import("fs")
+      const path = await import("path")
+      const serverPath = path.resolve(import.meta.dir, "../server.ts")
+      const source = fs.readFileSync(serverPath, "utf-8")
+
+      // Should NOT have "const metadata = await result.providerMetadata"
+      // This pattern buffers the entire stream before returning
+      expect(source).not.toMatch(/const\s+\w+\s*=\s*await\s+result\.providerMetadata/)
+    })
+  })
+
+  // spec-v6-002: messageMetadata callback for session ID
+  describe("spec-v6-002: messageMetadata callback", () => {
+    test("server.ts uses messageMetadata callback in toUIMessageStreamResponse", async () => {
+      const fs = await import("fs")
+      const path = await import("path")
+      const serverPath = path.resolve(import.meta.dir, "../server.ts")
+      const source = fs.readFileSync(serverPath, "utf-8")
+
+      // NEW PATTERN: messageMetadata callback extracts session ID from stream parts
+      // toUIMessageStreamResponse({ messageMetadata: ... })
+      expect(source).toMatch(/toUIMessageStreamResponse\s*\(\s*\{[\s\S]*messageMetadata/)
+    })
+
+    test("messageMetadata callback extracts ccSessionId from providerMetadata", async () => {
+      const fs = await import("fs")
+      const path = await import("path")
+      const serverPath = path.resolve(import.meta.dir, "../server.ts")
+      const source = fs.readFileSync(serverPath, "utf-8")
+
+      // Callback should reference providerMetadata and ccSessionId
+      expect(source).toMatch(/messageMetadata[\s\S]*providerMetadata/)
+      expect(source).toMatch(/messageMetadata[\s\S]*ccSessionId|sessionId/)
+    })
+  })
+
+  // spec-v6-003: No X-CC-Session-Id header setting via blocking await
+  describe("spec-v6-003: Session ID via stream metadata (not header)", () => {
+    test("session ID flows through messageMetadata (not separate header logic)", async () => {
+      const fs = await import("fs")
+      const path = await import("path")
+      const serverPath = path.resolve(import.meta.dir, "../server.ts")
+      const source = fs.readFileSync(serverPath, "utf-8")
+
+      // The OLD pattern extracted session ID via:
+      // const metadata = await result.providerMetadata
+      // const newCcSessionId = metadata?.['claude-code']?.sessionId
+      // return result.toUIMessageStreamResponse({ headers: { 'X-CC-Session-Id': newCcSessionId } })
+      // This should be replaced with messageMetadata callback
+      expect(source).not.toMatch(/const\s+\w+\s*=\s*await\s+result\.providerMetadata[\s\S]*headers\s*:\s*\{[\s\S]*X-CC-Session-Id/)
+    })
+  })
+})
+
+/**
  * Tests for Data Stream Protocol Implementation (task-css-server-protocol)
  *
  * Verifies server code structure for:
@@ -440,16 +519,19 @@ describe("Server Data Stream Protocol (task-css-server-protocol)", () => {
     })
   })
 
-  // spec-css-server-02: X-CC-Session-Id header
-  describe("spec-css-server-02: X-CC-Session-Id header", () => {
-    test("server.ts references X-CC-Session-Id header", async () => {
+  // spec-css-server-02: Session ID via messageMetadata (v3 API)
+  // chat-session-sync-fix: Replaced X-CC-Session-Id header with messageMetadata callback
+  describe("spec-css-server-02: Session ID via messageMetadata", () => {
+    test("server.ts uses messageMetadata callback (not header)", async () => {
       const fs = await import("fs")
       const path = await import("path")
       const serverPath = path.resolve(import.meta.dir, "../server.ts")
       const source = fs.readFileSync(serverPath, "utf-8")
 
-      // Should set X-CC-Session-Id header
-      expect(source).toMatch(/X-CC-Session-Id/)
+      // v3 API: Uses messageMetadata callback in toUIMessageStreamResponse
+      expect(source).toMatch(/messageMetadata/)
+      // Header approach is removed
+      expect(source).not.toMatch(/X-CC-Session-Id/)
     })
 
     test("CC_SESSION marker is not appended to response body", async () => {

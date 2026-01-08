@@ -17,9 +17,10 @@
  * - Smart query triggers: Detects tool calls in onFinish and triggers targeted data refreshes (task-3-1-004)
  */
 
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { observer } from "mobx-react-lite"
 import { useChat, type Message } from "@ai-sdk/react"
+import { DefaultChatTransport } from "ai"
 import { useDomains } from "@/contexts/DomainProvider"
 import { cn } from "@/lib/utils"
 import { ChatHeader } from "./ChatHeader"
@@ -127,6 +128,28 @@ function extractToolCalls(message: Message): ExtractedToolCall[] {
     })
 }
 
+/**
+ * Extract text content from a message.
+ * chat-session-sync-fix: v3 API uses parts array instead of content string.
+ * This helper handles both formats for backward compatibility.
+ */
+function extractTextContent(message: Message): string {
+  // If message has content string (legacy or fallback), use it
+  if (typeof message.content === "string" && message.content) {
+    return message.content
+  }
+
+  // v3 API: Extract text from parts array
+  if ("parts" in message && Array.isArray((message as any).parts)) {
+    return ((message as any).parts as any[])
+      .filter((part) => part.type === "text")
+      .map((part) => part.text || "")
+      .join("")
+  }
+
+  return ""
+}
+
 function mapToolCallState(state: string | undefined): ToolCallState {
   switch (state) {
     case "partial-call":
@@ -143,33 +166,9 @@ function mapToolCallState(state: string | undefined): ToolCallState {
 }
 
 // ============================================================
-// CC Session ID Extraction Helper (task-cc-session-threading)
+// CC Session ID is now extracted from X-CC-Session-Id response header
+// (chat-session-sync-fix: removed marker extraction in favor of header approach)
 // ============================================================
-
-/**
- * Regex to match the trailing CC session ID marker appended by the server.
- * Format: \n<!-- CC_SESSION:uuid -->
- */
-const CC_SESSION_MARKER_REGEX = /\n<!-- CC_SESSION:([a-f0-9-]+) -->$/
-
-/**
- * Extracts and strips the CC session ID marker from message content.
- * The server appends this marker after streaming completes so the client
- * can capture the session ID for future resume requests.
- *
- * @param content - Raw message content from stream
- * @returns Object with cleanContent (marker stripped) and optional ccSessionId
- */
-function extractCcSessionId(content: string): { cleanContent: string; ccSessionId?: string } {
-  const match = content.match(CC_SESSION_MARKER_REGEX)
-  if (match) {
-    return {
-      cleanContent: content.replace(CC_SESSION_MARKER_REGEX, ""),
-      ccSessionId: match[1],
-    }
-  }
-  return { cleanContent: content }
-}
 
 // ============================================================
 // Smart Query Trigger Mapping (task-3-1-004)
@@ -324,6 +323,10 @@ export const ChatPanel = observer(function ChatPanel({
   // Initialized from existing session's claudeCodeSessionId on load
   const [ccSessionId, setCcSessionId] = useState<string | undefined>(undefined)
 
+  // chat-session-sync-fix: Ref for latest ccSessionId value in callbacks
+  // State updates are async, ref provides immediate access for append() calls
+  const ccSessionIdRef = useRef<string | undefined>(undefined)
+
   // Find or create chat session for feature and phase (task-cpbi-005)
   // Session is uniquely identified by (featureId, phase) tuple
   useEffect(() => {
@@ -371,63 +374,86 @@ export const ChatPanel = observer(function ChatPanel({
   useEffect(() => {
     if (currentSession?.claudeCodeSessionId) {
       setCcSessionId(currentSession.claudeCodeSessionId)
+      ccSessionIdRef.current = currentSession.claudeCodeSessionId
     } else {
       // Clear ccSessionId when switching to a new session without one
       setCcSessionId(undefined)
+      ccSessionIdRef.current = undefined
     }
   }, [currentSession?.claudeCodeSessionId])
 
-  // AI SDK useChat hook
+  // chat-session-sync-fix: Keep ref in sync with state changes
+  useEffect(() => {
+    ccSessionIdRef.current = ccSessionId
+  }, [ccSessionId])
+
+  // chat-session-sync-fix: v3 API requires DefaultChatTransport for proper metadata handling
+  // The transport must be memoized to prevent re-creation on every render
+  const chatTransport = useMemo(
+    () => new DefaultChatTransport({ api: "/api/chat" }),
+    []
+  )
+
+  // AI SDK useChat hook (v3 API - chat-session-sync-fix)
   const {
     messages,
-    append,  // Use append() for direct message sending - avoids race condition
+    sendMessage,  // v3 API: sendMessage() replaces append()
     isLoading,
     error,
     setMessages,
     reload,
     stop,  // Used by idle timeout to force-complete hung streams
   } = useChat({
-    api: "/api/chat",
+    transport: chatTransport,
     id: currentSessionId || undefined,
-    body: { featureId, phase, ccSessionId }, // task-cpbi-005 + task-cc-chatpanel-integration: Include context and session ID for API
-    streamProtocol: "text", // Required for toTextStreamResponse() compatibility
+    // chat-session-sync-fix: v3 with transport enables proper message.metadata handling
+    // Server's messageMetadata callback sends ccSessionId, which becomes message.metadata.ccSessionId
     onError: (err) => {
       // Critical: Handle errors to ensure isLoading gets cleared
       // Without this handler, errors leave isLoading=true indefinitely
       console.error("[ChatPanel] Stream error:", err)
     },
-    onFinish: (message) => {
-      console.log("[ChatPanel] onFinish called - stream complete", { messageLength: message.content.length })
+    onFinish: async ({ message }) => {
+      // chat-session-sync-fix: v3 API callback receives { message, messages, isAbort, ... } options object
+      // Must destructure message from options - NOT receive message directly like v1/v2
+      const contentLength = message.content?.length ?? message.parts?.length ?? 0
+      // Debug: Log message metadata to verify session ID capture
+      console.log("[ChatPanel] onFinish called - stream complete", {
+        contentLength,
+        hasMetadata: !!(message as any).metadata,
+        ccSessionId: (message as any).metadata?.ccSessionId,
+      })
 
-      // Extract CC session ID from trailing marker (task-cc-session-threading)
-      // Server appends <!-- CC_SESSION:uuid --> after stream content
-      const { cleanContent, ccSessionId: extractedCcSessionId } = extractCcSessionId(message.content)
+      // chat-session-sync-fix: v3 API - Session ID from message.metadata
+      // Server's messageMetadata callback sends ccSessionId via SSE message-metadata event
+      const newCcSessionId = (message as any).metadata?.ccSessionId as string | undefined
 
-      // Update local state and persist CC session ID if extracted
-      if (extractedCcSessionId) {
-        console.log("[ChatPanel] Extracted CC session ID:", extractedCcSessionId)
-        setCcSessionId(extractedCcSessionId)
-
-        // Persist to domain for reload continuity (fire-and-forget)
-        if (currentSessionId) {
-          studioChat.chatSessionCollection.updateOne(currentSessionId, {
-            claudeCodeSessionId: extractedCcSessionId,
-          }).catch((err: unknown) => {
-            console.warn("[ChatPanel] Failed to persist CC session ID:", err)
+      // chat-session-sync-fix: Await persistence before state update
+      // This ensures persistence completes before React state updates
+      if (newCcSessionId && currentSessionId) {
+        console.log("[ChatPanel] Persisting CC session ID:", newCcSessionId)
+        try {
+          await studioChat.chatSessionCollection.updateOne(currentSessionId, {
+            claudeCodeSessionId: newCcSessionId,
           })
+          // Only update state after successful persistence
+          setCcSessionId(newCcSessionId)
+        } catch (err) {
+          // Don't update state if persistence fails - prevents broken resume
+          console.error("[ChatPanel] CRITICAL: CC session ID persistence failed:", err)
         }
       }
 
       // Persist assistant message in onFinish callback
       // NOTE: All persistence operations are fire-and-forget to prevent hanging
       // if backend is slow. The UI already shows the message, persistence is just logging.
-      // NOTE: Use cleanContent (marker stripped) for persistence
       if (currentSessionId) {
-        // Fire-and-forget: persist assistant message with clean content
+        // Fire-and-forget: persist assistant message
+        // chat-session-sync-fix: Use extractTextContent for v3 API compatibility
         studioChat.addMessage({
           sessionId: currentSessionId,
           role: "assistant",
-          content: cleanContent,
+          content: extractTextContent(message),
         }).catch((err) => {
           console.warn("[ChatPanel] Failed to persist assistant message:", err)
         })
@@ -570,9 +596,8 @@ export const ChatPanel = observer(function ChatPanel({
     onStreamingChange?.(isLoading)
   }, [isLoading, onStreamingChange])
 
-  // Handle message submission using append() to avoid race condition
-  // The old pattern used setInput() + handleSubmit() but setInput is async
-  // and handleSubmit would read stale "" input state, losing the message
+  // chat-session-sync-fix: Handle message submission using v3 sendMessage() API
+  // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
   const handleSendMessage = useCallback(
     async (content: string) => {
       console.log("[ChatPanel] handleSendMessage called", {
@@ -600,19 +625,31 @@ export const ChatPanel = observer(function ChatPanel({
         content: trimmedContent,
       }).catch((err) => console.warn("[ChatPanel] Failed to persist user message:", err))
 
-      // Send to API using append() - content is passed directly, no race condition!
-      console.log("[ChatPanel] Calling append()", { contentLength: trimmedContent.length })
+      // chat-session-sync-fix: Send via v3 sendMessage() API
+      // - First arg: { text } object (not { role, content })
+      // - Second arg: options with body for server-side data
+      // - ccSessionIdRef.current ensures fresh session ID value
+      console.log("[ChatPanel] Calling sendMessage()", {
+        contentLength: trimmedContent.length,
+        ccSessionId: ccSessionIdRef.current,
+      })
       try {
-        await append({
-          role: "user",
-          content: trimmedContent,
-        })
-        console.log("[ChatPanel] append() completed successfully")
+        await sendMessage(
+          { text: trimmedContent },
+          {
+            body: {
+              featureId,
+              phase,
+              ccSessionId: ccSessionIdRef.current,
+            },
+          }
+        )
+        console.log("[ChatPanel] sendMessage() completed successfully")
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
       }
     },
-    [currentSessionId, studioChat, append]
+    [currentSessionId, studioChat, sendMessage, featureId, phase]
   )
 
   // Handle form submit from ChatInput
@@ -766,9 +803,10 @@ export const ChatPanel = observer(function ChatPanel({
                       : "bg-muted text-foreground mr-auto"
                   )}
                 >
-                  {/* Strip CC session marker from displayed content */}
+                  {/* chat-session-sync-fix: Use extractTextContent for v3 API compatibility
+                      v3 uses parts array, content may be undefined */}
                   <div className="whitespace-pre-wrap break-words">
-                    {extractCcSessionId(message.content).cleanContent}
+                    {extractTextContent(message)}
                   </div>
                 </div>
               </div>
