@@ -2,29 +2,27 @@
  * Seed Initialization Tests
  *
  * Tests for automatic seed data initialization at MCP server startup.
- * Validates studio-core schema loading, bootstrap execution, and idempotency.
+ * Validates studio-core schema loading, async query/insert pattern, and idempotency.
  *
- * Generated from TestSpecifications:
- * - test-1-3-001: initializeSeedData creates Shogo org and Platform project when database is empty
- * - test-1-3-002: initializeSeedData is idempotent - skips creation when data exists
- * - test-1-3-003: initializeSeedData handles database errors gracefully
- * - test-1-3-004: initializeSeedData uses deterministic IDs from seeds/ids.ts
- * - test-1-3-005: initializeSeedData follows loadSchema pattern
+ * Pattern under test:
+ * - Uses .query().where().first() for idempotency check
+ * - Uses .insertOne() for writes (syncs to backend)
+ * - No FileSystemPersistence - routes through backendRegistry
  */
 
 import { describe, test, expect, beforeEach, afterEach, mock, spyOn, type Mock } from "bun:test"
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs"
+import { mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
-// Import the function under test - will fail until implemented
+// Import the function under test
 import { initializeSeedData } from "../seed-init"
 
 // Import for mocking
 import * as postgresInit from "../postgres-init"
 import * as stateApi from "@shogo/state-api"
 
-// Seed IDs for verification - exported from @shogo/state-api
+// Seed IDs for verification
 import { SHOGO_ORG_ID, PLATFORM_PROJECT_ID } from "@shogo/state-api"
 
 // Track mocks for cleanup
@@ -33,7 +31,6 @@ let sqliteAvailableSpy: Mock<typeof postgresInit.isSqliteAvailable> | null = nul
 let registrySpy: Mock<typeof postgresInit.getGlobalBackendRegistry> | null = null
 let loadSchemaSpy: Mock<typeof stateApi.loadSchema> | null = null
 let domainSpy: Mock<typeof stateApi.domain> | null = null
-let bootstrapSpy: Mock<typeof stateApi.bootstrapStudioCore> | null = null
 
 // ============================================================================
 // Test Fixtures
@@ -57,6 +54,7 @@ function createStudioCoreSchema() {
           name: { type: "string" },
           slug: { type: "string" },
           description: { type: "string" },
+          createdAt: { type: "number" },
         },
         required: ["id", "name", "slug"],
       },
@@ -66,20 +64,10 @@ function createStudioCoreSchema() {
           id: { type: "string", "x-mst-type": "identifier" },
           name: { type: "string" },
           organization: { type: "string", "x-mst-type": "reference" },
-          tier: { type: "string" },
-          status: { type: "string" },
+          description: { type: "string" },
+          createdAt: { type: "number" },
         },
         required: ["id", "name"],
-      },
-      Member: {
-        type: "object",
-        properties: {
-          id: { type: "string", "x-mst-type": "identifier" },
-          userId: { type: "string" },
-          role: { type: "string" },
-          organization: { type: "string", "x-mst-type": "reference" },
-        },
-        required: ["id", "userId", "role"],
       },
     },
   }
@@ -92,7 +80,6 @@ function createTempSchemasDir(): string {
   const tempDir = join(tmpdir(), `seed-init-test-${Date.now()}`)
   mkdirSync(tempDir, { recursive: true })
 
-  // Add studio-core schema
   const studioCoreDir = join(tempDir, "studio-core")
   mkdirSync(studioCoreDir, { recursive: true })
   writeFileSync(
@@ -115,47 +102,54 @@ function cleanupTempDir(dir: string) {
 }
 
 /**
- * Create mock store with organization and project collections
+ * Create chainable query mock that returns given result
  */
-function createMockStore(hasExistingData: boolean = false) {
-  const organizations: any[] = hasExistingData
-    ? [{ id: SHOGO_ORG_ID, name: "Shogo", slug: "shogo" }]
-    : []
-  const projects: any[] = hasExistingData
-    ? [{ id: PLATFORM_PROJECT_ID, name: "shogo-platform" }]
-    : []
-  const members: any[] = []
+function createQueryChain(result: any = null) {
+  const chain = {
+    where: mock(() => chain),
+    first: mock(() => Promise.resolve(result)),
+  }
+  return {
+    query: mock(() => chain),
+    _chain: chain,
+  }
+}
+
+/**
+ * Create mock store with queryable/mutatable collections
+ */
+function createMockStore(options: { hasExistingOrg?: boolean } = {}) {
+  const { hasExistingOrg = false } = options
+
+  // Organization collection with query + insertOne
+  const orgQueryChain = createQueryChain(
+    hasExistingOrg ? { id: SHOGO_ORG_ID, name: "Shogo", slug: "shogo" } : null
+  )
+  const orgInsertOne = mock((data: any) => Promise.resolve(data))
+
+  // Project collection with query + insertOne
+  const projectQueryChain = createQueryChain(null)
+  const projectInsertOne = mock((data: any) => Promise.resolve(data))
 
   return {
     organizationCollection: {
-      get: (id: string) => organizations.find((o) => o.id === id),
-      all: () => organizations,
-      add: mock((data: any) => {
-        organizations.push(data)
-        return data
-      }),
+      query: orgQueryChain.query,
+      insertOne: orgInsertOne,
+      _queryChain: orgQueryChain._chain,
     },
     projectCollection: {
-      get: (id: string) => projects.find((p) => p.id === id),
-      all: () => projects,
-      add: mock((data: any) => {
-        projects.push(data)
-        return data
-      }),
+      query: projectQueryChain.query,
+      insertOne: projectInsertOne,
+      _queryChain: projectQueryChain._chain,
     },
-    memberCollection: {
-      get: (id: string) => members.find((m) => m.id === id),
-      all: () => members,
-      add: mock((data: any) => {
-        members.push(data)
-        return data
-      }),
+    _mocks: {
+      orgQuery: orgQueryChain.query,
+      orgWhere: orgQueryChain._chain.where,
+      orgFirst: orgQueryChain._chain.first,
+      orgInsertOne,
+      projectQuery: projectQueryChain.query,
+      projectInsertOne,
     },
-    createMember: mock((data: any) => {
-      members.push(data)
-      return data
-    }),
-    loadAllFromBackend: mock(() => Promise.resolve()),
   }
 }
 
@@ -168,7 +162,7 @@ describe("Seed Initialization", () => {
   let consoleLogSpy: ReturnType<typeof spyOn>
   let consoleWarnSpy: ReturnType<typeof spyOn>
   let mockStore: ReturnType<typeof createMockStore>
-  let mockRegistry: { executeDDL: ReturnType<typeof mock> }
+  let mockRegistry: any
 
   beforeEach(() => {
     tempDir = createTempSchemasDir()
@@ -179,13 +173,7 @@ describe("Seed Initialization", () => {
 
     // Create mock registry
     mockRegistry = {
-      executeDDL: mock(() =>
-        Promise.resolve({
-          success: true,
-          statements: ["CREATE TABLE test"],
-          executed: 1,
-        })
-      ),
+      resolve: mock(() => ({ execute: mock(() => Promise.resolve({ items: [] })) })),
     }
 
     // Default mocks - SQL backend available
@@ -207,59 +195,103 @@ describe("Seed Initialization", () => {
     registrySpy?.mockRestore()
     loadSchemaSpy?.mockRestore()
     domainSpy?.mockRestore()
-    bootstrapSpy?.mockRestore()
 
     postgresAvailableSpy = null
     sqliteAvailableSpy = null
     registrySpy = null
     loadSchemaSpy = null
     domainSpy = null
-    bootstrapSpy = null
   })
 
   describe("initializeSeedData", () => {
-    test("creates Shogo org and Platform project when database is empty", async () => {
-      // Given: studio-core schema exists on disk and database is empty
-      mockStore = createMockStore(false) // Empty database
+    test("creates store with backendRegistry (no FileSystemPersistence)", async () => {
+      // Given: Global backend registry exists and store is empty
+      mockStore = createMockStore({ hasExistingOrg: false })
 
-      // Mock domain factory
-      const mockDomainFactory = {
-        createStore: mock(() => mockStore),
-      }
+      const createStoreMock = mock(() => mockStore)
+      const mockDomainFactory = { createStore: createStoreMock }
       domainSpy = spyOn(stateApi, "domain").mockReturnValue(mockDomainFactory as any)
 
-      // Mock loadSchema
       loadSchemaSpy = spyOn(stateApi, "loadSchema").mockResolvedValue({
         metadata: { name: "studio-core" },
         enhanced: createStudioCoreSchema(),
       } as any)
 
-      // Mock bootstrapStudioCore
-      bootstrapSpy = spyOn(stateApi, "bootstrapStudioCore").mockReturnValue({
-        alreadyBootstrapped: false,
-        organization: { id: SHOGO_ORG_ID, name: "Shogo", slug: "shogo" },
-        project: { id: PLATFORM_PROJECT_ID, name: "shogo-platform" },
-        member: { id: "member-1", userId: "bootstrap-user", role: "owner" },
-      })
+      // When: initializeSeedData is called
+      await initializeSeedData(tempDir)
+
+      // Then: createStore called with backendRegistry, NOT FileSystemPersistence
+      expect(createStoreMock).toHaveBeenCalled()
+      const createStoreArgs = createStoreMock.mock.calls[0][0]
+
+      // Should have backendRegistry
+      expect(createStoreArgs.services.backendRegistry).toBeDefined()
+
+      // Should NOT have persistence (FileSystemPersistence)
+      expect(createStoreArgs.services.persistence).toBeUndefined()
+    })
+
+    test("uses collection.query().where().first() for idempotency check", async () => {
+      // Given: Store with queryable collections
+      mockStore = createMockStore({ hasExistingOrg: false })
+
+      const mockDomainFactory = { createStore: mock(() => mockStore) }
+      domainSpy = spyOn(stateApi, "domain").mockReturnValue(mockDomainFactory as any)
+
+      loadSchemaSpy = spyOn(stateApi, "loadSchema").mockResolvedValue({
+        metadata: { name: "studio-core" },
+        enhanced: createStudioCoreSchema(),
+      } as any)
 
       // When: initializeSeedData is called
       await initializeSeedData(tempDir)
 
-      // Then: Shogo organization exists
-      expect(bootstrapSpy).toHaveBeenCalled()
-      expect(bootstrapSpy).toHaveBeenCalledWith(mockStore, expect.any(String))
+      // Then: organizationCollection.query().where().first() was called
+      expect(mockStore._mocks.orgQuery).toHaveBeenCalled()
+      expect(mockStore._mocks.orgWhere).toHaveBeenCalledWith({ id: SHOGO_ORG_ID })
+      expect(mockStore._mocks.orgFirst).toHaveBeenCalled()
+    })
+
+    test("creates seed data via collection.insertOne() when database is empty", async () => {
+      // Given: Empty store (no existing seed data)
+      mockStore = createMockStore({ hasExistingOrg: false })
+
+      const mockDomainFactory = { createStore: mock(() => mockStore) }
+      domainSpy = spyOn(stateApi, "domain").mockReturnValue(mockDomainFactory as any)
+
+      loadSchemaSpy = spyOn(stateApi, "loadSchema").mockResolvedValue({
+        metadata: { name: "studio-core" },
+        enhanced: createStudioCoreSchema(),
+      } as any)
+
+      // When: initializeSeedData is called
+      await initializeSeedData(tempDir)
+
+      // Then: insertOne() called for org with correct data
+      expect(mockStore._mocks.orgInsertOne).toHaveBeenCalled()
+      const orgInsertCall = mockStore._mocks.orgInsertOne.mock.calls[0][0]
+      expect(orgInsertCall.id).toBe(SHOGO_ORG_ID)
+      expect(orgInsertCall.name).toBe("Shogo")
+      expect(orgInsertCall.slug).toBe("shogo")
+
+      // And: insertOne() called for project with correct data
+      expect(mockStore._mocks.projectInsertOne).toHaveBeenCalled()
+      const projectInsertCall = mockStore._mocks.projectInsertOne.mock.calls[0][0]
+      expect(projectInsertCall.id).toBe(PLATFORM_PROJECT_ID)
+      expect(projectInsertCall.name).toBe("shogo-platform")
+      expect(projectInsertCall.organization).toBe(SHOGO_ORG_ID)
+      expect(projectInsertCall.tier).toBe("internal")
+      expect(projectInsertCall.status).toBe("active")
 
       // And: Function logs 'Seed data created' message
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Seed data created"))
     })
 
-    test("is idempotent - skips creation when data exists", async () => {
-      // Given: Shogo organization and Platform project already exist
-      mockStore = createMockStore(true) // Has existing data
+    test("skips creation when seed data already exists (idempotent)", async () => {
+      // Given: Store with existing SHOGO_ORG_ID
+      mockStore = createMockStore({ hasExistingOrg: true })
 
-      const mockDomainFactory = {
-        createStore: mock(() => mockStore),
-      }
+      const mockDomainFactory = { createStore: mock(() => mockStore) }
       domainSpy = spyOn(stateApi, "domain").mockReturnValue(mockDomainFactory as any)
 
       loadSchemaSpy = spyOn(stateApi, "loadSchema").mockResolvedValue({
@@ -267,18 +299,16 @@ describe("Seed Initialization", () => {
         enhanced: createStudioCoreSchema(),
       } as any)
 
-      // Mock bootstrapStudioCore to return already bootstrapped
-      bootstrapSpy = spyOn(stateApi, "bootstrapStudioCore").mockReturnValue({
-        alreadyBootstrapped: true,
-        organization: { id: SHOGO_ORG_ID, name: "Shogo", slug: "shogo" },
-        project: { id: PLATFORM_PROJECT_ID, name: "shogo-platform" },
-      })
-
       // When: initializeSeedData is called
       await initializeSeedData(tempDir)
 
-      // Then: No error is thrown and no duplicates created
-      expect(bootstrapSpy).toHaveBeenCalled()
+      // Then: query was called to check existence
+      expect(mockStore._mocks.orgQuery).toHaveBeenCalled()
+      expect(mockStore._mocks.orgFirst).toHaveBeenCalled()
+
+      // And: insertOne() was NOT called (data already exists)
+      expect(mockStore._mocks.orgInsertOne).not.toHaveBeenCalled()
+      expect(mockStore._mocks.projectInsertOne).not.toHaveBeenCalled()
 
       // And: Function logs 'Seed data already exists' message
       expect(consoleLogSpy).toHaveBeenCalledWith(
@@ -286,13 +316,12 @@ describe("Seed Initialization", () => {
       )
     })
 
-    test("handles database errors gracefully", async () => {
-      // Given: Database connection or query will fail
-      const mockDomainFactory = {
-        createStore: mock(() => {
-          throw new Error("Database connection failed")
-        }),
-      }
+    test("logs warning and continues on query error", async () => {
+      // Given: query() throws error
+      mockStore = createMockStore({ hasExistingOrg: false })
+      mockStore._mocks.orgFirst.mockRejectedValue(new Error("Database query failed"))
+
+      const mockDomainFactory = { createStore: mock(() => mockStore) }
       domainSpy = spyOn(stateApi, "domain").mockReturnValue(mockDomainFactory as any)
 
       loadSchemaSpy = spyOn(stateApi, "loadSchema").mockResolvedValue({
@@ -301,25 +330,22 @@ describe("Seed Initialization", () => {
       } as any)
 
       // When: initializeSeedData is called
-      // Then: Error is logged with descriptive message
       await initializeSeedData(tempDir)
 
-      // And: Function does not throw (returns normally)
-      // The test completes without exception
-
-      // And: Warning logged
+      // Then: Warning logged, no crash
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining("[seed-init]")
       )
+
+      // And: Function completes without throwing
+      // (test would fail if exception propagated)
     })
 
     test("uses deterministic IDs from seeds/ids.ts", async () => {
-      // Given: studio-core schema exists on disk and database is empty
-      mockStore = createMockStore(false)
+      // Given: Empty store
+      mockStore = createMockStore({ hasExistingOrg: false })
 
-      const mockDomainFactory = {
-        createStore: mock(() => mockStore),
-      }
+      const mockDomainFactory = { createStore: mock(() => mockStore) }
       domainSpy = spyOn(stateApi, "domain").mockReturnValue(mockDomainFactory as any)
 
       loadSchemaSpy = spyOn(stateApi, "loadSchema").mockResolvedValue({
@@ -327,62 +353,31 @@ describe("Seed Initialization", () => {
         enhanced: createStudioCoreSchema(),
       } as any)
 
-      bootstrapSpy = spyOn(stateApi, "bootstrapStudioCore").mockReturnValue({
-        alreadyBootstrapped: false,
-        organization: { id: SHOGO_ORG_ID, name: "Shogo", slug: "shogo" },
-        project: { id: PLATFORM_PROJECT_ID, name: "shogo-platform" },
-        member: { id: "member-1", userId: "bootstrap-user", role: "owner" },
-      })
-
       // When: initializeSeedData is called
       await initializeSeedData(tempDir)
 
-      // Then: bootstrapStudioCore is called (which uses deterministic IDs internally)
-      expect(bootstrapSpy).toHaveBeenCalled()
+      // Then: Query uses deterministic SHOGO_ORG_ID
+      expect(mockStore._mocks.orgWhere).toHaveBeenCalledWith({ id: SHOGO_ORG_ID })
 
-      // Verify the deterministic IDs are correct
+      // And: Insert uses deterministic IDs
+      const orgInsertCall = mockStore._mocks.orgInsertOne.mock.calls[0][0]
+      expect(orgInsertCall.id).toBe(SHOGO_ORG_ID)
+
+      const projectInsertCall = mockStore._mocks.projectInsertOne.mock.calls[0][0]
+      expect(projectInsertCall.id).toBe(PLATFORM_PROJECT_ID)
+
+      // And: Verify the deterministic IDs are correct constants
       expect(SHOGO_ORG_ID).toBe("00000000-0000-4000-8000-000000000001")
       expect(PLATFORM_PROJECT_ID).toBe("00000000-0000-4000-8000-000000000002")
-    })
-
-    test("follows loadSchema pattern", async () => {
-      // Given: studio-core schema exists on disk
-      mockStore = createMockStore(false)
-
-      const mockDomainFactory = {
-        createStore: mock(() => mockStore),
-      }
-      domainSpy = spyOn(stateApi, "domain").mockReturnValue(mockDomainFactory as any)
-
-      loadSchemaSpy = spyOn(stateApi, "loadSchema").mockResolvedValue({
-        metadata: { name: "studio-core" },
-        enhanced: createStudioCoreSchema(),
-      } as any)
-
-      bootstrapSpy = spyOn(stateApi, "bootstrapStudioCore").mockReturnValue({
-        alreadyBootstrapped: false,
-        organization: { id: SHOGO_ORG_ID, name: "Shogo" },
-        project: { id: PLATFORM_PROJECT_ID, name: "shogo-platform" },
-      })
-
-      // When: initializeSeedData is called
-      await initializeSeedData(tempDir)
-
-      // Then: studio-core schema is loaded using loadSchema()
-      expect(loadSchemaSpy).toHaveBeenCalledWith("studio-core", tempDir)
-
-      // And: Runtime store is created with domain().createStore()
-      expect(domainSpy).toHaveBeenCalled()
-      expect(mockDomainFactory.createStore).toHaveBeenCalled()
-
-      // And: Existing data is loaded before bootstrap check
-      expect(mockStore.loadAllFromBackend).toHaveBeenCalled()
     })
 
     test("skips when no SQL backend available", async () => {
       // Given: No SQL backend is available
       postgresAvailableSpy?.mockReturnValue(false)
       sqliteAvailableSpy?.mockReturnValue(false)
+
+      // Set up domain spy to verify it's NOT called
+      domainSpy = spyOn(stateApi, "domain").mockReturnValue({ createStore: mock(() => ({})) } as any)
 
       // When: initializeSeedData is called
       await initializeSeedData(tempDir)
@@ -391,6 +386,9 @@ describe("Seed Initialization", () => {
       expect(consoleLogSpy).toHaveBeenCalledWith(
         expect.stringContaining("No SQL backend available")
       )
+
+      // And: domain() was never called (early return)
+      expect(domainSpy).not.toHaveBeenCalled()
     })
 
     test("skips when studio-core schema does not exist", async () => {

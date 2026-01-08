@@ -502,21 +502,29 @@ describe("test-2-2-002-005: useWorkspaceData derives orgs from memberCollection.
 })
 
 // ============================================================
-// Test 3: useWorkspaceData groups features by phase using StatusToPhase map
-// (test-2-2-002-006)
+// Test 3: useWorkspaceData groups features by actual status
+// (test-2-2-002-006 - updated to reflect direct status grouping)
 // ============================================================
 
-describe("test-2-2-002-006: useWorkspaceData groups features by phase using StatusToPhase map", () => {
-  test("Hook imports StatusToPhase from state-api", async () => {
+describe("test-2-2-002-006: useWorkspaceData groups features by actual status", () => {
+  test("Hook groups features by their status field directly", async () => {
     const fs = await import("fs")
     const path = await import("path")
 
     const hookPath = path.resolve(import.meta.dir, "../useWorkspaceData.ts")
     const hookSource = fs.readFileSync(hookPath, "utf-8")
 
-    // Should import StatusToPhase
-    expect(hookSource).toMatch(/StatusToPhase/)
-    expect(hookSource).toMatch(/@shogo\/state-api/)
+    // Should use feature.status directly, not StatusToPhase mapping
+    expect(hookSource).toMatch(/feature\.status/)
+    // Should have all 8 phases defined
+    expect(hookSource).toMatch(/discovery/)
+    expect(hookSource).toMatch(/analysis/)
+    expect(hookSource).toMatch(/classification/)
+    expect(hookSource).toMatch(/design/)
+    expect(hookSource).toMatch(/spec/)
+    expect(hookSource).toMatch(/testing/)
+    expect(hookSource).toMatch(/implementation/)
+    expect(hookSource).toMatch(/complete/)
   })
 
   test("featuresByPhase groups features by StatusToPhase mapping", async () => {

@@ -19,17 +19,34 @@
 
 import { useDomains } from "../../../../contexts/DomainProvider"
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation"
-import { StatusToPhase } from "@shogo/state-api"
 
 /**
- * Phase type for feature grouping
+ * Phase type for feature grouping - matches FeatureSession status values
  */
-export type Phase = "discovery" | "design" | "build" | "deploy"
+export type Phase =
+  | "discovery"
+  | "analysis"
+  | "classification"
+  | "design"
+  | "spec"
+  | "testing"
+  | "implementation"
+  | "complete"
 
 /**
  * All phases in the platform features workflow
+ * Matches the status values in FeatureSession schema
  */
-export const PHASES: Phase[] = ["discovery", "design", "build", "deploy"]
+export const PHASES: Phase[] = [
+  "discovery",
+  "analysis",
+  "classification",
+  "design",
+  "spec",
+  "testing",
+  "implementation",
+  "complete",
+]
 
 /**
  * Return type for useWorkspaceData hook
@@ -140,20 +157,24 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Find current feature by ID
   const currentFeature = featureId ? features.find((f: any) => f.id === featureId) : undefined
 
-  // Group features by phase using StatusToPhase map
+  // Group features by their actual status (matches PHASES)
   const featuresByPhase: Record<string, any[]> = {
     discovery: [],
+    analysis: [],
+    classification: [],
     design: [],
-    build: [],
-    deploy: [],
+    spec: [],
+    testing: [],
+    implementation: [],
+    complete: [],
   }
 
   for (const feature of features) {
-    const phase = StatusToPhase[feature.status] || "discovery"
-    if (featuresByPhase[phase]) {
-      featuresByPhase[phase].push(feature)
+    const status = feature.status || "discovery"
+    if (featuresByPhase[status]) {
+      featuresByPhase[status].push(feature)
     } else {
-      // For phases not in our standard list, add to discovery
+      // For unknown statuses, add to discovery
       featuresByPhase.discovery.push(feature)
     }
   }
