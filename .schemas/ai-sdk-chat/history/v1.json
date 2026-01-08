@@ -1,70 +1,67 @@
 {
-  "id": "2447e5bb-786f-40d6-baff-f78509400675",
-  "name": "studio-chat",
+  "id": "f1a54d9a-cded-4e01-b6b4-da9dd3c4a15b",
+  "name": "ai-sdk-chat",
   "format": "enhanced-json-schema",
-  "createdAt": 1767637427389,
+  "createdAt": 1766002943778,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-persistence": {
+    "backend": "postgres"
+  },
   "$defs": {
     "ChatSession": {
       "type": "object",
+      "description": "A conversation session with Claude",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "name",
-        "nested": false
+        "displayKey": "name"
       },
       "properties": {
         "id": {
           "type": "string",
-          "format": "uuid",
           "x-mst-type": "identifier"
         },
         "name": {
           "type": "string",
-          "description": "User-settable session name"
+          "description": "User-friendly name for the chat session"
         },
-        "inferredName": {
+        "claudeSessionId": {
           "type": "string",
-          "description": "Auto-generated name from context"
+          "description": "Session ID from Claude Code for multi-turn context"
         },
-        "contextType": {
+        "project": {
           "type": "string",
-          "description": "Type of context this chat is associated with",
+          "description": "Loose ref to Project.id"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Loose ref to AuthUser.id"
+        },
+        "status": {
+          "type": "string",
           "enum": [
-            "feature",
-            "project",
-            "general"
+            "active",
+            "completed",
+            "error"
           ]
-        },
-        "contextId": {
-          "type": "string",
-          "description": "Loose string ref to FeatureSession.id or Project.id based on contextType"
-        },
-        "phase": {
-          "type": "string",
-          "description": "Optional phase association (discovery, design, etc.)"
-        },
-        "claudeCodeSessionId": {
-          "type": "string",
-          "description": "Claude Code session ID for conversation continuity/resume"
         },
         "createdAt": {
           "type": "number"
         },
-        "lastActiveAt": {
+        "updatedAt": {
           "type": "number"
         }
       },
       "required": [
         "id",
-        "inferredName",
-        "contextType",
-        "createdAt",
-        "lastActiveAt"
+        "name",
+        "status",
+        "createdAt"
       ],
       "x-original-name": "ChatSession"
     },
     "ChatMessage": {
       "type": "object",
+      "description": "A message in a chat session",
       "x-persistence": {
         "strategy": "entity-per-file",
         "displayKey": "id",
@@ -73,7 +70,6 @@
       "properties": {
         "id": {
           "type": "string",
-          "format": "uuid",
           "x-mst-type": "identifier"
         },
         "session": {
@@ -91,7 +87,12 @@
           ]
         },
         "content": {
-          "type": "string"
+          "type": "string",
+          "description": "Message text content"
+        },
+        "toolCalls": {
+          "type": "array",
+          "description": "Tool calls made by assistant"
         },
         "createdAt": {
           "type": "number"
@@ -106,54 +107,41 @@
       ],
       "x-original-name": "ChatMessage"
     },
-    "ToolCallLog": {
+    "CreatedArtifact": {
       "type": "object",
+      "description": "Tracks artifacts created by a chat session",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "displayKey": "toolName",
+        "displayKey": "artifactName",
         "nested": true
       },
       "properties": {
         "id": {
           "type": "string",
-          "format": "uuid",
           "x-mst-type": "identifier"
         },
-        "chatSession": {
+        "session": {
           "type": "string",
           "x-arktype": "ChatSession",
           "x-mst-type": "reference",
           "x-reference-type": "single",
           "x-reference-target": "ChatSession"
         },
-        "messageId": {
+        "artifactType": {
           "type": "string",
-          "description": "Which message triggered this tool call"
+          "enum": [
+            "schema",
+            "entity",
+            "other"
+          ]
+        },
+        "artifactName": {
+          "type": "string",
+          "description": "Name of the created artifact"
         },
         "toolName": {
           "type": "string",
-          "description": "Tool name (e.g. store.create, schema.set)"
-        },
-        "status": {
-          "type": "string",
-          "enum": [
-            "streaming",
-            "executing",
-            "complete",
-            "error"
-          ]
-        },
-        "args": {
-          "type": "object",
-          "description": "Input arguments (JSON)"
-        },
-        "result": {
-          "type": "object",
-          "description": "Output result (JSON, optional)"
-        },
-        "duration": {
-          "type": "number",
-          "description": "Execution time in ms"
+          "description": "Tool that created this artifact"
         },
         "createdAt": {
           "type": "number"
@@ -161,16 +149,13 @@
       },
       "required": [
         "id",
-        "chatSession",
-        "messageId",
+        "session",
+        "artifactType",
+        "artifactName",
         "toolName",
-        "status",
         "createdAt"
       ],
-      "x-original-name": "ToolCallLog"
+      "x-original-name": "CreatedArtifact"
     }
-  },
-  "x-persistence": {
-    "backend": "postgres"
   }
 }

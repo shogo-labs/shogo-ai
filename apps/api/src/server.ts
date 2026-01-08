@@ -159,22 +159,72 @@ app.get('/api/health', (c) => c.json({ ok: true }))
  * Streams Claude responses back to the client
  * Uses existing Claude Pro/Max subscription via Claude Code CLI
  * Scoped to project with access to local MCP server (wavesmith)
+ *
+ * Session Resume (task-cc-api-endpoint):
+ * - Accepts optional `ccSessionId` in request body
+ * - When provided, passes it as `resume` parameter to Claude Code
+ * - This allows continuing previous Claude Code conversations
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, phase } = await c.req.json()
+    const { messages, phase, ccSessionId } = await c.req.json()
 
     // Build dynamic system prompt based on current pipeline phase
     const systemPrompt = buildSystemPrompt(phase)
 
+    // Pass resume parameter if ccSessionId provided (task-cc-api-endpoint)
+    // This enables session continuity in Claude Code
+    const modelSettings = ccSessionId ? { resume: ccSessionId } : {}
+
+    // When resuming a CC session, only send NEW messages - CC already has the history!
+    // The AI SDK useChat pattern sends full message array, but CC loads prior context
+    // from its session files. Sending duplicates causes confusion/hangs.
+    let effectiveMessages = messages
+    if (ccSessionId && messages.length > 0) {
+      // Find the last user message (the new one being sent)
+      const lastUserIndex = messages.map((m: any) => m.role).lastIndexOf('user')
+      if (lastUserIndex >= 0) {
+        // Only send from the last user message onward
+        effectiveMessages = messages.slice(lastUserIndex)
+      }
+    }
+
     const result = streamText({
-      model: claudeCode('sonnet'),
+      model: claudeCode('sonnet', modelSettings),
       system: systemPrompt,
-      messages,
+      messages: effectiveMessages,
     })
 
-    // Return the stream in text format for useChat hook with streamProtocol: 'text'
-    return result.toTextStreamResponse()
+    // Create custom stream that appends CC session ID marker after content
+    // This allows the client to extract the session ID for future resume
+    const encoder = new TextEncoder()
+    const customStream = new ReadableStream({
+      async start(controller) {
+        try {
+          // Forward all text chunks from the AI stream
+          for await (const chunk of result.textStream) {
+            controller.enqueue(encoder.encode(chunk))
+          }
+
+          // After stream completes, get the CC session ID from provider metadata
+          const metadata = await result.providerMetadata
+          const newCcSessionId = metadata?.['claude-code']?.sessionId as string | undefined
+
+          // Append session ID marker if available (for client extraction)
+          if (newCcSessionId) {
+            controller.enqueue(encoder.encode(`\n<!-- CC_SESSION:${newCcSessionId} -->`))
+          }
+
+          controller.close()
+        } catch (err) {
+          controller.error(err)
+        }
+      },
+    })
+
+    return new Response(customStream, {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
   } catch (error: any) {
     console.error('[/api/chat] Error:', error)
     return c.json({
