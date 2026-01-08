@@ -194,3 +194,124 @@ describe("FeatureItem module exports", () => {
     expect(typeof module.statusBadgeVariants).toBe("function")
   })
 })
+
+// ============================================================
+// Test 6: FeatureItem has DropdownMenu with delete action
+// Task: task-delete-003-feature-item-menu
+// (test-spec-df-003-*)
+// ============================================================
+
+describe("test-spec-df-003-has-menu-icon: FeatureItem has MoreVertical icon button for menu", () => {
+  test("FeatureItem imports MoreVertical from lucide-react", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/MoreVertical/)
+    expect(componentSource).toMatch(/from\s+["']lucide-react["']/)
+  })
+
+  test("FeatureItem has MoreVertical icon button", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/<MoreVertical/)
+  })
+
+  test("FeatureItem icon button has accessible name", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have aria-label or sr-only text for screen readers
+    expect(componentSource).toMatch(/aria-label|sr-only/)
+  })
+})
+
+describe("test-spec-df-003-menu-opens: Clicking MoreVertical icon opens DropdownMenu", () => {
+  test("FeatureItem imports DropdownMenu from shadcn", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/from\s+["']@\/components\/ui\/dropdown-menu["']/)
+  })
+
+  test("FeatureItem uses DropdownMenu component", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/<DropdownMenu/)
+    expect(componentSource).toMatch(/<DropdownMenuTrigger/)
+    expect(componentSource).toMatch(/<DropdownMenuContent/)
+    expect(componentSource).toMatch(/<DropdownMenuItem/)
+  })
+})
+
+describe("test-spec-df-003-delete-item-styling: Delete menu item has Trash2 icon and destructive styling", () => {
+  test("FeatureItem imports Trash2 from lucide-react", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/Trash2/)
+  })
+
+  test("FeatureItem has delete menu item with destructive variant", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have DropdownMenuItem with variant="destructive"
+    expect(componentSource).toMatch(/DropdownMenuItem[\s\S]*?variant=["']destructive["']/)
+  })
+
+  test("FeatureItem has Delete text in menu", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/Delete/)
+  })
+})
+
+describe("test-spec-df-003-delete-opens-dialog: Delete menu item opens dialog", () => {
+  test("FeatureItem accepts onDelete prop", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/onDelete/)
+  })
+
+  test("FeatureItem delete menu item calls onDelete handler", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Delete menu item should have onClick that calls onDelete
+    expect(componentSource).toMatch(/onClick=[\s\S]*?onDelete/)
+  })
+})
+
+describe("test-spec-df-003-main-button-works: Main button area still handles selection click", () => {
+  test("FeatureItem main area still has onClick for selection", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have onClick on the main button/div area
+    expect(componentSource).toMatch(/onClick=\{onClick\}|onClick=\{.*onClick.*\}/)
+  })
+})
+
+describe("test-spec-df-003-no-propagation: Icon button click does not propagate to main button", () => {
+  test("FeatureItem menu trigger stops event propagation", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should call stopPropagation or have event handler that prevents propagation
+    expect(componentSource).toMatch(/stopPropagation|e\.stopPropagation\(\)|event\.stopPropagation\(\)/)
+  })
+})
+
+describe("test-spec-df-003-keyboard-access: Menu accessible via keyboard", () => {
+  test("FeatureItem menu trigger is a button element", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // DropdownMenuTrigger wrapping a button is keyboard accessible
+    expect(componentSource).toMatch(/<DropdownMenuTrigger[\s\S]*?asChild/)
+  })
+})

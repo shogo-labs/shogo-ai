@@ -189,3 +189,25 @@ describe("FeatureGroup module exports", () => {
     expect(module.FEATURE_PHASES.length).toBe(8)
   })
 })
+
+// ============================================================
+// Test 5: FeatureGroup passes onDeleteFeature to FeatureItem
+// Task: task-delete-004-delete-handler
+// ============================================================
+
+describe("task-delete-004: FeatureGroup passes delete handler to FeatureItem", () => {
+  test("FeatureGroup accepts onDeleteFeature prop", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureGroup.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/onDeleteFeature/)
+  })
+
+  test("FeatureGroup passes onDelete to FeatureItem", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureGroup.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // FeatureItem should receive onDelete prop
+    expect(componentSource).toMatch(/<FeatureItem[\s\S]*?onDelete=/)
+  })
+})

@@ -1,14 +1,16 @@
 /**
  * FeatureItem Component
- * Task: task-2-2-005
+ * Task: task-2-2-005, task-delete-003-feature-item-menu
  *
  * Renders a clickable feature row with name and status badge.
  * Uses CVA for status badge variants per design-2-2-component-hierarchy.
+ * Includes DropdownMenu with delete action.
  *
  * Props:
  * - feature: Feature object with id, name, status
  * - isSelected: Whether this item is currently selected
- * - onClick: Callback when item is clicked
+ * - onClick: Callback when item is clicked (selection)
+ * - onDelete: Callback when delete is triggered from menu
  *
  * Per design-2-2-clean-break:
  * - Built fresh in /components/app/workspace/sidebar/
@@ -16,7 +18,15 @@
  */
 
 import { cva, type VariantProps } from "class-variance-authority"
+import { MoreVertical, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Button } from "@/components/ui/button"
 
 /**
  * Feature type for sidebar display
@@ -38,6 +48,8 @@ export interface FeatureItemProps {
   isSelected: boolean
   /** Callback when item is clicked */
   onClick: () => void
+  /** Callback when delete action is triggered */
+  onDelete?: () => void
 }
 
 /**
@@ -88,26 +100,61 @@ function getStatusLabel(status: string): string {
  * Renders a single feature as a clickable row in the sidebar.
  * Shows feature name (truncated if too long) and status badge.
  * Highlights when selected using bg-accent.
+ * Includes action menu with delete option.
  */
-export function FeatureItem({ feature, isSelected, onClick }: FeatureItemProps) {
+export function FeatureItem({ feature, isSelected, onClick, onDelete }: FeatureItemProps) {
   const statusKey = feature.status as VariantProps<typeof statusBadgeVariants>["status"]
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       className={cn(
-        "w-full flex items-center justify-between gap-2 px-3 py-2 rounded-md text-left text-sm transition-colors",
+        "group w-full flex items-center gap-1 pr-1 rounded-md transition-colors",
         "hover:bg-accent/50",
         isSelected && "bg-accent"
       )}
-      aria-selected={isSelected}
       data-testid={`feature-item-${feature.id}`}
     >
-      <span className="truncate flex-1 text-foreground">{feature.name}</span>
-      <span className={statusBadgeVariants({ status: statusKey })}>
-        {getStatusLabel(feature.status)}
-      </span>
-    </button>
+      {/* Main clickable area for selection */}
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex-1 flex items-center justify-between gap-2 px-3 py-2 text-left text-sm min-w-0"
+        aria-selected={isSelected}
+      >
+        <span className="truncate flex-1 text-foreground">{feature.name}</span>
+        <span className={statusBadgeVariants({ status: statusKey })}>
+          {getStatusLabel(feature.status)}
+        </span>
+      </button>
+
+      {/* Action menu - visible on hover or when selected */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              "h-7 w-7 opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0",
+              isSelected && "opacity-100"
+            )}
+            onClick={(e) => e.stopPropagation()}
+            aria-label="Feature actions"
+          >
+            <MoreVertical className="h-4 w-4" />
+            <span className="sr-only">Open menu</span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={onDelete}
+            className="cursor-pointer"
+          >
+            <Trash2 className="mr-2 h-4 w-4" />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   )
 }

@@ -51,6 +51,8 @@ export interface FeatureGroupProps {
   currentFeatureId: string | null
   /** Callback when a feature is selected */
   onFeatureSelect: (id: string) => void
+  /** Callback when a feature delete is requested */
+  onDeleteFeature?: (id: string) => void
 }
 
 /**
@@ -65,6 +67,7 @@ export function FeatureGroup({
   features,
   currentFeatureId,
   onFeatureSelect,
+  onDeleteFeature,
 }: FeatureGroupProps) {
   // Don't render empty groups
   if (features.length === 0) {
@@ -89,6 +92,7 @@ export function FeatureGroup({
             feature={feature}
             isSelected={feature.id === currentFeatureId}
             onClick={() => onFeatureSelect(feature.id)}
+            onDelete={onDeleteFeature ? () => onDeleteFeature(feature.id) : undefined}
           />
         ))}
       </div>
