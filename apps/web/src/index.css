@@ -1,3 +1,7 @@
+/* Typography - Design System Fonts (must precede all other rules) */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap');
+
 @import "tailwindcss";
 
 /*
@@ -47,6 +51,17 @@
   --status-success: #22c55e;       /* green-500 */
   --status-error: #ef4444;         /* red-500 */
   --status-warning: #f59e0b;       /* amber-500 */
+
+  /* Typography - Design System */
+  --font-display: 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', monospace;
+  --font-body: 'Satoshi', 'General Sans', 'Inter', system-ui, sans-serif;
+  --font-micro: 'JetBrains Mono', monospace;
+
+  /* Progress Bar System - Feature Sidebar */
+  --progress-fill-opacity: 0.12;
+  --progress-fill-opacity-hover: 0.18;
+  --progress-fill-opacity-selected: 0.22;
+  --progress-edge-blur: 8px;
 }
 
 /* Dark theme variables */
@@ -87,6 +102,11 @@
   --status-success: #4ade80;       /* green-400 */
   --status-error: #f87171;         /* red-400 */
   --status-warning: #fbbf24;       /* amber-400 */
+
+  /* Progress Bar System - Dark Mode (higher opacity for visibility) */
+  --progress-fill-opacity: 0.15;
+  --progress-fill-opacity-hover: 0.22;
+  --progress-fill-opacity-selected: 0.28;
 }
 
 /* Tailwind v4 theme layer - maps CSS variables to Tailwind utilities */
@@ -216,4 +236,70 @@ body {
 .keyboard-focusable:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--ring);
+}
+
+/*
+ * Feature Sidebar - Underlaid Progress Bar
+ * Task: sidebar-pipeline-precision-redesign
+ *
+ * Progress fills horizontally from left based on phase (1-8 = 12.5% each).
+ * Uses phase color with low opacity for background, text floats above.
+ */
+
+.feature-item {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Progress fill layer - underlaid beneath feature name */
+.feature-item::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: var(--progress-fill-opacity);
+  background: linear-gradient(
+    90deg,
+    var(--phase-color, var(--phase-discovery)) 0%,
+    var(--phase-color, var(--phase-discovery)) calc(var(--progress-width, 12.5%) - 8px),
+    color-mix(in srgb, var(--phase-color, var(--phase-discovery)) 50%, transparent) calc(var(--progress-width, 12.5%) - 4px),
+    transparent var(--progress-width, 12.5%)
+  );
+  pointer-events: none;
+  z-index: 0;
+  transition: opacity 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Hover: brighten progress fill */
+.feature-item:hover::before {
+  opacity: var(--progress-fill-opacity-hover);
+}
+
+/* Selected: enhanced progress visibility */
+.feature-item[data-selected="true"]::before {
+  opacity: var(--progress-fill-opacity-selected);
+}
+
+/* Complete phase: celebration shimmer animation */
+.feature-item[data-phase="complete"]::before {
+  background: linear-gradient(
+    90deg,
+    var(--phase-complete) 0%,
+    color-mix(in srgb, var(--phase-complete) 80%, white) 50%,
+    var(--phase-complete) 100%
+  );
+  background-size: 200% 100%;
+  animation: complete-shimmer 3s ease-in-out infinite;
+}
+
+@keyframes complete-shimmer {
+  0% { background-position: 100% 0; }
+  50% { background-position: 0% 0; }
+  100% { background-position: 100% 0; }
+}
+
+/* Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .feature-item[data-phase="complete"]::before {
+    animation: none;
+  }
 }

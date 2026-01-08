@@ -163,3 +163,25 @@ describe("FeatureSidebar module exports", () => {
     expect(typeof module.FeatureSidebar).toBe("function")
   })
 })
+
+// ============================================================
+// Test 5: FeatureSidebar passes onDeleteFeature to FeatureGroup
+// Task: task-delete-004-delete-handler
+// ============================================================
+
+describe("task-delete-004: FeatureSidebar passes delete handler to FeatureGroup", () => {
+  test("FeatureSidebar accepts onDeleteFeature prop", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureSidebar.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/onDeleteFeature/)
+  })
+
+  test("FeatureSidebar passes onDeleteFeature to FeatureGroup", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureSidebar.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // FeatureGroup should receive onDeleteFeature prop
+    expect(componentSource).toMatch(/<FeatureGroup[\s\S]*?onDeleteFeature=/)
+  })
+})

@@ -18,6 +18,6 @@
 
 export { FeatureSidebar, type FeatureSidebarProps } from "./FeatureSidebar"
 export { FeatureGroup, FEATURE_PHASES, type FeatureGroupProps, type FeaturePhase } from "./FeatureGroup"
-export { FeatureItem, statusBadgeVariants, type FeatureItemProps, type Feature } from "./FeatureItem"
+export { FeatureItem, type FeatureItemProps, type Feature } from "./FeatureItem"
 export { SidebarSearch, type SidebarSearchProps } from "./SidebarSearch"
 export { NewFeatureButton, type NewFeatureButtonProps } from "./NewFeatureButton"

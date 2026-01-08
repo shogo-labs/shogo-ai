@@ -723,6 +723,106 @@ export const platformFeaturesDomain = domain({
           })
           return run
         },
+
+        /**
+         * Delete a feature session and all its child entities (cascade delete).
+         * Deletes in leaf-first order to respect referential integrity:
+         * 1. TaskExecution (refs run which refs session)
+         * 2. TestSpecification (refs task which refs session)
+         * 3. ImplementationRun (refs session)
+         * 4. ImplementationTask (refs session)
+         * 5. Direct session children: TestCase, IntegrationPoint, AnalysisFinding,
+         *    ClassificationDecision, DesignDecision, Requirement
+         * 6. FeatureSession
+         *
+         * @param sessionId - The ID of the FeatureSession to delete
+         * @returns {success: boolean, deletedCounts: Record<string, number>}
+         * @throws Error if session does not exist
+         */
+        async deleteFeatureSession(sessionId: string): Promise<{
+          success: boolean
+          deletedCounts: Record<string, number>
+        }> {
+          // Verify session exists
+          const session = self.featureSessionCollection.get(sessionId)
+          if (!session) {
+            throw new Error(`FeatureSession with id '${sessionId}' not found`)
+          }
+
+          const deletedCounts: Record<string, number> = {}
+
+          // 1. TaskExecution (refs run which refs session) - most deeply nested
+          // Find all runs for this session, then delete their executions
+          const sessionRuns = self.implementationRunCollection
+            .all()
+            .filter((r: any) => r.session?.id === sessionId)
+          const runIds = sessionRuns.map((r: any) => r.id)
+
+          let taskExecCount = 0
+          for (const runId of runIds) {
+            taskExecCount += await self.taskExecutionCollection.deleteMany({ "run.id": runId })
+          }
+          deletedCounts.TaskExecution = taskExecCount
+
+          // 2. TestSpecification (refs task which refs session)
+          // Find all tasks for this session, then delete their specs
+          const sessionTasks = self.implementationTaskCollection
+            .all()
+            .filter((t: any) => t.session?.id === sessionId)
+          const taskIds = sessionTasks.map((t: any) => t.id)
+
+          let testSpecCount = 0
+          for (const taskId of taskIds) {
+            testSpecCount += await self.testSpecificationCollection.deleteMany({ "task.id": taskId })
+          }
+          deletedCounts.TestSpecification = testSpecCount
+
+          // 3. ImplementationRun (refs session directly)
+          // Use "session.id" for reference field filtering
+          deletedCounts.ImplementationRun = await self.implementationRunCollection.deleteMany({
+            "session.id": sessionId,
+          })
+
+          // 4. ImplementationTask (refs session directly)
+          deletedCounts.ImplementationTask = await self.implementationTaskCollection.deleteMany({
+            "session.id": sessionId,
+          })
+
+          // 5. Direct session children
+          deletedCounts.TestCase = await self.testCaseCollection.deleteMany({
+            "session.id": sessionId,
+          })
+
+          deletedCounts.IntegrationPoint = await self.integrationPointCollection.deleteMany({
+            "session.id": sessionId,
+          })
+
+          deletedCounts.AnalysisFinding = await self.analysisFindingCollection.deleteMany({
+            "session.id": sessionId,
+          })
+
+          deletedCounts.ClassificationDecision =
+            await self.classificationDecisionCollection.deleteMany({
+              "session.id": sessionId,
+            })
+
+          deletedCounts.DesignDecision = await self.designDecisionCollection.deleteMany({
+            "session.id": sessionId,
+          })
+
+          deletedCounts.Requirement = await self.requirementCollection.deleteMany({
+            "session.id": sessionId,
+          })
+
+          // 6. Finally, delete the FeatureSession itself
+          const deleted = await self.featureSessionCollection.deleteOne(sessionId)
+          deletedCounts.FeatureSession = deleted ? 1 : 0
+
+          return {
+            success: true,
+            deletedCounts,
+          }
+        },
       })),
   },
 })

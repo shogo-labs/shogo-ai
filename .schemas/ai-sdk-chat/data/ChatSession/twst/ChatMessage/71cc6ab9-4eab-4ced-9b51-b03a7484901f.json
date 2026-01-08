@@ -1,8 +1,0 @@
-{
-  "id": "71cc6ab9-4eab-4ced-9b51-b03a7484901f",
-  "role": "assistant",
-  "content": "Hello! 👋 I'm here to help you build applications with Wavesmith. \n\nI can assist you with:\n- **Data schema design** - structuring your entities and fields\n- **Entity relationships** - connecting your data models\n- **Data modeling best practices** - making optimal design choices\n- **General guidance** - answering questions about app architecture\n\nWhat would you like to work on today?",
-  "toolCalls": [],
-  "createdAt": 1766008934788,
-  "session": "7d6079a6-7873-497a-88c4-4d95b7b184ad"
-}

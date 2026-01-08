@@ -51,6 +51,8 @@ export interface FeatureGroupProps {
   currentFeatureId: string | null
   /** Callback when a feature is selected */
   onFeatureSelect: (id: string) => void
+  /** Callback when a feature delete is requested */
+  onDeleteFeature?: (id: string) => void
 }
 
 /**
@@ -65,6 +67,7 @@ export function FeatureGroup({
   features,
   currentFeatureId,
   onFeatureSelect,
+  onDeleteFeature,
 }: FeatureGroupProps) {
   // Don't render empty groups
   if (features.length === 0) {
@@ -73,10 +76,19 @@ export function FeatureGroup({
 
   return (
     <div className="mb-4" data-testid={`feature-group-${phase.toLowerCase()}`}>
-      {/* Phase header with count badge */}
+      {/* Phase header with count badge - JetBrains Mono for technical precision */}
       <div className="flex items-center justify-between px-3 py-2">
-        <h3 className="text-sm font-semibold text-foreground capitalize">{phase}</h3>
-        <Badge variant="secondary" className="text-xs">
+        <h3
+          className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          {phase}
+        </h3>
+        <Badge
+          variant="secondary"
+          className="text-[10px] tracking-wider"
+          style={{ fontFamily: "var(--font-micro)" }}
+        >
           {features.length}
         </Badge>
       </div>
@@ -89,6 +101,7 @@ export function FeatureGroup({
             feature={feature}
             isSelected={feature.id === currentFeatureId}
             onClick={() => onFeatureSelect(feature.id)}
+            onDelete={onDeleteFeature ? () => onDeleteFeature(feature.id) : undefined}
           />
         ))}
       </div>

@@ -1,8 +1,0 @@
-{
-  "id": "30405879-52ec-45ca-9903-127072d714be",
-  "role": "assistant",
-  "content": "I don't have any MCP (Model Context Protocol) servers available in my current configuration. The available skills list in my system is empty.\n\nMCP servers would typically provide additional capabilities like:\n- Database connections\n- External API integrations\n- File system access beyond the standard tools\n- Custom domain-specific functionality\n\nHowever, I do have access to standard tools like:\n- File operations (Read, Write, Edit)\n- Code search (Grep, Glob)\n- Shell commands (Bash)\n- Web search and fetching\n- Task management\n\nIs there something specific you were hoping to do that would require an MCP server? I might be able to help with the built-in tools, or provide guidance on what you'd need to set up.",
-  "toolCalls": [],
-  "createdAt": 1766009163058,
-  "session": "7d6079a6-7873-497a-88c4-4d95b7b184ad"
-}
