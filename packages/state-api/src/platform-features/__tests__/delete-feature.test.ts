@@ -20,6 +20,7 @@
 import { describe, test, expect, beforeEach } from "bun:test"
 import { platformFeaturesDomain } from "../domain"
 import { BackendRegistry, MemoryBackend } from "../../query"
+import { NullPersistence } from "../../persistence/null"
 
 /**
  * Create test environment with memory backend.
@@ -32,6 +33,7 @@ function createTestEnvironment() {
 
   return {
     services: {
+      persistence: new NullPersistence(),
       backendRegistry: registry,
     },
     context: {

@@ -76,10 +76,19 @@ export function FeatureGroup({
 
   return (
     <div className="mb-4" data-testid={`feature-group-${phase.toLowerCase()}`}>
-      {/* Phase header with count badge */}
+      {/* Phase header with count badge - JetBrains Mono for technical precision */}
       <div className="flex items-center justify-between px-3 py-2">
-        <h3 className="text-sm font-semibold text-foreground capitalize">{phase}</h3>
-        <Badge variant="secondary" className="text-xs">
+        <h3
+          className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          {phase}
+        </h3>
+        <Badge
+          variant="secondary"
+          className="text-[10px] tracking-wider"
+          style={{ fontFamily: "var(--font-micro)" }}
+        >
           {features.length}
         </Badge>
       </div>
