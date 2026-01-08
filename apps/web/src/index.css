@@ -35,15 +35,15 @@
   --ring: #2563eb;
   --radius: 0.5rem;
 
-  /* Phase Colors - Orchestrated Precision Design System */
-  --phase-discovery: #3b82f6;      /* blue-500 */
-  --phase-analysis: #8b5cf6;       /* violet-500 */
-  --phase-classification: #ec4899; /* pink-500 */
-  --phase-design: #f59e0b;         /* amber-500 */
-  --phase-spec: #10b981;           /* emerald-500 */
-  --phase-testing: #06b6d4;        /* cyan-500 */
-  --phase-implementation: #ef4444; /* red-500 */
-  --phase-complete: #22c55e;       /* green-500 */
+  /* Phase Colors - Unified Spectrum (Pipeline Precision) */
+  --phase-discovery: #0ea5e9;      /* sky-500: open exploration */
+  --phase-analysis: #6366f1;       /* indigo-500: deep investigation */
+  --phase-classification: #a855f7; /* purple-500: categorization */
+  --phase-design: #d946ef;         /* fuchsia-500: creative phase */
+  --phase-spec: #14b8a6;           /* teal-500: technical precision */
+  --phase-testing: #06b6d4;        /* cyan-500: verification */
+  --phase-implementation: #f59e0b; /* amber-500: building action */
+  --phase-complete: #22c55e;       /* green-500: success */
 
   /* Semantic Status Colors */
   --status-pending: #71717a;       /* gray-500 */
@@ -57,10 +57,11 @@
   --font-body: 'Satoshi', 'General Sans', 'Inter', system-ui, sans-serif;
   --font-micro: 'JetBrains Mono', monospace;
 
-  /* Progress Bar System - Feature Sidebar */
-  --progress-fill-opacity: 0.12;
-  --progress-fill-opacity-hover: 0.18;
-  --progress-fill-opacity-selected: 0.22;
+  /* Progress Bar System - Feature Sidebar (Two-Toned) */
+  --progress-track-opacity: 0.08;
+  --progress-fill-opacity: 0.14;
+  --progress-fill-opacity-hover: 0.20;
+  --progress-fill-opacity-selected: 0.26;
   --progress-edge-blur: 8px;
 }
 
@@ -86,14 +87,14 @@
   --input: #333333;
   --ring: #2196f3;
 
-  /* Phase Colors - Dark Mode (brighter for contrast) */
-  --phase-discovery: #60a5fa;      /* blue-400 */
-  --phase-analysis: #a78bfa;       /* violet-400 */
-  --phase-classification: #f472b6; /* pink-400 */
-  --phase-design: #fbbf24;         /* amber-400 */
-  --phase-spec: #34d399;           /* emerald-400 */
+  /* Phase Colors - Dark Mode (elevated luminosity) */
+  --phase-discovery: #38bdf8;      /* sky-400 */
+  --phase-analysis: #818cf8;       /* indigo-400 */
+  --phase-classification: #c084fc; /* purple-400 */
+  --phase-design: #f0abfc;         /* fuchsia-300 */
+  --phase-spec: #2dd4bf;           /* teal-400 */
   --phase-testing: #22d3ee;        /* cyan-400 */
-  --phase-implementation: #f87171; /* red-400 */
+  --phase-implementation: #fbbf24; /* amber-400 */
   --phase-complete: #4ade80;       /* green-400 */
 
   /* Semantic Status Colors - Dark Mode */
@@ -104,9 +105,10 @@
   --status-warning: #fbbf24;       /* amber-400 */
 
   /* Progress Bar System - Dark Mode (higher opacity for visibility) */
-  --progress-fill-opacity: 0.15;
-  --progress-fill-opacity-hover: 0.22;
-  --progress-fill-opacity-selected: 0.28;
+  --progress-track-opacity: 0.12;
+  --progress-fill-opacity: 0.18;
+  --progress-fill-opacity-hover: 0.26;
+  --progress-fill-opacity-selected: 0.32;
 }
 
 /* Tailwind v4 theme layer - maps CSS variables to Tailwind utilities */
@@ -239,11 +241,12 @@ body {
 }
 
 /*
- * Feature Sidebar - Underlaid Progress Bar
+ * Feature Sidebar - Two-Toned Progress Bar
  * Task: sidebar-pipeline-precision-redesign
  *
- * Progress fills horizontally from left based on phase (1-8 = 12.5% each).
- * Uses phase color with low opacity for background, text floats above.
+ * Two-layer approach for contrast:
+ * 1. Track (::before): Full width at low opacity - shows "journey complete"
+ * 2. Fill (::after): Progress width with soft edge - shows actual progress
  */
 
 .feature-item {
@@ -251,40 +254,53 @@ body {
   overflow: hidden;
 }
 
-/* Progress fill layer - underlaid beneath feature name */
+/* LAYER 1: Track background (full width, very subtle) */
 .feature-item::before {
   content: '';
   position: absolute;
   inset: 0;
+  background-color: var(--phase-color, var(--phase-discovery));
+  opacity: var(--progress-track-opacity);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* LAYER 2: Progress fill (actual progress width with soft edge) */
+.feature-item::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: var(--progress-width, 12.5%);
   opacity: var(--progress-fill-opacity);
   background: linear-gradient(
     90deg,
     var(--phase-color, var(--phase-discovery)) 0%,
-    var(--phase-color, var(--phase-discovery)) calc(var(--progress-width, 12.5%) - 8px),
-    color-mix(in srgb, var(--phase-color, var(--phase-discovery)) 50%, transparent) calc(var(--progress-width, 12.5%) - 4px),
-    transparent var(--progress-width, 12.5%)
+    var(--phase-color, var(--phase-discovery)) calc(100% - 8px),
+    color-mix(in srgb, var(--phase-color, var(--phase-discovery)) 50%, transparent) calc(100% - 4px),
+    transparent 100%
   );
   pointer-events: none;
-  z-index: 0;
+  z-index: 1;
   transition: opacity 200ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Hover: brighten progress fill */
-.feature-item:hover::before {
+/* Hover: brighten fill layer */
+.feature-item:hover::after {
   opacity: var(--progress-fill-opacity-hover);
 }
 
-/* Selected: enhanced progress visibility */
-.feature-item[data-selected="true"]::before {
+/* Selected: enhanced fill visibility */
+.feature-item[data-selected="true"]::after {
   opacity: var(--progress-fill-opacity-selected);
 }
 
-/* Complete phase: celebration shimmer animation */
-.feature-item[data-phase="complete"]::before {
+/* Complete phase: full width + celebration shimmer */
+.feature-item[data-phase="complete"]::after {
+  width: 100%;
   background: linear-gradient(
     90deg,
     var(--phase-complete) 0%,
-    color-mix(in srgb, var(--phase-complete) 80%, white) 50%,
+    color-mix(in srgb, var(--phase-complete) 85%, white) 50%,
     var(--phase-complete) 100%
   );
   background-size: 200% 100%;
@@ -299,7 +315,7 @@ body {
 
 /* Respect reduced motion preference */
 @media (prefers-reduced-motion: reduce) {
-  .feature-item[data-phase="complete"]::before {
+  .feature-item[data-phase="complete"]::after {
     animation: none;
   }
 }
