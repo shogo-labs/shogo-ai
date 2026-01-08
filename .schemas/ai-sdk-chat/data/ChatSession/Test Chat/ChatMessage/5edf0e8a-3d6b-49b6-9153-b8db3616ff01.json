@@ -1,8 +1,0 @@
-{
-  "id": "5edf0e8a-3d6b-49b6-9153-b8db3616ff01",
-  "role": "user",
-  "content": "hey",
-  "toolCalls": [],
-  "createdAt": 1766007261450,
-  "session": "test-session-001"
-}

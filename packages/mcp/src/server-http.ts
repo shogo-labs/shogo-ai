@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { registerAllTools } from "./tools/registry"
 import { initializePostgresBackend, isPostgresAvailable, isSqliteAvailable } from "./postgres-init"
 import { initializeDomainSchemas } from "./ddl-init"
+import { initializeSeedData } from "./seed-init"
 
 // Port configuration from environment (supports multi-worktree isolation)
 const MCP_PORT = parseInt(process.env.MCP_PORT || '3100', 10)
@@ -12,6 +13,9 @@ await initializePostgresBackend()
 
 // Initialize DDL for domain schemas with postgres backend
 await initializeDomainSchemas(join(import.meta.dir, "../../../.schemas"))
+
+// Initialize seed data (Shogo org, Platform project)
+await initializeSeedData(join(import.meta.dir, "../../../.schemas"))
 
 // Wavesmith MCP with HTTP/SSE transport
 const server = new FastMCP({

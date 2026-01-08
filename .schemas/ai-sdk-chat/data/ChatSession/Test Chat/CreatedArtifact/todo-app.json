@@ -1,8 +1,0 @@
-{
-  "id": "test-artifact-001",
-  "artifactType": "schema",
-  "artifactName": "todo-app",
-  "toolName": "mcp__wavesmith__schema_set",
-  "createdAt": 1734462202000,
-  "session": "test-session-001"
-}

@@ -32,7 +32,6 @@ export {
   SidebarSearch,
   NewFeatureButton,
   FEATURE_PHASES,
-  statusBadgeVariants,
 } from "./sidebar"
 export type {
   FeatureSidebarProps,

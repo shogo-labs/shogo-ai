@@ -42,6 +42,8 @@ export interface FeatureSidebarProps {
   onNewFeature: () => void
   /** Current project ID (null disables new feature button) */
   projectId?: string | null
+  /** Callback when a feature delete is requested */
+  onDeleteFeature?: (id: string) => void
 }
 
 /**
@@ -76,6 +78,7 @@ export function FeatureSidebar({
   onFeatureSelect,
   onNewFeature,
   projectId,
+  onDeleteFeature,
 }: FeatureSidebarProps) {
   // Local state for search query
   const [searchQuery, setSearchQuery] = useState("")
@@ -119,6 +122,7 @@ export function FeatureSidebar({
               features={features}
               currentFeatureId={currentFeatureId}
               onFeatureSelect={onFeatureSelect}
+              onDeleteFeature={onDeleteFeature}
             />
           )
         })}

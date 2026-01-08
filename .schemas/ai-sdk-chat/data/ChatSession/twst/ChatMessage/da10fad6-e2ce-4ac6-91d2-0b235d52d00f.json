@@ -1,8 +1,0 @@
-{
-  "id": "da10fad6-e2ce-4ac6-91d2-0b235d52d00f",
-  "role": "assistant",
-  "content": "Ah yes! Now I can see the **Wavesmith MCP server** is available with these tools:\n\n## Schema Management\n- `schema_set` - Set the active schema and rebuild in-memory models\n- `schema_get` - Get a schema by name\n- `schema_load` - Load a saved schema from disk and create/reuse runtime store\n- `schema_list` - List all saved schemas\n\n## Store Operations (CRUD)\n- `store_models` - List model descriptors for a schema\n- `store_create` - Create a new entity instance\n- `store_get` - Retrieve an entity by ID\n- `store_list` - List all entities of a model type\n- `store_update` - Update an entity's properties\n- `store_query` - Query using MongoDB-style filters with operators like `$gt`, `$lt`, `$in`, `$and`, `$or`\n\n## View System\n- `view_execute` - Execute a named view (query or template)\n- `view_define` - Add or update a view definition\n- `view_delete` - Remove a view definition\n- `view_project` - Execute a view and write result to a file\n\n## Data Management\n- `data_load` - Load a single collection's data from disk\n- `data_loadAll` - Load all collections' data for a schema\n\n## AI Agent\n- `agent_chat` - Multi-turn conversational agent for app building (discovery, schema generation, iterative refinement)\n\nSo I'm fully equipped to help you build applications! What would you like to create? 🚀",
-  "toolCalls": [],
-  "createdAt": 1766009400239,
-  "session": "7d6079a6-7873-497a-88c4-4d95b7b184ad"
-}

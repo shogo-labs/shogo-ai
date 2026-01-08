@@ -68,52 +68,66 @@ describe("test-2-2-005-005: FeatureItem renders clickable row with name and stat
 })
 
 // ============================================================
-// Test 2: FeatureItem uses CVA for status badge variants
-// (test-2-2-005-006)
+// Test 2: FeatureItem uses underlaid progress bar for phase visualization
+// (test-2-2-005-006) - Updated for Pipeline Precision redesign
 // ============================================================
 
-describe("test-2-2-005-006: FeatureItem uses CVA for status badge variants", () => {
-  test("FeatureItem imports cva from class-variance-authority", () => {
+describe("test-2-2-005-006: FeatureItem uses underlaid progress bar for phase visualization", () => {
+  test("FeatureItem defines PHASE_INDEX mapping", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/import.*cva.*from.*class-variance-authority/)
+    expect(componentSource).toMatch(/PHASE_INDEX/)
   })
 
-  test("FeatureItem defines statusBadgeVariants with cva", () => {
+  test("FeatureItem defines PHASE_COLOR_VAR mapping", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    // Should define a cva for badge variants
-    expect(componentSource).toMatch(/statusBadgeVariants.*=.*cva|badgeVariants.*=.*cva/)
+    expect(componentSource).toMatch(/PHASE_COLOR_VAR/)
   })
 
-  test("FeatureItem has variant for discovery status", () => {
+  test("FeatureItem has mapping for discovery status", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
     expect(componentSource).toMatch(/discovery/)
   })
 
-  test("FeatureItem has variant for design status", () => {
+  test("FeatureItem has mapping for design status", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
     expect(componentSource).toMatch(/design/)
   })
 
-  test("FeatureItem has variant for complete status", () => {
+  test("FeatureItem has mapping for complete status", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
     expect(componentSource).toMatch(/complete/)
   })
 
-  test("FeatureItem exports statusBadgeVariants", () => {
+  test("FeatureItem has feature-item class for CSS progress styling", () => {
     const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/export.*statusBadgeVariants|export.*badgeVariants/)
+    expect(componentSource).toMatch(/feature-item/)
+  })
+
+  test("FeatureItem sets data-phase attribute", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/data-phase/)
+  })
+
+  test("FeatureItem sets CSS custom properties for progress", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/--phase-color/)
+    expect(componentSource).toMatch(/--progress-width/)
   })
 })
 
@@ -188,9 +202,131 @@ describe("FeatureItem module exports", () => {
     expect(typeof module.FeatureItem).toBe("function")
   })
 
-  test("statusBadgeVariants can be imported", async () => {
+  test("Feature interface can be imported", async () => {
+    // Feature interface should be exported for type usage
     const module = await import("../FeatureItem")
-    expect(module.statusBadgeVariants).toBeDefined()
-    expect(typeof module.statusBadgeVariants).toBe("function")
+    // TypeScript interfaces don't exist at runtime, but we can check the module loaded
+    expect(module.FeatureItem).toBeDefined()
+  })
+})
+
+// ============================================================
+// Test 6: FeatureItem has DropdownMenu with delete action
+// Task: task-delete-003-feature-item-menu
+// (test-spec-df-003-*)
+// ============================================================
+
+describe("test-spec-df-003-has-menu-icon: FeatureItem has MoreVertical icon button for menu", () => {
+  test("FeatureItem imports MoreVertical from lucide-react", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/MoreVertical/)
+    expect(componentSource).toMatch(/from\s+["']lucide-react["']/)
+  })
+
+  test("FeatureItem has MoreVertical icon button", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/<MoreVertical/)
+  })
+
+  test("FeatureItem icon button has accessible name", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have aria-label or sr-only text for screen readers
+    expect(componentSource).toMatch(/aria-label|sr-only/)
+  })
+})
+
+describe("test-spec-df-003-menu-opens: Clicking MoreVertical icon opens DropdownMenu", () => {
+  test("FeatureItem imports DropdownMenu from shadcn", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/from\s+["']@\/components\/ui\/dropdown-menu["']/)
+  })
+
+  test("FeatureItem uses DropdownMenu component", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/<DropdownMenu/)
+    expect(componentSource).toMatch(/<DropdownMenuTrigger/)
+    expect(componentSource).toMatch(/<DropdownMenuContent/)
+    expect(componentSource).toMatch(/<DropdownMenuItem/)
+  })
+})
+
+describe("test-spec-df-003-delete-item-styling: Delete menu item has Trash2 icon and destructive styling", () => {
+  test("FeatureItem imports Trash2 from lucide-react", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/Trash2/)
+  })
+
+  test("FeatureItem has delete menu item with destructive variant", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have DropdownMenuItem with variant="destructive"
+    expect(componentSource).toMatch(/DropdownMenuItem[\s\S]*?variant=["']destructive["']/)
+  })
+
+  test("FeatureItem has Delete text in menu", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/Delete/)
+  })
+})
+
+describe("test-spec-df-003-delete-opens-dialog: Delete menu item opens dialog", () => {
+  test("FeatureItem accepts onDelete prop", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/onDelete/)
+  })
+
+  test("FeatureItem delete menu item calls onDelete handler", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Delete menu item should have onClick that calls onDelete
+    expect(componentSource).toMatch(/onClick=[\s\S]*?onDelete/)
+  })
+})
+
+describe("test-spec-df-003-main-button-works: Main button area still handles selection click", () => {
+  test("FeatureItem main area still has onClick for selection", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have onClick on the main button/div area
+    expect(componentSource).toMatch(/onClick=\{onClick\}|onClick=\{.*onClick.*\}/)
+  })
+})
+
+describe("test-spec-df-003-no-propagation: Icon button click does not propagate to main button", () => {
+  test("FeatureItem menu trigger stops event propagation", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should call stopPropagation or have event handler that prevents propagation
+    expect(componentSource).toMatch(/stopPropagation|e\.stopPropagation\(\)|event\.stopPropagation\(\)/)
+  })
+})
+
+describe("test-spec-df-003-keyboard-access: Menu accessible via keyboard", () => {
+  test("FeatureItem menu trigger is a button element", () => {
+    const componentPath = path.resolve(import.meta.dir, "../FeatureItem.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // DropdownMenuTrigger wrapping a button is keyboard accessible
+    expect(componentSource).toMatch(/<DropdownMenuTrigger[\s\S]*?asChild/)
   })
 })
