@@ -10,3 +10,6 @@ export type { WorkspaceNavigationState } from "./useWorkspaceNavigation"
 
 export { useWorkspaceData, PHASES } from "./useWorkspaceData"
 export type { WorkspaceDataState, Phase } from "./useWorkspaceData"
+
+export { useDeleteFeature } from "./useDeleteFeature"
+export type { UseDeleteFeatureProps, UseDeleteFeatureReturn } from "./useDeleteFeature"

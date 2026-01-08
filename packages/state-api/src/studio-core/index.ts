@@ -6,7 +6,7 @@
  * - studioCoreDomain (domain result)
  * - RoleLevels constant
  * - Types and store factory
- * - Bootstrap utilities
+ * - Seed IDs for deterministic operations
  */
 
 export {
@@ -17,14 +17,7 @@ export {
   type CreateStudioCoreStoreOptions,
 } from './domain'
 
-export {
-  bootstrapStudioCore,
-  getBootstrapData,
-  type BootstrapData,
-  type BootstrapResult,
-} from './bootstrap'
-
-// Seed IDs for deterministic bootstrap operations
+// Seed IDs for deterministic seed operations
 export {
   SHOGO_ORG_ID,
   PLATFORM_PROJECT_ID,
