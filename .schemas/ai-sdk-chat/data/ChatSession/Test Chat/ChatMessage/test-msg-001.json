@@ -1,8 +1,0 @@
-{
-  "id": "test-msg-001",
-  "role": "user",
-  "content": "Hello Claude!",
-  "toolCalls": [],
-  "createdAt": 1734462201000,
-  "session": "test-session-001"
-}

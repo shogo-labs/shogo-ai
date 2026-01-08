@@ -1,6 +1,6 @@
 /**
  * WorkspaceLayout - Main workspace layout component
- * Tasks: task-2-2-004, task-2-3a-009, task-2-4-005, task-3-1-007, task-cpbi-004
+ * Tasks: task-2-2-004, task-2-3a-009, task-2-4-005, task-3-1-007, task-cpbi-004, task-delete-005
  *
  * Renders the workspace layout with sidebar + content in a flex row.
  * This is the "smart" component that connects useWorkspaceData() hook to UI.
@@ -32,6 +32,12 @@
  * - isPolling indicator visible in sidebar (subtle badge)
  * - refresh function passed to ChatPanel for smart triggers
  *
+ * Per design-delete-feature-integration (task-delete-005):
+ * - useDeleteFeature hook called at WorkspaceLayout level
+ * - DeleteFeatureDialog rendered with state from hook
+ * - FeatureSidebar receives onDeleteFeature handler
+ * - Handles navigation when deleted feature was selected
+ *
  * Per design-2-2-component-hierarchy:
  * - This is the "smart" component that connects hooks to UI
  * - Child components receive data as props, don't call hooks directly
@@ -42,14 +48,15 @@
 import { useState, useCallback, useEffect, useRef } from "react"
 import { Outlet } from "react-router-dom"
 import { observer } from "mobx-react-lite"
-import { useWorkspaceData } from "./hooks"
-import { useWorkspaceNavigation } from "./hooks"
+import { useWorkspaceData, useWorkspaceNavigation, useDeleteFeature } from "./hooks"
 import { usePhaseNavigation } from "../stepper/hooks/usePhaseNavigation"
 import { useFeaturePolling } from "@/hooks/useFeaturePolling"
 import { useToast } from "@/hooks/use-toast"
 import { ToastAction } from "@/components/ui/toast"
 import { PhaseContentPanel } from "../stepper"
 import { ChatPanel } from "../chat/ChatPanel"
+import { FeatureSidebar } from "./sidebar/FeatureSidebar"
+import { DeleteFeatureDialog } from "./modals/DeleteFeatureDialog"
 import { RefreshCw } from "lucide-react"
 
 /**
@@ -76,11 +83,38 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   } = useWorkspaceData()
 
   // Get navigation state for conditional rendering
-  const { featureId, projectId, setFeatureId } = useWorkspaceNavigation()
+  const { featureId, projectId, setFeatureId, clearFeature } = useWorkspaceNavigation()
 
   // Get phase navigation state (task-cpbi-004)
   // Pass feature status as fallback when feature is loaded, otherwise "discovery"
   const { phase } = usePhaseNavigation(currentFeature?.status ?? "discovery")
+
+  // Delete feature hook (task-delete-005)
+  // Manages dialog state, deletion, and navigation when deleted feature was selected
+  const {
+    deleteFeatureName,
+    isDeleteDialogOpen,
+    isDeleting,
+    openDeleteDialog,
+    closeDeleteDialog,
+    confirmDelete,
+  } = useDeleteFeature({
+    currentFeatureId: featureId,
+    clearFeature,
+  })
+
+  // Handler to open delete dialog with feature ID and name
+  // Maps from feature ID (from sidebar) to feature name (for dialog display)
+  const handleDeleteFeature = useCallback(
+    (featureIdToDelete: string) => {
+      // Find the feature in our features list to get its name
+      const feature = features.find((f: any) => f.id === featureIdToDelete)
+      if (feature) {
+        openDeleteDialog(featureIdToDelete, feature.name)
+      }
+    },
+    [features, openDeleteDialog]
+  )
 
   // Modal state for NewFeatureModal
   // isOpen state passed to modal, onClose callback to close it
@@ -140,63 +174,41 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
     <div className="flex h-full" data-testid="workspace-layout">
       {/* Sidebar area - fixed width with border separator */}
       <aside
-        className="w-64 border-r border-border bg-card"
+        className="w-64 border-r border-border bg-card flex flex-col"
         data-testid="workspace-sidebar"
       >
-        {/* FeatureSidebar placeholder - actual component in task-2-2-005 */}
-        <div className="p-4">
-          {/* Polling status indicator (task-3-1-007) */}
-          {featureId && (
-            <div className="flex items-center justify-between mb-3 text-xs text-muted-foreground">
-              <span>Features</span>
-              <div className="flex items-center gap-1.5">
-                {isPolling && (
-                  <RefreshCw
-                    className="h-3 w-3 animate-spin"
-                    data-testid="polling-indicator"
-                    aria-label="Syncing data"
-                  />
-                )}
-                {lastRefresh && (
-                  <span
-                    className="text-[10px] opacity-60"
-                    title={`Last refresh: ${new Date(lastRefresh).toLocaleTimeString()}`}
-                  >
-                    {new Date(lastRefresh).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                )}
-              </div>
+        {/* Polling status indicator (task-3-1-007) */}
+        {featureId && (
+          <div className="flex items-center justify-end px-3 py-2 text-xs text-muted-foreground border-b border-border">
+            <div className="flex items-center gap-1.5">
+              {isPolling && (
+                <RefreshCw
+                  className="h-3 w-3 animate-spin"
+                  data-testid="polling-indicator"
+                  aria-label="Syncing data"
+                />
+              )}
+              {lastRefresh && (
+                <span
+                  className="text-[10px] opacity-60"
+                  title={`Last refresh: ${new Date(lastRefresh).toLocaleTimeString()}`}
+                >
+                  {new Date(lastRefresh).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
             </div>
-          )}
-          <div className="text-sm text-muted-foreground">
-            {/* Features grouped by phase will go here */}
-            {Object.entries(featuresByPhase).map(([phase, phaseFeatures]) => (
-              <div key={phase} className="mb-4">
-                <h3 className="font-semibold capitalize mb-2">{phase}</h3>
-                <ul className="space-y-1">
-                  {phaseFeatures.map((feature: any) => (
-                    <li
-                      key={feature.id}
-                      className={`text-xs truncate cursor-pointer px-2 py-1 rounded hover:bg-accent ${
-                        featureId === feature.id ? "bg-accent font-medium" : ""
-                      }`}
-                      onClick={() => setFeatureId(feature.id)}
-                    >
-                      {feature.name}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
           </div>
-          {/* New Feature button will trigger modal */}
-          <button
-            onClick={handleOpenModal}
-            className="mt-4 w-full px-3 py-2 text-sm bg-primary text-primary-foreground rounded-md"
-          >
-            New Feature
-          </button>
-        </div>
+        )}
+
+        {/* FeatureSidebar with delete support (task-delete-005) */}
+        <FeatureSidebar
+          featuresByPhase={featuresByPhase}
+          currentFeatureId={featureId}
+          onFeatureSelect={setFeatureId}
+          onNewFeature={handleOpenModal}
+          projectId={projectId}
+          onDeleteFeature={handleDeleteFeature}
+        />
       </aside>
 
       {/* Content area - flexible width with padding and scroll */}
@@ -287,6 +299,15 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
           </div>
         </div>
       )}
+
+      {/* Delete feature confirmation dialog (task-delete-005) */}
+      <DeleteFeatureDialog
+        open={isDeleteDialogOpen}
+        onClose={closeDeleteDialog}
+        onConfirm={confirmDelete}
+        featureName={deleteFeatureName ?? ""}
+        isLoading={isDeleting}
+      />
     </div>
   )
 })
