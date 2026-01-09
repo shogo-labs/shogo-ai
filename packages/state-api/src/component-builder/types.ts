@@ -11,6 +11,56 @@
  */
 
 /**
+ * Universal configuration interface for display components.
+ *
+ * XRendererConfig enables Claude to dynamically adjust rendering appearance
+ * and behavior via MCP without code changes. Components declare which config
+ * keys they support via `supportedConfig` static property.
+ *
+ * Config cascade (highest to lowest priority):
+ * 1. Schema-level `x-renderer-config` on property definition
+ * 2. Binding-level `defaultConfig` on RendererBinding entity
+ * 3. Component-level defaults (baked into component)
+ */
+export interface XRendererConfig {
+  /** Visual variant for emphasis or semantic meaning */
+  variant?: "default" | "muted" | "emphasized" | "warning" | "success" | "error"
+  /** Text/element size */
+  size?: "xs" | "sm" | "md" | "lg" | "xl"
+  /** Layout mode */
+  layout?: "inline" | "block" | "compact"
+  /** Truncate text at character count (number) or default 200 (true) */
+  truncate?: boolean | number
+  /** Allow expanding truncated content */
+  expandable?: boolean
+  /** Make element interactive/clickable */
+  clickable?: boolean
+  /** Pass-through for component-specific props */
+  customProps?: Record<string, unknown>
+}
+
+/**
+ * Universal props interface for renderable display components.
+ *
+ * All display components should accept these props to enable:
+ * - PropertyRenderer integration
+ * - Config cascade from bindings
+ * - Recursive rendering via depth tracking
+ */
+export interface RenderableComponentProps<T = any> {
+  /** Property metadata for resolution context */
+  property: PropertyMetadata
+  /** The value to render */
+  value: T
+  /** Optional entity instance for reference displays */
+  entity?: any
+  /** Current nesting depth for recursive rendering (default 0) */
+  depth?: number
+  /** Merged config from cascade (binding defaults + schema overrides) */
+  config?: XRendererConfig
+}
+
+/**
  * Metadata about a property, derived from EnhancedJsonSchema.
  * Used by ComponentRegistry to resolve the appropriate display renderer.
  *
@@ -39,6 +89,8 @@ export interface PropertyMetadata {
   xRenderer?: string
   /** Whether this property is required */
   required?: boolean
+  /** Renderer configuration for this property (overrides binding defaults) */
+  xRendererConfig?: XRendererConfig
 }
 
 /**
@@ -97,6 +149,12 @@ export interface ComponentEntrySpec {
    * Examples: "StringDisplay", "EnumBadge", "ReferenceDisplay", "@shogo/web/displays/Custom"
    */
   componentRef: string
+
+  /**
+   * Default XRendererConfig applied when this binding matches.
+   * Can be overridden by schema-level xRendererConfig on the property.
+   */
+  defaultConfig?: XRendererConfig
 }
 
 /**

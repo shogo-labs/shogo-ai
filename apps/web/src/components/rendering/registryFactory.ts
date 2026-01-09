@@ -74,6 +74,7 @@ export function specToEntry(spec: ComponentEntrySpec): ComponentEntry {
     priority: spec.priority,
     matches: spec.matcher,
     component,
+    defaultConfig: spec.defaultConfig,
   }
 }
 

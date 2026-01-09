@@ -5,14 +5,14 @@
  * insertOne() operations via Wavesmith MCP tools.
  *
  * Exports:
- * - COMPONENT_DEFINITIONS: 26 entries (display components)
+ * - COMPONENT_DEFINITIONS: 29 entries (display components)
  * - REGISTRIES: 2 entries (default, studio)
- * - RENDERER_BINDINGS: 27 entries (12 default + 15 studio)
+ * - RENDERER_BINDINGS: 30 entries (12 default + 18 studio)
  *
  * All entities have proper id fields for idempotency checks.
  * TypeScript types match component-builder schema entity types.
  *
- * Task: task-sdr-v2-001
+ * Task: task-sdr-v2-001, smart-component-expansion
  */
 
 // =============================================================================
@@ -36,6 +36,8 @@ export interface ComponentDefinitionSeed {
   implementationRef: string
   /** Tags for categorization and search */
   tags?: string[]
+  /** Config keys this component supports (e.g., ['variant', 'size', 'truncate']) */
+  supportedConfig?: string[]
 }
 
 /**
@@ -56,6 +58,20 @@ export interface RegistrySeed {
 }
 
 /**
+ * XRendererConfig for defaultConfig on bindings.
+ * Matches state-api XRendererConfig interface.
+ */
+export interface XRendererConfigSeed {
+  variant?: "default" | "muted" | "emphasized" | "warning" | "success" | "error"
+  size?: "xs" | "sm" | "md" | "lg" | "xl"
+  layout?: "inline" | "block" | "compact"
+  truncate?: boolean | number
+  expandable?: boolean
+  clickable?: boolean
+  customProps?: Record<string, unknown>
+}
+
+/**
  * Seed data for RendererBinding entity.
  * Matches component-builder schema $defs.RendererBinding
  */
@@ -72,17 +88,19 @@ export interface RendererBindingSeed {
   matchExpression: Record<string, unknown>
   /** Resolution priority (higher wins) */
   priority: number
+  /** Default XRendererConfig applied when this binding matches */
+  defaultConfig?: XRendererConfigSeed
 }
 
 // =============================================================================
-// Component Definitions (26 total)
+// Component Definitions (29 total)
 // =============================================================================
 
 /**
  * All ComponentDefinition seed entities.
  *
  * Categories breakdown:
- * - Primitive Display (11): String, Number, Boolean, DateTime, Email, URI, Enum, Reference, Computed, Array, Object
+ * - Primitive Display (14): String, Number, Boolean, DateTime, Email, URI, Enum, Reference, Computed, Array, Object, StringArray, CodePath, LongText
  * - Domain-Specific Display (11): Priority, Archetype, FindingType, TaskStatus, TestType, SessionStatus, RequirementStatus, RunStatus, ExecutionStatus, TestCaseStatus, TaskRenderer
  * - Visualization (4): ProgressBar, DataCard, GraphNode, StatusIndicator
  */
@@ -97,6 +115,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders string values with optional truncation",
     implementationRef: "StringDisplay",
     tags: ["primitive", "text", "readonly"],
+    supportedConfig: ["size", "variant", "truncate", "layout"],
   },
   {
     id: "comp-number-display",
@@ -105,6 +124,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders numeric values with optional formatting",
     implementationRef: "NumberDisplay",
     tags: ["primitive", "numeric", "readonly"],
+    supportedConfig: ["size", "variant"],
   },
   {
     id: "comp-boolean-display",
@@ -113,6 +133,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders boolean values as visual indicators",
     implementationRef: "BooleanDisplay",
     tags: ["primitive", "boolean", "readonly"],
+    supportedConfig: ["size", "variant"],
   },
   {
     id: "comp-datetime-display",
@@ -121,6 +142,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders date-time values with relative formatting",
     implementationRef: "DateTimeDisplay",
     tags: ["primitive", "date", "time", "readonly"],
+    supportedConfig: ["size", "variant"],
   },
   {
     id: "comp-email-display",
@@ -129,6 +151,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders email addresses as clickable mailto links",
     implementationRef: "EmailDisplay",
     tags: ["primitive", "email", "link", "readonly"],
+    supportedConfig: ["size", "variant", "clickable"],
   },
   {
     id: "comp-uri-display",
@@ -137,6 +160,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders URIs as clickable external links",
     implementationRef: "UriDisplay",
     tags: ["primitive", "uri", "link", "readonly"],
+    supportedConfig: ["size", "variant", "truncate", "clickable"],
   },
   {
     id: "comp-enum-badge",
@@ -145,6 +169,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders enum values as colored badges",
     implementationRef: "EnumBadge",
     tags: ["primitive", "enum", "badge", "readonly"],
+    supportedConfig: ["size", "variant"],
   },
   {
     id: "comp-reference-display",
@@ -153,6 +178,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders MST reference relationships",
     implementationRef: "ReferenceDisplay",
     tags: ["primitive", "reference", "relationship", "readonly"],
+    supportedConfig: ["size", "variant", "clickable"],
   },
   {
     id: "comp-computed-display",
@@ -161,6 +187,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders computed/derived property values",
     implementationRef: "ComputedDisplay",
     tags: ["primitive", "computed", "derived", "readonly"],
+    supportedConfig: ["size", "variant", "layout"],
   },
   {
     id: "comp-array-display",
@@ -169,6 +196,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders arrays with item counts and expansion",
     implementationRef: "ArrayDisplay",
     tags: ["primitive", "array", "collection", "readonly"],
+    supportedConfig: ["size", "variant", "expandable", "layout"],
   },
   {
     id: "comp-object-display",
@@ -177,6 +205,34 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders nested object structures",
     implementationRef: "ObjectDisplay",
     tags: ["primitive", "object", "nested", "readonly"],
+    supportedConfig: ["size", "variant", "expandable", "layout"],
+  },
+  {
+    id: "comp-string-array-display",
+    name: "String Array Display",
+    category: "display",
+    description: "Renders string arrays as styled lists (bulleted, numbered, or inline)",
+    implementationRef: "StringArrayDisplay",
+    tags: ["primitive", "array", "list", "readonly"],
+    supportedConfig: ["size", "variant", "layout", "expandable"],
+  },
+  {
+    id: "comp-code-path-display",
+    name: "Code Path Display",
+    category: "display",
+    description: "Renders file paths with monospace font and optional truncation",
+    implementationRef: "CodePathDisplay",
+    tags: ["domain", "code", "path", "readonly"],
+    supportedConfig: ["size", "truncate", "clickable"],
+  },
+  {
+    id: "comp-long-text-display",
+    name: "Long Text Display",
+    category: "display",
+    description: "Renders long text with line clamping and expand/collapse",
+    implementationRef: "LongTextDisplay",
+    tags: ["primitive", "text", "readonly"],
+    supportedConfig: ["size", "variant", "truncate", "expandable"],
   },
 
   // ---------------------------------------------------------------------------
@@ -358,6 +414,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-computed-display",
     matchExpression: { xComputed: true },
     priority: 100,
+    defaultConfig: { variant: "muted", size: "sm" },
   },
   {
     id: "reference-display",
@@ -366,6 +423,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-reference-display",
     matchExpression: { xReferenceType: "single" },
     priority: 100,
+    defaultConfig: { size: "md", clickable: true },
   },
   {
     id: "reference-array-display",
@@ -374,6 +432,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-array-display",
     matchExpression: { xReferenceType: "array" },
     priority: 100,
+    defaultConfig: { size: "md", expandable: true },
   },
 
   // Priority 50 - Enum-based bindings
@@ -384,6 +443,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-enum-badge",
     matchExpression: { enum: { $exists: true } },
     priority: 50,
+    defaultConfig: { variant: "emphasized", size: "sm" },
   },
 
   // Priority 30 - Format-based bindings
@@ -394,6 +454,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-datetime-display",
     matchExpression: { format: "date-time" },
     priority: 30,
+    defaultConfig: { size: "sm", variant: "muted" },
   },
   {
     id: "email-display",
@@ -402,6 +463,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-email-display",
     matchExpression: { format: "email" },
     priority: 30,
+    defaultConfig: { size: "md", clickable: true },
   },
   {
     id: "uri-display",
@@ -410,6 +472,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-uri-display",
     matchExpression: { format: "uri" },
     priority: 30,
+    defaultConfig: { size: "md", truncate: 50, clickable: true },
   },
 
   // Priority 10 - Type-based bindings
@@ -420,6 +483,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-number-display",
     matchExpression: { type: "number" },
     priority: 10,
+    defaultConfig: { size: "md" },
   },
   {
     id: "boolean-display",
@@ -428,6 +492,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-boolean-display",
     matchExpression: { type: "boolean" },
     priority: 10,
+    defaultConfig: { size: "md" },
   },
   {
     id: "array-display",
@@ -436,6 +501,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-array-display",
     matchExpression: { type: "array" },
     priority: 10,
+    defaultConfig: { size: "md", expandable: true },
   },
   {
     id: "object-display",
@@ -444,6 +510,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-object-display",
     matchExpression: { type: "object" },
     priority: 10,
+    defaultConfig: { size: "md", expandable: true },
   },
   {
     id: "string-display",
@@ -452,6 +519,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
     component: "comp-string-display",
     matchExpression: { type: "string" },
     priority: 10,
+    defaultConfig: { size: "md", truncate: 200 },
   },
 ]
 
@@ -585,11 +653,40 @@ const STUDIO_BINDINGS: RendererBindingSeed[] = [
     matchExpression: { xRenderer: "status-indicator" },
     priority: 200,
   },
+
+  // New specialized renderers (3)
+  {
+    id: "string-array-display",
+    name: "String Array Display Binding",
+    registry: "studio",
+    component: "comp-string-array-display",
+    matchExpression: { xRenderer: "string-array" },
+    priority: 200,
+    defaultConfig: { size: "sm", layout: "compact" },
+  },
+  {
+    id: "code-path-display",
+    name: "Code Path Display Binding",
+    registry: "studio",
+    component: "comp-code-path-display",
+    matchExpression: { xRenderer: "code-path" },
+    priority: 200,
+    defaultConfig: { size: "xs", truncate: 60 },
+  },
+  {
+    id: "long-text-display",
+    name: "Long Text Display Binding",
+    registry: "studio",
+    component: "comp-long-text-display",
+    matchExpression: { xRenderer: "long-text" },
+    priority: 200,
+    defaultConfig: { truncate: 150, expandable: true },
+  },
 ]
 
 /**
  * Combined renderer bindings from both registries.
- * 12 default + 15 studio = 27 total entries.
+ * 12 default + 18 studio = 30 total entries.
  */
 export const RENDERER_BINDINGS: RendererBindingSeed[] = [
   ...DEFAULT_BINDINGS,
