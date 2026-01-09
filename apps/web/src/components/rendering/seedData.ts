@@ -1,15 +1,15 @@
 /**
  * Seed Data for Component Builder
- * Task: task-dcb-005
+ * Task: task-dcb-005, task-cbe-003
  *
  * Converts current defaultRegistry.ts and studioRegistry.ts entries into
  * ComponentDefinition, Registry, and RendererBinding entities.
  *
  * This module provides:
- * - COMPONENT_DEFINITIONS: 26 ComponentDefinition entries (11 primitive, 11 domain, 4 visualization)
+ * - COMPONENT_DEFINITIONS: 29 ComponentDefinition entries (11 primitive, 14 domain, 4 visualization)
  * - REGISTRY_DEFINITIONS: 2 Registry entries ('default' and 'studio')
  * - DEFAULT_BINDINGS: 13 RendererBinding entries for default registry
- * - STUDIO_BINDINGS: 15 RendererBinding entries for studio registry
+ * - STUDIO_BINDINGS: 18 RendererBinding entries for studio registry
  * - seedComponentBuilderData(store): Function to bootstrap all entities
  *
  * Match Expression Translation:
@@ -79,14 +79,14 @@ interface SeedSummary {
 }
 
 // ============================================================================
-// Component Definitions (26 total)
+// Component Definitions (29 total)
 // ============================================================================
 
 /**
  * All ComponentDefinition entities.
  *
  * Categories:
- * - display (22): Primitive and domain-specific renderers
+ * - display (25): Primitive and domain-specific renderers
  * - visualization (4): Data visualization components
  */
 export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
@@ -183,7 +183,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
   },
 
   // -------------------------------------------------------------------------
-  // Domain-Specific Display Renderers (11)
+  // Domain-Specific Display Renderers (14)
   // -------------------------------------------------------------------------
   {
     id: "comp-priority-badge",
@@ -272,6 +272,30 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders implementation task entities with full detail",
     implementationRef: "TaskRenderer",
     tags: ["domain", "task", "entity", "readonly"],
+  },
+  {
+    id: "comp-code-path-display",
+    name: "Code Path Display",
+    category: "display",
+    description: "Renders file paths with syntax highlighting and copy functionality",
+    implementationRef: "CodePathDisplay",
+    tags: ["domain", "code", "path", "file", "readonly"],
+  },
+  {
+    id: "comp-change-type-badge",
+    name: "Change Type Badge",
+    category: "display",
+    description: "Renders change type enum values (add, modify, extend) with semantic colors",
+    implementationRef: "ChangeTypeBadge",
+    tags: ["domain", "change-type", "badge", "readonly"],
+  },
+  {
+    id: "comp-phase-status-renderer",
+    name: "Phase Status Renderer",
+    category: "display",
+    description: "Renders session status as interactive phase indicator with navigation",
+    implementationRef: "PhaseStatusRenderer",
+    tags: ["domain", "session", "status", "phase", "interactive"],
   },
 
   // -------------------------------------------------------------------------
@@ -472,7 +496,7 @@ export const DEFAULT_BINDINGS: RendererBindingSeed[] = [
 ]
 
 // ============================================================================
-// Studio Registry Bindings (15 total)
+// Studio Registry Bindings (18 total)
 // ============================================================================
 
 /**
@@ -605,6 +629,31 @@ export const STUDIO_BINDINGS: RendererBindingSeed[] = [
     matchExpression: { xRenderer: "status-indicator" },
     priority: 200,
   },
+  // New bindings for task-cbe-003
+  {
+    id: "code-path-display",
+    name: "Code Path Display Binding",
+    registry: "studio",
+    component: componentId("CodePathDisplay"),
+    matchExpression: { xRenderer: "code-path-display" },
+    priority: 200,
+  },
+  {
+    id: "change-type-badge",
+    name: "Change Type Badge Binding",
+    registry: "studio",
+    component: componentId("ChangeTypeBadge"),
+    matchExpression: { xRenderer: "change-type-badge" },
+    priority: 200,
+  },
+  {
+    id: "phase-status-renderer",
+    name: "Phase Status Renderer Binding",
+    registry: "studio",
+    component: componentId("PhaseStatusRenderer"),
+    matchExpression: { xRenderer: "phase-status-renderer" },
+    priority: 200,
+  },
 ]
 
 // ============================================================================
@@ -615,9 +664,9 @@ export const STUDIO_BINDINGS: RendererBindingSeed[] = [
  * Seeds the component builder store with all required entities.
  *
  * Creates:
- * - 26 ComponentDefinition entities (11 primitive, 11 domain, 4 visualization)
+ * - 29 ComponentDefinition entities (11 primitive, 14 domain, 4 visualization)
  * - 2 Registry entities ('default' and 'studio')
- * - 28 RendererBinding entities (13 default, 15 studio)
+ * - 31 RendererBinding entities (13 default, 18 studio)
  *
  * @param store - A store with a create(collection, data) method
  * @returns Summary of created entities

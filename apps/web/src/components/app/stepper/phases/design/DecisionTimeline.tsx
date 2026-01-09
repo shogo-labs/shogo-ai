@@ -15,7 +15,7 @@
  * Uses phase-design amber color tokens for consistent styling.
  */
 
-import { useState, useMemo } from "react"
+import { useState, useRef } from "react"
 import { observer } from "mobx-react-lite"
 import { useDomains } from "@/contexts/DomainProvider"
 import { cn } from "@/lib/utils"
@@ -146,13 +146,29 @@ export const DecisionTimeline = observer(function DecisionTimeline({
 
   // Query design decisions for this feature session
   // Filter out enhancement-hooks-plan (shown in separate tab)
-  const decisions = useMemo(() => {
-    const allDecisions = platformFeatures?.designDecisionCollection?.all() ?? []
-    return allDecisions
-      .filter(
-        (d: any) =>
-          d.session?.id === featureId && d.name !== "enhancement-hooks-plan"
-      )
+  //
+  // PERF FIX: Use refs to track both the key AND the result.
+  // MobX observable references in useMemo deps defeat memoization - any observable
+  // change triggers re-render, and React sees a "new" collection reference.
+  // Instead, we manually compare a stable key derived from the actual data.
+  const prevDecisionsKeyRef = useRef<string>('')
+  const decisionsRef = useRef<DesignDecisionData[]>([])
+
+  // Get all decisions and compute a stable key
+  const allDecisions = platformFeatures?.designDecisionCollection?.all() ?? []
+  const filteredDecisions = allDecisions.filter(
+    (d: any) =>
+      d.session?.id === featureId && d.name !== "enhancement-hooks-plan"
+  )
+  // Key includes IDs and updatedAt timestamps of relevant decisions
+  const currentDecisionsKey = `${featureId}:${filteredDecisions.map(
+    (d: any) => `${d.id}:${d.updatedAt ?? ''}`
+  ).join('|')}`
+
+  // Only recompute when key actually changes
+  if (currentDecisionsKey !== prevDecisionsKeyRef.current) {
+    prevDecisionsKeyRef.current = currentDecisionsKey
+    decisionsRef.current = filteredDecisions
       .sort((a: any, b: any) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
       .map((d: any): DesignDecisionData => ({
         id: d.id,
@@ -163,13 +179,14 @@ export const DecisionTimeline = observer(function DecisionTimeline({
         // In future: extract affected entities from decision text or add to schema
         affectedEntities: extractAffectedEntities(d),
       }))
-  }, [platformFeatures?.designDecisionCollection, featureId])
+  }
 
-  // Find selected decision
-  const selectedDecision = useMemo(() => {
-    if (!selectedId) return null
-    return decisions.find((d) => d.id === selectedId) ?? null
-  }, [decisions, selectedId])
+  const decisions = decisionsRef.current
+
+  // Find selected decision (simple lookup, no memoization needed)
+  const selectedDecision = selectedId
+    ? decisions.find((d) => d.id === selectedId) ?? null
+    : null
 
   // Handle node click
   const handleSelectDecision = (decisionId: string) => {

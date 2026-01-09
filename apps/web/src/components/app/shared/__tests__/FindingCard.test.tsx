@@ -56,12 +56,13 @@ describe("test-2-3b-005: FindingCard renders with valid finding props", () => {
     expect(componentSource).toMatch(/finding\.type/)
   })
 
-  test("FindingCard displays location in monospace font", () => {
+  test("FindingCard displays location via PropertyRenderer (monospace handled by CodePathDisplay)", () => {
     const componentPath = path.resolve(import.meta.dir, "../FindingCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
     expect(componentSource).toMatch(/finding\.location/)
-    expect(componentSource).toMatch(/font-mono/)
+    // Monospace styling is now provided by CodePathDisplay via xRenderer: 'code-path'
+    expect(componentSource).toMatch(/xRenderer.*:.*["']code-path["']/)
   })
 
   test("FindingCard has data-testid", () => {

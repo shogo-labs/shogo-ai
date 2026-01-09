@@ -1,20 +1,26 @@
 /**
  * FindingCard Component
- * Task: task-2-3b-003
+ * Task: task-2-3b-003, task-cbe-005
  *
  * Displays an analysis finding with type badge using PropertyRenderer.
+ * All fields (type, description, location, recommendation) use PropertyRenderer
+ * for schema-driven rendering.
  *
  * Props:
  * - finding: AnalysisFinding object with id, name, type, description, location, recommendation
  *
  * Per design-2-3b-component-hierarchy:
  * - Built in /components/app/shared/ for reuse across phase views
- * - Uses PropertyRenderer for finding type badge (Phase 2 integration)
+ * - Uses PropertyRenderer for schema-driven rendering of all properties:
+ *   - type: FindingTypeBadge (xRenderer='finding-type-badge')
+ *   - description: LongTextDisplay (xRenderer='long-text')
+ *   - location: CodePathDisplay (xRenderer='code-path')
+ *   - recommendation: LongTextDisplay (xRenderer='long-text')
  */
 
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
-import { PropertyRenderer } from "@/components/rendering"
+import { PropertyRenderer, type PropertyMetadata } from "@/components/rendering"
 
 /**
  * Finding type enum - matches AnalysisFinding entity
@@ -83,10 +89,46 @@ function getTypeLabel(type: FindingType): string {
 }
 
 /**
+ * PropertyMetadata for description field - uses LongTextDisplay
+ */
+const descriptionPropertyMeta: PropertyMetadata = {
+  name: "description",
+  type: "string",
+  xRenderer: "long-text",
+}
+
+/**
+ * PropertyMetadata for location field - uses CodePathDisplay
+ */
+const locationPropertyMeta: PropertyMetadata = {
+  name: "location",
+  type: "string",
+  xRenderer: "code-path",
+}
+
+/**
+ * PropertyMetadata for recommendation field - uses LongTextDisplay
+ */
+const recommendationPropertyMeta: PropertyMetadata = {
+  name: "recommendation",
+  type: "string",
+  xRenderer: "long-text",
+}
+
+/**
+ * PropertyMetadata for type field - uses FindingTypeBadge
+ */
+const typePropertyMeta: PropertyMetadata = {
+  name: "type",
+  type: "string",
+  xRenderer: "finding-type-badge",
+}
+
+/**
  * FindingCard Component
  *
  * Displays a single finding with name, type badge, description, location, and optional recommendation.
- * Uses PropertyRenderer for the finding type badge (Phase 2 integration).
+ * Uses PropertyRenderer for schema-driven rendering of all properties.
  */
 export function FindingCard({ finding }: FindingCardProps) {
   return (
@@ -102,29 +144,38 @@ export function FindingCard({ finding }: FindingCardProps) {
           <h4 className="font-medium text-foreground truncate">
             {finding.name}
           </h4>
-          <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-            {finding.description}
-          </p>
-          <p className="text-xs font-mono text-muted-foreground mt-2">
-            {finding.location}
-          </p>
+          {/* Use PropertyRenderer for description - LongTextDisplay with expand/collapse */}
+          <div className="text-sm text-muted-foreground mt-1">
+            <PropertyRenderer
+              value={finding.description}
+              property={descriptionPropertyMeta}
+            />
+          </div>
+          {/* Use PropertyRenderer for location - CodePathDisplay with monospace + copy */}
+          <div className="mt-2">
+            <PropertyRenderer
+              value={finding.location}
+              property={locationPropertyMeta}
+            />
+          </div>
         </div>
         {/* Use PropertyRenderer for finding type badge */}
         <PropertyRenderer
           value={finding.type}
-          property={{
-            name: "type",
-            type: "string",
-            xRenderer: "finding-type-badge",
-          }}
+          property={typePropertyMeta}
         />
       </div>
 
       {finding.recommendation && (
         <div className="mt-3 pt-3 border-t">
-          <p className="text-xs text-muted-foreground">
-            <span className="font-medium">Recommendation:</span> {finding.recommendation}
-          </p>
+          {/* Use PropertyRenderer for recommendation - LongTextDisplay */}
+          <div className="text-xs text-muted-foreground">
+            <span className="font-medium">Recommendation: </span>
+            <PropertyRenderer
+              value={finding.recommendation}
+              property={recommendationPropertyMeta}
+            />
+          </div>
         </div>
       )}
     </div>

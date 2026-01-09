@@ -29,7 +29,7 @@
  * ```
  */
 
-import { createContext, useContext, useRef, useEffect, type ReactNode } from "react"
+import { createContext, useContext, useRef, useEffect, useMemo, type ReactNode } from "react"
 import type { DomainResult } from "@shogo/state-api"
 import { useEnv } from "./EnvironmentContext"
 
@@ -150,9 +150,13 @@ export function DomainProvider<T extends DomainsMap>({
     loadAllDomainData()
   }, []) // Run once on mount
 
-  const contextValue: DomainProviderContextValue = {
-    stores: storesRef.current!,
-  }
+  // PERF FIX: Memoize context value to prevent unnecessary consumer re-renders.
+  // storesRef.current is set once during initialization and never changes,
+  // so we can safely memoize with empty deps.
+  const contextValue = useMemo<DomainProviderContextValue>(
+    () => ({ stores: storesRef.current! }),
+    []
+  )
 
   return (
     <DomainProviderContext.Provider value={contextValue}>

@@ -1,6 +1,6 @@
 /**
  * RequirementCard Component
- * Task: task-2-3b-002, task-discovery-view, task-sdr-v2-005
+ * Task: task-2-3b-002, task-discovery-view, task-sdr-v2-005, task-cbe-004
  *
  * Displays a requirement with all properties rendered via PropertyRenderer.
  * This is the vertical slice proving schema-driven rendering for entity cards.
@@ -12,7 +12,7 @@
  * - Built in /components/app/shared/ for reuse across phase views
  * - Uses PropertyRenderer for schema-driven rendering of all properties:
  *   - name: StringDisplay (type=string)
- *   - description: StringDisplay (type=string)
+ *   - description: LongTextDisplay (type=string, xRenderer=long-text)
  *   - priority: PriorityBadge (enum with xRenderer=priority-badge)
  */
 
@@ -75,10 +75,12 @@ const namePropertyMeta: PropertyMetadata = {
 
 /**
  * PropertyMetadata for description field - matches schema annotation
+ * Uses LongTextDisplay for expandable long text rendering
  */
 const descriptionPropertyMeta: PropertyMetadata = {
   name: "description",
   type: "string",
+  xRenderer: "long-text",
 }
 
 /**
@@ -114,12 +116,13 @@ export function RequirementCard({ requirement }: RequirementCardProps) {
               value={requirement.name}
             />
           </h4>
-          <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+          <div className="text-sm text-muted-foreground mt-1">
             <PropertyRenderer
               property={descriptionPropertyMeta}
               value={requirement.description}
+              config={{ truncate: 150, expandable: true }}
             />
-          </p>
+          </div>
         </div>
         <PropertyRenderer
           property={priorityPropertyMeta}
