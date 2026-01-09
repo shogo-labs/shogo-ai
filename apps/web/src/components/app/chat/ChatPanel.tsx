@@ -37,6 +37,45 @@ import { AlertCircle } from "lucide-react"
 // Types
 // ============================================================
 
+// Progress event types from server (task-subagent-progress-streaming)
+type SubagentProgressEvent =
+  | { type: 'subagent-start'; agentId: string; agentType: string; timestamp: number }
+  | { type: 'subagent-stop'; agentId: string; timestamp: number }
+  | { type: 'tool-complete'; toolName: string; toolUseId: string; timestamp: number }
+
+interface SubagentProgress {
+  agentId: string
+  agentType: string
+  startTime: number
+  status: 'running' | 'completed'
+  toolCount: number
+}
+
+// Recent tool activity for display
+interface RecentToolCall {
+  id: string
+  toolName: string
+  timestamp: number
+}
+
+// Helper to format tool names for display
+function formatToolName(name: string): string {
+  // Handle MCP tool names: mcp__wavesmith__store_query -> wavesmith.store_query
+  if (name.startsWith('mcp__')) {
+    const parts = name.replace('mcp__', '').split('__')
+    return parts.join('.')
+  }
+  return name
+}
+
+// Helper to get tool category for styling
+function getToolCategory(name: string): 'mcp' | 'file' | 'skill' | 'other' {
+  if (name.startsWith('mcp__')) return 'mcp'
+  if (['Read', 'Write', 'Edit', 'Glob', 'Grep'].includes(name)) return 'file'
+  if (['Skill', 'Task'].includes(name)) return 'skill'
+  return 'other'
+}
+
 export interface ChatPanelProps {
   /** Feature session ID to link chat with */
   featureId: string | null
@@ -387,6 +426,11 @@ export const ChatPanel = observer(function ChatPanel({
     ccSessionIdRef.current = ccSessionId
   }, [ccSessionId])
 
+  // Subagent progress tracking (task-subagent-progress-streaming)
+  const [activeSubagents, setActiveSubagents] = useState<Map<string, SubagentProgress>>(new Map())
+  const [recentTools, setRecentTools] = useState<RecentToolCall[]>([])
+  const MAX_RECENT_TOOLS = 8 // Keep last N tool calls for display
+
   // chat-session-sync-fix: v3 API requires DefaultChatTransport for proper metadata handling
   // The transport must be memoized to prevent re-creation on every render
   const chatTransport = useMemo(
@@ -428,18 +472,24 @@ export const ChatPanel = observer(function ChatPanel({
       // Server's messageMetadata callback sends ccSessionId via SSE message-metadata event
       const newCcSessionId = (message as any).metadata?.ccSessionId as string | undefined
 
-      // chat-session-sync-fix: Await persistence before state update
-      // This ensures persistence completes before React state updates
+      // chat-session-sync-fix: Update ref IMMEDIATELY to prevent race condition
+      // React state updates are async, but the ref must be current for the next
+      // sendMessage() call. Without this, rapid user input (e.g., "yes" right after
+      // first response) would use stale/undefined ccSessionId, creating a new
+      // Claude Code session instead of resuming the existing one.
       if (newCcSessionId && currentSessionId) {
         console.log("[ChatPanel] Persisting CC session ID:", newCcSessionId)
+        // CRITICAL: Update ref BEFORE async operations to prevent race condition
+        ccSessionIdRef.current = newCcSessionId
         try {
           await studioChat.chatSessionCollection.updateOne(currentSessionId, {
             claudeCodeSessionId: newCcSessionId,
           })
-          // Only update state after successful persistence
+          // Update state after successful persistence (for React re-render)
           setCcSessionId(newCcSessionId)
         } catch (err) {
-          // Don't update state if persistence fails - prevents broken resume
+          // Persistence failed - revert ref to prevent broken resume attempts
+          ccSessionIdRef.current = ccSessionId
           console.error("[ChatPanel] CRITICAL: CC session ID persistence failed:", err)
         }
       }
@@ -570,6 +620,137 @@ export const ChatPanel = observer(function ChatPanel({
       }
     }
   }, [isLoading, messages, stop])
+
+  // Process progress events from message parts (task-subagent-progress-streaming)
+  useEffect(() => {
+    const latestMessage = messages[messages.length - 1]
+    if (!latestMessage || latestMessage.role !== 'assistant') return
+
+    const parts = (latestMessage as any).parts as any[] | undefined
+    if (!parts) {
+      console.log('[ChatPanel:Progress] No parts array in latest message')
+      return
+    }
+
+    // Log all part types for debugging
+    const partTypes = parts.map((p: any) => p.type)
+    console.log('[ChatPanel:Progress] Processing message parts:', {
+      messageId: latestMessage.id,
+      partTypes,
+      totalParts: parts.length,
+    })
+
+    // Find data-progress parts
+    const progressParts = parts.filter((part: any) => part.type === 'data-progress')
+    if (progressParts.length > 0) {
+      console.log('[ChatPanel:Progress] Found data-progress parts:', progressParts.length)
+    }
+
+    parts.forEach((part) => {
+      // Handle session ID from server (SDK workaround - session ID comes via custom event, not metadata)
+      if (part.type === 'data-session') {
+        const sessionData = part.data as { ccSessionId: string }
+        console.log('[ChatPanel:Session] 📨 Received data-session event:', sessionData)
+        if (sessionData.ccSessionId && !ccSessionIdRef.current) {
+          console.log('[ChatPanel:Session] ✅ Capturing session ID from server:', sessionData.ccSessionId)
+          ccSessionIdRef.current = sessionData.ccSessionId
+          setCcSessionId(sessionData.ccSessionId)
+          // Persist to session if available
+          if (currentSessionId) {
+            studioChat.chatSessionCollection.updateOne({
+              id: currentSessionId,
+              claudeCodeSessionId: sessionData.ccSessionId,
+            }).catch((error) => {
+              console.error('[ChatPanel:Session] Failed to persist session ID:', error)
+            })
+          }
+        }
+      }
+
+      if (part.type === 'data-progress') {
+        const event = part.data as SubagentProgressEvent
+        console.log('[ChatPanel:Progress] 📥 Received data-progress event:', event)
+
+        if (event.type === 'subagent-start') {
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            console.log('[ChatPanel:Progress] 🚀 Adding subagent to active map:', event.agentId, event.agentType)
+            next.set(event.agentId, {
+              agentId: event.agentId,
+              agentType: event.agentType,
+              startTime: event.timestamp,
+              status: 'running',
+              toolCount: 0,
+            })
+            console.log('[ChatPanel:Progress] 📊 Active subagents count:', next.size)
+            return next
+          })
+        } else if (event.type === 'subagent-stop') {
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            const existing = next.get(event.agentId)
+            console.log('[ChatPanel:Progress] 🛑 Stopping subagent:', event.agentId, 'existing:', !!existing)
+            if (existing) {
+              next.set(event.agentId, { ...existing, status: 'completed' })
+            }
+            console.log('[ChatPanel:Progress] 📊 Active subagents count:', next.size)
+            return next
+          })
+        } else if (event.type === 'tool-complete') {
+          console.log('[ChatPanel:Progress] 🔧 Tool complete:', event.toolName)
+          // Add to recent tools list
+          setRecentTools((prev) => {
+            const newTool: RecentToolCall = {
+              id: event.toolUseId,
+              toolName: event.toolName,
+              timestamp: event.timestamp,
+            }
+            const updated = [newTool, ...prev].slice(0, MAX_RECENT_TOOLS)
+            return updated
+          })
+          // Increment tool count on all running subagents
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            for (const [id, subagent] of next) {
+              if (subagent.status === 'running') {
+                next.set(id, { ...subagent, toolCount: subagent.toolCount + 1 })
+              }
+            }
+            return next
+          })
+        }
+      }
+    })
+  }, [messages, currentSessionId, studioChat.chatSessionCollection])
+
+  // Clear completed subagents and recent tools after stream ends (task-subagent-progress-streaming)
+  useEffect(() => {
+    if (!isLoading) {
+      console.log('[ChatPanel:Progress] Stream ended, clearing completed subagents')
+      setActiveSubagents((prev) => {
+        const next = new Map(prev)
+        let clearedCount = 0
+        for (const [id, subagent] of next) {
+          if (subagent.status === 'completed') {
+            next.delete(id)
+            clearedCount++
+          }
+        }
+        console.log('[ChatPanel:Progress] Cleared', clearedCount, 'completed subagents, remaining:', next.size)
+        return next
+      })
+      // Clear recent tools when stream ends
+      setRecentTools([])
+    }
+  }, [isLoading])
+
+  // Debug: Log whenever activeSubagents changes
+  useEffect(() => {
+    console.log('[ChatPanel:Progress] 📊 activeSubagents state changed:', {
+      size: activeSubagents.size,
+      agents: Array.from(activeSubagents.values()).map(a => ({ id: a.agentId, type: a.agentType, status: a.status })),
+    })
+  }, [activeSubagents])
 
   // Load persisted messages when session changes
   useEffect(() => {
@@ -844,6 +1025,91 @@ export const ChatPanel = observer(function ChatPanel({
               <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse" />
               <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.2s]" />
               <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.4s]" />
+            </div>
+          )}
+
+          {/* Subagent Progress Indicator (task-subagent-progress-streaming) */}
+          {/* Debug: Always log render check */}
+          {(() => {
+            console.log('[ChatPanel:Progress] 🎨 Render check - activeSubagents.size:', activeSubagents.size)
+            return null
+          })()}
+          {activeSubagents.size > 0 && (
+            <div className="px-4 py-3 border-t border-border/50 bg-gradient-to-b from-muted/40 to-muted/20">
+              {/* Subagent header with count */}
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                  <span className="text-xs font-semibold text-foreground/80">
+                    Running Subagent
+                  </span>
+                </div>
+                {Array.from(activeSubagents.values())
+                  .filter((s) => s.status === 'running')
+                  .map((subagent) => (
+                    <div key={subagent.agentId} className="flex items-center gap-2">
+                      <span className="text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/30 px-2 py-0.5 rounded">
+                        {subagent.agentType}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {subagent.toolCount} tools
+                      </span>
+                    </div>
+                  ))}
+              </div>
+
+              {/* Recent activity log */}
+              {recentTools.length > 0 && (
+                <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                  {recentTools.map((tool, index) => {
+                    const category = getToolCategory(tool.toolName)
+                    const displayName = formatToolName(tool.toolName)
+                    return (
+                      <div
+                        key={tool.id}
+                        className={cn(
+                          "flex items-center gap-2 text-xs py-0.5 transition-opacity",
+                          index === 0 ? "opacity-100" : index < 3 ? "opacity-70" : "opacity-40"
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "w-1.5 h-1.5 rounded-full shrink-0",
+                            category === 'mcp' && "bg-purple-500",
+                            category === 'file' && "bg-green-500",
+                            category === 'skill' && "bg-orange-500",
+                            category === 'other' && "bg-gray-500"
+                          )}
+                        />
+                        <span className="font-mono text-muted-foreground truncate">
+                          {displayName}
+                        </span>
+                        {index === 0 && (
+                          <span className="text-[10px] text-muted-foreground/60 ml-auto">now</span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              {/* Legend */}
+              {recentTools.length > 0 && (
+                <div className="flex items-center gap-3 mt-2 pt-2 border-t border-border/30">
+                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                    <span>MCP</span>
+                  </div>
+                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                    <span>File</span>
+                  </div>
+                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
+                    <span className="w-1.5 h-1.5 rounded-full bg-orange-500" />
+                    <span>Skill</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

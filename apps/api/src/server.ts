@@ -1,6 +1,9 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText, type ModelMessage } from 'ai'
+import { streamText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
+import { EventEmitter } from 'events'
+import type { SubagentProgressEvent } from './types/progress'
+import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
@@ -47,9 +50,19 @@ const VITE_PORT = parseInt(process.env.VITE_PORT || '3000', 10)
 const __filename = fileURLToPath(import.meta.url)
 const PROJECT_ROOT = resolve(__filename, '../../../../')
 
+// Progress event emitter for streaming subagent updates (task-subagent-progress-streaming)
+const progressEvents = new EventEmitter()
+
+// Stream completion event emitter - signals when parent agent finishes (fixes subagent hang)
+// This is separate from progressEvents to avoid confusion between progress updates and completion signals
+const streamCompletionEvents = new EventEmitter()
+
+// Debug logging prefix for subagent progress
+const LOG_PREFIX = '[SubagentProgress]'
+
 // Create Claude Code provider scoped to this project
 // This enables:
-// - .claude/skills/ from the project  
+// - .claude/skills/ from the project
 // - .mcp.json MCP servers (wavesmith)
 // - Project-specific settings
 const claudeCode = createClaudeCode({
@@ -127,6 +140,105 @@ const claudeCode = createClaudeCode({
     ],
     // Bypass permission prompts for non-interactive API use
     permissionMode: 'bypassPermissions',
+    // Hooks for subagent progress streaming (task-subagent-progress-streaming)
+    hooks: {
+      SubagentStart: [{
+        hooks: [async (rawInput: unknown) => {
+          const input = rawInput as SubagentStartHookInput
+          console.log(`${LOG_PREFIX} 🚀 HOOK SubagentStart fired:`, {
+            agentId: input.agent_id,
+            agentType: input.agent_type,
+            rawInput: JSON.stringify(rawInput).slice(0, 200),
+          })
+          const event = {
+            type: 'subagent-start',
+            agentId: input.agent_id,
+            agentType: input.agent_type,
+            timestamp: Date.now(),
+          } satisfies SubagentProgressEvent
+          progressEvents.emit('progress', event)
+          console.log(`${LOG_PREFIX} 📤 Emitted subagent-start event`)
+          return { continue: true }
+        }]
+      }],
+      SubagentStop: [{
+        hooks: [async (rawInput: unknown) => {
+          const input = rawInput as SubagentStopHookInput
+          console.log(`${LOG_PREFIX} 🛑 HOOK SubagentStop fired:`, {
+            agentId: input.agent_id,
+            rawInput: JSON.stringify(rawInput).slice(0, 200),
+          })
+          const event = {
+            type: 'subagent-stop',
+            agentId: input.agent_id,
+            timestamp: Date.now(),
+          } satisfies SubagentProgressEvent
+          progressEvents.emit('progress', event)
+          console.log(`${LOG_PREFIX} 📤 Emitted subagent-stop event`)
+          return { continue: true }
+        }]
+      }],
+      PostToolUse: [{
+        hooks: [async (rawInput: unknown) => {
+          const input = rawInput as PostToolUseHookInput
+          // Only log MCP and Skill tools to reduce noise
+          if (input.tool_name.includes('mcp__') || input.tool_name === 'Skill' || input.tool_name === 'Task') {
+            console.log(`${LOG_PREFIX} 🔧 HOOK PostToolUse fired:`, {
+              toolName: input.tool_name,
+              toolUseId: input.tool_use_id,
+            })
+          }
+          const event = {
+            type: 'tool-complete',
+            toolName: input.tool_name,
+            toolUseId: input.tool_use_id,
+            timestamp: Date.now(),
+          } satisfies SubagentProgressEvent
+          progressEvents.emit('progress', event)
+          return { continue: true }
+        }]
+      }],
+      // Stop hook fires when PARENT agent finishes (not just subagents)
+      // This is the authoritative signal that the stream should complete
+      Stop: [{
+        hooks: [async (rawInput: unknown) => {
+          // Extract session_id from rawInput - SDK doesn't provide it in stream metadata
+          const sessionId = (rawInput as { session_id?: string }).session_id
+          console.log(`${LOG_PREFIX} 🏁 HOOK Stop (PARENT) fired:`, {
+            sessionId,
+            rawInput: JSON.stringify(rawInput).slice(0, 200),
+          })
+          // Signal stream completion with session ID - this will unblock the reader.read() loop
+          streamCompletionEvents.emit('complete', {
+            source: 'Stop',
+            timestamp: Date.now(),
+            sessionId,  // Pass session ID for client persistence
+          })
+          console.log(`${LOG_PREFIX} 📤 Emitted stream-complete signal from Stop hook (sessionId: ${sessionId})`)
+          return { continue: true }
+        }]
+      }],
+      // SessionEnd hook fires when the Claude Code session ends
+      // This is a fallback signal in case Stop doesn't fire
+      SessionEnd: [{
+        hooks: [async (rawInput: unknown) => {
+          // Extract session_id from rawInput - SDK doesn't provide it in stream metadata
+          const sessionId = (rawInput as { session_id?: string }).session_id
+          console.log(`${LOG_PREFIX} 🔚 HOOK SessionEnd fired:`, {
+            sessionId,
+            rawInput: JSON.stringify(rawInput).slice(0, 200),
+          })
+          // Signal stream completion with session ID
+          streamCompletionEvents.emit('complete', {
+            source: 'SessionEnd',
+            timestamp: Date.now(),
+            sessionId,  // Pass session ID for client persistence
+          })
+          console.log(`${LOG_PREFIX} 📤 Emitted stream-complete signal from SessionEnd hook (sessionId: ${sessionId})`)
+          return { continue: true }
+        }]
+      }],
+    },
   },
 })
 
@@ -210,6 +322,59 @@ app.post('/api/chat', async (c) => {
     // v3 @ai-sdk/react sends UIMessage with parts array, but streamText expects CoreMessage with content string
     const coreMessages = convertUIMessagesToCoreMessages(messages)
 
+    // task-subagent-progress-streaming: Buffer events BEFORE starting streamText
+    // This fixes the race condition where SubagentStart fires before the stream listener is attached
+    const eventBuffer: SubagentProgressEvent[] = []
+    let streamWriter: { write: (data: any) => void } | null = null
+
+    // Stream completion signal - resolves when Stop or SessionEnd hook fires
+    // This fixes the hang when subagents complete but the stream doesn't close
+    let streamCompleteResolver: (() => void) | null = null
+    const streamCompletePromise = new Promise<void>((resolve) => {
+      streamCompleteResolver = resolve
+    })
+
+    // Session ID captured from Stop/SessionEnd hooks (SDK workaround)
+    // The Claude Code SDK doesn't include sessionId in stream metadata,
+    // so we extract it from hook rawInput and emit it as a final stream event
+    let capturedSessionId: string | undefined
+
+    // Listen for completion signal from Stop/SessionEnd hooks
+    const onStreamComplete = (info: { source: string; timestamp: number; sessionId?: string }) => {
+      console.log(`${LOG_PREFIX} 🎯 Received stream-complete signal:`, info)
+      capturedSessionId = info.sessionId
+      // Write final session event to stream before closing (if we have streamWriter)
+      if (streamWriter && info.sessionId) {
+        console.log(`${LOG_PREFIX} 📨 Writing final session event to stream:`, info.sessionId)
+        streamWriter.write({
+          type: 'data-session' as const,
+          data: { ccSessionId: info.sessionId },
+        } as any)
+      }
+      streamCompleteResolver?.()
+    }
+    streamCompletionEvents.on('complete', onStreamComplete)
+
+    const onProgress = (event: SubagentProgressEvent) => {
+      console.log(`${LOG_PREFIX} 📥 Received progress event:`, event)
+      if (streamWriter) {
+        // Stream is ready, write directly
+        streamWriter.write({
+          type: 'data-progress' as const,
+          data: event,
+        } as any)
+        console.log(`${LOG_PREFIX} ✅ Wrote data-progress to stream (live)`)
+      } else {
+        // Stream not ready yet, buffer the event
+        eventBuffer.push(event)
+        console.log(`${LOG_PREFIX} 📦 Buffered event (stream not ready), buffer size:`, eventBuffer.length)
+      }
+    }
+
+    // Attach listener BEFORE calling streamText
+    console.log(`${LOG_PREFIX} 👂 Attaching progress listener BEFORE streamText`)
+    progressEvents.on('progress', onProgress)
+
     // chat-session-sync-fix: Send FULL message history every time
     // Claude Code handles deduplication internally via its session files
     // Old message-filtering logic was removed in favor of passing full array
@@ -220,17 +385,96 @@ app.post('/api/chat', async (c) => {
       messages: coreMessages,
     })
 
-    // chat-session-sync-fix: Use toUIMessageStreamResponse() with messageMetadata callback
-    // This enables real-time tool call visibility in the client via message.parts
-    // Session ID flows through stream metadata (not blocking header extraction)
-    return result.toUIMessageStreamResponse({
-      messageMetadata: ({ part }) => {
-        // Extract session ID from providerMetadata when available
-        // Type assertion needed as TextStreamPart types don't include providerMetadata
-        const sessionId = ((part as any).providerMetadata as Record<string, Record<string, unknown>> | undefined)?.['claude-code']?.sessionId
-        return sessionId ? { ccSessionId: sessionId as string } : undefined
+    // task-subagent-progress-streaming: Create merged stream with progress events
+    // Uses createUIMessageStream to interleave hook events with LLM stream
+    console.log(`${LOG_PREFIX} 📡 Creating UIMessageStream for request`)
+    const stream = createUIMessageStream({
+      execute: async ({ writer }) => {
+        // Connect the writer so new events go directly to stream
+        streamWriter = writer
+        console.log(`${LOG_PREFIX} 🔗 Stream writer connected`)
+
+        // Flush any buffered events that arrived before stream was ready
+        if (eventBuffer.length > 0) {
+          console.log(`${LOG_PREFIX} 📤 Flushing ${eventBuffer.length} buffered events`)
+          for (const bufferedEvent of eventBuffer) {
+            writer.write({
+              type: 'data-progress' as const,
+              data: bufferedEvent,
+            } as any)
+          }
+          eventBuffer.length = 0 // Clear buffer
+        }
+
+        try {
+          // Merge the LLM stream with messageMetadata for session ID
+          const llmStream = result.toUIMessageStream({
+            messageMetadata: ({ part }) => {
+              // Debug logging for session ID extraction (task-cc-api-endpoint)
+              const hasProviderMetadata = !!(part as any).providerMetadata
+              const claudeCodeMeta = ((part as any).providerMetadata as Record<string, Record<string, unknown>> | undefined)?.['claude-code']
+              const sessionId = claudeCodeMeta?.sessionId as string | undefined
+              console.log('[messageMetadata]', {
+                hasProviderMetadata,
+                hasClaudeCodeMeta: !!claudeCodeMeta,
+                sessionId: sessionId ?? 'undefined',
+                partType: (part as any).type,
+              })
+              return sessionId ? { ccSessionId: sessionId } : undefined
+            },
+          })
+
+          // Read and forward all chunks from LLM stream
+          // CRITICAL: Race each read against the stream completion signal
+          // This fixes the hang when subagents complete but the reader is still waiting
+          const reader = llmStream.getReader()
+          console.log(`${LOG_PREFIX} 📖 Starting reader loop with completion race`)
+
+          // Create the complete signal ONCE outside the loop to avoid repeated logging
+          let streamCompleteWon = false
+          const completeSignal = streamCompletePromise.then(() => {
+            if (!streamCompleteWon) {
+              streamCompleteWon = true
+              console.log(`${LOG_PREFIX} 🏁 Stream complete signal won the race - closing stream`)
+            }
+            return { done: true as const, value: undefined }
+          })
+
+          while (true) {
+            // Race the read against the completion signal from Stop/SessionEnd hooks
+            const readResult = await Promise.race([
+              reader.read(),
+              completeSignal
+            ])
+
+            if (readResult.done) {
+              console.log(`${LOG_PREFIX} ✅ Reader loop complete (done=${readResult.done})`)
+              break
+            }
+            if (readResult.value) {
+              writer.write(readResult.value)
+            }
+          }
+        } finally {
+          // Cleanup: remove progress listener to prevent memory leak
+          console.log(`${LOG_PREFIX} 🧹 Removing progress listener (stream ending)`)
+          progressEvents.off('progress', onProgress)
+          streamCompletionEvents.off('complete', onStreamComplete)
+          streamWriter = null
+          console.log(`${LOG_PREFIX} 📊 Remaining listener count:`, progressEvents.listenerCount('progress'))
+        }
+      },
+      onError: (error) => {
+        console.error('[/api/chat] Stream error:', error)
+        // Cleanup on error too
+        progressEvents.off('progress', onProgress)
+        streamCompletionEvents.off('complete', onStreamComplete)
+        streamWriter = null
+        return 'An error occurred during streaming'
       },
     })
+
+    return createUIMessageStreamResponse({ stream })
   } catch (error: any) {
     console.error('[/api/chat] Error:', error)
     return c.json({
@@ -250,5 +494,8 @@ console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 export default {
   port: API_PORT,
   fetch: app.fetch,
+  // Increase idle timeout for long-running subagent operations
+  // Default is 10 seconds which is too short for Claude Code tool execution
+  idleTimeout: 120, // 2 minutes
 }
 
