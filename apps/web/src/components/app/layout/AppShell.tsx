@@ -27,7 +27,7 @@
  * when domain bindings change (e.g., via BindingEditorPanel).
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { observer } from "mobx-react-lite"
 import { Outlet } from "react-router-dom"
 import { AppHeader } from "./AppHeader"
@@ -79,26 +79,35 @@ export const AppShell = observer(function AppShell() {
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [toggleBindingEditor])
 
-  // Create domain-driven registry with memoization
-  // PERF FIX: Added useMemo to prevent registry recreation on every render.
+  // Create domain-driven registry with ref-based memoization
+  // PERF FIX: Use refs to track both the key AND the registry.
   // The registry is expensive to create (iterates all bindings, creates ComponentEntry objects).
-  // Without memoization, any re-render cascading from ChatPanel would recreate the registry,
+  // Without proper memoization, any re-render cascading from polling would recreate the registry,
   // triggering re-renders of all children using ComponentRegistryProvider.
   //
-  // REACTIVITY FIX: componentBuilder alone is a stable MST reference that doesn't change
-  // when internal data updates. We need to observe actual binding data to trigger recreation
-  // when MCP updates bindings. Using JSON.stringify on bindings items as a change detector.
-  const bindingsJson = JSON.stringify(
-    componentBuilder?.rendererBindingCollection?.all()?.map((b: any) => ({
-      id: b.id,
-      defaultConfig: b.defaultConfig,
-      updatedAt: b.updatedAt,
-    })) ?? []
-  )
-  const registry = useMemo(
-    () => createRegistryFromDomain(componentBuilder),
-    [componentBuilder, bindingsJson]
-  )
+  // CRITICAL: useMemo with ref.current in deps doesn't work - React sees the changed value.
+  // Instead, we manually compare the key and only recreate the registry when it actually changes.
+  // This ensures the registry object is stable unless bindings truly change.
+  //
+  // REACTIVITY: componentBuilder alone is a stable MST reference. We observe binding data
+  // via the key to trigger recreation when MCP updates bindings.
+  // NOTE: Avoid including defaultConfig in serialization - it may contain circular MST refs.
+  const prevBindingsKeyRef = useRef<string>('')
+  const registryRef = useRef<ReturnType<typeof createRegistryFromDomain> | null>(null)
+
+  // Compute current key from bindings
+  const bindings = componentBuilder?.rendererBindingCollection?.all() ?? []
+  const currentBindingsKey = bindings.map((b: any) =>
+    `${b.id}:${b.updatedAt ?? ''}`
+  ).join('|')
+
+  // Only recreate registry when key actually changes (or on first render)
+  if (currentBindingsKey !== prevBindingsKeyRef.current || !registryRef.current) {
+    prevBindingsKeyRef.current = currentBindingsKey
+    registryRef.current = createRegistryFromDomain(componentBuilder)
+  }
+
+  const registry = registryRef.current
 
   return (
     <ComponentRegistryProvider registry={registry}>

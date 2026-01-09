@@ -222,7 +222,7 @@ function mapToolCallState(state: string | undefined): ToolCallState {
  * Maps model names from store.create tool calls to collection names for refresh.
  * Per design-3-1-003: store.create with specific models triggers that collection refresh.
  */
-const MODEL_TO_COLLECTION_MAP: Record<string, string> = {
+const PLATFORM_FEATURES_MODEL_MAP: Record<string, string> = {
   // Core feature entities
   Requirement: "requirementCollection",
   AnalysisFinding: "analysisFindingCollection",
@@ -237,55 +237,63 @@ const MODEL_TO_COLLECTION_MAP: Record<string, string> = {
 }
 
 /**
+ * Maps component-builder model names to collection names.
+ * Used for smart refresh when AI updates UI bindings/components.
+ */
+const COMPONENT_BUILDER_MODEL_MAP: Record<string, string> = {
+  ComponentDefinition: "componentDefinitionCollection",
+  Registry: "registryCollection",
+  RendererBinding: "rendererBindingCollection",
+}
+
+/**
+ * Result of getCollectionsToRefresh - includes schema for routing.
+ */
+interface RefreshTarget {
+  schema: "platform-features" | "component-builder"
+  collections: string[]
+}
+
+/**
  * Determines which collections to refresh based on a tool call.
- * Returns collection names that should be refreshed via query().toArray().
+ * Returns schema and collection names for targeted refresh.
  *
  * @param toolCall - Extracted tool call from AI message
- * @returns Array of collection names to refresh
+ * @returns RefreshTarget with schema and collections, or null if no refresh needed
  */
-function getCollectionsToRefresh(toolCall: ExtractedToolCall): string[] {
+function getRefreshTarget(toolCall: ExtractedToolCall): RefreshTarget | null {
   const { toolName, args } = toolCall
-  const collections: string[] = []
 
   // Handle MCP tool naming: "mcp__wavesmith__store_create" -> "store_create"
   const normalizedToolName = toolName.includes("__")
     ? toolName.split("__").pop() || toolName
     : toolName
 
-  switch (normalizedToolName) {
-    case "store_create": {
-      // store.create with model -> refresh that collection
-      const model = args?.model as string | undefined
-      if (model && MODEL_TO_COLLECTION_MAP[model]) {
-        collections.push(MODEL_TO_COLLECTION_MAP[model])
-      }
-      break
-    }
-
-    case "store_update": {
-      // store.update with model -> refresh that collection
-      const model = args?.model as string | undefined
-      if (model && MODEL_TO_COLLECTION_MAP[model]) {
-        collections.push(MODEL_TO_COLLECTION_MAP[model])
-      }
-      break
-    }
-
-    case "store_delete": {
-      // store.delete with model -> refresh that collection
-      const model = args?.model as string | undefined
-      if (model && MODEL_TO_COLLECTION_MAP[model]) {
-        collections.push(MODEL_TO_COLLECTION_MAP[model])
-      }
-      break
-    }
-
-    // Note: schema_set and schema_load are handled separately via onSchemaRefresh callback
-    default:
-      break
+  // Only handle store operations
+  if (!["store_create", "store_update", "store_delete"].includes(normalizedToolName)) {
+    return null
   }
 
-  return collections
+  const model = args?.model as string | undefined
+  const schema = args?.schema as string | undefined
+
+  if (!model) return null
+
+  // Route based on schema arg
+  if (schema === "component-builder") {
+    const collection = COMPONENT_BUILDER_MODEL_MAP[model]
+    if (collection) {
+      return { schema: "component-builder", collections: [collection] }
+    }
+  } else {
+    // Default to platform-features (handles "platform-features" and undefined)
+    const collection = PLATFORM_FEATURES_MODEL_MAP[model]
+    if (collection) {
+      return { schema: "platform-features", collections: [collection] }
+    }
+  }
+
+  return null
 }
 
 /**
@@ -304,14 +312,15 @@ function requiresSchemaRefresh(toolCall: ExtractedToolCall): boolean {
 }
 
 /**
- * Triggers collection refreshes for the given collection names.
+ * Triggers collection refreshes for the given collection names on a domain.
  * Uses same query().toArray() pattern as useFeaturePolling for consistency.
  */
 async function refreshCollections(
-  platformFeatures: any,
-  collectionNames: string[]
+  domain: any,
+  collectionNames: string[],
+  domainName: string = "domain"
 ): Promise<void> {
-  if (!platformFeatures || collectionNames.length === 0) {
+  if (!domain || collectionNames.length === 0) {
     return
   }
 
@@ -320,12 +329,12 @@ async function refreshCollections(
 
   // Refresh all collections in parallel
   const refreshPromises = uniqueCollections.map(async (collectionName) => {
-    const collection = platformFeatures[collectionName]
+    const collection = domain[collectionName]
     if (collection?.query && typeof collection.query === "function") {
       try {
         await collection.query().toArray()
       } catch (err) {
-        console.warn(`[ChatPanel] Failed to refresh ${collectionName}:`, err)
+        console.warn(`[ChatPanel] Failed to refresh ${domainName}.${collectionName}:`, err)
       }
     }
   })
@@ -349,9 +358,10 @@ export const ChatPanel = observer(function ChatPanel({
   isPolling,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
-  const { studioChat, platformFeatures } = useDomains<{
+  const { studioChat, platformFeatures, componentBuilder } = useDomains<{
     studioChat: any
     platformFeatures: any
+    componentBuilder: any
   }>()
 
   // Panel state
@@ -470,12 +480,6 @@ export const ChatPanel = observer(function ChatPanel({
       // chat-session-sync-fix: v3 API callback receives { message, messages, isAbort, ... } options object
       // Must destructure message from options - NOT receive message directly like v1/v2
       const contentLength = message.content?.length ?? message.parts?.length ?? 0
-      // Debug: Log message metadata to verify session ID capture
-      console.log("[ChatPanel] onFinish called - stream complete", {
-        contentLength,
-        hasMetadata: !!(message as any).metadata,
-        ccSessionId: (message as any).metadata?.ccSessionId,
-      })
 
       // chat-session-sync-fix: v3 API - Session ID from message.metadata
       // Server's messageMetadata callback sends ccSessionId via SSE message-metadata event
@@ -487,7 +491,6 @@ export const ChatPanel = observer(function ChatPanel({
       // first response) would use stale/undefined ccSessionId, creating a new
       // Claude Code session instead of resuming the existing one.
       if (newCcSessionId && currentSessionId) {
-        console.log("[ChatPanel] Persisting CC session ID:", newCcSessionId)
         // CRITICAL: Update ref BEFORE async operations to prevent race condition
         ccSessionIdRef.current = newCcSessionId
         try {
@@ -535,8 +538,9 @@ export const ChatPanel = observer(function ChatPanel({
         // Smart Query Triggers (task-3-1-004)
         // After streaming completes, detect tool calls and trigger targeted data refreshes
         if (toolCalls.length > 0) {
-          // Collect all collections that need refreshing
-          const collectionsToRefresh: string[] = []
+          // Collect refresh targets by schema
+          const platformFeaturesCollections: string[] = []
+          const componentBuilderCollections: string[] = []
           let needsSchemaRefresh = false
 
           for (const toolCall of toolCalls) {
@@ -550,9 +554,15 @@ export const ChatPanel = observer(function ChatPanel({
               needsSchemaRefresh = true
             }
 
-            // Collect collections to refresh
-            const collections = getCollectionsToRefresh(toolCall)
-            collectionsToRefresh.push(...collections)
+            // Get refresh target with schema routing
+            const target = getRefreshTarget(toolCall)
+            if (target) {
+              if (target.schema === "component-builder") {
+                componentBuilderCollections.push(...target.collections)
+              } else {
+                platformFeaturesCollections.push(...target.collections)
+              }
+            }
           }
 
           // Trigger schema refresh if needed (via callback prop)
@@ -563,9 +573,14 @@ export const ChatPanel = observer(function ChatPanel({
           // Trigger collection refreshes in parallel (fire-and-forget)
           // NOTE: No await to prevent onFinish from hanging if collection queries
           // take too long. Smart refresh is background data sync.
-          if (collectionsToRefresh.length > 0) {
-            refreshCollections(platformFeatures, collectionsToRefresh).catch((err) => {
-              console.warn("[ChatPanel] Smart refresh failed:", err)
+          if (platformFeaturesCollections.length > 0) {
+            refreshCollections(platformFeatures, platformFeaturesCollections, "platformFeatures").catch((err) => {
+              console.warn("[ChatPanel] Smart refresh (platformFeatures) failed:", err)
+            })
+          }
+          if (componentBuilderCollections.length > 0) {
+            refreshCollections(componentBuilder, componentBuilderCollections, "componentBuilder").catch((err) => {
+              console.warn("[ChatPanel] Smart refresh (componentBuilder) failed:", err)
             })
           }
 
@@ -604,7 +619,6 @@ export const ChatPanel = observer(function ChatPanel({
       // Check if content changed
       if (currentContent !== lastMessageContentRef.current) {
         lastMessageContentRef.current = currentContent
-        console.log("[ChatPanel] Stream activity detected, resetting idle timer")
       }
 
       // Set new timeout
@@ -637,31 +651,14 @@ export const ChatPanel = observer(function ChatPanel({
 
     const parts = (latestMessage as any).parts as any[] | undefined
     if (!parts) {
-      console.log('[ChatPanel:Progress] No parts array in latest message')
       return
-    }
-
-    // Log all part types for debugging
-    const partTypes = parts.map((p: any) => p.type)
-    console.log('[ChatPanel:Progress] Processing message parts:', {
-      messageId: latestMessage.id,
-      partTypes,
-      totalParts: parts.length,
-    })
-
-    // Find data-progress parts
-    const progressParts = parts.filter((part: any) => part.type === 'data-progress')
-    if (progressParts.length > 0) {
-      console.log('[ChatPanel:Progress] Found data-progress parts:', progressParts.length)
     }
 
     parts.forEach((part) => {
       // Handle session ID from server (SDK workaround - session ID comes via custom event, not metadata)
       if (part.type === 'data-session') {
         const sessionData = part.data as { ccSessionId: string }
-        console.log('[ChatPanel:Session] 📨 Received data-session event:', sessionData)
         if (sessionData.ccSessionId && !ccSessionIdRef.current) {
-          console.log('[ChatPanel:Session] ✅ Capturing session ID from server:', sessionData.ccSessionId)
           ccSessionIdRef.current = sessionData.ccSessionId
           setCcSessionId(sessionData.ccSessionId)
           // Persist to session if available
@@ -678,12 +675,10 @@ export const ChatPanel = observer(function ChatPanel({
 
       if (part.type === 'data-progress') {
         const event = part.data as SubagentProgressEvent
-        console.log('[ChatPanel:Progress] 📥 Received data-progress event:', event)
 
         if (event.type === 'subagent-start') {
           setActiveSubagents((prev) => {
             const next = new Map(prev)
-            console.log('[ChatPanel:Progress] 🚀 Adding subagent to active map:', event.agentId, event.agentType)
             next.set(event.agentId, {
               agentId: event.agentId,
               agentType: event.agentType,
@@ -691,22 +686,18 @@ export const ChatPanel = observer(function ChatPanel({
               status: 'running',
               toolCount: 0,
             })
-            console.log('[ChatPanel:Progress] 📊 Active subagents count:', next.size)
             return next
           })
         } else if (event.type === 'subagent-stop') {
           setActiveSubagents((prev) => {
             const next = new Map(prev)
             const existing = next.get(event.agentId)
-            console.log('[ChatPanel:Progress] 🛑 Stopping subagent:', event.agentId, 'existing:', !!existing)
             if (existing) {
               next.set(event.agentId, { ...existing, status: 'completed' })
             }
-            console.log('[ChatPanel:Progress] 📊 Active subagents count:', next.size)
             return next
           })
         } else if (event.type === 'tool-complete') {
-          console.log('[ChatPanel:Progress] 🔧 Tool complete:', event.toolName)
           // Add to recent tools list (for live display in SubagentPanel)
           setRecentTools((prev) => {
             const newTool: RecentToolCall = {
@@ -762,8 +753,6 @@ export const ChatPanel = observer(function ChatPanel({
   // so users can see the final state before the panel disappears
   useEffect(() => {
     if (!isLoading) {
-      console.log('[ChatPanel:Progress] Stream ended, scheduling delayed cleanup for completed subagents')
-
       // Set timeouts for each completed subagent (only if not already scheduled)
       const timeoutIds: ReturnType<typeof setTimeout>[] = []
 
@@ -772,7 +761,6 @@ export const ChatPanel = observer(function ChatPanel({
           // Mark as scheduled BEFORE creating timeout to prevent duplicates
           scheduledCleanupRef.current.add(id)
           const timeoutId = setTimeout(() => {
-            console.log('[ChatPanel:Progress] Delayed cleanup: removing subagent', id)
             scheduledCleanupRef.current.delete(id) // Allow re-scheduling if needed
             setActiveSubagents((prev) => {
               const next = new Map(prev)
@@ -788,7 +776,6 @@ export const ChatPanel = observer(function ChatPanel({
       if (!toolsCleanupScheduledRef.current && recentTools.length > 0) {
         toolsCleanupScheduledRef.current = true
         const toolsTimeoutId = setTimeout(() => {
-          console.log('[ChatPanel:Progress] Delayed cleanup: clearing recent tools')
           toolsCleanupScheduledRef.current = false
           setRecentTools([])
         }, SUBAGENT_LINGER_MS)
@@ -806,21 +793,12 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [isLoading, activeSubagents, recentTools.length])
 
-  // Debug: Log whenever activeSubagents changes
-  useEffect(() => {
-    console.log('[ChatPanel:Progress] 📊 activeSubagents state changed:', {
-      size: activeSubagents.size,
-      agents: Array.from(activeSubagents.values()).map(a => ({ id: a.agentId, type: a.agentType, status: a.status })),
-    })
-  }, [activeSubagents])
-
   // Clear accumulated tools when a new stream starts (task-chat-ux-fix)
   // We use a ref to track the previous isLoading state to detect stream start
   const prevIsLoadingRef = useRef(false)
   useEffect(() => {
     // Detect stream start: isLoading transitions from false to true
     if (isLoading && !prevIsLoadingRef.current) {
-      console.log('[ChatPanel:Progress] New stream started, clearing accumulated tools')
       setAccumulatedSubagentTools([])
     }
     prevIsLoadingRef.current = isLoading
@@ -855,19 +833,12 @@ export const ChatPanel = observer(function ChatPanel({
   // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
   const handleSendMessage = useCallback(
     async (content: string) => {
-      console.log("[ChatPanel] handleSendMessage called", {
-        content: content?.slice(0, 50),
-        currentSessionId,
-        hasContent: !!content?.trim()
-      })
-
       if (!currentSessionId) {
-        console.warn("[ChatPanel] No session ID - message will be lost!", { content: content?.slice(0, 50) })
+        console.warn("[ChatPanel] No session ID - message will be lost!")
         return
       }
 
       if (!content.trim()) {
-        console.warn("[ChatPanel] Empty content - ignoring")
         return
       }
 
@@ -884,10 +855,6 @@ export const ChatPanel = observer(function ChatPanel({
       // - First arg: { text } object (not { role, content })
       // - Second arg: options with body for server-side data
       // - ccSessionIdRef.current ensures fresh session ID value
-      console.log("[ChatPanel] Calling sendMessage()", {
-        contentLength: trimmedContent.length,
-        ccSessionId: ccSessionIdRef.current,
-      })
       try {
         await sendMessage(
           { text: trimmedContent },
@@ -899,7 +866,6 @@ export const ChatPanel = observer(function ChatPanel({
             },
           }
         )
-        console.log("[ChatPanel] sendMessage() completed successfully")
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
       }

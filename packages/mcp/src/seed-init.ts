@@ -98,56 +98,80 @@ async function seedStudioCore(store: any): Promise<SeedResult> {
 /**
  * Seed component-builder domain with ComponentDefinitions, Registries, and RendererBindings.
  *
- * Uses isomorphic pattern:
- * - .query().where().first() for idempotency check (check if default registry exists)
- * - .insertOne() for writes (syncs to backend)
+ * Uses INCREMENTAL seeding pattern:
+ * - Checks each entity by ID and only inserts if missing
+ * - This allows new bindings to be added without clearing existing data
+ * - Uses .query().where().first() for existence check, .insertOne() for writes
  *
  * @param store - Runtime store with queryable/mutatable collections
- * @returns Seed result indicating whether data was created or already existed
+ * @returns Seed result indicating counts of newly created entities
  */
 async function seedComponentBuilder(store: any): Promise<ComponentBuilderSeedResult> {
-  // Check idempotency via .query() - if default registry exists, skip seeding
-  const existingRegistry = await store.registryCollection
-    .query()
-    .where({ id: "default" })
-    .first()
-
-  if (existingRegistry) {
-    return { alreadySeeded: true }
-  }
-
   const now = Date.now()
+  let createdDefs = 0
+  let createdRegs = 0
+  let createdBindings = 0
 
-  // Insert ComponentDefinitions via .insertOne()
+  // Insert ComponentDefinitions - check each individually
   for (const def of COMPONENT_DEFINITIONS) {
-    await store.componentDefinitionCollection.insertOne({
-      ...def,
-      createdAt: now,
-    })
+    const existing = await store.componentDefinitionCollection
+      .query()
+      .where({ id: def.id })
+      .first()
+
+    if (!existing) {
+      await store.componentDefinitionCollection.insertOne({
+        ...def,
+        createdAt: now,
+      })
+      createdDefs++
+    }
   }
 
-  // Insert Registries via .insertOne()
+  // Insert Registries - check each individually
   for (const reg of REGISTRIES) {
-    await store.registryCollection.insertOne({
-      ...reg,
-      createdAt: now,
-    })
+    const existing = await store.registryCollection
+      .query()
+      .where({ id: reg.id })
+      .first()
+
+    if (!existing) {
+      await store.registryCollection.insertOne({
+        ...reg,
+        createdAt: now,
+      })
+      createdRegs++
+    }
   }
 
-  // Insert RendererBindings via .insertOne()
+  // Insert RendererBindings - check each individually
   for (const binding of RENDERER_BINDINGS) {
-    await store.rendererBindingCollection.insertOne({
-      ...binding,
-      createdAt: now,
-    })
+    const existing = await store.rendererBindingCollection
+      .query()
+      .where({ id: binding.id })
+      .first()
+
+    if (!existing) {
+      await store.rendererBindingCollection.insertOne({
+        ...binding,
+        createdAt: now,
+      })
+      createdBindings++
+    }
+  }
+
+  // Consider "already seeded" only if nothing new was created
+  const totalCreated = createdDefs + createdRegs + createdBindings
+  if (totalCreated === 0) {
+    return { alreadySeeded: true }
   }
 
   return {
     alreadySeeded: false,
     created: {
-      componentDefinitions: COMPONENT_DEFINITIONS.length,
-      registries: REGISTRIES.length,
-      rendererBindings: RENDERER_BINDINGS.length,
+      componentDefinitions: createdDefs,
+      registries: createdRegs,
+      rendererBindings: createdBindings,
     },
   }
 }

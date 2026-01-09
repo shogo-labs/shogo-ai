@@ -19,6 +19,7 @@ import {
   ExecutionStatusBadge,
   TestCaseStatusBadge,
   TaskRenderer,
+  PhaseStatusRenderer,
 } from "./displays/domain"
 import {
   ProgressBar,
@@ -150,6 +151,15 @@ export function createStudioRegistry() {
     id: "status-indicator",
     matches: (meta) => meta.xRenderer === "status-indicator",
     component: StatusIndicator,
+    priority: 200,
+  })
+
+  // Interactive phase status renderer (task-cbe-008)
+  // Proves that renderers can be interactive, not just display-only
+  registry.register({
+    id: "phase-status-renderer",
+    matches: (meta) => meta.xRenderer === "phase-status-renderer",
+    component: PhaseStatusRenderer,
     priority: 200,
   })
 
