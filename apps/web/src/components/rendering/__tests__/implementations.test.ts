@@ -39,6 +39,9 @@ import {
   ExecutionStatusBadge,
   TestCaseStatusBadge,
   TaskRenderer,
+  CodePathDisplay,
+  ChangeTypeBadge,
+  PhaseStatusRenderer,
 } from "../displays/domain"
 
 import {
@@ -169,7 +172,19 @@ describe("componentImplementationMap", () => {
       expect(componentImplementationMap.get("TaskRenderer")).toBe(TaskRenderer)
     })
 
-    test("all 11 domain renderers are mapped", () => {
+    test("maps CodePathDisplay", () => {
+      expect(componentImplementationMap.get("CodePathDisplay")).toBe(CodePathDisplay)
+    })
+
+    test("maps ChangeTypeBadge", () => {
+      expect(componentImplementationMap.get("ChangeTypeBadge")).toBe(ChangeTypeBadge)
+    })
+
+    test("maps PhaseStatusRenderer", () => {
+      expect(componentImplementationMap.get("PhaseStatusRenderer")).toBe(PhaseStatusRenderer)
+    })
+
+    test("all 14 domain renderers are mapped", () => {
       const domainRefs = [
         "PriorityBadge",
         "ArchetypeBadge",
@@ -182,6 +197,9 @@ describe("componentImplementationMap", () => {
         "ExecutionStatusBadge",
         "TestCaseStatusBadge",
         "TaskRenderer",
+        "CodePathDisplay",
+        "ChangeTypeBadge",
+        "PhaseStatusRenderer",
       ]
 
       for (const ref of domainRefs) {

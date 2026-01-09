@@ -26,7 +26,7 @@ import {
 import "@xyflow/react/dist/style.css"
 import { useDomains } from "@/contexts/DomainProvider"
 import { cn } from "@/lib/utils"
-import { GitBranch, CheckCircle, Clock, AlertCircle, X, Circle } from "lucide-react"
+import { GitBranch, CheckCircle, Clock, AlertCircle, X, Circle, Link2 } from "lucide-react"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
 import { PropertyRenderer } from "@/components/rendering"
 import type { PropertyMetadata } from "@/components/rendering/types"
@@ -50,6 +50,57 @@ const acceptanceCriteriaPropertyMeta: PropertyMetadata = {
   name: "acceptanceCriteria",
   type: "array",
   xRenderer: "string-array",
+}
+
+/**
+ * PropertyMetadata for IntegrationPoint.changeType (resolved via registry)
+ * Task: task-cbe-007
+ *
+ * Semantic colors: add=green, modify=blue, extend=purple, remove=red
+ */
+const changeTypeMeta: PropertyMetadata = {
+  name: "changeType",
+  type: "string",
+  enum: ["add", "modify", "extend", "remove"],
+  xRenderer: "change-type-badge",
+}
+
+/**
+ * PropertyMetadata for IntegrationPoint.filePath (resolved via registry)
+ * Task: task-cbe-007
+ *
+ * Displays with monospace styling via CodePathDisplay
+ */
+const filePathMeta: PropertyMetadata = {
+  name: "filePath",
+  type: "string",
+  xRenderer: "code-path",
+}
+
+/**
+ * PropertyMetadata for IntegrationPoint.description (resolved via registry)
+ * Task: task-cbe-007
+ *
+ * Shows expand/collapse for long content via LongTextDisplay
+ */
+const integrationPointDescriptionMeta: PropertyMetadata = {
+  name: "description",
+  type: "string",
+  xRenderer: "long-text",
+}
+
+/**
+ * IntegrationPoint type for SpecView
+ * Task: task-cbe-007
+ */
+export interface IntegrationPoint {
+  id: string
+  name: string
+  filePath: string
+  changeType?: string
+  description: string
+  package?: string
+  targetFunction?: string
 }
 
 /**
@@ -148,17 +199,105 @@ const TaskNode = memo(function TaskNode({ data }: NodeProps<TaskNodeData>) {
 })
 
 /**
+ * IntegrationPointCard Component
+ * Task: task-cbe-007
+ *
+ * Renders a single IntegrationPoint with PropertyRenderer for:
+ * - changeType (via ChangeTypeBadge)
+ * - filePath (via CodePathDisplay)
+ * - description (via LongTextDisplay)
+ */
+function IntegrationPointCard({
+  integrationPoint,
+}: {
+  integrationPoint: IntegrationPoint
+}) {
+  return (
+    <div className="p-3 rounded-lg border bg-card border-emerald-500/20 hover:border-emerald-500/40 transition-colors">
+      {/* Header with name and change type badge */}
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <span className="font-medium text-sm text-foreground">{integrationPoint.name}</span>
+        {integrationPoint.changeType && (
+          <PropertyRenderer
+            value={integrationPoint.changeType}
+            property={changeTypeMeta}
+          />
+        )}
+      </div>
+
+      {/* File path via CodePathDisplay */}
+      <div className="mb-2">
+        <PropertyRenderer
+          value={integrationPoint.filePath}
+          property={filePathMeta}
+          config={{ truncate: 50 }}
+        />
+      </div>
+
+      {/* Description via LongTextDisplay */}
+      <div className="text-sm">
+        <PropertyRenderer
+          value={integrationPoint.description}
+          property={integrationPointDescriptionMeta}
+          config={{ truncate: 100, size: "sm" }}
+        />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * IntegrationPointsSection Component
+ * Task: task-cbe-007
+ *
+ * Displays a list of IntegrationPoints for a task using IntegrationPointCard
+ */
+function IntegrationPointsSection({
+  integrationPoints,
+}: {
+  integrationPoints: IntegrationPoint[]
+}) {
+  if (!integrationPoints || integrationPoints.length === 0) return null
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center gap-1.5 mb-2">
+        <Link2 className="h-3 w-3 text-emerald-500" />
+        <span className="text-xs text-muted-foreground uppercase tracking-wider">
+          Integration Points
+        </span>
+        <span className="text-xs text-muted-foreground">
+          ({integrationPoints.length})
+        </span>
+      </div>
+      <div className="space-y-2">
+        {integrationPoints.map((ip) => (
+          <IntegrationPointCard key={ip.id} integrationPoint={ip} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
  * TaskDetailsPanel Component
- * Shows details for selected task
+ * Shows details for selected task including associated IntegrationPoints
  */
 function TaskDetailsPanel({
   task,
+  integrationPoints,
   onClose,
 }: {
   task: Task | null
+  integrationPoints: IntegrationPoint[]
   onClose: () => void
 }) {
   if (!task) return null
+
+  // Filter integration points for this task (by matching task in integrationPoint)
+  const taskIntegrationPoints = integrationPoints.filter(
+    (ip: any) => ip.task === task.id
+  )
 
   return (
     <div className="w-80 border-l border-emerald-500/20 bg-card p-4 overflow-auto">
@@ -209,6 +348,9 @@ function TaskDetailsPanel({
           </div>
         </div>
       )}
+
+      {/* Integration Points (via PropertyRenderer) - Task: task-cbe-007 */}
+      <IntegrationPointsSection integrationPoints={taskIntegrationPoints} />
 
       {/* Dependencies */}
       {task.dependencies && task.dependencies.length > 0 && (
@@ -407,6 +549,9 @@ export const SpecView = observer(function SpecView({
   // Fetch tasks for this feature session
   const tasks = platformFeatures?.implementationTaskCollection?.findBySession?.(feature.id) ?? []
 
+  // Fetch integration points for this feature session (task-cbe-007)
+  const integrationPoints: IntegrationPoint[] = platformFeatures?.integrationPointCollection?.findBySession?.(feature.id) ?? []
+
   // Transform tasks to graph
   const { nodes, edges } = useMemo(
     () => transformToGraph(tasks, selectedTaskId),
@@ -474,7 +619,7 @@ export const SpecView = observer(function SpecView({
           </div>
 
           {/* Task Details Panel */}
-          <TaskDetailsPanel task={selectedTask} onClose={handleCloseDetails} />
+          <TaskDetailsPanel task={selectedTask} integrationPoints={integrationPoints} onClose={handleCloseDetails} />
         </div>
       )}
     </div>

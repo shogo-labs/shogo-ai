@@ -559,11 +559,11 @@ describe("Seed Initialization", () => {
       // When: initializeSeedData is called
       await initializeSeedData(tempDir)
 
-      // Then: 26 ComponentDefinitions are created in the store
+      // Then: 31 ComponentDefinitions are created in the store
       expect(mockComponentBuilderStore._mocks.componentDefInsertOne).toHaveBeenCalledTimes(
         COMPONENT_DEFINITIONS.length
       )
-      expect(COMPONENT_DEFINITIONS.length).toBe(26)
+      expect(COMPONENT_DEFINITIONS.length).toBe(31)
 
       // And: Each definition matches seed data constants
       const insertedDefs = mockComponentBuilderStore._mocks.componentDefInsertOne.mock.calls.map(
@@ -653,11 +653,11 @@ describe("Seed Initialization", () => {
       // When: initializeSeedData is called
       await initializeSeedData(tempDir)
 
-      // Then: 27 RendererBindings are created (12 default + 15 studio)
+      // Then: 32 RendererBindings are created (12 default + 20 studio)
       expect(mockComponentBuilderStore._mocks.bindingInsertOne).toHaveBeenCalledTimes(
         RENDERER_BINDINGS.length
       )
-      expect(RENDERER_BINDINGS.length).toBe(27)
+      expect(RENDERER_BINDINGS.length).toBe(32)
 
       // And: Bindings reference valid registry IDs
       const insertedBindings = mockComponentBuilderStore._mocks.bindingInsertOne.mock.calls.map(

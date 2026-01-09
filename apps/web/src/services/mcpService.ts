@@ -213,9 +213,7 @@ export class MCPService {
 
     // Parse SSE response format (stateful mode returns SSE even for simple calls)
     const text = await response.text()
-    console.log('[mcpService.callTool] Raw response text:', text.slice(0, 500))
     const data: MCPResponse<T> = this.parseSSEResponse(text)
-    console.log('[mcpService.callTool] Parsed SSE data:', JSON.stringify(data, null, 2).slice(0, 500))
 
     if (data.error) {
       throw new Error(`MCP tool error: ${data.error.message}`)
@@ -227,7 +225,6 @@ export class MCPService {
     }
 
     const parsed = JSON.parse(data.result.content[0].text)
-    console.log('[mcpService.callTool] Final parsed result:', JSON.stringify(parsed, null, 2).slice(0, 500))
     return parsed
   }
 
@@ -271,12 +268,10 @@ export class MCPService {
     toolCalls?: Array<{ tool: string; args: any; result?: string }>
     error?: { code: string; message: string }
   }> {
-    console.log('[mcpService.chat] Calling agent.chat with message:', message)
     const result = await this.callTool('agent.chat', {
       message,
       ...(sessionId && { sessionId }),
     })
-    console.log('[mcpService.chat] Got result:', JSON.stringify(result, null, 2))
     return result
   }
 

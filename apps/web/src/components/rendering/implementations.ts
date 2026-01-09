@@ -43,6 +43,8 @@ import {
   TestCaseStatusBadge,
   TaskRenderer,
   CodePathDisplay,
+  ChangeTypeBadge,
+  PhaseStatusRenderer,
 } from "./displays/domain"
 
 // Visualization renderers
@@ -58,7 +60,7 @@ import {
  *
  * This map contains all registered display renderers:
  * - 13 primitive renderers (StringDisplay, NumberDisplay, StringArrayDisplay, LongTextDisplay, etc.)
- * - 12 domain renderers (PriorityBadge, TaskStatusBadge, CodePathDisplay, etc.)
+ * - 14 domain renderers (PriorityBadge, TaskStatusBadge, CodePathDisplay, ChangeTypeBadge, PhaseStatusRenderer, etc.)
  * - 4 visualization renderers (ProgressBar, DataCard, etc.)
  */
 export const componentImplementationMap = new Map<
@@ -93,6 +95,8 @@ export const componentImplementationMap = new Map<
   ["TestCaseStatusBadge", TestCaseStatusBadge],
   ["TaskRenderer", TaskRenderer],
   ["CodePathDisplay", CodePathDisplay],
+  ["ChangeTypeBadge", ChangeTypeBadge],
+  ["PhaseStatusRenderer", PhaseStatusRenderer],
 
   // Visualization renderers
   ["ProgressBar", ProgressBar as ComponentType<DisplayRendererProps>],

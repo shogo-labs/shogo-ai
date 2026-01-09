@@ -15,6 +15,7 @@
 
 import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
+import { getSnapshot, isStateTreeNode } from "mobx-state-tree"
 import { getMetaStore, getRuntimeStore, deserializeCondition } from "@shogo/state-api"
 import type { SerializedCondition } from "@shogo/state-api"
 import { getEffectiveWorkspace } from "../state"
@@ -22,6 +23,32 @@ import { getEffectiveWorkspace } from "../state"
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/**
+ * Convert MST instances to plain objects for safe JSON serialization.
+ * Handles circular references by using getSnapshot() for MST nodes.
+ *
+ * @param items - Array of items that may contain MST instances
+ * @returns Array of plain objects safe for JSON.stringify()
+ *
+ * @remarks
+ * This prevents "Too many properties to enumerate" errors when
+ * JSON.stringify encounters circular MST references (e.g., Schema → Model → Property → Model).
+ */
+function toSerializableItems<T>(items: T[]): any[] {
+  return items.map((item) => {
+    if (isStateTreeNode(item)) {
+      try {
+        return getSnapshot(item)
+      } catch {
+        // If getSnapshot fails (shouldn't happen with proper MST nodes),
+        // fall back to the raw item - JSON.stringify will handle or fail
+        return item
+      }
+    }
+    return item
+  })
+}
 
 /**
  * Validate that an AST object has the expected structure.
@@ -242,14 +269,14 @@ export async function executeStoreQuery(
         return {
           ok: true,
           count: first ? 1 : 0,
-          items: first ? [first] : [],
+          items: first ? toSerializableItems([first]) : [],
         }
       }
 
       case "toArray":
       default: {
         const items = await q.toArray()
-        return { ok: true, count: items.length, items }
+        return { ok: true, count: items.length, items: toSerializableItems(items) }
       }
     }
   } catch (error: any) {
