@@ -19,6 +19,11 @@ import {
   isSqliteAvailable,
   getGlobalBackendRegistry,
 } from "./postgres-init"
+import {
+  COMPONENT_DEFINITIONS,
+  REGISTRIES,
+  RENDERER_BINDINGS,
+} from "./seed-data/component-builder"
 
 // ============================================================================
 // Types
@@ -27,6 +32,15 @@ import {
 interface SeedResult {
   alreadySeeded: boolean
   created?: { orgId: string; projectId: string }
+}
+
+interface ComponentBuilderSeedResult {
+  alreadySeeded: boolean
+  created?: {
+    componentDefinitions: number
+    registries: number
+    rendererBindings: number
+  }
 }
 
 // ============================================================================
@@ -81,15 +95,72 @@ async function seedStudioCore(store: any): Promise<SeedResult> {
   }
 }
 
+/**
+ * Seed component-builder domain with ComponentDefinitions, Registries, and RendererBindings.
+ *
+ * Uses isomorphic pattern:
+ * - .query().where().first() for idempotency check (check if default registry exists)
+ * - .insertOne() for writes (syncs to backend)
+ *
+ * @param store - Runtime store with queryable/mutatable collections
+ * @returns Seed result indicating whether data was created or already existed
+ */
+async function seedComponentBuilder(store: any): Promise<ComponentBuilderSeedResult> {
+  // Check idempotency via .query() - if default registry exists, skip seeding
+  const existingRegistry = await store.registryCollection
+    .query()
+    .where({ id: "default" })
+    .first()
+
+  if (existingRegistry) {
+    return { alreadySeeded: true }
+  }
+
+  const now = Date.now()
+
+  // Insert ComponentDefinitions via .insertOne()
+  for (const def of COMPONENT_DEFINITIONS) {
+    await store.componentDefinitionCollection.insertOne({
+      ...def,
+      createdAt: now,
+    })
+  }
+
+  // Insert Registries via .insertOne()
+  for (const reg of REGISTRIES) {
+    await store.registryCollection.insertOne({
+      ...reg,
+      createdAt: now,
+    })
+  }
+
+  // Insert RendererBindings via .insertOne()
+  for (const binding of RENDERER_BINDINGS) {
+    await store.rendererBindingCollection.insertOne({
+      ...binding,
+      createdAt: now,
+    })
+  }
+
+  return {
+    alreadySeeded: false,
+    created: {
+      componentDefinitions: COMPONENT_DEFINITIONS.length,
+      registries: REGISTRIES.length,
+      rendererBindings: RENDERER_BINDINGS.length,
+    },
+  }
+}
+
 // ============================================================================
 // Main Function
 // ============================================================================
 
 /**
- * Initialize seed data for studio-core domain.
+ * Initialize seed data for studio-core and component-builder domains.
  *
- * Loads the studio-core schema, creates a runtime store with backendRegistry,
- * and seeds Shogo organization and Platform project via .query()/.insertOne().
+ * Loads each schema, creates a runtime store with backendRegistry,
+ * and seeds data via .query()/.insertOne().
  *
  * @param schemasDir - Path to the .schemas directory
  *
@@ -114,6 +185,10 @@ export async function initializeSeedData(schemasDir: string): Promise<void> {
   }
 
   try {
+    // =========================================================================
+    // Studio Core Domain
+    // =========================================================================
+
     // 2. Load studio-core schema from disk
     const { enhanced } = await loadSchema("studio-core", schemasDir)
 
@@ -143,8 +218,56 @@ export async function initializeSeedData(schemasDir: string): Promise<void> {
     } else {
       console.log("[seed-init] Seed data created successfully")
     }
+
+    // =========================================================================
+    // Component Builder Domain
+    // =========================================================================
+
+    try {
+      // 7. Load component-builder schema from disk
+      const { enhanced: componentBuilderEnhanced } = await loadSchema("component-builder", schemasDir)
+
+      // 8. Create domain factory from enhanced schema
+      const componentBuilderDomain = domain({
+        name: "component-builder",
+        from: componentBuilderEnhanced,
+      })
+
+      // 9. Create runtime store with backendRegistry
+      const componentBuilderStore = componentBuilderDomain.createStore({
+        services: {
+          backendRegistry: getGlobalBackendRegistry(),
+        },
+        context: {
+          schemaName: "component-builder",
+          location: schemasDir,
+        },
+      })
+
+      // 10. Seed component-builder data
+      const componentBuilderResult = await seedComponentBuilder(componentBuilderStore)
+
+      // 11. Log result
+      if (componentBuilderResult.alreadySeeded) {
+        console.log("[seed-init] component-builder seed data already exists - skipping creation")
+      } else {
+        console.log(
+          `[seed-init] component-builder seed data created successfully ` +
+            `(${componentBuilderResult.created?.componentDefinitions} definitions, ` +
+            `${componentBuilderResult.created?.registries} registries, ` +
+            `${componentBuilderResult.created?.rendererBindings} bindings)`
+        )
+      }
+    } catch (componentBuilderError) {
+      // Component-builder schema might not exist yet - that's okay
+      console.log(
+        `[seed-init] component-builder schema not available - skipping: ${
+          componentBuilderError instanceof Error ? componentBuilderError.message : String(componentBuilderError)
+        }`
+      )
+    }
   } catch (error) {
-    // 7. Handle errors gracefully - log but don't crash
+    // Handle errors gracefully - log but don't crash
     console.warn(
       `[seed-init] Failed to initialize seed data: ${error instanceof Error ? error.message : String(error)}`
     )
