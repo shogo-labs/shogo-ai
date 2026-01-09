@@ -742,10 +742,20 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
     })
-  }, [messages, currentSessionId, studioChat.chatSessionCollection])
+    // PERF FIX: Removed studioChat.chatSessionCollection from deps - it's a MobX observable
+    // object reference that changes on every store update, causing an infinite re-render loop.
+    // We only need messages and currentSessionId to process progress events.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, currentSessionId])
 
   // Linger duration for completed subagents (ms) - keeps panel visible after completion
   const SUBAGENT_LINGER_MS = 2500
+
+  // PERF FIX: Track which subagent IDs have scheduled cleanup to prevent duplicate timeouts
+  // Without this, the effect would re-run when activeSubagents changes (from timeout callbacks),
+  // creating new timeouts for the same subagents and causing memory leaks.
+  const scheduledCleanupRef = useRef<Set<string>>(new Set())
+  const toolsCleanupScheduledRef = useRef<boolean>(false)
 
   // Delayed cleanup of completed subagents after stream ends (task-subagent-progress-streaming)
   // Instead of clearing immediately, we keep completed subagents visible for a few seconds
@@ -754,13 +764,16 @@ export const ChatPanel = observer(function ChatPanel({
     if (!isLoading) {
       console.log('[ChatPanel:Progress] Stream ended, scheduling delayed cleanup for completed subagents')
 
-      // Set timeouts for each completed subagent
+      // Set timeouts for each completed subagent (only if not already scheduled)
       const timeoutIds: ReturnType<typeof setTimeout>[] = []
 
       activeSubagents.forEach((subagent, id) => {
-        if (subagent.status === 'completed') {
+        if (subagent.status === 'completed' && !scheduledCleanupRef.current.has(id)) {
+          // Mark as scheduled BEFORE creating timeout to prevent duplicates
+          scheduledCleanupRef.current.add(id)
           const timeoutId = setTimeout(() => {
             console.log('[ChatPanel:Progress] Delayed cleanup: removing subagent', id)
+            scheduledCleanupRef.current.delete(id) // Allow re-scheduling if needed
             setActiveSubagents((prev) => {
               const next = new Map(prev)
               next.delete(id)
@@ -771,19 +784,27 @@ export const ChatPanel = observer(function ChatPanel({
         }
       })
 
-      // Delay clearing recent tools to match subagent visibility
-      const toolsTimeoutId = setTimeout(() => {
-        console.log('[ChatPanel:Progress] Delayed cleanup: clearing recent tools')
-        setRecentTools([])
-      }, SUBAGENT_LINGER_MS)
-      timeoutIds.push(toolsTimeoutId)
+      // Delay clearing recent tools to match subagent visibility (only once per stream end)
+      if (!toolsCleanupScheduledRef.current && recentTools.length > 0) {
+        toolsCleanupScheduledRef.current = true
+        const toolsTimeoutId = setTimeout(() => {
+          console.log('[ChatPanel:Progress] Delayed cleanup: clearing recent tools')
+          toolsCleanupScheduledRef.current = false
+          setRecentTools([])
+        }, SUBAGENT_LINGER_MS)
+        timeoutIds.push(toolsTimeoutId)
+      }
 
       // Cleanup timeouts if component unmounts or isLoading changes
       return () => {
         timeoutIds.forEach((id) => clearTimeout(id))
       }
+    } else {
+      // Stream started - reset scheduled cleanup tracking
+      scheduledCleanupRef.current.clear()
+      toolsCleanupScheduledRef.current = false
     }
-  }, [isLoading, activeSubagents])
+  }, [isLoading, activeSubagents, recentTools.length])
 
   // Debug: Log whenever activeSubagents changes
   useEffect(() => {

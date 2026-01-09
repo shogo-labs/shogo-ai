@@ -17,9 +17,39 @@ import { useDomains } from "@/contexts/DomainProvider"
 import { cn } from "@/lib/utils"
 import { FlaskConical, CheckCircle2, Layers, Target, X } from "lucide-react"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
+import { PropertyRenderer } from "@/components/rendering"
+import type { PropertyMetadata } from "@/components/rendering/types"
 import { ProgressBar } from "../../primitives"
 import { type TestSpec } from "../../cards"
 import { EmptyPhaseContent } from "../../EmptyStates"
+
+/**
+ * PropertyMetadata for test type badge (resolved via registry)
+ */
+const testTypePropertyMeta: PropertyMetadata = {
+  name: "testType",
+  type: "string",
+  enum: ["unit", "integration", "acceptance"],
+  xRenderer: "test-type-badge",
+}
+
+/**
+ * PropertyMetadata for given conditions (resolved via registry)
+ */
+const givenPropertyMeta: PropertyMetadata = {
+  name: "given",
+  type: "array",
+  xRenderer: "string-array",
+}
+
+/**
+ * PropertyMetadata for then assertions (resolved via registry)
+ */
+const thenPropertyMeta: PropertyMetadata = {
+  name: "then",
+  type: "array",
+  xRenderer: "string-array",
+}
 
 /**
  * Feature type for TestingView
@@ -248,16 +278,14 @@ function ScenarioSpotlightCard({
 }) {
   return (
     <div className={cn("p-5 rounded-lg border-2 bg-card", "border-cyan-500/50")}>
-      {/* Header with test type badge */}
+      {/* Header with test type badge (via PropertyRenderer) */}
       <div className="flex items-start justify-between mb-4">
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-2">
-            <span className={cn(
-              "px-2 py-0.5 rounded text-xs font-medium",
-              "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
-            )}>
-              {spec.testType || "unit"}
-            </span>
+            <PropertyRenderer
+              value={spec.testType || "unit"}
+              property={testTypePropertyMeta}
+            />
             {spec.requirement && (
               <span className="text-xs text-muted-foreground">
                 req: {spec.requirement}
@@ -276,25 +304,26 @@ function ScenarioSpotlightCard({
         </button>
       </div>
 
-      {/* Given/When/Then sections */}
+      {/* Given/When/Then sections (Given/Then via PropertyRenderer) */}
       <div className="space-y-4">
-        {/* Given */}
+        {/* Given (via PropertyRenderer) */}
         {spec.given && spec.given.length > 0 && (
           <div className="space-y-1">
             <span className="text-xs font-semibold text-cyan-500 uppercase tracking-wider">
               Given
             </span>
-            <ul className="space-y-1 pl-4">
-              {spec.given.map((item: string, i: number) => (
-                <li key={i} className="text-sm text-foreground list-disc">
-                  {item}
-                </li>
-              ))}
-            </ul>
+            <PropertyRenderer
+              value={spec.given}
+              property={givenPropertyMeta}
+              config={{
+                size: "sm",
+                layout: "compact",
+              }}
+            />
           </div>
         )}
 
-        {/* When */}
+        {/* When (single string, keep inline) */}
         {spec.when && (
           <div className="space-y-1">
             <span className="text-xs font-semibold text-cyan-500 uppercase tracking-wider">
@@ -304,19 +333,20 @@ function ScenarioSpotlightCard({
           </div>
         )}
 
-        {/* Then */}
+        {/* Then (via PropertyRenderer) */}
         {spec.then && spec.then.length > 0 && (
           <div className="space-y-1">
             <span className="text-xs font-semibold text-cyan-500 uppercase tracking-wider">
               Then
             </span>
-            <ul className="space-y-1 pl-4">
-              {spec.then.map((item: string, i: number) => (
-                <li key={i} className="text-sm text-foreground list-disc">
-                  {item}
-                </li>
-              ))}
-            </ul>
+            <PropertyRenderer
+              value={spec.then}
+              property={thenPropertyMeta}
+              config={{
+                size: "sm",
+                layout: "compact",
+              }}
+            />
           </div>
         )}
       </div>
