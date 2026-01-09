@@ -1,0 +1,37 @@
+# =============================================================================
+# Domain Mappings - Staging Environment
+# =============================================================================
+# Maps staging domains to Knative Services
+# =============================================================================
+apiVersion: serving.knative.dev/v1beta1
+kind: DomainMapping
+metadata:
+  name: api-staging.shogo.ai
+  namespace: shogo-staging-system
+spec:
+  ref:
+    name: s-api
+    kind: Service
+    apiVersion: serving.knative.dev/v1
+---
+apiVersion: serving.knative.dev/v1beta1
+kind: DomainMapping
+metadata:
+  name: studio-staging.shogo.ai
+  namespace: shogo-staging-system
+spec:
+  ref:
+    name: s-studio
+    kind: Service
+    apiVersion: serving.knative.dev/v1
+---
+apiVersion: serving.knative.dev/v1beta1
+kind: DomainMapping
+metadata:
+  name: mcp-staging.shogo.ai
+  namespace: shogo-staging-workspaces
+spec:
+  ref:
+    name: mcp-workspace-1
+    kind: Service
+    apiVersion: serving.knative.dev/v1

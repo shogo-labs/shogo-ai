@@ -1,0 +1,57 @@
+# =============================================================================
+# API Service - Staging Environment
+# =============================================================================
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: s-api
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: staging
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
+        autoscaling.knative.dev/max-scale: "5"
+    spec:
+      containers:
+        - name: api
+          image: shogo-api  # Replaced by kustomize
+          ports:
+            - containerPort: 8002
+          env:
+            - name: API_PORT
+              value: "8002"
+            - name: NODE_ENV
+              value: "staging"
+            - name: MCP_URL
+              value: "http://mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
+            - name: BETTER_AUTH_URL
+              value: "https://api-staging.shogo.ai"
+            - name: ALLOWED_ORIGINS
+              value: "https://studio-staging.shogo.ai,https://api-staging.shogo.ai"
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: REDIS_URL
+                  optional: true
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+            - name: BETTER_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: BETTER_AUTH_SECRET
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

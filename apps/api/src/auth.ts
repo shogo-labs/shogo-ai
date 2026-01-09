@@ -18,6 +18,17 @@ import { Pool } from "pg"
 // Port configuration from environment
 const VITE_PORT = process.env.VITE_PORT || "5173"
 
+// CORS origins from environment - supports comma-separated list
+// Defaults to localhost for development
+const getAllowedOrigins = (): string[] => {
+  const envOrigins = process.env.ALLOWED_ORIGINS
+  if (envOrigins) {
+    return envOrigins.split(',').map(o => o.trim())
+  }
+  // Default: localhost only (dev mode)
+  return [`http://localhost:${VITE_PORT}`]
+}
+
 export const auth = betterAuth({
   // Base URL for OAuth callbacks - must match Google's authorized redirect URIs
   baseURL: `http://localhost:${VITE_PORT}`,
@@ -93,8 +104,8 @@ export const auth = betterAuth({
     },
   },
 
-  // Trusted origins for CORS - includes localhost with VITE_PORT
-  trustedOrigins: [`http://localhost:${VITE_PORT}`],
+  // Trusted origins for CORS - configured via ALLOWED_ORIGINS env var
+  trustedOrigins: getAllowedOrigins(),
 })
 
 // Export the Auth type for use in route handlers

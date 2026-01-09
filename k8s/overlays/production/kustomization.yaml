@@ -1,0 +1,32 @@
+# =============================================================================
+# Kustomize Overlay - Production Environment
+# =============================================================================
+# Usage: kubectl apply -k k8s/overlays/production/
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: shogo-system
+
+resources:
+  - namespace.yaml
+  - domain-mappings.yaml
+  - api-service.yaml
+  - web-service.yaml
+  - workspace-services.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: shogo
+  app.kubernetes.io/managed-by: kustomize
+  environment: production
+
+images:
+  - name: shogo-mcp
+    newName: 620804327344.dkr.ecr.us-east-2.amazonaws.com/shogo/shogo-mcp
+    newTag: production-latest
+  - name: shogo-api
+    newName: 620804327344.dkr.ecr.us-east-2.amazonaws.com/shogo/shogo-api
+    newTag: production-latest
+  - name: shogo-web
+    newName: 620804327344.dkr.ecr.us-east-2.amazonaws.com/shogo/shogo-web
+    newTag: production-latest

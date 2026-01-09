@@ -34,9 +34,9 @@ variable "vpc_cidr" {
 # EKS Configuration
 # -----------------------------------------------------------------------------
 variable "eks_cluster_version" {
-  description = "Kubernetes version for EKS cluster (latest stable: 1.31)"
+  description = "Kubernetes version for EKS cluster (latest stable: 1.33)"
   type        = string
-  default     = "1.31"  # Latest EKS supported version as of Jan 2026
+  default     = "1.33"  # Latest EKS supported version as of Jan 2026
 }
 
 variable "node_instance_types" {
