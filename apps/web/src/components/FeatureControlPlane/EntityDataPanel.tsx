@@ -135,10 +135,10 @@ export function EntityDataPanel({ featureSessionId }: EntityDataPanelProps) {
     loadData()
   }, [loadData])
 
-  // Poll for updates every 3 seconds when a session is selected
+  // Poll for updates every 30 seconds when a session is selected
   useEffect(() => {
     if (!featureSessionId) return
-    const interval = setInterval(loadData, 3000)
+    const interval = setInterval(loadData, 30000)
     return () => clearInterval(interval)
   }, [featureSessionId, loadData])
 

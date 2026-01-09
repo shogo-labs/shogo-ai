@@ -62,8 +62,8 @@ export function useArtifactTracker(sessionId: string | null): Artifact[] {
     // Initial fetch
     fetchArtifacts()
 
-    // Set up polling
-    const interval = setInterval(fetchArtifacts, 2000)
+    // Set up polling (every 15 seconds)
+    const interval = setInterval(fetchArtifacts, 15000)
 
     return () => clearInterval(interval)
   }, [sessionId])
