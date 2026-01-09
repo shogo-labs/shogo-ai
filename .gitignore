@@ -67,3 +67,4 @@ _tmp/
 *.tfstate
 *.tfstate.*
 .terraform.lock.hcl
+tfplan

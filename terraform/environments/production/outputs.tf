@@ -45,3 +45,8 @@ output "deploy_command" {
   value       = "cd ${path.module}/../../../ && ./scripts/deploy-eks.sh"
 }
 
+
+output "github_actions_role_arn" {
+  description = "GitHub Actions IAM role ARN (use this in GitHub secrets as AWS_ROLE_ARN)"
+  value       = module.github_oidc.role_arn
+}
