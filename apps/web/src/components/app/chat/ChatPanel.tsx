@@ -29,6 +29,11 @@ import { ChatInput } from "./ChatInput"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
 import { ChatContextProvider, type ChatContextValue } from "./ChatContext"
+// Chat Panel UX Redesign - New component imports (task-chat-008)
+import { TurnList } from "./turns"
+import { PhaseEmptyState } from "./empty"
+import type { SubagentProgress as SubagentProgressType, RecentTool as RecentToolType } from "./subagent"
+import { type ToolCallData, getToolCategory as getToolCategoryFromTools } from "./tools/types"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { AlertCircle } from "lucide-react"
@@ -431,6 +436,10 @@ export const ChatPanel = observer(function ChatPanel({
   const [recentTools, setRecentTools] = useState<RecentToolCall[]>([])
   const MAX_RECENT_TOOLS = 8 // Keep last N tool calls for display
 
+  // Accumulated subagent tool calls for timeline persistence (task-chat-ux-fix)
+  // These persist even after streaming ends, unlike recentTools which are for live display
+  const [accumulatedSubagentTools, setAccumulatedSubagentTools] = useState<ToolCallData[]>([])
+
   // chat-session-sync-fix: v3 API requires DefaultChatTransport for proper metadata handling
   // The transport must be memoized to prevent re-creation on every render
   const chatTransport = useMemo(
@@ -698,7 +707,7 @@ export const ChatPanel = observer(function ChatPanel({
           })
         } else if (event.type === 'tool-complete') {
           console.log('[ChatPanel:Progress] 🔧 Tool complete:', event.toolName)
-          // Add to recent tools list
+          // Add to recent tools list (for live display in SubagentPanel)
           setRecentTools((prev) => {
             const newTool: RecentToolCall = {
               id: event.toolUseId,
@@ -708,6 +717,18 @@ export const ChatPanel = observer(function ChatPanel({
             const updated = [newTool, ...prev].slice(0, MAX_RECENT_TOOLS)
             return updated
           })
+          // Accumulate for timeline persistence (task-chat-ux-fix)
+          // These persist even after streaming ends for display in ToolTimeline
+          setAccumulatedSubagentTools((prev) => [
+            ...prev,
+            {
+              id: event.toolUseId,
+              toolName: event.toolName,
+              category: getToolCategoryFromTools(event.toolName),
+              state: "success" as const,
+              timestamp: event.timestamp,
+            },
+          ])
           // Increment tool count on all running subagents
           setActiveSubagents((prev) => {
             const next = new Map(prev)
@@ -723,26 +744,46 @@ export const ChatPanel = observer(function ChatPanel({
     })
   }, [messages, currentSessionId, studioChat.chatSessionCollection])
 
-  // Clear completed subagents and recent tools after stream ends (task-subagent-progress-streaming)
+  // Linger duration for completed subagents (ms) - keeps panel visible after completion
+  const SUBAGENT_LINGER_MS = 2500
+
+  // Delayed cleanup of completed subagents after stream ends (task-subagent-progress-streaming)
+  // Instead of clearing immediately, we keep completed subagents visible for a few seconds
+  // so users can see the final state before the panel disappears
   useEffect(() => {
     if (!isLoading) {
-      console.log('[ChatPanel:Progress] Stream ended, clearing completed subagents')
-      setActiveSubagents((prev) => {
-        const next = new Map(prev)
-        let clearedCount = 0
-        for (const [id, subagent] of next) {
-          if (subagent.status === 'completed') {
-            next.delete(id)
-            clearedCount++
-          }
+      console.log('[ChatPanel:Progress] Stream ended, scheduling delayed cleanup for completed subagents')
+
+      // Set timeouts for each completed subagent
+      const timeoutIds: ReturnType<typeof setTimeout>[] = []
+
+      activeSubagents.forEach((subagent, id) => {
+        if (subagent.status === 'completed') {
+          const timeoutId = setTimeout(() => {
+            console.log('[ChatPanel:Progress] Delayed cleanup: removing subagent', id)
+            setActiveSubagents((prev) => {
+              const next = new Map(prev)
+              next.delete(id)
+              return next
+            })
+          }, SUBAGENT_LINGER_MS)
+          timeoutIds.push(timeoutId)
         }
-        console.log('[ChatPanel:Progress] Cleared', clearedCount, 'completed subagents, remaining:', next.size)
-        return next
       })
-      // Clear recent tools when stream ends
-      setRecentTools([])
+
+      // Delay clearing recent tools to match subagent visibility
+      const toolsTimeoutId = setTimeout(() => {
+        console.log('[ChatPanel:Progress] Delayed cleanup: clearing recent tools')
+        setRecentTools([])
+      }, SUBAGENT_LINGER_MS)
+      timeoutIds.push(toolsTimeoutId)
+
+      // Cleanup timeouts if component unmounts or isLoading changes
+      return () => {
+        timeoutIds.forEach((id) => clearTimeout(id))
+      }
     }
-  }, [isLoading])
+  }, [isLoading, activeSubagents])
 
   // Debug: Log whenever activeSubagents changes
   useEffect(() => {
@@ -751,6 +792,18 @@ export const ChatPanel = observer(function ChatPanel({
       agents: Array.from(activeSubagents.values()).map(a => ({ id: a.agentId, type: a.agentType, status: a.status })),
     })
   }, [activeSubagents])
+
+  // Clear accumulated tools when a new stream starts (task-chat-ux-fix)
+  // We use a ref to track the previous isLoading state to detect stream start
+  const prevIsLoadingRef = useRef(false)
+  useEffect(() => {
+    // Detect stream start: isLoading transitions from false to true
+    if (isLoading && !prevIsLoadingRef.current) {
+      console.log('[ChatPanel:Progress] New stream started, clearing accumulated tools')
+      setAccumulatedSubagentTools([])
+    }
+    prevIsLoadingRef.current = isLoading
+  }, [isLoading])
 
   // Load persisted messages when session changes
   useEffect(() => {
@@ -928,11 +981,7 @@ export const ChatPanel = observer(function ChatPanel({
     )
   }
 
-  // Extract tool calls from all messages for inline display
-  const messagesWithToolCalls = messages.map((msg) => ({
-    message: msg,
-    toolCalls: extractToolCalls(msg),
-  }))
+  // Note: Tool call extraction now handled by TurnList/useTurnGrouping (task-chat-008)
 
   return (
     <div className={cn("flex h-full", className)}>
@@ -965,57 +1014,25 @@ export const ChatPanel = observer(function ChatPanel({
           onToggleCollapse={handleToggleCollapse}
         />
 
-        {/* Messages with Tool Calls */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messagesWithToolCalls.map(({ message, toolCalls }) => (
-            <div key={message.id} className="space-y-2">
-              {/* Message content via MessageList item pattern */}
-              <div
-                className={cn(
-                  "flex w-full",
-                  message.role === "user" ? "justify-end" : "justify-start"
-                )}
-              >
-                <div
-                  className={cn(
-                    "max-w-[80%] rounded-lg px-4 py-2 text-sm",
-                    message.role === "user"
-                      ? "bg-primary text-primary-foreground ml-auto"
-                      : "bg-muted text-foreground mr-auto"
-                  )}
-                >
-                  {/* chat-session-sync-fix: Use extractTextContent for v3 API compatibility
-                      v3 uses parts array, content may be undefined */}
-                  <div className="whitespace-pre-wrap break-words">
-                    {extractTextContent(message)}
-                  </div>
-                </div>
-              </div>
-
-              {/* Inline Tool Call Displays */}
-              {toolCalls.map((toolCall, index) => (
-                <ToolCallDisplay
-                  key={`${message.id}-tool-${index}`}
-                  toolName={toolCall.toolName}
-                  state={toolCall.state}
-                  args={toolCall.args}
-                  result={toolCall.result}
-                  error={toolCall.error}
-                />
-              ))}
-            </div>
-          ))}
-
-          {/* Empty state */}
-          {messages.length === 0 && !isLoading && (
-            <div className="flex flex-1 flex-col items-center justify-center text-center text-muted-foreground py-8">
-              <p className="text-sm">No messages yet</p>
-              <p className="text-xs mt-1">Start a conversation</p>
-            </div>
-          )}
-
-          {/* Loading indicator */}
-          {isLoading && (
+        {/* Messages with Turn Grouping (task-chat-008) */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {messages.length > 0 ? (
+            <TurnList
+              messages={messages}
+              isStreaming={isLoading}
+              phase={phase}
+              activeSubagents={Array.from(activeSubagents.values()) as SubagentProgressType[]}
+              recentTools={recentTools as RecentToolType[]}
+              subagentToolCalls={accumulatedSubagentTools}
+            />
+          ) : !isLoading ? (
+            /* Phase-contextual empty state (task-chat-008) */
+            <PhaseEmptyState
+              phase={phase}
+              onSuggestionClick={handleSendMessage}
+            />
+          ) : (
+            /* Loading indicator when no messages yet */
             <div
               data-testid="loading-indicator"
               aria-label="Loading response"
@@ -1025,91 +1042,6 @@ export const ChatPanel = observer(function ChatPanel({
               <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse" />
               <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.2s]" />
               <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.4s]" />
-            </div>
-          )}
-
-          {/* Subagent Progress Indicator (task-subagent-progress-streaming) */}
-          {/* Debug: Always log render check */}
-          {(() => {
-            console.log('[ChatPanel:Progress] 🎨 Render check - activeSubagents.size:', activeSubagents.size)
-            return null
-          })()}
-          {activeSubagents.size > 0 && (
-            <div className="px-4 py-3 border-t border-border/50 bg-gradient-to-b from-muted/40 to-muted/20">
-              {/* Subagent header with count */}
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                  <span className="text-xs font-semibold text-foreground/80">
-                    Running Subagent
-                  </span>
-                </div>
-                {Array.from(activeSubagents.values())
-                  .filter((s) => s.status === 'running')
-                  .map((subagent) => (
-                    <div key={subagent.agentId} className="flex items-center gap-2">
-                      <span className="text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/30 px-2 py-0.5 rounded">
-                        {subagent.agentType}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {subagent.toolCount} tools
-                      </span>
-                    </div>
-                  ))}
-              </div>
-
-              {/* Recent activity log */}
-              {recentTools.length > 0 && (
-                <div className="space-y-0.5 max-h-32 overflow-y-auto">
-                  {recentTools.map((tool, index) => {
-                    const category = getToolCategory(tool.toolName)
-                    const displayName = formatToolName(tool.toolName)
-                    return (
-                      <div
-                        key={tool.id}
-                        className={cn(
-                          "flex items-center gap-2 text-xs py-0.5 transition-opacity",
-                          index === 0 ? "opacity-100" : index < 3 ? "opacity-70" : "opacity-40"
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "w-1.5 h-1.5 rounded-full shrink-0",
-                            category === 'mcp' && "bg-purple-500",
-                            category === 'file' && "bg-green-500",
-                            category === 'skill' && "bg-orange-500",
-                            category === 'other' && "bg-gray-500"
-                          )}
-                        />
-                        <span className="font-mono text-muted-foreground truncate">
-                          {displayName}
-                        </span>
-                        {index === 0 && (
-                          <span className="text-[10px] text-muted-foreground/60 ml-auto">now</span>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-
-              {/* Legend */}
-              {recentTools.length > 0 && (
-                <div className="flex items-center gap-3 mt-2 pt-2 border-t border-border/30">
-                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
-                    <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
-                    <span>MCP</span>
-                  </div>
-                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
-                    <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                    <span>File</span>
-                  </div>
-                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
-                    <span className="w-1.5 h-1.5 rounded-full bg-orange-500" />
-                    <span>Skill</span>
-                  </div>
-                </div>
-              )}
             </div>
           )}
         </div>
