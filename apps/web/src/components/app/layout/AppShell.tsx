@@ -27,7 +27,7 @@
  * when domain bindings change (e.g., via BindingEditorPanel).
  */
 
-import { useMemo, useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { observer } from "mobx-react-lite"
 import { Outlet } from "react-router-dom"
 import { AppHeader } from "./AppHeader"
@@ -80,9 +80,10 @@ export const AppShell = observer(function AppShell() {
   }, [toggleBindingEditor])
 
   // Create domain-driven registry
-  // Depends on componentBuilder state for reactivity via observer wrapper
+  // NO useMemo here - observer() wrapper tracks MST accesses inside createRegistryFromDomain()
+  // When bindings change in the store, MobX triggers re-render and registry is recreated
   // Falls back gracefully if componentBuilder is undefined (registryFactory handles this)
-  const registry = useMemo(() => createRegistryFromDomain(componentBuilder), [componentBuilder])
+  const registry = createRegistryFromDomain(componentBuilder)
 
   return (
     <ComponentRegistryProvider registry={registry}>

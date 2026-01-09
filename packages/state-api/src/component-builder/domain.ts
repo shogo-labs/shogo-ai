@@ -40,6 +40,8 @@ export const ComponentBuilderDomain = scope({
     "previewRef?": "string",
     "tags?": "string[]",
     "propsSchema?": "unknown",
+    /** Config keys this component supports (e.g., ['variant', 'size', 'truncate']) */
+    "supportedConfig?": "string[]",
     createdAt: "number",
     "updatedAt?": "number",
   },
@@ -62,6 +64,8 @@ export const ComponentBuilderDomain = scope({
     component: "ComponentDefinition", // Required reference
     matchExpression: "unknown", // MongoDB-style query object
     priority: "number",
+    /** Default XRendererConfig applied when this binding matches */
+    "defaultConfig?": "unknown",
     createdAt: "number",
     "updatedAt?": "number",
   },
@@ -105,6 +109,7 @@ export const componentBuilderDomain = domain({
             priority: self.priority,
             matcher: this.matcher,
             componentRef: self.component?.implementationRef ?? "FallbackDisplay",
+            defaultConfig: self.defaultConfig ?? undefined,
           }
         },
       })),
@@ -216,10 +221,15 @@ export const componentBuilderDomain = domain({
         },
 
         /**
-         * Get the default registry (by convention: name === "Default Registry").
+         * Get the default registry for the app.
+         * Looks for "studio" registry first (has xRenderer bindings), falls back to "default".
          */
         get defaultRegistry(): any | undefined {
-          return self.all().find((r: any) => r.name === "Default Registry")
+          // Studio registry has all the xRenderer bindings and extends default
+          const studio = self.all().find((r: any) => r.name === "studio")
+          if (studio) return studio
+          // Fall back to base default registry
+          return self.all().find((r: any) => r.name === "default")
         },
       })),
 

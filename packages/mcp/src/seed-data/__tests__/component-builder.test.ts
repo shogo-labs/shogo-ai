@@ -3,9 +3,9 @@
  * Task: seed-data-constants-file
  *
  * Tests that the component-builder seed data exports match the expected structure:
- * - 26 COMPONENT_DEFINITIONS
+ * - 29 COMPONENT_DEFINITIONS (11 primitive + 14 domain + 4 visualization)
  * - 2 REGISTRIES (default and studio)
- * - 28 RENDERER_BINDINGS (13 default + 15 studio)
+ * - 30 RENDERER_BINDINGS (12 default + 18 studio)
  */
 
 import { describe, test, expect } from "bun:test"
@@ -24,8 +24,8 @@ describe("Seed data file exports COMPONENT_DEFINITIONS array", () => {
     expect(Array.isArray(COMPONENT_DEFINITIONS)).toBe(true)
   })
 
-  test("Array has 26 entries", () => {
-    expect(COMPONENT_DEFINITIONS).toHaveLength(26)
+  test("Array has 29 entries", () => {
+    expect(COMPONENT_DEFINITIONS).toHaveLength(29)
   })
 
   test("Each entry has id, name, category, implementationRef fields", () => {
@@ -80,9 +80,9 @@ describe("Seed data file exports RENDERER_BINDINGS array", () => {
     expect(Array.isArray(RENDERER_BINDINGS)).toBe(true)
   })
 
-  test("Array has 27 entries (12 default + 15 studio)", () => {
-    // 12 default bindings + 15 studio bindings = 27 total
-    expect(RENDERER_BINDINGS).toHaveLength(27)
+  test("Array has 30 entries (12 default + 18 studio)", () => {
+    // 12 default bindings + 18 studio bindings = 30 total
+    expect(RENDERER_BINDINGS).toHaveLength(30)
   })
 
   test("Each entry has id, registry, component, matchExpression, priority fields", () => {
@@ -127,7 +127,7 @@ describe("All seed entities have unique IDs", () => {
       ...RENDERER_BINDINGS.map((b) => b.id),
     ]
 
-    // Total: 26 + 2 + 27 = 55
-    expect(allIds.length).toBe(55)
+    // Total: 29 + 2 + 30 = 61
+    expect(allIds.length).toBe(61)
   })
 })

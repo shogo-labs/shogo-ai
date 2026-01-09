@@ -25,6 +25,8 @@ import {
   ComputedDisplay,
   ArrayDisplay,
   ObjectDisplay,
+  StringArrayDisplay,
+  LongTextDisplay,
 } from "./displays"
 
 // Domain-specific renderers
@@ -40,6 +42,7 @@ import {
   ExecutionStatusBadge,
   TestCaseStatusBadge,
   TaskRenderer,
+  CodePathDisplay,
 } from "./displays/domain"
 
 // Visualization renderers
@@ -54,8 +57,8 @@ import {
  * Map of implementationRef strings to React components.
  *
  * This map contains all registered display renderers:
- * - 11 primitive renderers (StringDisplay, NumberDisplay, etc.)
- * - 11 domain renderers (PriorityBadge, TaskStatusBadge, etc.)
+ * - 13 primitive renderers (StringDisplay, NumberDisplay, StringArrayDisplay, LongTextDisplay, etc.)
+ * - 12 domain renderers (PriorityBadge, TaskStatusBadge, CodePathDisplay, etc.)
  * - 4 visualization renderers (ProgressBar, DataCard, etc.)
  */
 export const componentImplementationMap = new Map<
@@ -74,6 +77,8 @@ export const componentImplementationMap = new Map<
   ["ComputedDisplay", ComputedDisplay],
   ["ArrayDisplay", ArrayDisplay],
   ["ObjectDisplay", ObjectDisplay],
+  ["StringArrayDisplay", StringArrayDisplay],
+  ["LongTextDisplay", LongTextDisplay],
 
   // Domain-specific renderers
   ["PriorityBadge", PriorityBadge],
@@ -87,6 +92,7 @@ export const componentImplementationMap = new Map<
   ["ExecutionStatusBadge", ExecutionStatusBadge],
   ["TestCaseStatusBadge", TestCaseStatusBadge],
   ["TaskRenderer", TaskRenderer],
+  ["CodePathDisplay", CodePathDisplay],
 
   // Visualization renderers
   ["ProgressBar", ProgressBar as ComponentType<DisplayRendererProps>],

@@ -84,14 +84,27 @@ export async function initializeDomainSchemas(schemasDir: string): Promise<void>
       return
     }
 
+    // 4. Separate bootstrap schemas from regular schemas
+    // Bootstrap schemas (like system-migrations) must be processed first
+    // because other schemas depend on them for migration tracking
+    const bootstrapSchemas = postgresSchemas.filter(
+      (s) => s.schema["x-persistence"]?.bootstrap === true
+    )
+    const regularSchemas = postgresSchemas.filter(
+      (s) => s.schema["x-persistence"]?.bootstrap !== true
+    )
+
+    // Process in order: bootstrap first, then regular
+    const orderedSchemas = [...bootstrapSchemas, ...regularSchemas]
+
     console.log(
       `[ddl-init] Found ${postgresSchemas.length} schema(s) with postgres backend`
     )
 
-    // 4. Execute DDL for each schema
+    // 5. Execute DDL for each schema (bootstrap first, then regular)
     const registry = getGlobalBackendRegistry()
 
-    for (const { name, schema } of postgresSchemas) {
+    for (const { name, schema } of orderedSchemas) {
       try {
         const result: SchemaSyncResult = await registry.syncSchema(name, schema)
 

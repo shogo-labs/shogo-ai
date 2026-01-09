@@ -150,7 +150,8 @@ function specToEntry(
     id: spec.id,
     priority: spec.priority,
     matches: spec.matcher,
-    component: componentMap.get(spec.componentRef) ?? fallback
+    component: componentMap.get(spec.componentRef) ?? fallback,
+    defaultConfig: spec.defaultConfig,
   }
 }
 

@@ -16,7 +16,12 @@ export type {
   ComponentDefinitionEntity,
   RegistryEntity,
   BindingEntity,
+  XRendererConfig,
+  RenderableComponentProps,
 } from "@shogo/state-api"
+
+// Import XRendererConfig for local use
+import type { XRendererConfig } from "@shogo/state-api"
 
 /**
  * Metadata about a property, derived from EnhancedJsonSchema.
@@ -44,6 +49,8 @@ export interface PropertyMetadata {
   xRenderer?: string
   /** Whether this property is required */
   required?: boolean
+  /** Renderer configuration for this property (overrides binding defaults) */
+  xRendererConfig?: XRendererConfig
 }
 
 /**
@@ -64,6 +71,8 @@ export interface DisplayRendererProps {
   entity?: any
   /** Current nesting depth for recursive rendering (max 2) */
   depth?: number
+  /** Merged config from cascade (binding defaults + schema overrides) */
+  config?: XRendererConfig
 }
 
 /**
@@ -87,6 +96,8 @@ export interface ComponentEntry {
   component: ComponentType<DisplayRendererProps>
   /** Priority for cascade resolution (higher wins). Defaults to 10. */
   priority?: number
+  /** Default XRendererConfig applied when this entry matches */
+  defaultConfig?: XRendererConfig
 }
 
 /**

@@ -23,6 +23,9 @@ export type { CreateComponentBuilderStoreOptions } from "./domain"
 // Types exports
 export * from "./types"
 
+// Config utilities
+export { mergeRendererConfig } from "./config-utils"
+
 // Match expression exports
 export {
   createMatcherFromExpression,

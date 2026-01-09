@@ -180,6 +180,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   const { isPolling, lastRefresh, refresh, error: pollingError } = useFeaturePolling({
     featureId,
     enabled: !!featureId && !isChatStreaming,
+    domainsToSync: ["platformFeatures", "componentBuilder"],
   })
 
   // Callback for ChatPanel to report streaming state changes
