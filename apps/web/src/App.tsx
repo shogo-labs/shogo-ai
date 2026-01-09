@@ -24,7 +24,7 @@ import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentCo
 import { DomainProvider } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { MCPBackend } from './query/MCPBackend'
-import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, BetterAuthService } from '@shogo/state-api'
+import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, BetterAuthService } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
 import { mcpService } from './services/mcpService'
 import { Toaster } from '@/components/ui/toaster'
@@ -61,7 +61,7 @@ const env = createEnvironment({
 })
 
 // Domain configuration - keys become property names in useDomains()
-// Access via: const { teams, auth, chat, ... } = useDomains()
+// Access via: const { teams, auth, chat, componentBuilder, ... } = useDomains()
 const domains = {
   teams: teamsDomain,
   multiTenancy: teamsMultiTenancyDomain,
@@ -70,6 +70,7 @@ const domains = {
   studioChat: studioChatDomain,
   platformFeatures: platformFeaturesDomain,
   auth: betterAuthDomain,
+  componentBuilder: componentBuilderDomain,
 } as const
 
 function Navigation() {

@@ -2,24 +2,28 @@
  * useComponentBuilderStore Hook
  * Task: task-dcb-008
  *
- * Provides typed access to the component-builder schema store.
- * Handles schema loading and returns collection accessors for:
- * - ComponentDefinition entities
- * - Registry entities
- * - RendererBinding entities
+ * @deprecated Use useDomains() pattern instead:
+ * ```tsx
+ * import { useDomains } from "@/contexts/DomainProvider"
  *
- * Uses the WavesmithMetaStoreContext pattern for schema loading
- * and collection access with MobX reactivity.
+ * function ComponentCatalog() {
+ *   const { componentBuilder } = useDomains()
+ *   const components = componentBuilder.componentDefinitionCollection.all()
+ *   return <ComponentList components={components} />
+ * }
+ * ```
  *
- * @example
+ * This hook is kept for backward compatibility with existing tests.
+ * New code should use the useDomains() pattern which provides:
+ * - Consistent access pattern across all domains
+ * - Domain enhancements (e.g., registry.toEntrySpecs())
+ * - Single provider configuration in App.tsx
+ *
+ * @example (deprecated)
  * ```tsx
  * function ComponentCatalog() {
  *   const { loading, error, store } = useComponentBuilderStore()
- *
- *   if (loading) return <Spinner />
- *   if (error) return <ErrorDisplay error={error} />
  *   if (!store) return null
- *
  *   const components = store.componentDefinitions.all()
  *   return <ComponentList components={components} />
  * }

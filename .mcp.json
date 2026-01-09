@@ -13,13 +13,6 @@
         "-y",
         "chrome-devtools-mcp@latest"
       ]
-    },
-    "obsidian-mcp-tools": {
-      "command": "/Users/ryangahl/dev/ai/odin/OdinVault/.obsidian/plugins/mcp-tools/bin/mcp-server",
-      "args": [],
-      "env": {
-        "OBSIDIAN_API_KEY": "7a203152def84cb6c7e1cd5b6cadb4504ef8390023bb3b4903f9a8aff61ae12a"
-      }
     }
   }
 }

@@ -55,7 +55,8 @@
 import { useState, useCallback, useEffect, useRef } from "react"
 import { Outlet } from "react-router-dom"
 import { observer } from "mobx-react-lite"
-import { useWorkspaceData, useWorkspaceNavigation, useDeleteFeature, useComponentBuilderStore } from "./hooks"
+import { useWorkspaceData, useWorkspaceNavigation, useDeleteFeature } from "./hooks"
+import { useDomains } from "@/contexts/DomainProvider"
 import { usePhaseNavigation } from "../stepper/hooks/usePhaseNavigation"
 import { useFeaturePolling } from "@/hooks/useFeaturePolling"
 import { useToast } from "@/hooks/use-toast"
@@ -159,12 +160,12 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
     setIsComponentCatalogCollapsed(prev => !prev)
   }, [])
 
-  // Component builder store hook (task-dcb-012)
+  // Component builder domain via useDomains() pattern (task-dcb-012)
   // Provides access to ComponentDefinition entities for the catalog
-  const { store: componentBuilderStore } = useComponentBuilderStore()
+  const { componentBuilder } = useDomains()
 
-  // Get component definitions from store, or empty array while loading
-  const componentDefinitions = componentBuilderStore?.componentDefinitions.all() ?? []
+  // Get component definitions from domain store, or empty array while loading
+  const componentDefinitions = componentBuilder?.componentDefinitionCollection?.all() ?? []
 
   // State for selected component in catalog (optional for future use)
   const [selectedComponentId, setSelectedComponentId] = useState<string | undefined>(undefined)

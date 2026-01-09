@@ -277,6 +277,6 @@
     }
   },
   "x-persistence": {
-    "backend": "memory"
+    "backend": "postgres"
   }
 }
