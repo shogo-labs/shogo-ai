@@ -28,17 +28,28 @@ After applying, note the output:
 github_actions_role_arn = "arn:aws:iam::ACCOUNT_ID:role/shogo-github-actions"
 ```
 
-## Step 2: Configure GitHub Secrets
+## Step 2: Configure GitHub Secrets and Variables
 
-In your GitHub repository, go to **Settings > Secrets and variables > Actions** and add:
+In your GitHub repository, go to **Settings > Secrets and variables > Actions**.
+
+### Secrets (sensitive values - masked in logs)
 
 | Secret Name | Value | Description |
 |-------------|-------|-------------|
 | `AWS_ROLE_ARN` | `arn:aws:iam::ACCOUNT_ID:role/shogo-github-actions` | From Terraform output |
+
+### Variables (non-sensitive config - visible in logs)
+
+Click the **Variables** tab and add:
+
+| Variable Name | Value | Description |
+|---------------|-------|-------------|
 | `VITE_API_URL` | `https://api.your-domain.com` | API endpoint URL |
 | `VITE_MCP_URL` | `https://mcp.your-domain.com` | MCP endpoint URL |
-| `VITE_BETTER_AUTH_URL` | `https://api.your-domain.com` | Auth endpoint URL |
+| `VITE_BETTER_AUTH_URL` | `https://api.your-domain.com` | Auth endpoint URL (same as API - BetterAuth runs in API server) |
 | `VITE_WORKSPACE` | `default` | Default workspace ID |
+
+> **Note:** `VITE_BETTER_AUTH_URL` should be the same as `VITE_API_URL` since BetterAuth is integrated into the API server.
 
 ## Step 3: Configure EKS Access
 

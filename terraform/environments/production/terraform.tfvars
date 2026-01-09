@@ -29,5 +29,5 @@ domain          = ""  # Set your domain here (e.g., "shogo.ai")
 better_auth_secret = "shogo-production-secret-key-must-be-at-least-32-characters-long"
 
 # GitHub Actions CI/CD
-github_org  = ""  # Set your GitHub organization or username
+github_org  = "CodeGlo"
 github_repo = "shogo-ai"

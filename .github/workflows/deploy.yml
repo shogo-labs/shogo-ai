@@ -121,10 +121,10 @@ jobs:
             ${{ env.ECR_REGISTRY }}/shogo/shogo-web:latest
             ${{ env.ECR_REGISTRY }}/shogo/shogo-web:${{ github.sha }}
           build-args: |
-            VITE_API_URL=${{ secrets.VITE_API_URL }}
-            VITE_MCP_URL=${{ secrets.VITE_MCP_URL }}
-            VITE_BETTER_AUTH_URL=${{ secrets.VITE_BETTER_AUTH_URL }}
-            VITE_WORKSPACE=${{ secrets.VITE_WORKSPACE }}
+            VITE_API_URL=${{ vars.VITE_API_URL }}
+            VITE_MCP_URL=${{ vars.VITE_MCP_URL }}
+            VITE_BETTER_AUTH_URL=${{ vars.VITE_BETTER_AUTH_URL }}
+            VITE_WORKSPACE=${{ vars.VITE_WORKSPACE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
