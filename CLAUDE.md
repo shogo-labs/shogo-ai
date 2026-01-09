@@ -175,8 +175,8 @@ MCP server exposing Wavesmith tools to Claude:
 
 **@shogo/web** (`apps/web/`)
 **Shogo Studio** - the production interface for AI-driven feature development:
-- `/app` - Full platform: org/project management, feature browser, phase-aware chat, 8-phase pipeline visualization
-- Demo pages (`/unit-*`) - Integration pattern examples for reference
+- Root route (`/`) - Full platform: org/project management, feature browser, phase-aware chat, 8-phase pipeline visualization
+- Protected by AuthGate which handles authentication inline
 
 **@shogo/api** (`apps/api/`)
 Backend for Shogo Studio:
