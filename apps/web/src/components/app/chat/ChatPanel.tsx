@@ -32,7 +32,7 @@ import { ChatContextProvider, type ChatContextValue } from "./ChatContext"
 // Chat Panel UX Redesign - New component imports (task-chat-008)
 import { TurnList } from "./turns"
 import { PhaseEmptyState } from "./empty"
-import type { SubagentProgress as SubagentProgressType, RecentTool as RecentToolType } from "./subagent"
+import { SubagentPanel, type SubagentProgress as SubagentProgressType, type RecentTool as RecentToolType } from "./subagent"
 import { type ToolCallData, getToolCategory as getToolCategoryFromTools } from "./tools/types"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -476,6 +476,81 @@ export const ChatPanel = observer(function ChatPanel({
       // Without this handler, errors leave isLoading=true indefinitely
       console.error("[ChatPanel] Stream error:", err)
     },
+    // Handle transient data parts via AI SDK 6.x data-{name} format
+    // Server sends: { type: 'data-progress', id: string, data: SubagentProgressEvent }
+    // Session ID comes via message-metadata (handled in onFinish)
+    // See: https://ai-sdk.dev/docs/ai-sdk-ui/streaming-data
+    onData: (dataPart) => {
+      console.log('[ChatPanel:onData] Received data part:', dataPart.type, dataPart)
+
+      // Handle subagent progress events (task-subagent-progress-streaming)
+      // AI SDK 6.x uses data-{name} format: { type: 'data-progress', id, data }
+      if (dataPart.type === 'data-progress') {
+        const event = (dataPart as any).data as SubagentProgressEvent
+        console.log('[ChatPanel:Progress] 📥 Received progress event:', event)
+
+        if (event.type === 'subagent-start') {
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            console.log('[ChatPanel:Progress] 🚀 Adding subagent to active map:', event.agentId, event.agentType)
+            next.set(event.agentId, {
+              agentId: event.agentId,
+              agentType: event.agentType,
+              startTime: event.timestamp,
+              status: 'running',
+              toolCount: 0,
+            })
+            console.log('[ChatPanel:Progress] 📊 Active subagents count:', next.size)
+            return next
+          })
+        } else if (event.type === 'subagent-stop') {
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            const existing = next.get(event.agentId)
+            console.log('[ChatPanel:Progress] 🛑 Stopping subagent:', event.agentId, 'existing:', !!existing)
+            if (existing) {
+              next.set(event.agentId, { ...existing, status: 'completed' })
+            }
+            console.log('[ChatPanel:Progress] 📊 Active subagents count:', next.size)
+            return next
+          })
+        } else if (event.type === 'tool-complete') {
+          console.log('[ChatPanel:Progress] 🔧 Tool complete:', event.toolName)
+          // Add to recent tools list (for live display in SubagentPanel)
+          setRecentTools((prev) => {
+            const newTool: RecentToolCall = {
+              id: event.toolUseId,
+              toolName: event.toolName,
+              timestamp: event.timestamp,
+            }
+            const updated = [newTool, ...prev].slice(0, MAX_RECENT_TOOLS)
+            return updated
+          })
+          // Accumulate for timeline persistence (task-chat-ux-fix)
+          // These persist even after streaming ends for display in ToolTimeline
+          setAccumulatedSubagentTools((prev) => [
+            ...prev,
+            {
+              id: event.toolUseId,
+              toolName: event.toolName,
+              category: getToolCategoryFromTools(event.toolName),
+              state: "success" as const,
+              timestamp: event.timestamp,
+            },
+          ])
+          // Increment tool count on all running subagents
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            for (const [id, subagent] of next) {
+              if (subagent.status === 'running') {
+                next.set(id, { ...subagent, toolCount: subagent.toolCount + 1 })
+              }
+            }
+            return next
+          })
+        }
+      }
+    },
     onFinish: async ({ message }) => {
       // chat-session-sync-fix: v3 API callback receives { message, messages, isAbort, ... } options object
       // Must destructure message from options - NOT receive message directly like v1/v2
@@ -527,7 +602,7 @@ export const ChatPanel = observer(function ChatPanel({
             sessionId: currentSessionId,
             toolName: toolCall.toolName,
             status: toolCall.state === "output-available" ? "complete" :
-                    toolCall.state === "output-error" ? "error" : "executing",
+              toolCall.state === "output-error" ? "error" : "executing",
             args: toolCall.args || {},
             result: toolCall.result,
           }).catch((err) => {
@@ -919,7 +994,7 @@ export const ChatPanel = observer(function ChatPanel({
 
       // Track last mouse X for final width calculation
       const trackMouseMove = (moveEvent: MouseEvent) => {
-        ;(window as any).lastMouseX = moveEvent.clientX
+        ; (window as any).lastMouseX = moveEvent.clientX
         handleMouseMove(moveEvent)
       }
 
@@ -1019,16 +1094,27 @@ export const ChatPanel = observer(function ChatPanel({
               onSuggestionClick={handleSendMessage}
             />
           ) : (
-            /* Loading indicator when no messages yet */
-            <div
-              data-testid="loading-indicator"
-              aria-label="Loading response"
-              aria-busy="true"
-              className="flex items-center gap-1 p-2"
-            >
-              <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse" />
-              <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.2s]" />
-              <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.4s]" />
+            /* Loading state when no messages yet - show SubagentPanel if subagents active */
+            <div className="space-y-3">
+              {/* Subagent panel during initial loading (before first message arrives) */}
+              {activeSubagents.size > 0 && (
+                <SubagentPanel
+                  subagents={Array.from(activeSubagents.values()) as SubagentProgressType[]}
+                  recentTools={recentTools as RecentToolType[]}
+                  defaultExpanded
+                />
+              )}
+              {/* Loading indicator */}
+              <div
+                data-testid="loading-indicator"
+                aria-label="Loading response"
+                aria-busy="true"
+                className="flex items-center gap-1 p-2"
+              >
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.2s]" />
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.4s]" />
+              </div>
             </div>
           )}
         </div>

@@ -67,6 +67,9 @@ const LOG_PREFIX = '[SubagentProgress]'
 // - Project-specific settings
 const claudeCode = createClaudeCode({
   defaultSettings: {
+    // Enable streaming input - REQUIRED for hooks to fire
+    // See: https://ai-sdk.dev/providers/claude-code (hooks require streaming input)
+    streamingInput: 'always',
     // Set working directory to project root
     cwd: PROJECT_ROOT,
     // Load project settings (picks up .claude/skills, .mcp.json, etc.)
@@ -346,10 +349,11 @@ app.post('/api/chat', async (c) => {
       // Write final session event to stream before closing (if we have streamWriter)
       if (streamWriter && info.sessionId) {
         console.log(`${LOG_PREFIX} 📨 Writing final session event to stream:`, info.sessionId)
+        // Use message-metadata chunk type for session ID (AI SDK 6.x format)
         streamWriter.write({
-          type: 'data-session' as const,
-          data: { ccSessionId: info.sessionId },
-        } as any)
+          type: 'message-metadata',
+          messageMetadata: { ccSessionId: info.sessionId },
+        })
       }
       streamCompleteResolver?.()
     }
@@ -358,12 +362,14 @@ app.post('/api/chat', async (c) => {
     const onProgress = (event: SubagentProgressEvent) => {
       console.log(`${LOG_PREFIX} 📥 Received progress event:`, event)
       if (streamWriter) {
-        // Stream is ready, write directly
+        // Stream is ready, write directly using AI SDK 6.x data-{name} format
+        // The `data-progress` type allows custom data to flow through the stream
         streamWriter.write({
-          type: 'data-progress' as const,
+          type: 'data-progress',
+          id: `progress-${Date.now()}`,
           data: event,
-        } as any)
-        console.log(`${LOG_PREFIX} ✅ Wrote data-progress to stream (live)`)
+        })
+        console.log(`${LOG_PREFIX} ✅ Wrote data-progress part to stream (live)`)
       } else {
         // Stream not ready yet, buffer the event
         eventBuffer.push(event)
@@ -399,9 +405,10 @@ app.post('/api/chat', async (c) => {
           console.log(`${LOG_PREFIX} 📤 Flushing ${eventBuffer.length} buffered events`)
           for (const bufferedEvent of eventBuffer) {
             writer.write({
-              type: 'data-progress' as const,
+              type: 'data-progress',
+              id: `progress-${Date.now()}`,
               data: bufferedEvent,
-            } as any)
+            })
           }
           eventBuffer.length = 0 // Clear buffer
         }
