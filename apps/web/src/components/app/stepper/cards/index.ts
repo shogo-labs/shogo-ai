@@ -13,11 +13,11 @@
  */
 
 // TaskCard - displays ImplementationTask entities
-export { TaskCard, taskStatusVariants } from "./TaskCard"
+export { TaskCard } from "./TaskCard"
 export type { TaskCardProps, Task, TaskStatus } from "./TaskCard"
 
 // TestSpecCard - displays TestSpecification entities
-export { TestSpecCard, testTypeVariants } from "./TestSpecCard"
+export { TestSpecCard } from "./TestSpecCard"
 export type { TestSpecCardProps, TestSpec, TestType } from "./TestSpecCard"
 
 // DependencyIndicator - shows task dependencies with status dots
