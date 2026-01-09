@@ -5,9 +5,18 @@
  * PropertyMetadata mirrors the x-* extensions from EnhancedJsonSchema.
  *
  * Task: task-registry-types
+ * Updated: task-dcb-006 (added HydratedComponentEntry, entity type aliases)
  */
 
 import type { ComponentType } from "react"
+
+// Re-export isomorphic types from state-api for convenience
+export type {
+  ComponentEntrySpec,
+  ComponentDefinitionEntity,
+  RegistryEntity,
+  BindingEntity,
+} from "@shogo/state-api"
 
 /**
  * Metadata about a property, derived from EnhancedJsonSchema.
@@ -78,6 +87,41 @@ export interface ComponentEntry {
   component: ComponentType<DisplayRendererProps>
   /** Priority for cascade resolution (higher wins). Defaults to 10. */
   priority?: number
+}
+
+/**
+ * A ComponentEntry that was hydrated from a RendererBinding entity.
+ *
+ * Extends ComponentEntry with tracking information for the source entity,
+ * enabling the registry to maintain reactivity with Wavesmith entities.
+ *
+ * Used by:
+ * - registryFactory.ts: Creates HydratedComponentEntry from RendererBinding entities
+ * - ComponentBuilderContext: Tracks entity source for MobX reactivity
+ *
+ * Task: task-dcb-006
+ *
+ * @example
+ * ```typescript
+ * const entry: HydratedComponentEntry = {
+ *   id: "string-display",
+ *   matches: (meta) => meta.type === "string",
+ *   component: StringDisplay,
+ *   priority: 10,
+ *   entityId: "binding-string-display-001"  // RendererBinding entity ID
+ * }
+ * ```
+ */
+export interface HydratedComponentEntry extends ComponentEntry {
+  /**
+   * ID of the RendererBinding entity this entry was hydrated from.
+   *
+   * Enables:
+   * - Tracing entries back to their source entity
+   * - MobX reactivity when the source entity changes
+   * - Debugging which entity produced which registry entry
+   */
+  entityId: string
 }
 
 /**
