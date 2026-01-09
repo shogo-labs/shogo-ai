@@ -1,0 +1,57 @@
+# =============================================================================
+# Shogo Web Frontend
+# =============================================================================
+# Static React app served by Nginx.
+# In production, this would be served via CloudFront/CDN.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shogo-web
+  namespace: shogo-system
+  labels:
+    app: shogo-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: shogo-web
+  template:
+    metadata:
+      labels:
+        app: shogo-web
+    spec:
+      containers:
+        - name: web
+          image: k3d-shogo-registry:5000/shogo-web:latest
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shogo-web
+  namespace: shogo-system
+  labels:
+    app: shogo-web
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+  selector:
+    app: shogo-web
+

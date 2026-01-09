@@ -36,12 +36,14 @@ server.start({
   httpStream: {
     port: MCP_PORT,
     endpoint: "/mcp",
+    // Bind to 0.0.0.0 for Docker/Kubernetes (allows external connections)
+    host: "0.0.0.0",
     // Stateful mode (default) - enables session tracking for streaming notifications
     // Client must include mcp-session-id header on subsequent requests
   },
 })
 
-console.log(`Wavesmith MCP HTTP server running on http://localhost:${MCP_PORT}`)
+console.log(`Wavesmith MCP HTTP server running on http://0.0.0.0:${MCP_PORT}`)
 console.log(`HTTP Stream endpoint: http://localhost:${MCP_PORT}/mcp`)
 console.log(`SSE endpoint: http://localhost:${MCP_PORT}/sse`)
 console.log(`SQL backend: ${isPostgresAvailable() ? "postgres" : isSqliteAvailable() ? "sqlite" : "memory only"}`)
