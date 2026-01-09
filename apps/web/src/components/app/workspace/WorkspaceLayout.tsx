@@ -1,6 +1,6 @@
 /**
  * WorkspaceLayout - Main workspace layout component
- * Tasks: task-2-2-004, task-2-3a-009, task-2-4-005, task-3-1-007, task-cpbi-004, task-delete-005
+ * Tasks: task-2-2-004, task-2-3a-009, task-2-4-005, task-3-1-007, task-cpbi-004, task-delete-005, task-dcb-012
  *
  * Renders the workspace layout with sidebar + content in a flex row.
  * This is the "smart" component that connects useWorkspaceData() hook to UI.
@@ -38,6 +38,13 @@
  * - FeatureSidebar receives onDeleteFeature handler
  * - Handles navigation when deleted feature was selected
  *
+ * Per dynamic-component-builder-vision (task-dcb-012):
+ * - ComponentCatalogSidebar integrated below FeatureSidebar
+ * - Collapsible section with 'Components' header
+ * - Collapse state persisted to localStorage
+ * - Visual separator (border-t) between sections
+ * - Both sections share sidebar scroll container
+ *
  * Per design-2-2-component-hierarchy:
  * - This is the "smart" component that connects hooks to UI
  * - Child components receive data as props, don't call hooks directly
@@ -55,9 +62,14 @@ import { useToast } from "@/hooks/use-toast"
 import { ToastAction } from "@/components/ui/toast"
 import { PhaseContentPanel } from "../stepper"
 import { ChatPanel } from "../chat/ChatPanel"
-import { FeatureSidebar } from "./sidebar/FeatureSidebar"
+import { FeatureSidebar } from "./sidebar"
 import { DeleteFeatureDialog } from "./modals/DeleteFeatureDialog"
 import { RefreshCw } from "lucide-react"
+import type { PollableDomain } from "@/hooks/useFeaturePolling"
+
+// PERF FIX: Stable array reference for polling domains.
+// Inline arrays create new references on every render, causing useCallback deps to change.
+const POLLING_DOMAINS: PollableDomain[] = ["platformFeatures"]
 
 /**
  * WorkspaceLayout component
@@ -130,6 +142,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   const { isPolling, lastRefresh, refresh, error: pollingError } = useFeaturePolling({
     featureId,
     enabled: !!featureId && !isChatStreaming,
+    domainsToSync: POLLING_DOMAINS,
   })
 
   // Callback for ChatPanel to report streaming state changes
@@ -200,15 +213,21 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
           </div>
         )}
 
-        {/* FeatureSidebar with delete support (task-delete-005) */}
-        <FeatureSidebar
-          featuresByPhase={featuresByPhase}
-          currentFeatureId={featureId}
-          onFeatureSelect={setFeatureId}
-          onNewFeature={handleOpenModal}
-          projectId={projectId}
-          onDeleteFeature={handleDeleteFeature}
-        />
+        {/* Scrollable container for both sidebar sections (task-dcb-012) */}
+        <div
+          className="flex-1 overflow-y-auto"
+          data-testid="sidebar-scroll-container"
+        >
+          {/* FeatureSidebar with delete support (task-delete-005) */}
+          <FeatureSidebar
+            featuresByPhase={featuresByPhase}
+            currentFeatureId={featureId}
+            onFeatureSelect={setFeatureId}
+            onNewFeature={handleOpenModal}
+            projectId={projectId}
+            onDeleteFeature={handleDeleteFeature}
+          />
+        </div>
       </aside>
 
       {/* Content area - flexible width with padding and scroll */}

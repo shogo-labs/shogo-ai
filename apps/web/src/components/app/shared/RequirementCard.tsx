@@ -1,15 +1,19 @@
 /**
  * RequirementCard Component
- * Task: task-2-3b-002, task-discovery-view
+ * Task: task-2-3b-002, task-discovery-view, task-sdr-v2-005, task-cbe-004
  *
- * Displays a requirement with priority badge using schema-driven PropertyRenderer.
+ * Displays a requirement with all properties rendered via PropertyRenderer.
+ * This is the vertical slice proving schema-driven rendering for entity cards.
  *
  * Props:
  * - requirement: Requirement object with id, name, description, priority, status
  *
  * Per design-2-3b-component-hierarchy:
  * - Built in /components/app/shared/ for reuse across phase views
- * - Uses PropertyRenderer for schema-driven badge rendering
+ * - Uses PropertyRenderer for schema-driven rendering of all properties:
+ *   - name: StringDisplay (type=string)
+ *   - description: LongTextDisplay (type=string, xRenderer=long-text)
+ *   - priority: PriorityBadge (enum with xRenderer=priority-badge)
  */
 
 import { cva } from "class-variance-authority"
@@ -62,6 +66,24 @@ export const priorityBadgeVariants = cva(
 )
 
 /**
+ * PropertyMetadata for name field - matches schema annotation
+ */
+const namePropertyMeta: PropertyMetadata = {
+  name: "name",
+  type: "string",
+}
+
+/**
+ * PropertyMetadata for description field - matches schema annotation
+ * Uses LongTextDisplay for expandable long text rendering
+ */
+const descriptionPropertyMeta: PropertyMetadata = {
+  name: "description",
+  type: "string",
+  xRenderer: "long-text",
+}
+
+/**
  * PropertyMetadata for priority field - matches schema annotation
  */
 const priorityPropertyMeta: PropertyMetadata = {
@@ -89,11 +111,18 @@ export function RequirementCard({ requirement }: RequirementCardProps) {
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
           <h4 className="font-medium text-foreground truncate">
-            {requirement.name}
+            <PropertyRenderer
+              property={namePropertyMeta}
+              value={requirement.name}
+            />
           </h4>
-          <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-            {requirement.description}
-          </p>
+          <div className="text-sm text-muted-foreground mt-1">
+            <PropertyRenderer
+              property={descriptionPropertyMeta}
+              value={requirement.description}
+              config={{ truncate: 150, expandable: true }}
+            />
+          </div>
         </div>
         <PropertyRenderer
           property={priorityPropertyMeta}

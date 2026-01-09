@@ -25,6 +25,13 @@ import * as stateApi from "@shogo/state-api"
 // Seed IDs for verification
 import { SHOGO_ORG_ID, PLATFORM_PROJECT_ID } from "@shogo/state-api"
 
+// Component builder seed data
+import {
+  COMPONENT_DEFINITIONS,
+  REGISTRIES,
+  RENDERER_BINDINGS,
+} from "../seed-data/component-builder"
+
 // Track mocks for cleanup
 let postgresAvailableSpy: Mock<typeof postgresInit.isPostgresAvailable> | null = null
 let sqliteAvailableSpy: Mock<typeof postgresInit.isSqliteAvailable> | null = null
@@ -102,6 +109,59 @@ function cleanupTempDir(dir: string) {
 }
 
 /**
+ * Create a mock component-builder schema
+ */
+function createComponentBuilderSchema() {
+  return {
+    id: "component-builder",
+    name: "component-builder",
+    format: "enhanced-json-schema",
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    "x-persistence": { backend: "postgres" },
+    $defs: {
+      ComponentDefinition: {
+        type: "object",
+        properties: {
+          id: { type: "string", "x-mst-type": "identifier" },
+          name: { type: "string" },
+          category: { type: "string" },
+          description: { type: "string" },
+          implementationRef: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          createdAt: { type: "number" },
+        },
+        required: ["id", "name", "category", "implementationRef"],
+      },
+      Registry: {
+        type: "object",
+        properties: {
+          id: { type: "string", "x-mst-type": "identifier" },
+          name: { type: "string" },
+          description: { type: "string" },
+          extends: { type: "string", "x-mst-type": "maybe-reference" },
+          fallbackComponent: { type: "string", "x-mst-type": "maybe-reference" },
+          createdAt: { type: "number" },
+        },
+        required: ["id", "name"],
+      },
+      RendererBinding: {
+        type: "object",
+        properties: {
+          id: { type: "string", "x-mst-type": "identifier" },
+          name: { type: "string" },
+          registry: { type: "string", "x-mst-type": "reference" },
+          component: { type: "string", "x-mst-type": "reference" },
+          matchExpression: { type: "object" },
+          priority: { type: "number" },
+          createdAt: { type: "number" },
+        },
+        required: ["id", "name", "registry", "component", "matchExpression", "priority"],
+      },
+    },
+  }
+}
+
+/**
  * Create chainable query mock that returns given result
  */
 function createQueryChain(result: any = null) {
@@ -149,6 +209,53 @@ function createMockStore(options: { hasExistingOrg?: boolean } = {}) {
       orgInsertOne,
       projectQuery: projectQueryChain.query,
       projectInsertOne,
+    },
+  }
+}
+
+/**
+ * Create mock component-builder store with queryable/mutatable collections
+ */
+function createMockComponentBuilderStore(options: { hasExistingRegistry?: boolean } = {}) {
+  const { hasExistingRegistry = false } = options
+
+  // Registry collection with query + insertOne
+  const registryQueryChain = createQueryChain(
+    hasExistingRegistry ? { id: "default", name: "default" } : null
+  )
+  const registryInsertOne = mock((data: any) => Promise.resolve(data))
+
+  // ComponentDefinition collection with query + insertOne
+  const componentDefQueryChain = createQueryChain(null)
+  const componentDefInsertOne = mock((data: any) => Promise.resolve(data))
+
+  // RendererBinding collection with query + insertOne
+  const bindingQueryChain = createQueryChain(null)
+  const bindingInsertOne = mock((data: any) => Promise.resolve(data))
+
+  return {
+    registryCollection: {
+      query: registryQueryChain.query,
+      insertOne: registryInsertOne,
+      _queryChain: registryQueryChain._chain,
+    },
+    componentDefinitionCollection: {
+      query: componentDefQueryChain.query,
+      insertOne: componentDefInsertOne,
+      _queryChain: componentDefQueryChain._chain,
+    },
+    rendererBindingCollection: {
+      query: bindingQueryChain.query,
+      insertOne: bindingInsertOne,
+      _queryChain: bindingQueryChain._chain,
+    },
+    _mocks: {
+      registryQuery: registryQueryChain.query,
+      registryWhere: registryQueryChain._chain.where,
+      registryFirst: registryQueryChain._chain.first,
+      registryInsertOne,
+      componentDefInsertOne,
+      bindingInsertOne,
     },
   }
 }
@@ -404,6 +511,245 @@ describe("Seed Initialization", () => {
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining("[seed-init]")
       )
+    })
+  })
+
+  // ==========================================================================
+  // Component Builder Seed Tests
+  // ==========================================================================
+
+  describe("component-builder seeding", () => {
+    let mockComponentBuilderStore: ReturnType<typeof createMockComponentBuilderStore>
+
+    test("creates ComponentDefinitions when none exist", async () => {
+      // Given: component-builder schema is loaded and registryCollection is empty
+      mockStore = createMockStore({ hasExistingOrg: true }) // studio-core already seeded
+      mockComponentBuilderStore = createMockComponentBuilderStore({ hasExistingRegistry: false })
+
+      let schemaLoadCount = 0
+      loadSchemaSpy = spyOn(stateApi, "loadSchema").mockImplementation(async (name: string) => {
+        schemaLoadCount++
+        if (name === "studio-core") {
+          return {
+            metadata: { name: "studio-core" },
+            enhanced: createStudioCoreSchema(),
+          } as any
+        }
+        if (name === "component-builder") {
+          return {
+            metadata: { name: "component-builder" },
+            enhanced: createComponentBuilderSchema(),
+          } as any
+        }
+        throw new Error(`Unknown schema: ${name}`)
+      })
+
+      let domainCallCount = 0
+      domainSpy = spyOn(stateApi, "domain").mockImplementation((opts: any) => {
+        domainCallCount++
+        if (opts.name === "studio-core") {
+          return { createStore: mock(() => mockStore) } as any
+        }
+        if (opts.name === "component-builder") {
+          return { createStore: mock(() => mockComponentBuilderStore) } as any
+        }
+        throw new Error(`Unknown domain: ${opts.name}`)
+      })
+
+      // When: initializeSeedData is called
+      await initializeSeedData(tempDir)
+
+      // Then: 31 ComponentDefinitions are created in the store
+      expect(mockComponentBuilderStore._mocks.componentDefInsertOne).toHaveBeenCalledTimes(
+        COMPONENT_DEFINITIONS.length
+      )
+      expect(COMPONENT_DEFINITIONS.length).toBe(31)
+
+      // And: Each definition matches seed data constants
+      const insertedDefs = mockComponentBuilderStore._mocks.componentDefInsertOne.mock.calls.map(
+        (call: any) => call[0]
+      )
+      for (const def of COMPONENT_DEFINITIONS) {
+        const inserted = insertedDefs.find((d: any) => d.id === def.id)
+        expect(inserted).toBeDefined()
+        expect(inserted.name).toBe(def.name)
+        expect(inserted.category).toBe(def.category)
+      }
+    })
+
+    test("creates Registries when none exist", async () => {
+      // Given: component-builder schema is loaded and registryCollection is empty
+      mockStore = createMockStore({ hasExistingOrg: true })
+      mockComponentBuilderStore = createMockComponentBuilderStore({ hasExistingRegistry: false })
+
+      loadSchemaSpy = spyOn(stateApi, "loadSchema").mockImplementation(async (name: string) => {
+        if (name === "studio-core") {
+          return { metadata: { name: "studio-core" }, enhanced: createStudioCoreSchema() } as any
+        }
+        if (name === "component-builder") {
+          return { metadata: { name: "component-builder" }, enhanced: createComponentBuilderSchema() } as any
+        }
+        throw new Error(`Unknown schema: ${name}`)
+      })
+
+      domainSpy = spyOn(stateApi, "domain").mockImplementation((opts: any) => {
+        if (opts.name === "studio-core") {
+          return { createStore: mock(() => mockStore) } as any
+        }
+        if (opts.name === "component-builder") {
+          return { createStore: mock(() => mockComponentBuilderStore) } as any
+        }
+        throw new Error(`Unknown domain: ${opts.name}`)
+      })
+
+      // When: initializeSeedData is called
+      await initializeSeedData(tempDir)
+
+      // Then: 2 Registries are created (default and studio)
+      expect(mockComponentBuilderStore._mocks.registryInsertOne).toHaveBeenCalledTimes(
+        REGISTRIES.length
+      )
+      expect(REGISTRIES.length).toBe(2)
+
+      // And: default registry has no extends
+      const insertedRegistries = mockComponentBuilderStore._mocks.registryInsertOne.mock.calls.map(
+        (call: any) => call[0]
+      )
+      const defaultRegistry = insertedRegistries.find((r: any) => r.id === "default")
+      expect(defaultRegistry).toBeDefined()
+      expect(defaultRegistry.extends).toBeUndefined()
+
+      // And: studio registry extends default
+      const studioRegistry = insertedRegistries.find((r: any) => r.id === "studio")
+      expect(studioRegistry).toBeDefined()
+      expect(studioRegistry.extends).toBe("default")
+    })
+
+    test("creates RendererBindings when none exist", async () => {
+      // Given: component-builder schema is loaded and rendererBindingCollection is empty
+      mockStore = createMockStore({ hasExistingOrg: true })
+      mockComponentBuilderStore = createMockComponentBuilderStore({ hasExistingRegistry: false })
+
+      loadSchemaSpy = spyOn(stateApi, "loadSchema").mockImplementation(async (name: string) => {
+        if (name === "studio-core") {
+          return { metadata: { name: "studio-core" }, enhanced: createStudioCoreSchema() } as any
+        }
+        if (name === "component-builder") {
+          return { metadata: { name: "component-builder" }, enhanced: createComponentBuilderSchema() } as any
+        }
+        throw new Error(`Unknown schema: ${name}`)
+      })
+
+      domainSpy = spyOn(stateApi, "domain").mockImplementation((opts: any) => {
+        if (opts.name === "studio-core") {
+          return { createStore: mock(() => mockStore) } as any
+        }
+        if (opts.name === "component-builder") {
+          return { createStore: mock(() => mockComponentBuilderStore) } as any
+        }
+        throw new Error(`Unknown domain: ${opts.name}`)
+      })
+
+      // When: initializeSeedData is called
+      await initializeSeedData(tempDir)
+
+      // Then: 32 RendererBindings are created (12 default + 20 studio)
+      expect(mockComponentBuilderStore._mocks.bindingInsertOne).toHaveBeenCalledTimes(
+        RENDERER_BINDINGS.length
+      )
+      expect(RENDERER_BINDINGS.length).toBe(32)
+
+      // And: Bindings reference valid registry IDs
+      const insertedBindings = mockComponentBuilderStore._mocks.bindingInsertOne.mock.calls.map(
+        (call: any) => call[0]
+      )
+      for (const binding of insertedBindings) {
+        expect(["default", "studio"]).toContain(binding.registry)
+      }
+
+      // And: Bindings reference valid component IDs
+      const validComponentIds = COMPONENT_DEFINITIONS.map((c) => c.id)
+      for (const binding of insertedBindings) {
+        expect(validComponentIds).toContain(binding.component)
+      }
+    })
+
+    test("is idempotent - skips when default registry already exists", async () => {
+      // Given: component-builder schema is loaded and default registry already exists
+      mockStore = createMockStore({ hasExistingOrg: true })
+      mockComponentBuilderStore = createMockComponentBuilderStore({ hasExistingRegistry: true })
+
+      loadSchemaSpy = spyOn(stateApi, "loadSchema").mockImplementation(async (name: string) => {
+        if (name === "studio-core") {
+          return { metadata: { name: "studio-core" }, enhanced: createStudioCoreSchema() } as any
+        }
+        if (name === "component-builder") {
+          return { metadata: { name: "component-builder" }, enhanced: createComponentBuilderSchema() } as any
+        }
+        throw new Error(`Unknown schema: ${name}`)
+      })
+
+      domainSpy = spyOn(stateApi, "domain").mockImplementation((opts: any) => {
+        if (opts.name === "studio-core") {
+          return { createStore: mock(() => mockStore) } as any
+        }
+        if (opts.name === "component-builder") {
+          return { createStore: mock(() => mockComponentBuilderStore) } as any
+        }
+        throw new Error(`Unknown domain: ${opts.name}`)
+      })
+
+      // When: initializeSeedData is called again
+      await initializeSeedData(tempDir)
+
+      // Then: No new entities are created
+      expect(mockComponentBuilderStore._mocks.componentDefInsertOne).not.toHaveBeenCalled()
+      expect(mockComponentBuilderStore._mocks.registryInsertOne).not.toHaveBeenCalled()
+      expect(mockComponentBuilderStore._mocks.bindingInsertOne).not.toHaveBeenCalled()
+
+      // And: Function completes without error
+      // (test passes if no exception thrown)
+    })
+
+    test("logs seeding status", async () => {
+      // Given: component-builder schema is loaded
+      mockStore = createMockStore({ hasExistingOrg: true })
+      mockComponentBuilderStore = createMockComponentBuilderStore({ hasExistingRegistry: false })
+
+      loadSchemaSpy = spyOn(stateApi, "loadSchema").mockImplementation(async (name: string) => {
+        if (name === "studio-core") {
+          return { metadata: { name: "studio-core" }, enhanced: createStudioCoreSchema() } as any
+        }
+        if (name === "component-builder") {
+          return { metadata: { name: "component-builder" }, enhanced: createComponentBuilderSchema() } as any
+        }
+        throw new Error(`Unknown schema: ${name}`)
+      })
+
+      domainSpy = spyOn(stateApi, "domain").mockImplementation((opts: any) => {
+        if (opts.name === "studio-core") {
+          return { createStore: mock(() => mockStore) } as any
+        }
+        if (opts.name === "component-builder") {
+          return { createStore: mock(() => mockComponentBuilderStore) } as any
+        }
+        throw new Error(`Unknown domain: ${opts.name}`)
+      })
+
+      // When: initializeSeedData is called
+      await initializeSeedData(tempDir)
+
+      // Then: Logs indicate seeding started
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("component-builder")
+      )
+
+      // And: Logs indicate seeding completed or skipped
+      const calls = consoleLogSpy.mock.calls.map((c: any) => c[0])
+      const hasComponentBuilderLog = calls.some(
+        (msg: string) => msg.includes("component-builder") && (msg.includes("created") || msg.includes("exists"))
+      )
+      expect(hasComponentBuilderLog).toBe(true)
     })
   })
 })

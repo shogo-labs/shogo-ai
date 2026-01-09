@@ -69,6 +69,25 @@ export class ComponentRegistry implements IComponentRegistry {
   }
 
   /**
+   * Get the best matching entry for property metadata.
+   *
+   * Iterates through entries sorted by priority (highest first).
+   * Returns the first entry whose matches() predicate returns true.
+   * Returns undefined if no entry matches (caller should use defaultComponent).
+   *
+   * This is useful when you need access to the entry's defaultConfig
+   * or other metadata, not just the component.
+   */
+  getEntry(property: PropertyMetadata): ComponentEntry | undefined {
+    for (const entry of this.entries_) {
+      if (entry.matches(property)) {
+        return entry
+      }
+    }
+    return undefined
+  }
+
+  /**
    * Resolve property metadata to the best matching component.
    *
    * Iterates through entries sorted by priority (highest first).
@@ -76,12 +95,8 @@ export class ComponentRegistry implements IComponentRegistry {
    * Falls back to defaultComponent if no entry matches.
    */
   resolve(property: PropertyMetadata): ComponentType<DisplayRendererProps> {
-    for (const entry of this.entries_) {
-      if (entry.matches(property)) {
-        return entry.component
-      }
-    }
-    return this.defaultComponent
+    const entry = this.getEntry(property)
+    return entry?.component ?? this.defaultComponent
   }
 
   /**

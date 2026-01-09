@@ -1,6 +1,7 @@
 /**
  * Tests for TaskCard Component
  * Task: task-2-3d-task-card
+ * Updated: task-cbe-009 (PropertyRenderer audit)
  *
  * TDD tests for the task card component that displays ImplementationTask entities
  * with status badges, acceptance criteria, and dependency indicators.
@@ -8,8 +9,8 @@
  * Test Specifications from task acceptance criteria:
  * - TaskCard.tsx created in stepper/cards/ directory
  * - Component wrapped with observer() from mobx-react-lite for MST reactivity
- * - Displays task name, description, and status using taskStatusVariants CVA
- * - Renders acceptanceCriteria as expandable/collapsible list
+ * - Displays task name, description, and status using PropertyRenderer with task-status-badge xRenderer
+ * - Renders acceptanceCriteria via PropertyRenderer with string-array xRenderer
  * - Includes DependencyIndicator showing task dependencies
  * - Uses shadcn Card with hover effects
  * - Exports TaskCard and TaskCardProps
@@ -86,58 +87,49 @@ describe("TaskCard displays task properties", () => {
 })
 
 // ============================================================
-// Test 4: TaskCard uses taskStatusVariants CVA
+// Test 4: TaskCard uses PropertyRenderer for status badge
 // ============================================================
 
-describe("TaskCard uses taskStatusVariants CVA", () => {
-  test("TaskCard imports cva from class-variance-authority", () => {
+describe("TaskCard uses PropertyRenderer for status", () => {
+  test("TaskCard imports PropertyRenderer from rendering", () => {
     const componentPath = path.resolve(import.meta.dir, "../TaskCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/import.*cva.*from.*class-variance-authority/)
+    expect(componentSource).toMatch(/import.*PropertyRenderer.*from.*@\/components\/rendering/)
   })
 
-  test("TaskCard defines taskStatusVariants with cva", () => {
+  test("TaskCard defines statusPropertyMeta with xRenderer task-status-badge", () => {
     const componentPath = path.resolve(import.meta.dir, "../TaskCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/taskStatusVariants.*=.*cva/)
+    expect(componentSource).toMatch(/statusPropertyMeta.*PropertyMetadata/)
+    expect(componentSource).toMatch(/xRenderer.*task-status-badge/)
   })
 
-  test("pending status has gray styling", () => {
+  test("TaskCard uses PropertyRenderer for status", () => {
     const componentPath = path.resolve(import.meta.dir, "../TaskCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/planned.*bg-gray/)
+    expect(componentSource).toMatch(/<PropertyRenderer[\s\S]*?value=\{task\.status\}/)
   })
 
-  test("in_progress status has blue styling", () => {
+  test("statusPropertyMeta includes all valid task statuses", () => {
     const componentPath = path.resolve(import.meta.dir, "../TaskCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/in_progress.*bg-blue/)
-  })
-
-  test("complete status has green styling", () => {
-    const componentPath = path.resolve(import.meta.dir, "../TaskCard.tsx")
-    const componentSource = fs.readFileSync(componentPath, "utf-8")
-
-    expect(componentSource).toMatch(/complete.*bg-green/)
-  })
-
-  test("blocked status has red styling", () => {
-    const componentPath = path.resolve(import.meta.dir, "../TaskCard.tsx")
-    const componentSource = fs.readFileSync(componentPath, "utf-8")
-
-    expect(componentSource).toMatch(/blocked.*bg-red/)
+    // Check that enum includes all 4 task statuses
+    expect(componentSource).toMatch(/enum:.*planned/)
+    expect(componentSource).toMatch(/enum:.*in_progress/)
+    expect(componentSource).toMatch(/enum:.*complete/)
+    expect(componentSource).toMatch(/enum:.*blocked/)
   })
 })
 
 // ============================================================
-// Test 5: TaskCard renders acceptanceCriteria
+// Test 5: TaskCard renders acceptanceCriteria via PropertyRenderer
 // ============================================================
 
-describe("TaskCard renders acceptanceCriteria", () => {
+describe("TaskCard renders acceptanceCriteria via PropertyRenderer", () => {
   test("TaskCard has acceptanceCriteria section", () => {
     const componentPath = path.resolve(import.meta.dir, "../TaskCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
@@ -145,11 +137,27 @@ describe("TaskCard renders acceptanceCriteria", () => {
     expect(componentSource).toMatch(/acceptanceCriteria/)
   })
 
-  test("acceptanceCriteria renders as list", () => {
+  test("TaskCard defines acceptanceCriteriaPropertyMeta with xRenderer string-array", () => {
     const componentPath = path.resolve(import.meta.dir, "../TaskCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/acceptanceCriteria.*map/)
+    expect(componentSource).toMatch(/acceptanceCriteriaPropertyMeta.*PropertyMetadata/)
+    expect(componentSource).toMatch(/xRenderer.*string-array/)
+  })
+
+  test("acceptanceCriteria uses PropertyRenderer", () => {
+    const componentPath = path.resolve(import.meta.dir, "../TaskCard.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/<PropertyRenderer[\s\S]*?value=\{task\.acceptanceCriteria\}/)
+  })
+
+  test("acceptanceCriteria PropertyRenderer has config for collapsible behavior", () => {
+    const componentPath = path.resolve(import.meta.dir, "../TaskCard.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Check that config is passed with customProps for collapsible behavior
+    expect(componentSource).toMatch(/config=\{[\s\S]*?collapsible/)
   })
 })
 
@@ -218,10 +226,11 @@ describe("TaskCard exports", () => {
     expect(componentSource).toMatch(/export.*TaskCardProps/)
   })
 
-  test("TaskCard exports taskStatusVariants", () => {
+  test("TaskCard exports TaskStatus type", () => {
     const componentPath = path.resolve(import.meta.dir, "../TaskCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/export.*taskStatusVariants/)
+    // Verify TaskStatus type is exported (replaces taskStatusVariants export)
+    expect(componentSource).toMatch(/export.*type.*TaskStatus/)
   })
 })
