@@ -27,7 +27,7 @@
  * when domain bindings change (e.g., via BindingEditorPanel).
  */
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { observer } from "mobx-react-lite"
 import { Outlet } from "react-router-dom"
 import { AppHeader } from "./AppHeader"
@@ -79,11 +79,26 @@ export const AppShell = observer(function AppShell() {
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [toggleBindingEditor])
 
-  // Create domain-driven registry
-  // NO useMemo here - observer() wrapper tracks MST accesses inside createRegistryFromDomain()
-  // When bindings change in the store, MobX triggers re-render and registry is recreated
-  // Falls back gracefully if componentBuilder is undefined (registryFactory handles this)
-  const registry = createRegistryFromDomain(componentBuilder)
+  // Create domain-driven registry with memoization
+  // PERF FIX: Added useMemo to prevent registry recreation on every render.
+  // The registry is expensive to create (iterates all bindings, creates ComponentEntry objects).
+  // Without memoization, any re-render cascading from ChatPanel would recreate the registry,
+  // triggering re-renders of all children using ComponentRegistryProvider.
+  //
+  // REACTIVITY FIX: componentBuilder alone is a stable MST reference that doesn't change
+  // when internal data updates. We need to observe actual binding data to trigger recreation
+  // when MCP updates bindings. Using JSON.stringify on bindings items as a change detector.
+  const bindingsJson = JSON.stringify(
+    componentBuilder?.rendererBindingCollection?.all()?.map((b: any) => ({
+      id: b.id,
+      defaultConfig: b.defaultConfig,
+      updatedAt: b.updatedAt,
+    })) ?? []
+  )
+  const registry = useMemo(
+    () => createRegistryFromDomain(componentBuilder),
+    [componentBuilder, bindingsJson]
+  )
 
   return (
     <ComponentRegistryProvider registry={registry}>

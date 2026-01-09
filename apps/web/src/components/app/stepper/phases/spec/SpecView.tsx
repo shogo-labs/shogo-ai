@@ -28,8 +28,29 @@ import { useDomains } from "@/contexts/DomainProvider"
 import { cn } from "@/lib/utils"
 import { GitBranch, CheckCircle, Clock, AlertCircle, X, Circle } from "lucide-react"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
+import { PropertyRenderer } from "@/components/rendering"
+import type { PropertyMetadata } from "@/components/rendering/types"
 import { type Task } from "../../cards"
 import { EmptyPhaseContent } from "../../EmptyStates"
+
+/**
+ * PropertyMetadata for task status badge (resolved via registry)
+ */
+const statusPropertyMeta: PropertyMetadata = {
+  name: "status",
+  type: "string",
+  enum: ["planned", "in_progress", "complete", "blocked"],
+  xRenderer: "task-status-badge",
+}
+
+/**
+ * PropertyMetadata for acceptance criteria (resolved via registry)
+ */
+const acceptanceCriteriaPropertyMeta: PropertyMetadata = {
+  name: "acceptanceCriteria",
+  type: "array",
+  xRenderer: "string-array",
+}
 
 /**
  * Feature type for SpecView
@@ -151,12 +172,14 @@ function TaskDetailsPanel({
         </button>
       </div>
 
-      {/* Status */}
+      {/* Status (via PropertyRenderer) */}
       <div className="mb-4">
         <span className="text-xs text-muted-foreground uppercase tracking-wider">Status</span>
-        <div className="flex items-center gap-2 mt-1">
-          {statusIcons[task.status] || statusIcons.planned}
-          <span className="text-sm capitalize">{task.status?.replace("_", " ")}</span>
+        <div className="mt-1">
+          <PropertyRenderer
+            value={task.status}
+            property={statusPropertyMeta}
+          />
         </div>
       </div>
 
@@ -168,20 +191,22 @@ function TaskDetailsPanel({
         </div>
       )}
 
-      {/* Acceptance Criteria */}
+      {/* Acceptance Criteria (via PropertyRenderer) */}
       {task.acceptanceCriteria && task.acceptanceCriteria.length > 0 && (
         <div className="mb-4">
           <span className="text-xs text-muted-foreground uppercase tracking-wider">
             Acceptance Criteria
           </span>
-          <ul className="mt-1 space-y-1">
-            {task.acceptanceCriteria.map((criterion: string, index: number) => (
-              <li key={index} className="flex items-start gap-2 text-sm">
-                <CheckCircle className="h-3 w-3 text-emerald-500 mt-1 flex-shrink-0" />
-                <span>{criterion}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="mt-1">
+            <PropertyRenderer
+              value={task.acceptanceCriteria}
+              property={acceptanceCriteriaPropertyMeta}
+              config={{
+                size: "sm",
+                layout: "compact",
+              }}
+            />
+          </div>
         </div>
       )}
 
