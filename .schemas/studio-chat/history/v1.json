@@ -43,6 +43,10 @@
           "type": "string",
           "description": "Optional phase association (discovery, design, etc.)"
         },
+        "claudeCodeSessionId": {
+          "type": "string",
+          "description": "Claude Code session ID for conversation continuity/resume"
+        },
         "createdAt": {
           "type": "number"
         },
