@@ -17,11 +17,10 @@
  */
 
 import { observer } from "mobx-react-lite"
-import { cva, type VariantProps } from "class-variance-authority"
-import { FileCode } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { PropertyRenderer } from "@/components/rendering"
+import type { PropertyMetadata } from "@/components/rendering/types"
 
 /**
  * Test type enum - matches TestSpecification entity
@@ -50,35 +49,40 @@ export interface TestSpecCardProps {
 }
 
 /**
- * CVA variants for test type badge styling
- * Maps test type to visual styling
+ * PropertyMetadata for test type badge (resolved via registry)
  */
-export const testTypeVariants = cva(
-  "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-  {
-    variants: {
-      type: {
-        unit: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-        integration: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
-        acceptance: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-      },
-    },
-    defaultVariants: {
-      type: "unit",
-    },
-  }
-)
+const testTypePropertyMeta: PropertyMetadata = {
+  name: "testType",
+  type: "string",
+  enum: ["unit", "integration", "acceptance"],
+  xRenderer: "test-type-badge",
+}
 
 /**
- * Get display label for test type
+ * PropertyMetadata for target file path (resolved via registry)
  */
-function getTypeLabel(type: TestType): string {
-  const labels: Record<TestType, string> = {
-    unit: "Unit",
-    integration: "Integration",
-    acceptance: "Acceptance",
-  }
-  return labels[type] || type
+const targetFilePropertyMeta: PropertyMetadata = {
+  name: "targetFile",
+  type: "string",
+  xRenderer: "code-path",
+}
+
+/**
+ * PropertyMetadata for given conditions (resolved via registry)
+ */
+const givenPropertyMeta: PropertyMetadata = {
+  name: "given",
+  type: "array",
+  xRenderer: "string-array",
+}
+
+/**
+ * PropertyMetadata for then assertions (resolved via registry)
+ */
+const thenPropertyMeta: PropertyMetadata = {
+  name: "then",
+  type: "array",
+  xRenderer: "string-array",
 }
 
 /**
@@ -110,39 +114,38 @@ export const TestSpecCard = observer(function TestSpecCard({
           {/* Use PropertyRenderer for test type badge */}
           <PropertyRenderer
             value={spec.testType}
-            property={{
-              name: "testType",
-              type: "string",
-              xRenderer: "test-type-badge",
-            }}
+            property={testTypePropertyMeta}
           />
         </div>
 
-        {/* Target file path */}
+        {/* Target file path (via PropertyRenderer) */}
         {spec.targetFile && (
-          <div className="flex items-center gap-1 mt-2 text-xs text-muted-foreground">
-            <FileCode className="h-3 w-3" />
-            <span className="font-mono truncate">{spec.targetFile}</span>
+          <div className="mt-2">
+            <PropertyRenderer
+              value={spec.targetFile}
+              property={targetFilePropertyMeta}
+            />
           </div>
         )}
       </CardHeader>
 
       <CardContent className="pt-0 space-y-3">
-        {/* Given section */}
+        {/* Given section (via PropertyRenderer) */}
         <div className="p-2 bg-muted/30 rounded-md">
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1 block">
             Given:
           </span>
-          <ul className="mt-1 space-y-0.5 pl-4">
-            {spec.given.map((item, index) => (
-              <li key={index} className="text-xs text-foreground list-disc">
-                {item}
-              </li>
-            ))}
-          </ul>
+          <PropertyRenderer
+            value={spec.given}
+            property={givenPropertyMeta}
+            config={{
+              size: "xs",
+              layout: "compact",
+            }}
+          />
         </div>
 
-        {/* When section */}
+        {/* When section (single string, keep inline) */}
         <div className="p-2 bg-muted/30 rounded-md">
           <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
             When:
@@ -152,18 +155,19 @@ export const TestSpecCard = observer(function TestSpecCard({
           </p>
         </div>
 
-        {/* Then section */}
+        {/* Then section (via PropertyRenderer) */}
         <div className="p-2 bg-muted/30 rounded-md">
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1 block">
             Then:
           </span>
-          <ul className="mt-1 space-y-0.5 pl-4">
-            {spec.then.map((item, index) => (
-              <li key={index} className="text-xs text-foreground list-disc">
-                {item}
-              </li>
-            ))}
-          </ul>
+          <PropertyRenderer
+            value={spec.then}
+            property={thenPropertyMeta}
+            config={{
+              size: "xs",
+              layout: "compact",
+            }}
+          />
         </div>
       </CardContent>
     </Card>

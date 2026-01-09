@@ -29,11 +29,10 @@ import { registerAgentChat } from "./agent.chat"
  * Register all Wavesmith MCP tools on a FastMCP server instance.
  * This is the single source of truth for tool registration.
  *
- * Total: 16 tools across 6 namespaces
+ * Total: 15 tools across 5 namespaces
  * - Schema: 3 tools (set, load, list)
  * - Store: 5 tools (create, get, update, delete, query)
  * - View: 4 tools (execute, define, delete, project)
- * - Data: 1 tool (bootstrap)
  * - DDL: 2 tools (execute, migrate)
  * - Agent: 1 tool (chat)
  *

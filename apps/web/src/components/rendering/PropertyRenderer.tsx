@@ -4,6 +4,10 @@
  * Takes PropertyMetadata and a value, resolves the appropriate display
  * component via ComponentRegistry, and renders it.
  *
+ * Config cascade (highest to lowest priority):
+ * 1. Schema-level xRendererConfig on PropertyMetadata
+ * 2. Binding-level defaultConfig on matched ComponentEntry
+ *
  * Wrapped with observer() for MST reactivity when values come from
  * observable stores.
  *
@@ -11,6 +15,7 @@
  */
 
 import { observer } from "mobx-react-lite"
+import { mergeRendererConfig } from "@shogo/state-api"
 import { useComponentRegistry } from "./ComponentRegistryContext"
 import type { PropertyMetadata, DisplayRendererProps } from "./types"
 
@@ -36,12 +41,20 @@ export const PropertyRenderer = observer(function PropertyRenderer({
 }: PropertyRendererProps) {
   const registry = useComponentRegistry()
   const Component = registry.resolve(property)
+  const entry = registry.getEntry(property)
+
+  // Merge config cascade: binding defaults < schema config
+  const config = mergeRendererConfig(
+    entry?.defaultConfig,
+    property.xRendererConfig
+  )
 
   const props: DisplayRendererProps = {
     property,
     value,
     entity,
-    depth
+    depth,
+    config
   }
 
   return <Component {...props} />

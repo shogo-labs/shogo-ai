@@ -22,7 +22,17 @@ export type { ComponentRegistryConfig } from "./ComponentRegistry"
 // Context and hooks
 export {
   ComponentRegistryProvider,
-  useComponentRegistry
+  useComponentRegistry,
+  // Hydration (task-dcb-007)
+  useHydratedRegistry,
+  RegistryHydrationProvider
+} from "./ComponentRegistryContext"
+
+// Hydration types (task-dcb-007)
+export type {
+  HydratedRegistryResult,
+  ComponentImplementationMap,
+  RegistryHydrationProviderProps
 } from "./ComponentRegistryContext"
 
 // PropertyRenderer
@@ -39,3 +49,15 @@ export { createStudioRegistry } from "./studioRegistry"
 
 // Domain-specific renderers and variants
 export * from "./displays/domain"
+
+// Component implementations map (task-dcb-003)
+export { componentImplementationMap, getComponent } from "./implementations"
+
+// Seed data (task-dcb-005)
+export {
+  seedComponentBuilderData,
+  COMPONENT_DEFINITIONS,
+  REGISTRY_DEFINITIONS,
+  DEFAULT_BINDINGS,
+  STUDIO_BINDINGS
+} from "./seedData"
