@@ -1,0 +1,19 @@
+# =============================================================================
+# Kustomize Base - Shogo System Components
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: shogo-system
+
+resources:
+  - postgres.yaml
+  - redis.yaml
+  - api.yaml
+  - web.yaml
+  - ingress.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: shogo
+  app.kubernetes.io/managed-by: kustomize
+

@@ -138,6 +138,9 @@ export async function initializePostgresBackend(): Promise<boolean> {
     // (e.g., during seed-init when schemas haven't been loaded via schema.load yet)
     globalRegistry!.setDefault("postgres")
 
+    // Initialize registry (creates system-migrations table for migration tracking)
+    await globalRegistry!.initialize()
+
     postgresInitialized = true
     console.log("[postgres-init] PostgreSQL backend initialized successfully")
 
@@ -201,6 +204,9 @@ export async function initializeSqliteBackend(): Promise<boolean> {
     // Set sqlite as the default when postgres isn't available
     // This ensures schemas without x-persistence.backend still work
     globalRegistry!.setDefault("sqlite")
+
+    // Initialize registry (creates system-migrations table for migration tracking)
+    await globalRegistry!.initialize()
 
     sqliteInitialized = true
     const mode = dbPath === ":memory:" ? "in-memory" : `file: ${dbPath}`

@@ -1,0 +1,97 @@
+# =============================================================================
+# Shogo API Server - Control Plane
+# =============================================================================
+# The API server is a shared service that handles:
+#   - BetterAuth authentication
+#   - AI chat requests (proxied to Claude Code)
+#   - Workspace routing to MCP services
+#
+# This runs as a regular Deployment (not Knative) since it should always be up.
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-secrets
+  namespace: shogo-system
+type: Opaque
+stringData:
+  BETTER_AUTH_SECRET: shogo-k8s-dev-secret-32-chars-minimum-required
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shogo-api
+  namespace: shogo-system
+  labels:
+    app: shogo-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: shogo-api
+  template:
+    metadata:
+      labels:
+        app: shogo-api
+    spec:
+      containers:
+        - name: api
+          image: k3d-shogo-registry:5000/shogo-api:latest
+          ports:
+            - containerPort: 8002
+          env:
+            - name: API_PORT
+              value: "8002"
+            - name: NODE_ENV
+              value: "production"
+            - name: VITE_PORT
+              value: "80"
+            - name: BETTER_AUTH_URL
+              value: "http://localhost"
+            - name: REDIS_URL
+              value: "redis://redis:6379"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+            - name: BETTER_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: BETTER_AUTH_SECRET
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8002
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8002
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shogo-api
+  namespace: shogo-system
+  labels:
+    app: shogo-api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8002
+      targetPort: 8002
+  selector:
+    app: shogo-api
+

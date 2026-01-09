@@ -1,0 +1,128 @@
+# =============================================================================
+# EKS Knative Service for Workspaces
+# =============================================================================
+# Each workspace gets its own Knative Service that:
+#   - Scales to zero when idle (after 60s by default)
+#   - Scales up on first request (cold start)
+#
+# Uses ECR images: 620804327344.dkr.ecr.us-east-2.amazonaws.com/shogo/
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Workspace 1 - Default workspace
+# ---------------------------------------------------------------------------
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: mcp-workspace-1
+  namespace: shogo-workspaces
+  labels:
+    app.kubernetes.io/part-of: shogo
+    shogo.io/workspace: workspace-1
+    shogo.io/tenant: tenant-a
+spec:
+  template:
+    metadata:
+      annotations:
+        # Scale to zero after 60 seconds of no traffic
+        autoscaling.knative.dev/scale-to-zero-pod-retention-period: "60s"
+        # Maximum 1 replica (single-tenant workspace)
+        autoscaling.knative.dev/max-scale: "1"
+        # Minimum 0 replicas (enable scale-to-zero)
+        autoscaling.knative.dev/min-scale: "0"
+        # Target 100 concurrent requests per pod
+        autoscaling.knative.dev/target: "100"
+    spec:
+      # Timeout for requests (important for long-running MCP operations)
+      timeoutSeconds: 300
+      containers:
+        - name: mcp
+          image: 620804327344.dkr.ecr.us-east-2.amazonaws.com/shogo/shogo-mcp:latest
+          ports:
+            - containerPort: 3100
+              protocol: TCP
+          env:
+            - name: MCP_PORT
+              value: "3100"
+            - name: NODE_ENV
+              value: "production"
+            - name: SCHEMAS_PATH
+              value: "/app/.schemas"
+            - name: WORKSPACE_ID
+              value: "workspace-1"
+            - name: TENANT_ID
+              value: "tenant-a"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            tcpSocket:
+              port: 3100
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+# ---------------------------------------------------------------------------
+# Workspace 2 - Second workspace for testing isolation
+# ---------------------------------------------------------------------------
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: mcp-workspace-2
+  namespace: shogo-workspaces
+  labels:
+    app.kubernetes.io/part-of: shogo
+    shogo.io/workspace: workspace-2
+    shogo.io/tenant: tenant-b
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/scale-to-zero-pod-retention-period: "60s"
+        autoscaling.knative.dev/max-scale: "1"
+        autoscaling.knative.dev/min-scale: "0"
+        autoscaling.knative.dev/target: "100"
+    spec:
+      timeoutSeconds: 300
+      containers:
+        - name: mcp
+          image: 620804327344.dkr.ecr.us-east-2.amazonaws.com/shogo/shogo-mcp:latest
+          ports:
+            - containerPort: 3100
+              protocol: TCP
+          env:
+            - name: MCP_PORT
+              value: "3100"
+            - name: NODE_ENV
+              value: "production"
+            - name: SCHEMAS_PATH
+              value: "/app/.schemas"
+            - name: WORKSPACE_ID
+              value: "workspace-2"
+            - name: TENANT_ID
+              value: "tenant-b"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            tcpSocket:
+              port: 3100
+            initialDelaySeconds: 5
+            periodSeconds: 10
