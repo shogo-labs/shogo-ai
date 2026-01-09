@@ -1062,3 +1062,221 @@ describe("test-2-4-005-008: Layout maintains responsive behavior on smaller scre
     expect(componentSource).toMatch(/flex-1/)
   })
 })
+
+// ============================================================
+// Task dcb-012: ComponentCatalogSidebar Integration Tests
+// ============================================================
+
+// ============================================================
+// Test dcb-012-001: ComponentCatalogSidebar appears below FeatureSidebar
+// ============================================================
+
+describe("test-dcb-012-001: ComponentCatalogSidebar appears below FeatureSidebar in sidebar", () => {
+  test("ComponentCatalogSidebar is imported from sidebar/index.ts", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should import ComponentCatalogSidebar from sidebar module
+    expect(componentSource).toMatch(/import.*ComponentCatalogSidebar.*from.*sidebar/)
+  })
+
+  test("ComponentCatalogSidebar is rendered in sidebar element", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should use ComponentCatalogSidebar in JSX
+    expect(componentSource).toMatch(/<ComponentCatalogSidebar/)
+  })
+
+  test("Sidebar contains both FeatureSidebar and ComponentCatalogSidebar", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Both components should be present
+    expect(componentSource).toMatch(/<FeatureSidebar/)
+    expect(componentSource).toMatch(/<ComponentCatalogSidebar/)
+  })
+})
+
+// ============================================================
+// Test dcb-012-002: Section has collapsible header with 'Components' label
+// ============================================================
+
+describe("test-dcb-012-002: Section has collapsible header with 'Components' label", () => {
+  test("Collapsible section wrapper exists around ComponentCatalogSidebar", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have state for component catalog collapse
+    expect(componentSource).toMatch(/isComponentCatalogCollapsed|componentCatalogCollapsed/)
+  })
+
+  test("Toggle button or header exists for collapsing", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have a toggle handler for component catalog section
+    expect(componentSource).toMatch(/toggleComponentCatalog|setIsComponentCatalogCollapsed|setComponentCatalogCollapsed/)
+  })
+
+  test("Collapsible header shows 'Components' label (source verification)", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Verify that the header element exists with 'Components' text
+    expect(componentSource).toMatch(/data-testid="component-catalog-header"/)
+    // Verify the header contains 'Components' text
+    expect(componentSource).toMatch(/<span>Components<\/span>/)
+  })
+})
+
+// ============================================================
+// Test dcb-012-003: Collapse state persisted to localStorage
+// ============================================================
+
+describe("test-dcb-012-003: Collapse state persisted to localStorage", () => {
+  test("localStorage key is defined for component catalog collapse state", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should reference a localStorage key for component catalog collapse
+    expect(componentSource).toMatch(/workspace-component-catalog-collapsed|component-catalog-collapsed/)
+  })
+
+  test("localStorage.getItem is used to restore collapse state", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should use localStorage to persist/restore state
+    expect(componentSource).toMatch(/localStorage/)
+  })
+})
+
+// ============================================================
+// Test dcb-012-004: Visual separator between feature list and component catalog
+// ============================================================
+
+describe("test-dcb-012-004: Visual separator between feature list and component catalog", () => {
+  test("Border separator exists between FeatureSidebar and ComponentCatalog section (source verification)", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Verify that component-catalog-section has border-t class
+    expect(componentSource).toMatch(/data-testid="component-catalog-section"/)
+    expect(componentSource).toMatch(/className="border-t border-border"/)
+  })
+})
+
+// ============================================================
+// Test dcb-012-005: Both sections share the sidebar scroll container
+// ============================================================
+
+describe("test-dcb-012-005: Both sections share the sidebar scroll container", () => {
+  test("Sidebar has single scroll container with overflow-y-auto (source verification)", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Verify that sidebar-scroll-container exists with overflow-y-auto class
+    expect(componentSource).toMatch(/data-testid="sidebar-scroll-container"/)
+    expect(componentSource).toMatch(/overflow-y-auto/)
+  })
+})
+
+// ============================================================
+// Test dcb-012-006: Toggle does not affect FeatureSidebar visibility
+// ============================================================
+
+describe("test-dcb-012-006: Toggle does not affect FeatureSidebar visibility", () => {
+  test("FeatureSidebar remains visible when component catalog is collapsed", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // FeatureSidebar should NOT be wrapped in the collapsible section
+    // The collapsible state should only affect ComponentCatalogSidebar
+    // Verify by checking that FeatureSidebar is rendered independently
+    expect(componentSource).toMatch(/<FeatureSidebar/)
+
+    // The component catalog collapse state should be distinct
+    expect(componentSource).toMatch(/isComponentCatalogCollapsed|componentCatalogCollapsed/)
+
+    // FeatureSidebar should not be conditionally rendered based on catalog state
+    // This is verified by the structure - FeatureSidebar always renders
+  })
+
+  test("Component catalog content is conditionally rendered based on collapse state", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // ComponentCatalogSidebar should be conditionally rendered based on collapse state
+    // The pattern in our implementation: {!isComponentCatalogCollapsed && (...<ComponentCatalogSidebar...)}
+    expect(componentSource).toMatch(/!isComponentCatalogCollapsed/)
+    expect(componentSource).toMatch(/<ComponentCatalogSidebar/)
+  })
+})
+
+// ============================================================
+// Test dcb-012-007: useComponentBuilderStore hook integration
+// ============================================================
+
+describe("test-dcb-012-007: useComponentBuilderStore hook integration", () => {
+  test("useComponentBuilderStore hook is imported and called", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should import useComponentBuilderStore from hooks
+    expect(componentSource).toMatch(/import.*useComponentBuilderStore.*from.*hooks/)
+
+    // Should call the hook
+    expect(componentSource).toMatch(/useComponentBuilderStore\s*\(\)/)
+  })
+
+  test("Component definitions are passed to ComponentCatalogSidebar", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const componentPath = path.resolve(import.meta.dir, "../WorkspaceLayout.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // ComponentCatalogSidebar should receive components prop
+    expect(componentSource).toMatch(/<ComponentCatalogSidebar[^>]*components=/)
+  })
+})

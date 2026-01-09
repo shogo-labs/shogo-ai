@@ -92,6 +92,7 @@ export function WavesmithMetaStoreProvider({
  * - Schema entities with `runtimeStore` accessor
  *
  * @returns The meta-store instance
+ * @throws Error if used outside WavesmithMetaStoreProvider
  */
 export function useWavesmithMetaStore() {
   const context = useContext(MetaStoreContext)
@@ -99,6 +100,19 @@ export function useWavesmithMetaStore() {
     throw new Error('useWavesmithMetaStore must be used within WavesmithMetaStoreProvider')
   }
   return context.metaStore
+}
+
+/**
+ * Hook to optionally access the meta-store.
+ *
+ * Returns null if used outside WavesmithMetaStoreProvider, allowing
+ * components to gracefully handle missing meta-store context.
+ *
+ * @returns The meta-store instance or null
+ */
+export function useOptionalWavesmithMetaStore() {
+  const context = useContext(MetaStoreContext)
+  return context?.metaStore ?? null
 }
 
 /**

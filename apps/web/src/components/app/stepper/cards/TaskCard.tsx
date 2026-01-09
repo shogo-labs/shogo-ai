@@ -13,20 +13,16 @@
  * - Uses useDomains() for data access (via parent)
  * - Wrapped with observer() for MobX reactivity
  *
- * Per finding-2-3d-002 (CVA pattern):
- * - Uses taskStatusVariants CVA for status badges
- *   - planned: gray
- *   - in_progress: blue
- *   - complete: green
- *   - blocked: red
+ * Per Phase 2 conversion (schema-driven rendering):
+ * - Uses PropertyRenderer for status badges via "task-status-badge" xRenderer
+ * - Uses PropertyRenderer for acceptanceCriteria via "string-array" xRenderer
  */
 
-import { useState } from "react"
 import { observer } from "mobx-react-lite"
-import { cva, type VariantProps } from "class-variance-authority"
-import { ChevronDown, ChevronRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
+import { PropertyRenderer } from "@/components/rendering"
+import type { PropertyMetadata } from "@/components/rendering/types"
 import { DependencyIndicator } from "./DependencyIndicator"
 
 /**
@@ -57,37 +53,22 @@ export interface TaskCardProps {
 }
 
 /**
- * CVA variants for task status badge styling
- * Maps task status to visual styling
+ * PropertyMetadata for task status badge (resolved via registry)
  */
-export const taskStatusVariants = cva(
-  "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-  {
-    variants: {
-      status: {
-        planned: "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400",
-        in_progress: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-        complete: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-        blocked: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-      },
-    },
-    defaultVariants: {
-      status: "planned",
-    },
-  }
-)
+const statusPropertyMeta: PropertyMetadata = {
+  name: "status",
+  type: "string",
+  enum: ["planned", "in_progress", "complete", "blocked"],
+  xRenderer: "task-status-badge",
+}
 
 /**
- * Get display label for task status
+ * PropertyMetadata for acceptance criteria (resolved via registry)
  */
-function getStatusLabel(status: TaskStatus): string {
-  const labels: Record<TaskStatus, string> = {
-    planned: "Planned",
-    in_progress: "In Progress",
-    complete: "Complete",
-    blocked: "Blocked",
-  }
-  return labels[status] || status
+const acceptanceCriteriaPropertyMeta: PropertyMetadata = {
+  name: "acceptanceCriteria",
+  type: "array",
+  xRenderer: "string-array",
 }
 
 /**
@@ -103,9 +84,6 @@ export const TaskCard = observer(function TaskCard({
   task,
   defaultExpanded = false,
 }: TaskCardProps) {
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded)
-  const statusKey = task.status as VariantProps<typeof taskStatusVariants>["status"]
-
   const hasCriteria = task.acceptanceCriteria && task.acceptanceCriteria.length > 0
 
   return (
@@ -123,9 +101,10 @@ export const TaskCard = observer(function TaskCard({
               {task.name}
             </h4>
           </div>
-          <span className={taskStatusVariants({ status: statusKey })}>
-            {getStatusLabel(task.status)}
-          </span>
+          <PropertyRenderer
+            value={task.status}
+            property={statusPropertyMeta}
+          />
         </div>
       </CardHeader>
 
@@ -135,34 +114,21 @@ export const TaskCard = observer(function TaskCard({
           {task.description}
         </p>
 
-        {/* Acceptance Criteria (collapsible) */}
+        {/* Acceptance Criteria (via PropertyRenderer) */}
         {hasCriteria && (
           <div className="border-t pt-3">
-            <button
-              type="button"
-              onClick={() => setIsExpanded(!isExpanded)}
-              className="flex items-center gap-1 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-            >
-              {isExpanded ? (
-                <ChevronDown className="h-4 w-4" />
-              ) : (
-                <ChevronRight className="h-4 w-4" />
-              )}
-              Acceptance Criteria ({task.acceptanceCriteria.length})
-            </button>
-
-            {isExpanded && (
-              <ul className="mt-2 space-y-1 pl-5">
-                {task.acceptanceCriteria.map((criterion, index) => (
-                  <li
-                    key={index}
-                    className="text-xs text-muted-foreground list-disc"
-                  >
-                    {criterion}
-                  </li>
-                ))}
-              </ul>
-            )}
+            <PropertyRenderer
+              value={task.acceptanceCriteria}
+              property={acceptanceCriteriaPropertyMeta}
+              config={{
+                size: "xs",
+                layout: "compact",
+                customProps: {
+                  sectionLabel: "Acceptance Criteria",
+                  collapsible: !defaultExpanded,
+                },
+              }}
+            />
           </div>
         )}
 

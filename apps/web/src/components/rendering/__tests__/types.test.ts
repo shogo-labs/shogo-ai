@@ -1,6 +1,7 @@
 /**
  * Tests for component registry type definitions
  * Task: task-registry-types
+ * Updated: task-dcb-006 (added HydratedComponentEntry tests)
  *
  * Verifies that all interfaces are correctly defined and exported.
  */
@@ -10,7 +11,12 @@ import type {
   PropertyMetadata,
   ComponentEntry,
   DisplayRendererProps,
-  IComponentRegistry
+  IComponentRegistry,
+  HydratedComponentEntry,
+  ComponentEntrySpec,
+  ComponentDefinitionEntity,
+  RegistryEntity,
+  BindingEntity
 } from "../types"
 import type { ComponentType } from "react"
 
@@ -210,5 +216,142 @@ describe("Types module exports", () => {
 
     // The module should export (types are erased at runtime, but we can check the module loads)
     expect(types).toBeDefined()
+  })
+})
+
+/**
+ * Task: task-dcb-006
+ * Tests for HydratedComponentEntry and re-exported types from state-api
+ */
+describe("HydratedComponentEntry interface", () => {
+  test("HydratedComponentEntry extends ComponentEntry with entityId", () => {
+    const MockComponent = () => null
+
+    const entry: HydratedComponentEntry = {
+      id: "string-display",
+      matches: (meta) => meta.type === "string",
+      component: MockComponent as ComponentType<DisplayRendererProps>,
+      priority: 10,
+      entityId: "binding-string-display-001"
+    }
+
+    // Has all ComponentEntry fields
+    expect(entry.id).toBe("string-display")
+    expect(typeof entry.matches).toBe("function")
+    expect(entry.component).toBe(MockComponent)
+    expect(entry.priority).toBe(10)
+
+    // Plus entityId field
+    expect(entry.entityId).toBe("binding-string-display-001")
+  })
+
+  test("HydratedComponentEntry is assignable to ComponentEntry", () => {
+    const MockComponent = () => null
+
+    const hydrated: HydratedComponentEntry = {
+      id: "test",
+      matches: () => true,
+      component: MockComponent as ComponentType<DisplayRendererProps>,
+      entityId: "entity-123"
+    }
+
+    // Should be assignable to ComponentEntry (subtype compatibility)
+    const entry: ComponentEntry = hydrated
+    expect(entry.id).toBe("test")
+  })
+
+  test("HydratedComponentEntry can be used in arrays with ComponentEntry", () => {
+    const MockComponent = () => null
+
+    const entries: ComponentEntry[] = [
+      // Regular ComponentEntry
+      {
+        id: "fallback",
+        matches: () => true,
+        component: MockComponent as ComponentType<DisplayRendererProps>,
+        priority: 0
+      },
+      // HydratedComponentEntry (is a subtype of ComponentEntry)
+      {
+        id: "string-display",
+        matches: (meta) => meta.type === "string",
+        component: MockComponent as ComponentType<DisplayRendererProps>,
+        priority: 10,
+        entityId: "binding-123"
+      } as HydratedComponentEntry
+    ]
+
+    expect(entries.length).toBe(2)
+  })
+})
+
+describe("Re-exported types from state-api", () => {
+  test("ComponentEntrySpec interface (isomorphic, no React)", () => {
+    // ComponentEntrySpec uses componentRef (string) instead of component (React.ComponentType)
+    const spec: ComponentEntrySpec = {
+      id: "string-display",
+      priority: 10,
+      matcher: (meta) => meta.type === "string",
+      componentRef: "StringDisplay"
+    }
+
+    expect(spec.id).toBe("string-display")
+    expect(spec.priority).toBe(10)
+    expect(typeof spec.matcher).toBe("function")
+    expect(spec.componentRef).toBe("StringDisplay")
+  })
+
+  test("ComponentEntrySpec matcher is compatible with PropertyMetadata", () => {
+    const spec: ComponentEntrySpec = {
+      id: "enum-badge",
+      priority: 50,
+      matcher: (meta) => {
+        // Can access PropertyMetadata fields
+        return (
+          meta.type === "string" &&
+          Array.isArray(meta.enum) &&
+          !meta.xComputed
+        )
+      },
+      componentRef: "EnumBadge"
+    }
+
+    const testMeta: PropertyMetadata = {
+      name: "status",
+      type: "string",
+      enum: ["active", "inactive"]
+    }
+
+    expect(spec.matcher(testMeta)).toBe(true)
+  })
+
+  test("Entity type aliases are exported (any types for MST instances)", () => {
+    // These are 'any' type aliases for MST entity instances
+    // We just verify they can be used without type errors
+
+    const componentDef: ComponentDefinitionEntity = {
+      id: "string-display",
+      name: "String Display",
+      category: "display",
+      implementationRef: "StringDisplay"
+    }
+    expect(componentDef.id).toBe("string-display")
+
+    const registry: RegistryEntity = {
+      id: "default",
+      name: "Default Registry",
+      bindings: []
+    }
+    expect(registry.id).toBe("default")
+
+    const binding: BindingEntity = {
+      id: "binding-001",
+      name: "String Type Binding",
+      registry: "default",
+      component: "string-display",
+      matchExpression: { type: "string" },
+      priority: 10
+    }
+    expect(binding.id).toBe("binding-001")
   })
 })

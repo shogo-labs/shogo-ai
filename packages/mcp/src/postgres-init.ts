@@ -134,6 +134,10 @@ export async function initializePostgresBackend(): Promise<boolean> {
     ensureRegistry()
     globalRegistry!.register("postgres", sqlBackend)
 
+    // Set postgres as default so schemas work before meta-store ingestion
+    // (e.g., during seed-init when schemas haven't been loaded via schema.load yet)
+    globalRegistry!.setDefault("postgres")
+
     postgresInitialized = true
     console.log("[postgres-init] PostgreSQL backend initialized successfully")
 

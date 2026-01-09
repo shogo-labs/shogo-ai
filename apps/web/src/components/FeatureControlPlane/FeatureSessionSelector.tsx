@@ -59,9 +59,9 @@ export function FeatureSessionSelector({
     loadSessions()
   }, [loadSessions])
 
-  // Poll for updates every 5 seconds
+  // Poll for updates every 30 seconds
   useEffect(() => {
-    const interval = setInterval(loadSessions, 5000)
+    const interval = setInterval(loadSessions, 30000)
     return () => clearInterval(interval)
   }, [loadSessions])
 
