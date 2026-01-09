@@ -55,5 +55,8 @@ export * from './platform-features'
 // Studio Chat layer
 export * from './studio-chat'
 
+// Component Builder layer
+export * from './component-builder'
+
 // Utilities
 export * from './utils'

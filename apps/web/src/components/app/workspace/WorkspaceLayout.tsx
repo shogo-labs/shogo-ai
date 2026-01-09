@@ -1,6 +1,6 @@
 /**
  * WorkspaceLayout - Main workspace layout component
- * Tasks: task-2-2-004, task-2-3a-009, task-2-4-005, task-3-1-007, task-cpbi-004, task-delete-005
+ * Tasks: task-2-2-004, task-2-3a-009, task-2-4-005, task-3-1-007, task-cpbi-004, task-delete-005, task-dcb-012
  *
  * Renders the workspace layout with sidebar + content in a flex row.
  * This is the "smart" component that connects useWorkspaceData() hook to UI.
@@ -38,6 +38,13 @@
  * - FeatureSidebar receives onDeleteFeature handler
  * - Handles navigation when deleted feature was selected
  *
+ * Per dynamic-component-builder-vision (task-dcb-012):
+ * - ComponentCatalogSidebar integrated below FeatureSidebar
+ * - Collapsible section with 'Components' header
+ * - Collapse state persisted to localStorage
+ * - Visual separator (border-t) between sections
+ * - Both sections share sidebar scroll container
+ *
  * Per design-2-2-component-hierarchy:
  * - This is the "smart" component that connects hooks to UI
  * - Child components receive data as props, don't call hooks directly
@@ -48,16 +55,23 @@
 import { useState, useCallback, useEffect, useRef } from "react"
 import { Outlet } from "react-router-dom"
 import { observer } from "mobx-react-lite"
-import { useWorkspaceData, useWorkspaceNavigation, useDeleteFeature } from "./hooks"
+import { useWorkspaceData, useWorkspaceNavigation, useDeleteFeature, useComponentBuilderStore } from "./hooks"
 import { usePhaseNavigation } from "../stepper/hooks/usePhaseNavigation"
 import { useFeaturePolling } from "@/hooks/useFeaturePolling"
 import { useToast } from "@/hooks/use-toast"
 import { ToastAction } from "@/components/ui/toast"
 import { PhaseContentPanel } from "../stepper"
 import { ChatPanel } from "../chat/ChatPanel"
-import { FeatureSidebar } from "./sidebar/FeatureSidebar"
+import { FeatureSidebar, ComponentCatalogSidebar } from "./sidebar"
 import { DeleteFeatureDialog } from "./modals/DeleteFeatureDialog"
-import { RefreshCw } from "lucide-react"
+import { RefreshCw, ChevronDown, ChevronRight } from "lucide-react"
+
+// ============================================================
+// Constants
+// ============================================================
+
+/** localStorage key for component catalog collapse state */
+const COMPONENT_CATALOG_COLLAPSED_KEY = "workspace-component-catalog-collapsed"
 
 /**
  * WorkspaceLayout component
@@ -119,6 +133,41 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // Modal state for NewFeatureModal
   // isOpen state passed to modal, onClose callback to close it
   const [isModalOpen, setIsModalOpen] = useState(false)
+
+  // Component catalog collapse state (task-dcb-012)
+  // Initialized from localStorage, persisted on change
+  const [isComponentCatalogCollapsed, setIsComponentCatalogCollapsed] = useState(() => {
+    try {
+      const stored = localStorage.getItem(COMPONENT_CATALOG_COLLAPSED_KEY)
+      return stored === "true"
+    } catch {
+      return false
+    }
+  })
+
+  // Persist component catalog collapse state to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(COMPONENT_CATALOG_COLLAPSED_KEY, String(isComponentCatalogCollapsed))
+    } catch {
+      // Ignore localStorage errors (e.g., in private browsing)
+    }
+  }, [isComponentCatalogCollapsed])
+
+  // Toggle handler for component catalog section
+  const toggleComponentCatalog = useCallback(() => {
+    setIsComponentCatalogCollapsed(prev => !prev)
+  }, [])
+
+  // Component builder store hook (task-dcb-012)
+  // Provides access to ComponentDefinition entities for the catalog
+  const { store: componentBuilderStore } = useComponentBuilderStore()
+
+  // Get component definitions from store, or empty array while loading
+  const componentDefinitions = componentBuilderStore?.componentDefinitions.all() ?? []
+
+  // State for selected component in catalog (optional for future use)
+  const [selectedComponentId, setSelectedComponentId] = useState<string | undefined>(undefined)
 
   // Chat streaming state - tracked here to coordinate with polling (task-3-1-007)
   // When chat is actively streaming, polling should be paused to avoid race conditions
@@ -200,15 +249,54 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
           </div>
         )}
 
-        {/* FeatureSidebar with delete support (task-delete-005) */}
-        <FeatureSidebar
-          featuresByPhase={featuresByPhase}
-          currentFeatureId={featureId}
-          onFeatureSelect={setFeatureId}
-          onNewFeature={handleOpenModal}
-          projectId={projectId}
-          onDeleteFeature={handleDeleteFeature}
-        />
+        {/* Scrollable container for both sidebar sections (task-dcb-012) */}
+        <div
+          className="flex-1 overflow-y-auto"
+          data-testid="sidebar-scroll-container"
+        >
+          {/* FeatureSidebar with delete support (task-delete-005) */}
+          <FeatureSidebar
+            featuresByPhase={featuresByPhase}
+            currentFeatureId={featureId}
+            onFeatureSelect={setFeatureId}
+            onNewFeature={handleOpenModal}
+            projectId={projectId}
+            onDeleteFeature={handleDeleteFeature}
+          />
+
+          {/* Component Catalog Section (task-dcb-012) */}
+          <div
+            className="border-t border-border"
+            data-testid="component-catalog-section"
+          >
+            {/* Collapsible header */}
+            <button
+              onClick={toggleComponentCatalog}
+              className="w-full flex items-center justify-between px-3 py-2 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors"
+              data-testid="component-catalog-header"
+              aria-expanded={!isComponentCatalogCollapsed}
+              aria-controls="component-catalog-content"
+            >
+              <span>Components</span>
+              {isComponentCatalogCollapsed ? (
+                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              )}
+            </button>
+
+            {/* Collapsible content */}
+            {!isComponentCatalogCollapsed && (
+              <div id="component-catalog-content">
+                <ComponentCatalogSidebar
+                  components={componentDefinitions}
+                  selectedId={selectedComponentId}
+                  onSelect={setSelectedComponentId}
+                />
+              </div>
+            )}
+          </div>
+        </div>
       </aside>
 
       {/* Content area - flexible width with padding and scroll */}
