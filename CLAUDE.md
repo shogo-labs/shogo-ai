@@ -12,14 +12,55 @@ Shogo AI is an **AI-first app builder platform** where Claude orchestrates the e
 - Schema and code are generated from this captured intent
 - The runtime is always traceable back to user requirements
 
-**The App Builder Pipeline** (each phase has a Claude skill in `.claude/skills/`):
-1. **Discovery** → Capture problem, artifacts, analysis, requirements
-2. **Schema Design** → Generate Enhanced JSON Schema from requirements
-3. **Implementation Spec** → Create modules, interfaces, tests
-4. **Code Generation** → Produce TDD-ready Python scaffolding
-5. **Documentation** → Generate architecture and API docs
+**Invoking the Platform Feature Pipeline**
 
-The Wavesmith MCP tools (`schema.*`, `store.*`, `view.*`, `data.*`) provide the persistence layer that skills use to capture and query intent across the pipeline.
+The pipeline has 8 phases defined by `FeatureSession.status` in `.schemas/platform-features/schema.json`:
+```
+discovery → analysis → classification → design → spec → testing → implementation → complete
+```
+
+**Entry points:**
+
+| Context | How to Start | What Happens |
+|---------|--------------|--------------|
+| **Shogo Studio** (`/app`) | Create/select feature → navigate phases | Full UI: org/project management, feature browser, phase-aware chat |
+| Development (CLI) | `/platform-feature-orchestrator` | Orchestrator manages phase transitions via subagents |
+| Development (CLI) | `/platform-feature-discovery` | Start specific phase directly |
+
+**When to use what:**
+- **Shogo Studio** (`/app`) - Production interface for managing features through the pipeline with visual feedback
+- **Skills** (`/platform-feature-*`) - Direct skill invocation for pipeline phases (works in both Studio and CLI)
+- **MCP tools** (`mcp__wavesmith__*`) - Direct data operations outside pipeline context
+
+**Note:** Studio organizes work by Organization → Project. The `platform-feature-*` skills are available to projects with `tier: 'internal'` (like the "shogo-platform" project used for platform development).
+
+Each skill documents its own workflow in `.claude/skills/platform-feature-*/SKILL.md`.
+
+---
+
+## How It Works
+
+This CLAUDE.md is read in two contexts:
+
+1. **Shogo Studio** (`/app`) - Backend loads it via `settingSources: ['project', 'local']` when handling `/api/chat`
+2. **Development** (CLI) - Claude Code reads it as project instructions
+
+Both contexts invoke the same skills with the same MCP tools. The difference is the interface:
+
+```
+Shogo Studio                          Development CLI
+     │                                      │
+     ▼                                      ▼
+ChatPanel → /api/chat              Claude Code CLI
+     │                                      │
+     └──────────► Skills ◄──────────────────┘
+                    │
+                    ▼
+              Wavesmith MCP
+    (studio-core, studio-chat, platform-features)
+```
+
+In Studio, the `/api/chat` endpoint receives a `phase` parameter and augments the system prompt with phase-specific context from `apps/api/src/prompts/phase-prompts.ts`.
 
 ---
 
@@ -40,6 +81,19 @@ bun run typecheck
 
 # Development mode (runs all dev scripts in parallel)
 bun run dev
+```
+
+### Quick Start (individual services)
+
+```bash
+# Start Shogo Studio frontend
+bun run web:dev
+
+# Start API server (with watch mode)
+bun run api:dev
+
+# Start MCP server (for Claude Code integration)
+bun run mcp:http
 ```
 
 ### Package-specific commands
@@ -120,10 +174,14 @@ MCP server exposing Wavesmith tools to Claude:
 - Uses FastMCP for both stdio (Claude Code) and HTTP transports
 
 **@shogo/web** (`apps/web/`)
-React demo app showing different integration patterns:
-- Unit 1: Direct MST store usage with host-defined schemas
-- Unit 2: Meta-store system for runtime schema introspection
-- Unit 3: Conversational app builder using MCP
+**Shogo Studio** - the production interface for AI-driven feature development:
+- `/app` - Full platform: org/project management, feature browser, phase-aware chat, 8-phase pipeline visualization
+- Demo pages (`/unit-*`) - Integration pattern examples for reference
+
+**@shogo/api** (`apps/api/`)
+Backend for Shogo Studio:
+- `/api/chat` - AI endpoint using Claude Code provider with project-scoped skills and MCP tools
+- `/api/auth/*` - Authentication via Better Auth
 
 ### Key Concepts
 
