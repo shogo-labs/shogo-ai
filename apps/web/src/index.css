@@ -319,3 +319,131 @@ body {
     animation: none;
   }
 }
+
+/*
+ * Chat Panel UX Redesign - Animations and Tokens
+ * Task: task-chat-001
+ *
+ * Keyframe animations for streaming text, cursor blink, and panel transitions.
+ * Tool category and execution state color tokens for consistent styling.
+ */
+
+/* Tool Category Colors - for visual distinction of tool types */
+:root {
+  --tool-mcp: #8B5CF6;      /* violet-500: MCP/Wavesmith tools */
+  --tool-file: #10B981;     /* emerald-500: File operations (Read, Write, Edit, Glob, Grep) */
+  --tool-skill: #F59E0B;    /* amber-500: Skill invocations */
+  --tool-bash: #6B7280;     /* gray-500: Bash/terminal commands */
+
+  /* Execution State Colors - for tool call status indication */
+  --exec-streaming: #3B82F6;  /* blue-500: actively streaming */
+  --exec-success: #22C55E;    /* green-500: completed successfully */
+  --exec-error: #EF4444;      /* red-500: error state */
+}
+
+.dark {
+  /* Tool Category Colors - Dark Mode (elevated luminosity) */
+  --tool-mcp: #A78BFA;      /* violet-400 */
+  --tool-file: #34D399;     /* emerald-400 */
+  --tool-skill: #FBBF24;    /* amber-400 */
+  --tool-bash: #9CA3AF;     /* gray-400 */
+
+  /* Execution State Colors - Dark Mode */
+  --exec-streaming: #60A5FA;  /* blue-400 */
+  --exec-success: #4ADE80;    /* green-400 */
+  --exec-error: #F87171;      /* red-400 */
+}
+
+/* Tailwind v4 theme layer - Tool and Execution color utilities */
+@theme {
+  --color-tool-mcp: var(--tool-mcp);
+  --color-tool-file: var(--tool-file);
+  --color-tool-skill: var(--tool-skill);
+  --color-tool-bash: var(--tool-bash);
+  --color-exec-streaming: var(--exec-streaming);
+  --color-exec-success: var(--exec-success);
+  --color-exec-error: var(--exec-error);
+}
+
+/*
+ * Keyframe Animations
+ */
+
+/* Streaming text chunk fade-in - 200ms ease-out (from 0 for visible effect) */
+@keyframes fade-in-chunk {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Cursor blink for streaming indicator - 500ms cycle */
+@keyframes cursor-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Panel slide for collapsible panels - 300ms ease-out */
+@keyframes panel-slide {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/*
+ * Animation Utility Classes
+ */
+
+.animate-fade-in-chunk {
+  animation: fade-in-chunk 200ms ease-out forwards;
+}
+
+.cursor-blink {
+  animation: cursor-blink 500ms infinite;
+}
+
+.animate-panel-slide {
+  animation: panel-slide 300ms ease-out forwards;
+}
+
+/* Panel transition utilities for expand/collapse */
+.panel-transition {
+  transition: all 300ms ease-out;
+}
+
+/*
+ * Reduced Motion - Accessibility
+ * Disable all chat panel animations when user prefers reduced motion
+ */
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in-chunk {
+    animation: none;
+    opacity: 1;
+  }
+
+  .cursor-blink {
+    animation: none;
+    opacity: 1;
+  }
+
+  .animate-panel-slide {
+    animation: none;
+    transform: translateX(0);
+    opacity: 1;
+  }
+
+  .panel-transition {
+    transition: none;
+  }
+}
