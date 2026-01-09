@@ -1,9 +1,14 @@
 /**
  * PhaseNode Component
- * Task: task-3-1-001 (redesign from task-2-3a-003)
+ * Task: task-cbe-008 (refactored from task-3-1-001)
  *
  * Single phase node in the SkillStepper with vertical stack layout.
- * 32px circle above full label text for visual clarity.
+ * Now uses PropertyRenderer with phase-status-renderer binding for
+ * registry-driven rendering of interactive phase nodes.
+ *
+ * Key architectural proof: Interactive components work through registry
+ * resolution via config.customProps. This demonstrates that renderers
+ * are NOT "display only" - interactive behavior flows through customProps.
  *
  * Per design-3-1-001:
  * - Vertical stack: circle above full label text
@@ -16,9 +21,8 @@
  * - Zero imports from /components/Studio/
  */
 
-import { Check } from "lucide-react"
 import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "@/lib/utils"
+import { PropertyRenderer, type PropertyMetadata } from "@/components/rendering"
 import type { PhaseStatus } from "./phaseUtils"
 
 /**
@@ -45,6 +49,8 @@ const PHASE_COLOR_VAR: Record<string, string> = {
  * - current: primary bg/border, white text, shadow
  * - complete: green bg/border, white text, checkmark icon
  * - blocked: destructive/50 opacity, cursor-not-allowed
+ *
+ * Note: These variants are exported for use by PhaseStatusRenderer.
  */
 export const phaseNodeVariants = cva(
   // Base styles - 32px circle
@@ -85,6 +91,8 @@ export const phaseNodeVariants = cva(
  * Per design-3-1-001:
  * - Label text color matches node status
  * - Provides visual consistency between node and label
+ *
+ * Note: These variants are exported for use by PhaseStatusRenderer.
  */
 export const labelVariants = cva(
   // Base styles
@@ -121,12 +129,27 @@ export interface PhaseNodeProps extends VariantProps<typeof phaseNodeVariants> {
 }
 
 /**
+ * PropertyMetadata for phase status rendering
+ * Uses explicit xRenderer binding to resolve PhaseStatusRenderer via registry
+ */
+const phaseStatusMeta: PropertyMetadata = {
+  name: "phaseStatus",
+  type: "string",
+  xRenderer: "phase-status-renderer"
+}
+
+/**
  * PhaseNode Component
  *
  * Per design-3-1-001:
  * Renders a vertical stack with 32px circle above full label text.
  * Circle shows checkmark for complete status.
  * Label text color coordinates with node status via labelVariants.
+ *
+ * Per task-cbe-008:
+ * Uses PropertyRenderer with phase-status-renderer binding for
+ * registry-driven rendering. Interactive behavior (onClick, disabled)
+ * flows through config.customProps.
  */
 export function PhaseNode({
   name,
@@ -135,6 +158,7 @@ export function PhaseNode({
   isSelected,
   onClick,
 }: PhaseNodeProps) {
+  // Status determination logic remains in PhaseNode parent
   const isBlocked = status === "blocked"
   const isComplete = status === "complete"
   const isCurrent = status === "current"
@@ -142,51 +166,37 @@ export function PhaseNode({
   // Get phase color for current status (syncs with sidebar)
   const phaseColor = PHASE_COLOR_VAR[name.toLowerCase()] ?? PHASE_COLOR_VAR.discovery
 
+  // Handle click - prevent interaction when blocked
   const handleClick = () => {
     if (!isBlocked) {
       onClick()
     }
   }
 
-  // Inline styles for current phase (uses CSS variable)
-  const currentPhaseStyle: React.CSSProperties | undefined = isCurrent
-    ? {
-        backgroundColor: phaseColor,
-        borderColor: phaseColor,
-      }
-    : undefined
+  // Build config object with customProps for interactive behavior
+  const config = {
+    customProps: {
+      onClick: handleClick,
+      disabled: isBlocked,
+      isCurrent,
+      isComplete,
+      ariaLabel: `${label} phase - ${status}`,
+      // Pass additional props for styling
+      phaseColor,
+      isSelected,
+    },
+  }
 
   return (
-    <button
-      type="button"
-      role="button"
-      onClick={handleClick}
-      disabled={isBlocked}
-      aria-selected={isSelected}
-      aria-disabled={isBlocked}
-      aria-label={`${label} phase - ${status}`}
+    <div
       data-testid={`phase-node-${name}`}
-      className={cn(
-        // Vertical flex-col layout: circle above label
-        "flex flex-col items-center gap-2 cursor-pointer",
-        isBlocked && "cursor-not-allowed"
-      )}
+      className="flex flex-col items-center"
     >
-      {/* 32px circle with status styling */}
-      <div
-        className={cn(
-          phaseNodeVariants({ status }),
-          // Selected state ring (independent of status)
-          isSelected && "ring-2 ring-primary ring-offset-2 ring-offset-background"
-        )}
-        style={currentPhaseStyle}
-      >
-        {isComplete && <Check className="w-4 h-4" />}
-      </div>
-      {/* Full label text below circle */}
-      <span className={labelVariants({ status })}>
-        {label}
-      </span>
-    </button>
+      <PropertyRenderer
+        property={phaseStatusMeta}
+        value={name}
+        config={config}
+      />
+    </div>
   )
 }

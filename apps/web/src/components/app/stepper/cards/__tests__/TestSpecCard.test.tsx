@@ -1,21 +1,16 @@
 /**
  * Tests for TestSpecCard Component
- * Task: task-2-3d-test-spec-card
+ * Task: task-2-3d-test-spec-card (original), task-cbe-010 (audit)
  *
- * TDD tests for the test specification card with Given/When/Then display.
+ * Tests for the test specification card with Given/When/Then display.
+ * Updated to reflect PropertyRenderer integration (Phase 2 component-builder-expansion).
  *
- * Test Specifications from task acceptance criteria:
- * - TestSpecCard.tsx created in stepper/cards/ directory
- * - Component wrapped with observer() for MST reactivity
- * - Displays scenario name prominently as card header
- * - Shows testType badge using testTypeVariants CVA (unit=blue, integration=purple, acceptance=green)
- * - Renders targetFile path with monospace font when present
- * - Given[] rendered as bullet list
- * - When rendered as single line
- * - Then[] rendered as bullet list
- * - Uses muted background sections between Given/When/Then
- * - Uses shadcn Card component with hover effects
- * - Exports TestSpecCard and TestSpecCardProps
+ * PropertyRenderer Integration:
+ * - testType: Uses PropertyRenderer with xRenderer: "test-type-badge"
+ * - targetFile: Uses PropertyRenderer with xRenderer: "code-path"
+ * - given[]: Uses PropertyRenderer with xRenderer: "string-array"
+ * - then[]: Uses PropertyRenderer with xRenderer: "string-array"
+ * - when: Renders inline (single string, no PropertyRenderer needed)
  */
 
 import { describe, test, expect } from "bun:test"
@@ -66,77 +61,134 @@ describe("TestSpecCard displays scenario and testType", () => {
     expect(componentSource).toMatch(/spec\.scenario/)
   })
 
-  test("TestSpecCard displays testType badge", () => {
+  test("TestSpecCard displays testType via PropertyRenderer", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
     expect(componentSource).toMatch(/spec\.testType/)
+    expect(componentSource).toMatch(/PropertyRenderer/)
   })
 })
 
 // ============================================================
-// Test 4: TestSpecCard uses testTypeVariants CVA
+// Test 4: TestSpecCard uses PropertyRenderer for testType (Phase 2 migration)
 // ============================================================
 
-describe("TestSpecCard uses testTypeVariants CVA", () => {
-  test("TestSpecCard imports cva from class-variance-authority", () => {
+describe("TestSpecCard uses PropertyRenderer for testType", () => {
+  test("TestSpecCard imports PropertyRenderer", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/import.*cva.*from.*class-variance-authority/)
+    expect(componentSource).toMatch(/import.*PropertyRenderer.*from.*@\/components\/rendering/)
   })
 
-  test("TestSpecCard defines testTypeVariants with cva", () => {
+  test("TestSpecCard defines testTypePropertyMeta with xRenderer", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/testTypeVariants.*=.*cva/)
+    expect(componentSource).toMatch(/testTypePropertyMeta/)
+    expect(componentSource).toMatch(/xRenderer:\s*["']test-type-badge["']/)
   })
 
-  test("unit type has blue styling", () => {
+  test("TestSpecCard uses PropertyRenderer for testType field", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/unit.*bg-blue/)
-  })
-
-  test("integration type has purple styling", () => {
-    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
-    const componentSource = fs.readFileSync(componentPath, "utf-8")
-
-    expect(componentSource).toMatch(/integration.*bg-purple/)
-  })
-
-  test("acceptance type has green styling", () => {
-    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
-    const componentSource = fs.readFileSync(componentPath, "utf-8")
-
-    expect(componentSource).toMatch(/acceptance.*bg-green/)
+    // PropertyRenderer is used with testTypePropertyMeta
+    expect(componentSource).toMatch(/PropertyRenderer[\s\S]*?property=\{testTypePropertyMeta\}/)
   })
 })
 
 // ============================================================
-// Test 5: TestSpecCard displays targetFile with monospace font
+// Test 5: TestSpecCard uses PropertyRenderer for targetFile (code-path)
 // ============================================================
 
-describe("TestSpecCard displays targetFile", () => {
-  test("TestSpecCard has targetFile section", () => {
+describe("TestSpecCard uses PropertyRenderer for targetFile", () => {
+  test("TestSpecCard defines targetFilePropertyMeta with code-path xRenderer", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/targetFile/)
+    expect(componentSource).toMatch(/targetFilePropertyMeta/)
+    expect(componentSource).toMatch(/xRenderer:\s*["']code-path["']/)
   })
 
-  test("targetFile uses monospace font", () => {
+  test("TestSpecCard uses PropertyRenderer for targetFile field", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/font-mono/)
+    // PropertyRenderer is used with targetFilePropertyMeta
+    expect(componentSource).toMatch(/PropertyRenderer[\s\S]*?property=\{targetFilePropertyMeta\}/)
   })
 })
 
 // ============================================================
-// Test 6: TestSpecCard displays Given/When/Then sections
+// Test 6: TestSpecCard uses PropertyRenderer for given[] (string-array)
+// ============================================================
+
+describe("TestSpecCard uses PropertyRenderer for given array", () => {
+  test("TestSpecCard defines givenPropertyMeta with string-array xRenderer", () => {
+    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/givenPropertyMeta/)
+    expect(componentSource).toMatch(/xRenderer:\s*["']string-array["']/)
+  })
+
+  test("TestSpecCard uses PropertyRenderer for given field with config", () => {
+    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // PropertyRenderer with givenPropertyMeta and config
+    expect(componentSource).toMatch(/PropertyRenderer[\s\S]*?property=\{givenPropertyMeta\}/)
+    expect(componentSource).toMatch(/config=\{[\s\S]*?size:\s*["']xs["']/)
+  })
+})
+
+// ============================================================
+// Test 7: TestSpecCard uses PropertyRenderer for then[] (string-array)
+// ============================================================
+
+describe("TestSpecCard uses PropertyRenderer for then array", () => {
+  test("TestSpecCard defines thenPropertyMeta with string-array xRenderer", () => {
+    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/thenPropertyMeta/)
+    expect(componentSource).toMatch(/xRenderer:\s*["']string-array["']/)
+  })
+
+  test("TestSpecCard uses PropertyRenderer for then field with config", () => {
+    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // PropertyRenderer with thenPropertyMeta and config
+    expect(componentSource).toMatch(/PropertyRenderer[\s\S]*?property=\{thenPropertyMeta\}/)
+  })
+})
+
+// ============================================================
+// Test 8: TestSpecCard displays when field inline (single string)
+// ============================================================
+
+describe("TestSpecCard displays when field appropriately", () => {
+  test("TestSpecCard displays When section label", () => {
+    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/When:/)
+  })
+
+  test("TestSpecCard renders when as single line without PropertyRenderer", () => {
+    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // When section uses direct rendering, not PropertyRenderer
+    expect(componentSource).toMatch(/\{spec\.when\}/)
+  })
+})
+
+// ============================================================
+// Test 9: TestSpecCard displays Given/When/Then sections
 // ============================================================
 
 describe("TestSpecCard displays Given/When/Then sections", () => {
@@ -144,7 +196,7 @@ describe("TestSpecCard displays Given/When/Then sections", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/Given/)
+    expect(componentSource).toMatch(/Given:/)
     expect(componentSource).toMatch(/spec\.given/)
   })
 
@@ -152,7 +204,7 @@ describe("TestSpecCard displays Given/When/Then sections", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/When/)
+    expect(componentSource).toMatch(/When:/)
     expect(componentSource).toMatch(/spec\.when/)
   })
 
@@ -160,27 +212,13 @@ describe("TestSpecCard displays Given/When/Then sections", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/Then/)
+    expect(componentSource).toMatch(/Then:/)
     expect(componentSource).toMatch(/spec\.then/)
-  })
-
-  test("Given renders as list (maps array)", () => {
-    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
-    const componentSource = fs.readFileSync(componentPath, "utf-8")
-
-    expect(componentSource).toMatch(/spec\.given.*map/)
-  })
-
-  test("Then renders as list (maps array)", () => {
-    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
-    const componentSource = fs.readFileSync(componentPath, "utf-8")
-
-    expect(componentSource).toMatch(/spec\.then.*map/)
   })
 })
 
 // ============================================================
-// Test 7: TestSpecCard uses shadcn Card
+// Test 10: TestSpecCard uses shadcn Card
 // ============================================================
 
 describe("TestSpecCard uses shadcn Card", () => {
@@ -200,7 +238,7 @@ describe("TestSpecCard uses shadcn Card", () => {
 })
 
 // ============================================================
-// Test 8: TestSpecCard exports
+// Test 11: TestSpecCard exports
 // ============================================================
 
 describe("TestSpecCard exports", () => {
@@ -218,10 +256,34 @@ describe("TestSpecCard exports", () => {
     expect(componentSource).toMatch(/export.*TestSpecCardProps/)
   })
 
-  test("TestSpecCard exports testTypeVariants", () => {
+  test("TestSpecCard exports TestType type", () => {
     const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/export.*testTypeVariants/)
+    expect(componentSource).toMatch(/export.*type.*TestType/)
+  })
+})
+
+// ============================================================
+// Test 12: TestSpecCard uses PropertyMetadata types
+// ============================================================
+
+describe("TestSpecCard uses PropertyMetadata types", () => {
+  test("TestSpecCard imports PropertyMetadata type", () => {
+    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    expect(componentSource).toMatch(/import.*PropertyMetadata.*from.*@\/components\/rendering/)
+  })
+
+  test("All PropertyMetadata definitions have required fields", () => {
+    const componentPath = path.resolve(import.meta.dir, "../TestSpecCard.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Each metadata should have name, type, and xRenderer (multiline objects)
+    expect(componentSource).toMatch(/testTypePropertyMeta[\s\S]*?name:\s*["']testType["']/)
+    expect(componentSource).toMatch(/targetFilePropertyMeta[\s\S]*?name:\s*["']targetFile["']/)
+    expect(componentSource).toMatch(/givenPropertyMeta[\s\S]*?name:\s*["']given["']/)
+    expect(componentSource).toMatch(/thenPropertyMeta[\s\S]*?name:\s*["']then["']/)
   })
 })

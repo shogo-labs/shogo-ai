@@ -5,14 +5,14 @@
  * insertOne() operations via Wavesmith MCP tools.
  *
  * Exports:
- * - COMPONENT_DEFINITIONS: 29 entries (display components)
+ * - COMPONENT_DEFINITIONS: 31 entries (display components)
  * - REGISTRIES: 2 entries (default, studio)
- * - RENDERER_BINDINGS: 30 entries (12 default + 18 studio)
+ * - RENDERER_BINDINGS: 32 entries (12 default + 20 studio)
  *
  * All entities have proper id fields for idempotency checks.
  * TypeScript types match component-builder schema entity types.
  *
- * Task: task-sdr-v2-001, smart-component-expansion
+ * Tasks: task-sdr-v2-001, smart-component-expansion; task-cbe-003
  */
 
 // =============================================================================
@@ -93,7 +93,7 @@ export interface RendererBindingSeed {
 }
 
 // =============================================================================
-// Component Definitions (29 total)
+// Component Definitions (31 total)
 // =============================================================================
 
 /**
@@ -101,7 +101,7 @@ export interface RendererBindingSeed {
  *
  * Categories breakdown:
  * - Primitive Display (14): String, Number, Boolean, DateTime, Email, URI, Enum, Reference, Computed, Array, Object, StringArray, CodePath, LongText
- * - Domain-Specific Display (11): Priority, Archetype, FindingType, TaskStatus, TestType, SessionStatus, RequirementStatus, RunStatus, ExecutionStatus, TestCaseStatus, TaskRenderer
+ * - Domain-Specific Display (13): Priority, Archetype, FindingType, TaskStatus, TestType, SessionStatus, RequirementStatus, RunStatus, ExecutionStatus, TestCaseStatus, TaskRenderer, ChangeTypeBadge, PhaseStatusRenderer
  * - Visualization (4): ProgressBar, DataCard, GraphNode, StatusIndicator
  */
 export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
@@ -326,6 +326,22 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     implementationRef: "TaskRenderer",
     tags: ["domain", "task", "entity", "readonly"],
   },
+  {
+    id: "comp-change-type-badge",
+    name: "Change Type Badge",
+    category: "display",
+    description: "Renders change type enum values (add, modify, extend) with semantic colors",
+    implementationRef: "ChangeTypeBadge",
+    tags: ["domain", "change-type", "badge", "readonly"],
+  },
+  {
+    id: "comp-phase-status-renderer",
+    name: "Phase Status Renderer",
+    category: "display",
+    description: "Renders session status as interactive phase indicator with navigation",
+    implementationRef: "PhaseStatusRenderer",
+    tags: ["domain", "session", "status", "phase", "interactive"],
+  },
 
   // ---------------------------------------------------------------------------
   // Visualization Components (4)
@@ -393,7 +409,7 @@ export const REGISTRIES: RegistrySeed[] = [
 ]
 
 // =============================================================================
-// Renderer Bindings (27 total: 12 default + 15 studio)
+// Renderer Bindings (32 total: 12 default + 20 studio)
 // =============================================================================
 
 /**
@@ -524,7 +540,7 @@ const DEFAULT_BINDINGS: RendererBindingSeed[] = [
 ]
 
 /**
- * Studio registry bindings (15 entries).
+ * Studio registry bindings (20 entries).
  *
  * All bindings at priority 200 using explicit x-renderer matching.
  * These override the generic EnumBadge (50) for domain-specific fields.
@@ -682,11 +698,29 @@ const STUDIO_BINDINGS: RendererBindingSeed[] = [
     priority: 200,
     defaultConfig: { truncate: 150, expandable: true },
   },
+
+  // New bindings for task-cbe-003
+  {
+    id: "change-type-badge",
+    name: "Change Type Badge Binding",
+    registry: "studio",
+    component: "comp-change-type-badge",
+    matchExpression: { xRenderer: "change-type-badge" },
+    priority: 200,
+  },
+  {
+    id: "phase-status-renderer",
+    name: "Phase Status Renderer Binding",
+    registry: "studio",
+    component: "comp-phase-status-renderer",
+    matchExpression: { xRenderer: "phase-status-renderer" },
+    priority: 200,
+  },
 ]
 
 /**
  * Combined renderer bindings from both registries.
- * 12 default + 18 studio = 30 total entries.
+ * 12 default + 20 studio = 32 total entries.
  */
 export const RENDERER_BINDINGS: RendererBindingSeed[] = [
   ...DEFAULT_BINDINGS,

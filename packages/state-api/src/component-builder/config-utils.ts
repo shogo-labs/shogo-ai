@@ -14,6 +14,7 @@ import type { XRendererConfig } from "./types"
  * 1. componentDefaults - Baked into the component implementation
  * 2. bindingConfig - From RendererBinding.defaultConfig
  * 3. schemaConfig - From PropertyMetadata.xRendererConfig
+ * 4. callerConfig - From PropertyRenderer config prop (highest priority)
  *
  * Later values override earlier values for the same key.
  * customProps are deep-merged (later values override per-key).
@@ -23,20 +24,22 @@ import type { XRendererConfig } from "./types"
  * const config = mergeRendererConfig(
  *   { size: "md", truncate: 200 },     // component defaults
  *   { size: "lg" },                     // binding config
- *   { variant: "emphasized" }           // schema config
+ *   { variant: "emphasized" },          // schema config
+ *   { customProps: { onClick: fn } }    // caller config (optional)
  * )
- * // Result: { size: "lg", truncate: 200, variant: "emphasized" }
+ * // Result: { size: "lg", truncate: 200, variant: "emphasized", customProps: { onClick: fn } }
  * ```
  */
 export function mergeRendererConfig(
   componentDefaults?: XRendererConfig,
   bindingConfig?: XRendererConfig,
-  schemaConfig?: XRendererConfig
+  schemaConfig?: XRendererConfig,
+  callerConfig?: XRendererConfig
 ): XRendererConfig {
   const result: XRendererConfig = {}
 
-  // Apply in order: component defaults < binding < schema
-  const configs = [componentDefaults, bindingConfig, schemaConfig]
+  // Apply in order: component defaults < binding < schema < caller
+  const configs = [componentDefaults, bindingConfig, schemaConfig, callerConfig]
 
   for (const config of configs) {
     if (!config) continue

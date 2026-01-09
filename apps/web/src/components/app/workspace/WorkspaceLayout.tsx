@@ -56,23 +56,20 @@ import { useState, useCallback, useEffect, useRef } from "react"
 import { Outlet } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { useWorkspaceData, useWorkspaceNavigation, useDeleteFeature } from "./hooks"
-import { useDomains } from "@/contexts/DomainProvider"
 import { usePhaseNavigation } from "../stepper/hooks/usePhaseNavigation"
 import { useFeaturePolling } from "@/hooks/useFeaturePolling"
 import { useToast } from "@/hooks/use-toast"
 import { ToastAction } from "@/components/ui/toast"
 import { PhaseContentPanel } from "../stepper"
 import { ChatPanel } from "../chat/ChatPanel"
-import { FeatureSidebar, ComponentCatalogSidebar } from "./sidebar"
+import { FeatureSidebar } from "./sidebar"
 import { DeleteFeatureDialog } from "./modals/DeleteFeatureDialog"
-import { RefreshCw, ChevronDown, ChevronRight } from "lucide-react"
+import { RefreshCw } from "lucide-react"
+import type { PollableDomain } from "@/hooks/useFeaturePolling"
 
-// ============================================================
-// Constants
-// ============================================================
-
-/** localStorage key for component catalog collapse state */
-const COMPONENT_CATALOG_COLLAPSED_KEY = "workspace-component-catalog-collapsed"
+// PERF FIX: Stable array reference for polling domains.
+// Inline arrays create new references on every render, causing useCallback deps to change.
+const POLLING_DOMAINS: PollableDomain[] = ["platformFeatures"]
 
 /**
  * WorkspaceLayout component
@@ -135,41 +132,6 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // isOpen state passed to modal, onClose callback to close it
   const [isModalOpen, setIsModalOpen] = useState(false)
 
-  // Component catalog collapse state (task-dcb-012)
-  // Initialized from localStorage, persisted on change
-  const [isComponentCatalogCollapsed, setIsComponentCatalogCollapsed] = useState(() => {
-    try {
-      const stored = localStorage.getItem(COMPONENT_CATALOG_COLLAPSED_KEY)
-      return stored === "true"
-    } catch {
-      return false
-    }
-  })
-
-  // Persist component catalog collapse state to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(COMPONENT_CATALOG_COLLAPSED_KEY, String(isComponentCatalogCollapsed))
-    } catch {
-      // Ignore localStorage errors (e.g., in private browsing)
-    }
-  }, [isComponentCatalogCollapsed])
-
-  // Toggle handler for component catalog section
-  const toggleComponentCatalog = useCallback(() => {
-    setIsComponentCatalogCollapsed(prev => !prev)
-  }, [])
-
-  // Component builder domain via useDomains() pattern (task-dcb-012)
-  // Provides access to ComponentDefinition entities for the catalog
-  const { componentBuilder } = useDomains()
-
-  // Get component definitions from domain store, or empty array while loading
-  const componentDefinitions = componentBuilder?.componentDefinitionCollection?.all() ?? []
-
-  // State for selected component in catalog (optional for future use)
-  const [selectedComponentId, setSelectedComponentId] = useState<string | undefined>(undefined)
-
   // Chat streaming state - tracked here to coordinate with polling (task-3-1-007)
   // When chat is actively streaming, polling should be paused to avoid race conditions
   const [isChatStreaming, setIsChatStreaming] = useState(false)
@@ -180,7 +142,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   const { isPolling, lastRefresh, refresh, error: pollingError } = useFeaturePolling({
     featureId,
     enabled: !!featureId && !isChatStreaming,
-    domainsToSync: ["platformFeatures", "componentBuilder"],
+    domainsToSync: POLLING_DOMAINS,
   })
 
   // Callback for ChatPanel to report streaming state changes
@@ -265,39 +227,6 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
             projectId={projectId}
             onDeleteFeature={handleDeleteFeature}
           />
-
-          {/* Component Catalog Section (task-dcb-012) */}
-          <div
-            className="border-t border-border"
-            data-testid="component-catalog-section"
-          >
-            {/* Collapsible header */}
-            <button
-              onClick={toggleComponentCatalog}
-              className="w-full flex items-center justify-between px-3 py-2 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors"
-              data-testid="component-catalog-header"
-              aria-expanded={!isComponentCatalogCollapsed}
-              aria-controls="component-catalog-content"
-            >
-              <span>Components</span>
-              {isComponentCatalogCollapsed ? (
-                <ChevronRight className="h-4 w-4 text-muted-foreground" />
-              ) : (
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
-              )}
-            </button>
-
-            {/* Collapsible content */}
-            {!isComponentCatalogCollapsed && (
-              <div id="component-catalog-content">
-                <ComponentCatalogSidebar
-                  components={componentDefinitions}
-                  selectedId={selectedComponentId}
-                  onSelect={setSelectedComponentId}
-                />
-              </div>
-            )}
-          </div>
         </div>
       </aside>
 
