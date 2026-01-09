@@ -164,7 +164,11 @@ module "rds" {
 
   vpc_id             = module.vpc.vpc_id
   subnet_ids         = module.vpc.private_subnet_ids
-  security_group_ids = [module.eks.node_security_group_id]
+  # Include both cluster and node security groups - pods use cluster SG
+  security_group_ids = [
+    module.eks.cluster_security_group_id,
+    module.eks.node_security_group_id
+  ]
 
   instance_class    = var.rds_instance_class
   allocated_storage = var.rds_allocated_storage
@@ -195,7 +199,11 @@ module "elasticache" {
 
   vpc_id             = module.vpc.vpc_id
   subnet_ids         = module.vpc.private_subnet_ids
-  security_group_ids = [module.eks.node_security_group_id]
+  # Include both cluster and node security groups - pods use cluster SG
+  security_group_ids = [
+    module.eks.cluster_security_group_id,
+    module.eks.node_security_group_id
+  ]
 
   node_type       = var.redis_node_type
   num_cache_nodes = 1
@@ -285,4 +293,51 @@ resource "kubernetes_secret" "api_secrets" {
   data = {
     BETTER_AUTH_SECRET = var.better_auth_secret
   }
+}
+
+# -----------------------------------------------------------------------------
+# GitHub Actions OIDC (for CI/CD)
+# -----------------------------------------------------------------------------
+module "github_oidc" {
+  source = "../../modules/github-oidc"
+
+  project_name = var.project_name
+  github_org   = var.github_org
+  github_repo  = var.github_repo
+
+  eks_cluster_arn     = module.eks.cluster_arn
+  ecr_repository_arns = values(module.ecr.repository_arns)
+}
+
+# -----------------------------------------------------------------------------
+# Outputs
+# -----------------------------------------------------------------------------
+output "eks_cluster_name" {
+  description = "EKS cluster name"
+  value       = module.eks.cluster_name
+}
+
+output "eks_cluster_endpoint" {
+  description = "EKS cluster endpoint"
+  value       = module.eks.cluster_endpoint
+}
+
+output "rds_endpoint" {
+  description = "RDS endpoint"
+  value       = module.rds.endpoint
+}
+
+output "redis_endpoint" {
+  description = "Redis endpoint"
+  value       = module.elasticache.endpoint
+}
+
+output "ecr_repository_urls" {
+  description = "ECR repository URLs"
+  value       = module.ecr.repository_urls
+}
+
+output "github_actions_role_arn" {
+  description = "GitHub Actions IAM role ARN (use this in GitHub secrets as AWS_ROLE_ARN)"
+  value       = module.github_oidc.role_arn
 }

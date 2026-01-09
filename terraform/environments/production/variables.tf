@@ -110,3 +110,18 @@ variable "better_auth_secret" {
   type        = string
   sensitive   = true
 }
+
+# -----------------------------------------------------------------------------
+# GitHub Actions CI/CD Configuration
+# -----------------------------------------------------------------------------
+variable "github_org" {
+  description = "GitHub organization or username"
+  type        = string
+  default     = ""
+}
+
+variable "github_repo" {
+  description = "GitHub repository name"
+  type        = string
+  default     = "shogo-ai"
+}
