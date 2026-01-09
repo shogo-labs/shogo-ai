@@ -1679,3 +1679,70 @@ describe("test-cpbi-003-d: findByFeatureAndPhase is added via enhancements.colle
     expect(typeof store.chatSessionCollection.findByFeatureAndPhase).toBe("function")
   })
 })
+
+// ============================================================
+// Test CC-DOMAIN: ChatSession.claudeCodeSessionId field
+// ============================================================
+describe("ChatSession.claudeCodeSessionId", () => {
+  let env: IEnvironment
+  let store: any
+
+  beforeEach(() => {
+    env = createTestEnv()
+    store = studioChatDomain.createStore(env)
+  })
+
+  test("can be created with claudeCodeSessionId", async () => {
+    const session = await store.createChatSession({
+      inferredName: "Test Session",
+      contextType: "feature",
+      contextId: "feat-123",
+    })
+    // Update with CC session ID
+    await store.chatSessionCollection.updateOne(session.id, {
+      claudeCodeSessionId: "cc-session-abc"
+    })
+    const updated = store.chatSessionCollection.get(session.id)
+    expect(updated.claudeCodeSessionId).toBe("cc-session-abc")
+  })
+
+  test("claudeCodeSessionId is optional (undefined by default)", async () => {
+    const session = await store.createChatSession({
+      inferredName: "Test Session",
+      contextType: "general",
+    })
+    expect(session.claudeCodeSessionId).toBeUndefined()
+  })
+
+  test("hasClaudeCodeSession returns true when set", async () => {
+    const session = await store.createChatSession({
+      inferredName: "Test",
+      contextType: "general",
+    })
+    await store.chatSessionCollection.updateOne(session.id, {
+      claudeCodeSessionId: "cc-xyz"
+    })
+    const updated = store.chatSessionCollection.get(session.id)
+    expect(updated.hasClaudeCodeSession).toBe(true)
+  })
+
+  test("hasClaudeCodeSession returns false when not set", async () => {
+    const session = await store.createChatSession({
+      inferredName: "Test",
+      contextType: "general",
+    })
+    expect(session.hasClaudeCodeSession).toBe(false)
+  })
+
+  test("hasClaudeCodeSession returns false for empty string", async () => {
+    const session = await store.createChatSession({
+      inferredName: "Test",
+      contextType: "general",
+    })
+    await store.chatSessionCollection.updateOne(session.id, {
+      claudeCodeSessionId: ""
+    })
+    const updated = store.chatSessionCollection.get(session.id)
+    expect(updated.hasClaudeCodeSession).toBe(false)
+  })
+})

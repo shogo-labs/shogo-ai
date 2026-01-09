@@ -1,9 +1,6 @@
 {
-  "id": "2447e5bb-786f-40d6-baff-f78509400675",
-  "name": "studio-chat",
-  "format": "enhanced-json-schema",
-  "createdAt": 1767637427389,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-chat",
   "$defs": {
     "ChatSession": {
       "type": "object",
@@ -42,10 +39,6 @@
         "phase": {
           "type": "string",
           "description": "Optional phase association (discovery, design, etc.)"
-        },
-        "claudeCodeSessionId": {
-          "type": "string",
-          "description": "Claude Code session ID for conversation continuity/resume"
         },
         "createdAt": {
           "type": "number"
