@@ -8,14 +8,18 @@ import { initializeSeedData } from "./seed-init"
 // Port configuration from environment (supports multi-worktree isolation)
 const MCP_PORT = parseInt(process.env.MCP_PORT || '3100', 10)
 
+// Schemas path - use SCHEMAS_PATH env var (Docker) or default to monorepo .schemas (local dev)
+const SCHEMAS_PATH = process.env.SCHEMAS_PATH || join(import.meta.dir, "../../../.schemas")
+console.log(`[mcp] Schemas path: ${SCHEMAS_PATH}`)
+
 // Initialize PostgreSQL backend from DATABASE_URL (if available)
 await initializePostgresBackend()
 
 // Initialize DDL for domain schemas with postgres backend
-await initializeDomainSchemas(join(import.meta.dir, "../../../.schemas"))
+await initializeDomainSchemas(SCHEMAS_PATH)
 
 // Initialize seed data (Shogo org, Platform project)
-await initializeSeedData(join(import.meta.dir, "../../../.schemas"))
+await initializeSeedData(SCHEMAS_PATH)
 
 // Wavesmith MCP with HTTP/SSE transport
 const server = new FastMCP({
