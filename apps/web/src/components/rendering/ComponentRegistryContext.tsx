@@ -47,6 +47,12 @@ import {
   type HydrationStore,
   type ComponentEntrySpec
 } from "@shogo/state-api"
+
+// Note: With componentBuilderDomain, Registry entities have:
+// - toEntrySpecs(): ComponentEntrySpec[]  (returns hydrated specs)
+// - fallbackRef: string | undefined       (resolved fallback implementationRef)
+// The hydrateRegistry function is kept for backward compatibility but
+// new code can use registry.toEntrySpecs() directly when using the domain.
 import { ComponentRegistry, createComponentRegistry } from "./ComponentRegistry"
 import type { DisplayRendererProps, ComponentEntry } from "./types"
 
@@ -222,7 +228,21 @@ export function useHydratedRegistry(
         }
 
         // Hydrate to get ComponentEntrySpec[]
-        const { specs, fallbackRef } = hydrateRegistry(registryEntity, store)
+        // Use entity methods when available (from componentBuilderDomain),
+        // otherwise fall back to external hydrateRegistry function
+        let specs: ComponentEntrySpec[]
+        let fallbackRef: string | undefined
+
+        if (typeof registryEntity.toEntrySpecs === "function") {
+          // Domain pattern: entity has enhancement views
+          specs = registryEntity.toEntrySpecs()
+          fallbackRef = registryEntity.fallbackRef
+        } else {
+          // Fallback: use external hydration function
+          const result = hydrateRegistry(registryEntity, store)
+          specs = result.specs
+          fallbackRef = result.fallbackRef
+        }
 
         // Resolve fallback from the registry entity or use default
         const resolvedFallback = fallbackRef
