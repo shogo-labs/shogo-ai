@@ -443,15 +443,15 @@ describe("AI SDK v6 UIMessage Stream (chat-session-sync-fix)", () => {
 
   // spec-v6-002: messageMetadata callback for session ID
   describe("spec-v6-002: messageMetadata callback", () => {
-    test("server.ts uses messageMetadata callback in toUIMessageStreamResponse", async () => {
+    test("server.ts uses messageMetadata callback in toUIMessageStream", async () => {
       const fs = await import("fs")
       const path = await import("path")
       const serverPath = path.resolve(import.meta.dir, "../server.ts")
       const source = fs.readFileSync(serverPath, "utf-8")
 
-      // NEW PATTERN: messageMetadata callback extracts session ID from stream parts
-      // toUIMessageStreamResponse({ messageMetadata: ... })
-      expect(source).toMatch(/toUIMessageStreamResponse\s*\(\s*\{[\s\S]*messageMetadata/)
+      // Updated pattern: messageMetadata callback extracts session ID from stream parts
+      // Uses toUIMessageStream inside createUIMessageStream for merged streaming
+      expect(source).toMatch(/toUIMessageStream\s*\(\s*\{[\s\S]*messageMetadata/)
     })
 
     test("messageMetadata callback extracts ccSessionId from providerMetadata", async () => {
@@ -494,16 +494,17 @@ describe("AI SDK v6 UIMessage Stream (chat-session-sync-fix)", () => {
  * - No CC_SESSION marker in body
  */
 describe("Server Data Stream Protocol (task-css-server-protocol)", () => {
-  // spec-css-server-01: Server uses toUIMessageStreamResponse
-  describe("spec-css-server-01: toUIMessageStreamResponse usage", () => {
-    test("server.ts imports or uses toUIMessageStreamResponse pattern", async () => {
+  // spec-css-server-01: Server uses createUIMessageStreamResponse
+  // task-subagent-progress-streaming: Updated to createUIMessageStreamResponse for merged streams
+  describe("spec-css-server-01: createUIMessageStreamResponse usage", () => {
+    test("server.ts imports or uses createUIMessageStreamResponse pattern", async () => {
       const fs = await import("fs")
       const path = await import("path")
       const serverPath = path.resolve(import.meta.dir, "../server.ts")
       const source = fs.readFileSync(serverPath, "utf-8")
 
-      // Should use toUIMessageStreamResponse (not custom ReadableStream for chat)
-      expect(source).toMatch(/toUIMessageStreamResponse/)
+      // Should use createUIMessageStreamResponse for merged streaming (progress + LLM)
+      expect(source).toMatch(/createUIMessageStreamResponse/)
     })
 
     test("custom ReadableStream for chat endpoint is removed", async () => {
