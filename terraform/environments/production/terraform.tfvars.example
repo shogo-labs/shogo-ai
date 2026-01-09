@@ -9,8 +9,8 @@ aws_region   = "us-east-2"
 environment  = "production"
 project_name = "shogo"
 
-# EKS Configuration
-eks_cluster_version = "1.29"
+# EKS Configuration (Kubernetes 1.33 - latest EKS supported)
+eks_cluster_version = "1.33"
 node_instance_types = ["t3.medium", "t3.large"]
 node_desired_size   = 2
 node_min_size       = 1
