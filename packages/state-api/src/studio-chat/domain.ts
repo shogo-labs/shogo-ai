@@ -23,6 +23,7 @@ export const StudioChatDomain = scope({
     contextType: "'feature' | 'project' | 'general'",
     "contextId?": "string", // Reference to FeatureSession or Project (cross-schema)
     "phase?": "string", // Optional phase association
+    "claudeCodeSessionId?": "string", // Optional Claude Code session ID for continuity
     createdAt: "number",
     lastActiveAt: "number",
   },
@@ -96,6 +97,13 @@ export const studioChatDomain = domain({
       })),
 
       ChatSession: models.ChatSession.views((self: any) => ({
+        /**
+         * Returns true if this session has an associated Claude Code session ID
+         */
+        get hasClaudeCodeSession(): boolean {
+          return self.claudeCodeSessionId != null && self.claudeCodeSessionId !== ""
+        },
+
         /**
          * Count of messages in this session
          */

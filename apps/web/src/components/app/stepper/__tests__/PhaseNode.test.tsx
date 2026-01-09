@@ -40,9 +40,11 @@ describe("PhaseNode", () => {
 
   // test-2-3a-003-02: Renders with current status styling
   describe("test-2-3a-003-02: current status styling", () => {
-    test("has bg-primary styling", () => {
+    test("has phase color styling via PHASE_COLOR_VAR", () => {
       const source = getSource()
-      expect(source).toContain("bg-primary")
+      // Uses dynamic phase colors instead of static bg-primary
+      expect(source).toContain("PHASE_COLOR_VAR")
+      expect(source).toContain("backgroundColor")
     })
 
     test("has primary foreground or white text", () => {
