@@ -17,9 +17,10 @@
  * - Smart query triggers: Detects tool calls in onFinish and triggers targeted data refreshes (task-3-1-004)
  */
 
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { observer } from "mobx-react-lite"
 import { useChat, type Message } from "@ai-sdk/react"
+import { DefaultChatTransport } from "ai"
 import { useDomains } from "@/contexts/DomainProvider"
 import { cn } from "@/lib/utils"
 import { ChatHeader } from "./ChatHeader"
@@ -28,6 +29,11 @@ import { ChatInput } from "./ChatInput"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
 import { ChatContextProvider, type ChatContextValue } from "./ChatContext"
+// Chat Panel UX Redesign - New component imports (task-chat-008)
+import { TurnList } from "./turns"
+import { PhaseEmptyState } from "./empty"
+import type { SubagentProgress as SubagentProgressType, RecentTool as RecentToolType } from "./subagent"
+import { type ToolCallData, getToolCategory as getToolCategoryFromTools } from "./tools/types"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { AlertCircle } from "lucide-react"
@@ -35,6 +41,45 @@ import { AlertCircle } from "lucide-react"
 // ============================================================
 // Types
 // ============================================================
+
+// Progress event types from server (task-subagent-progress-streaming)
+type SubagentProgressEvent =
+  | { type: 'subagent-start'; agentId: string; agentType: string; timestamp: number }
+  | { type: 'subagent-stop'; agentId: string; timestamp: number }
+  | { type: 'tool-complete'; toolName: string; toolUseId: string; timestamp: number }
+
+interface SubagentProgress {
+  agentId: string
+  agentType: string
+  startTime: number
+  status: 'running' | 'completed'
+  toolCount: number
+}
+
+// Recent tool activity for display
+interface RecentToolCall {
+  id: string
+  toolName: string
+  timestamp: number
+}
+
+// Helper to format tool names for display
+function formatToolName(name: string): string {
+  // Handle MCP tool names: mcp__wavesmith__store_query -> wavesmith.store_query
+  if (name.startsWith('mcp__')) {
+    const parts = name.replace('mcp__', '').split('__')
+    return parts.join('.')
+  }
+  return name
+}
+
+// Helper to get tool category for styling
+function getToolCategory(name: string): 'mcp' | 'file' | 'skill' | 'other' {
+  if (name.startsWith('mcp__')) return 'mcp'
+  if (['Read', 'Write', 'Edit', 'Glob', 'Grep'].includes(name)) return 'file'
+  if (['Skill', 'Task'].includes(name)) return 'skill'
+  return 'other'
+}
 
 export interface ChatPanelProps {
   /** Feature session ID to link chat with */
@@ -127,6 +172,28 @@ function extractToolCalls(message: Message): ExtractedToolCall[] {
     })
 }
 
+/**
+ * Extract text content from a message.
+ * chat-session-sync-fix: v3 API uses parts array instead of content string.
+ * This helper handles both formats for backward compatibility.
+ */
+function extractTextContent(message: Message): string {
+  // If message has content string (legacy or fallback), use it
+  if (typeof message.content === "string" && message.content) {
+    return message.content
+  }
+
+  // v3 API: Extract text from parts array
+  if ("parts" in message && Array.isArray((message as any).parts)) {
+    return ((message as any).parts as any[])
+      .filter((part) => part.type === "text")
+      .map((part) => part.text || "")
+      .join("")
+  }
+
+  return ""
+}
+
 function mapToolCallState(state: string | undefined): ToolCallState {
   switch (state) {
     case "partial-call":
@@ -141,6 +208,11 @@ function mapToolCallState(state: string | undefined): ToolCallState {
       return "input-streaming"
   }
 }
+
+// ============================================================
+// CC Session ID is now extracted from X-CC-Session-Id response header
+// (chat-session-sync-fix: removed marker extraction in favor of header approach)
+// ============================================================
 
 // ============================================================
 // Smart Query Trigger Mapping (task-3-1-004)
@@ -291,6 +363,14 @@ export const ChatPanel = observer(function ChatPanel({
   // Chat session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
 
+  // Claude Code session ID for continuity (task-cc-chatpanel-integration)
+  // Initialized from existing session's claudeCodeSessionId on load
+  const [ccSessionId, setCcSessionId] = useState<string | undefined>(undefined)
+
+  // chat-session-sync-fix: Ref for latest ccSessionId value in callbacks
+  // State updates are async, ref provides immediate access for append() calls
+  const ccSessionIdRef = useRef<string | undefined>(undefined)
+
   // Find or create chat session for feature and phase (task-cpbi-005)
   // Session is uniquely identified by (featureId, phase) tuple
   useEffect(() => {
@@ -333,36 +413,106 @@ export const ChatPanel = observer(function ChatPanel({
     ? studioChat.chatSessionCollection.get(currentSessionId)
     : null
 
-  // AI SDK useChat hook
+  // Initialize ccSessionId from existing session (task-cc-chatpanel-integration)
+  // This ensures session continuity when reloading the page or switching sessions
+  useEffect(() => {
+    if (currentSession?.claudeCodeSessionId) {
+      setCcSessionId(currentSession.claudeCodeSessionId)
+      ccSessionIdRef.current = currentSession.claudeCodeSessionId
+    } else {
+      // Clear ccSessionId when switching to a new session without one
+      setCcSessionId(undefined)
+      ccSessionIdRef.current = undefined
+    }
+  }, [currentSession?.claudeCodeSessionId])
+
+  // chat-session-sync-fix: Keep ref in sync with state changes
+  useEffect(() => {
+    ccSessionIdRef.current = ccSessionId
+  }, [ccSessionId])
+
+  // Subagent progress tracking (task-subagent-progress-streaming)
+  const [activeSubagents, setActiveSubagents] = useState<Map<string, SubagentProgress>>(new Map())
+  const [recentTools, setRecentTools] = useState<RecentToolCall[]>([])
+  const MAX_RECENT_TOOLS = 8 // Keep last N tool calls for display
+
+  // Accumulated subagent tool calls for timeline persistence (task-chat-ux-fix)
+  // These persist even after streaming ends, unlike recentTools which are for live display
+  const [accumulatedSubagentTools, setAccumulatedSubagentTools] = useState<ToolCallData[]>([])
+
+  // chat-session-sync-fix: v3 API requires DefaultChatTransport for proper metadata handling
+  // The transport must be memoized to prevent re-creation on every render
+  const chatTransport = useMemo(
+    () => new DefaultChatTransport({ api: "/api/chat" }),
+    []
+  )
+
+  // AI SDK useChat hook (v3 API - chat-session-sync-fix)
   const {
     messages,
-    append,  // Use append() for direct message sending - avoids race condition
+    sendMessage,  // v3 API: sendMessage() replaces append()
     isLoading,
     error,
     setMessages,
     reload,
     stop,  // Used by idle timeout to force-complete hung streams
   } = useChat({
-    api: "/api/chat",
+    transport: chatTransport,
     id: currentSessionId || undefined,
-    body: { featureId, phase }, // task-cpbi-005: Include context for API
-    streamProtocol: "text",
+    // chat-session-sync-fix: v3 with transport enables proper message.metadata handling
+    // Server's messageMetadata callback sends ccSessionId, which becomes message.metadata.ccSessionId
     onError: (err) => {
       // Critical: Handle errors to ensure isLoading gets cleared
       // Without this handler, errors leave isLoading=true indefinitely
       console.error("[ChatPanel] Stream error:", err)
     },
-    onFinish: (message) => {
-      console.log("[ChatPanel] onFinish called - stream complete", { messageLength: message.content.length })
+    onFinish: async ({ message }) => {
+      // chat-session-sync-fix: v3 API callback receives { message, messages, isAbort, ... } options object
+      // Must destructure message from options - NOT receive message directly like v1/v2
+      const contentLength = message.content?.length ?? message.parts?.length ?? 0
+      // Debug: Log message metadata to verify session ID capture
+      console.log("[ChatPanel] onFinish called - stream complete", {
+        contentLength,
+        hasMetadata: !!(message as any).metadata,
+        ccSessionId: (message as any).metadata?.ccSessionId,
+      })
+
+      // chat-session-sync-fix: v3 API - Session ID from message.metadata
+      // Server's messageMetadata callback sends ccSessionId via SSE message-metadata event
+      const newCcSessionId = (message as any).metadata?.ccSessionId as string | undefined
+
+      // chat-session-sync-fix: Update ref IMMEDIATELY to prevent race condition
+      // React state updates are async, but the ref must be current for the next
+      // sendMessage() call. Without this, rapid user input (e.g., "yes" right after
+      // first response) would use stale/undefined ccSessionId, creating a new
+      // Claude Code session instead of resuming the existing one.
+      if (newCcSessionId && currentSessionId) {
+        console.log("[ChatPanel] Persisting CC session ID:", newCcSessionId)
+        // CRITICAL: Update ref BEFORE async operations to prevent race condition
+        ccSessionIdRef.current = newCcSessionId
+        try {
+          await studioChat.chatSessionCollection.updateOne(currentSessionId, {
+            claudeCodeSessionId: newCcSessionId,
+          })
+          // Update state after successful persistence (for React re-render)
+          setCcSessionId(newCcSessionId)
+        } catch (err) {
+          // Persistence failed - revert ref to prevent broken resume attempts
+          ccSessionIdRef.current = ccSessionId
+          console.error("[ChatPanel] CRITICAL: CC session ID persistence failed:", err)
+        }
+      }
+
       // Persist assistant message in onFinish callback
       // NOTE: All persistence operations are fire-and-forget to prevent hanging
       // if backend is slow. The UI already shows the message, persistence is just logging.
       if (currentSessionId) {
         // Fire-and-forget: persist assistant message
+        // chat-session-sync-fix: Use extractTextContent for v3 API compatibility
         studioChat.addMessage({
           sessionId: currentSessionId,
           role: "assistant",
-          content: message.content,
+          content: extractTextContent(message),
         }).catch((err) => {
           console.warn("[ChatPanel] Failed to persist assistant message:", err)
         })
@@ -480,6 +630,181 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [isLoading, messages, stop])
 
+  // Process progress events from message parts (task-subagent-progress-streaming)
+  useEffect(() => {
+    const latestMessage = messages[messages.length - 1]
+    if (!latestMessage || latestMessage.role !== 'assistant') return
+
+    const parts = (latestMessage as any).parts as any[] | undefined
+    if (!parts) {
+      console.log('[ChatPanel:Progress] No parts array in latest message')
+      return
+    }
+
+    // Log all part types for debugging
+    const partTypes = parts.map((p: any) => p.type)
+    console.log('[ChatPanel:Progress] Processing message parts:', {
+      messageId: latestMessage.id,
+      partTypes,
+      totalParts: parts.length,
+    })
+
+    // Find data-progress parts
+    const progressParts = parts.filter((part: any) => part.type === 'data-progress')
+    if (progressParts.length > 0) {
+      console.log('[ChatPanel:Progress] Found data-progress parts:', progressParts.length)
+    }
+
+    parts.forEach((part) => {
+      // Handle session ID from server (SDK workaround - session ID comes via custom event, not metadata)
+      if (part.type === 'data-session') {
+        const sessionData = part.data as { ccSessionId: string }
+        console.log('[ChatPanel:Session] 📨 Received data-session event:', sessionData)
+        if (sessionData.ccSessionId && !ccSessionIdRef.current) {
+          console.log('[ChatPanel:Session] ✅ Capturing session ID from server:', sessionData.ccSessionId)
+          ccSessionIdRef.current = sessionData.ccSessionId
+          setCcSessionId(sessionData.ccSessionId)
+          // Persist to session if available
+          if (currentSessionId) {
+            studioChat.chatSessionCollection.updateOne({
+              id: currentSessionId,
+              claudeCodeSessionId: sessionData.ccSessionId,
+            }).catch((error) => {
+              console.error('[ChatPanel:Session] Failed to persist session ID:', error)
+            })
+          }
+        }
+      }
+
+      if (part.type === 'data-progress') {
+        const event = part.data as SubagentProgressEvent
+        console.log('[ChatPanel:Progress] 📥 Received data-progress event:', event)
+
+        if (event.type === 'subagent-start') {
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            console.log('[ChatPanel:Progress] 🚀 Adding subagent to active map:', event.agentId, event.agentType)
+            next.set(event.agentId, {
+              agentId: event.agentId,
+              agentType: event.agentType,
+              startTime: event.timestamp,
+              status: 'running',
+              toolCount: 0,
+            })
+            console.log('[ChatPanel:Progress] 📊 Active subagents count:', next.size)
+            return next
+          })
+        } else if (event.type === 'subagent-stop') {
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            const existing = next.get(event.agentId)
+            console.log('[ChatPanel:Progress] 🛑 Stopping subagent:', event.agentId, 'existing:', !!existing)
+            if (existing) {
+              next.set(event.agentId, { ...existing, status: 'completed' })
+            }
+            console.log('[ChatPanel:Progress] 📊 Active subagents count:', next.size)
+            return next
+          })
+        } else if (event.type === 'tool-complete') {
+          console.log('[ChatPanel:Progress] 🔧 Tool complete:', event.toolName)
+          // Add to recent tools list (for live display in SubagentPanel)
+          setRecentTools((prev) => {
+            const newTool: RecentToolCall = {
+              id: event.toolUseId,
+              toolName: event.toolName,
+              timestamp: event.timestamp,
+            }
+            const updated = [newTool, ...prev].slice(0, MAX_RECENT_TOOLS)
+            return updated
+          })
+          // Accumulate for timeline persistence (task-chat-ux-fix)
+          // These persist even after streaming ends for display in ToolTimeline
+          setAccumulatedSubagentTools((prev) => [
+            ...prev,
+            {
+              id: event.toolUseId,
+              toolName: event.toolName,
+              category: getToolCategoryFromTools(event.toolName),
+              state: "success" as const,
+              timestamp: event.timestamp,
+            },
+          ])
+          // Increment tool count on all running subagents
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            for (const [id, subagent] of next) {
+              if (subagent.status === 'running') {
+                next.set(id, { ...subagent, toolCount: subagent.toolCount + 1 })
+              }
+            }
+            return next
+          })
+        }
+      }
+    })
+  }, [messages, currentSessionId, studioChat.chatSessionCollection])
+
+  // Linger duration for completed subagents (ms) - keeps panel visible after completion
+  const SUBAGENT_LINGER_MS = 2500
+
+  // Delayed cleanup of completed subagents after stream ends (task-subagent-progress-streaming)
+  // Instead of clearing immediately, we keep completed subagents visible for a few seconds
+  // so users can see the final state before the panel disappears
+  useEffect(() => {
+    if (!isLoading) {
+      console.log('[ChatPanel:Progress] Stream ended, scheduling delayed cleanup for completed subagents')
+
+      // Set timeouts for each completed subagent
+      const timeoutIds: ReturnType<typeof setTimeout>[] = []
+
+      activeSubagents.forEach((subagent, id) => {
+        if (subagent.status === 'completed') {
+          const timeoutId = setTimeout(() => {
+            console.log('[ChatPanel:Progress] Delayed cleanup: removing subagent', id)
+            setActiveSubagents((prev) => {
+              const next = new Map(prev)
+              next.delete(id)
+              return next
+            })
+          }, SUBAGENT_LINGER_MS)
+          timeoutIds.push(timeoutId)
+        }
+      })
+
+      // Delay clearing recent tools to match subagent visibility
+      const toolsTimeoutId = setTimeout(() => {
+        console.log('[ChatPanel:Progress] Delayed cleanup: clearing recent tools')
+        setRecentTools([])
+      }, SUBAGENT_LINGER_MS)
+      timeoutIds.push(toolsTimeoutId)
+
+      // Cleanup timeouts if component unmounts or isLoading changes
+      return () => {
+        timeoutIds.forEach((id) => clearTimeout(id))
+      }
+    }
+  }, [isLoading, activeSubagents])
+
+  // Debug: Log whenever activeSubagents changes
+  useEffect(() => {
+    console.log('[ChatPanel:Progress] 📊 activeSubagents state changed:', {
+      size: activeSubagents.size,
+      agents: Array.from(activeSubagents.values()).map(a => ({ id: a.agentId, type: a.agentType, status: a.status })),
+    })
+  }, [activeSubagents])
+
+  // Clear accumulated tools when a new stream starts (task-chat-ux-fix)
+  // We use a ref to track the previous isLoading state to detect stream start
+  const prevIsLoadingRef = useRef(false)
+  useEffect(() => {
+    // Detect stream start: isLoading transitions from false to true
+    if (isLoading && !prevIsLoadingRef.current) {
+      console.log('[ChatPanel:Progress] New stream started, clearing accumulated tools')
+      setAccumulatedSubagentTools([])
+    }
+    prevIsLoadingRef.current = isLoading
+  }, [isLoading])
+
   // Load persisted messages when session changes
   useEffect(() => {
     if (currentSessionId) {
@@ -505,9 +830,8 @@ export const ChatPanel = observer(function ChatPanel({
     onStreamingChange?.(isLoading)
   }, [isLoading, onStreamingChange])
 
-  // Handle message submission using append() to avoid race condition
-  // The old pattern used setInput() + handleSubmit() but setInput is async
-  // and handleSubmit would read stale "" input state, losing the message
+  // chat-session-sync-fix: Handle message submission using v3 sendMessage() API
+  // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
   const handleSendMessage = useCallback(
     async (content: string) => {
       console.log("[ChatPanel] handleSendMessage called", {
@@ -535,19 +859,31 @@ export const ChatPanel = observer(function ChatPanel({
         content: trimmedContent,
       }).catch((err) => console.warn("[ChatPanel] Failed to persist user message:", err))
 
-      // Send to API using append() - content is passed directly, no race condition!
-      console.log("[ChatPanel] Calling append()", { contentLength: trimmedContent.length })
+      // chat-session-sync-fix: Send via v3 sendMessage() API
+      // - First arg: { text } object (not { role, content })
+      // - Second arg: options with body for server-side data
+      // - ccSessionIdRef.current ensures fresh session ID value
+      console.log("[ChatPanel] Calling sendMessage()", {
+        contentLength: trimmedContent.length,
+        ccSessionId: ccSessionIdRef.current,
+      })
       try {
-        await append({
-          role: "user",
-          content: trimmedContent,
-        })
-        console.log("[ChatPanel] append() completed successfully")
+        await sendMessage(
+          { text: trimmedContent },
+          {
+            body: {
+              featureId,
+              phase,
+              ccSessionId: ccSessionIdRef.current,
+            },
+          }
+        )
+        console.log("[ChatPanel] sendMessage() completed successfully")
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
       }
     },
-    [currentSessionId, studioChat, append]
+    [currentSessionId, studioChat, sendMessage, featureId, phase]
   )
 
   // Handle form submit from ChatInput
@@ -645,11 +981,7 @@ export const ChatPanel = observer(function ChatPanel({
     )
   }
 
-  // Extract tool calls from all messages for inline display
-  const messagesWithToolCalls = messages.map((msg) => ({
-    message: msg,
-    toolCalls: extractToolCalls(msg),
-  }))
+  // Note: Tool call extraction now handled by TurnList/useTurnGrouping (task-chat-008)
 
   return (
     <div className={cn("flex h-full", className)}>
@@ -682,53 +1014,25 @@ export const ChatPanel = observer(function ChatPanel({
           onToggleCollapse={handleToggleCollapse}
         />
 
-        {/* Messages with Tool Calls */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messagesWithToolCalls.map(({ message, toolCalls }) => (
-            <div key={message.id} className="space-y-2">
-              {/* Message content via MessageList item pattern */}
-              <div
-                className={cn(
-                  "flex w-full",
-                  message.role === "user" ? "justify-end" : "justify-start"
-                )}
-              >
-                <div
-                  className={cn(
-                    "max-w-[80%] rounded-lg px-4 py-2 text-sm",
-                    message.role === "user"
-                      ? "bg-primary text-primary-foreground ml-auto"
-                      : "bg-muted text-foreground mr-auto"
-                  )}
-                >
-                  <div className="whitespace-pre-wrap break-words">{message.content}</div>
-                </div>
-              </div>
-
-              {/* Inline Tool Call Displays */}
-              {toolCalls.map((toolCall, index) => (
-                <ToolCallDisplay
-                  key={`${message.id}-tool-${index}`}
-                  toolName={toolCall.toolName}
-                  state={toolCall.state}
-                  args={toolCall.args}
-                  result={toolCall.result}
-                  error={toolCall.error}
-                />
-              ))}
-            </div>
-          ))}
-
-          {/* Empty state */}
-          {messages.length === 0 && !isLoading && (
-            <div className="flex flex-1 flex-col items-center justify-center text-center text-muted-foreground py-8">
-              <p className="text-sm">No messages yet</p>
-              <p className="text-xs mt-1">Start a conversation</p>
-            </div>
-          )}
-
-          {/* Loading indicator */}
-          {isLoading && (
+        {/* Messages with Turn Grouping (task-chat-008) */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {messages.length > 0 ? (
+            <TurnList
+              messages={messages}
+              isStreaming={isLoading}
+              phase={phase}
+              activeSubagents={Array.from(activeSubagents.values()) as SubagentProgressType[]}
+              recentTools={recentTools as RecentToolType[]}
+              subagentToolCalls={accumulatedSubagentTools}
+            />
+          ) : !isLoading ? (
+            /* Phase-contextual empty state (task-chat-008) */
+            <PhaseEmptyState
+              phase={phase}
+              onSuggestionClick={handleSendMessage}
+            />
+          ) : (
+            /* Loading indicator when no messages yet */
             <div
               data-testid="loading-indicator"
               aria-label="Loading response"

@@ -22,6 +22,21 @@ import { cn } from "@/lib/utils"
 import type { PhaseStatus } from "./phaseUtils"
 
 /**
+ * Phase color CSS variable mapping
+ * Syncs stepper with sidebar phase colors
+ */
+const PHASE_COLOR_VAR: Record<string, string> = {
+  discovery: "var(--phase-discovery)",
+  analysis: "var(--phase-analysis)",
+  classification: "var(--phase-classification)",
+  design: "var(--phase-design)",
+  spec: "var(--phase-spec)",
+  testing: "var(--phase-testing)",
+  implementation: "var(--phase-implementation)",
+  complete: "var(--phase-complete)",
+}
+
+/**
  * CVA variants for PhaseNode circle styling
  *
  * Per design-3-1-001:
@@ -43,9 +58,9 @@ export const phaseNodeVariants = cva(
           "dark:border-muted-foreground/20 dark:bg-muted/20",
         ].join(" "),
         current: [
-          "border-primary bg-primary shadow-md",
-          "hover:bg-primary/90",
-          "dark:bg-primary dark:border-primary",
+          // Uses --phase-color CSS variable set via inline style
+          "shadow-md text-white",
+          "hover:opacity-90",
         ].join(" "),
         complete: [
           "border-green-500 bg-green-500 text-white",
@@ -122,12 +137,24 @@ export function PhaseNode({
 }: PhaseNodeProps) {
   const isBlocked = status === "blocked"
   const isComplete = status === "complete"
+  const isCurrent = status === "current"
+
+  // Get phase color for current status (syncs with sidebar)
+  const phaseColor = PHASE_COLOR_VAR[name.toLowerCase()] ?? PHASE_COLOR_VAR.discovery
 
   const handleClick = () => {
     if (!isBlocked) {
       onClick()
     }
   }
+
+  // Inline styles for current phase (uses CSS variable)
+  const currentPhaseStyle: React.CSSProperties | undefined = isCurrent
+    ? {
+        backgroundColor: phaseColor,
+        borderColor: phaseColor,
+      }
+    : undefined
 
   return (
     <button
@@ -152,6 +179,7 @@ export function PhaseNode({
           // Selected state ring (independent of status)
           isSelected && "ring-2 ring-primary ring-offset-2 ring-offset-background"
         )}
+        style={currentPhaseStyle}
       >
         {isComplete && <Check className="w-4 h-4" />}
       </div>

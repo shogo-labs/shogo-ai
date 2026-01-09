@@ -66,9 +66,15 @@ function isOptionalReference(field: SchemaField): boolean {
 
 /**
  * Infer target model name from field name or type
- * Uses the field name and looks for matching model in the schema
+ * Uses x-reference-target if available, otherwise falls back to heuristics
  */
 function inferTargetModel(field: SchemaField, models: SchemaModel[]): string | null {
+  // First, check explicit x-reference-target (highest priority)
+  const explicitTarget = (field as any)['x-reference-target']
+  if (explicitTarget && modelNames.has(explicitTarget)) {
+    return explicitTarget
+  }
+
   // Check if field name matches a model (common pattern)
   const fieldNameCapitalized = field.name.charAt(0).toUpperCase() + field.name.slice(1)
   if (modelNames.has(fieldNameCapitalized)) {

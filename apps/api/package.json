@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@shogo/state-api": "workspace:*",
-    "ai": "^5.0.115",
+    "ai": "^6.0.23",
     "ai-sdk-provider-claude-code": "^2.2.4",
     "better-auth": "^1.2.8",
     "hono": "^4.7.10",
