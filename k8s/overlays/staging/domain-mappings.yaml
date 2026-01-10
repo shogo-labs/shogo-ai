@@ -2,18 +2,8 @@
 # Domain Mappings - Staging Environment
 # =============================================================================
 # Maps staging domains to Knative Services
+# Note: API is proxied via /api path on studio, no separate subdomain needed
 # =============================================================================
-apiVersion: serving.knative.dev/v1beta1
-kind: DomainMapping
-metadata:
-  name: api-staging.shogo.ai
-  namespace: shogo-staging-system
-spec:
-  ref:
-    name: api
-    kind: Service
-    apiVersion: serving.knative.dev/v1
----
 apiVersion: serving.knative.dev/v1beta1
 kind: DomainMapping
 metadata:

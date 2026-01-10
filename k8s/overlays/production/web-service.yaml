@@ -22,6 +22,9 @@ spec:
           image: shogo-web  # Replaced by kustomize
           ports:
             - containerPort: 80
+          env:
+            - name: API_UPSTREAM
+              value: "http://api.shogo-system.svc.cluster.local"
           resources:
             requests:
               memory: "128Mi"

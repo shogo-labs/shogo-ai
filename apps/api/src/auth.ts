@@ -16,7 +16,15 @@ import { betterAuth } from "better-auth"
 import { Pool } from "pg"
 
 // Port configuration from environment
-const VITE_PORT = process.env.VITE_PORT || "5173"
+const API_PORT = process.env.API_PORT || "8002"
+
+// Base URL for Better Auth - use BETTER_AUTH_URL in production, localhost in dev
+const getBaseURL = (): string => {
+  if (process.env.BETTER_AUTH_URL) {
+    return process.env.BETTER_AUTH_URL
+  }
+  return `http://localhost:${API_PORT}`
+}
 
 // CORS origins from environment - supports comma-separated list
 // Defaults to localhost for development
@@ -26,12 +34,12 @@ const getAllowedOrigins = (): string[] => {
     return envOrigins.split(',').map(o => o.trim())
   }
   // Default: localhost only (dev mode)
-  return [`http://localhost:${VITE_PORT}`]
+  return [`http://localhost:${API_PORT}`]
 }
 
 export const auth = betterAuth({
   // Base URL for OAuth callbacks - must match Google's authorized redirect URIs
-  baseURL: `http://localhost:${VITE_PORT}`,
+  baseURL: getBaseURL(),
 
   // PostgreSQL database connection via pg Pool
   database: new Pool({

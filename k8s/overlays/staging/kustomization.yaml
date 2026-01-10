@@ -25,10 +25,10 @@ labels:
 images:
   - name: shogo-mcp
     newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-mcp
-    newTag: staging-latest
+    digest: sha256:b7289d5c26e63a85130ac66d8f5f78fb25fc34ac973158d38d813d081727ae56
   - name: shogo-api
     newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-api
-    newTag: staging-latest
+    digest: sha256:b7289d5c26e63a85130ac66d8f5f78fb25fc34ac973158d38d813d081727ae56
   - name: shogo-web
     newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-web
-    newTag: staging-latest
+    digest: sha256:b7289d5c26e63a85130ac66d8f5f78fb25fc34ac973158d38d813d081727ae56

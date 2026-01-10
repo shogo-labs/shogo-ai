@@ -182,9 +182,11 @@ module "rds" {
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnet_ids
+  # Include ALL EKS security groups: custom cluster SG, node SG, AND EKS-managed SG
   security_group_ids = [
     module.eks.cluster_security_group_id,
-    module.eks.node_security_group_id
+    module.eks.node_security_group_id,
+    module.eks.eks_managed_security_group_id
   ]
 
   instance_class          = var.rds_instance_class

@@ -48,8 +48,7 @@ jobs:
       ecr_registry: ${{ steps.set-env.outputs.ecr_registry }}
       namespace_system: ${{ steps.set-env.outputs.namespace_system }}
       namespace_workspaces: ${{ steps.set-env.outputs.namespace_workspaces }}
-      api_domain: ${{ steps.set-env.outputs.api_domain }}
-      studio_domain: ${{ steps.set-env.outputs.studio_domain }}
+      domain: ${{ steps.set-env.outputs.domain }}
       mcp_domain: ${{ steps.set-env.outputs.mcp_domain }}
     steps:
       - name: Set environment variables
@@ -79,15 +78,13 @@ jobs:
             echo "eks_cluster=shogo-production" >> $GITHUB_OUTPUT
             echo "namespace_system=shogo-system" >> $GITHUB_OUTPUT
             echo "namespace_workspaces=shogo-workspaces" >> $GITHUB_OUTPUT
-            echo "api_domain=api.shogo.ai" >> $GITHUB_OUTPUT
-            echo "studio_domain=studio.shogo.ai" >> $GITHUB_OUTPUT
+            echo "domain=studio.shogo.ai" >> $GITHUB_OUTPUT
             echo "mcp_domain=mcp.shogo.ai" >> $GITHUB_OUTPUT
           else
             echo "eks_cluster=shogo-staging" >> $GITHUB_OUTPUT
             echo "namespace_system=shogo-staging-system" >> $GITHUB_OUTPUT
             echo "namespace_workspaces=shogo-staging-workspaces" >> $GITHUB_OUTPUT
-            echo "api_domain=api-staging.shogo.ai" >> $GITHUB_OUTPUT
-            echo "studio_domain=studio-staging.shogo.ai" >> $GITHUB_OUTPUT
+            echo "domain=studio-staging.shogo.ai" >> $GITHUB_OUTPUT
             echo "mcp_domain=mcp-staging.shogo.ai" >> $GITHUB_OUTPUT
           fi
 
@@ -216,8 +213,7 @@ jobs:
       EKS_CLUSTER: ${{ needs.setup.outputs.eks_cluster }}
       NS_SYSTEM: ${{ needs.setup.outputs.namespace_system }}
       NS_WORKSPACES: ${{ needs.setup.outputs.namespace_workspaces }}
-      API_DOMAIN: ${{ needs.setup.outputs.api_domain }}
-      STUDIO_DOMAIN: ${{ needs.setup.outputs.studio_domain }}
+      DOMAIN: ${{ needs.setup.outputs.domain }}
       MCP_DOMAIN: ${{ needs.setup.outputs.mcp_domain }}
       IMAGE_TAG: ${{ needs.setup.outputs.environment }}-${{ github.sha }}
 
@@ -273,23 +269,12 @@ jobs:
 
       - name: Apply domain mappings
         run: |
-          # Create domain mappings for the environment
+          # Create domain mapping for studio (API is proxied via /api path)
           cat <<EOF | kubectl apply -f -
           apiVersion: serving.knative.dev/v1beta1
           kind: DomainMapping
           metadata:
-            name: ${{ env.API_DOMAIN }}
-            namespace: ${{ env.NS_SYSTEM }}
-          spec:
-            ref:
-              name: api
-              kind: Service
-              apiVersion: serving.knative.dev/v1
-          ---
-          apiVersion: serving.knative.dev/v1beta1
-          kind: DomainMapping
-          metadata:
-            name: ${{ env.STUDIO_DOMAIN }}
+            name: ${{ env.DOMAIN }}
             namespace: ${{ env.NS_SYSTEM }}
           spec:
             ref:
@@ -339,8 +324,8 @@ jobs:
           echo "| Web | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Endpoints" >> $GITHUB_STEP_SUMMARY
-          echo "- **Studio**: https://${{ env.STUDIO_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **API**: https://${{ env.API_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Studio**: https://${{ env.DOMAIN }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **API**: https://${{ env.DOMAIN }}/api" >> $GITHUB_STEP_SUMMARY
           echo "- **MCP**: https://${{ env.MCP_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Cluster" >> $GITHUB_STEP_SUMMARY

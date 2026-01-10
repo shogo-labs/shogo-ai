@@ -2,18 +2,8 @@
 # Domain Mappings - Production Environment
 # =============================================================================
 # Maps production domains to Knative Services
+# Note: API is proxied via /api path on studio, no separate subdomain needed
 # =============================================================================
-apiVersion: serving.knative.dev/v1beta1
-kind: DomainMapping
-metadata:
-  name: api.shogo.ai
-  namespace: shogo-system
-spec:
-  ref:
-    name: api
-    kind: Service
-    apiVersion: serving.knative.dev/v1
----
 apiVersion: serving.knative.dev/v1beta1
 kind: DomainMapping
 metadata:
