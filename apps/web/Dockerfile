@@ -52,15 +52,20 @@ RUN bun run build
 # =============================================================================
 FROM nginx:alpine
 
+# Default API upstream and host header (overridden by environment variables)
+ENV API_UPSTREAM=http://api.shogo-system.svc.cluster.local
+ENV API_HOST=api.shogo-system.svc.cluster.local
+
 # Copy built static files
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 
-# Copy nginx configuration
-COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
+# Copy nginx configuration template
+COPY apps/web/nginx.conf /etc/nginx/templates/default.conf.template
 
 # Expose port 80
 EXPOSE 80
 
-# Nginx runs in foreground by default
+# Use envsubst to substitute environment variables in nginx config at startup
+# nginx:alpine image supports this natively via /docker-entrypoint.d/
 CMD ["nginx", "-g", "daemon off;"]
 

@@ -30,14 +30,25 @@ variable "ecr_repository_arns" {
   type        = list(string)
 }
 
-# GitHub OIDC Provider - use existing or create new
+# Check if GitHub OIDC provider already exists
 data "aws_iam_openid_connect_provider" "github_existing" {
-  count = 1
+  count = 0  # Disabled - we'll create our own if needed
   url   = "https://token.actions.githubusercontent.com"
 }
 
+# Create GitHub OIDC Provider (idempotent - AWS handles duplicates)
+resource "aws_iam_openid_connect_provider" "github" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1", "1c58a3a8518e8759bf075b76b750d4f2df264fcd"]
+
+  tags = {
+    Name = "github-actions-oidc"
+  }
+}
+
 locals {
-  github_oidc_arn = data.aws_iam_openid_connect_provider.github_existing[0].arn
+  github_oidc_arn = aws_iam_openid_connect_provider.github.arn
 }
 
 # IAM Role for GitHub Actions

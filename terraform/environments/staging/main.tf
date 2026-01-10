@@ -1,18 +1,18 @@
 # =============================================================================
-# Shogo AI - Production EKS Deployment
+# Shogo AI - Staging EKS Deployment
 # =============================================================================
 # Region: us-east-1 (Ohio)
 # Architecture: Pod-per-Workspace with Knative scale-to-zero
-# Updated: January 2026 - Latest package versions
+# Updated: January 2026
 # =============================================================================
 
 terraform {
-  required_version = ">= 1.5.0" # Supports Homebrew's last open-source Terraform
+  required_version = ">= 1.5.0"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.80" # Latest stable 5.x (6.0 is beta)
+      version = "~> 5.80"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -36,10 +36,10 @@ terraform {
     }
   }
 
-  # Uncomment for remote state (recommended for production)
+  # Uncomment for remote state (recommended)
   # backend "s3" {
   #   bucket         = "shogo-terraform-state"
-  #   key            = "production/terraform.tfstate"
+  #   key            = "staging/terraform.tfstate"
   #   region         = "us-east-1"
   #   encrypt        = true
   #   dynamodb_table = "shogo-terraform-locks"
@@ -118,26 +118,33 @@ module "vpc" {
   cidr               = var.vpc_cidr
   availability_zones = slice(data.aws_availability_zones.available.names, 0, 3)
 
+  # Use single NAT gateway to save costs and avoid EIP limits
+  single_nat_gateway = true
+
   tags = {
     "kubernetes.io/cluster/${var.project_name}-${var.environment}" = "shared"
   }
 }
 
 # -----------------------------------------------------------------------------
-# ECR Repositories
+# ECR Repositories (shared with production - no need to duplicate)
 # -----------------------------------------------------------------------------
-module "ecr" {
-  source = "../../modules/ecr"
-
-  project_name = var.project_name
-  environment  = var.environment
-
-  repositories = [
-    "shogo-mcp",
-    "shogo-api",
-    "shogo-web"
-  ]
-}
+# Note: Staging uses the same ECR repositories as production
+# Images are tagged with environment prefix (staging-*, production-*)
+# If you want separate repos, uncomment below:
+#
+# module "ecr" {
+#   source = "../../modules/ecr"
+#
+#   project_name = var.project_name
+#   environment  = var.environment
+#
+#   repositories = [
+#     "shogo-mcp",
+#     "shogo-api",
+#     "shogo-web"
+#   ]
+# }
 
 # -----------------------------------------------------------------------------
 # EKS Cluster
@@ -151,7 +158,7 @@ module "eks" {
   vpc_id          = module.vpc.vpc_id
   private_subnets = module.vpc.private_subnet_ids
 
-  # Node group configuration
+  # Node group configuration (smaller for staging)
   node_instance_types = var.node_instance_types
   node_desired_size   = var.node_desired_size
   node_min_size       = var.node_min_size
@@ -182,8 +189,9 @@ module "rds" {
     module.eks.eks_managed_security_group_id
   ]
 
-  instance_class    = var.rds_instance_class
-  allocated_storage = var.rds_allocated_storage
+  instance_class          = var.rds_instance_class
+  allocated_storage       = var.rds_allocated_storage
+  backup_retention_period = var.rds_backup_retention_period
 
   database_name = "shogo"
   username      = "shogo"
@@ -191,10 +199,9 @@ module "rds" {
   # Enable encryption
   storage_encrypted = true
 
-  # Backup configuration
-  backup_retention_period = 7
-  backup_window           = "03:00-04:00"
-  maintenance_window      = "Mon:04:00-Mon:05:00"
+  # Backup configuration (Free Tier accounts need 0 retention)
+  backup_window      = "03:00-04:00"
+  maintenance_window = "Mon:04:00-Mon:05:00"
 
   tags = {
     Environment = var.environment
@@ -249,14 +256,16 @@ module "knative" {
 
 # -----------------------------------------------------------------------------
 # Kubernetes Resources (Namespaces, Secrets, etc.)
+# Note: Staging uses different namespace names
 # -----------------------------------------------------------------------------
 resource "kubernetes_namespace" "shogo_system" {
   depends_on = [module.eks]
 
   metadata {
-    name = "shogo-system"
+    name = "shogo-staging-system"
     labels = {
       "app.kubernetes.io/part-of" = "shogo"
+      "environment"               = "staging"
     }
   }
 }
@@ -265,20 +274,21 @@ resource "kubernetes_namespace" "shogo_workspaces" {
   depends_on = [module.eks]
 
   metadata {
-    name = "shogo-workspaces"
+    name = "shogo-staging-workspaces"
     labels = {
       "app.kubernetes.io/part-of" = "shogo"
+      "environment"               = "staging"
     }
   }
 }
 
-# Database credentials secret (shogo-system namespace)
+# Database credentials secret (shogo-staging-system namespace)
 resource "kubernetes_secret" "postgres_credentials" {
   depends_on = [kubernetes_namespace.shogo_system]
 
   metadata {
     name      = "postgres-credentials"
-    namespace = "shogo-system"
+    namespace = "shogo-staging-system"
   }
 
   data = {
@@ -287,18 +297,32 @@ resource "kubernetes_secret" "postgres_credentials" {
   }
 }
 
-# Database credentials secret (shogo-workspaces namespace)
+# Database credentials secret (shogo-staging-workspaces namespace)
 resource "kubernetes_secret" "postgres_credentials_workspaces" {
   depends_on = [kubernetes_namespace.shogo_workspaces]
 
   metadata {
     name      = "postgres-credentials"
-    namespace = "shogo-workspaces"
+    namespace = "shogo-staging-workspaces"
   }
 
   data = {
     # Include sslmode=require for AWS RDS SSL connections
     DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}?sslmode=require"
+  }
+}
+
+# Redis credentials secret (shogo-staging-system namespace)
+resource "kubernetes_secret" "redis_credentials" {
+  depends_on = [kubernetes_namespace.shogo_system]
+
+  metadata {
+    name      = "redis-credentials"
+    namespace = "shogo-staging-system"
+  }
+
+  data = {
+    REDIS_URL = "redis://${module.elasticache.endpoint}:6379"
   }
 }
 
@@ -308,7 +332,7 @@ resource "kubernetes_secret" "api_secrets" {
 
   metadata {
     name      = "api-secrets"
-    namespace = "shogo-system"
+    namespace = "shogo-staging-system"
   }
 
   data = {
@@ -319,14 +343,22 @@ resource "kubernetes_secret" "api_secrets" {
 # -----------------------------------------------------------------------------
 # GitHub Actions OIDC (for CI/CD)
 # -----------------------------------------------------------------------------
-module "github_oidc" {
-  source = "../../modules/github-oidc"
-
-  project_name = var.project_name
-  github_org   = var.github_org
-  github_repo  = var.github_repo
-
-  eks_cluster_arn     = module.eks.cluster_arn
-  ecr_repository_arns = values(module.ecr.repository_arns)
-}
-
+# NOTE: Staging shares the GitHub OIDC role with production
+# The role "shogo-github-actions" is created by the production environment
+# and has permissions for both clusters. No need to create a separate role.
+#
+# If you need a separate role, uncomment below and change the role name:
+# module "github_oidc" {
+#   source = "../../modules/github-oidc"
+#
+#   project_name = "${var.project_name}-${var.environment}"  # Makes role name unique
+#   github_org   = var.github_org
+#   github_repo  = var.github_repo
+#
+#   eks_cluster_arn     = module.eks.cluster_arn
+#   ecr_repository_arns = [
+#     "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-mcp",
+#     "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-api",
+#     "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-web"
+#   ]
+# }

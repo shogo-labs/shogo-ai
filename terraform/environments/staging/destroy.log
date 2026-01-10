@@ -1,0 +1,30 @@
+[0m[1mmodule.rds.random_password.master: Refreshing state... [id=none][0m
+[0m[1mdata.aws_availability_zones.available: Reading...[0m[0m
+[0m[1mdata.aws_caller_identity.current: Reading...[0m[0m
+[0m[1mmodule.vpc.aws_vpc.main: Refreshing state... [id=vpc-0747d440f882335b1][0m
+[0m[1mmodule.eks.aws_iam_role.cluster: Refreshing state... [id=shogo-staging-cluster-role][0m
+[0m[1mdata.aws_caller_identity.current: Read complete after 0s [id=620804327344][0m
+[0m[1mdata.aws_availability_zones.available: Read complete after 0s [id=us-east-1][0m
+[0m[1mmodule.eks.aws_iam_role_policy_attachment.cluster_policy: Refreshing state... [id=shogo-staging-cluster-role-20260109231231807900000002][0m
+[0m[1mmodule.vpc.aws_subnet.private[1]: Refreshing state... [id=subnet-0739752ee52316db5][0m
+[0m[1mmodule.vpc.aws_subnet.private[0]: Refreshing state... [id=subnet-04f3966a1825b7436][0m
+[0m[1mmodule.eks.aws_security_group.cluster: Refreshing state... [id=sg-0d0b38287f2931ae6][0m
+[0m[1mmodule.vpc.aws_subnet.private[2]: Refreshing state... [id=subnet-0eba201b7b51bd5f6][0m
+[0m[1mmodule.eks.aws_security_group.node: Refreshing state... [id=sg-033d7cf5909cbfd54][0m
+[0m[1mmodule.elasticache.aws_elasticache_subnet_group.main: Refreshing state... [id=shogo-staging-subnet-group][0m
+[0m[1mmodule.rds.aws_db_subnet_group.main: Refreshing state... [id=shogo-staging-subnet-group][0m
+[0m[1mmodule.eks.aws_eks_cluster.main: Refreshing state... [id=shogo-staging][0m
+[0m[1mmodule.rds.aws_security_group.rds: Refreshing state... [id=sg-054f89a139cdce437][0m
+[0m[1mmodule.elasticache.aws_security_group.redis: Refreshing state... [id=sg-0fb7bcd7e43c0eab6][0m
+[0m[1mmodule.eks.data.tls_certificate.cluster: Reading...[0m[0m
+[0m[1mmodule.rds.aws_db_instance.main: Refreshing state... [id=db-CR4NBQJZ4Y6MH24X6ODVCUQCWE][0m
+[0m[1mmodule.elasticache.aws_elasticache_cluster.main: Refreshing state... [id=shogo-staging][0m
+[0m[1mmodule.eks.data.tls_certificate.cluster: Read complete after 0s [id=0a759b1370f2328d0bd5dd3ac81215f4c3398ef8][0m
+[31m╷[0m[0m
+[31m│[0m [0m[1m[31mError: [0m[0m[1mlisting tags for ElastiCache Cluster (arn:aws:elasticache:us-east-1:620804327344:cluster:shogo-staging): operation error ElastiCache: ListTagsForResource, https response error StatusCode: 404, RequestID: c7e3dd91-06a1-456e-a33f-3030ca424c96, CacheClusterNotFound: shogo-staging is either not present or not available.[0m
+[31m│[0m [0m
+[31m│[0m [0m[0m  with module.elasticache.aws_elasticache_cluster.main,
+[31m│[0m [0m  on ../../modules/elasticache/main.tf line 83, in resource "aws_elasticache_cluster" "main":
+[31m│[0m [0m  83: resource "aws_elasticache_cluster" "main" [4m{[0m[0m
+[31m│[0m [0m
+[31m╵[0m[0m

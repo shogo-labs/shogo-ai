@@ -157,6 +157,7 @@ services:
       BETTER_AUTH_SECRET: shogo-local-dev-secret-32-chars-minimum-ok
       BETTER_AUTH_URL: http://localhost:8002
       REDIS_URL: redis://redis:6379
+      ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
     depends_on:
       postgres:
         condition: service_healthy

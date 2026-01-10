@@ -1,13 +1,16 @@
 # =============================================================================
 # Shogo AI - Build, Test, and Deploy Pipeline
 # =============================================================================
-# Triggers on push to main branch
-# 
+# Multi-environment deployment pipeline:
+#   - staging branch  → staging environment
+#   - main branch     → production environment
+#
 # Pipeline stages:
-#   1. Build & Test - Run unit tests for all packages
-#   2. Build Images - Build Docker images for linux/amd64
-#   3. Push to ECR - Push images to AWS ECR
-#   4. Deploy to EKS - Update Knative services with new images
+#   1. Setup - Determine environment from branch
+#   2. Build & Test - Run unit tests for all packages
+#   3. Build Images - Build Docker images for linux/amd64
+#   4. Push to ECR - Push images to AWS ECR
+#   5. Deploy to EKS - Update Knative services with new images
 # =============================================================================
 
 name: Build, Test, and Deploy
@@ -16,14 +19,75 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:  # Allow manual triggers
+      - staging
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
 
 env:
-  AWS_REGION: us-east-2
-  ECR_REGISTRY: 620804327344.dkr.ecr.us-east-2.amazonaws.com
-  EKS_CLUSTER_NAME: shogo-production
+  AWS_REGION: us-east-1
+  # ECR_REGISTRY is set per-environment in the setup job
 
 jobs:
+  # ===========================================================================
+  # Stage 0: Setup - Determine Environment
+  # ===========================================================================
+  setup:
+    name: Determine Environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      eks_cluster: ${{ steps.set-env.outputs.eks_cluster }}
+      ecr_registry: ${{ steps.set-env.outputs.ecr_registry }}
+      namespace_system: ${{ steps.set-env.outputs.namespace_system }}
+      namespace_workspaces: ${{ steps.set-env.outputs.namespace_workspaces }}
+      domain: ${{ steps.set-env.outputs.domain }}
+      mcp_domain: ${{ steps.set-env.outputs.mcp_domain }}
+    steps:
+      - name: Set environment variables
+        id: set-env
+        run: |
+          # Determine environment from trigger
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENV="production"
+          elif [[ "${{ github.ref }}" == "refs/heads/staging" ]]; then
+            ENV="staging"
+          else
+            echo "Unknown branch, defaulting to staging"
+            ENV="staging"
+          fi
+          
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+          echo "📦 Deploying to: $ENV"
+          
+          # Set environment-specific variables
+          # Both environments use the same AWS account (097357356677)
+          ECR_REGISTRY="097357356677.dkr.ecr.us-east-1.amazonaws.com"
+          echo "ecr_registry=$ECR_REGISTRY" >> $GITHUB_OUTPUT
+          
+          if [[ "$ENV" == "production" ]]; then
+            echo "eks_cluster=shogo-production" >> $GITHUB_OUTPUT
+            echo "namespace_system=shogo-system" >> $GITHUB_OUTPUT
+            echo "namespace_workspaces=shogo-workspaces" >> $GITHUB_OUTPUT
+            echo "domain=studio.shogo.ai" >> $GITHUB_OUTPUT
+            echo "mcp_domain=mcp.shogo.ai" >> $GITHUB_OUTPUT
+          else
+            echo "eks_cluster=shogo-staging" >> $GITHUB_OUTPUT
+            echo "namespace_system=shogo-staging-system" >> $GITHUB_OUTPUT
+            echo "namespace_workspaces=shogo-staging-workspaces" >> $GITHUB_OUTPUT
+            echo "domain=studio-staging.shogo.ai" >> $GITHUB_OUTPUT
+            echo "mcp_domain=mcp-staging.shogo.ai" >> $GITHUB_OUTPUT
+          fi
+
   # ===========================================================================
   # Stage 1: Build and Test
   # ===========================================================================
@@ -60,8 +124,8 @@ jobs:
   build-and-push:
     name: Build & Push Images
     runs-on: ubuntu-latest
-    needs: test
-    environment: stage
+    needs: [setup, test]
+    environment: ${{ needs.setup.outputs.environment }}
     
     permissions:
       id-token: write
@@ -93,8 +157,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-mcp:latest
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-mcp:${{ github.sha }}
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-mcp:${{ needs.setup.outputs.environment }}-latest
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-mcp:${{ needs.setup.outputs.environment }}-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -106,8 +170,10 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-api:latest
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-api:${{ github.sha }}
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-api:${{ needs.setup.outputs.environment }}-latest
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-api:${{ needs.setup.outputs.environment }}-${{ github.sha }}
+          build-args: |
+            ALLOWED_ORIGINS=${{ vars.ALLOWED_ORIGINS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -119,8 +185,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-web:latest
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-web:${{ github.sha }}
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-web:${{ needs.setup.outputs.environment }}-latest
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-web:${{ needs.setup.outputs.environment }}-${{ github.sha }}
           build-args: |
             VITE_API_URL=${{ vars.VITE_API_URL }}
             VITE_MCP_URL=${{ vars.VITE_MCP_URL }}
@@ -133,14 +199,23 @@ jobs:
   # Stage 3: Deploy to EKS
   # ===========================================================================
   deploy:
-    name: Deploy to EKS
+    name: Deploy to EKS (${{ needs.setup.outputs.environment }})
     runs-on: ubuntu-latest
-    needs: build-and-push
-    environment: stage
+    needs: [setup, build-and-push]
+    environment: ${{ needs.setup.outputs.environment }}
     
     permissions:
       id-token: write
       contents: read
+
+    env:
+      ENVIRONMENT: ${{ needs.setup.outputs.environment }}
+      EKS_CLUSTER: ${{ needs.setup.outputs.eks_cluster }}
+      NS_SYSTEM: ${{ needs.setup.outputs.namespace_system }}
+      NS_WORKSPACES: ${{ needs.setup.outputs.namespace_workspaces }}
+      DOMAIN: ${{ needs.setup.outputs.domain }}
+      MCP_DOMAIN: ${{ needs.setup.outputs.mcp_domain }}
+      IMAGE_TAG: ${{ needs.setup.outputs.environment }}-${{ github.sha }}
 
     steps:
       - name: Checkout code
@@ -155,40 +230,105 @@ jobs:
 
       - name: Update kubeconfig
         run: |
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      - name: Create namespaces if not exist
+        run: |
+          kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy Knative services
         run: |
-          # Update workspace services with new image tag
-          sed -i "s|:latest|:${{ github.sha }}|g" k8s/eks/workspace-services.yaml
-          kubectl apply -f k8s/eks/workspace-services.yaml
+          # Apply environment-specific overlay
+          if [ -d "k8s/overlays/${{ env.ENVIRONMENT }}" ]; then
+            echo "📦 Applying kustomize overlay for ${{ env.ENVIRONMENT }}"
+            
+            # Update image tags in overlay
+            cd k8s/overlays/${{ env.ENVIRONMENT }}
+            kustomize edit set image \
+              shogo-mcp=${{ env.ECR_REGISTRY }}/shogo/shogo-mcp:${{ env.IMAGE_TAG }} \
+              shogo-api=${{ env.ECR_REGISTRY }}/shogo/shogo-api:${{ env.IMAGE_TAG }} \
+              shogo-web=${{ env.ECR_REGISTRY }}/shogo/shogo-web:${{ env.IMAGE_TAG }}
+            cd -
+            
+            kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}
+          else
+            echo "⚠️ No overlay found for ${{ env.ENVIRONMENT }}, using base with sed replacements"
+            
+            # Fallback: Update workspace services with new image tag and namespace
+            sed -i "s|:latest|:${{ env.IMAGE_TAG }}|g" k8s/eks/workspace-services.yaml
+            sed -i "s|namespace: shogo-workspaces|namespace: ${{ env.NS_WORKSPACES }}|g" k8s/eks/workspace-services.yaml
+            kubectl apply -f k8s/eks/workspace-services.yaml
+            
+            # Update API and Web services
+            sed -i "s|:latest|:${{ env.IMAGE_TAG }}|g" k8s/eks/ingress.yaml
+            sed -i "s|namespace: shogo-system|namespace: ${{ env.NS_SYSTEM }}|g" k8s/eks/ingress.yaml
+            sed -i "s|shogo.ai|${{ env.API_DOMAIN }}|g" k8s/eks/ingress.yaml
+            kubectl apply -f k8s/eks/ingress.yaml
+          fi
+
+      - name: Apply domain mappings
+        run: |
+          # Create domain mapping for studio (API is proxied via /api path)
+          cat <<EOF | kubectl apply -f -
+          apiVersion: serving.knative.dev/v1beta1
+          kind: DomainMapping
+          metadata:
+            name: ${{ env.DOMAIN }}
+            namespace: ${{ env.NS_SYSTEM }}
+          spec:
+            ref:
+              name: studio
+              kind: Service
+              apiVersion: serving.knative.dev/v1
+          EOF
+
+      - name: Wait for rollout
+        run: |
+          echo "⏳ Waiting for service rollouts in ${{ env.ENVIRONMENT }}..."
           
-          # Wait for rollout to complete
-          echo "Waiting for workspace-1 rollout..."
-          kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n shogo-workspaces --timeout=300s || true
+          echo "Waiting for api rollout..."
+          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
           
-          echo "Waiting for workspace-2 rollout..."
-          kubectl wait --for=condition=ready ksvc/mcp-workspace-2 -n shogo-workspaces --timeout=300s || true
+          echo "Waiting for studio rollout..."
+          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          
+          echo "Waiting for workspace services..."
+          kubectl wait --for=condition=ready ksvc/mcp -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
 
       - name: Verify deployment
         run: |
-          echo "=== Knative Services Status ==="
-          kubectl get ksvc -n shogo-workspaces
+          echo "=== Knative Services Status (${{ env.NS_SYSTEM }}) ==="
+          kubectl get ksvc -n ${{ env.NS_SYSTEM }}
           echo ""
-          echo "=== Pods Status ==="
-          kubectl get pods -n shogo-workspaces
+          echo "=== Knative Services Status (${{ env.NS_WORKSPACES }}) ==="
+          kubectl get ksvc -n ${{ env.NS_WORKSPACES }}
           echo ""
-          echo "=== Recent Events ==="
-          kubectl get events -n shogo-workspaces --sort-by='.lastTimestamp' | tail -10
+          echo "=== Domain Mappings ==="
+          kubectl get domainmapping -n ${{ env.NS_SYSTEM }}
+          echo ""
+          echo "=== Pods Status (${{ env.NS_SYSTEM }}) ==="
+          kubectl get pods -n ${{ env.NS_SYSTEM }}
 
       - name: Summary
         run: |
-          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Environment: \`${{ env.ENVIRONMENT }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Services Deployed" >> $GITHUB_STEP_SUMMARY
           echo "| Service | Image Tag |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|-----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| MCP | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| API | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Web | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| MCP | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| API | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Web | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Deployed to EKS cluster: \`${{ env.EKS_CLUSTER_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "### Endpoints" >> $GITHUB_STEP_SUMMARY
+          echo "- **Studio**: https://${{ env.DOMAIN }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **API**: https://${{ env.DOMAIN }}/api" >> $GITHUB_STEP_SUMMARY
+          echo "- **MCP**: https://${{ env.MCP_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Cluster" >> $GITHUB_STEP_SUMMARY
+          echo "- **EKS Cluster**: \`${{ env.EKS_CLUSTER }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **System Namespace**: \`${{ env.NS_SYSTEM }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Workspaces Namespace**: \`${{ env.NS_WORKSPACES }}\`" >> $GITHUB_STEP_SUMMARY

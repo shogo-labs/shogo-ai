@@ -1,6 +1,6 @@
 # =============================================================================
-# Variables - Production Environment
-# Updated: January 2026 - Latest package versions
+# Variables - Staging Environment
+# Updated: January 2026
 # =============================================================================
 
 variable "aws_region" {
@@ -12,7 +12,7 @@ variable "aws_region" {
 variable "environment" {
   description = "Environment name"
   type        = string
-  default     = "production"
+  default     = "staging"
 }
 
 variable "project_name" {
@@ -27,7 +27,7 @@ variable "project_name" {
 variable "vpc_cidr" {
   description = "CIDR block for VPC"
   type        = string
-  default     = "10.0.0.0/16"
+  default     = "10.1.0.0/16" # Different from production (10.0.0.0/16)
 }
 
 # -----------------------------------------------------------------------------
@@ -36,19 +36,19 @@ variable "vpc_cidr" {
 variable "eks_cluster_version" {
   description = "Kubernetes version for EKS cluster (latest stable: 1.33)"
   type        = string
-  default     = "1.33" # Latest EKS supported version as of Jan 2026
+  default     = "1.33"
 }
 
 variable "node_instance_types" {
   description = "Instance types for EKS node group"
   type        = list(string)
-  default     = ["t3.medium", "t3.large"]
+  default     = ["t3.medium"] # Smaller than production
 }
 
 variable "node_desired_size" {
   description = "Desired number of nodes in the node group"
   type        = number
-  default     = 2
+  default     = 1 # Smaller than production
 }
 
 variable "node_min_size" {
@@ -60,7 +60,7 @@ variable "node_min_size" {
 variable "node_max_size" {
   description = "Maximum number of nodes in the node group"
   type        = number
-  default     = 10
+  default     = 5 # Smaller than production
 }
 
 # -----------------------------------------------------------------------------
@@ -69,13 +69,19 @@ variable "node_max_size" {
 variable "rds_instance_class" {
   description = "RDS instance class"
   type        = string
-  default     = "db.t3.small"
+  default     = "db.t3.micro" # Smaller than production
 }
 
 variable "rds_allocated_storage" {
   description = "Allocated storage for RDS in GB"
   type        = number
   default     = 20
+}
+
+variable "rds_backup_retention_period" {
+  description = "RDS backup retention period in days (0 for Free Tier accounts)"
+  type        = number
+  default     = 0
 }
 
 # -----------------------------------------------------------------------------
@@ -91,9 +97,9 @@ variable "redis_node_type" {
 # Knative Configuration
 # -----------------------------------------------------------------------------
 variable "knative_version" {
-  description = "Knative Serving version (latest stable: 1.20)"
+  description = "Knative Serving version"
   type        = string
-  default     = "1.20.0" # Latest Knative version as of Jan 2026
+  default     = "1.20.0"
 }
 
 variable "domain" {
