@@ -32,8 +32,8 @@ on:
           - production
 
 env:
-  AWS_REGION: us-east-2
-  ECR_REGISTRY: 620804327344.dkr.ecr.us-east-2.amazonaws.com
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 620804327344.dkr.ecr.us-east-1.amazonaws.com
 
 jobs:
   # ===========================================================================

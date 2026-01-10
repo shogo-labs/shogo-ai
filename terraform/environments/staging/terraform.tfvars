@@ -1,9 +1,9 @@
 # =============================================================================
-# Terraform Variables - Staging (us-east-2)
+# Terraform Variables - Staging (us-east-1)
 # Updated: January 2026
 # =============================================================================
 
-aws_region   = "us-east-2"
+aws_region   = "us-east-1"
 environment  = "staging"
 project_name = "shogo"
 

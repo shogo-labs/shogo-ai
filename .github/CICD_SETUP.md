@@ -96,7 +96,7 @@ The GitHub Actions role needs to be added to **both** EKS clusters' aws-auth Con
 ```bash
 eksctl create iamidentitymapping \
   --cluster shogo-staging \
-  --region us-east-2 \
+  --region us-east-1 \
   --arn arn:aws:iam::ACCOUNT_ID:role/shogo-github-actions \
   --username github-actions \
   --group system:masters
@@ -107,7 +107,7 @@ eksctl create iamidentitymapping \
 ```bash
 eksctl create iamidentitymapping \
   --cluster shogo-production \
-  --region us-east-2 \
+  --region us-east-1 \
   --arn arn:aws:iam::ACCOUNT_ID:role/shogo-github-actions \
   --username github-actions \
   --group system:masters

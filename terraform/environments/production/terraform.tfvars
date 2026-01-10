@@ -1,9 +1,9 @@
 # =============================================================================
-# Terraform Variables - Production (us-east-2)
+# Terraform Variables - Production (us-east-1)
 # Updated: January 2026 - Latest package versions
 # =============================================================================
 
-aws_region   = "us-east-2"
+aws_region   = "us-east-1"
 environment  = "production"
 project_name = "shogo"
 

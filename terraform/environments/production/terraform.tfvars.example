@@ -5,7 +5,7 @@
 # DO NOT commit terraform.tfvars to version control!
 # =============================================================================
 
-aws_region   = "us-east-2"
+aws_region   = "us-east-1"
 environment  = "production"
 project_name = "shogo"
 

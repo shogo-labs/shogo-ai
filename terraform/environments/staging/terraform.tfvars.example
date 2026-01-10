@@ -3,7 +3,7 @@
 # Copy this file to terraform.tfvars and fill in the values
 # =============================================================================
 
-aws_region   = "us-east-2"
+aws_region   = "us-east-1"
 environment  = "staging"
 project_name = "shogo"
 

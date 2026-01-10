@@ -22,11 +22,11 @@ commonLabels:
 
 images:
   - name: shogo-mcp
-    newName: 620804327344.dkr.ecr.us-east-2.amazonaws.com/shogo/shogo-mcp
+    newName: 620804327344.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-mcp
     newTag: production-latest
   - name: shogo-api
-    newName: 620804327344.dkr.ecr.us-east-2.amazonaws.com/shogo/shogo-api
+    newName: 620804327344.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-api
     newTag: production-latest
   - name: shogo-web
-    newName: 620804327344.dkr.ecr.us-east-2.amazonaws.com/shogo/shogo-web
+    newName: 620804327344.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-web
     newTag: production-latest

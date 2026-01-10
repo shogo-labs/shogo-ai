@@ -1,7 +1,7 @@
 # =============================================================================
 # Shogo AI - Production EKS Deployment
 # =============================================================================
-# Region: us-east-2 (Ohio)
+# Region: us-east-1 (Ohio)
 # Architecture: Pod-per-Workspace with Knative scale-to-zero
 # Updated: January 2026 - Latest package versions
 # =============================================================================
@@ -40,7 +40,7 @@ terraform {
   # backend "s3" {
   #   bucket         = "shogo-terraform-state"
   #   key            = "production/terraform.tfstate"
-  #   region         = "us-east-2"
+  #   region         = "us-east-1"
   #   encrypt        = true
   #   dynamodb_table = "shogo-terraform-locks"
   # }
