@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: 620804327344.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-api:latest
+          image: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-api:latest
           ports:
             - containerPort: 8002
           env:

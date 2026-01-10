@@ -33,7 +33,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REGISTRY: 620804327344.dkr.ecr.us-east-1.amazonaws.com
+  # ECR_REGISTRY is set per-environment in the setup job
 
 jobs:
   # ===========================================================================
@@ -45,6 +45,7 @@ jobs:
     outputs:
       environment: ${{ steps.set-env.outputs.environment }}
       eks_cluster: ${{ steps.set-env.outputs.eks_cluster }}
+      ecr_registry: ${{ steps.set-env.outputs.ecr_registry }}
       namespace_system: ${{ steps.set-env.outputs.namespace_system }}
       namespace_workspaces: ${{ steps.set-env.outputs.namespace_workspaces }}
       api_domain: ${{ steps.set-env.outputs.api_domain }}
@@ -70,6 +71,10 @@ jobs:
           echo "📦 Deploying to: $ENV"
           
           # Set environment-specific variables
+          # Both environments use the same AWS account (097357356677)
+          ECR_REGISTRY="097357356677.dkr.ecr.us-east-1.amazonaws.com"
+          echo "ecr_registry=$ECR_REGISTRY" >> $GITHUB_OUTPUT
+          
           if [[ "$ENV" == "production" ]]; then
             echo "eks_cluster=shogo-production" >> $GITHUB_OUTPUT
             echo "namespace_system=shogo-system" >> $GITHUB_OUTPUT
@@ -155,8 +160,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-mcp:${{ needs.setup.outputs.environment }}-latest
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-mcp:${{ needs.setup.outputs.environment }}-${{ github.sha }}
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-mcp:${{ needs.setup.outputs.environment }}-latest
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-mcp:${{ needs.setup.outputs.environment }}-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -168,8 +173,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-api:${{ needs.setup.outputs.environment }}-latest
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-api:${{ needs.setup.outputs.environment }}-${{ github.sha }}
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-api:${{ needs.setup.outputs.environment }}-latest
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-api:${{ needs.setup.outputs.environment }}-${{ github.sha }}
           build-args: |
             ALLOWED_ORIGINS=${{ vars.ALLOWED_ORIGINS }}
           cache-from: type=gha
@@ -183,8 +188,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-web:${{ needs.setup.outputs.environment }}-latest
-            ${{ env.ECR_REGISTRY }}/shogo/shogo-web:${{ needs.setup.outputs.environment }}-${{ github.sha }}
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-web:${{ needs.setup.outputs.environment }}-latest
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-web:${{ needs.setup.outputs.environment }}-${{ github.sha }}
           build-args: |
             VITE_API_URL=${{ vars.VITE_API_URL }}
             VITE_MCP_URL=${{ vars.VITE_MCP_URL }}

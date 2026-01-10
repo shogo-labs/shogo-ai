@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: 620804327344.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-web:latest
+          image: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-web:latest
           ports:
             - containerPort: 80
           resources:

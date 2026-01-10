@@ -5,7 +5,7 @@
 #   - Scales to zero when idle (after 60s by default)
 #   - Scales up on first request (cold start)
 #
-# Uses ECR images: 620804327344.dkr.ecr.us-east-1.amazonaws.com/shogo/
+# Uses ECR images: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ spec:
       timeoutSeconds: 300
       containers:
         - name: mcp
-          image: 620804327344.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-mcp:latest
+          image: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-mcp:latest
           ports:
             - containerPort: 3100
               protocol: TCP
@@ -94,7 +94,7 @@ spec:
       timeoutSeconds: 300
       containers:
         - name: mcp
-          image: 620804327344.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-mcp:latest
+          image: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-mcp:latest
           ports:
             - containerPort: 3100
               protocol: TCP
