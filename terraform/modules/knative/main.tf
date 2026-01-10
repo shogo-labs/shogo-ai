@@ -107,7 +107,22 @@ resource "null_resource" "kourier_ssl" {
         service.beta.kubernetes.io/aws-load-balancer-backend-protocol=http \
         service.beta.kubernetes.io/aws-load-balancer-ssl-ports="443"
       
-      echo "SSL certificate attached to Kourier LoadBalancer"
+      # Wait for ELB to be created and get its name
+      sleep 30
+      ELB_DNS=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+      ELB_NAME=$(echo $ELB_DNS | cut -d'-' -f1-5)
+      
+      # Get the HTTP NodePort (port 80)
+      HTTP_NODEPORT=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
+      
+      # Fix the HTTPS listener to forward to HTTP NodePort after SSL termination
+      # (Kubernetes sets it to forward to the 443 NodePort which expects TLS traffic)
+      aws elb delete-load-balancer-listeners --load-balancer-name $ELB_NAME --load-balancer-ports 443 --region us-east-1 || true
+      aws elb create-load-balancer-listeners --load-balancer-name $ELB_NAME \
+        --listeners "Protocol=HTTPS,LoadBalancerPort=443,InstanceProtocol=HTTP,InstancePort=$HTTP_NODEPORT,SSLCertificateId=${var.ssl_certificate_arn}" \
+        --region us-east-1
+      
+      echo "SSL certificate attached to Kourier LoadBalancer with correct backend port"
     EOT
   }
 }

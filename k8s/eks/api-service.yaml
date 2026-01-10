@@ -33,7 +33,7 @@ spec:
             - name: VITE_PORT
               value: "80"
             - name: BETTER_AUTH_URL
-              value: "https://s-api.shogo.ai"
+              value: "https://api.shogo.ai"
             - name: REDIS_URL
               value: "redis://shogo-production.cache.amazonaws.com:6379"
             - name: DATABASE_URL

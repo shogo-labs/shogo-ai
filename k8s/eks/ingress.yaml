@@ -18,7 +18,7 @@ data:
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
-  name: s-api
+  name: api
   namespace: shogo-system
   labels:
     app.kubernetes.io/part-of: shogo
@@ -43,7 +43,7 @@ spec:
             - name: MCP_URL
               value: "http://mcp-workspace-1.shogo-workspaces.svc.cluster.local"
             - name: BETTER_AUTH_URL
-              value: "https://s-api.shogo.ai"
+              value: "https://api.shogo.ai"
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
@@ -74,7 +74,7 @@ spec:
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
-  name: s-studio
+  name: studio
   namespace: shogo-system
   labels:
     app.kubernetes.io/part-of: shogo

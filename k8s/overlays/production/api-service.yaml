@@ -4,7 +4,7 @@
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
-  name: s-api
+  name: api
   namespace: shogo-system
   labels:
     app.kubernetes.io/part-of: shogo

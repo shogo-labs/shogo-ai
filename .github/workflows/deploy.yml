@@ -277,7 +277,7 @@ jobs:
             namespace: ${{ env.NS_SYSTEM }}
           spec:
             ref:
-              name: s-api
+              name: api
               kind: Service
               apiVersion: serving.knative.dev/v1
           ---
@@ -288,7 +288,7 @@ jobs:
             namespace: ${{ env.NS_SYSTEM }}
           spec:
             ref:
-              name: s-studio
+              name: studio
               kind: Service
               apiVersion: serving.knative.dev/v1
           EOF
@@ -297,14 +297,14 @@ jobs:
         run: |
           echo "⏳ Waiting for service rollouts in ${{ env.ENVIRONMENT }}..."
           
-          echo "Waiting for s-api rollout..."
-          kubectl wait --for=condition=ready ksvc/s-api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          echo "Waiting for api rollout..."
+          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
           
-          echo "Waiting for s-studio rollout..."
-          kubectl wait --for=condition=ready ksvc/s-studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          echo "Waiting for studio rollout..."
+          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
           
           echo "Waiting for workspace services..."
-          kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/mcp -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
 
       - name: Verify deployment
         run: |

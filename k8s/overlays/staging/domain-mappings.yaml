@@ -10,7 +10,7 @@ metadata:
   namespace: shogo-staging-system
 spec:
   ref:
-    name: s-api
+    name: api
     kind: Service
     apiVersion: serving.knative.dev/v1
 ---
@@ -21,7 +21,7 @@ metadata:
   namespace: shogo-staging-system
 spec:
   ref:
-    name: s-studio
+    name: studio
     kind: Service
     apiVersion: serving.knative.dev/v1
 ---
