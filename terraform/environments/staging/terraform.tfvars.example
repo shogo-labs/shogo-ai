@@ -25,7 +25,7 @@ rds_allocated_storage = 20
 redis_node_type = "cache.t3.micro"
 
 # Knative Configuration
-knative_version = "1.16.0"
+knative_version = "1.20.0"
 domain          = ""  # Optional: your domain (e.g., "shogo.ai")
 
 # Application Secrets (REQUIRED - generate a random 32+ char string)

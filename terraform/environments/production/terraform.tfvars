@@ -21,9 +21,10 @@ rds_allocated_storage = 20
 # Redis Configuration
 redis_node_type = "cache.t3.micro"
 
-# Knative Configuration (1.16.0 - latest stable)
-knative_version = "1.16.0"
-domain          = ""  # Set your domain here (e.g., "shogo.ai")
+# Knative Configuration (1.20.0 - latest stable)
+knative_version        = "1.20.0"
+domain                 = "shogo.ai"
+ssl_certificate_domain = "*.shogo.ai"  # ACM certificate for HTTPS termination
 
 # Application Secrets
 better_auth_secret = "shogo-production-secret-key-must-be-at-least-32-characters-long"

@@ -15,9 +15,9 @@ terraform {
 }
 
 variable "knative_version" {
-  description = "Knative Serving version (latest: 1.16.0 as of Jan 2026)"
+  description = "Knative Serving version (latest: 1.20.0 as of Jan 2026)"
   type        = string
-  default     = "1.16.0"
+  default     = "1.20.0"
 }
 
 variable "domain" {
@@ -30,6 +30,12 @@ variable "scale_to_zero_grace_period" {
   description = "Grace period before scaling to zero"
   type        = string
   default     = "60s"
+}
+
+variable "ssl_certificate_arn" {
+  description = "ACM certificate ARN for HTTPS termination on the load balancer"
+  type        = string
+  default     = ""
 }
 
 # -----------------------------------------------------------------------------
@@ -75,6 +81,33 @@ resource "null_resource" "kourier" {
       
       # Wait for Kourier
       kubectl wait --for=condition=Available deployment/3scale-kourier-gateway -n kourier-system --timeout=300s || true
+    EOT
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Configure Kourier LoadBalancer with SSL Certificate (optional)
+# -----------------------------------------------------------------------------
+resource "null_resource" "kourier_ssl" {
+  count      = var.ssl_certificate_arn != "" ? 1 : 0
+  depends_on = [null_resource.kourier]
+
+  triggers = {
+    ssl_certificate_arn = var.ssl_certificate_arn
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Wait for Kourier service to be created
+      kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' service/kourier -n kourier-system --timeout=300s || sleep 30
+      
+      # Patch Kourier service with SSL annotations for AWS ELB
+      kubectl annotate service/kourier -n kourier-system --overwrite \
+        service.beta.kubernetes.io/aws-load-balancer-ssl-cert="${var.ssl_certificate_arn}" \
+        service.beta.kubernetes.io/aws-load-balancer-backend-protocol=http \
+        service.beta.kubernetes.io/aws-load-balancer-ssl-ports="443"
+      
+      echo "SSL certificate attached to Kourier LoadBalancer"
     EOT
   }
 }

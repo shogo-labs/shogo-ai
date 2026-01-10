@@ -27,7 +27,7 @@ variable "project_name" {
 variable "vpc_cidr" {
   description = "CIDR block for VPC"
   type        = string
-  default     = "10.1.0.0/16"  # Different from production (10.0.0.0/16)
+  default     = "10.1.0.0/16" # Different from production (10.0.0.0/16)
 }
 
 # -----------------------------------------------------------------------------
@@ -42,13 +42,13 @@ variable "eks_cluster_version" {
 variable "node_instance_types" {
   description = "Instance types for EKS node group"
   type        = list(string)
-  default     = ["t3.medium"]  # Smaller than production
+  default     = ["t3.medium"] # Smaller than production
 }
 
 variable "node_desired_size" {
   description = "Desired number of nodes in the node group"
   type        = number
-  default     = 1  # Smaller than production
+  default     = 1 # Smaller than production
 }
 
 variable "node_min_size" {
@@ -60,7 +60,7 @@ variable "node_min_size" {
 variable "node_max_size" {
   description = "Maximum number of nodes in the node group"
   type        = number
-  default     = 5  # Smaller than production
+  default     = 5 # Smaller than production
 }
 
 # -----------------------------------------------------------------------------
@@ -69,13 +69,19 @@ variable "node_max_size" {
 variable "rds_instance_class" {
   description = "RDS instance class"
   type        = string
-  default     = "db.t3.micro"  # Smaller than production
+  default     = "db.t3.micro" # Smaller than production
 }
 
 variable "rds_allocated_storage" {
   description = "Allocated storage for RDS in GB"
   type        = number
   default     = 20
+}
+
+variable "rds_backup_retention_period" {
+  description = "RDS backup retention period in days (0 for Free Tier accounts)"
+  type        = number
+  default     = 0
 }
 
 # -----------------------------------------------------------------------------
@@ -93,11 +99,17 @@ variable "redis_node_type" {
 variable "knative_version" {
   description = "Knative Serving version"
   type        = string
-  default     = "1.16.0"
+  default     = "1.20.0"
 }
 
 variable "domain" {
   description = "Domain for Knative services (e.g., shogo.ai)"
+  type        = string
+  default     = ""
+}
+
+variable "ssl_certificate_domain" {
+  description = "Domain name to look up ACM certificate (e.g., *.shogo.ai)"
   type        = string
   default     = ""
 }

@@ -7,12 +7,12 @@
 # =============================================================================
 
 terraform {
-  required_version = ">= 1.5.0"  # Supports Homebrew's last open-source Terraform
+  required_version = ">= 1.5.0" # Supports Homebrew's last open-source Terraform
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.80"  # Latest stable 5.x (6.0 is beta)
+      version = "~> 5.80" # Latest stable 5.x (6.0 is beta)
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -98,6 +98,17 @@ data "aws_availability_zones" "available" {
 data "aws_caller_identity" "current" {}
 
 # -----------------------------------------------------------------------------
+# ACM Certificate Lookup (for SSL termination on load balancer)
+# -----------------------------------------------------------------------------
+data "aws_acm_certificate" "ssl" {
+  count       = var.ssl_certificate_domain != "" ? 1 : 0
+  domain      = var.ssl_certificate_domain
+  statuses    = ["ISSUED"]
+  most_recent = true
+  types       = ["AMAZON_ISSUED"]  # Prefer Amazon-issued over imported certificates
+}
+
+# -----------------------------------------------------------------------------
 # VPC Module
 # -----------------------------------------------------------------------------
 module "vpc" {
@@ -162,8 +173,8 @@ module "rds" {
 
   identifier = "${var.project_name}-${var.environment}"
 
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.private_subnet_ids
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnet_ids
   # Include both cluster and node security groups - pods use cluster SG
   security_group_ids = [
     module.eks.cluster_security_group_id,
@@ -197,8 +208,8 @@ module "elasticache" {
 
   cluster_id = "${var.project_name}-${var.environment}"
 
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.private_subnet_ids
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnet_ids
   # Include both cluster and node security groups - pods use cluster SG
   security_group_ids = [
     module.eks.cluster_security_group_id,
@@ -226,6 +237,9 @@ module "knative" {
 
   # Scale-to-zero configuration
   scale_to_zero_grace_period = "60s"
+
+  # SSL certificate for HTTPS termination on load balancer
+  ssl_certificate_arn = var.ssl_certificate_domain != "" ? data.aws_acm_certificate.ssl[0].arn : ""
 }
 
 # -----------------------------------------------------------------------------

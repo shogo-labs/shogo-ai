@@ -98,6 +98,17 @@ data "aws_availability_zones" "available" {
 data "aws_caller_identity" "current" {}
 
 # -----------------------------------------------------------------------------
+# ACM Certificate Lookup (for SSL termination on load balancer)
+# -----------------------------------------------------------------------------
+data "aws_acm_certificate" "ssl" {
+  count       = var.ssl_certificate_domain != "" ? 1 : 0
+  domain      = var.ssl_certificate_domain
+  statuses    = ["ISSUED"]
+  most_recent = true
+  types       = ["AMAZON_ISSUED"]  # Prefer Amazon-issued over imported certificates
+}
+
+# -----------------------------------------------------------------------------
 # VPC Module
 # -----------------------------------------------------------------------------
 module "vpc" {
@@ -106,7 +117,7 @@ module "vpc" {
   name               = "${var.project_name}-${var.environment}"
   cidr               = var.vpc_cidr
   availability_zones = slice(data.aws_availability_zones.available.names, 0, 3)
-  
+
   # Use single NAT gateway to save costs and avoid EIP limits
   single_nat_gateway = true
 
@@ -169,15 +180,16 @@ module "rds" {
 
   identifier = "${var.project_name}-${var.environment}"
 
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.private_subnet_ids
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnet_ids
   security_group_ids = [
     module.eks.cluster_security_group_id,
     module.eks.node_security_group_id
   ]
 
-  instance_class    = var.rds_instance_class
-  allocated_storage = var.rds_allocated_storage
+  instance_class          = var.rds_instance_class
+  allocated_storage       = var.rds_allocated_storage
+  backup_retention_period = var.rds_backup_retention_period
 
   database_name = "shogo"
   username      = "shogo"
@@ -185,10 +197,9 @@ module "rds" {
   # Enable encryption
   storage_encrypted = true
 
-  # Backup configuration (shorter retention for staging)
-  backup_retention_period = 3
-  backup_window           = "03:00-04:00"
-  maintenance_window      = "Mon:04:00-Mon:05:00"
+  # Backup configuration (Free Tier accounts need 0 retention)
+  backup_window      = "03:00-04:00"
+  maintenance_window = "Mon:04:00-Mon:05:00"
 
   tags = {
     Environment = var.environment
@@ -203,8 +214,8 @@ module "elasticache" {
 
   cluster_id = "${var.project_name}-${var.environment}"
 
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.private_subnet_ids
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnet_ids
   security_group_ids = [
     module.eks.cluster_security_group_id,
     module.eks.node_security_group_id
@@ -231,6 +242,9 @@ module "knative" {
 
   # Scale-to-zero configuration
   scale_to_zero_grace_period = "60s"
+
+  # SSL certificate for HTTPS termination on load balancer
+  ssl_certificate_arn = var.ssl_certificate_domain != "" ? data.aws_acm_certificate.ssl[0].arn : ""
 }
 
 # -----------------------------------------------------------------------------
