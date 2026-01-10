@@ -59,13 +59,12 @@ ENV API_HOST=api.shogo-system.svc.cluster.local
 # Copy built static files
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 
-# Copy nginx configuration template
-COPY apps/web/nginx.conf /etc/nginx/templates/default.conf.template
+# Copy nginx configuration template (NOT to templates/ dir - we handle envsubst ourselves)
+COPY apps/web/nginx.conf /etc/nginx/nginx.conf.template
 
 # Expose port 80
 EXPOSE 80
 
-# Use envsubst to substitute environment variables in nginx config at startup
-# nginx:alpine image supports this natively via /docker-entrypoint.d/
-CMD ["nginx", "-g", "daemon off;"]
+# Custom entrypoint: run envsubst only on API_UPSTREAM and API_HOST, then start nginx
+CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_HOST}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
 
