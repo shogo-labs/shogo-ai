@@ -25,6 +25,8 @@ spec:
           env:
             - name: API_UPSTREAM
               value: "http://api.shogo-system.svc.cluster.local"
+            - name: API_HOST
+              value: "api.shogo-system.svc.cluster.local"
           resources:
             requests:
               memory: "128Mi"

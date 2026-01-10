@@ -38,6 +38,8 @@ spec:
               value: "3100"
             - name: NODE_ENV
               value: "production"
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
             - name: SCHEMAS_PATH
               value: "/app/.schemas"
             - name: WORKSPACE_ID
@@ -96,6 +98,8 @@ spec:
               value: "3100"
             - name: NODE_ENV
               value: "production"
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
             - name: SCHEMAS_PATH
               value: "/app/.schemas"
             - name: WORKSPACE_ID

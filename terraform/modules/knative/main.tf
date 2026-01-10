@@ -130,11 +130,18 @@ resource "null_resource" "kourier_ssl" {
 # -----------------------------------------------------------------------------
 # Configure Knative via kubectl (ConfigMaps)
 # -----------------------------------------------------------------------------
+variable "ecr_registry" {
+  description = "ECR registry URL to skip tag resolution for (e.g., 123456789.dkr.ecr.us-east-1.amazonaws.com)"
+  type        = string
+  default     = ""
+}
+
 resource "null_resource" "knative_config" {
   depends_on = [null_resource.kourier]
 
   triggers = {
     scale_to_zero_grace_period = var.scale_to_zero_grace_period
+    ecr_registry               = var.ecr_registry
   }
 
   provisioner "local-exec" {
@@ -153,6 +160,15 @@ resource "null_resource" "knative_config" {
         --namespace knative-serving \
         --type merge \
         --patch '{"data":{"enable-scale-to-zero":"true","scale-to-zero-grace-period":"${var.scale_to_zero_grace_period}","scale-to-zero-pod-retention-period":"0s"}}'
+      
+      # Configure ECR registry to skip tag resolution (avoids controller needing ECR auth)
+      # This allows Knative to use image tags directly without resolving to digests
+      %{ if var.ecr_registry != "" }
+      kubectl patch configmap/config-deployment \
+        --namespace knative-serving \
+        --type merge \
+        --patch '{"data":{"registries-skipping-tag-resolving":"kind.local,ko.local,dev.local,${var.ecr_registry}"}}'
+      %{ endif }
     EOT
   }
 }

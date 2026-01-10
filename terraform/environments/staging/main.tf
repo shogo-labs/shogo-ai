@@ -218,9 +218,11 @@ module "elasticache" {
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnet_ids
+  # Include ALL EKS security groups: custom cluster SG, node SG, AND EKS-managed SG
   security_group_ids = [
     module.eks.cluster_security_group_id,
-    module.eks.node_security_group_id
+    module.eks.node_security_group_id,
+    module.eks.eks_managed_security_group_id
   ]
 
   node_type       = var.redis_node_type
@@ -247,6 +249,9 @@ module "knative" {
 
   # SSL certificate for HTTPS termination on load balancer
   ssl_certificate_arn = var.ssl_certificate_domain != "" ? data.aws_acm_certificate.ssl[0].arn : ""
+
+  # ECR registry - skip tag resolution (avoids auth issues with Knative controller)
+  ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
 }
 
 # -----------------------------------------------------------------------------
@@ -287,7 +292,8 @@ resource "kubernetes_secret" "postgres_credentials" {
   }
 
   data = {
-    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}"
+    # Include sslmode=require for AWS RDS SSL connections
+    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}?sslmode=require"
   }
 }
 
@@ -301,7 +307,8 @@ resource "kubernetes_secret" "postgres_credentials_workspaces" {
   }
 
   data = {
-    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}"
+    # Include sslmode=require for AWS RDS SSL connections
+    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}?sslmode=require"
   }
 }
 

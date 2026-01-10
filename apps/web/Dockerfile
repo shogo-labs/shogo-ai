@@ -52,8 +52,9 @@ RUN bun run build
 # =============================================================================
 FROM nginx:alpine
 
-# Default API upstream (overridden by environment variable)
+# Default API upstream and host header (overridden by environment variables)
 ENV API_UPSTREAM=http://api.shogo-system.svc.cluster.local
+ENV API_HOST=api.shogo-system.svc.cluster.local
 
 # Copy built static files
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
