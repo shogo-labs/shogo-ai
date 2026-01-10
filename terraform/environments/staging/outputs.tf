@@ -36,8 +36,8 @@ output "kubeconfig_command" {
 }
 
 output "github_actions_role_arn" {
-  description = "GitHub Actions IAM role ARN (use this in GitHub secrets as AWS_ROLE_ARN)"
-  value       = module.github_oidc.role_arn
+  description = "GitHub Actions IAM role ARN - uses shared production role"
+  value       = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/shogo-github-actions"
 }
 
 output "namespaces" {

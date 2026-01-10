@@ -106,6 +106,9 @@ module "vpc" {
   name               = "${var.project_name}-${var.environment}"
   cidr               = var.vpc_cidr
   availability_zones = slice(data.aws_availability_zones.available.names, 0, 3)
+  
+  # Use single NAT gateway to save costs and avoid EIP limits
+  single_nat_gateway = true
 
   tags = {
     "kubernetes.io/cluster/${var.project_name}-${var.environment}" = "shared"
@@ -317,18 +320,22 @@ resource "kubernetes_secret" "api_secrets" {
 # -----------------------------------------------------------------------------
 # GitHub Actions OIDC (for CI/CD)
 # -----------------------------------------------------------------------------
-module "github_oidc" {
-  source = "../../modules/github-oidc"
-
-  project_name = var.project_name
-  github_org   = var.github_org
-  github_repo  = var.github_repo
-
-  eks_cluster_arn     = module.eks.cluster_arn
-  # Use production ECR repos (shared)
-  ecr_repository_arns = [
-    "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-mcp",
-    "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-api",
-    "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-web"
-  ]
-}
+# NOTE: Staging shares the GitHub OIDC role with production
+# The role "shogo-github-actions" is created by the production environment
+# and has permissions for both clusters. No need to create a separate role.
+#
+# If you need a separate role, uncomment below and change the role name:
+# module "github_oidc" {
+#   source = "../../modules/github-oidc"
+#
+#   project_name = "${var.project_name}-${var.environment}"  # Makes role name unique
+#   github_org   = var.github_org
+#   github_repo  = var.github_repo
+#
+#   eks_cluster_arn     = module.eks.cluster_arn
+#   ecr_repository_arns = [
+#     "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-mcp",
+#     "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-api",
+#     "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-web"
+#   ]
+# }
