@@ -18,7 +18,11 @@ export {
   componentBuilderDomain,
   createComponentBuilderStore,
 } from "./domain"
-export type { CreateComponentBuilderStoreOptions } from "./domain"
+export type {
+  CreateComponentBuilderStoreOptions,
+  SlotDefinition,
+  SlotContentEntry,
+} from "./domain"
 
 // Types exports
 export * from "./types"

@@ -33,7 +33,7 @@
 interface ComponentDefinitionSeed {
   id: string
   name: string
-  category: "display" | "input" | "layout" | "visualization"
+  category: "display" | "input" | "layout" | "visualization" | "section"
   description: string
   implementationRef: string
   tags?: string[]
@@ -76,6 +76,8 @@ interface SeedSummary {
   componentDefinitions: number
   registries: number
   rendererBindings: number
+  layoutTemplates: number
+  compositions: number
 }
 
 // ============================================================================
@@ -332,6 +334,50 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders multi-stage status indicators with layout options",
     implementationRef: "StatusIndicator",
     tags: ["visualization", "status", "indicator", "readonly"],
+  },
+
+  // -------------------------------------------------------------------------
+  // Section Components (5) - Composable Phase Views
+  // -------------------------------------------------------------------------
+  {
+    id: "comp-def-intent-terminal-section",
+    name: "Intent Terminal Section",
+    category: "section",
+    description: "Displays session intent in a terminal-style format for discovery phase",
+    implementationRef: "IntentTerminalSection",
+    tags: ["section", "phase", "discovery", "intent"],
+  },
+  {
+    id: "comp-def-initial-assessment-section",
+    name: "Initial Assessment Section",
+    category: "section",
+    description: "Displays initial assessment details including archetype and indicators",
+    implementationRef: "InitialAssessmentSection",
+    tags: ["section", "phase", "discovery", "assessment"],
+  },
+  {
+    id: "comp-def-requirements-list-section",
+    name: "Requirements List Section",
+    category: "section",
+    description: "Lists requirements with status badges and priority indicators",
+    implementationRef: "RequirementsListSection",
+    tags: ["section", "phase", "discovery", "requirements"],
+  },
+  {
+    id: "comp-def-session-summary-section",
+    name: "Session Summary Section",
+    category: "section",
+    description: "Displays session summary with key metrics and status",
+    implementationRef: "SessionSummarySection",
+    tags: ["section", "phase", "summary"],
+  },
+  {
+    id: "comp-def-phase-actions-section",
+    name: "Phase Actions Section",
+    category: "section",
+    description: "Provides phase-specific action buttons and navigation",
+    implementationRef: "PhaseActionsSection",
+    tags: ["section", "phase", "actions", "navigation"],
   },
 ]
 
@@ -657,6 +703,90 @@ export const STUDIO_BINDINGS: RendererBindingSeed[] = [
 ]
 
 // ============================================================================
+// Layout Templates - Composable Phase Views
+// ============================================================================
+
+/**
+ * Slot definition type for LayoutTemplate
+ */
+interface SlotDefinitionSeed {
+  name: string
+  position: string
+  required?: boolean
+}
+
+/**
+ * LayoutTemplate seed data (without timestamps)
+ */
+interface LayoutTemplateSeed {
+  id: string
+  name: string
+  description?: string
+  slots: SlotDefinitionSeed[]
+}
+
+/**
+ * Layout templates for composable phase views.
+ */
+export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
+  {
+    id: "layout-phase-two-column",
+    name: "Phase Two Column",
+    description: "Two-column layout with header, main content, sidebar, and actions footer",
+    slots: [
+      { name: "header", position: "top", required: true },
+      { name: "main", position: "left", required: true },
+      { name: "sidebar", position: "right", required: false },
+      { name: "actions", position: "bottom", required: false },
+    ],
+  },
+]
+
+// ============================================================================
+// Compositions - Composable Phase Views
+// ============================================================================
+
+/**
+ * Slot content entry type for Composition
+ */
+interface SlotContentEntrySeed {
+  slot: string
+  component: string
+  config?: Record<string, unknown>
+}
+
+/**
+ * Composition seed data (without timestamps)
+ */
+interface CompositionSeed {
+  id: string
+  name: string
+  description?: string
+  layout: string
+  slotContent: SlotContentEntrySeed[]
+  dataContext?: Record<string, unknown>
+}
+
+/**
+ * Compositions for phase views.
+ */
+export const COMPOSITIONS: CompositionSeed[] = [
+  {
+    id: "composition-discovery",
+    name: "discovery",
+    description: "Discovery phase view composition",
+    layout: "layout-phase-two-column",
+    slotContent: [
+      { slot: "header", component: "comp-def-intent-terminal-section" },
+      { slot: "main", component: "comp-def-requirements-list-section" },
+      { slot: "sidebar", component: "comp-def-initial-assessment-section" },
+      { slot: "actions", component: "comp-def-phase-actions-section" },
+    ],
+    dataContext: { phase: "discovery" },
+  },
+]
+
+// ============================================================================
 // Seed Function
 // ============================================================================
 
@@ -664,9 +794,11 @@ export const STUDIO_BINDINGS: RendererBindingSeed[] = [
  * Seeds the component builder store with all required entities.
  *
  * Creates:
- * - 29 ComponentDefinition entities (11 primitive, 14 domain, 4 visualization)
+ * - 34 ComponentDefinition entities (11 primitive, 14 domain, 4 visualization, 5 section)
  * - 2 Registry entities ('default' and 'studio')
  * - 31 RendererBinding entities (13 default, 18 studio)
+ * - 1 LayoutTemplate entity
+ * - 1 Composition entity
  *
  * @param store - A store with a create(collection, data) method
  * @returns Summary of created entities
@@ -676,7 +808,7 @@ export const STUDIO_BINDINGS: RendererBindingSeed[] = [
  * const store = createComponentBuilderStore()
  * const summary = seedComponentBuilderData(store)
  * console.log(summary)
- * // { componentDefinitions: 26, registries: 2, rendererBindings: 28 }
+ * // { componentDefinitions: 34, registries: 2, rendererBindings: 31, layoutTemplates: 1, compositions: 1 }
  * ```
  */
 export function seedComponentBuilderData(store: SeedableStore): SeedSummary {
@@ -714,9 +846,27 @@ export function seedComponentBuilderData(store: SeedableStore): SeedSummary {
     })
   }
 
+  // Create LayoutTemplate entities
+  for (const layout of LAYOUT_TEMPLATES) {
+    store.create("LayoutTemplate", {
+      ...layout,
+      createdAt: now,
+    })
+  }
+
+  // Create Composition entities
+  for (const comp of COMPOSITIONS) {
+    store.create("Composition", {
+      ...comp,
+      createdAt: now,
+    })
+  }
+
   return {
     componentDefinitions: COMPONENT_DEFINITIONS.length,
     registries: REGISTRY_DEFINITIONS.length,
     rendererBindings: DEFAULT_BINDINGS.length + STUDIO_BINDINGS.length,
+    layoutTemplates: LAYOUT_TEMPLATES.length,
+    compositions: COMPOSITIONS.length,
   }
 }

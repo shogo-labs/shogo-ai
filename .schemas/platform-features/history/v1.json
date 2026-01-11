@@ -3,10 +3,9 @@
   "name": "platform-features",
   "format": "enhanced-json-schema",
   "createdAt": 1765197911179,
+  "version": 1,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "x-persistence": {
-    "backend": "postgres"
-  },
+  "$id": "platform-features",
   "$defs": {
     "FeatureSession": {
       "type": "object",
@@ -44,10 +43,7 @@
         },
         "affectedPackages": {
           "type": "array",
-          "description": "Which packages this feature touches",
-          "items": {
-            "type": "string"
-          }
+          "description": "Which packages this feature touches"
         },
         "schemaName": {
           "type": "string",
@@ -55,33 +51,7 @@
         },
         "initialAssessment": {
           "type": "object",
-          "description": "Preliminary archetype assessment from discovery (not finalized until classification)",
-          "properties": {
-            "likelyArchetype": {
-              "type": "string",
-              "enum": [
-                "service",
-                "domain",
-                "infrastructure",
-                "hybrid"
-              ],
-              "x-renderer": "archetype-badge"
-            },
-            "indicators": {
-              "type": "array",
-              "description": "Evidence observed during discovery",
-              "items": {
-                "type": "string"
-              }
-            },
-            "uncertainties": {
-              "type": "array",
-              "description": "What needs validation during classification",
-              "items": {
-                "type": "string"
-              }
-            }
-          }
+          "description": "Preliminary archetype assessment from discovery (not finalized until classification)"
         },
         "featureArchetype": {
           "type": "string",
@@ -96,10 +66,7 @@
         },
         "applicablePatterns": {
           "type": "array",
-          "description": "Patterns applicable to this feature (set by classification skill)",
-          "items": {
-            "type": "string"
-          }
+          "description": "Patterns applicable to this feature (set by classification skill)"
         },
         "createdAt": {
           "type": "number"
@@ -566,20 +533,14 @@
         },
         "acceptanceCriteria": {
           "type": "array",
-          "description": "Conditions that must be met for task completion",
-          "items": {
-            "type": "string"
-          }
+          "description": "Conditions that must be met for task completion"
         },
         "dependencies": {
           "type": "array",
           "description": "Tasks that must complete before this one",
-          "items": {
-            "type": "string"
-          },
+          "x-arktype": "ImplementationTask",
           "x-mst-type": "reference",
           "x-reference-type": "array",
-          "x-arktype": "ImplementationTask",
           "x-reference-target": "ImplementationTask"
         },
         "status": {
@@ -646,10 +607,7 @@
         },
         "given": {
           "type": "array",
-          "description": "Preconditions for the test",
-          "items": {
-            "type": "string"
-          }
+          "description": "Preconditions for the test"
         },
         "when": {
           "type": "string",
@@ -657,10 +615,7 @@
         },
         "then": {
           "type": "array",
-          "description": "Expected outcomes",
-          "items": {
-            "type": "string"
-          }
+          "description": "Expected outcomes"
         },
         "testType": {
           "type": "string",
@@ -729,17 +684,11 @@
         },
         "completedTasks": {
           "type": "array",
-          "description": "IDs of successfully completed tasks",
-          "items": {
-            "type": "string"
-          }
+          "description": "IDs of successfully completed tasks"
         },
         "failedTasks": {
           "type": "array",
-          "description": "IDs of tasks that failed/blocked",
-          "items": {
-            "type": "string"
-          }
+          "description": "IDs of tasks that failed/blocked"
         },
         "startedAt": {
           "type": "number"
@@ -765,8 +714,8 @@
       "description": "Execution record for a single task attempt",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "partitionKey": "run",
-        "nested": true
+        "nested": true,
+        "partitionKey": "run"
       },
       "properties": {
         "id": {
@@ -837,6 +786,17 @@
         "startedAt"
       ],
       "x-original-name": "TaskExecution"
+    }
+  },
+  "x-persistence": {
+    "backend": "postgres"
+  },
+  "views": {
+    "discovery-view-composition": {
+      "type": "template",
+      "select": [],
+      "dataSource": "custom",
+      "template": "{\n  \"sessionId\": \"{{ session.id }}\",\n  \"metadata\": {\n    \"phase\": \"discovery\",\n    \"generatedAt\": {{ \"now\" | date(\"x\") }},\n    \"featureName\": \"{{ session.name }}\",\n    \"intent\": \"{{ session.intent }}\"\n  },\n  \"sections\": [\n    {\n      \"id\": \"intent\",\n      \"title\": \"Feature Intent\",\n      \"type\": \"text-display\",\n      \"content\": \"{{ session.intent }}\"\n    },\n    {\n      \"id\": \"requirements\",\n      \"title\": \"Requirements ({{ requirements.length }})\",\n      \"type\": \"requirement-list\",\n      \"items\": [\n        {% for req in requirements %}\n        {\n          \"id\": \"{{ req.id }}\",\n          \"name\": \"{{ req.name }}\",\n          \"description\": \"{{ req.description }}\",\n          \"priority\": \"{{ req.priority }}\",\n          \"status\": \"{{ req.status }}\"\n        }{% if not loop.last %},{% endif %}\n        {% endfor %}\n      ]\n    },\n    {\n      \"id\": \"initial-assessment\",\n      \"title\": \"Initial Assessment\",\n      \"type\": \"assessment-card\",\n      \"visible\": {{ \"true\" if session.initialAssessment else \"false\" }},\n      \"data\": {{ session.initialAssessment | dump | safe }}\n    },\n    {\n      \"id\": \"next-steps\",\n      \"title\": \"Next Steps\",\n      \"type\": \"action-panel\",\n      \"actions\": [\n        {\n          \"label\": \"Proceed to Analysis\",\n          \"enabled\": {{ \"true\" if requirements.length > 0 else \"false\" }},\n          \"nextPhase\": \"analysis\"\n        }\n      ]\n    }\n  ]\n}"
     }
   }
 }

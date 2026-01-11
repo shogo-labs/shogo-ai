@@ -30,6 +30,8 @@ import {
   COMPONENT_DEFINITIONS,
   REGISTRIES,
   RENDERER_BINDINGS,
+  LAYOUT_TEMPLATES,
+  COMPOSITIONS,
 } from "../seed-data/component-builder"
 
 // Track mocks for cleanup
@@ -233,6 +235,14 @@ function createMockComponentBuilderStore(options: { hasExistingRegistry?: boolea
   const bindingQueryChain = createQueryChain(null)
   const bindingInsertOne = mock((data: any) => Promise.resolve(data))
 
+  // LayoutTemplate collection with query + insertOne
+  const layoutQueryChain = createQueryChain(null)
+  const layoutInsertOne = mock((data: any) => Promise.resolve(data))
+
+  // Composition collection with query + insertOne
+  const compositionQueryChain = createQueryChain(null)
+  const compositionInsertOne = mock((data: any) => Promise.resolve(data))
+
   return {
     registryCollection: {
       query: registryQueryChain.query,
@@ -249,6 +259,16 @@ function createMockComponentBuilderStore(options: { hasExistingRegistry?: boolea
       insertOne: bindingInsertOne,
       _queryChain: bindingQueryChain._chain,
     },
+    layoutTemplateCollection: {
+      query: layoutQueryChain.query,
+      insertOne: layoutInsertOne,
+      _queryChain: layoutQueryChain._chain,
+    },
+    compositionCollection: {
+      query: compositionQueryChain.query,
+      insertOne: compositionInsertOne,
+      _queryChain: compositionQueryChain._chain,
+    },
     _mocks: {
       registryQuery: registryQueryChain.query,
       registryWhere: registryQueryChain._chain.where,
@@ -256,6 +276,8 @@ function createMockComponentBuilderStore(options: { hasExistingRegistry?: boolea
       registryInsertOne,
       componentDefInsertOne,
       bindingInsertOne,
+      layoutInsertOne,
+      compositionInsertOne,
     },
   }
 }
@@ -559,11 +581,11 @@ describe("Seed Initialization", () => {
       // When: initializeSeedData is called
       await initializeSeedData(tempDir)
 
-      // Then: 31 ComponentDefinitions are created in the store
+      // Then: 36 ComponentDefinitions are created in the store
       expect(mockComponentBuilderStore._mocks.componentDefInsertOne).toHaveBeenCalledTimes(
         COMPONENT_DEFINITIONS.length
       )
-      expect(COMPONENT_DEFINITIONS.length).toBe(31)
+      expect(COMPONENT_DEFINITIONS.length).toBe(36)
 
       // And: Each definition matches seed data constants
       const insertedDefs = mockComponentBuilderStore._mocks.componentDefInsertOne.mock.calls.map(
@@ -674,10 +696,26 @@ describe("Seed Initialization", () => {
       }
     })
 
-    test("is idempotent - skips when default registry already exists", async () => {
-      // Given: component-builder schema is loaded and default registry already exists
+    test("is idempotent - skips entities that already exist", async () => {
+      // Given: component-builder schema is loaded and all entities already exist
+      // We use hasExistingRegistry: true to simulate existing default registry
+      // The mock returns a non-null result for ALL queries, simulating all entities exist
       mockStore = createMockStore({ hasExistingOrg: true })
       mockComponentBuilderStore = createMockComponentBuilderStore({ hasExistingRegistry: true })
+
+      // Override query chains to return existing entities for ALL queries (complete idempotency)
+      mockComponentBuilderStore.componentDefinitionCollection._queryChain.first = mock(() =>
+        Promise.resolve({ id: "existing-component", name: "Existing" })
+      )
+      mockComponentBuilderStore.rendererBindingCollection._queryChain.first = mock(() =>
+        Promise.resolve({ id: "existing-binding", name: "Existing" })
+      )
+      mockComponentBuilderStore.layoutTemplateCollection._queryChain.first = mock(() =>
+        Promise.resolve({ id: "existing-layout", name: "Existing" })
+      )
+      mockComponentBuilderStore.compositionCollection._queryChain.first = mock(() =>
+        Promise.resolve({ id: "existing-composition", name: "Existing" })
+      )
 
       loadSchemaSpy = spyOn(stateApi, "loadSchema").mockImplementation(async (name: string) => {
         if (name === "studio-core") {
@@ -699,13 +737,15 @@ describe("Seed Initialization", () => {
         throw new Error(`Unknown domain: ${opts.name}`)
       })
 
-      // When: initializeSeedData is called again
+      // When: initializeSeedData is called
       await initializeSeedData(tempDir)
 
-      // Then: No new entities are created
+      // Then: No new entities are created (all already exist)
       expect(mockComponentBuilderStore._mocks.componentDefInsertOne).not.toHaveBeenCalled()
       expect(mockComponentBuilderStore._mocks.registryInsertOne).not.toHaveBeenCalled()
       expect(mockComponentBuilderStore._mocks.bindingInsertOne).not.toHaveBeenCalled()
+      expect(mockComponentBuilderStore._mocks.layoutInsertOne).not.toHaveBeenCalled()
+      expect(mockComponentBuilderStore._mocks.compositionInsertOne).not.toHaveBeenCalled()
 
       // And: Function completes without error
       // (test passes if no exception thrown)

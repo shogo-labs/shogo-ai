@@ -33,7 +33,8 @@
             "display",
             "input",
             "layout",
-            "visualization"
+            "visualization",
+            "section"
           ],
           "x-renderer": "category-badge"
         },
@@ -220,7 +221,25 @@
         },
         "slots": {
           "type": "array",
-          "description": "Slot definitions specifying available placement areas"
+          "description": "Slot definitions specifying available placement areas",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Slot identifier (e.g., 'header', 'main', 'sidebar')"
+              },
+              "position": {
+                "type": "string",
+                "description": "Layout position hint (e.g., 'top', 'left', 'right', 'bottom', 'center')"
+              },
+              "required": {
+                "type": "boolean",
+                "description": "Whether this slot must have content assigned"
+              }
+            },
+            "required": ["name", "position"]
+          }
         },
         "defaultBindings": {
           "type": "object",
@@ -267,7 +286,29 @@
         },
         "slotContent": {
           "type": "array",
-          "description": "Content placed in each slot"
+          "description": "Content placed in each slot",
+          "items": {
+            "type": "object",
+            "properties": {
+              "slot": {
+                "type": "string",
+                "description": "Slot name this content fills (must match a slot in the layout)"
+              },
+              "component": {
+                "type": "string",
+                "description": "ComponentDefinition to render in this slot",
+                "x-arktype": "ComponentDefinition",
+                "x-mst-type": "reference",
+                "x-reference-type": "single",
+                "x-reference-target": "ComponentDefinition"
+              },
+              "config": {
+                "type": "object",
+                "description": "Optional configuration passed to the component"
+              }
+            },
+            "required": ["slot", "component"]
+          }
         },
         "dataContext": {
           "type": "object",

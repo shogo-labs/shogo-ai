@@ -5,14 +5,16 @@
  * insertOne() operations via Wavesmith MCP tools.
  *
  * Exports:
- * - COMPONENT_DEFINITIONS: 31 entries (display components)
+ * - COMPONENT_DEFINITIONS: 36 entries (display, visualization, section components)
  * - REGISTRIES: 2 entries (default, studio)
  * - RENDERER_BINDINGS: 32 entries (12 default + 20 studio)
+ * - LAYOUT_TEMPLATES: 1 entry (layout-phase-two-column)
+ * - COMPOSITIONS: 1 entry (discovery)
  *
  * All entities have proper id fields for idempotency checks.
  * TypeScript types match component-builder schema entity types.
  *
- * Tasks: task-sdr-v2-001, smart-component-expansion; task-cbe-003
+ * Tasks: task-sdr-v2-001, smart-component-expansion; task-cbe-003; task-cpv-003; task-cpv-004
  */
 
 // =============================================================================
@@ -29,7 +31,7 @@ export interface ComponentDefinitionSeed {
   /** Human-readable component name */
   name: string
   /** Component category for organization */
-  category: "display" | "input" | "layout" | "visualization"
+  category: "display" | "input" | "layout" | "visualization" | "section"
   /** Documentation for the component's purpose */
   description: string
   /** Key mapping to code-side component registry */
@@ -92,8 +94,68 @@ export interface RendererBindingSeed {
   defaultConfig?: XRendererConfigSeed
 }
 
+/**
+ * Slot definition for LayoutTemplate.
+ * Matches component-builder schema $defs.LayoutTemplate.slots.items
+ */
+export interface SlotSeed {
+  /** Slot identifier (e.g., 'header', 'main', 'sidebar') */
+  name: string
+  /** Layout position hint (e.g., 'top', 'left', 'right', 'bottom', 'center') */
+  position: string
+  /** Whether this slot must have content assigned */
+  required?: boolean
+}
+
+/**
+ * Seed data for LayoutTemplate entity.
+ * Matches component-builder schema $defs.LayoutTemplate
+ */
+export interface LayoutTemplateSeed {
+  /** Unique identifier (x-mst-type: identifier) */
+  id: string
+  /** Layout name (e.g., 'two-column', 'dashboard-grid', 'detail-panel') */
+  name: string
+  /** Documentation for the layout's structure and intended use */
+  description?: string
+  /** Slot definitions specifying available placement areas */
+  slots: SlotSeed[]
+  /** Default slot-to-component mappings as {slotName: componentId} */
+  defaultBindings?: Record<string, string>
+}
+
+/**
+ * Slot content definition for Composition.
+ * Matches component-builder schema $defs.Composition.slotContent.items
+ */
+export interface SlotContentSeed {
+  /** Slot name this content fills (must match a slot in the layout) */
+  slot: string
+  /** ComponentDefinition id to render in this slot (x-mst-type: reference) */
+  component: string
+  /** Optional configuration passed to the component */
+  config?: Record<string, unknown>
+}
+
+/**
+ * Seed data for Composition entity.
+ * Matches component-builder schema $defs.Composition
+ */
+export interface CompositionSeed {
+  /** Unique identifier (x-mst-type: identifier) */
+  id: string
+  /** Composition name (e.g., 'Feature Session Detail View', 'User Dashboard') */
+  name: string
+  /** The LayoutTemplate id this composition uses (x-mst-type: reference) */
+  layout: string
+  /** Content placed in each slot */
+  slotContent: SlotContentSeed[]
+  /** Shared data source definitions available to all slot components */
+  dataContext?: Record<string, unknown>
+}
+
 // =============================================================================
-// Component Definitions (31 total)
+// Component Definitions (36 total)
 // =============================================================================
 
 /**
@@ -103,6 +165,7 @@ export interface RendererBindingSeed {
  * - Primitive Display (14): String, Number, Boolean, DateTime, Email, URI, Enum, Reference, Computed, Array, Object, StringArray, CodePath, LongText
  * - Domain-Specific Display (13): Priority, Archetype, FindingType, TaskStatus, TestType, SessionStatus, RequirementStatus, RunStatus, ExecutionStatus, TestCaseStatus, TaskRenderer, ChangeTypeBadge, PhaseStatusRenderer
  * - Visualization (4): ProgressBar, DataCard, GraphNode, StatusIndicator
+ * - Section (5): IntentTerminalSection, InitialAssessmentSection, RequirementsListSection, SessionSummarySection, PhaseActionsSection
  */
 export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
   // ---------------------------------------------------------------------------
@@ -377,6 +440,50 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders multi-stage status indicators with layout options",
     implementationRef: "StatusIndicator",
     tags: ["visualization", "status", "indicator", "readonly"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Section Components for Composable Phase Views (5) - task-cpv-003
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-intent-terminal-section",
+    name: "IntentTerminalSection",
+    category: "section",
+    description: "Renders session intent in terminal-style display",
+    implementationRef: "IntentTerminalSection",
+    tags: ["section", "discovery-phase"],
+  },
+  {
+    id: "comp-def-initial-assessment-section",
+    name: "InitialAssessmentSection",
+    category: "section",
+    description: "Renders initial assessment with archetype and priority badges",
+    implementationRef: "InitialAssessmentSection",
+    tags: ["section", "discovery-phase"],
+  },
+  {
+    id: "comp-def-requirements-list-section",
+    name: "RequirementsListSection",
+    category: "section",
+    description: "Renders requirements as an interactive checklist",
+    implementationRef: "RequirementsListSection",
+    tags: ["section", "discovery-phase"],
+  },
+  {
+    id: "comp-def-session-summary-section",
+    name: "SessionSummarySection",
+    category: "section",
+    description: "Renders session metadata summary with key information",
+    implementationRef: "SessionSummarySection",
+    tags: ["section", "discovery-phase"],
+  },
+  {
+    id: "comp-def-phase-actions-section",
+    name: "PhaseActionsSection",
+    category: "section",
+    description: "Renders phase-specific action buttons for navigation and transitions",
+    implementationRef: "PhaseActionsSection",
+    tags: ["section", "discovery-phase"],
   },
 ]
 
@@ -725,4 +832,54 @@ const STUDIO_BINDINGS: RendererBindingSeed[] = [
 export const RENDERER_BINDINGS: RendererBindingSeed[] = [
   ...DEFAULT_BINDINGS,
   ...STUDIO_BINDINGS,
+]
+
+// =============================================================================
+// Layout Templates (1 total) - task-cpv-004
+// =============================================================================
+
+/**
+ * LayoutTemplate seed entities defining slot-based layouts.
+ *
+ * Structure:
+ * - layout-phase-two-column: Two-column layout for phase views with header and actions areas
+ */
+export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
+  {
+    id: "layout-phase-two-column",
+    name: "layout-phase-two-column",
+    description: "Two-column layout for phase views with header and actions areas",
+    slots: [
+      { name: "header", position: "top", required: true },
+      { name: "main", position: "left", required: true },
+      { name: "sidebar", position: "right", required: false },
+      { name: "actions", position: "bottom", required: false },
+    ],
+    defaultBindings: {},
+  },
+]
+
+// =============================================================================
+// Compositions (1 total) - task-cpv-004
+// =============================================================================
+
+/**
+ * Composition seed entities defining concrete page/view compositions.
+ *
+ * Structure:
+ * - discovery: Discovery phase view composition with slot-to-section mappings
+ */
+export const COMPOSITIONS: CompositionSeed[] = [
+  {
+    id: "composition-discovery",
+    name: "discovery",
+    layout: "layout-phase-two-column",
+    slotContent: [
+      { slot: "header", component: "comp-def-intent-terminal-section" },
+      { slot: "main", component: "comp-def-requirements-list-section" },
+      { slot: "sidebar", component: "comp-def-initial-assessment-section" },
+      { slot: "actions", component: "comp-def-phase-actions-section" },
+    ],
+    dataContext: { phase: "discovery" },
+  },
 ]

@@ -150,6 +150,8 @@ export enum MigrationOperation {
   DROP_COLUMN = "DROP_COLUMN",
   /** Recreate table (SQLite workaround for unsupported ALTER operations) */
   RECREATE_TABLE = "RECREATE_TABLE",
+  /** Modify CHECK constraint (for enum value changes) */
+  MODIFY_CONSTRAINT = "MODIFY_CONSTRAINT",
 }
 
 /**
@@ -171,7 +173,7 @@ export interface MigrationOperationDef {
   tableName: string
   /** Column definition (for ADD_COLUMN) */
   column?: ColumnDef
-  /** Column name (for DROP_COLUMN) */
+  /** Column name (for DROP_COLUMN, MODIFY_CONSTRAINT) */
   columnName?: string
   /** All columns for table recreation (for RECREATE_TABLE and CREATE_TABLE) */
   columns?: ColumnDef[]
@@ -181,6 +183,10 @@ export interface MigrationOperationDef {
   primaryKey?: string
   /** Foreign key definitions (for CREATE_TABLE) */
   foreignKeys?: ForeignKeyDef[]
+  /** Constraint name (for MODIFY_CONSTRAINT) */
+  constraintName?: string
+  /** New enum values for CHECK constraint (for MODIFY_CONSTRAINT) */
+  newEnumValues?: string[]
 }
 
 // ============================================================================

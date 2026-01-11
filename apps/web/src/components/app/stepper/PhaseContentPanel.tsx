@@ -1,6 +1,6 @@
 /**
  * PhaseContentPanel Component
- * Tasks: task-2-3a-008, task-2-3b-011, task-2-3d-phase-content-panel, task-3-1-008
+ * Tasks: task-2-3a-008, task-2-3b-011, task-2-3d-phase-content-panel, task-3-1-008, task-cpv-013
  *
  * Smart component that uses usePhaseNavigation hook and renders SkillStepper
  * plus content area. This is the data-fetching boundary per design-2-3a-component-hierarchy.
@@ -22,9 +22,15 @@
  * Session 3.1 (task-3-1-008): Added LoadingOverlay for subtle loading states
  * - Uses isPolling from ChatContext to show loading indicator during data refresh
  * - Optimistic rendering - existing content visible while refreshing
+ *
+ * Session CPV (task-cpv-013): Integrated ComposablePhaseView for discovery phase
+ * - Discovery phase now uses data-driven composition via ComposablePhaseView
+ * - Other phases remain unchanged using hardcoded view components
+ * - ComposablePhaseView handles fallback when composition not found
  */
 
 import { useMemo } from "react"
+import { observer } from "mobx-react-lite"
 import { cn } from "@/lib/utils"
 import { SkillStepper } from "./SkillStepper"
 import { EmptyPhaseContent } from "./EmptyStates"
@@ -33,6 +39,8 @@ import { LoadingOverlay } from "./LoadingOverlay"
 import { usePhaseNavigation } from "./hooks/usePhaseNavigation"
 import { getPhaseStatus, PHASE_CONFIG } from "./phaseUtils"
 import { useChatContextSafe } from "../chat/ChatContext"
+// Composable phase view for data-driven phase composition (Session CPV)
+import { ComposablePhaseView } from "@/components/rendering/composition/ComposablePhaseView"
 // Phase view components (Session 2.3B, 2.3C, 2.3D)
 import { DiscoveryView, AnalysisView, ClassificationView, DesignView } from "./phases"
 import { SpecView } from "./phases/spec/SpecView"
@@ -84,7 +92,7 @@ export interface PhaseContentPanelProps {
  * - 2.3C: DesignView, SpecView in content area
  * - 2.3D: Run phase callback for EmptyPhaseContent
  */
-export function PhaseContentPanel({ feature }: PhaseContentPanelProps) {
+export const PhaseContentPanel = observer(function PhaseContentPanel({ feature }: PhaseContentPanelProps) {
   // Use the phase navigation hook with feature status
   const { phase, setPhase, phases } = usePhaseNavigation(feature.status)
 
@@ -135,8 +143,9 @@ export function PhaseContentPanel({ feature }: PhaseContentPanelProps) {
 
     // Render phase-specific views based on selected phase
     switch (phase) {
+      // Discovery uses data-driven composition via ComposablePhaseView (task-cpv-013)
       case "discovery":
-        return <DiscoveryView feature={feature} />
+        return <ComposablePhaseView phaseName="discovery" feature={feature} />
 
       case "analysis":
         return <AnalysisView feature={feature} />
@@ -206,4 +215,4 @@ export function PhaseContentPanel({ feature }: PhaseContentPanelProps) {
       </LoadingOverlay>
     </div>
   )
-}
+})
