@@ -1,9 +1,10 @@
 /**
  * OrgSwitcher Component
- * Task: task-2-2-003
+ * Task: task-2-2-003, task-org-004
  *
  * Dropdown for organization selection using shadcn Select.
  * Displays current org name, lists all user organizations.
+ * Includes "Create Organization" button at the bottom of the dropdown.
  *
  * Per design decision design-2-2-clean-break:
  * - Fresh component in /components/app/workspace/
@@ -14,16 +15,27 @@
  * - Props: orgs, currentOrg, onOrgChange
  * - Shows org name
  * - Disabled state when loading
+ *
+ * Per task-org-004:
+ * - Create Organization button at bottom of dropdown
+ * - Visual separator from org list
+ * - Opens CreateOrgModal for creating new organizations
  */
+
+import { useState } from "react"
+import { Plus } from "lucide-react"
 
 import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Button } from "@/components/ui/button"
+import { CreateOrgModal } from "./CreateOrgModal"
 
 /**
  * Organization entity shape (from studioCore domain)
@@ -54,6 +66,7 @@ export interface OrgSwitcherProps {
  * Uses shadcn Select component for accessible dropdown.
  * Shows current org name as trigger, lists all orgs in dropdown.
  * Calls onOrgChange(slug) when selection changes.
+ * Includes "Create Organization" button at the bottom.
  *
  * @example
  * ```tsx
@@ -70,9 +83,20 @@ export function OrgSwitcher({
   onOrgChange,
   isLoading = false,
 }: OrgSwitcherProps) {
+  // State for Create Organization modal
+  const [showCreateModal, setShowCreateModal] = useState<boolean>(false)
+
   // Handle selection change
   const handleValueChange = (value: string) => {
     onOrgChange(value)
+  }
+
+  // Handle Create Organization button click
+  const handleCreateClick = (e: React.MouseEvent) => {
+    // Prevent the select from closing/changing
+    e.preventDefault()
+    e.stopPropagation()
+    setShowCreateModal(true)
   }
 
   // Show skeleton during loading
@@ -81,21 +105,46 @@ export function OrgSwitcher({
   }
 
   return (
-    <Select
-      value={currentOrg?.slug ?? ""}
-      onValueChange={handleValueChange}
-      disabled={isLoading}
-    >
-      <SelectTrigger className="w-[180px]">
-        <SelectValue placeholder="Select organization" />
-      </SelectTrigger>
-      <SelectContent>
-        {orgs.map((org) => (
-          <SelectItem key={org.id} value={org.slug}>
-            {org.name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <>
+      <Select
+        value={currentOrg?.slug ?? ""}
+        onValueChange={handleValueChange}
+        disabled={isLoading}
+      >
+        <SelectTrigger className="w-[180px]">
+          <SelectValue placeholder="Select organization" />
+        </SelectTrigger>
+        <SelectContent>
+          {/* Organization list */}
+          {orgs.map((org) => (
+            <SelectItem key={org.id} value={org.slug}>
+              {org.name}
+            </SelectItem>
+          ))}
+
+          {/* Visual separator */}
+          <SelectSeparator />
+
+          {/* Create Organization button */}
+          <div className="p-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+              onClick={handleCreateClick}
+            >
+              <Plus className="h-4 w-4" />
+              Create Organization
+            </Button>
+          </div>
+        </SelectContent>
+      </Select>
+
+      {/* Create Organization Modal */}
+      <CreateOrgModal
+        open={showCreateModal}
+        onOpenChange={setShowCreateModal}
+      />
+    </>
   )
 }

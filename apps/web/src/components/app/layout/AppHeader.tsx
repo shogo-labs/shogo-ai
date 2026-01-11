@@ -20,10 +20,13 @@
  */
 
 import { observer } from "mobx-react-lite"
+import { Link } from "react-router-dom"
+import { Users } from "lucide-react"
 import { ThemeToggle } from "../shared/ThemeToggle"
 import { UserMenu } from "../shared/UserMenu"
 import { OrgSwitcher, ProjectSelector } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
+import { Button } from "@/components/ui/button"
 
 /**
  * AppHeader component
@@ -72,7 +75,17 @@ export const AppHeader = observer(function AppHeader() {
           onProjectChange={handleProjectChange}
           disabled={!currentOrg}
           isLoading={isLoading}
+          organizationId={currentOrg?.id}
         />
+        {/* Members link - only show when org is selected */}
+        {currentOrg && (
+          <Link to="/app/members" title="Manage members">
+            <Button variant="ghost" size="icon" className="h-9 w-9">
+              <Users className="h-4 w-4" />
+              <span className="sr-only">Members</span>
+            </Button>
+          </Link>
+        )}
       </div>
 
       {/* Right: Controls */}

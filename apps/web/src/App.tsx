@@ -19,6 +19,8 @@ import { StudioCoreDemoPage } from './pages/StudioCoreDemoPage'
 import { StudioChatDemoPage } from './pages/StudioChatDemoPage'
 import { StudioPage } from './pages/StudioPage'
 import { RenderingDemoPage } from './pages/RenderingDemoPage'
+import { AppMemberManagementPage } from './pages/AppMemberManagementPage'
+import { AppProfilePage } from './pages/AppProfilePage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
@@ -154,7 +156,10 @@ function App() {
                   }>
                     {/* WorkspaceLayout as index route (task-2-2-004) */}
                     <Route index element={<WorkspaceLayout />} />
-                    {/* Future nested routes go here (Session 2.2+) */}
+                    {/* Member management route */}
+                    <Route path="members" element={<AppMemberManagementPage />} />
+                    {/* User profile route */}
+                    <Route path="profile" element={<AppProfilePage />} />
                   </Route>
                 </Routes>
               </AuthProvider>

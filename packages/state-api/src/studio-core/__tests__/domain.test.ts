@@ -959,3 +959,197 @@ describe("createInvitation action validates polymorphic references", () => {
     }).toThrow(/exactly one/)
   })
 })
+
+// ============================================================
+// Test: OrganizationCollection.findByMembership query
+// (test-org-003-01, test-org-003-02)
+// ============================================================
+describe("OrganizationCollection.findByMembership query works", () => {
+  let env: IEnvironment
+  let store: any
+
+  beforeEach(() => {
+    env = createTestEnv()
+    const { createStore } = createStudioCoreStore()
+    store = createStore(env)
+  })
+
+  test("Returns organizations where user has membership", () => {
+    // Create two orgs
+    const org1 = store.organizationCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Org 1",
+      slug: "org-1",
+      createdAt: Date.now(),
+    })
+
+    const org2 = store.organizationCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      name: "Org 2",
+      slug: "org-2",
+      createdAt: Date.now(),
+    })
+
+    const org3 = store.organizationCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440003",
+      name: "Org 3",
+      slug: "org-3",
+      createdAt: Date.now(),
+    })
+
+    // User 1 has membership in org1 and org2
+    store.memberCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      userId: "user-1",
+      role: "owner",
+      organization: org1.id,
+      createdAt: Date.now(),
+    })
+
+    store.memberCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440011",
+      userId: "user-1",
+      role: "member",
+      organization: org2.id,
+      createdAt: Date.now(),
+    })
+
+    // User 2 has membership in org3 only
+    store.memberCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440012",
+      userId: "user-2",
+      role: "owner",
+      organization: org3.id,
+      createdAt: Date.now(),
+    })
+
+    const user1Orgs = store.organizationCollection.findByMembership("user-1")
+    expect(user1Orgs).toHaveLength(2)
+    expect(user1Orgs.map((o: any) => o.id)).toContain(org1.id)
+    expect(user1Orgs.map((o: any) => o.id)).toContain(org2.id)
+    expect(user1Orgs.map((o: any) => o.id)).not.toContain(org3.id)
+  })
+
+  test("Returns empty array for user with no memberships", () => {
+    store.organizationCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Org 1",
+      slug: "org-1",
+      createdAt: Date.now(),
+    })
+
+    const noMemberOrgs = store.organizationCollection.findByMembership("nonexistent-user")
+    expect(noMemberOrgs).toHaveLength(0)
+    expect(Array.isArray(noMemberOrgs)).toBe(true)
+  })
+
+  test("Does not include organizations without direct membership", () => {
+    const org = store.organizationCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Acme Corp",
+      slug: "acme",
+      createdAt: Date.now(),
+    })
+
+    const team = store.teamCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      name: "Engineering",
+      organization: org.id,
+      createdAt: Date.now(),
+    })
+
+    // User has team membership but NOT org membership
+    store.memberCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      userId: "user-1",
+      role: "member",
+      team: team.id,
+      createdAt: Date.now(),
+    })
+
+    // findByMembership should return only direct org memberships
+    const user1Orgs = store.organizationCollection.findByMembership("user-1")
+    expect(user1Orgs).toHaveLength(0)
+  })
+})
+
+// ============================================================
+// Test: rootStore.createOrganization action
+// (test-org-003-03, test-org-003-04, test-org-003-05)
+// ============================================================
+describe("rootStore.createOrganization action works", () => {
+  let env: IEnvironment
+  let store: any
+
+  beforeEach(() => {
+    env = createTestEnv()
+    const { createStore } = createStudioCoreStore()
+    store = createStore(env)
+  })
+
+  test("Creates org and owner membership with name and description", () => {
+    const userId = "user-123"
+    const org = store.createOrganization("My New Org", "A great organization", userId)
+
+    // Organization should be created
+    expect(org).toBeDefined()
+    expect(org.name).toBe("My New Org")
+    expect(org.description).toBe("A great organization")
+    expect(org.slug).toBeDefined()
+
+    // Owner membership should be created
+    const members = store.memberCollection.findByUserId(userId)
+    expect(members).toHaveLength(1)
+    expect(members[0].role).toBe("owner")
+    expect(members[0].organization?.id).toBe(org.id)
+  })
+
+  test("Works without description (optional)", () => {
+    const userId = "user-456"
+    const org = store.createOrganization("Simple Org", undefined, userId)
+
+    expect(org).toBeDefined()
+    expect(org.name).toBe("Simple Org")
+    expect(org.description).toBeUndefined()
+
+    // Owner membership should still be created
+    const members = store.memberCollection.findByUserId(userId)
+    expect(members).toHaveLength(1)
+    expect(members[0].role).toBe("owner")
+  })
+
+  test("Creates org before member (correct sequence)", () => {
+    const userId = "user-789"
+    const org = store.createOrganization("Sequenced Org", undefined, userId)
+
+    // Verify org exists
+    const storedOrg = store.organizationCollection.get(org.id)
+    expect(storedOrg).toBeDefined()
+    expect(storedOrg.name).toBe("Sequenced Org")
+
+    // Verify member references the org correctly
+    const members = store.memberCollection.findByUserId(userId)
+    expect(members[0].organization).toBe(storedOrg)
+  })
+
+  test("Returns the created Organization instance", () => {
+    const userId = "user-abc"
+    const org = store.createOrganization("Return Test Org", undefined, userId)
+
+    // Should return the org instance
+    expect(org.id).toBeDefined()
+    expect(typeof org.id).toBe("string")
+
+    // Should be the same instance as stored
+    const storedOrg = store.organizationCollection.get(org.id)
+    expect(org).toBe(storedOrg)
+  })
+
+  test("Generates unique slug from name", () => {
+    const userId = "user-xyz"
+    const org = store.createOrganization("Test Organization!", undefined, userId)
+
+    // Slug should be lowercase with dashes
+    expect(org.slug).toMatch(/^[a-z0-9-]+$/)
+  })
+})

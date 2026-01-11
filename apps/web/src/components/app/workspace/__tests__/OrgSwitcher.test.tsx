@@ -214,6 +214,72 @@ describe("test-2-2-003-008: Clean break - OrgSwitcher in /components/app/workspa
 })
 
 // ============================================================
+// Test 5: Create Organization button
+// (test-org-004)
+// ============================================================
+
+describe("test-org-004: OrgSwitcher includes Create Organization button", () => {
+  test("OrgSwitcher includes Create Organization option at bottom of dropdown", () => {
+    const componentPath = path.resolve(import.meta.dir, "../OrgSwitcher.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have "Create Organization" text somewhere in the component
+    expect(componentSource).toMatch(/Create Organization|Create Org/)
+  })
+
+  test("OrgSwitcher imports Button from shadcn", () => {
+    const componentPath = path.resolve(import.meta.dir, "../OrgSwitcher.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should import Button for Create Organization action
+    expect(componentSource).toMatch(/@\/components\/ui\/button/)
+    expect(componentSource).toMatch(/Button/)
+  })
+
+  test("OrgSwitcher has visual separator between org list and create button", () => {
+    const componentPath = path.resolve(import.meta.dir, "../OrgSwitcher.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have some kind of separator (div, SelectSeparator, border, etc.)
+    expect(componentSource).toMatch(/Separator|separator|border-t|divider|<hr/)
+  })
+
+  test("OrgSwitcher manages modal state for CreateOrgModal", () => {
+    const componentPath = path.resolve(import.meta.dir, "../OrgSwitcher.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have state for modal open/close
+    expect(componentSource).toMatch(/useState.*boolean|showCreateModal|isCreateModalOpen|createModalOpen/)
+  })
+
+  test("OrgSwitcher imports CreateOrgModal component", () => {
+    const componentPath = path.resolve(import.meta.dir, "../OrgSwitcher.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should import and render CreateOrgModal
+    expect(componentSource).toMatch(/import.*CreateOrgModal|from.*CreateOrgModal/)
+    expect(componentSource).toMatch(/<CreateOrgModal/)
+  })
+
+  test("OrgSwitcher passes open and onOpenChange to CreateOrgModal", () => {
+    const componentPath = path.resolve(import.meta.dir, "../OrgSwitcher.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should pass controlled props to CreateOrgModal
+    expect(componentSource).toMatch(/<CreateOrgModal[^>]*open=/)
+    expect(componentSource).toMatch(/<CreateOrgModal[^>]*onOpenChange=/)
+  })
+
+  test("OrgSwitcher uses Plus icon for create button", () => {
+    const componentPath = path.resolve(import.meta.dir, "../OrgSwitcher.tsx")
+    const componentSource = fs.readFileSync(componentPath, "utf-8")
+
+    // Should import Plus icon from lucide-react
+    expect(componentSource).toMatch(/Plus|plus|PlusCircle/)
+  })
+})
+
+// ============================================================
 // Test: OrgSwitcher module can be imported
 // ============================================================
 

@@ -1,9 +1,6 @@
 {
-  "id": "b83de179-8e15-4f6d-a02c-a8b69faa39ff",
-  "name": "studio-core",
-  "format": "enhanced-json-schema",
-  "createdAt": 1767399249034,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-core",
   "$defs": {
     "Organization": {
       "type": "object",

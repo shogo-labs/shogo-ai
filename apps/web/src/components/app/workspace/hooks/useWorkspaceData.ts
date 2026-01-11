@@ -2,23 +2,23 @@
  * useWorkspaceData Hook
  * Task: task-2-2-002
  *
- * Combines URL state with domain queries to provide workspace data.
- * Uses useWorkspaceNavigation() + useDomains() + useAuth() to derive
- * the complete workspace context.
+ * Combines URL state with MCP domain queries to provide workspace data.
+ * Uses useWorkspaceNavigation() + domain queries to derive the complete workspace context.
  *
  * Per design decision design-2-2-data-flow:
  * - Components receive derived data, don't call domains directly
- * - orgs derived from memberCollection.findByUserId()
+ * - orgs fetched from MCP (studioCore.organizationCollection)
+ * - projects fetched from MCP (studioCore.projectCollection)
+ * - features from MCP (platformFeatures.featureSessionCollection)
  * - features grouped by StatusToPhase map into featuresByPhase
  *
- * Note: This hook relies on MobX observer reactivity. Components using this
- * hook should be wrapped with observer() to automatically re-render when
- * accessed MST observables change. useMemo is intentionally NOT used as it
- * would break MobX's automatic dependency tracking.
+ * Note: This hook triggers MCP reload when userId/orgId changes.
  */
 
+import { useState, useEffect, useCallback } from "react"
 import { useDomains } from "../../../../contexts/DomainProvider"
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation"
+import { useSession } from "../../../../auth/client"
 
 /**
  * Phase type for feature grouping - matches FeatureSession status values
@@ -56,6 +56,8 @@ export interface WorkspaceDataState {
   orgs: any[]
   /** Currently selected organization (by slug) */
   currentOrg: any | undefined
+  /** Current user's role in the current organization */
+  currentOrgRole: "owner" | "admin" | "member" | "viewer" | undefined
   /** Projects for the current organization */
   projects: any[]
   /** Currently selected project (by ID) */
@@ -68,15 +70,20 @@ export interface WorkspaceDataState {
   featuresByPhase: Record<string, any[]>
   /** Loading state */
   isLoading: boolean
+  /** Function to refetch organizations (call after creating org or signup) */
+  refetchOrgs: () => void
+  /** Function to refetch projects (call after creating project) */
+  refetchProjects: () => void
 }
 
 /**
- * Hook for accessing workspace data derived from URL state and domain queries.
+ * Hook for accessing workspace data derived from URL state and API/domain queries.
  *
  * Combines:
  * - useWorkspaceNavigation() for URL state (org slug, project ID, feature ID)
- * - useDomains() for studioCore and platformFeatures domains
- * - useAuth() for current user ID
+ * - useSession() for auth state
+ * - API calls for organizations (/api/me/orgs)
+ * - useDomains() for projects and features (studioCore, platformFeatures)
  *
  * @example
  * ```tsx
@@ -101,27 +108,54 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Get URL state
   const { org: orgSlug, projectId, featureId } = useWorkspaceNavigation()
 
-  // Get domains (including auth for currentUser)
-  const { studioCore, platformFeatures, auth } = useDomains()
+  // Get auth session from Better Auth
+  const { data: session, isPending: isSessionLoading } = useSession()
 
-  // Get current user from betterAuthDomain (synced with session)
-  const userId = auth?.currentUser?.id
+  // Get domains for orgs, projects, and features
+  const { studioCore, platformFeatures } = useDomains()
 
-  // Derive organizations from member collection
-  // Per finding-2-2-004: memberCollection.findByUserId(userId) -> derive orgs from member.organization refs
-  // Note: No useMemo - MobX observer tracks MST observable access automatically
-  let orgs: any[] = []
-  if (userId && studioCore?.memberCollection) {
-    try {
-      const members = studioCore.memberCollection.findByUserId(userId)
-      // Get unique organizations from members that have organization refs
-      const orgMap = new Map<string, any>()
-      for (const member of members) {
-        if (member.organization) {
-          orgMap.set(member.organization.id, member.organization)
-        }
+  // State for tracking loading and refetch
+  const [isLoadingOrgs, setIsLoadingOrgs] = useState(true)
+  const [isLoadingProjects, setIsLoadingProjects] = useState(false)
+  const [orgsRefetchCounter, setOrgsRefetchCounter] = useState(0)
+  const [projectsRefetchCounter, setProjectsRefetchCounter] = useState(0)
+
+  // User ID from session (stable reference for dependency tracking)
+  const userId = session?.user?.id
+
+  // Reload organizations from MCP when user changes or refetch is triggered
+  useEffect(() => {
+    const loadOrgs = async () => {
+      if (!userId || !studioCore?.organizationCollection) {
+        setIsLoadingOrgs(false)
+        return
       }
-      orgs = Array.from(orgMap.values())
+
+      try {
+        setIsLoadingOrgs(true)
+        // Reload orgs and members from backend
+        await studioCore.organizationCollection.query().toArray()
+        await studioCore.memberCollection.query().toArray()
+      } catch (error) {
+        console.error("[useWorkspaceData] Error loading orgs:", error)
+      } finally {
+        setIsLoadingOrgs(false)
+      }
+    }
+
+    loadOrgs()
+  }, [userId, studioCore, orgsRefetchCounter])
+
+  // Function to trigger a refetch of organizations
+  const refetchOrgs = useCallback(() => {
+    setOrgsRefetchCounter((c) => c + 1)
+  }, [])
+
+  // Get orgs for the current user from MCP
+  let orgs: any[] = []
+  if (userId && studioCore?.organizationCollection) {
+    try {
+      orgs = studioCore.organizationCollection.findByMembership(userId)
     } catch {
       orgs = []
     }
@@ -130,7 +164,48 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Find current organization by slug
   const currentOrg = orgSlug ? orgs.find((org: any) => org.slug === orgSlug) : undefined
 
-  // Get projects for current organization
+  // Get current user's role in the current org from memberCollection
+  let currentOrgRole: "owner" | "admin" | "member" | "viewer" | undefined = undefined
+  if (userId && currentOrg?.id && studioCore?.memberCollection) {
+    try {
+      const userMembers = studioCore.memberCollection.findByUserId(userId)
+      const orgMember = userMembers.find((m: any) => m.organization?.id === currentOrg.id)
+      if (orgMember) {
+        currentOrgRole = orgMember.role as "owner" | "admin" | "member" | "viewer"
+      }
+    } catch {
+      currentOrgRole = undefined
+    }
+  }
+
+  // Reload projects from MCP when org changes or refetch is triggered
+  useEffect(() => {
+    const loadProjects = async () => {
+      if (!currentOrg?.id || !studioCore?.projectCollection) {
+        setIsLoadingProjects(false)
+        return
+      }
+
+      try {
+        setIsLoadingProjects(true)
+        // Reload projects from backend
+        await studioCore.projectCollection.query().toArray()
+      } catch (error) {
+        console.error("[useWorkspaceData] Error loading projects:", error)
+      } finally {
+        setIsLoadingProjects(false)
+      }
+    }
+
+    loadProjects()
+  }, [currentOrg?.id, studioCore, projectsRefetchCounter])
+
+  // Function to trigger a refetch of projects
+  const refetchProjects = useCallback(() => {
+    setProjectsRefetchCounter((c) => c + 1)
+  }, [])
+
+  // Get projects for current organization from MCP
   let projects: any[] = []
   if (currentOrg?.id && studioCore?.projectCollection) {
     try {
@@ -179,19 +254,20 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
   }
 
-  // Determine loading state
-  // For now, we're not doing async loading, so isLoading is always false
-  // In the future, this could track async queries
-  const isLoading = false
+  // Determine loading state - combines session loading, org loading, and project loading
+  const isLoading = isSessionLoading || isLoadingOrgs || isLoadingProjects
 
   return {
     orgs,
     currentOrg,
+    currentOrgRole,
     projects,
     currentProject,
     features,
     currentFeature,
     featuresByPhase,
     isLoading,
+    refetchOrgs,
+    refetchProjects,
   }
 }
