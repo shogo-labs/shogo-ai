@@ -250,6 +250,30 @@ export function generateMigration(
             `Lossy type conversion may occur.`
           )
         }
+
+        // Handle constraint changes (enum value changes)
+        if (mod.changeType === "constraint") {
+          // PostgreSQL: Can ALTER CONSTRAINT directly
+          // SQLite: Requires table recreation
+          if (dialect.requiresTableRecreation("MODIFY_CONSTRAINT")) {
+            // SQLite: handled by needsRecreation logic above
+            // For now just warn, full recreation handled separately
+            warnings.push(
+              `Constraint change ${tableName}.${mod.columnName}: ` +
+              `SQLite requires table recreation for constraint changes.`
+            )
+          } else {
+            // PostgreSQL: Generate MODIFY_CONSTRAINT operation
+            const constraintName = `${toSnakeCase(modelDiff.modelName)}_${toSnakeCase(mod.columnName)}_check`
+            operations.push({
+              type: MigrationOperation.MODIFY_CONSTRAINT,
+              tableName,
+              columnName: toSnakeCase(mod.columnName),
+              constraintName,
+              newEnumValues: mod.newDef.enumValues,
+            })
+          }
+        }
       }
     }
   }
@@ -364,6 +388,18 @@ export function migrationOutputToSQL(
       case MigrationOperation.RECREATE_TABLE:
         if (op.columns) {
           statements.push(...generateRecreateTableSQL(op.tableName, op.columns, dialect))
+        }
+        break
+
+      case MigrationOperation.MODIFY_CONSTRAINT:
+        if (op.constraintName && op.newEnumValues && op.columnName) {
+          const escapedTable = escapeTableName(op.tableName, dialect)
+          const escapedColumn = dialect.escapeIdentifier(op.columnName)
+          const values = op.newEnumValues.map(v => `'${v}'`).join(", ")
+          // Drop existing constraint (IF EXISTS for safety)
+          statements.push(`ALTER TABLE ${escapedTable} DROP CONSTRAINT IF EXISTS ${dialect.escapeIdentifier(op.constraintName)}`)
+          // Add new constraint with updated enum values
+          statements.push(`ALTER TABLE ${escapedTable} ADD CONSTRAINT ${dialect.escapeIdentifier(op.constraintName)} CHECK (${escapedColumn} IN (${values}))`)
         }
         break
     }

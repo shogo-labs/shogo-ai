@@ -23,6 +23,8 @@ import {
   COMPONENT_DEFINITIONS,
   REGISTRIES,
   RENDERER_BINDINGS,
+  LAYOUT_TEMPLATES,
+  COMPOSITIONS,
 } from "./seed-data/component-builder"
 
 // ============================================================================
@@ -40,6 +42,8 @@ interface ComponentBuilderSeedResult {
     componentDefinitions: number
     registries: number
     rendererBindings: number
+    layoutTemplates: number
+    compositions: number
   }
 }
 
@@ -111,6 +115,8 @@ async function seedComponentBuilder(store: any): Promise<ComponentBuilderSeedRes
   let createdDefs = 0
   let createdRegs = 0
   let createdBindings = 0
+  let createdLayouts = 0
+  let createdCompositions = 0
 
   // Insert ComponentDefinitions - check each individually
   for (const def of COMPONENT_DEFINITIONS) {
@@ -160,8 +166,40 @@ async function seedComponentBuilder(store: any): Promise<ComponentBuilderSeedRes
     }
   }
 
+  // Insert LayoutTemplates - check each individually
+  for (const layout of LAYOUT_TEMPLATES) {
+    const existing = await store.layoutTemplateCollection
+      .query()
+      .where({ id: layout.id })
+      .first()
+
+    if (!existing) {
+      await store.layoutTemplateCollection.insertOne({
+        ...layout,
+        createdAt: now,
+      })
+      createdLayouts++
+    }
+  }
+
+  // Insert Compositions - check each individually
+  for (const composition of COMPOSITIONS) {
+    const existing = await store.compositionCollection
+      .query()
+      .where({ id: composition.id })
+      .first()
+
+    if (!existing) {
+      await store.compositionCollection.insertOne({
+        ...composition,
+        createdAt: now,
+      })
+      createdCompositions++
+    }
+  }
+
   // Consider "already seeded" only if nothing new was created
-  const totalCreated = createdDefs + createdRegs + createdBindings
+  const totalCreated = createdDefs + createdRegs + createdBindings + createdLayouts + createdCompositions
   if (totalCreated === 0) {
     return { alreadySeeded: true }
   }
@@ -172,6 +210,8 @@ async function seedComponentBuilder(store: any): Promise<ComponentBuilderSeedRes
       componentDefinitions: createdDefs,
       registries: createdRegs,
       rendererBindings: createdBindings,
+      layoutTemplates: createdLayouts,
+      compositions: createdCompositions,
     },
   }
 }
@@ -279,7 +319,9 @@ export async function initializeSeedData(schemasDir: string): Promise<void> {
           `[seed-init] component-builder seed data created successfully ` +
             `(${componentBuilderResult.created?.componentDefinitions} definitions, ` +
             `${componentBuilderResult.created?.registries} registries, ` +
-            `${componentBuilderResult.created?.rendererBindings} bindings)`
+            `${componentBuilderResult.created?.rendererBindings} bindings, ` +
+            `${componentBuilderResult.created?.layoutTemplates} layouts, ` +
+            `${componentBuilderResult.created?.compositions} compositions)`
         )
       }
     } catch (componentBuilderError) {

@@ -69,7 +69,7 @@ import type { PollableDomain } from "@/hooks/useFeaturePolling"
 
 // PERF FIX: Stable array reference for polling domains.
 // Inline arrays create new references on every render, causing useCallback deps to change.
-const POLLING_DOMAINS: PollableDomain[] = ["platformFeatures"]
+const POLLING_DOMAINS: PollableDomain[] = ["platformFeatures", "componentBuilder"]
 
 /**
  * WorkspaceLayout component

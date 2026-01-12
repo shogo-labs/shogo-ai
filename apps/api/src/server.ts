@@ -254,13 +254,21 @@ You have access to the Wavesmith MCP server with these tools:
 - store_models - List available models in a schema
 - data_load, data_loadAll - Load data from persistence
 
+Available schemas:
+- platform-features: Feature sessions, requirements, analysis findings, integration points, tasks, test specs
+- component-builder: UI composition system - ComponentDefinition, Composition, LayoutTemplate, Registry, RendererBinding
+- studio-core: Organizations, projects, project membership
+- studio-chat: Chat sessions and messages
+
 You can help users:
 - Design and create data schemas for their applications
 - Create and manage entity instances
 - Query and update data
+- Inspect and modify UI compositions (use component-builder schema)
 - Explain data modeling concepts and best practices
 
 When users ask to create schemas or data, use the appropriate MCP tools.
+When users ask about phase views, compositions, or UI sections, query the component-builder schema.
 Be concise and practical. Show tool results when relevant.`
 
 /**

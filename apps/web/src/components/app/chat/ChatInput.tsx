@@ -4,7 +4,7 @@
  *
  * Renders a textarea with submit button for chat input.
  * Uses shadcn components. Calls onSubmit with content and clears input.
- * Supports disabled state.
+ * Supports disabled state and stop button during streaming.
  */
 
 import * as React from "react"
@@ -12,18 +12,24 @@ import { useCallback, useRef } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Send } from "lucide-react"
+import { Send, Square } from "lucide-react"
 
 export interface ChatInputProps {
   onSubmit: (content: string) => void
   disabled?: boolean
   placeholder?: string
+  /** Whether a stream is currently in progress */
+  isStreaming?: boolean
+  /** Callback to stop the current stream */
+  onStop?: () => void
 }
 
 export function ChatInput({
   onSubmit,
   disabled = false,
-  placeholder = "Type a message..."
+  placeholder = "Type a message...",
+  isStreaming = false,
+  onStop,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -65,19 +71,32 @@ export function ChatInput({
         )}
         rows={1}
       />
-      <Button
-        type="submit"
-        onClick={handleSubmit}
-        disabled={disabled}
-        size="icon"
-        className={cn(
-          "h-[60px] w-[60px] shrink-0",
-          disabled && "pointer-events-none opacity-50"
-        )}
-      >
-        <Send className="h-5 w-5" />
-        <span className="sr-only">Send message</span>
-      </Button>
+      {isStreaming ? (
+        <Button
+          type="button"
+          onClick={onStop}
+          variant="destructive"
+          size="icon"
+          className="h-[60px] w-[60px] shrink-0"
+        >
+          <Square className="h-5 w-5" />
+          <span className="sr-only">Stop generation</span>
+        </Button>
+      ) : (
+        <Button
+          type="submit"
+          onClick={handleSubmit}
+          disabled={disabled}
+          size="icon"
+          className={cn(
+            "h-[60px] w-[60px] shrink-0",
+            disabled && "pointer-events-none opacity-50"
+          )}
+        >
+          <Send className="h-5 w-5" />
+          <span className="sr-only">Send message</span>
+        </Button>
+      )}
     </div>
   )
 }
