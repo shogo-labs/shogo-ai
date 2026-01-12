@@ -776,6 +776,21 @@ export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
       { name: "actions", position: "bottom", required: false },
     ],
   },
+  {
+    id: "layout-single-column",
+    name: "Single Column",
+    description: "Single-column full-width layout for container section phases",
+    slots: [{ name: "main", position: "center", required: true }],
+  },
+  {
+    id: "layout-two-column-compact",
+    name: "Two Column Compact",
+    description: "Compact two-column layout without header/actions rows. Main content on left, sidebar on right.",
+    slots: [
+      { name: "main", position: "left", required: true },
+      { name: "sidebar", position: "right", required: false },
+    ],
+  },
 ]
 
 // ============================================================================
@@ -822,35 +837,33 @@ export const COMPOSITIONS: CompositionSeed[] = [
     dataContext: { phase: "discovery" },
   },
   // Analysis phase composition - task-analysis-008
+  // Uses compact layout (no header/actions rows) for better space utilization
   {
     id: "composition-analysis",
     name: "analysis",
     description: "Analysis phase view composition",
-    layout: "layout-phase-two-column",
+    layout: "layout-two-column-compact",
     slotContent: [
-      // Header slot: Evidence Board header with view toggle
-      { slot: "header", component: "comp-def-evidence-board-header-section" },
-      // Main slot: Location heat bar + Finding matrix (stacked via prephase-002)
+      // Main slot: Evidence Board header + Location heat bar + Finding matrix (stacked)
+      { slot: "main", component: "comp-def-evidence-board-header-section" },
       { slot: "main", component: "comp-def-location-heat-bar-section" },
       { slot: "main", component: "comp-def-finding-matrix-section" },
       // Sidebar slot: Finding list (filtered/grouped)
       { slot: "sidebar", component: "comp-def-finding-list-section" },
-      // Actions slot: Phase actions
-      { slot: "actions", component: "comp-def-phase-actions-section" },
     ],
     dataContext: { phase: "analysis" },
     providerWrapper: "AnalysisPanelProvider",
   },
   // Classification phase composition - no provider needed (pure slot composition)
+  // Uses compact layout (no header/actions rows) for better space utilization
   {
     id: "composition-classification",
     name: "classification",
     description: "Classification phase view composition",
-    layout: "layout-phase-two-column",
+    layout: "layout-two-column-compact",
     slotContent: [
-      // Header slot: Archetype transformation visualization
-      { slot: "header", component: "comp-def-archetype-transformation-section" },
-      // Main slot: 5 sections stacked via slot stacking (prephase-002)
+      // Main slot: All 6 sections stacked vertically (archetype transformation at top)
+      { slot: "main", component: "comp-def-archetype-transformation-section" },
       { slot: "main", component: "comp-def-correction-note-section" },
       { slot: "main", component: "comp-def-confidence-meters-section" },
       { slot: "main", component: "comp-def-evidence-columns-section" },

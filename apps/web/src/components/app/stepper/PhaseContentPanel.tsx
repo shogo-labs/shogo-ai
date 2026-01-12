@@ -159,15 +159,17 @@ export const PhaseContentPanel = observer(function PhaseContentPanel({ feature }
       case "design":
         return <ComposablePhaseView phaseName="design" feature={feature} />
 
-      // Phase views (Session 2.3D)
+      // Spec uses data-driven composition via ComposablePhaseView (task-spec-010)
       case "spec":
-        return <SpecView feature={feature} />
+        return <ComposablePhaseView phaseName="spec" feature={feature} />
 
+      // Testing uses data-driven composition via ComposablePhaseView (task-testing-010)
       case "testing":
-        return <TestingView feature={feature} />
+        return <ComposablePhaseView phaseName="testing" feature={feature} />
 
+      // Implementation uses data-driven composition via ComposablePhaseView (task-implementation-010)
       case "implementation":
-        return <ImplementationView feature={feature} />
+        return <ComposablePhaseView phaseName="implementation" feature={feature} />
 
       case "complete":
         return <CompleteView feature={feature} />

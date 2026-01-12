@@ -5,18 +5,19 @@
  * insertOne() operations via Wavesmith MCP tools.
  *
  * Exports:
- * - COMPONENT_DEFINITIONS: 51 entries (display, visualization, section components)
+ * - COMPONENT_DEFINITIONS: 56 entries (display, visualization, section components)
  * - REGISTRIES: 2 entries (default, studio)
  * - RENDERER_BINDINGS: 32 entries (12 default + 20 studio)
- * - LAYOUT_TEMPLATES: 2 entries (layout-phase-two-column, layout-single-column)
- * - COMPOSITIONS: 5 entries (discovery, analysis, classification, design, testing)
+ * - LAYOUT_TEMPLATES: 3 entries (layout-phase-two-column, layout-single-column, layout-two-column-compact)
+ * - COMPOSITIONS: 7 entries (discovery, analysis, classification, design, spec, testing, implementation)
  *
  * All entities have proper id fields for idempotency checks.
  * TypeScript types match component-builder schema entity types.
  *
  * Tasks: task-sdr-v2-001, smart-component-expansion; task-cbe-003; task-cpv-003; task-cpv-004;
  *        task-analysis-007, task-analysis-008, task-prephase-005, task-design-009, task-design-010,
- *        task-testing-007, task-testing-008
+ *        task-testing-007, task-testing-008, task-spec-009, task-spec-010,
+ *        task-implementation-007, task-implementation-008
  */
 
 // =============================================================================
@@ -601,6 +602,19 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
   },
 
   // ---------------------------------------------------------------------------
+  // Spec Phase Section Components (1) - task-spec-009
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-spec-container",
+    name: "SpecContainerSection",
+    category: "section",
+    description:
+      "Container section for Spec phase with ReactFlow dependency graph and internal task selection state. Displays implementation tasks as nodes with dependency edges. Manages selected task state internally for detail panel display. Uses single-column layout pattern where the container handles all internal layout structure.",
+    implementationRef: "SpecContainerSection",
+    tags: ["section", "spec-phase", "container", "graph"],
+  },
+
+  // ---------------------------------------------------------------------------
   // Testing Phase Section Components (4) - task-testing-007
   // ---------------------------------------------------------------------------
   {
@@ -638,6 +652,46 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
       "Featured test scenario card showing Given/When/Then details for selected test. Data sourced from individual TestSpecification entity.",
     implementationRef: "ScenarioSpotlightSection",
     tags: ["section", "testing-phase"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Implementation Phase Section Components (4) - task-implementation-007
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-tdd-stage-indicator-section",
+    name: "TDDStageIndicatorSection",
+    category: "section",
+    description:
+      "Visual badge showing current TDD stage (idle, pending, RED, GREEN, complete, failed) with color-coded styling. Reads currentTDDStage from ImplementationPanelContext.",
+    implementationRef: "TDDStageIndicatorSection",
+    tags: ["section", "implementation-phase", "tdd"],
+  },
+  {
+    id: "comp-def-progress-dashboard-section",
+    name: "ProgressDashboardSection",
+    category: "section",
+    description:
+      "Shows overall implementation progress with ProgressBar, 3-column stats grid (completed/in-progress/failed), and current task indicator. Data sourced from ImplementationTasks and TaskExecutions.",
+    implementationRef: "ProgressDashboardSection",
+    tags: ["section", "implementation-phase", "progress"],
+  },
+  {
+    id: "comp-def-task-execution-timeline-section",
+    name: "TaskExecutionTimelineSection",
+    category: "section",
+    description:
+      "Vertical timeline of task executions with status dots and selection interaction. Clicking an execution selects it for display in LiveOutputTerminalSection. Data sourced from TaskExecutions.",
+    implementationRef: "TaskExecutionTimelineSection",
+    tags: ["section", "implementation-phase", "timeline"],
+  },
+  {
+    id: "comp-def-live-output-terminal-section",
+    name: "LiveOutputTerminalSection",
+    category: "section",
+    description:
+      "Terminal-style display showing test output for selected execution. Output colored red for failing tests, green for passing. Shows file paths (test/impl) when available. Reads selectedExecutionId from context.",
+    implementationRef: "LiveOutputTerminalSection",
+    tags: ["section", "implementation-phase", "terminal"],
   },
 ]
 
@@ -998,6 +1052,7 @@ export const RENDERER_BINDINGS: RendererBindingSeed[] = [
  * Structure:
  * - layout-phase-two-column: Two-column layout for phase views with header and actions areas
  * - layout-single-column: Single-column full-width layout for container section phases
+ * - layout-two-column-compact: Compact two-column layout without header/actions rows
  */
 export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
   {
@@ -1020,10 +1075,21 @@ export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
     slots: [{ name: "main", position: "center", required: true }],
     defaultBindings: {},
   },
+  {
+    id: "layout-two-column-compact",
+    name: "layout-two-column-compact",
+    description:
+      "Compact two-column layout without header/actions rows. Main content on left, sidebar on right. Ideal for phases that don't need header/footer areas.",
+    slots: [
+      { name: "main", position: "left", required: true },
+      { name: "sidebar", position: "right", required: false },
+    ],
+    defaultBindings: {},
+  },
 ]
 
 // =============================================================================
-// Compositions (5 total) - task-cpv-004, task-analysis-008, task-classification-009, task-design-010, task-testing-008
+// Compositions (7 total) - task-cpv-004, task-analysis-008, task-classification-009, task-design-010, task-spec-010, task-testing-008, task-implementation-008
 // =============================================================================
 
 /**
@@ -1034,6 +1100,7 @@ export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
  * - analysis: Analysis phase with AnalysisPanelProvider context wrapper
  * - classification: Classification phase with pure slot composition (no provider)
  * - design: Design phase with single-column layout and container section pattern
+ * - spec: Spec phase with single-column layout and container section pattern
  * - testing: Testing phase with TestingPanelProvider context wrapper
  */
 export const COMPOSITIONS: CompositionSeed[] = [
@@ -1050,20 +1117,18 @@ export const COMPOSITIONS: CompositionSeed[] = [
     dataContext: { phase: "discovery" },
   },
   // Analysis phase composition - task-analysis-008
+  // Uses compact layout (no header/actions rows) for better space utilization
   {
     id: "composition-analysis",
     name: "analysis",
-    layout: "layout-phase-two-column",
+    layout: "layout-two-column-compact",
     slotContent: [
-      // Header slot: Evidence Board header with view toggle
-      { slot: "header", component: "comp-def-evidence-board-header-section" },
-      // Main slot: Location heat bar + Finding matrix (stacked)
+      // Main slot: Evidence Board header + Location heat bar + Finding matrix (stacked)
+      { slot: "main", component: "comp-def-evidence-board-header-section" },
       { slot: "main", component: "comp-def-location-heat-bar-section" },
       { slot: "main", component: "comp-def-finding-matrix-section" },
       // Sidebar slot: Finding list (filtered/grouped)
       { slot: "sidebar", component: "comp-def-finding-list-section" },
-      // Actions slot: Phase actions
-      { slot: "actions", component: "comp-def-phase-actions-section" },
     ],
     dataContext: { phase: "analysis" },
     providerWrapper: "AnalysisPanelProvider",
@@ -1071,14 +1136,14 @@ export const COMPOSITIONS: CompositionSeed[] = [
   // Classification phase composition - task-classification-009
   // Pattern: Pure slot composition - NO providerWrapper needed
   // Each section reads directly from useDomains() hook
+  // Uses compact layout (no header/actions rows) for better space utilization
   {
     id: "composition-classification",
     name: "classification",
-    layout: "layout-phase-two-column",
+    layout: "layout-two-column-compact",
     slotContent: [
-      // Header slot: Archetype transformation visual
-      { slot: "header", component: "comp-def-archetype-transformation-section" },
-      // Main slot: All 5 remaining sections stacked vertically
+      // Main slot: All 6 sections stacked vertically (archetype transformation at top)
+      { slot: "main", component: "comp-def-archetype-transformation-section" },
       { slot: "main", component: "comp-def-correction-note-section" },
       { slot: "main", component: "comp-def-confidence-meters-section" },
       { slot: "main", component: "comp-def-evidence-columns-section" },
@@ -1102,13 +1167,28 @@ export const COMPOSITIONS: CompositionSeed[] = [
     dataContext: { phase: "design" },
     // NO providerWrapper - Design uses container section pattern with internal React state
   },
+  // Spec phase composition - task-spec-010
+  // Pattern: Container section with internal React state (no shared context)
+  // Single-column layout with SpecContainerSection managing ReactFlow graph and task selection
+  {
+    id: "composition-spec",
+    name: "spec",
+    layout: "layout-single-column",
+    slotContent: [
+      // Main slot: Container section with ReactFlow dependency graph and internal task selection
+      { slot: "main", component: "comp-spec-container" },
+    ],
+    dataContext: { phase: "spec" },
+    // NO providerWrapper - Spec uses container section pattern with internal React state (not shared context)
+  },
   // Testing phase composition - task-testing-008
   // Pattern: Provider-wrapped composition for shared context coordination
   // Uses TestingPanelProvider to share selected test/task state across sections
+  // Uses compact layout (no header/actions rows) for better space utilization
   {
     id: "composition-testing",
     name: "testing",
-    layout: "layout-phase-two-column",
+    layout: "layout-two-column-compact",
     slotContent: [
       // Main slot: Test pyramid + distribution visualizations (stacked)
       { slot: "main", component: "comp-def-test-pyramid-section" },
@@ -1119,5 +1199,24 @@ export const COMPOSITIONS: CompositionSeed[] = [
     ],
     dataContext: { phase: "testing" },
     providerWrapper: "TestingPanelProvider",
+  },
+  // Implementation phase composition - task-implementation-008
+  // Pattern: Provider-wrapped composition for shared context coordination
+  // Uses ImplementationPanelProvider to share selectedExecutionId, latestRun, sortedExecutions, currentTDDStage
+  // Uses compact layout (no header/actions rows) for better space utilization
+  {
+    id: "composition-implementation",
+    name: "implementation",
+    layout: "layout-two-column-compact",
+    slotContent: [
+      // Main slot: TDD stage + Progress dashboard + execution timeline (stacked)
+      { slot: "main", component: "comp-def-tdd-stage-indicator-section" },
+      { slot: "main", component: "comp-def-progress-dashboard-section" },
+      { slot: "main", component: "comp-def-task-execution-timeline-section" },
+      // Sidebar slot: Live terminal output
+      { slot: "sidebar", component: "comp-def-live-output-terminal-section" },
+    ],
+    dataContext: { phase: "implementation" },
+    providerWrapper: "ImplementationPanelProvider",
   },
 ]

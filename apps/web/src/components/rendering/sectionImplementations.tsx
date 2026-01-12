@@ -42,8 +42,17 @@ import {
 } from "./sections/classification"
 // Design phase sections
 import { DesignContainerSection } from "./sections/DesignContainerSection"
+// Spec phase sections
+import { SpecContainerSection } from "./sections/spec/SpecContainerSection"
 // Testing phase sections
 import { TestTypeDistributionSection, TestPyramidSection, TaskCoverageBarSection, ScenarioSpotlightSection } from "./sections/testing"
+// Implementation phase sections
+import {
+  TDDStageIndicatorSection,
+  ProgressDashboardSection,
+  TaskExecutionTimelineSection,
+  LiveOutputTerminalSection,
+} from "./sections/implementation"
 
 // Re-export SectionRendererProps from types.ts to avoid circular dependencies
 // (Analysis section components import from types.ts, not from this file)
@@ -101,11 +110,18 @@ export const sectionImplementationMap = new Map<
   ["ClassificationRationaleSection", ClassificationRationaleSection],
   // Design phase sections
   ["DesignContainerSection", DesignContainerSection],
+  // Spec phase sections
+  ["SpecContainerSection", SpecContainerSection],
   // Testing phase sections
   ["TestTypeDistributionSection", TestTypeDistributionSection],
   ["TestPyramidSection", TestPyramidSection],
   ["TaskCoverageBarSection", TaskCoverageBarSection],
   ["ScenarioSpotlightSection", ScenarioSpotlightSection],
+  // Implementation phase sections
+  ["TDDStageIndicatorSection", TDDStageIndicatorSection],
+  ["ProgressDashboardSection", ProgressDashboardSection],
+  ["TaskExecutionTimelineSection", TaskExecutionTimelineSection],
+  ["LiveOutputTerminalSection", LiveOutputTerminalSection],
 ])
 
 /**

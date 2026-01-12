@@ -26,8 +26,8 @@ describe("Seed data file exports COMPONENT_DEFINITIONS array", () => {
     expect(Array.isArray(COMPONENT_DEFINITIONS)).toBe(true)
   })
 
-  test("Array has 51 entries (29 original + 2 for task-cbe-003 + 5 for task-cpv-003 + 4 for analysis sections + 6 for classification sections + 1 for design container + 4 for testing sections)", () => {
-    expect(COMPONENT_DEFINITIONS).toHaveLength(51)
+  test("Array has 56 entries (29 original + 2 for task-cbe-003 + 5 for task-cpv-003 + 4 for analysis sections + 6 for classification sections + 1 for design container + 4 for testing sections + 1 for spec container + 4 for implementation sections)", () => {
+    expect(COMPONENT_DEFINITIONS).toHaveLength(56)
   })
 
   test("Each entry has id, name, category, implementationRef fields", () => {
@@ -129,8 +129,8 @@ describe("All seed entities have unique IDs", () => {
       ...RENDERER_BINDINGS.map((b) => b.id),
     ]
 
-    // Total: 51 + 2 + 32 = 85 (includes 4 analysis + 6 classification sections + 1 design container + 4 testing sections)
-    expect(allIds.length).toBe(85)
+    // Total: 56 + 2 + 32 = 90 (includes 4 analysis + 6 classification sections + 1 design container + 4 testing sections + 1 spec container + 4 implementation sections)
+    expect(allIds.length).toBe(90)
   })
 })
 
@@ -289,8 +289,8 @@ describe("Section ComponentDefinitions for composable-phase-views", () => {
     (d) => d.category === "section"
   )
 
-  test("20 section ComponentDefinitions exist (5 discovery + 4 analysis + 6 classification + 1 design + 4 testing)", () => {
-    expect(sectionDefinitions).toHaveLength(20)
+  test("25 section ComponentDefinitions exist (5 discovery + 4 analysis + 6 classification + 1 design + 4 testing + 1 spec + 4 implementation)", () => {
+    expect(sectionDefinitions).toHaveLength(25)
   })
 
   test("All section definitions have category='section'", () => {
@@ -721,7 +721,7 @@ describe("All seed entities including LayoutTemplates and Compositions have uniq
     expect(uniqueIds.size).toBe(allIds.length)
   })
 
-  test("Set size equals total entity count (51 + 2 + 32 + 2 + 5 = 92)", () => {
+  test("Set size equals total entity count (52 + 2 + 32 + 2 + 6 = 94)", () => {
     const allIds = [
       ...COMPONENT_DEFINITIONS.map((d) => d.id),
       ...REGISTRIES.map((r) => r.id),
@@ -730,8 +730,8 @@ describe("All seed entities including LayoutTemplates and Compositions have uniq
       ...COMPOSITIONS.map((c) => c.id),
     ]
 
-    // Total: 51 components + 2 registries + 32 bindings + 2 layouts + 5 compositions = 92
-    expect(allIds.length).toBe(92)
+    // Total: 56 components + 2 registries + 32 bindings + 3 layouts + 7 compositions = 100
+    expect(allIds.length).toBe(100)
   })
 })
 
@@ -790,24 +790,26 @@ describe("Analysis Composition", () => {
     expect(composition?.name).toBe("analysis")
   })
 
-  test("Entry has layout reference to layout-phase-two-column", () => {
+  test("Entry has layout reference to layout-two-column-compact", () => {
     const composition = COMPOSITIONS.find((c) => c.id === "composition-analysis")
-    expect(composition?.layout).toBe("layout-phase-two-column")
+    // Uses compact layout (no header/actions rows) for better space utilization
+    expect(composition?.layout).toBe("layout-two-column-compact")
   })
 
-  test("header slot maps to EvidenceBoardHeaderSection", () => {
-    const composition = COMPOSITIONS.find((c) => c.id === "composition-analysis")
-    const headerContent = composition?.slotContent.find((s) => s.slot === "header")
-    expect(headerContent).toBeDefined()
-    expect(headerContent?.component).toBe("comp-def-evidence-board-header-section")
-  })
-
-  test("main slot has slot stacking (LocationHeatBar + FindingMatrix)", () => {
+  test("main slot first entry is EvidenceBoardHeaderSection", () => {
     const composition = COMPOSITIONS.find((c) => c.id === "composition-analysis")
     const mainContents = composition?.slotContent.filter((s) => s.slot === "main")
-    expect(mainContents).toHaveLength(2)
-    expect(mainContents?.[0].component).toBe("comp-def-location-heat-bar-section")
-    expect(mainContents?.[1].component).toBe("comp-def-finding-matrix-section")
+    // Evidence Board header moved from header slot to main slot for compact layout
+    expect(mainContents?.[0]?.component).toBe("comp-def-evidence-board-header-section")
+  })
+
+  test("main slot has slot stacking (EvidenceBoardHeader + LocationHeatBar + FindingMatrix)", () => {
+    const composition = COMPOSITIONS.find((c) => c.id === "composition-analysis")
+    const mainContents = composition?.slotContent.filter((s) => s.slot === "main")
+    expect(mainContents).toHaveLength(3)
+    expect(mainContents?.[0].component).toBe("comp-def-evidence-board-header-section")
+    expect(mainContents?.[1].component).toBe("comp-def-location-heat-bar-section")
+    expect(mainContents?.[2].component).toBe("comp-def-finding-matrix-section")
   })
 
   test("sidebar slot maps to FindingListSection", () => {
@@ -904,23 +906,24 @@ describe("Classification Composition", () => {
     expect(composition?.name).toBe("classification")
   })
 
-  test("Entry has layout reference to layout-phase-two-column", () => {
+  test("Entry has layout reference to layout-two-column-compact", () => {
     const composition = COMPOSITIONS.find((c) => c.id === "composition-classification")
-    expect(composition?.layout).toBe("layout-phase-two-column")
+    // Uses compact layout (no header/actions rows) for better space utilization
+    expect(composition?.layout).toBe("layout-two-column-compact")
   })
 
-  test("header slot maps to ArchetypeTransformationSection", () => {
+  test("main slot first entry is ArchetypeTransformationSection", () => {
     const composition = COMPOSITIONS.find((c) => c.id === "composition-classification")
-    const headerContent = composition?.slotContent.find((s) => s.slot === "header")
-    expect(headerContent).toBeDefined()
-    expect(headerContent?.component).toBe("comp-def-archetype-transformation-section")
+    const mainContents = composition?.slotContent.filter((s) => s.slot === "main")
+    // Archetype transformation moved from header to main slot for compact layout
+    expect(mainContents?.[0]?.component).toBe("comp-def-archetype-transformation-section")
   })
 
   test("main slot has slot stacking (6 sections total)", () => {
     const composition = COMPOSITIONS.find((c) => c.id === "composition-classification")
     const mainContents = composition?.slotContent.filter((s) => s.slot === "main")
-    // CorrectionNote + ConfidenceMeters + EvidenceColumns + ApplicablePatterns + ClassificationRationale = 5 in main
-    expect(mainContents?.length).toBeGreaterThanOrEqual(5)
+    // ArchetypeTransformation + CorrectionNote + ConfidenceMeters + EvidenceColumns + ApplicablePatterns + ClassificationRationale = 6 in main
+    expect(mainContents?.length).toBe(6)
   })
 
   test("Entry has dataContext with phase='classification'", () => {
@@ -1152,9 +1155,9 @@ describe("Testing Composition", () => {
     expect(composition?.name).toBe("testing")
   })
 
-  test("Entry has layout reference to 'layout-phase-two-column'", () => {
+  test("Entry has layout reference to 'layout-two-column-compact'", () => {
     const composition = COMPOSITIONS.find((c) => c.id === "composition-testing")
-    expect(composition?.layout).toBe("layout-phase-two-column")
+    expect(composition?.layout).toBe("layout-two-column-compact")
   })
 
   test("slotContent has 4 entries for Testing sections", () => {
@@ -1195,5 +1198,94 @@ describe("Testing Composition", () => {
   test("Entry has providerWrapper='TestingPanelProvider'", () => {
     const composition = COMPOSITIONS.find((c) => c.id === "composition-testing")
     expect(composition?.providerWrapper).toBe("TestingPanelProvider")
+  })
+})
+
+// =============================================================================
+// test-spec-009-seed: SpecContainerSection ComponentDefinition
+// =============================================================================
+describe("SpecContainerSection ComponentDefinition", () => {
+  test("Array contains entry with id 'comp-spec-container'", () => {
+    const def = COMPONENT_DEFINITIONS.find((d) => d.id === "comp-spec-container")
+    expect(def).toBeDefined()
+  })
+
+  test("Entry has name 'SpecContainerSection'", () => {
+    const def = COMPONENT_DEFINITIONS.find((d) => d.id === "comp-spec-container")
+    expect(def?.name).toBe("SpecContainerSection")
+  })
+
+  test("Entry has category 'section'", () => {
+    const def = COMPONENT_DEFINITIONS.find((d) => d.id === "comp-spec-container")
+    expect(def?.category).toBe("section")
+  })
+
+  test("Entry has implementationRef 'SpecContainerSection' matching sectionImplementationMap key", () => {
+    const def = COMPONENT_DEFINITIONS.find((d) => d.id === "comp-spec-container")
+    expect(def?.implementationRef).toBe("SpecContainerSection")
+  })
+
+  test("Entry has description documenting container section pattern with ReactFlow graph and internal task selection state", () => {
+    const def = COMPONENT_DEFINITIONS.find((d) => d.id === "comp-spec-container")
+    expect(def?.description).toBeDefined()
+    expect(typeof def?.description).toBe("string")
+    // Should mention container pattern, ReactFlow, and/or task selection
+    const desc = def?.description?.toLowerCase() ?? ""
+    expect(
+      desc.includes("container") ||
+        desc.includes("reactflow") ||
+        desc.includes("graph") ||
+        desc.includes("task")
+    ).toBe(true)
+  })
+
+  test("Entry has tags including 'spec-phase'", () => {
+    const def = COMPONENT_DEFINITIONS.find((d) => d.id === "comp-spec-container")
+    expect(def?.tags).toContain("spec-phase")
+  })
+})
+
+// =============================================================================
+// test-spec-010-composition: Spec Composition uses single-column layout with container section
+// =============================================================================
+describe("Spec Composition", () => {
+  test("COMPOSITIONS array contains spec composition with id 'composition-spec'", () => {
+    const composition = COMPOSITIONS.find((c) => c.id === "composition-spec")
+    expect(composition).toBeDefined()
+  })
+
+  test("Entry has name 'spec'", () => {
+    const composition = COMPOSITIONS.find((c) => c.id === "composition-spec")
+    expect(composition?.name).toBe("spec")
+  })
+
+  test("Entry has layout reference to 'layout-single-column'", () => {
+    const composition = COMPOSITIONS.find((c) => c.id === "composition-spec")
+    expect(composition?.layout).toBe("layout-single-column")
+  })
+
+  test("slotContent has single entry for main slot", () => {
+    const composition = COMPOSITIONS.find((c) => c.id === "composition-spec")
+    expect(composition?.slotContent).toHaveLength(1)
+    const mainContent = composition?.slotContent.find((s) => s.slot === "main")
+    expect(mainContent).toBeDefined()
+  })
+
+  test("main slot maps to SpecContainerSection component", () => {
+    const composition = COMPOSITIONS.find((c) => c.id === "composition-spec")
+    const mainContent = composition?.slotContent.find((s) => s.slot === "main")
+    expect(mainContent?.component).toBe("comp-spec-container")
+  })
+
+  test("Entry has dataContext with phase='spec'", () => {
+    const composition = COMPOSITIONS.find((c) => c.id === "composition-spec")
+    expect(composition?.dataContext).toBeDefined()
+    expect(composition?.dataContext?.phase).toBe("spec")
+  })
+
+  test("Entry has NO providerWrapper (internal React state via container section)", () => {
+    const composition = COMPOSITIONS.find((c) => c.id === "composition-spec")
+    // Spec phase uses container section pattern with internal state - no React Context provider needed
+    expect(composition?.providerWrapper).toBeUndefined()
   })
 })

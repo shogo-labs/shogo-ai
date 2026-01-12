@@ -129,6 +129,21 @@ describe("sectionImplementationMap", () => {
     expect(sectionImplementationMap.has("TaskCoverageBarSection")).toBe(true)
     expect(sectionImplementationMap.has("ScenarioSpotlightSection")).toBe(true)
   })
+
+  /**
+   * Test Specification: test-spec-008-registration
+   * Task: task-spec-008
+   * Scenario: SpecContainerSection registered in sectionImplementationMap
+   *
+   * Given: sectionImplementationMap is imported
+   * When: Map entries are inspected
+   * Then: Map has entry for 'SpecContainerSection'
+   */
+  test("contains Spec phase sections", () => {
+    // Spec phase container section registration
+    // Task: task-spec-008
+    expect(sectionImplementationMap.has("SpecContainerSection")).toBe(true)
+  })
 })
 
 describe("getSectionComponent", () => {
@@ -189,6 +204,29 @@ describe("getSectionComponent", () => {
     // Verify it's specifically the DesignContainerSection, not the fallback
     // by checking it's directly from the map
     expect(sectionImplementationMap.get("DesignContainerSection")).toBe(Component)
+  })
+
+  /**
+   * Test Specification: test-spec-008-registration
+   * Task: task-spec-008
+   * Scenario: SpecContainerSection registered in sectionImplementationMap
+   *
+   * Given: sectionImplementationMap is imported
+   * When: Map is inspected
+   * Then: Map has entry for 'SpecContainerSection'
+   *       getSectionComponent('SpecContainerSection') returns the component
+   */
+  test("returns SpecContainerSection component (not fallback)", () => {
+    const Component = getSectionComponent("SpecContainerSection")
+    // Component should not be the fallback (function returning div with "Section not found")
+    // Verify it's a valid component (function or MobX observer)
+    const isFunction = typeof Component === "function"
+    const isMobXObserver = typeof Component === "object" && Component !== null
+    expect(isFunction || isMobXObserver).toBe(true)
+
+    // Verify it's specifically the SpecContainerSection, not the fallback
+    // by checking it's directly from the map
+    expect(sectionImplementationMap.get("SpecContainerSection")).toBe(Component)
   })
 })
 

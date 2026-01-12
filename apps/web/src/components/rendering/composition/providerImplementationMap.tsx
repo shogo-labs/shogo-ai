@@ -21,6 +21,7 @@
 import type { ComponentType, ReactNode } from "react"
 import { AnalysisPanelProvider } from "../sections/analysis/AnalysisPanelContext"
 import { TestingPanelProvider } from "../sections/testing/TestingPanelContext"
+import { ImplementationPanelProvider } from "../sections/implementation/ImplementationPanelContext"
 
 /**
  * Props passed to provider wrapper components.
@@ -77,6 +78,8 @@ export const providerImplementationMap = new Map<
   ["AnalysisPanelProvider", AnalysisPanelProvider],
   // Testing phase provider - coordinates selectedSpec state
   ["TestingPanelProvider", TestingPanelProvider],
+  // Implementation phase provider - coordinates selectedExecutionId, latestRun, sortedExecutions, currentTDDStage
+  ["ImplementationPanelProvider", ImplementationPanelProvider],
 ])
 
 /**

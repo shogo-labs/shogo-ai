@@ -30,8 +30,9 @@ import {
   Controls,
   Handle,
   Position,
+  type Node,
+  type Edge,
   type NodeProps,
-  type OnNodeClick,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import {
@@ -47,23 +48,7 @@ import { useDomains } from "@/contexts/DomainProvider"
 import { EmptyPhaseContent } from "@/components/app/stepper/EmptyStates"
 import type { SectionRendererProps } from "../../types"
 import { TaskDetailsPanel, type Task as TaskDetailTask } from "./TaskDetailsPanel"
-import { transformToGraph, type Task } from "./graphUtils"
-
-// =============================================================================
-// Types
-// =============================================================================
-
-/**
- * Task node data for ReactFlow
- * Task: task-spec-002
- */
-interface TaskNodeData {
-  task: Task
-  dependencyCount: number
-  blocksCount: number
-  isSelected: boolean
-  isCritical: boolean
-}
+import { transformToGraph, type Task, type TaskNodeData } from "./graphUtils"
 
 // =============================================================================
 // TaskNode Sub-component
@@ -97,8 +82,8 @@ const statusIcons: Record<string, React.ReactNode> = {
  * - Default styling: border-emerald-500/30 hover:border-emerald-500/50
  * - Shows dependencyCount and blocksCount with emerald text color
  */
-const TaskNode = memo(function TaskNode({ data }: NodeProps<TaskNodeData>) {
-  const { task, dependencyCount, blocksCount, isSelected, isCritical } = data
+const TaskNode = memo(function TaskNode({ data }: NodeProps) {
+  const { task, dependencyCount, blocksCount, isSelected, isCritical } = data as unknown as TaskNodeData
 
   return (
     <div
@@ -218,8 +203,8 @@ export const SpecContainerSection = observer(function SpecContainerSection({
   )
 
   // onNodeClick callback toggles selection (same node = deselect, different = select)
-  const handleNodeClick: OnNodeClick = useCallback(
-    (event, node) => {
+  const handleNodeClick = useCallback(
+    (_: any, node: Node) => {
       const nodeId = node.id
       setSelectedTaskId((current) => (nodeId === current ? null : nodeId))
     },
@@ -264,7 +249,7 @@ export const SpecContainerSection = observer(function SpecContainerSection({
           >
             <ReactFlowProvider>
               <ReactFlow
-                nodes={nodes}
+                nodes={nodes as unknown as Node[]}
                 edges={edges}
                 nodeTypes={nodeTypes}
                 onNodeClick={handleNodeClick}
