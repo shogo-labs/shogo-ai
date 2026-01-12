@@ -1,0 +1,219 @@
+# =============================================================================
+# Shogo AI - Local Development Environment
+# =============================================================================
+# Usage:
+#   docker-compose up -d          # Start all services
+#   docker-compose logs -f mcp    # Follow MCP logs
+#   docker-compose down           # Stop all services
+#   docker-compose down -v        # Stop and remove volumes
+#
+# Architecture:
+#   - Control Plane (shared): studio-core (orgs/teams), better-auth, migrations
+#   - Per-Workspace (isolated): platform-features, studio-chat, user schemas
+#
+# For local dev, we simulate workspaces. In production, each workspace
+# gets its own MCP pod via Knative with scale-to-zero.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database (Control Plane + Workspace Data)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: shogo-postgres
+    environment:
+      POSTGRES_USER: shogo
+      POSTGRES_PASSWORD: shogo_dev
+      POSTGRES_DB: shogo
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shogo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # MinIO (S3-compatible storage - for future cloud parity)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: shogo-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # Redis (BetterAuth session cache)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: shogo-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # Shogo MCP Server - Workspace 1 (Default)
+  # ---------------------------------------------------------------------------
+  mcp:
+    build:
+      context: .
+      dockerfile: packages/mcp/Dockerfile
+    container_name: shogo-mcp
+    ports:
+      - "3100:3100"
+    environment:
+      MCP_PORT: "3100"
+      NODE_ENV: development
+      DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
+      SCHEMAS_PATH: /app/.schemas
+      WORKSPACE_ID: workspace-1
+      TENANT_ID: tenant-a
+    volumes:
+      - mcp_schemas_ws1:/data/schemas
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -s -o /dev/null -w '%{http_code}' http://localhost:3100/mcp | grep -q '400\\|200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # Shogo MCP Server - Workspace 2 (For testing isolation)
+  # ---------------------------------------------------------------------------
+  mcp-workspace-2:
+    build:
+      context: .
+      dockerfile: packages/mcp/Dockerfile
+    container_name: shogo-mcp-workspace-2
+    ports:
+      - "3101:3100"
+    environment:
+      MCP_PORT: "3100"
+      NODE_ENV: development
+      DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
+      SCHEMAS_PATH: /app/.schemas
+      WORKSPACE_ID: workspace-2
+      TENANT_ID: tenant-b
+    volumes:
+      - mcp_schemas_ws2:/data/schemas
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -s -o /dev/null -w '%{http_code}' http://localhost:3100/mcp | grep -q '400\\|200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - shogo-network
+    profiles:
+      - testing  # Only starts with: docker-compose --profile testing up
+
+  # ---------------------------------------------------------------------------
+  # Shogo API Server (Control Plane + BetterAuth)
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: shogo-api
+    ports:
+      - "8002:8002"
+    environment:
+      API_PORT: "8002"
+      NODE_ENV: development
+      DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
+      MCP_URL: http://mcp:3100
+      VITE_PORT: "3000"
+      BETTER_AUTH_SECRET: shogo-local-dev-secret-32-chars-minimum-ok
+      BETTER_AUTH_URL: http://localhost:8002
+      REDIS_URL: redis://redis:6379
+      ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      mcp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8002/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # Shogo Web Frontend
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8002
+        VITE_MCP_URL: http://localhost:3100
+        VITE_BETTER_AUTH_URL: http://localhost:8002
+        VITE_WORKSPACE: workspace-1
+    container_name: shogo-web
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+      - mcp
+    networks:
+      - shogo-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    name: shogo-postgres-data
+  minio_data:
+    name: shogo-minio-data
+  redis_data:
+    name: shogo-redis-data
+  mcp_schemas_ws1:
+    name: shogo-mcp-schemas-ws1
+  mcp_schemas_ws2:
+    name: shogo-mcp-schemas-ws2
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  shogo-network:
+    name: shogo-network
+    driver: bridge

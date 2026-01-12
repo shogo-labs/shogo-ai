@@ -5,14 +5,19 @@
  * insertOne() operations via Wavesmith MCP tools.
  *
  * Exports:
- * - COMPONENT_DEFINITIONS: 31 entries (display components)
+ * - COMPONENT_DEFINITIONS: 56 entries (display, visualization, section components)
  * - REGISTRIES: 2 entries (default, studio)
  * - RENDERER_BINDINGS: 32 entries (12 default + 20 studio)
+ * - LAYOUT_TEMPLATES: 3 entries (layout-phase-two-column, layout-single-column, layout-two-column-compact)
+ * - COMPOSITIONS: 7 entries (discovery, analysis, classification, design, spec, testing, implementation)
  *
  * All entities have proper id fields for idempotency checks.
  * TypeScript types match component-builder schema entity types.
  *
- * Tasks: task-sdr-v2-001, smart-component-expansion; task-cbe-003
+ * Tasks: task-sdr-v2-001, smart-component-expansion; task-cbe-003; task-cpv-003; task-cpv-004;
+ *        task-analysis-007, task-analysis-008, task-prephase-005, task-design-009, task-design-010,
+ *        task-testing-007, task-testing-008, task-spec-009, task-spec-010,
+ *        task-implementation-007, task-implementation-008
  */
 
 // =============================================================================
@@ -29,7 +34,7 @@ export interface ComponentDefinitionSeed {
   /** Human-readable component name */
   name: string
   /** Component category for organization */
-  category: "display" | "input" | "layout" | "visualization"
+  category: "display" | "input" | "layout" | "visualization" | "section"
   /** Documentation for the component's purpose */
   description: string
   /** Key mapping to code-side component registry */
@@ -92,8 +97,72 @@ export interface RendererBindingSeed {
   defaultConfig?: XRendererConfigSeed
 }
 
+/**
+ * Slot definition for LayoutTemplate.
+ * Matches component-builder schema $defs.LayoutTemplate.slots.items
+ */
+export interface SlotSeed {
+  /** Slot identifier (e.g., 'header', 'main', 'sidebar') */
+  name: string
+  /** Layout position hint (e.g., 'top', 'left', 'right', 'bottom', 'center') */
+  position: string
+  /** Whether this slot must have content assigned */
+  required?: boolean
+}
+
+/**
+ * Seed data for LayoutTemplate entity.
+ * Matches component-builder schema $defs.LayoutTemplate
+ */
+export interface LayoutTemplateSeed {
+  /** Unique identifier (x-mst-type: identifier) */
+  id: string
+  /** Layout name (e.g., 'two-column', 'dashboard-grid', 'detail-panel') */
+  name: string
+  /** Documentation for the layout's structure and intended use */
+  description?: string
+  /** Slot definitions specifying available placement areas */
+  slots: SlotSeed[]
+  /** Default slot-to-component mappings as {slotName: componentId} */
+  defaultBindings?: Record<string, string>
+}
+
+/**
+ * Slot content definition for Composition.
+ * Matches component-builder schema $defs.Composition.slotContent.items
+ */
+export interface SlotContentSeed {
+  /** Slot name this content fills (must match a slot in the layout) */
+  slot: string
+  /** ComponentDefinition id to render in this slot (x-mst-type: reference) */
+  component: string
+  /** Optional configuration passed to the component */
+  config?: Record<string, unknown>
+}
+
+/**
+ * Seed data for Composition entity.
+ * Matches component-builder schema $defs.Composition
+ */
+export interface CompositionSeed {
+  /** Unique identifier (x-mst-type: identifier) */
+  id: string
+  /** Composition name (e.g., 'Feature Session Detail View', 'User Dashboard') */
+  name: string
+  /** The LayoutTemplate id this composition uses (x-mst-type: reference) */
+  layout: string
+  /** Content placed in each slot */
+  slotContent: SlotContentSeed[]
+  /** Shared data source definitions available to all slot components */
+  dataContext?: Record<string, unknown>
+  /** Optional provider wrapper component key to wrap the slot layout */
+  providerWrapper?: string
+  /** Optional configuration passed to the provider wrapper component */
+  providerConfig?: Record<string, unknown>
+}
+
 // =============================================================================
-// Component Definitions (31 total)
+// Component Definitions (40 total)
 // =============================================================================
 
 /**
@@ -103,6 +172,8 @@ export interface RendererBindingSeed {
  * - Primitive Display (14): String, Number, Boolean, DateTime, Email, URI, Enum, Reference, Computed, Array, Object, StringArray, CodePath, LongText
  * - Domain-Specific Display (13): Priority, Archetype, FindingType, TaskStatus, TestType, SessionStatus, RequirementStatus, RunStatus, ExecutionStatus, TestCaseStatus, TaskRenderer, ChangeTypeBadge, PhaseStatusRenderer
  * - Visualization (4): ProgressBar, DataCard, GraphNode, StatusIndicator
+ * - Section - Discovery (5): IntentTerminalSection, InitialAssessmentSection, RequirementsListSection, SessionSummarySection, PhaseActionsSection
+ * - Section - Analysis (4): EvidenceBoardHeaderSection, LocationHeatBarSection, FindingMatrixSection, FindingListSection
  */
 export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
   // ---------------------------------------------------------------------------
@@ -377,6 +448,250 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders multi-stage status indicators with layout options",
     implementationRef: "StatusIndicator",
     tags: ["visualization", "status", "indicator", "readonly"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Section Components for Composable Phase Views (5) - task-cpv-003
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-intent-terminal-section",
+    name: "IntentTerminalSection",
+    category: "section",
+    description: "Renders session intent in terminal-style display",
+    implementationRef: "IntentTerminalSection",
+    tags: ["section", "discovery-phase"],
+  },
+  {
+    id: "comp-def-initial-assessment-section",
+    name: "InitialAssessmentSection",
+    category: "section",
+    description: "Renders initial assessment with archetype and priority badges",
+    implementationRef: "InitialAssessmentSection",
+    tags: ["section", "discovery-phase"],
+  },
+  {
+    id: "comp-def-requirements-list-section",
+    name: "RequirementsListSection",
+    category: "section",
+    description: "Renders requirements as an interactive checklist",
+    implementationRef: "RequirementsListSection",
+    tags: ["section", "discovery-phase"],
+  },
+  {
+    id: "comp-def-session-summary-section",
+    name: "SessionSummarySection",
+    category: "section",
+    description: "Renders session metadata summary with key information",
+    implementationRef: "SessionSummarySection",
+    tags: ["section", "discovery-phase"],
+  },
+  {
+    id: "comp-def-phase-actions-section",
+    name: "PhaseActionsSection",
+    category: "section",
+    description: "Renders phase-specific action buttons for navigation and transitions",
+    implementationRef: "PhaseActionsSection",
+    tags: ["section", "discovery-phase"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Analysis Phase Section Components (4) - task-analysis-007
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-evidence-board-header-section",
+    name: "EvidenceBoardHeaderSection",
+    category: "section",
+    description: "Header for Analysis Evidence Board with finding count and view mode toggle",
+    implementationRef: "EvidenceBoardHeaderSection",
+    tags: ["section", "analysis-phase", "evidence-board"],
+  },
+  {
+    id: "comp-def-location-heat-bar-section",
+    name: "LocationHeatBarSection",
+    category: "section",
+    description: "Stacked progress bar showing finding distribution by package location",
+    implementationRef: "LocationHeatBarSection",
+    tags: ["section", "analysis-phase", "evidence-board", "visualization"],
+  },
+  {
+    id: "comp-def-finding-matrix-section",
+    name: "FindingMatrixSection",
+    category: "section",
+    description: "Type x Location grid matrix with clickable cells for filtering findings",
+    implementationRef: "FindingMatrixSection",
+    tags: ["section", "analysis-phase", "evidence-board", "matrix"],
+  },
+  {
+    id: "comp-def-finding-list-section",
+    name: "FindingListSection",
+    category: "section",
+    description: "Filtered/grouped finding cards with filter indicator and expand/collapse",
+    implementationRef: "FindingListSection",
+    tags: ["section", "analysis-phase", "evidence-board", "list"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Classification Phase Section Components (6) - task-classification-008
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-archetype-transformation-section",
+    name: "ArchetypeTransformationSection",
+    category: "section",
+    description:
+      "Phase header with initial->validated archetype transformation visual and animated arrow. Shows 'Archetype Determination' title with pink theme.",
+    implementationRef: "ArchetypeTransformationSection",
+    tags: ["section", "classification-phase", "header"],
+  },
+  {
+    id: "comp-def-correction-note-section",
+    name: "CorrectionNoteSection",
+    category: "section",
+    description:
+      "Conditional correction notice when archetype was changed during classification. Amber-styled with AlertTriangle icon.",
+    implementationRef: "CorrectionNoteSection",
+    tags: ["section", "classification-phase", "conditional"],
+  },
+  {
+    id: "comp-def-confidence-meters-section",
+    name: "ConfidenceMetersSection",
+    category: "section",
+    description:
+      "Archetype confidence percentages using ProgressBar visualization. Shows all 4 archetypes with validated one highlighted.",
+    implementationRef: "ConfidenceMetersSection",
+    tags: ["section", "classification-phase", "visualization"],
+  },
+  {
+    id: "comp-def-evidence-columns-section",
+    name: "EvidenceColumnsSection",
+    category: "section",
+    description:
+      "Dual columns for supporting (Check icons) and opposing (X icons) evidence analysis from evidenceChecklist.",
+    implementationRef: "EvidenceColumnsSection",
+    tags: ["section", "classification-phase", "evidence"],
+  },
+  {
+    id: "comp-def-applicable-patterns-section",
+    name: "ApplicablePatternsSection",
+    category: "section",
+    description:
+      "Displays applicable patterns as chips using PatternChips shared component. Conditional - returns null when no patterns.",
+    implementationRef: "ApplicablePatternsSection",
+    tags: ["section", "classification-phase", "conditional"],
+  },
+  {
+    id: "comp-def-classification-rationale-section",
+    name: "ClassificationRationaleSection",
+    category: "section",
+    description:
+      "Classification rationale text in a styled card with pink theme border. Shows decision.rationale with whitespace-pre-wrap.",
+    implementationRef: "ClassificationRationaleSection",
+    tags: ["section", "classification-phase", "rationale"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Design Phase Section Components (1) - task-design-009
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-design-container",
+    name: "DesignContainerSection",
+    category: "section",
+    description:
+      "Container section for Design phase with internal tab navigation. Manages Schema, Graph, and Tasks tabs with their own state. Uses single-column layout pattern where the container handles all internal layout structure.",
+    implementationRef: "DesignContainerSection",
+    tags: ["section", "design-phase", "container", "tabbed"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Spec Phase Section Components (1) - task-spec-009
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-spec-container",
+    name: "SpecContainerSection",
+    category: "section",
+    description:
+      "Container section for Spec phase with ReactFlow dependency graph and internal task selection state. Displays implementation tasks as nodes with dependency edges. Manages selected task state internally for detail panel display. Uses single-column layout pattern where the container handles all internal layout structure.",
+    implementationRef: "SpecContainerSection",
+    tags: ["section", "spec-phase", "container", "graph"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Testing Phase Section Components (4) - task-testing-007
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-test-pyramid-section",
+    name: "TestPyramidSection",
+    category: "section",
+    description:
+      "Visual pyramid showing test distribution across unit, integration, and e2e layers. Data sourced from TestSpecifications grouped by testType.",
+    implementationRef: "TestPyramidSection",
+    tags: ["section", "testing-phase"],
+  },
+  {
+    id: "comp-def-test-type-distribution-section",
+    name: "TestTypeDistributionSection",
+    category: "section",
+    description:
+      "Horizontal bar chart showing test count distribution by type (unit, integration, e2e). Data sourced from TestSpecifications aggregate counts.",
+    implementationRef: "TestTypeDistributionSection",
+    tags: ["section", "testing-phase"],
+  },
+  {
+    id: "comp-def-task-coverage-bar-section",
+    name: "TaskCoverageBarSection",
+    category: "section",
+    description:
+      "Stacked progress bar showing test coverage per implementation task. Data sourced from ImplementationTasks with linked TestSpecifications.",
+    implementationRef: "TaskCoverageBarSection",
+    tags: ["section", "testing-phase"],
+  },
+  {
+    id: "comp-def-scenario-spotlight-section",
+    name: "ScenarioSpotlightSection",
+    category: "section",
+    description:
+      "Featured test scenario card showing Given/When/Then details for selected test. Data sourced from individual TestSpecification entity.",
+    implementationRef: "ScenarioSpotlightSection",
+    tags: ["section", "testing-phase"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Implementation Phase Section Components (4) - task-implementation-007
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-tdd-stage-indicator-section",
+    name: "TDDStageIndicatorSection",
+    category: "section",
+    description:
+      "Visual badge showing current TDD stage (idle, pending, RED, GREEN, complete, failed) with color-coded styling. Reads currentTDDStage from ImplementationPanelContext.",
+    implementationRef: "TDDStageIndicatorSection",
+    tags: ["section", "implementation-phase", "tdd"],
+  },
+  {
+    id: "comp-def-progress-dashboard-section",
+    name: "ProgressDashboardSection",
+    category: "section",
+    description:
+      "Shows overall implementation progress with ProgressBar, 3-column stats grid (completed/in-progress/failed), and current task indicator. Data sourced from ImplementationTasks and TaskExecutions.",
+    implementationRef: "ProgressDashboardSection",
+    tags: ["section", "implementation-phase", "progress"],
+  },
+  {
+    id: "comp-def-task-execution-timeline-section",
+    name: "TaskExecutionTimelineSection",
+    category: "section",
+    description:
+      "Vertical timeline of task executions with status dots and selection interaction. Clicking an execution selects it for display in LiveOutputTerminalSection. Data sourced from TaskExecutions.",
+    implementationRef: "TaskExecutionTimelineSection",
+    tags: ["section", "implementation-phase", "timeline"],
+  },
+  {
+    id: "comp-def-live-output-terminal-section",
+    name: "LiveOutputTerminalSection",
+    category: "section",
+    description:
+      "Terminal-style display showing test output for selected execution. Output colored red for failing tests, green for passing. Shows file paths (test/impl) when available. Reads selectedExecutionId from context.",
+    implementationRef: "LiveOutputTerminalSection",
+    tags: ["section", "implementation-phase", "terminal"],
   },
 ]
 
@@ -725,4 +1040,183 @@ const STUDIO_BINDINGS: RendererBindingSeed[] = [
 export const RENDERER_BINDINGS: RendererBindingSeed[] = [
   ...DEFAULT_BINDINGS,
   ...STUDIO_BINDINGS,
+]
+
+// =============================================================================
+// Layout Templates (2 total) - task-cpv-004, task-prephase-005
+// =============================================================================
+
+/**
+ * LayoutTemplate seed entities defining slot-based layouts.
+ *
+ * Structure:
+ * - layout-phase-two-column: Two-column layout for phase views with header and actions areas
+ * - layout-single-column: Single-column full-width layout for container section phases
+ * - layout-two-column-compact: Compact two-column layout without header/actions rows
+ */
+export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
+  {
+    id: "layout-phase-two-column",
+    name: "layout-phase-two-column",
+    description: "Two-column layout for phase views with header and actions areas",
+    slots: [
+      { name: "header", position: "top", required: true },
+      { name: "main", position: "left", required: true },
+      { name: "sidebar", position: "right", required: false },
+      { name: "actions", position: "bottom", required: false },
+    ],
+    defaultBindings: {},
+  },
+  {
+    id: "layout-single-column",
+    name: "layout-single-column",
+    description:
+      "Single-column full-width layout for container section phases (Design, Spec). Ideal for phases that render their own internal layout structure, such as tabbed views, graph editors, or complex nested components.",
+    slots: [{ name: "main", position: "center", required: true }],
+    defaultBindings: {},
+  },
+  {
+    id: "layout-two-column-compact",
+    name: "layout-two-column-compact",
+    description:
+      "Compact two-column layout without header/actions rows. Main content on left, sidebar on right. Ideal for phases that don't need header/footer areas.",
+    slots: [
+      { name: "main", position: "left", required: true },
+      { name: "sidebar", position: "right", required: false },
+    ],
+    defaultBindings: {},
+  },
+]
+
+// =============================================================================
+// Compositions (7 total) - task-cpv-004, task-analysis-008, task-classification-009, task-design-010, task-spec-010, task-testing-008, task-implementation-008
+// =============================================================================
+
+/**
+ * Composition seed entities defining concrete page/view compositions.
+ *
+ * Structure:
+ * - discovery: Discovery phase view composition with slot-to-section mappings
+ * - analysis: Analysis phase with AnalysisPanelProvider context wrapper
+ * - classification: Classification phase with pure slot composition (no provider)
+ * - design: Design phase with single-column layout and container section pattern
+ * - spec: Spec phase with single-column layout and container section pattern
+ * - testing: Testing phase with TestingPanelProvider context wrapper
+ */
+export const COMPOSITIONS: CompositionSeed[] = [
+  {
+    id: "composition-discovery",
+    name: "discovery",
+    layout: "layout-phase-two-column",
+    slotContent: [
+      { slot: "header", component: "comp-def-intent-terminal-section" },
+      { slot: "main", component: "comp-def-requirements-list-section" },
+      { slot: "sidebar", component: "comp-def-initial-assessment-section" },
+      { slot: "actions", component: "comp-def-phase-actions-section" },
+    ],
+    dataContext: { phase: "discovery" },
+  },
+  // Analysis phase composition - task-analysis-008
+  // Uses compact layout (no header/actions rows) for better space utilization
+  {
+    id: "composition-analysis",
+    name: "analysis",
+    layout: "layout-two-column-compact",
+    slotContent: [
+      // Main slot: Evidence Board header + Location heat bar + Finding matrix (stacked)
+      { slot: "main", component: "comp-def-evidence-board-header-section" },
+      { slot: "main", component: "comp-def-location-heat-bar-section" },
+      { slot: "main", component: "comp-def-finding-matrix-section" },
+      // Sidebar slot: Finding list (filtered/grouped)
+      { slot: "sidebar", component: "comp-def-finding-list-section" },
+    ],
+    dataContext: { phase: "analysis" },
+    providerWrapper: "AnalysisPanelProvider",
+  },
+  // Classification phase composition - task-classification-009
+  // Pattern: Pure slot composition - NO providerWrapper needed
+  // Each section reads directly from useDomains() hook
+  // Uses compact layout (no header/actions rows) for better space utilization
+  {
+    id: "composition-classification",
+    name: "classification",
+    layout: "layout-two-column-compact",
+    slotContent: [
+      // Main slot: All 6 sections stacked vertically (archetype transformation at top)
+      { slot: "main", component: "comp-def-archetype-transformation-section" },
+      { slot: "main", component: "comp-def-correction-note-section" },
+      { slot: "main", component: "comp-def-confidence-meters-section" },
+      { slot: "main", component: "comp-def-evidence-columns-section" },
+      { slot: "main", component: "comp-def-applicable-patterns-section" },
+      { slot: "main", component: "comp-def-classification-rationale-section" },
+    ],
+    dataContext: { phase: "classification" },
+    // NO providerWrapper - validates pure slot composition without React Context
+  },
+  // Design phase composition - task-design-010
+  // Pattern: Container section with internal React state (no shared context)
+  // Single-column layout with DesignContainerSection managing its own tabs
+  {
+    id: "composition-design",
+    name: "design",
+    layout: "layout-single-column",
+    slotContent: [
+      // Main slot: Container section with internal tab navigation
+      { slot: "main", component: "comp-design-container", config: { defaultTab: "schema" } },
+    ],
+    dataContext: { phase: "design" },
+    // NO providerWrapper - Design uses container section pattern with internal React state
+  },
+  // Spec phase composition - task-spec-010
+  // Pattern: Container section with internal React state (no shared context)
+  // Single-column layout with SpecContainerSection managing ReactFlow graph and task selection
+  {
+    id: "composition-spec",
+    name: "spec",
+    layout: "layout-single-column",
+    slotContent: [
+      // Main slot: Container section with ReactFlow dependency graph and internal task selection
+      { slot: "main", component: "comp-spec-container" },
+    ],
+    dataContext: { phase: "spec" },
+    // NO providerWrapper - Spec uses container section pattern with internal React state (not shared context)
+  },
+  // Testing phase composition - task-testing-008
+  // Pattern: Provider-wrapped composition for shared context coordination
+  // Uses TestingPanelProvider to share selected test/task state across sections
+  // Uses compact layout (no header/actions rows) for better space utilization
+  {
+    id: "composition-testing",
+    name: "testing",
+    layout: "layout-two-column-compact",
+    slotContent: [
+      // Main slot: Test pyramid + distribution visualizations (stacked)
+      { slot: "main", component: "comp-def-test-pyramid-section" },
+      { slot: "main", component: "comp-def-test-type-distribution-section" },
+      // Sidebar slot: Task coverage + scenario spotlight (stacked)
+      { slot: "sidebar", component: "comp-def-task-coverage-bar-section" },
+      { slot: "sidebar", component: "comp-def-scenario-spotlight-section" },
+    ],
+    dataContext: { phase: "testing" },
+    providerWrapper: "TestingPanelProvider",
+  },
+  // Implementation phase composition - task-implementation-008
+  // Pattern: Provider-wrapped composition for shared context coordination
+  // Uses ImplementationPanelProvider to share selectedExecutionId, latestRun, sortedExecutions, currentTDDStage
+  // Uses compact layout (no header/actions rows) for better space utilization
+  {
+    id: "composition-implementation",
+    name: "implementation",
+    layout: "layout-two-column-compact",
+    slotContent: [
+      // Main slot: TDD stage + Progress dashboard + execution timeline (stacked)
+      { slot: "main", component: "comp-def-tdd-stage-indicator-section" },
+      { slot: "main", component: "comp-def-progress-dashboard-section" },
+      { slot: "main", component: "comp-def-task-execution-timeline-section" },
+      // Sidebar slot: Live terminal output
+      { slot: "sidebar", component: "comp-def-live-output-terminal-section" },
+    ],
+    dataContext: { phase: "implementation" },
+    providerWrapper: "ImplementationPanelProvider",
+  },
 ]

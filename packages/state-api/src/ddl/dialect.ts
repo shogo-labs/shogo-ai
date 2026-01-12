@@ -150,6 +150,7 @@ class SqliteDialect implements SqlDialect {
     const recreationRequired = [
       "DROP_COLUMN",
       "RECREATE_TABLE",
+      "MODIFY_CONSTRAINT",
     ]
     return recreationRequired.includes(operation)
   }

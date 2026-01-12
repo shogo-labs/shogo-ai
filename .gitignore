@@ -62,3 +62,9 @@ _tmp/
 
 # Git worktrees (managed by git-gtr)
 .worktrees/
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+tfplan

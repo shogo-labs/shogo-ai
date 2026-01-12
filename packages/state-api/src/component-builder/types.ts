@@ -247,6 +247,31 @@ export type BindingEntity = any
  * - IEnvironment.services.componentRegistry (optional service)
  * - apps/web ComponentRegistry class implements this
  */
+/**
+ * Slot specification for Composition hydration.
+ *
+ * Returned by Composition.toSlotSpecs() for use by renderers
+ * that need to compose section components into layouts.
+ *
+ * @example
+ * ```typescript
+ * const composition = store.compositionCollection.findByName("Discovery View")
+ * const specs = composition.toSlotSpecs()
+ * // [
+ * //   { slotName: "header", sectionRef: "HeaderSection" },
+ * //   { slotName: "main", sectionRef: "ContentSection", config: { variant: "compact" } }
+ * // ]
+ * ```
+ */
+export interface SlotSpec {
+  /** The slot name this content fills (matches LayoutTemplate slot name) */
+  slotName: string
+  /** ComponentDefinition.implementationRef for the section component */
+  sectionRef: string
+  /** Optional configuration passed to the component */
+  config?: Record<string, unknown>
+}
+
 export interface IComponentRegistry {
   /**
    * Register a new component entry.

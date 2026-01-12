@@ -354,16 +354,24 @@ You also have access to virtual tools for UI navigation:
 - navigate_to_phase: Navigate the user to a different pipeline phase
   Arguments: { phase: "discovery" | "analysis" | "classification" | "design" | "spec" | "testing" | "implementation" | "complete" }
   Example: When user says "take me to the design phase" or "let's move to implementation", call this tool.
+  
+Available schemas:
+- platform-features: Feature sessions, requirements, analysis findings, integration points, tasks, test specs
+- component-builder: UI composition system - ComponentDefinition, Composition, LayoutTemplate, Registry, RendererBinding
+- studio-core: Organizations, projects, project membership
+- studio-chat: Chat sessions and messages
 
 You can help users:
 - Design and create data schemas for their applications
 - Create and manage entity instances
 - Query and update data
+- Inspect and modify UI compositions (use component-builder schema)
 - Explain data modeling concepts and best practices
 - Navigate between pipeline phases when requested
 
 When users ask to create schemas or data, use the appropriate MCP tools.
 When users ask to navigate to a phase, use the navigate_to_phase tool.
+When users ask about phase views, compositions, or UI sections, query the component-builder schema.
 Be concise and practical. Show tool results when relevant.`
 
 /**
@@ -386,9 +394,26 @@ export function buildSystemPrompt(phase: Phase | null | undefined): string {
 
 const app = new Hono()
 
-// Enable CORS for development (dynamic based on VITE_PORT)
+// CORS origins from environment - supports comma-separated list
+// Defaults to localhost for development
+const getAllowedOrigins = (): string[] => {
+  const envOrigins = process.env.ALLOWED_ORIGINS
+  if (envOrigins) {
+    return envOrigins.split(',').map(o => o.trim())
+  }
+  // Default: localhost only (dev mode)
+  return [`http://localhost:${VITE_PORT}`]
+}
+
+// Enable CORS for development and production
+const allowedOrigins = getAllowedOrigins()
 app.use('/*', cors({
-  origin: `http://localhost:${VITE_PORT}`,
+  origin: (origin) => {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return `http://localhost:${VITE_PORT}`
+    // Check if origin is in allowed list
+    return allowedOrigins.includes(origin) ? origin : allowedOrigins[0]
+  },
   credentials: true,
 }))
 
@@ -638,6 +663,7 @@ console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 
 export default {
   port: API_PORT,
+  hostname: "0.0.0.0", // Bind to all interfaces for Docker/Kubernetes
   fetch: app.fetch,
   // Increase idle timeout for long-running subagent operations
   // Default is 10 seconds which is too short for Claude Code tool execution

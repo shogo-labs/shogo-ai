@@ -1,0 +1,36 @@
+# =============================================================================
+# Terraform Variables Example - Staging
+# Copy this file to terraform.tfvars and fill in the values
+# =============================================================================
+
+aws_region   = "us-east-1"
+environment  = "staging"
+project_name = "shogo"
+
+# VPC Configuration (different CIDR from production)
+vpc_cidr = "10.1.0.0/16"
+
+# EKS Configuration (smaller than production for cost savings)
+eks_cluster_version = "1.33"
+node_instance_types = ["t3.medium"]
+node_desired_size   = 1
+node_min_size       = 1
+node_max_size       = 5
+
+# RDS Configuration (smaller than production)
+rds_instance_class    = "db.t3.micro"
+rds_allocated_storage = 20
+
+# Redis Configuration
+redis_node_type = "cache.t3.micro"
+
+# Knative Configuration
+knative_version = "1.20.0"
+domain          = ""  # Optional: your domain (e.g., "shogo.ai")
+
+# Application Secrets (REQUIRED - generate a random 32+ char string)
+better_auth_secret = "your-staging-secret-key-at-least-32-characters"
+
+# GitHub Actions CI/CD
+github_org  = "your-github-username-or-org"
+github_repo = "shogo-ai"

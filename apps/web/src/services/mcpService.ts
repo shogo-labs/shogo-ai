@@ -21,7 +21,7 @@ export interface MCPResponse<T = any> {
 }
 
 export class MCPService {
-  private baseUrl = `http://localhost:${import.meta.env.VITE_MCP_PORT || '3100'}/mcp`
+  private baseUrl = `${import.meta.env.VITE_MCP_URL || 'http://localhost:3100'}/mcp`
   private requestId = 0
   private mcpSessionId: string | null = null  // Track MCP session for stateful mode
   private sseReader: ReadableStreamDefaultReader<Uint8Array> | null = null

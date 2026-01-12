@@ -3,10 +3,9 @@
   "name": "platform-features",
   "format": "enhanced-json-schema",
   "createdAt": 1765197911179,
+  "version": 2,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "x-persistence": {
-    "backend": "postgres"
-  },
+  "$id": "platform-features",
   "$defs": {
     "FeatureSession": {
       "type": "object",
@@ -30,13 +29,21 @@
         },
         "status": {
           "type": "string",
-          "enum": ["discovery", "analysis", "classification", "design", "spec", "implementation", "testing", "complete"],
+          "enum": [
+            "discovery",
+            "analysis",
+            "classification",
+            "design",
+            "spec",
+            "implementation",
+            "testing",
+            "complete"
+          ],
           "x-renderer": "session-status-badge"
         },
         "affectedPackages": {
           "type": "array",
-          "description": "Which packages this feature touches",
-          "items": { "type": "string" }
+          "description": "Which packages this feature touches"
         },
         "schemaName": {
           "type": "string",
@@ -44,35 +51,22 @@
         },
         "initialAssessment": {
           "type": "object",
-          "description": "Preliminary archetype assessment from discovery (not finalized until classification)",
-          "properties": {
-            "likelyArchetype": {
-              "type": "string",
-              "enum": ["service", "domain", "infrastructure", "hybrid"],
-              "x-renderer": "archetype-badge"
-            },
-            "indicators": {
-              "type": "array",
-              "description": "Evidence observed during discovery",
-              "items": { "type": "string" }
-            },
-            "uncertainties": {
-              "type": "array",
-              "description": "What needs validation during classification",
-              "items": { "type": "string" }
-            }
-          }
+          "description": "Preliminary archetype assessment from discovery (not finalized until classification)"
         },
         "featureArchetype": {
           "type": "string",
           "description": "Validated archetype after classification (set by classification skill)",
-          "enum": ["service", "domain", "infrastructure", "hybrid"],
+          "enum": [
+            "service",
+            "domain",
+            "infrastructure",
+            "hybrid"
+          ],
           "x-renderer": "archetype-badge"
         },
         "applicablePatterns": {
           "type": "array",
-          "description": "Patterns applicable to this feature (set by classification skill)",
-          "items": { "type": "string" }
+          "description": "Patterns applicable to this feature (set by classification skill)"
         },
         "createdAt": {
           "type": "number"
@@ -85,10 +79,15 @@
           "description": "Loose ref to Project.id"
         }
       },
-      "required": ["id", "name", "intent", "status", "createdAt"],
+      "required": [
+        "id",
+        "name",
+        "intent",
+        "status",
+        "createdAt"
+      ],
       "x-original-name": "FeatureSession"
     },
-
     "Requirement": {
       "type": "object",
       "description": "A requirement derived from the feature intent",
@@ -119,18 +118,33 @@
         },
         "priority": {
           "type": "string",
-          "enum": ["must", "should", "could", "wont"],
+          "enum": [
+            "must",
+            "should",
+            "could",
+            "wont"
+          ],
           "x-renderer": "priority-badge"
         },
         "status": {
           "type": "string",
-          "enum": ["proposed", "accepted", "implemented"],
+          "enum": [
+            "proposed",
+            "accepted",
+            "implemented"
+          ],
           "x-renderer": "requirement-status-badge"
         },
         "auditVerdict": {
           "type": "string",
           "description": "Audit verdict: OK (aligned), REVISE (needs reframe), DROP (redundant), MERGE (combine with another), DEFER (push to later phase)",
-          "enum": ["OK", "REVISE", "DROP", "MERGE", "DEFER"]
+          "enum": [
+            "OK",
+            "REVISE",
+            "DROP",
+            "MERGE",
+            "DEFER"
+          ]
         },
         "auditNotes": {
           "type": "string",
@@ -140,10 +154,16 @@
           "type": "number"
         }
       },
-      "required": ["id", "session", "name", "description", "priority", "status"],
+      "required": [
+        "id",
+        "session",
+        "name",
+        "description",
+        "priority",
+        "status"
+      ],
       "x-original-name": "Requirement"
     },
-
     "DesignDecision": {
       "type": "object",
       "description": "A design decision made during feature development",
@@ -184,10 +204,16 @@
           "type": "number"
         }
       },
-      "required": ["id", "session", "name", "question", "decision", "rationale"],
+      "required": [
+        "id",
+        "session",
+        "name",
+        "question",
+        "decision",
+        "rationale"
+      ],
       "x-original-name": "DesignDecision"
     },
-
     "ClassificationDecision": {
       "type": "object",
       "description": "Records the validated archetype classification with evidence-based rationale",
@@ -211,13 +237,23 @@
         "initialAssessment": {
           "type": "string",
           "description": "Archetype from discovery (before validation)",
-          "enum": ["service", "domain", "infrastructure", "hybrid"],
+          "enum": [
+            "service",
+            "domain",
+            "infrastructure",
+            "hybrid"
+          ],
           "x-renderer": "archetype-badge"
         },
         "validatedArchetype": {
           "type": "string",
           "description": "Final archetype after evidence-based validation",
-          "enum": ["service", "domain", "infrastructure", "hybrid"],
+          "enum": [
+            "service",
+            "domain",
+            "infrastructure",
+            "hybrid"
+          ],
           "x-renderer": "archetype-badge"
         },
         "evidenceChecklist": {
@@ -236,10 +272,15 @@
           "type": "number"
         }
       },
-      "required": ["id", "session", "validatedArchetype", "rationale", "createdAt"],
+      "required": [
+        "id",
+        "session",
+        "validatedArchetype",
+        "rationale",
+        "createdAt"
+      ],
       "x-original-name": "ClassificationDecision"
     },
-
     "AnalysisFinding": {
       "type": "object",
       "description": "A finding from codebase analysis relevant to implementing a platform feature",
@@ -267,7 +308,15 @@
         "type": {
           "type": "string",
           "description": "Category of finding",
-          "enum": ["pattern", "integration_point", "risk", "gap", "existing_test", "verification", "classification_evidence"],
+          "enum": [
+            "pattern",
+            "integration_point",
+            "risk",
+            "gap",
+            "existing_test",
+            "verification",
+            "classification_evidence"
+          ],
           "x-renderer": "finding-type-badge"
         },
         "description": {
@@ -290,10 +339,17 @@
           "type": "number"
         }
       },
-      "required": ["id", "session", "name", "type", "description", "location", "createdAt"],
+      "required": [
+        "id",
+        "session",
+        "name",
+        "type",
+        "description",
+        "location",
+        "createdAt"
+      ],
       "x-original-name": "AnalysisFinding"
     },
-
     "IntegrationPoint": {
       "type": "object",
       "description": "A specific location in the codebase where changes will be made",
@@ -333,7 +389,12 @@
         "changeType": {
           "type": "string",
           "description": "Type of change required",
-          "enum": ["add", "modify", "extend", "remove"]
+          "enum": [
+            "add",
+            "modify",
+            "extend",
+            "remove"
+          ]
         },
         "description": {
           "type": "string",
@@ -359,10 +420,16 @@
           "type": "number"
         }
       },
-      "required": ["id", "session", "name", "filePath", "description", "createdAt"],
+      "required": [
+        "id",
+        "session",
+        "name",
+        "filePath",
+        "description",
+        "createdAt"
+      ],
       "x-original-name": "IntegrationPoint"
     },
-
     "TestCase": {
       "type": "object",
       "description": "A requirement-scoped acceptance test case",
@@ -413,17 +480,29 @@
         },
         "status": {
           "type": "string",
-          "enum": ["specified", "implemented", "passing"],
+          "enum": [
+            "specified",
+            "implemented",
+            "passing"
+          ],
           "x-renderer": "test-case-status-badge"
         },
         "createdAt": {
           "type": "number"
         }
       },
-      "required": ["id", "session", "name", "description", "given", "when", "then", "status"],
+      "required": [
+        "id",
+        "session",
+        "name",
+        "description",
+        "given",
+        "when",
+        "then",
+        "status"
+      ],
       "x-original-name": "TestCase"
     },
-
     "ImplementationTask": {
       "type": "object",
       "description": "A discrete unit of work to implement part of a platform feature",
@@ -470,22 +549,25 @@
         },
         "acceptanceCriteria": {
           "type": "array",
-          "description": "Conditions that must be met for task completion",
-          "items": { "type": "string" }
+          "description": "Conditions that must be met for task completion"
         },
         "dependencies": {
           "type": "array",
           "description": "Tasks that must complete before this one",
-          "items": { "type": "string" },
+          "x-arktype": "ImplementationTask",
           "x-mst-type": "reference",
           "x-reference-type": "array",
-          "x-arktype": "ImplementationTask",
           "x-reference-target": "ImplementationTask"
         },
         "status": {
           "type": "string",
           "description": "Current task status",
-          "enum": ["planned", "in_progress", "complete", "blocked"],
+          "enum": [
+            "planned",
+            "in_progress",
+            "complete",
+            "blocked"
+          ],
           "x-renderer": "task-status-badge"
         },
         "createdAt": {
@@ -495,10 +577,17 @@
           "type": "number"
         }
       },
-      "required": ["id", "session", "name", "description", "acceptanceCriteria", "status", "createdAt"],
+      "required": [
+        "id",
+        "session",
+        "name",
+        "description",
+        "acceptanceCriteria",
+        "status",
+        "createdAt"
+      ],
       "x-original-name": "ImplementationTask"
     },
-
     "TestSpecification": {
       "type": "object",
       "description": "A task-scoped test specification in Given/When/Then format",
@@ -534,8 +623,7 @@
         },
         "given": {
           "type": "array",
-          "description": "Preconditions for the test",
-          "items": { "type": "string" }
+          "description": "Preconditions for the test"
         },
         "when": {
           "type": "string",
@@ -543,13 +631,16 @@
         },
         "then": {
           "type": "array",
-          "description": "Expected outcomes",
-          "items": { "type": "string" }
+          "description": "Expected outcomes"
         },
         "testType": {
           "type": "string",
           "description": "Level of testing",
-          "enum": ["unit", "integration", "acceptance"],
+          "enum": [
+            "unit",
+            "integration",
+            "acceptance"
+          ],
           "x-renderer": "test-type-badge"
         },
         "targetFile": {
@@ -560,10 +651,18 @@
           "type": "number"
         }
       },
-      "required": ["id", "task", "scenario", "given", "when", "then", "testType", "createdAt"],
+      "required": [
+        "id",
+        "task",
+        "scenario",
+        "given",
+        "when",
+        "then",
+        "testType",
+        "createdAt"
+      ],
       "x-original-name": "TestSpecification"
     },
-
     "ImplementationRun": {
       "type": "object",
       "description": "A single execution run of the implementation skill",
@@ -587,7 +686,12 @@
         "status": {
           "type": "string",
           "description": "Current run status",
-          "enum": ["in_progress", "blocked", "complete", "failed"],
+          "enum": [
+            "in_progress",
+            "blocked",
+            "complete",
+            "failed"
+          ],
           "x-renderer": "run-status-badge"
         },
         "currentTaskId": {
@@ -596,13 +700,11 @@
         },
         "completedTasks": {
           "type": "array",
-          "description": "IDs of successfully completed tasks",
-          "items": { "type": "string" }
+          "description": "IDs of successfully completed tasks"
         },
         "failedTasks": {
           "type": "array",
-          "description": "IDs of tasks that failed/blocked",
-          "items": { "type": "string" }
+          "description": "IDs of tasks that failed/blocked"
         },
         "startedAt": {
           "type": "number"
@@ -615,17 +717,21 @@
           "description": "Most recent error message if any"
         }
       },
-      "required": ["id", "session", "status", "startedAt"],
+      "required": [
+        "id",
+        "session",
+        "status",
+        "startedAt"
+      ],
       "x-original-name": "ImplementationRun"
     },
-
     "TaskExecution": {
       "type": "object",
       "description": "Execution record for a single task attempt",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "partitionKey": "run",
-        "nested": true
+        "nested": true,
+        "partitionKey": "run"
       },
       "properties": {
         "id": {
@@ -651,7 +757,14 @@
         "status": {
           "type": "string",
           "description": "Current execution status",
-          "enum": ["pending", "test_written", "test_failing", "implementing", "test_passing", "failed"],
+          "enum": [
+            "pending",
+            "test_written",
+            "test_failing",
+            "implementing",
+            "test_passing",
+            "failed"
+          ],
           "x-renderer": "execution-status-badge"
         },
         "testFilePath": {
@@ -681,8 +794,31 @@
           "type": "number"
         }
       },
-      "required": ["id", "run", "task", "status", "startedAt"],
+      "required": [
+        "id",
+        "run",
+        "task",
+        "status",
+        "startedAt"
+      ],
       "x-original-name": "TaskExecution"
+    }
+  },
+  "x-persistence": {
+    "backend": "postgres"
+  },
+  "views": {
+    "discovery-view-composition": {
+      "type": "query",
+      "collection": "FeatureSession",
+      "filter": {},
+      "select": [
+        "id",
+        "name",
+        "intent",
+        "status",
+        "initialAssessment"
+      ]
     }
   }
 }

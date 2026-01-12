@@ -277,4 +277,87 @@ describe("diff.ts - compareSchemas()", () => {
       expect(typeof importedFn).toBe("function")
     })
   })
+
+  describe("Detect enum value change", () => {
+    test("modifiedColumns contains constraint change when enum values added", () => {
+      const oldSchema = createSchema({
+        Task: {
+          id: { type: "string" },
+          category: { type: "string", enum: ["feature", "bug"] },
+        },
+      })
+      const newSchema = createSchema({
+        Task: {
+          id: { type: "string" },
+          category: { type: "string", enum: ["feature", "bug", "section"] },
+        },
+      })
+
+      const diff = compareSchemas(oldSchema, newSchema)
+      const taskDiff = diff.modifiedModels.find((m) => m.modelName === "Task")
+      expect(taskDiff).toBeDefined()
+
+      const categoryChange = taskDiff!.modifiedColumns.find((c) => c.columnName === "category")
+      expect(categoryChange).toBeDefined()
+      expect(categoryChange!.changeType).toBe("constraint")
+    })
+
+    test("no change when enum values identical but reordered", () => {
+      const oldSchema = createSchema({
+        Task: {
+          id: { type: "string" },
+          priority: { type: "string", enum: ["low", "high"] },
+        },
+      })
+      const newSchema = createSchema({
+        Task: {
+          id: { type: "string" },
+          priority: { type: "string", enum: ["high", "low"] },
+        },
+      })
+
+      const diff = compareSchemas(oldSchema, newSchema)
+      expect(diff.hasChanges).toBe(false)
+    })
+
+    test("detects change when enum added to non-enum property", () => {
+      const oldSchema = createSchema({
+        Task: {
+          id: { type: "string" },
+          category: { type: "string" },
+        },
+      })
+      const newSchema = createSchema({
+        Task: {
+          id: { type: "string" },
+          category: { type: "string", enum: ["a", "b"] },
+        },
+      })
+
+      const diff = compareSchemas(oldSchema, newSchema)
+      const taskDiff = diff.modifiedModels.find((m) => m.modelName === "Task")
+      expect(taskDiff).toBeDefined()
+      expect(taskDiff!.modifiedColumns[0].changeType).toBe("constraint")
+    })
+
+    test("detects change when enum removed from property", () => {
+      const oldSchema = createSchema({
+        Task: {
+          id: { type: "string" },
+          status: { type: "string", enum: ["open", "closed"] },
+        },
+      })
+      const newSchema = createSchema({
+        Task: {
+          id: { type: "string" },
+          status: { type: "string" },
+        },
+      })
+
+      const diff = compareSchemas(oldSchema, newSchema)
+      const taskDiff = diff.modifiedModels.find((m) => m.modelName === "Task")
+      expect(taskDiff).toBeDefined()
+      expect(taskDiff!.modifiedColumns[0].changeType).toBe("constraint")
+    })
+  })
 })

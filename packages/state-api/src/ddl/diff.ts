@@ -209,8 +209,41 @@ function compareColumns(
     }
   }
 
+  // Check for enum change (constraint modification)
+  if (hasEnumChanged(oldProp.enum, newProp.enum)) {
+    return {
+      columnName,
+      oldDef: propertyToColumnDef(columnName, oldProp, wasRequired),
+      newDef: propertyToColumnDef(columnName, newProp, isRequired),
+      changeType: "constraint",
+    }
+  }
+
   // No changes detected
   return null
+}
+
+/**
+ * Checks if enum values have changed between two property definitions.
+ * Uses Set comparison to detect value changes while ignoring order.
+ *
+ * @param oldEnum - Previous enum values array
+ * @param newEnum - New enum values array
+ * @returns True if enum values changed, false otherwise
+ */
+function hasEnumChanged(oldEnum: any[] | undefined, newEnum: any[] | undefined): boolean {
+  // Both undefined - no change
+  if (!oldEnum && !newEnum) return false
+  // One undefined, other defined - change (added or removed enum)
+  if (!oldEnum || !newEnum) return true
+  // Different lengths - change
+  if (oldEnum.length !== newEnum.length) return true
+  // Compare values using Set (order-independent)
+  const oldSet = new Set(oldEnum)
+  for (const value of newEnum) {
+    if (!oldSet.has(value)) return true
+  }
+  return false
 }
 
 /**
@@ -260,6 +293,8 @@ export function propertyToColumnDef(name: string, prop: any, isRequired: boolean
     type: sqlType,
     nullable: !isRequired,
     ...(defaultValue !== undefined && { defaultValue }),
+    // Capture enum values for constraint generation
+    ...(prop.enum && Array.isArray(prop.enum) && { enumValues: prop.enum }),
   }
 }
 

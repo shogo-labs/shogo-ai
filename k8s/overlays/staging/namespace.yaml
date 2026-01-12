@@ -1,0 +1,16 @@
+# =============================================================================
+# Staging Namespaces
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shogo-staging-system
+  labels:
+    environment: staging
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shogo-staging-workspaces
+  labels:
+    environment: staging

@@ -64,6 +64,7 @@ import {
   COMPONENT_DEFINITIONS,
   REGISTRY_DEFINITIONS,
   DEFAULT_BINDINGS,
+  STUDIO_BINDINGS,
   componentImplementationMap,
   useHydratedRegistry,
   RegistryHydrationProvider,
@@ -79,7 +80,7 @@ import { ComponentCatalogSidebar } from "@/components/app/workspace/sidebar/Comp
 const MockComponentDefinition = types.model("ComponentDefinition", {
   id: types.identifier,
   name: types.string,
-  category: types.enumeration(["display", "input", "layout", "visualization"]),
+  category: types.enumeration(["display", "input", "layout", "visualization", "section"]),
   description: types.optional(types.string, ""),
   implementationRef: types.string,
   tags: types.optional(types.array(types.string), []),
@@ -271,7 +272,7 @@ describe("Self-Describing Proof (task-dcb-014)", () => {
     test("seedComponentBuilderData creates RendererBinding entities", () => {
       const { store, summary } = createSeededStore()
 
-      const expectedBindings = DEFAULT_BINDINGS.length + 15 // DEFAULT + STUDIO
+      const expectedBindings = DEFAULT_BINDINGS.length + STUDIO_BINDINGS.length // DEFAULT + STUDIO
       expect(summary.rendererBindings).toBe(expectedBindings)
     })
 
