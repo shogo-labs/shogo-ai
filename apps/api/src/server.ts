@@ -291,9 +291,26 @@ export function buildSystemPrompt(phase: Phase | null | undefined): string {
 
 const app = new Hono()
 
-// Enable CORS for development (dynamic based on VITE_PORT)
+// CORS origins from environment - supports comma-separated list
+// Defaults to localhost for development
+const getAllowedOrigins = (): string[] => {
+  const envOrigins = process.env.ALLOWED_ORIGINS
+  if (envOrigins) {
+    return envOrigins.split(',').map(o => o.trim())
+  }
+  // Default: localhost only (dev mode)
+  return [`http://localhost:${VITE_PORT}`]
+}
+
+// Enable CORS for development and production
+const allowedOrigins = getAllowedOrigins()
 app.use('/*', cors({
-  origin: `http://localhost:${VITE_PORT}`,
+  origin: (origin) => {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return `http://localhost:${VITE_PORT}`
+    // Check if origin is in allowed list
+    return allowedOrigins.includes(origin) ? origin : allowedOrigins[0]
+  },
   credentials: true,
 }))
 
@@ -501,6 +518,7 @@ console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 
 export default {
   port: API_PORT,
+  hostname: "0.0.0.0", // Bind to all interfaces for Docker/Kubernetes
   fetch: app.fetch,
   // Increase idle timeout for long-running subagent operations
   // Default is 10 seconds which is too short for Claude Code tool execution

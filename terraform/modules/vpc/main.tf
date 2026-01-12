@@ -26,6 +26,12 @@ variable "tags" {
   default     = {}
 }
 
+variable "single_nat_gateway" {
+  description = "Use single NAT gateway instead of one per AZ (cost savings for non-prod)"
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------------------
 # VPC
 # -----------------------------------------------------------------------------
@@ -88,9 +94,14 @@ resource "aws_subnet" "private" {
 
 # -----------------------------------------------------------------------------
 # NAT Gateway (for private subnet internet access)
+# Use single_nat_gateway = true for non-prod to save costs
 # -----------------------------------------------------------------------------
+locals {
+  nat_gateway_count = var.single_nat_gateway ? 1 : length(var.availability_zones)
+}
+
 resource "aws_eip" "nat" {
-  count  = length(var.availability_zones)
+  count  = local.nat_gateway_count
   domain = "vpc"
 
   tags = merge(var.tags, {
@@ -101,13 +112,13 @@ resource "aws_eip" "nat" {
 }
 
 resource "aws_nat_gateway" "main" {
-  count = length(var.availability_zones)
+  count = local.nat_gateway_count
 
   allocation_id = aws_eip.nat[count.index].id
   subnet_id     = aws_subnet.public[count.index].id
 
   tags = merge(var.tags, {
-    Name = "${var.name}-nat-${var.availability_zones[count.index]}"
+    Name = var.single_nat_gateway ? "${var.name}-nat" : "${var.name}-nat-${var.availability_zones[count.index]}"
   })
 
   depends_on = [aws_internet_gateway.main]
@@ -135,7 +146,8 @@ resource "aws_route_table" "private" {
 
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main[count.index].id
+    # When using single NAT gateway, all private subnets route through it
+    nat_gateway_id = var.single_nat_gateway ? aws_nat_gateway.main[0].id : aws_nat_gateway.main[count.index].id
   }
 
   tags = merge(var.tags, {

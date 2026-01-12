@@ -15,9 +15,9 @@ terraform {
 }
 
 variable "knative_version" {
-  description = "Knative Serving version (latest: 1.16.0 as of Jan 2026)"
+  description = "Knative Serving version (latest: 1.20.0 as of Jan 2026)"
   type        = string
-  default     = "1.16.0"
+  default     = "1.20.0"
 }
 
 variable "domain" {
@@ -30,6 +30,12 @@ variable "scale_to_zero_grace_period" {
   description = "Grace period before scaling to zero"
   type        = string
   default     = "60s"
+}
+
+variable "ssl_certificate_arn" {
+  description = "ACM certificate ARN for HTTPS termination on the load balancer"
+  type        = string
+  default     = ""
 }
 
 # -----------------------------------------------------------------------------
@@ -80,13 +86,62 @@ resource "null_resource" "kourier" {
 }
 
 # -----------------------------------------------------------------------------
+# Configure Kourier LoadBalancer with SSL Certificate (optional)
+# -----------------------------------------------------------------------------
+resource "null_resource" "kourier_ssl" {
+  count      = var.ssl_certificate_arn != "" ? 1 : 0
+  depends_on = [null_resource.kourier]
+
+  triggers = {
+    ssl_certificate_arn = var.ssl_certificate_arn
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Wait for Kourier service to be created
+      kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' service/kourier -n kourier-system --timeout=300s || sleep 30
+      
+      # Patch Kourier service with SSL annotations for AWS ELB
+      kubectl annotate service/kourier -n kourier-system --overwrite \
+        service.beta.kubernetes.io/aws-load-balancer-ssl-cert="${var.ssl_certificate_arn}" \
+        service.beta.kubernetes.io/aws-load-balancer-backend-protocol=http \
+        service.beta.kubernetes.io/aws-load-balancer-ssl-ports="443"
+      
+      # Wait for ELB to be created and get its name
+      sleep 30
+      ELB_DNS=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+      ELB_NAME=$(echo $ELB_DNS | cut -d'-' -f1-5)
+      
+      # Get the HTTP NodePort (port 80)
+      HTTP_NODEPORT=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
+      
+      # Fix the HTTPS listener to forward to HTTP NodePort after SSL termination
+      # (Kubernetes sets it to forward to the 443 NodePort which expects TLS traffic)
+      aws elb delete-load-balancer-listeners --load-balancer-name $ELB_NAME --load-balancer-ports 443 --region us-east-1 || true
+      aws elb create-load-balancer-listeners --load-balancer-name $ELB_NAME \
+        --listeners "Protocol=HTTPS,LoadBalancerPort=443,InstanceProtocol=HTTP,InstancePort=$HTTP_NODEPORT,SSLCertificateId=${var.ssl_certificate_arn}" \
+        --region us-east-1
+      
+      echo "SSL certificate attached to Kourier LoadBalancer with correct backend port"
+    EOT
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Configure Knative via kubectl (ConfigMaps)
 # -----------------------------------------------------------------------------
+variable "ecr_registry" {
+  description = "ECR registry URL to skip tag resolution for (e.g., 123456789.dkr.ecr.us-east-1.amazonaws.com)"
+  type        = string
+  default     = ""
+}
+
 resource "null_resource" "knative_config" {
   depends_on = [null_resource.kourier]
 
   triggers = {
     scale_to_zero_grace_period = var.scale_to_zero_grace_period
+    ecr_registry               = var.ecr_registry
   }
 
   provisioner "local-exec" {
@@ -105,6 +160,15 @@ resource "null_resource" "knative_config" {
         --namespace knative-serving \
         --type merge \
         --patch '{"data":{"enable-scale-to-zero":"true","scale-to-zero-grace-period":"${var.scale_to_zero_grace_period}","scale-to-zero-pod-retention-period":"0s"}}'
+      
+      # Configure ECR registry to skip tag resolution (avoids controller needing ECR auth)
+      # This allows Knative to use image tags directly without resolving to digests
+      %{ if var.ecr_registry != "" }
+      kubectl patch configmap/config-deployment \
+        --namespace knative-serving \
+        --type merge \
+        --patch '{"data":{"registries-skipping-tag-resolving":"kind.local,ko.local,dev.local,${var.ecr_registry}"}}'
+      %{ endif }
     EOT
   }
 }

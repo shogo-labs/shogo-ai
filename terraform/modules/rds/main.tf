@@ -128,7 +128,7 @@ resource "aws_db_instance" "main" {
   identifier = var.identifier
 
   engine         = "postgres"
-  engine_version = "15.15"  # Latest available PostgreSQL on RDS in us-east-2
+  engine_version = "15.15"  # Latest available PostgreSQL on RDS in us-east-1
   instance_class = var.instance_class
 
   allocated_storage     = var.allocated_storage
