@@ -244,6 +244,8 @@ const COMPONENT_BUILDER_MODEL_MAP: Record<string, string> = {
   ComponentDefinition: "componentDefinitionCollection",
   Registry: "registryCollection",
   RendererBinding: "rendererBindingCollection",
+  LayoutTemplate: "layoutTemplateCollection",
+  Composition: "compositionCollection",
 }
 
 /**
@@ -461,7 +463,7 @@ export const ChatPanel = observer(function ChatPanel({
   const {
     messages,
     sendMessage,  // v3 API: sendMessage() replaces append()
-    isLoading,
+    status,       // v3 API: 'submitted' | 'streaming' | 'ready' | 'error'
     error,
     setMessages,
     reload,
@@ -599,6 +601,9 @@ export const ChatPanel = observer(function ChatPanel({
     },
   })
 
+  // Derive isStreaming from v3 status for backward compatibility
+  const isStreaming = status === 'streaming' || status === 'submitted'
+
   // Idle timeout to force-complete hung streams
   // When Claude Code invokes skills/tools, the stream can hang indefinitely
   // because onFinish never fires. This detects idle state and calls stop().
@@ -610,7 +615,7 @@ export const ChatPanel = observer(function ChatPanel({
     // Get current content to track changes
     const currentContent = messages.map(m => m.content).join("")
 
-    if (isLoading) {
+    if (isStreaming) {
       // Clear existing timeout
       if (idleTimeoutRef.current) {
         clearTimeout(idleTimeoutRef.current)
@@ -623,7 +628,7 @@ export const ChatPanel = observer(function ChatPanel({
 
       // Set new timeout
       idleTimeoutRef.current = setTimeout(() => {
-        if (isLoading) {
+        if (isStreaming) {
           console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
           stop()
         }
@@ -642,7 +647,7 @@ export const ChatPanel = observer(function ChatPanel({
         clearTimeout(idleTimeoutRef.current)
       }
     }
-  }, [isLoading, messages, stop])
+  }, [isStreaming, messages, stop])
 
   // Process progress events from message parts (task-subagent-progress-streaming)
   useEffect(() => {
@@ -752,7 +757,7 @@ export const ChatPanel = observer(function ChatPanel({
   // Instead of clearing immediately, we keep completed subagents visible for a few seconds
   // so users can see the final state before the panel disappears
   useEffect(() => {
-    if (!isLoading) {
+    if (!isStreaming) {
       // Set timeouts for each completed subagent (only if not already scheduled)
       const timeoutIds: ReturnType<typeof setTimeout>[] = []
 
@@ -782,7 +787,7 @@ export const ChatPanel = observer(function ChatPanel({
         timeoutIds.push(toolsTimeoutId)
       }
 
-      // Cleanup timeouts if component unmounts or isLoading changes
+      // Cleanup timeouts if component unmounts or isStreaming changes
       return () => {
         timeoutIds.forEach((id) => clearTimeout(id))
       }
@@ -791,18 +796,18 @@ export const ChatPanel = observer(function ChatPanel({
       scheduledCleanupRef.current.clear()
       toolsCleanupScheduledRef.current = false
     }
-  }, [isLoading, activeSubagents, recentTools.length])
+  }, [isStreaming, activeSubagents, recentTools.length])
 
   // Clear accumulated tools when a new stream starts (task-chat-ux-fix)
-  // We use a ref to track the previous isLoading state to detect stream start
-  const prevIsLoadingRef = useRef(false)
+  // We use a ref to track the previous isStreaming state to detect stream start
+  const prevIsStreamingRef = useRef(false)
   useEffect(() => {
-    // Detect stream start: isLoading transitions from false to true
-    if (isLoading && !prevIsLoadingRef.current) {
+    // Detect stream start: isStreaming transitions from false to true
+    if (isStreaming && !prevIsStreamingRef.current) {
       setAccumulatedSubagentTools([])
     }
-    prevIsLoadingRef.current = isLoading
-  }, [isLoading])
+    prevIsStreamingRef.current = isStreaming
+  }, [isStreaming])
 
   // Load persisted messages when session changes
   useEffect(() => {
@@ -826,8 +831,8 @@ export const ChatPanel = observer(function ChatPanel({
   // Notify parent of streaming state changes (task-3-1-007)
   // This allows WorkspaceLayout to pause polling during active streaming
   useEffect(() => {
-    onStreamingChange?.(isLoading)
-  }, [isLoading, onStreamingChange])
+    onStreamingChange?.(isStreaming)
+  }, [isStreaming, onStreamingChange])
 
   // chat-session-sync-fix: Handle message submission using v3 sendMessage() API
   // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
@@ -948,7 +953,7 @@ export const ChatPanel = observer(function ChatPanel({
       : null,
     messages: messageListMessages,
     sendMessage: handleSendMessage,
-    isLoading,
+    isLoading: isStreaming,
     isPolling, // task-3-1-008: Pass polling state to context for LoadingOverlay
     error: error?.message ?? null,
   }
@@ -996,7 +1001,7 @@ export const ChatPanel = observer(function ChatPanel({
         {/* Header */}
         <ChatHeader
           sessionName={currentSession?.name || featureName || "Chat"}
-          isLoading={isLoading}
+          isLoading={isStreaming}
           isCollapsed={isCollapsed}
           onToggleCollapse={handleToggleCollapse}
         />
@@ -1006,13 +1011,13 @@ export const ChatPanel = observer(function ChatPanel({
           {messages.length > 0 ? (
             <TurnList
               messages={messages}
-              isStreaming={isLoading}
+              isStreaming={isStreaming}
               phase={phase}
               activeSubagents={Array.from(activeSubagents.values()) as SubagentProgressType[]}
               recentTools={recentTools as RecentToolType[]}
               subagentToolCalls={accumulatedSubagentTools}
             />
-          ) : !isLoading ? (
+          ) : !isStreaming ? (
             /* Phase-contextual empty state (task-chat-008) */
             <PhaseEmptyState
               phase={phase}
@@ -1056,8 +1061,10 @@ export const ChatPanel = observer(function ChatPanel({
         {/* Input */}
         <ChatInput
           onSubmit={handleInputSubmit}
-          disabled={isLoading || !currentSessionId}
+          disabled={!currentSessionId}
           placeholder={!featureId ? "Select a feature to start chatting..." : "Type a message..."}
+          isStreaming={isStreaming}
+          onStop={stop}
         />
       </div>
     </div>

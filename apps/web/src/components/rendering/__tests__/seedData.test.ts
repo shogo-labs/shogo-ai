@@ -43,9 +43,9 @@ function createMockStore(): MockStore {
 
 describe("seedData module", () => {
   describe("COMPONENT_DEFINITIONS constant", () => {
-    test("defines 26 ComponentDefinition entries", async () => {
+    test("defines 38 ComponentDefinition entries (34 original + 4 analysis sections)", async () => {
       const { COMPONENT_DEFINITIONS } = await import("../seedData")
-      expect(COMPONENT_DEFINITIONS.length).toBe(26)
+      expect(COMPONENT_DEFINITIONS.length).toBe(38)
     })
 
     describe("primitive display components (11)", () => {
@@ -354,7 +354,7 @@ describe("seedData module", () => {
         expect(def.name).toBeDefined()
         expect(typeof def.name).toBe("string")
         expect(def.category).toBeDefined()
-        expect(["display", "input", "layout", "visualization"]).toContain(
+        expect(["display", "input", "layout", "visualization", "section"]).toContain(
           def.category
         )
         expect(def.implementationRef).toBeDefined()
@@ -534,9 +534,9 @@ describe("seedData module", () => {
   })
 
   describe("STUDIO_BINDINGS constant", () => {
-    test("defines 15 RendererBinding entries", async () => {
+    test("defines 18 RendererBinding entries", async () => {
       const { STUDIO_BINDINGS } = await import("../seedData")
-      expect(STUDIO_BINDINGS.length).toBe(15)
+      expect(STUDIO_BINDINGS.length).toBe(18)
     })
 
     test("all bindings reference 'studio' registry", async () => {
@@ -726,7 +726,7 @@ describe("seedData module", () => {
       seedComponentBuilderData(store)
 
       expect(store.ComponentDefinition.size).toBe(COMPONENT_DEFINITIONS.length)
-      expect(store.ComponentDefinition.size).toBe(26)
+      expect(store.ComponentDefinition.size).toBe(38)
     })
 
     test("creates all Registry entities", async () => {
@@ -748,7 +748,7 @@ describe("seedData module", () => {
 
       const expectedCount = DEFAULT_BINDINGS.length + STUDIO_BINDINGS.length
       expect(store.RendererBinding.size).toBe(expectedCount)
-      expect(store.RendererBinding.size).toBe(27) // 12 + 15
+      expect(store.RendererBinding.size).toBe(30) // 12 + 18
     })
 
     test("creates entities with createdAt timestamps", async () => {
@@ -822,9 +822,9 @@ describe("seedData module", () => {
       const result = seedComponentBuilderData(store)
 
       expect(result).toBeDefined()
-      expect(result.componentDefinitions).toBe(26)
+      expect(result.componentDefinitions).toBe(38)
       expect(result.registries).toBe(2)
-      expect(result.rendererBindings).toBe(27) // 12 default + 15 studio
+      expect(result.rendererBindings).toBe(30) // 12 default + 18 studio
     })
   })
 
