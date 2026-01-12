@@ -8,6 +8,7 @@
 // Base shared components (Session 2.1)
 export { UserMenu } from "./UserMenu"
 export { ThemeToggle } from "./ThemeToggle"
+export { AdvancedModeToggle } from "./AdvancedModeToggle"
 export { SplashScreen } from "./SplashScreen"
 
 // Phase view shared cards (Session 2.3B)

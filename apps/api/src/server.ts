@@ -1,10 +1,12 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { streamText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
+import { z } from 'zod'
 import { EventEmitter } from 'events'
-import type { SubagentProgressEvent } from './types/progress'
-import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
-import { createClaudeCode } from 'ai-sdk-provider-claude-code'
+import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
+import { isVirtualTool } from './types/progress'
+import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
+import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-provider-claude-code'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { auth } from './auth'
@@ -53,12 +55,55 @@ const PROJECT_ROOT = resolve(__filename, '../../../../')
 // Progress event emitter for streaming subagent updates (task-subagent-progress-streaming)
 const progressEvents = new EventEmitter()
 
+// Virtual tool event emitter for streaming client-side execution instructions
+// (virtual-tools-domain Phase 0 PoC)
+const virtualToolEvents = new EventEmitter()
+
 // Stream completion event emitter - signals when parent agent finishes (fixes subagent hang)
 // This is separate from progressEvents to avoid confusion between progress updates and completion signals
 const streamCompletionEvents = new EventEmitter()
 
 // Debug logging prefix for subagent progress
 const LOG_PREFIX = '[SubagentProgress]'
+const VT_LOG_PREFIX = '[VirtualTool]'
+
+// Create SDK MCP server for virtual tools (in-process, call-site defined)
+// These tools execute in our API server process and emit events for client-side effects
+const virtualToolsServer = createSdkMcpServer({
+  name: 'virtual-tools',
+  version: '1.0.0',
+  tools: [
+    sdkTool(
+      'navigate_to_phase',
+      'Navigate the user to a different pipeline phase in the Shogo Studio UI. Use when user asks to go to a different phase like "take me to design" or "let\'s move to implementation".',
+      {
+        phase: z.enum(['discovery', 'analysis', 'classification', 'design', 'spec', 'testing', 'implementation', 'complete'])
+          .describe('The target phase to navigate to'),
+      },
+      async (args) => {
+        console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing:`, args)
+
+        // Emit event for client-side execution
+        const event: VirtualToolEvent = {
+          type: 'virtual-tool-execute',
+          toolUseId: `vt-${Date.now()}`,
+          toolName: 'navigate_to_phase',
+          args: args as Record<string, unknown>,
+          timestamp: Date.now(),
+        }
+        virtualToolEvents.emit('virtual-tool', event)
+        console.log(`${VT_LOG_PREFIX} ✅ Emitted virtual tool event`)
+
+        return {
+          content: [{
+            type: 'text',
+            text: `Navigation initiated to ${args.phase} phase`
+          }]
+        }
+      }
+    ),
+  ]
+})
 
 // Create Claude Code provider scoped to this project
 // This enables:
@@ -74,15 +119,19 @@ const claudeCode = createClaudeCode({
     cwd: PROJECT_ROOT,
     // Load project settings (picks up .claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
-    // Wavesmith MCP server - matches .mcp.json config
+    // MCP servers - Wavesmith for data + Virtual tools for client-side effects
     mcpServers: {
       wavesmith: {
         command: 'bun',
         args: ['run', 'packages/mcp/src/server.ts'],
       },
+      // SDK MCP server for virtual tools (in-process, defined above)
+      'virtual-tools': virtualToolsServer,
     },
     // Allow MCP tools, file operations, and skill invocation
     allowedTools: [
+      // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
+      'mcp__virtual-tools__navigate_to_phase',
       // File operations
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
       // Skill and agent tools (required for /platform-feature-* skills)
@@ -144,7 +193,51 @@ const claudeCode = createClaudeCode({
     // Bypass permission prompts for non-interactive API use
     permissionMode: 'bypassPermissions',
     // Hooks for subagent progress streaming (task-subagent-progress-streaming)
+    // and virtual tool interception (virtual-tools-domain Phase 0 PoC)
     hooks: {
+      // PreToolUse: Intercept virtual tool calls before they route to MCP
+      // Virtual tools are executed client-side, not via MCP
+      PreToolUse: [{
+        hooks: [async (rawInput: unknown) => {
+          const input = rawInput as PreToolUseHookInput
+          const toolName = input.tool_name
+
+          // Check if this is a virtual tool
+          if (isVirtualTool(toolName)) {
+            console.log(`${VT_LOG_PREFIX} 🎯 Intercepting virtual tool:`, {
+              toolName,
+              toolUseId: input.tool_use_id,
+              args: input.tool_input,
+            })
+
+            // Emit event for streaming to client
+            const event: VirtualToolEvent = {
+              type: 'virtual-tool-execute',
+              toolUseId: input.tool_use_id,
+              toolName,
+              args: input.tool_input as Record<string, unknown>,
+              timestamp: Date.now(),
+            }
+            virtualToolEvents.emit('virtual-tool', event)
+
+            // Return tool result immediately - don't route to MCP
+            // For navigate_to_phase, we acknowledge success
+            const result = toolName === 'navigate_to_phase'
+              ? `Navigation initiated to phase: ${(input.tool_input as any)?.phase ?? 'unknown'}`
+              : `Virtual tool ${toolName} executed successfully`
+
+            console.log(`${VT_LOG_PREFIX} ✅ Returning result:`, result)
+
+            return {
+              // Skip MCP execution - return our own result
+              toolResult: result,
+            }
+          }
+
+          // Not a virtual tool - continue to MCP
+          return { continue: true }
+        }]
+      }],
       SubagentStart: [{
         hooks: [async (rawInput: unknown) => {
           const input = rawInput as SubagentStartHookInput
@@ -257,13 +350,20 @@ You have access to the Wavesmith MCP server with these tools:
 - store_models - List available models in a schema
 - data_load, data_loadAll - Load data from persistence
 
+You also have access to virtual tools for UI navigation:
+- navigate_to_phase: Navigate the user to a different pipeline phase
+  Arguments: { phase: "discovery" | "analysis" | "classification" | "design" | "spec" | "testing" | "implementation" | "complete" }
+  Example: When user says "take me to the design phase" or "let's move to implementation", call this tool.
+
 You can help users:
 - Design and create data schemas for their applications
 - Create and manage entity instances
 - Query and update data
 - Explain data modeling concepts and best practices
+- Navigate between pipeline phases when requested
 
 When users ask to create schemas or data, use the appropriate MCP tools.
+When users ask to navigate to a phase, use the navigate_to_phase tool.
 Be concise and practical. Show tool results when relevant.`
 
 /**
@@ -328,6 +428,8 @@ app.post('/api/chat', async (c) => {
     // task-subagent-progress-streaming: Buffer events BEFORE starting streamText
     // This fixes the race condition where SubagentStart fires before the stream listener is attached
     const eventBuffer: SubagentProgressEvent[] = []
+    // virtual-tools-domain: Buffer for virtual tool events
+    const virtualToolBuffer: VirtualToolEvent[] = []
     let streamWriter: { write: (data: any) => void } | null = null
 
     // Stream completion signal - resolves when Stop or SessionEnd hook fires
@@ -377,9 +479,29 @@ app.post('/api/chat', async (c) => {
       }
     }
 
-    // Attach listener BEFORE calling streamText
+    // virtual-tools-domain: Handle virtual tool events for client-side execution
+    const onVirtualTool = (event: VirtualToolEvent) => {
+      console.log(`${VT_LOG_PREFIX} 📥 Received virtual tool event:`, event)
+      if (streamWriter) {
+        // Stream is ready, write directly using AI SDK 6.x data-{name} format
+        streamWriter.write({
+          type: 'data-virtual-tool',
+          id: `vt-${Date.now()}`,
+          data: event,
+        })
+        console.log(`${VT_LOG_PREFIX} ✅ Wrote data-virtual-tool part to stream (live)`)
+      } else {
+        // Stream not ready yet, buffer the event
+        virtualToolBuffer.push(event)
+        console.log(`${VT_LOG_PREFIX} 📦 Buffered event (stream not ready), buffer size:`, virtualToolBuffer.length)
+      }
+    }
+
+    // Attach listeners BEFORE calling streamText
     console.log(`${LOG_PREFIX} 👂 Attaching progress listener BEFORE streamText`)
     progressEvents.on('progress', onProgress)
+    console.log(`${VT_LOG_PREFIX} 👂 Attaching virtual tool listener BEFORE streamText`)
+    virtualToolEvents.on('virtual-tool', onVirtualTool)
 
     // chat-session-sync-fix: Send FULL message history every time
     // Claude Code handles deduplication internally via its session files
@@ -411,6 +533,19 @@ app.post('/api/chat', async (c) => {
             })
           }
           eventBuffer.length = 0 // Clear buffer
+        }
+
+        // virtual-tools-domain: Flush buffered virtual tool events
+        if (virtualToolBuffer.length > 0) {
+          console.log(`${VT_LOG_PREFIX} 📤 Flushing ${virtualToolBuffer.length} buffered virtual tool events`)
+          for (const bufferedEvent of virtualToolBuffer) {
+            writer.write({
+              type: 'data-virtual-tool',
+              id: `vt-${Date.now()}`,
+              data: bufferedEvent,
+            })
+          }
+          virtualToolBuffer.length = 0 // Clear buffer
         }
 
         try {
@@ -466,15 +601,18 @@ app.post('/api/chat', async (c) => {
           // Cleanup: remove progress listener to prevent memory leak
           console.log(`${LOG_PREFIX} 🧹 Removing progress listener (stream ending)`)
           progressEvents.off('progress', onProgress)
+          virtualToolEvents.off('virtual-tool', onVirtualTool)
           streamCompletionEvents.off('complete', onStreamComplete)
           streamWriter = null
           console.log(`${LOG_PREFIX} 📊 Remaining listener count:`, progressEvents.listenerCount('progress'))
+          console.log(`${VT_LOG_PREFIX} 📊 Remaining listener count:`, virtualToolEvents.listenerCount('virtual-tool'))
         }
       },
       onError: (error) => {
         console.error('[/api/chat] Stream error:', error)
         // Cleanup on error too
         progressEvents.off('progress', onProgress)
+        virtualToolEvents.off('virtual-tool', onVirtualTool)
         streamCompletionEvents.off('complete', onStreamComplete)
         streamWriter = null
         return 'An error occurred during streaming'

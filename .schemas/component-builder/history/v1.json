@@ -33,6 +33,7 @@
             "display",
             "input",
             "layout",
+            "section",
             "visualization"
           ],
           "x-renderer": "category-badge"

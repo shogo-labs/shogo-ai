@@ -48,6 +48,15 @@ type SubagentProgressEvent =
   | { type: 'subagent-stop'; agentId: string; timestamp: number }
   | { type: 'tool-complete'; toolName: string; toolUseId: string; timestamp: number }
 
+// Virtual tool event type from server (virtual-tools-domain Phase 0 PoC)
+interface VirtualToolEvent {
+  type: 'virtual-tool-execute'
+  toolUseId: string
+  toolName: string
+  args: Record<string, unknown>
+  timestamp: number
+}
+
 interface SubagentProgress {
   agentId: string
   agentType: string
@@ -81,6 +90,10 @@ function getToolCategory(name: string): 'mcp' | 'file' | 'skill' | 'other' {
   return 'other'
 }
 
+// Re-export WorkspacePanelData from advanced-chat for workspace integration (task-testbed-chat-integration)
+import type { WorkspacePanelData } from "../advanced-chat/WorkspacePanel"
+export type { WorkspacePanelData }
+
 export interface ChatPanelProps {
   /** Feature session ID to link chat with */
   featureId: string | null
@@ -100,6 +113,10 @@ export interface ChatPanelProps {
   onStreamingChange?: (isStreaming: boolean) => void
   /** Whether data is being refreshed via polling - task-3-1-008 */
   isPolling?: boolean
+  /** Callback to navigate to a different phase (virtual-tools-domain Phase 0 PoC) */
+  onNavigateToPhase?: (phase: string) => void
+  /** Callback to open a panel in workspace (task-testbed-chat-integration) */
+  onOpenPanel?: (panel: WorkspacePanelData) => void
 }
 
 // ============================================================
@@ -356,6 +373,8 @@ export const ChatPanel = observer(function ChatPanel({
   onRefresh,
   onStreamingChange,
   isPolling,
+  onNavigateToPhase,
+  onOpenPanel,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
@@ -478,10 +497,55 @@ export const ChatPanel = observer(function ChatPanel({
     },
     // Handle transient data parts via AI SDK 6.x data-{name} format
     // Server sends: { type: 'data-progress', id: string, data: SubagentProgressEvent }
+    // Server sends: { type: 'data-virtual-tool', id: string, data: VirtualToolEvent }
     // Session ID comes via message-metadata (handled in onFinish)
     // See: https://ai-sdk.dev/docs/ai-sdk-ui/streaming-data
     onData: (dataPart) => {
       console.log('[ChatPanel:onData] Received data part:', dataPart.type, dataPart)
+
+      // Handle virtual tool events (virtual-tools-domain Phase 0 PoC)
+      // These are tools executed client-side rather than via MCP
+      if (dataPart.type === 'data-virtual-tool') {
+        const event = (dataPart as any).data as VirtualToolEvent
+        console.log('[ChatPanel:VirtualTool] 🎯 Received virtual tool event:', event)
+
+        // Execute the virtual tool based on toolName
+        if (event.toolName === 'navigate_to_phase') {
+          const targetPhase = event.args?.phase as string
+          if (targetPhase && onNavigateToPhase) {
+            console.log('[ChatPanel:VirtualTool] 🚀 Navigating to phase:', targetPhase)
+            onNavigateToPhase(targetPhase)
+          } else if (targetPhase) {
+            // Fallback: Update URL directly if no callback provided
+            console.log('[ChatPanel:VirtualTool] 🚀 Navigating via URL to phase:', targetPhase)
+            const url = new URL(window.location.href)
+            url.searchParams.set('phase', targetPhase)
+            window.history.pushState({}, '', url.toString())
+            // Dispatch popstate to trigger re-render (WorkspaceLayout listens to URL)
+            window.dispatchEvent(new PopStateEvent('popstate'))
+          }
+        } else if (event.toolName === 'open_panel') {
+          // task-testbed-chat-integration: Handle open_panel virtual tool
+          const panelId = event.args?.panelId as string || `panel-${event.toolUseId}`
+          const panelType = event.args?.type as string || 'preview'
+          const panelTitle = event.args?.title as string || 'Panel'
+          const panelContent = event.args?.content as unknown
+
+          if (onOpenPanel) {
+            console.log('[ChatPanel:VirtualTool] 📋 Opening panel:', panelId, panelType, panelTitle)
+            onOpenPanel({
+              id: panelId,
+              type: panelType,
+              title: panelTitle,
+              content: panelContent,
+            })
+          } else {
+            console.warn('[ChatPanel:VirtualTool] ⚠️ open_panel called but no onOpenPanel callback provided')
+          }
+        } else {
+          console.warn('[ChatPanel:VirtualTool] ⚠️ Unknown virtual tool:', event.toolName)
+        }
+      }
 
       // Handle subagent progress events (task-subagent-progress-streaming)
       // AI SDK 6.x uses data-{name} format: { type: 'data-progress', id, data }

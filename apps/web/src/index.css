@@ -179,10 +179,7 @@ body {
   color-scheme: dark;
 }
 
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-}
+/* #root width constraint removed for full-width /app routes */
 
 /*
  * Accessibility Utilities

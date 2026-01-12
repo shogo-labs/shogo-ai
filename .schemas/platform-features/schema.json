@@ -119,13 +119,22 @@
         },
         "priority": {
           "type": "string",
-          "enum": ["must", "should", "could"],
+          "enum": ["must", "should", "could", "wont"],
           "x-renderer": "priority-badge"
         },
         "status": {
           "type": "string",
           "enum": ["proposed", "accepted", "implemented"],
           "x-renderer": "requirement-status-badge"
+        },
+        "auditVerdict": {
+          "type": "string",
+          "description": "Audit verdict: OK (aligned), REVISE (needs reframe), DROP (redundant), MERGE (combine with another), DEFER (push to later phase)",
+          "enum": ["OK", "REVISE", "DROP", "MERGE", "DEFER"]
+        },
+        "auditNotes": {
+          "type": "string",
+          "description": "Notes explaining the audit verdict"
         },
         "createdAt": {
           "type": "number"

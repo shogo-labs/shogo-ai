@@ -20,7 +20,7 @@
  */
 
 import { observer } from "mobx-react-lite"
-import { ThemeToggle } from "../shared/ThemeToggle"
+import { ThemeToggle, AdvancedModeToggle } from "../shared"
 import { UserMenu } from "../shared/UserMenu"
 import { OrgSwitcher, ProjectSelector } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
@@ -77,6 +77,7 @@ export const AppHeader = observer(function AppHeader() {
 
       {/* Right: Controls */}
       <div className="flex items-center gap-2">
+        <AdvancedModeToggle />
         <ThemeToggle />
         <UserMenu />
       </div>

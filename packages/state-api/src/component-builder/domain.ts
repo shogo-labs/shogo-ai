@@ -34,7 +34,7 @@ export const ComponentBuilderDomain = scope({
   ComponentDefinition: {
     id: "string",
     name: "string",
-    category: "'display' | 'input' | 'layout' | 'visualization'",
+    category: "'display' | 'input' | 'layout' | 'section' | 'visualization'",
     "description?": "string",
     implementationRef: "string",
     "previewRef?": "string",
@@ -189,7 +189,7 @@ export const componentBuilderDomain = domain({
            * Find all components in a given category.
            */
           findByCategory(
-            category: "display" | "input" | "layout" | "visualization"
+            category: "display" | "input" | "layout" | "section" | "visualization"
           ): any[] {
             return self.all().filter((c: any) => c.category === category)
           },
@@ -280,6 +280,7 @@ export const componentBuilderDomain = domain({
             display: 0,
             input: 0,
             layout: 0,
+            section: 0,
             visualization: 0,
           }
           for (const c of self.componentDefinitionCollection.all()) {
