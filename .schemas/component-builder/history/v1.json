@@ -3,12 +3,9 @@
   "name": "component-builder",
   "format": "enhanced-json-schema",
   "createdAt": 1767839088233,
-  "version": 1,
+  "version": 2,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "component-builder",
-  "x-persistence": {
-    "backend": "postgres"
-  },
   "$defs": {
     "ComponentDefinition": {
       "type": "object",
@@ -60,9 +57,6 @@
         },
         "supportedConfig": {
           "type": "array",
-          "items": {
-            "type": "string"
-          },
           "description": "Config keys this component supports (e.g., ['variant', 'size', 'truncate'])"
         },
         "createdAt": {
@@ -221,28 +215,7 @@
         },
         "slots": {
           "type": "array",
-          "description": "Slot definitions specifying available placement areas",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string",
-                "description": "Slot identifier (e.g., 'header', 'main', 'sidebar')"
-              },
-              "position": {
-                "type": "string",
-                "description": "Layout position hint (e.g., 'top', 'left', 'right', 'bottom', 'center')"
-              },
-              "required": {
-                "type": "boolean",
-                "description": "Whether this slot must have content assigned"
-              }
-            },
-            "required": [
-              "name",
-              "position"
-            ]
-          }
+          "description": "Slot definitions specifying available placement areas"
         },
         "defaultBindings": {
           "type": "object",
@@ -289,36 +262,19 @@
         },
         "slotContent": {
           "type": "array",
-          "description": "Content placed in each slot",
-          "items": {
-            "type": "object",
-            "properties": {
-              "slot": {
-                "type": "string",
-                "description": "Slot name this content fills (must match a slot in the layout)"
-              },
-              "component": {
-                "type": "string",
-                "description": "ComponentDefinition to render in this slot",
-                "x-arktype": "ComponentDefinition",
-                "x-mst-type": "reference",
-                "x-reference-type": "single",
-                "x-reference-target": "ComponentDefinition"
-              },
-              "config": {
-                "type": "object",
-                "description": "Optional configuration passed to the component"
-              }
-            },
-            "required": [
-              "slot",
-              "component"
-            ]
-          }
+          "description": "Content placed in each slot"
         },
         "dataContext": {
           "type": "object",
           "description": "Shared data source definitions available to all slot components"
+        },
+        "providerWrapper": {
+          "type": "string",
+          "description": "Optional provider component key to wrap the slot layout. References a provider in providerImplementationMap (e.g., 'AnalysisPanelProvider', 'TestingPanelProvider')"
+        },
+        "providerConfig": {
+          "type": "object",
+          "description": "Optional configuration passed to the provider wrapper component"
         },
         "createdAt": {
           "type": "number"
@@ -336,5 +292,8 @@
       ],
       "x-original-name": "Composition"
     }
+  },
+  "x-persistence": {
+    "backend": "postgres"
   }
 }

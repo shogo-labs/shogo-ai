@@ -67,15 +67,67 @@ describe("sectionImplementationMap", () => {
 
   test("map values are ComponentType<SectionRendererProps>", () => {
     // All values in the map should be valid React components
+    // Components can be functions or MobX observer objects with render methods
     for (const [key, component] of sectionImplementationMap.entries()) {
-      expect(typeof component).toBe("function")
+      const isFunction = typeof component === "function"
+      const isMobXObserver = typeof component === "object" && component !== null
+      expect(isFunction || isMobXObserver).toBe(true)
     }
   })
 
-  test("is initially empty (placeholder for future section components)", () => {
-    // Initially the map is empty, sections will be added as they're created
-    // This test documents the initial state
-    expect(sectionImplementationMap.size).toBe(0)
+  test("contains registered section components", () => {
+    // The map contains section components for composable phase views
+    expect(sectionImplementationMap.size).toBeGreaterThan(0)
+
+    // Verify some known sections are registered
+    expect(sectionImplementationMap.has("IntentTerminalSection")).toBe(true)
+    expect(sectionImplementationMap.has("PhaseActionsSection")).toBe(true)
+  })
+
+  test("contains Analysis phase sections", () => {
+    // Analysis phase sections registered for Evidence Board view
+    expect(sectionImplementationMap.has("EvidenceBoardHeaderSection")).toBe(true)
+    expect(sectionImplementationMap.has("LocationHeatBarSection")).toBe(true)
+    expect(sectionImplementationMap.has("FindingMatrixSection")).toBe(true)
+    expect(sectionImplementationMap.has("FindingListSection")).toBe(true)
+  })
+
+  test("contains Classification phase sections", () => {
+    // Classification phase sections registered for Archetype Determination view
+    // Task: task-classification-007
+    expect(sectionImplementationMap.has("ArchetypeTransformationSection")).toBe(true)
+    expect(sectionImplementationMap.has("CorrectionNoteSection")).toBe(true)
+    expect(sectionImplementationMap.has("ConfidenceMetersSection")).toBe(true)
+    expect(sectionImplementationMap.has("EvidenceColumnsSection")).toBe(true)
+    expect(sectionImplementationMap.has("ApplicablePatternsSection")).toBe(true)
+    expect(sectionImplementationMap.has("ClassificationRationaleSection")).toBe(true)
+  })
+
+  test("contains Design phase sections", () => {
+    // Design phase container section registration
+    // Task: task-design-008
+    expect(sectionImplementationMap.has("DesignContainerSection")).toBe(true)
+  })
+
+  /**
+   * Test Specification: test-testing-006-registration
+   * Task: task-testing-006
+   * Scenario: All 4 Testing sections registered in sectionImplementationMap
+   *
+   * Given: sectionImplementationMap is imported
+   * When: Map entries are inspected
+   * Then: Map has entry for 'TestPyramidSection'
+   *       Map has entry for 'TestTypeDistributionSection'
+   *       Map has entry for 'TaskCoverageBarSection'
+   *       Map has entry for 'ScenarioSpotlightSection'
+   */
+  test("contains Testing phase sections", () => {
+    // Testing phase sections registered for Test Matrix view
+    // Task: task-testing-006
+    expect(sectionImplementationMap.has("TestPyramidSection")).toBe(true)
+    expect(sectionImplementationMap.has("TestTypeDistributionSection")).toBe(true)
+    expect(sectionImplementationMap.has("TaskCoverageBarSection")).toBe(true)
+    expect(sectionImplementationMap.has("ScenarioSpotlightSection")).toBe(true)
   })
 })
 
@@ -114,6 +166,29 @@ describe("getSectionComponent", () => {
     // This is a type-level verification that the fallback matches the expected signature
     const propsCheck: ComponentType<SectionRendererProps> = Fallback
     expect(propsCheck).toBeDefined()
+  })
+
+  /**
+   * Test Specification: test-design-008-registration
+   * Task: task-design-008
+   * Scenario: DesignContainerSection registered in sectionImplementationMap
+   *
+   * Given: sectionImplementationMap is imported
+   * When: Map is inspected
+   * Then: Map has entry for 'DesignContainerSection'
+   *       getSectionComponent('DesignContainerSection') returns the component
+   */
+  test("returns DesignContainerSection component (not fallback)", () => {
+    const Component = getSectionComponent("DesignContainerSection")
+    // Component should not be the fallback (function returning div with "Section not found")
+    // Verify it's a valid component (function or MobX observer)
+    const isFunction = typeof Component === "function"
+    const isMobXObserver = typeof Component === "object" && Component !== null
+    expect(isFunction || isMobXObserver).toBe(true)
+
+    // Verify it's specifically the DesignContainerSection, not the fallback
+    // by checking it's directly from the map
+    expect(sectionImplementationMap.get("DesignContainerSection")).toBe(Component)
   })
 })
 

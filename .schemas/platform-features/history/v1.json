@@ -3,7 +3,7 @@
   "name": "platform-features",
   "format": "enhanced-json-schema",
   "createdAt": 1765197911179,
-  "version": 1,
+  "version": 2,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "platform-features",
   "$defs": {
@@ -793,10 +793,16 @@
   },
   "views": {
     "discovery-view-composition": {
-      "type": "template",
-      "select": [],
-      "dataSource": "custom",
-      "template": "{\n  \"sessionId\": \"{{ session.id }}\",\n  \"metadata\": {\n    \"phase\": \"discovery\",\n    \"generatedAt\": {{ \"now\" | date(\"x\") }},\n    \"featureName\": \"{{ session.name }}\",\n    \"intent\": \"{{ session.intent }}\"\n  },\n  \"sections\": [\n    {\n      \"id\": \"intent\",\n      \"title\": \"Feature Intent\",\n      \"type\": \"text-display\",\n      \"content\": \"{{ session.intent }}\"\n    },\n    {\n      \"id\": \"requirements\",\n      \"title\": \"Requirements ({{ requirements.length }})\",\n      \"type\": \"requirement-list\",\n      \"items\": [\n        {% for req in requirements %}\n        {\n          \"id\": \"{{ req.id }}\",\n          \"name\": \"{{ req.name }}\",\n          \"description\": \"{{ req.description }}\",\n          \"priority\": \"{{ req.priority }}\",\n          \"status\": \"{{ req.status }}\"\n        }{% if not loop.last %},{% endif %}\n        {% endfor %}\n      ]\n    },\n    {\n      \"id\": \"initial-assessment\",\n      \"title\": \"Initial Assessment\",\n      \"type\": \"assessment-card\",\n      \"visible\": {{ \"true\" if session.initialAssessment else \"false\" }},\n      \"data\": {{ session.initialAssessment | dump | safe }}\n    },\n    {\n      \"id\": \"next-steps\",\n      \"title\": \"Next Steps\",\n      \"type\": \"action-panel\",\n      \"actions\": [\n        {\n          \"label\": \"Proceed to Analysis\",\n          \"enabled\": {{ \"true\" if requirements.length > 0 else \"false\" }},\n          \"nextPhase\": \"analysis\"\n        }\n      ]\n    }\n  ]\n}"
+      "type": "query",
+      "collection": "FeatureSession",
+      "filter": {},
+      "select": [
+        "id",
+        "name",
+        "intent",
+        "status",
+        "initialAssessment"
+      ]
     }
   }
 }

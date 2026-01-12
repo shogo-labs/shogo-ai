@@ -113,6 +113,10 @@ export const ComponentBuilderDomain = scope({
     /** Array of slot content entries (value objects, stored as frozen data) */
     slotContent: "unknown[]",
     "dataContext?": "unknown",
+    /** Optional provider wrapper component key to wrap the slot layout */
+    "providerWrapper?": "string",
+    /** Optional configuration passed to the provider wrapper component */
+    "providerConfig?": "unknown",
     createdAt: "number",
     "updatedAt?": "number",
   },

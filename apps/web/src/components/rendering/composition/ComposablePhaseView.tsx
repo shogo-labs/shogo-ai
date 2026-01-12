@@ -29,6 +29,7 @@ import type { ReactNode } from "react"
 import { useDomains } from "@/contexts/DomainProvider"
 import { SlotLayout } from "./SlotLayout"
 import { getSectionComponent } from "../sectionImplementations"
+import { getProviderComponent } from "./providerImplementationMap"
 import type { SlotSpec } from "@shogo/state-api"
 
 /**
@@ -102,20 +103,52 @@ export const ComposablePhaseView = observer(function ComposablePhaseView({
   const slotSpecs: SlotSpec[] = composition.toSlotSpecs?.() ?? []
 
   // 5. Resolve each sectionRef to a React component and build slot children
-  const slotChildren: Record<string, ReactNode> = {}
+  // Group by slot name to support slot stacking (multiple sections in same slot)
+  const slotChildren: Record<string, ReactNode | ReactNode[]> = {}
   for (const spec of slotSpecs) {
     const SectionComponent = getSectionComponent(spec.sectionRef)
-    slotChildren[spec.slotName] = (
-      <SectionComponent feature={feature} config={spec.config} />
+    const element = (
+      <SectionComponent key={spec.sectionRef} feature={feature} config={spec.config} />
     )
+
+    // If slot already has content, convert to array or push to existing array
+    if (slotChildren[spec.slotName] !== undefined) {
+      const existing = slotChildren[spec.slotName]
+      if (Array.isArray(existing)) {
+        existing.push(element)
+      } else {
+        slotChildren[spec.slotName] = [existing as ReactNode, element]
+      }
+    } else {
+      slotChildren[spec.slotName] = element
+    }
   }
 
-  // 6. Render sections in SlotLayout
-  return (
+  // 6. Build the SlotLayout content
+  const slotLayoutContent = (
     <SlotLayout layout={layoutTemplate} className={className}>
       {slotChildren}
     </SlotLayout>
   )
+
+  // 7. Optionally wrap with provider if composition specifies providerWrapper
+  const providerWrapper = composition.providerWrapper
+  if (providerWrapper) {
+    const ProviderComponent = getProviderComponent(providerWrapper)
+    if (ProviderComponent) {
+      return (
+        <ProviderComponent
+          feature={feature}
+          config={composition.providerConfig}
+        >
+          {slotLayoutContent}
+        </ProviderComponent>
+      )
+    }
+  }
+
+  // 8. Return SlotLayout directly if no provider wrapper
+  return slotLayoutContent
 })
 
 export default ComposablePhaseView

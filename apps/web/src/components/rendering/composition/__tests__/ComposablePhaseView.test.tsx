@@ -532,3 +532,125 @@ describe("ComposablePhaseView - MobX Reactivity", () => {
     // For now, we just verify the component works reactively in integration
   })
 })
+
+describe("ComposablePhaseView - Provider Wrapper", () => {
+  test("renders SlotLayout without wrapper when no providerWrapper specified", () => {
+    // Given: Composition without providerWrapper
+    const layoutTemplate = createMockLayoutTemplate([
+      { name: "main", position: "left" },
+    ])
+    const composition = {
+      ...createMockComposition(layoutTemplate, [
+        { slotName: "main", sectionRef: "SessionSummarySection" },
+      ]),
+      providerWrapper: undefined, // No provider
+    }
+
+    mockUseDomains.mockReturnValue({
+      componentBuilder: {
+        compositionCollection: { findByName: () => composition },
+        layoutTemplateCollection: { get: () => layoutTemplate },
+      },
+    })
+
+    // When: Rendering
+    const { container } = render(
+      <ComposablePhaseView phaseName="discovery" feature={mockFeature} />
+    )
+
+    // Then: SlotLayout renders directly without wrapper
+    expect(container.querySelector("[data-slot-layout]")).not.toBeNull()
+    // No provider wrapper attribute present
+    expect(container.querySelector("[data-provider-wrapper]")).toBeNull()
+  })
+
+  test("wraps SlotLayout with provider when providerWrapper is specified", () => {
+    // Given: Composition with providerWrapper
+    const layoutTemplate = createMockLayoutTemplate([
+      { name: "main", position: "left" },
+    ])
+    const composition = {
+      ...createMockComposition(layoutTemplate, [
+        { slotName: "main", sectionRef: "SessionSummarySection" },
+      ]),
+      providerWrapper: "TestProvider", // Mock provider name
+    }
+
+    mockUseDomains.mockReturnValue({
+      componentBuilder: {
+        compositionCollection: { findByName: () => composition },
+        layoutTemplateCollection: { get: () => layoutTemplate },
+      },
+    })
+
+    // When: Rendering
+    const { container } = render(
+      <ComposablePhaseView phaseName="discovery" feature={mockFeature} />
+    )
+
+    // Then: Provider wrapper wraps the SlotLayout
+    // The provider wrapper should have a data attribute identifying it
+    const providerWrapper = container.querySelector("[data-provider-wrapper]")
+    expect(providerWrapper).not.toBeNull()
+    expect(providerWrapper?.getAttribute("data-provider-wrapper")).toBe("TestProvider")
+    // SlotLayout should still be rendered inside
+    expect(container.querySelector("[data-slot-layout]")).not.toBeNull()
+  })
+
+  test("passes feature and providerConfig to provider wrapper", () => {
+    // Given: Composition with providerWrapper and providerConfig
+    const layoutTemplate = createMockLayoutTemplate([
+      { name: "main", position: "left" },
+    ])
+    const composition = {
+      ...createMockComposition(layoutTemplate, [
+        { slotName: "main", sectionRef: "SessionSummarySection" },
+      ]),
+      providerWrapper: "TestProvider",
+      providerConfig: { defaultViewMode: "matrix" },
+    }
+
+    mockUseDomains.mockReturnValue({
+      componentBuilder: {
+        compositionCollection: { findByName: () => composition },
+        layoutTemplateCollection: { get: () => layoutTemplate },
+      },
+    })
+
+    // When: Rendering
+    const { container } = render(
+      <ComposablePhaseView phaseName="discovery" feature={mockFeature} />
+    )
+
+    // Then: Provider wrapper is rendered (config passed internally)
+    expect(container.querySelector("[data-provider-wrapper='TestProvider']")).not.toBeNull()
+  })
+
+  test("uses fallback wrapper for unknown provider", () => {
+    // Given: Composition with unknown providerWrapper
+    const layoutTemplate = createMockLayoutTemplate([
+      { name: "main", position: "left" },
+    ])
+    const composition = {
+      ...createMockComposition(layoutTemplate, [
+        { slotName: "main", sectionRef: "SessionSummarySection" },
+      ]),
+      providerWrapper: "NonExistentProvider",
+    }
+
+    mockUseDomains.mockReturnValue({
+      componentBuilder: {
+        compositionCollection: { findByName: () => composition },
+        layoutTemplateCollection: { get: () => layoutTemplate },
+      },
+    })
+
+    // When: Rendering
+    const { container } = render(
+      <ComposablePhaseView phaseName="discovery" feature={mockFeature} />
+    )
+
+    // Then: Falls back to direct rendering (no wrapper)
+    expect(container.querySelector("[data-slot-layout]")).not.toBeNull()
+  })
+})

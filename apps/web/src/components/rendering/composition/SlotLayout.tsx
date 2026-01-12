@@ -36,8 +36,8 @@ export interface LayoutTemplateData {
 export interface SlotLayoutProps {
   /** Layout template defining slots and positions */
   layout: LayoutTemplateData
-  /** Content for each slot, keyed by slot name */
-  children: Record<string, ReactNode>
+  /** Content for each slot, keyed by slot name. Can be a single ReactNode or an array for stacking. */
+  children: Record<string, ReactNode | ReactNode[]>
   /** Additional CSS classes */
   className?: string
   /** Gap size (Tailwind gap scale: 1, 2, 4, 6, 8, etc.) */
@@ -53,6 +53,8 @@ const positionToArea: Record<string, string> = {
   left: "main",
   right: "sidebar",
   bottom: "actions",
+  // Single-column layout position
+  center: "main",
   // Enhanced layout positions
   "top-full": "hero",
   "left-top": "overview",
@@ -92,6 +94,12 @@ function detectLayoutType(positions: Set<string>): "basic" | "enhanced" {
 function generateGridTemplateAreas(slots: SlotDefinition[]): string {
   const positions = new Set(slots.map((s) => s.position))
   const layoutType = detectLayoutType(positions)
+
+  // Handle single-slot layouts (center or single left position)
+  if (slots.length === 1) {
+    const singleArea = getGridArea(slots[0].position)
+    return `"${singleArea}"`
+  }
 
   if (layoutType === "enhanced") {
     // Enhanced 3-column grid layout for discovery phase
@@ -180,6 +188,11 @@ function generateGridTemplateAreas(slots: SlotDefinition[]): string {
  * Get grid columns configuration based on layout type
  */
 function getGridColumnsClass(slots: SlotDefinition[]): string {
+  // Single-slot layouts always use single column
+  if (slots.length === 1) {
+    return "grid-cols-1"
+  }
+
   const positions = new Set(slots.map((s) => s.position))
   const layoutType = detectLayoutType(positions)
 
@@ -188,9 +201,10 @@ function getGridColumnsClass(slots: SlotDefinition[]): string {
     return "md:grid-cols-[minmax(300px,1fr)_2fr_minmax(300px,400px)]"
   }
 
-  // Basic 2-column layout
-  const hasLeftRight = positions.has("left") || positions.has("right")
-  return hasLeftRight ? "md:grid-cols-[1fr_300px]" : "grid-cols-1"
+  // Basic 2-column layout - only apply if both left and right positions exist
+  const hasLeft = positions.has("left")
+  const hasRight = positions.has("right")
+  return hasLeft && hasRight ? "md:grid-cols-[1fr_300px]" : "grid-cols-1"
 }
 
 /**
@@ -246,6 +260,17 @@ export const SlotLayout = memo(function SlotLayout({
 
     if (gridTemplateAreas) {
       style.gridTemplateAreas = gridTemplateAreas
+      // Count unique rows in the grid template
+      // gridTemplateAreas format: '"main"' or '"header" "main"' etc.
+      const rowCount = gridTemplateAreas.split('"').filter((_, i) => i % 2 === 1).length
+      // Make rows fill available space: auto for all but last, 1fr for last (main content)
+      // For single row: '1fr', for multi-row: 'auto 1fr' or 'auto 1fr auto' etc.
+      if (rowCount === 1) {
+        style.gridTemplateRows = '1fr'
+      } else {
+        // For multi-row layouts, use minmax(0, 1fr) for flexible row
+        style.gridTemplateRows = Array(rowCount).fill('minmax(0, 1fr)').join(' ')
+      }
     }
 
     return style
@@ -255,7 +280,7 @@ export const SlotLayout = memo(function SlotLayout({
     <div
       data-slot-layout="true"
       className={cn(
-        "grid",
+        "grid h-full",
         getGapClass(gap),
         // Responsive columns
         "grid-cols-1",
@@ -269,13 +294,25 @@ export const SlotLayout = memo(function SlotLayout({
         const gridArea = getGridArea(slot.position)
         const content = children[slot.name]
 
+        // Handle slot stacking: wrap arrays in flex column container
+        const renderedContent = Array.isArray(content) ? (
+          content.length > 0 ? (
+            <div className="flex flex-col gap-4">
+              {content}
+            </div>
+          ) : null
+        ) : (
+          content
+        )
+
         return (
           <div
             key={slot.name}
             data-slot={slot.name}
+            className="min-h-0 h-full"
             style={{ gridArea }}
           >
-            {content}
+            {renderedContent}
           </div>
         )
       })}

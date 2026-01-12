@@ -24,39 +24,31 @@ import { IntentRichPanel } from "./sections/IntentRichPanel"
 import { RequirementsGridSection } from "./sections/RequirementsGridSection"
 import { InsightsPanel } from "./sections/InsightsPanel"
 import { ContextFooter } from "./sections/ContextFooter"
+// Analysis phase sections
+import {
+  EvidenceBoardHeaderSection,
+  LocationHeatBarSection,
+  FindingMatrixSection,
+  FindingListSection,
+} from "./sections/analysis"
+// Classification phase sections
+import {
+  ArchetypeTransformationSection,
+  CorrectionNoteSection,
+  ConfidenceMetersSection,
+  EvidenceColumnsSection,
+  ApplicablePatternsSection,
+  ClassificationRationaleSection,
+} from "./sections/classification"
+// Design phase sections
+import { DesignContainerSection } from "./sections/DesignContainerSection"
+// Testing phase sections
+import { TestTypeDistributionSection, TestPyramidSection, TaskCoverageBarSection, ScenarioSpotlightSection } from "./sections/testing"
 
-/**
- * Props passed to section renderer components.
- *
- * Section components receive:
- * - feature: The current FeatureSession data (required)
- * - config: Optional configuration from slotContent entity
- *
- * Unlike DisplayRendererProps which render individual property values,
- * SectionRendererProps provide access to the full feature context for
- * rendering complete UI sections.
- */
-export interface SectionRendererProps {
-  /**
-   * The current feature session data.
-   * Typed as 'any' to match codebase patterns for MST instance types.
-   * Contains id, name, status, requirements, tasks, etc.
-   */
-  feature: any
-
-  /**
-   * Optional configuration from the slotContent entity.
-   * Allows customization of section rendering behavior without
-   * creating new component implementations.
-   *
-   * @example
-   * ```typescript
-   * // SlotContent entity might specify:
-   * { showHeader: true, maxItems: 5, columns: 2 }
-   * ```
-   */
-  config?: Record<string, unknown>
-}
+// Re-export SectionRendererProps from types.ts to avoid circular dependencies
+// (Analysis section components import from types.ts, not from this file)
+export type { SectionRendererProps } from "./types"
+import type { SectionRendererProps } from "./types"
 
 /**
  * Fallback section component displayed when the requested section
@@ -76,16 +68,7 @@ function FallbackSection({ feature, config }: SectionRendererProps) {
 /**
  * Map of implementationRef strings to React section components.
  *
- * This map contains all registered section renderers.
- * Currently empty - will be populated as section components are created.
- *
- * @example
- * ```typescript
- * // Future entries might include:
- * sectionImplementationMap.set("RequirementsSection", RequirementsSection)
- * sectionImplementationMap.set("TasksSection", TasksSection)
- * sectionImplementationMap.set("ProgressSection", ProgressSection)
- * ```
+ * This map contains all registered section renderers for composable phase views.
  */
 export const sectionImplementationMap = new Map<
   string,
@@ -104,6 +87,25 @@ export const sectionImplementationMap = new Map<
   ["RequirementsGridSection", RequirementsGridSection],
   ["InsightsPanel", InsightsPanel],
   ["ContextFooter", ContextFooter],
+  // Analysis phase sections
+  ["EvidenceBoardHeaderSection", EvidenceBoardHeaderSection],
+  ["LocationHeatBarSection", LocationHeatBarSection],
+  ["FindingMatrixSection", FindingMatrixSection],
+  ["FindingListSection", FindingListSection],
+  // Classification phase sections
+  ["ArchetypeTransformationSection", ArchetypeTransformationSection],
+  ["CorrectionNoteSection", CorrectionNoteSection],
+  ["ConfidenceMetersSection", ConfidenceMetersSection],
+  ["EvidenceColumnsSection", EvidenceColumnsSection],
+  ["ApplicablePatternsSection", ApplicablePatternsSection],
+  ["ClassificationRationaleSection", ClassificationRationaleSection],
+  // Design phase sections
+  ["DesignContainerSection", DesignContainerSection],
+  // Testing phase sections
+  ["TestTypeDistributionSection", TestTypeDistributionSection],
+  ["TestPyramidSection", TestPyramidSection],
+  ["TaskCoverageBarSection", TaskCoverageBarSection],
+  ["ScenarioSpotlightSection", ScenarioSpotlightSection],
 ])
 
 /**

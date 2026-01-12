@@ -12,7 +12,8 @@ export type {
   PropertyMetadata,
   ComponentEntry,
   DisplayRendererProps,
-  IComponentRegistry
+  IComponentRegistry,
+  SectionRendererProps
 } from "./types"
 
 // Registry
@@ -64,7 +65,7 @@ export {
 
 // Section implementations map (task-cpv-005)
 export { sectionImplementationMap, getSectionComponent } from "./sectionImplementations"
-export type { SectionRendererProps } from "./sectionImplementations"
+// SectionRendererProps is exported from ./types above
 
 // Composition components (task-cpv-011, task-cpv-012)
 export { SlotLayout } from "./composition/SlotLayout"

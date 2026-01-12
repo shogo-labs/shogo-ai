@@ -5,16 +5,18 @@
  * insertOne() operations via Wavesmith MCP tools.
  *
  * Exports:
- * - COMPONENT_DEFINITIONS: 36 entries (display, visualization, section components)
+ * - COMPONENT_DEFINITIONS: 51 entries (display, visualization, section components)
  * - REGISTRIES: 2 entries (default, studio)
  * - RENDERER_BINDINGS: 32 entries (12 default + 20 studio)
- * - LAYOUT_TEMPLATES: 1 entry (layout-phase-two-column)
- * - COMPOSITIONS: 1 entry (discovery)
+ * - LAYOUT_TEMPLATES: 2 entries (layout-phase-two-column, layout-single-column)
+ * - COMPOSITIONS: 5 entries (discovery, analysis, classification, design, testing)
  *
  * All entities have proper id fields for idempotency checks.
  * TypeScript types match component-builder schema entity types.
  *
- * Tasks: task-sdr-v2-001, smart-component-expansion; task-cbe-003; task-cpv-003; task-cpv-004
+ * Tasks: task-sdr-v2-001, smart-component-expansion; task-cbe-003; task-cpv-003; task-cpv-004;
+ *        task-analysis-007, task-analysis-008, task-prephase-005, task-design-009, task-design-010,
+ *        task-testing-007, task-testing-008
  */
 
 // =============================================================================
@@ -152,10 +154,14 @@ export interface CompositionSeed {
   slotContent: SlotContentSeed[]
   /** Shared data source definitions available to all slot components */
   dataContext?: Record<string, unknown>
+  /** Optional provider wrapper component key to wrap the slot layout */
+  providerWrapper?: string
+  /** Optional configuration passed to the provider wrapper component */
+  providerConfig?: Record<string, unknown>
 }
 
 // =============================================================================
-// Component Definitions (36 total)
+// Component Definitions (40 total)
 // =============================================================================
 
 /**
@@ -165,7 +171,8 @@ export interface CompositionSeed {
  * - Primitive Display (14): String, Number, Boolean, DateTime, Email, URI, Enum, Reference, Computed, Array, Object, StringArray, CodePath, LongText
  * - Domain-Specific Display (13): Priority, Archetype, FindingType, TaskStatus, TestType, SessionStatus, RequirementStatus, RunStatus, ExecutionStatus, TestCaseStatus, TaskRenderer, ChangeTypeBadge, PhaseStatusRenderer
  * - Visualization (4): ProgressBar, DataCard, GraphNode, StatusIndicator
- * - Section (5): IntentTerminalSection, InitialAssessmentSection, RequirementsListSection, SessionSummarySection, PhaseActionsSection
+ * - Section - Discovery (5): IntentTerminalSection, InitialAssessmentSection, RequirementsListSection, SessionSummarySection, PhaseActionsSection
+ * - Section - Analysis (4): EvidenceBoardHeaderSection, LocationHeatBarSection, FindingMatrixSection, FindingListSection
  */
 export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
   // ---------------------------------------------------------------------------
@@ -484,6 +491,153 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders phase-specific action buttons for navigation and transitions",
     implementationRef: "PhaseActionsSection",
     tags: ["section", "discovery-phase"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Analysis Phase Section Components (4) - task-analysis-007
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-evidence-board-header-section",
+    name: "EvidenceBoardHeaderSection",
+    category: "section",
+    description: "Header for Analysis Evidence Board with finding count and view mode toggle",
+    implementationRef: "EvidenceBoardHeaderSection",
+    tags: ["section", "analysis-phase", "evidence-board"],
+  },
+  {
+    id: "comp-def-location-heat-bar-section",
+    name: "LocationHeatBarSection",
+    category: "section",
+    description: "Stacked progress bar showing finding distribution by package location",
+    implementationRef: "LocationHeatBarSection",
+    tags: ["section", "analysis-phase", "evidence-board", "visualization"],
+  },
+  {
+    id: "comp-def-finding-matrix-section",
+    name: "FindingMatrixSection",
+    category: "section",
+    description: "Type x Location grid matrix with clickable cells for filtering findings",
+    implementationRef: "FindingMatrixSection",
+    tags: ["section", "analysis-phase", "evidence-board", "matrix"],
+  },
+  {
+    id: "comp-def-finding-list-section",
+    name: "FindingListSection",
+    category: "section",
+    description: "Filtered/grouped finding cards with filter indicator and expand/collapse",
+    implementationRef: "FindingListSection",
+    tags: ["section", "analysis-phase", "evidence-board", "list"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Classification Phase Section Components (6) - task-classification-008
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-archetype-transformation-section",
+    name: "ArchetypeTransformationSection",
+    category: "section",
+    description:
+      "Phase header with initial->validated archetype transformation visual and animated arrow. Shows 'Archetype Determination' title with pink theme.",
+    implementationRef: "ArchetypeTransformationSection",
+    tags: ["section", "classification-phase", "header"],
+  },
+  {
+    id: "comp-def-correction-note-section",
+    name: "CorrectionNoteSection",
+    category: "section",
+    description:
+      "Conditional correction notice when archetype was changed during classification. Amber-styled with AlertTriangle icon.",
+    implementationRef: "CorrectionNoteSection",
+    tags: ["section", "classification-phase", "conditional"],
+  },
+  {
+    id: "comp-def-confidence-meters-section",
+    name: "ConfidenceMetersSection",
+    category: "section",
+    description:
+      "Archetype confidence percentages using ProgressBar visualization. Shows all 4 archetypes with validated one highlighted.",
+    implementationRef: "ConfidenceMetersSection",
+    tags: ["section", "classification-phase", "visualization"],
+  },
+  {
+    id: "comp-def-evidence-columns-section",
+    name: "EvidenceColumnsSection",
+    category: "section",
+    description:
+      "Dual columns for supporting (Check icons) and opposing (X icons) evidence analysis from evidenceChecklist.",
+    implementationRef: "EvidenceColumnsSection",
+    tags: ["section", "classification-phase", "evidence"],
+  },
+  {
+    id: "comp-def-applicable-patterns-section",
+    name: "ApplicablePatternsSection",
+    category: "section",
+    description:
+      "Displays applicable patterns as chips using PatternChips shared component. Conditional - returns null when no patterns.",
+    implementationRef: "ApplicablePatternsSection",
+    tags: ["section", "classification-phase", "conditional"],
+  },
+  {
+    id: "comp-def-classification-rationale-section",
+    name: "ClassificationRationaleSection",
+    category: "section",
+    description:
+      "Classification rationale text in a styled card with pink theme border. Shows decision.rationale with whitespace-pre-wrap.",
+    implementationRef: "ClassificationRationaleSection",
+    tags: ["section", "classification-phase", "rationale"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Design Phase Section Components (1) - task-design-009
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-design-container",
+    name: "DesignContainerSection",
+    category: "section",
+    description:
+      "Container section for Design phase with internal tab navigation. Manages Schema, Graph, and Tasks tabs with their own state. Uses single-column layout pattern where the container handles all internal layout structure.",
+    implementationRef: "DesignContainerSection",
+    tags: ["section", "design-phase", "container", "tabbed"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Testing Phase Section Components (4) - task-testing-007
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-test-pyramid-section",
+    name: "TestPyramidSection",
+    category: "section",
+    description:
+      "Visual pyramid showing test distribution across unit, integration, and e2e layers. Data sourced from TestSpecifications grouped by testType.",
+    implementationRef: "TestPyramidSection",
+    tags: ["section", "testing-phase"],
+  },
+  {
+    id: "comp-def-test-type-distribution-section",
+    name: "TestTypeDistributionSection",
+    category: "section",
+    description:
+      "Horizontal bar chart showing test count distribution by type (unit, integration, e2e). Data sourced from TestSpecifications aggregate counts.",
+    implementationRef: "TestTypeDistributionSection",
+    tags: ["section", "testing-phase"],
+  },
+  {
+    id: "comp-def-task-coverage-bar-section",
+    name: "TaskCoverageBarSection",
+    category: "section",
+    description:
+      "Stacked progress bar showing test coverage per implementation task. Data sourced from ImplementationTasks with linked TestSpecifications.",
+    implementationRef: "TaskCoverageBarSection",
+    tags: ["section", "testing-phase"],
+  },
+  {
+    id: "comp-def-scenario-spotlight-section",
+    name: "ScenarioSpotlightSection",
+    category: "section",
+    description:
+      "Featured test scenario card showing Given/When/Then details for selected test. Data sourced from individual TestSpecification entity.",
+    implementationRef: "ScenarioSpotlightSection",
+    tags: ["section", "testing-phase"],
   },
 ]
 
@@ -835,7 +989,7 @@ export const RENDERER_BINDINGS: RendererBindingSeed[] = [
 ]
 
 // =============================================================================
-// Layout Templates (1 total) - task-cpv-004
+// Layout Templates (2 total) - task-cpv-004, task-prephase-005
 // =============================================================================
 
 /**
@@ -843,6 +997,7 @@ export const RENDERER_BINDINGS: RendererBindingSeed[] = [
  *
  * Structure:
  * - layout-phase-two-column: Two-column layout for phase views with header and actions areas
+ * - layout-single-column: Single-column full-width layout for container section phases
  */
 export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
   {
@@ -857,10 +1012,18 @@ export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
     ],
     defaultBindings: {},
   },
+  {
+    id: "layout-single-column",
+    name: "layout-single-column",
+    description:
+      "Single-column full-width layout for container section phases (Design, Spec). Ideal for phases that render their own internal layout structure, such as tabbed views, graph editors, or complex nested components.",
+    slots: [{ name: "main", position: "center", required: true }],
+    defaultBindings: {},
+  },
 ]
 
 // =============================================================================
-// Compositions (1 total) - task-cpv-004
+// Compositions (5 total) - task-cpv-004, task-analysis-008, task-classification-009, task-design-010, task-testing-008
 // =============================================================================
 
 /**
@@ -868,6 +1031,10 @@ export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
  *
  * Structure:
  * - discovery: Discovery phase view composition with slot-to-section mappings
+ * - analysis: Analysis phase with AnalysisPanelProvider context wrapper
+ * - classification: Classification phase with pure slot composition (no provider)
+ * - design: Design phase with single-column layout and container section pattern
+ * - testing: Testing phase with TestingPanelProvider context wrapper
  */
 export const COMPOSITIONS: CompositionSeed[] = [
   {
@@ -881,5 +1048,76 @@ export const COMPOSITIONS: CompositionSeed[] = [
       { slot: "actions", component: "comp-def-phase-actions-section" },
     ],
     dataContext: { phase: "discovery" },
+  },
+  // Analysis phase composition - task-analysis-008
+  {
+    id: "composition-analysis",
+    name: "analysis",
+    layout: "layout-phase-two-column",
+    slotContent: [
+      // Header slot: Evidence Board header with view toggle
+      { slot: "header", component: "comp-def-evidence-board-header-section" },
+      // Main slot: Location heat bar + Finding matrix (stacked)
+      { slot: "main", component: "comp-def-location-heat-bar-section" },
+      { slot: "main", component: "comp-def-finding-matrix-section" },
+      // Sidebar slot: Finding list (filtered/grouped)
+      { slot: "sidebar", component: "comp-def-finding-list-section" },
+      // Actions slot: Phase actions
+      { slot: "actions", component: "comp-def-phase-actions-section" },
+    ],
+    dataContext: { phase: "analysis" },
+    providerWrapper: "AnalysisPanelProvider",
+  },
+  // Classification phase composition - task-classification-009
+  // Pattern: Pure slot composition - NO providerWrapper needed
+  // Each section reads directly from useDomains() hook
+  {
+    id: "composition-classification",
+    name: "classification",
+    layout: "layout-phase-two-column",
+    slotContent: [
+      // Header slot: Archetype transformation visual
+      { slot: "header", component: "comp-def-archetype-transformation-section" },
+      // Main slot: All 5 remaining sections stacked vertically
+      { slot: "main", component: "comp-def-correction-note-section" },
+      { slot: "main", component: "comp-def-confidence-meters-section" },
+      { slot: "main", component: "comp-def-evidence-columns-section" },
+      { slot: "main", component: "comp-def-applicable-patterns-section" },
+      { slot: "main", component: "comp-def-classification-rationale-section" },
+    ],
+    dataContext: { phase: "classification" },
+    // NO providerWrapper - validates pure slot composition without React Context
+  },
+  // Design phase composition - task-design-010
+  // Pattern: Container section with internal React state (no shared context)
+  // Single-column layout with DesignContainerSection managing its own tabs
+  {
+    id: "composition-design",
+    name: "design",
+    layout: "layout-single-column",
+    slotContent: [
+      // Main slot: Container section with internal tab navigation
+      { slot: "main", component: "comp-design-container", config: { defaultTab: "schema" } },
+    ],
+    dataContext: { phase: "design" },
+    // NO providerWrapper - Design uses container section pattern with internal React state
+  },
+  // Testing phase composition - task-testing-008
+  // Pattern: Provider-wrapped composition for shared context coordination
+  // Uses TestingPanelProvider to share selected test/task state across sections
+  {
+    id: "composition-testing",
+    name: "testing",
+    layout: "layout-phase-two-column",
+    slotContent: [
+      // Main slot: Test pyramid + distribution visualizations (stacked)
+      { slot: "main", component: "comp-def-test-pyramid-section" },
+      { slot: "main", component: "comp-def-test-type-distribution-section" },
+      // Sidebar slot: Task coverage + scenario spotlight (stacked)
+      { slot: "sidebar", component: "comp-def-task-coverage-bar-section" },
+      { slot: "sidebar", component: "comp-def-scenario-spotlight-section" },
+    ],
+    dataContext: { phase: "testing" },
+    providerWrapper: "TestingPanelProvider",
   },
 ]

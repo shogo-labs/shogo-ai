@@ -42,7 +42,7 @@ import { useChatContextSafe } from "../chat/ChatContext"
 // Composable phase view for data-driven phase composition (Session CPV)
 import { ComposablePhaseView } from "@/components/rendering/composition/ComposablePhaseView"
 // Phase view components (Session 2.3B, 2.3C, 2.3D)
-import { DiscoveryView, AnalysisView, ClassificationView, DesignView } from "./phases"
+import { DiscoveryView, AnalysisView, ClassificationView } from "./phases"
 import { SpecView } from "./phases/spec/SpecView"
 import { TestingView } from "./phases/testing/TestingView"
 import { ImplementationView } from "./phases/implementation/ImplementationView"
@@ -147,15 +147,17 @@ export const PhaseContentPanel = observer(function PhaseContentPanel({ feature }
       case "discovery":
         return <ComposablePhaseView phaseName="discovery" feature={feature} />
 
+      // Analysis uses data-driven composition via ComposablePhaseView (task-analysis-009)
       case "analysis":
-        return <AnalysisView feature={feature} />
+        return <ComposablePhaseView phaseName="analysis" feature={feature} />
 
+      // Classification uses data-driven composition via ComposablePhaseView (task-classification-010)
       case "classification":
-        return <ClassificationView feature={feature} />
+        return <ComposablePhaseView phaseName="classification" feature={feature} />
 
-      // Phase view (Session 2.3C)
+      // Design uses data-driven composition via ComposablePhaseView (task-design-migration)
       case "design":
-        return <DesignView feature={feature} />
+        return <ComposablePhaseView phaseName="design" feature={feature} />
 
       // Phase views (Session 2.3D)
       case "spec":

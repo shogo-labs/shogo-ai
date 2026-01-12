@@ -581,11 +581,11 @@ describe("Seed Initialization", () => {
       // When: initializeSeedData is called
       await initializeSeedData(tempDir)
 
-      // Then: 36 ComponentDefinitions are created in the store
+      // Then: 47 ComponentDefinitions are created in the store
       expect(mockComponentBuilderStore._mocks.componentDefInsertOne).toHaveBeenCalledTimes(
         COMPONENT_DEFINITIONS.length
       )
-      expect(COMPONENT_DEFINITIONS.length).toBe(36)
+      expect(COMPONENT_DEFINITIONS.length).toBe(47)
 
       // And: Each definition matches seed data constants
       const insertedDefs = mockComponentBuilderStore._mocks.componentDefInsertOne.mock.calls.map(

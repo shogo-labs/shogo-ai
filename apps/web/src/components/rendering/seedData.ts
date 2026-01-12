@@ -1,12 +1,12 @@
 /**
  * Seed Data for Component Builder
- * Task: task-dcb-005, task-cbe-003
+ * Task: task-dcb-005, task-cbe-003, task-analysis-007
  *
  * Converts current defaultRegistry.ts and studioRegistry.ts entries into
  * ComponentDefinition, Registry, and RendererBinding entities.
  *
  * This module provides:
- * - COMPONENT_DEFINITIONS: 29 ComponentDefinition entries (11 primitive, 14 domain, 4 visualization)
+ * - COMPONENT_DEFINITIONS: 38 ComponentDefinition entries (11 primitive, 14 domain, 4 visualization, 9 section)
  * - REGISTRY_DEFINITIONS: 2 Registry entries ('default' and 'studio')
  * - DEFAULT_BINDINGS: 13 RendererBinding entries for default registry
  * - STUDIO_BINDINGS: 18 RendererBinding entries for studio registry
@@ -378,6 +378,42 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Provides phase-specific action buttons and navigation",
     implementationRef: "PhaseActionsSection",
     tags: ["section", "phase", "actions", "navigation"],
+  },
+
+  // -------------------------------------------------------------------------
+  // Analysis Phase Section Components (4) - task-analysis-007
+  // -------------------------------------------------------------------------
+  {
+    id: "comp-def-evidence-board-header-section",
+    name: "EvidenceBoardHeaderSection",
+    category: "section",
+    description: "Header for Analysis Evidence Board with finding count and view mode toggle",
+    implementationRef: "EvidenceBoardHeaderSection",
+    tags: ["section", "analysis-phase", "evidence-board"],
+  },
+  {
+    id: "comp-def-location-heat-bar-section",
+    name: "LocationHeatBarSection",
+    category: "section",
+    description: "Stacked progress bar showing finding distribution by package location",
+    implementationRef: "LocationHeatBarSection",
+    tags: ["section", "analysis-phase", "evidence-board", "visualization"],
+  },
+  {
+    id: "comp-def-finding-matrix-section",
+    name: "FindingMatrixSection",
+    category: "section",
+    description: "Type x Location grid matrix with clickable cells for filtering findings",
+    implementationRef: "FindingMatrixSection",
+    tags: ["section", "analysis-phase", "evidence-board", "matrix"],
+  },
+  {
+    id: "comp-def-finding-list-section",
+    name: "FindingListSection",
+    category: "section",
+    description: "Filtered/grouped finding cards with filter indicator and expand/collapse",
+    implementationRef: "FindingListSection",
+    tags: ["section", "analysis-phase", "evidence-board", "list"],
   },
 ]
 
@@ -765,6 +801,7 @@ interface CompositionSeed {
   layout: string
   slotContent: SlotContentEntrySeed[]
   dataContext?: Record<string, unknown>
+  providerWrapper?: string
 }
 
 /**
@@ -784,6 +821,66 @@ export const COMPOSITIONS: CompositionSeed[] = [
     ],
     dataContext: { phase: "discovery" },
   },
+  // Analysis phase composition - task-analysis-008
+  {
+    id: "composition-analysis",
+    name: "analysis",
+    description: "Analysis phase view composition",
+    layout: "layout-phase-two-column",
+    slotContent: [
+      // Header slot: Evidence Board header with view toggle
+      { slot: "header", component: "comp-def-evidence-board-header-section" },
+      // Main slot: Location heat bar + Finding matrix (stacked via prephase-002)
+      { slot: "main", component: "comp-def-location-heat-bar-section" },
+      { slot: "main", component: "comp-def-finding-matrix-section" },
+      // Sidebar slot: Finding list (filtered/grouped)
+      { slot: "sidebar", component: "comp-def-finding-list-section" },
+      // Actions slot: Phase actions
+      { slot: "actions", component: "comp-def-phase-actions-section" },
+    ],
+    dataContext: { phase: "analysis" },
+    providerWrapper: "AnalysisPanelProvider",
+  },
+  // Classification phase composition - no provider needed (pure slot composition)
+  {
+    id: "composition-classification",
+    name: "classification",
+    description: "Classification phase view composition",
+    layout: "layout-phase-two-column",
+    slotContent: [
+      // Header slot: Archetype transformation visualization
+      { slot: "header", component: "comp-def-archetype-transformation-section" },
+      // Main slot: 5 sections stacked via slot stacking (prephase-002)
+      { slot: "main", component: "comp-def-correction-note-section" },
+      { slot: "main", component: "comp-def-confidence-meters-section" },
+      { slot: "main", component: "comp-def-evidence-columns-section" },
+      { slot: "main", component: "comp-def-applicable-patterns-section" },
+      { slot: "main", component: "comp-def-classification-rationale-section" },
+    ],
+    dataContext: { phase: "classification" },
+  },
+  // Design phase composition - container section pattern (single slot)
+  // Config options enable MCP-driven UI customization
+  {
+    id: "composition-design",
+    name: "design",
+    description: "Design phase view composition with container section",
+    layout: "layout-single-column",
+    slotContent: [
+      {
+        slot: "main",
+        component: "comp-design-container",
+        config: {
+          defaultTab: "schema",
+          expandGraph: true, // Graph expands to fill available space
+          showStatistics: true,
+          showLegend: true,
+          graphMinHeight: 400,
+        },
+      },
+    ],
+    dataContext: { phase: "design" },
+  },
 ]
 
 // ============================================================================
@@ -794,11 +891,11 @@ export const COMPOSITIONS: CompositionSeed[] = [
  * Seeds the component builder store with all required entities.
  *
  * Creates:
- * - 34 ComponentDefinition entities (11 primitive, 14 domain, 4 visualization, 5 section)
+ * - 38 ComponentDefinition entities (11 primitive, 14 domain, 4 visualization, 9 section)
  * - 2 Registry entities ('default' and 'studio')
- * - 31 RendererBinding entities (13 default, 18 studio)
+ * - 30 RendererBinding entities (12 default, 18 studio)
  * - 1 LayoutTemplate entity
- * - 1 Composition entity
+ * - 4 Composition entities (discovery, analysis, classification, design)
  *
  * @param store - A store with a create(collection, data) method
  * @returns Summary of created entities

@@ -297,6 +297,141 @@ describe("SlotLayout - Custom Styling", () => {
   })
 })
 
+describe("SlotLayout - Slot Stacking", () => {
+  test("renders multiple components when slot receives ReactNode array", () => {
+    const layout = createTestLayout([
+      { name: "main", position: "left" },
+    ])
+
+    const { container } = render(
+      <SlotLayout layout={layout}>
+        {{
+          main: [
+            <div key="1">Component 1</div>,
+            <div key="2">Component 2</div>,
+          ],
+        }}
+      </SlotLayout>
+    )
+
+    expect(container.textContent).toContain("Component 1")
+    expect(container.textContent).toContain("Component 2")
+  })
+
+  test("stacked components render in array order", () => {
+    const layout = createTestLayout([
+      { name: "main", position: "left" },
+    ])
+
+    const { container } = render(
+      <SlotLayout layout={layout}>
+        {{
+          main: [
+            <div key="first" data-testid="first">First</div>,
+            <div key="second" data-testid="second">Second</div>,
+            <div key="third" data-testid="third">Third</div>,
+          ],
+        }}
+      </SlotLayout>
+    )
+
+    const slot = container.querySelector("[data-slot='main']")
+    expect(slot).not.toBeNull()
+
+    // Check order by getting all child divs
+    const children = slot?.querySelectorAll("[data-testid]")
+    expect(children?.length).toBe(3)
+    expect(children?.[0].getAttribute("data-testid")).toBe("first")
+    expect(children?.[1].getAttribute("data-testid")).toBe("second")
+    expect(children?.[2].getAttribute("data-testid")).toBe("third")
+  })
+
+  test("stacked components wrap in flex column container with gap", () => {
+    const layout = createTestLayout([
+      { name: "main", position: "left" },
+    ])
+
+    const { container } = render(
+      <SlotLayout layout={layout}>
+        {{
+          main: [
+            <div key="1">Component 1</div>,
+            <div key="2">Component 2</div>,
+          ],
+        }}
+      </SlotLayout>
+    )
+
+    const slot = container.querySelector("[data-slot='main']")
+    // The wrapper should have flex and flex-col classes
+    const stackWrapper = slot?.querySelector(".flex.flex-col")
+    expect(stackWrapper).not.toBeNull()
+    expect(stackWrapper?.className).toContain("gap-4")
+  })
+
+  test("single component slots work unchanged (backward compatible)", () => {
+    const { container } = render(
+      <SlotLayout layout={standardLayout}>
+        {{
+          header: <div>Single Header</div>,
+          main: <div>Single Main</div>,
+        }}
+      </SlotLayout>
+    )
+
+    expect(container.textContent).toContain("Single Header")
+    expect(container.textContent).toContain("Single Main")
+
+    // Single components should NOT be wrapped in flex container
+    const headerSlot = container.querySelector("[data-slot='header']")
+    expect(headerSlot?.querySelector(".flex.flex-col.gap-4")).toBeNull()
+  })
+
+  test("handles mixed single and array slots in same layout", () => {
+    const layout = createTestLayout([
+      { name: "header", position: "top" },
+      { name: "main", position: "left" },
+      { name: "sidebar", position: "right" },
+    ])
+
+    const { container } = render(
+      <SlotLayout layout={layout}>
+        {{
+          header: <div>Single Header</div>,
+          main: [
+            <div key="1">Stacked 1</div>,
+            <div key="2">Stacked 2</div>,
+          ],
+          sidebar: <div>Single Sidebar</div>,
+        }}
+      </SlotLayout>
+    )
+
+    expect(container.textContent).toContain("Single Header")
+    expect(container.textContent).toContain("Stacked 1")
+    expect(container.textContent).toContain("Stacked 2")
+    expect(container.textContent).toContain("Single Sidebar")
+  })
+
+  test("empty array slot renders nothing", () => {
+    const layout = createTestLayout([
+      { name: "main", position: "left" },
+    ])
+
+    const { container } = render(
+      <SlotLayout layout={layout}>
+        {{
+          main: [],
+        }}
+      </SlotLayout>
+    )
+
+    const slot = container.querySelector("[data-slot='main']")
+    expect(slot).not.toBeNull()
+    expect(slot?.children.length).toBe(0)
+  })
+})
+
 describe("SlotLayout - Edge Cases", () => {
   test("handles layout with single slot", () => {
     const singleSlotLayout = createTestLayout([
@@ -361,5 +496,92 @@ describe("SlotLayout - Edge Cases", () => {
     expect(container.textContent).toContain("Subtitle")
     expect(container.textContent).toContain("Part 1")
     expect(container.textContent).toContain("Part 2")
+  })
+})
+
+// =============================================================================
+// test-prephase-005: Single-Column Layout Tests (layout-single-column)
+// =============================================================================
+describe("SlotLayout - Single-Column Layout", () => {
+  // Single-column layout fixture: single main slot at center position
+  const singleColumnLayout = createTestLayout([
+    { name: "main", position: "center", required: true },
+  ])
+
+  test("renders full-width main slot without multi-column grid", () => {
+    const { container } = render(
+      <SlotLayout layout={singleColumnLayout}>
+        {{ main: <div data-testid="container-section">Full Width Content</div> }}
+      </SlotLayout>
+    )
+
+    const grid = container.querySelector("[data-slot-layout]")
+    expect(grid).not.toBeNull()
+    // Should use single column grid, not multi-column
+    expect(grid?.className).toContain("grid-cols-1")
+    // Should NOT have md:grid-cols-[...] for two-column layouts
+    expect(grid?.className).not.toContain("md:grid-cols-[1fr_300px]")
+    expect(grid?.className).not.toContain("md:grid-cols-[minmax")
+  })
+
+  test("maps 'center' position to main grid area", () => {
+    const { container } = render(
+      <SlotLayout layout={singleColumnLayout}>
+        {{ main: <div>Center Content</div> }}
+      </SlotLayout>
+    )
+
+    const slot = container.querySelector("[data-slot='main']")
+    expect(slot).not.toBeNull()
+    expect(slot?.getAttribute("style")).toContain("grid-area")
+    expect(slot?.getAttribute("style")).toContain("main")
+  })
+
+  test("generates single area grid-template-areas for center position", () => {
+    const { container } = render(
+      <SlotLayout layout={singleColumnLayout}>
+        {{ main: <div>Content</div> }}
+      </SlotLayout>
+    )
+
+    const grid = container.querySelector("[data-slot-layout]")
+    const style = grid?.getAttribute("style") || ""
+
+    // Should contain grid-template-areas with only "main"
+    expect(style).toContain("grid-template-areas")
+    // The template should be simple - just "main" without multi-column structure
+    expect(style).toMatch(/grid-template-areas:\s*"main"/)
+  })
+
+  test("renders container section content at full width", () => {
+    const { container } = render(
+      <SlotLayout layout={singleColumnLayout}>
+        {{ main: <div className="w-full">Full Width Section</div> }}
+      </SlotLayout>
+    )
+
+    expect(container.textContent).toContain("Full Width Section")
+    const mainSlot = container.querySelector("[data-slot='main']")
+    expect(mainSlot).not.toBeNull()
+  })
+
+  test("single-slot layout with left position also uses grid-cols-1", () => {
+    const leftOnlyLayout = createTestLayout([
+      { name: "main", position: "left", required: true },
+    ])
+
+    const { container } = render(
+      <SlotLayout layout={leftOnlyLayout}>
+        {{ main: <div>Left Only Content</div> }}
+      </SlotLayout>
+    )
+
+    const grid = container.querySelector("[data-slot-layout]")
+    expect(grid).not.toBeNull()
+    // Single slot (even at left position) should use single column
+    // No right slot means no need for two-column grid
+    expect(grid?.className).toContain("grid-cols-1")
+    // Verify the className does not include a two-column responsive class
+    expect(grid?.className).not.toMatch(/md:grid-cols-\[1fr.*300px\]/)
   })
 })
