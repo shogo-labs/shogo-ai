@@ -145,42 +145,6 @@ const virtualToolsServer = createSdkMcpServer({
         }
       }
     ),
-    // DISABLED: v1 show_schema - replaced by v2 set_workspace
-    // Keeping for reference during v2 validation, will remove once v2 is confirmed
-    /*
-    sdkTool(
-      'show_schema',
-      'Display a schema visualization in the advanced chat workspace. Use when user asks to see a schema like "show me the component-builder schema" or "display the platform-features schema".',
-      {
-        schemaName: z.string()
-          .describe('The name of the schema to display (e.g., "component-builder", "platform-features", "studio-core")'),
-        defaultTab: z.enum(['schema', 'decisions', 'hooks']).optional()
-          .describe('Initial tab to display (defaults to "schema")'),
-      },
-      async (args) => {
-        console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing show_schema:`, args)
-
-        // Emit event for client-side execution
-        // Client will update workspace Composition entity
-        const event: VirtualToolEvent = {
-          type: 'virtual-tool-execute',
-          toolUseId: `vt-${Date.now()}`,
-          toolName: 'show_schema',
-          args: args as Record<string, unknown>,
-          timestamp: Date.now(),
-        }
-        virtualToolEvents.emit('virtual-tool', event)
-        console.log(`${VT_LOG_PREFIX} ✅ Emitted show_schema virtual tool event`)
-
-        return {
-          content: [{
-            type: 'text',
-            text: `Displaying ${args.schemaName} schema in workspace`
-          }]
-        }
-      }
-    ),
-    */
     // set_workspace: Declaratively set workspace state (v2 architecture)
     // Client handler updates workspace Composition entity based on desired state
     // NOTE: Using z.any() for complex nested types to avoid SDK schema validation issues
@@ -275,7 +239,6 @@ const claudeCode = createClaudeCode({
     allowedTools: [
       // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
       'mcp__virtual-tools__navigate_to_phase',
-      // 'mcp__virtual-tools__show_schema',  // DISABLED: v1 replaced by v2 set_workspace
       'mcp__virtual-tools__set_workspace',
       'mcp__virtual-tools__execute',
       // File operations
@@ -343,7 +306,7 @@ const claudeCode = createClaudeCode({
     hooks: {
       // PreToolUse: Currently unused - virtual tools handled via sdkTool()
       // SDK tools (virtualToolsServer) are the single execution path for virtual tools.
-      // See: sdkTool('show_schema', ...) and sdkTool('navigate_to_phase', ...)
+      // See: sdkTool('set_workspace', ...), sdkTool('execute', ...), sdkTool('navigate_to_phase', ...)
       // Keeping hook structure for future non-virtual-tool interceptors if needed.
       SubagentStart: [{
         hooks: [async (rawInput: unknown) => {
@@ -461,12 +424,7 @@ You also have access to virtual tools for UI control:
 - navigate_to_phase: Navigate the user to a different pipeline phase
   Arguments: { phase: "discovery" | "analysis" | "classification" | "design" | "spec" | "testing" | "implementation" | "complete" }
   Example: When user says "take me to the design phase" or "let's move to implementation", call this tool.
-- show_schema: Display a schema visualization in the workspace (v1 - prefer set_workspace)
-  Arguments: { schemaName: string, defaultTab?: "schema" | "decisions" | "hooks" }
-  Example: When user says "show me the component-builder schema" or "display platform-features", call this tool.
-  This will render the schema graph and entity details in the workspace panel.
-
-- set_workspace: Declaratively set workspace state (v2 - preferred)
+- set_workspace: Declaratively set workspace state
   Arguments: { layout?: "single"|"split-h"|"split-v", panels: [{ slot, section, config? }] }
   Example: set_workspace({ panels: [{ slot: "main", section: "DesignContainerSection", config: { schemaName: "platform-features" } }] })
   Use this to show schemas, change layouts, or display any combination of panels.
