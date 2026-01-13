@@ -1681,6 +1681,87 @@ describe("test-cpbi-003-d: findByFeatureAndPhase is added via enhancements.colle
 })
 
 // ============================================================
+// Test IMAGE-001: ChatMessage imageData field support
+// ============================================================
+describe("ChatMessage imageData field", () => {
+  let env: IEnvironment
+  let store: any
+
+  beforeEach(() => {
+    env = createTestEnv()
+    store = studioChatDomain.createStore(env)
+  })
+
+  test("addMessage creates message with imageData when provided", async () => {
+    const session = await store.createChatSession({
+      inferredName: "Test Session",
+      contextType: "general",
+    })
+
+    const dataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    const message = await store.addMessage({
+      sessionId: session.id,
+      role: "user",
+      content: "Check out this image",
+      imageData: dataUrl,
+    })
+
+    expect(message).toBeDefined()
+    expect(message.imageData).toBe(dataUrl)
+    expect(message.content).toBe("Check out this image")
+  })
+
+  test("addMessage creates message without imageData (backward compatible)", async () => {
+    const session = await store.createChatSession({
+      inferredName: "Test Session",
+      contextType: "general",
+    })
+
+    const message = await store.addMessage({
+      sessionId: session.id,
+      role: "user",
+      content: "Text only message",
+    })
+
+    expect(message).toBeDefined()
+    expect(message.content).toBe("Text only message")
+    expect(message.imageData).toBeUndefined()
+  })
+
+  test("ChatMessage.hasImage computed view returns true when imageData present", async () => {
+    const session = await store.createChatSession({
+      inferredName: "Test Session",
+      contextType: "general",
+    })
+
+    const dataUrl = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ=="
+    const message = await store.addMessage({
+      sessionId: session.id,
+      role: "user",
+      content: "Image message",
+      imageData: dataUrl,
+    })
+
+    expect(message.hasImage).toBe(true)
+  })
+
+  test("ChatMessage.hasImage returns false when no imageData", async () => {
+    const session = await store.createChatSession({
+      inferredName: "Test Session",
+      contextType: "general",
+    })
+
+    const message = await store.addMessage({
+      sessionId: session.id,
+      role: "user",
+      content: "No image",
+    })
+
+    expect(message.hasImage).toBe(false)
+  })
+})
+
+// ============================================================
 // Test CC-DOMAIN: ChatSession.claudeCodeSessionId field
 // ============================================================
 describe("ChatSession.claudeCodeSessionId", () => {

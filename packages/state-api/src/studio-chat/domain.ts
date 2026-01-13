@@ -33,6 +33,7 @@ export const StudioChatDomain = scope({
     session: "ChatSession", // Reference to ChatSession
     role: "'user' | 'assistant'",
     content: "string",
+    "imageData?": "string", // Optional data URL for image attachments (data:image/{type};base64,{data})
     createdAt: "number",
   },
 
@@ -93,6 +94,15 @@ export const studioChatDomain = domain({
           if (model) return `${self.toolName}: ${model}`
           if (schema) return `${self.toolName}: ${schema}`
           return self.toolName
+        },
+      })),
+
+      ChatMessage: models.ChatMessage.views((self: any) => ({
+        /**
+         * Returns true if this message has an attached image
+         */
+        get hasImage(): boolean {
+          return self.imageData != null && self.imageData !== ""
         },
       })),
 
@@ -261,6 +271,7 @@ export const studioChatDomain = domain({
           sessionId: string
           role: "user" | "assistant"
           content: string
+          imageData?: string // Optional data URL for image attachments
         }): Promise<any> {
           const session = self.chatSessionCollection.get(data.sessionId)
           if (!session) {
@@ -280,6 +291,7 @@ export const studioChatDomain = domain({
             session: data.sessionId,
             role: data.role,
             content: data.content,
+            imageData: data.imageData,
             createdAt: now,
           })
         },
