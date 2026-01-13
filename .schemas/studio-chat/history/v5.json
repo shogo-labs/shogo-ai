@@ -1,9 +1,4 @@
 {
-  "id": "283c8276-75a0-402b-a9f0-0813e1ea962a",
-  "name": "studio-chat",
-  "format": "enhanced-json-schema",
-  "createdAt": 1768258106608,
-  "version": 1,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "studio-chat",
   "$defs": {

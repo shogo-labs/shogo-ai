@@ -1093,35 +1093,64 @@ export const ChatPanel = observer(function ChatPanel({
     onStreamingChange?.(isStreaming)
   }, [isStreaming, onStreamingChange])
 
+  /**
+   * Extract mediaType from a data URL.
+   * Example: "data:image/png;base64,..." -> "image/png"
+   */
+  const extractMediaType = useCallback((dataUrl: string): string => {
+    const match = dataUrl.match(/^data:([^;]+);/)
+    return match?.[1] || "image/png" // Default to PNG if parsing fails
+  }, [])
+
   // chat-session-sync-fix: Handle message submission using v3 sendMessage() API
   // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
+  // task-chatpanel-sendmessage: Extended to support imageData parameter
   const handleSendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, imageData?: string) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
       }
 
-      if (!content.trim()) {
+      if (!content.trim() && !imageData) {
         return
       }
 
       const trimmedContent = content.trim()
 
       // Persist user message to local store (fire-and-forget)
+      // task-chatpanel-sendmessage: Include imageData when present
       studioChat.addMessage({
         sessionId: currentSessionId,
         role: "user",
         content: trimmedContent,
+        imageData: imageData,
       }).catch((err) => console.warn("[ChatPanel] Failed to persist user message:", err))
 
+      // Build the sendMessage options
+      // task-chatpanel-sendmessage: Construct FileUIPart when image is attached
+      const messagePayload: { text: string; files?: Array<{ type: "file"; mediaType: string; url: string }> } = {
+        text: trimmedContent,
+      }
+
+      if (imageData) {
+        const mediaType = extractMediaType(imageData)
+        messagePayload.files = [
+          {
+            type: "file" as const,
+            mediaType,
+            url: imageData,
+          },
+        ]
+      }
+
       // chat-session-sync-fix: Send via v3 sendMessage() API
-      // - First arg: { text } object (not { role, content })
+      // - First arg: { text, files? } object
       // - Second arg: options with body for server-side data
       // - ccSessionIdRef.current ensures fresh session ID value
       try {
         await sendMessage(
-          { text: trimmedContent },
+          messagePayload,
           {
             body: {
               featureId,
@@ -1134,13 +1163,14 @@ export const ChatPanel = observer(function ChatPanel({
         console.error("[ChatPanel] Failed to send message:", err)
       }
     },
-    [currentSessionId, studioChat, sendMessage, featureId, phase]
+    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType]
   )
 
   // Handle form submit from ChatInput
+  // task-chatpanel-sendmessage: Extended to support imageData parameter
   const handleInputSubmit = useCallback(
-    (content: string) => {
-      handleSendMessage(content)
+    (content: string, imageData?: string) => {
+      handleSendMessage(content, imageData)
     },
     [handleSendMessage]
   )
