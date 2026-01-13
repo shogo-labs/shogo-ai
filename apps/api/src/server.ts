@@ -11,13 +11,28 @@ import { auth } from './auth'
 import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
 
 /**
+ * Parse a data URL to extract mediaType and base64 data.
+ * Example: "data:image/png;base64,iVBORw0..." -> { mediaType: "image/png", base64Data: "iVBORw0..." }
+ *
+ * task-api-convert-images: Helper for image part conversion
+ */
+function parseDataUrl(dataUrl: string): { mimeType: string; base64Data: string } | null {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
+  if (!match) return null
+  return { mimeType: match[1], base64Data: match[2] }
+}
+
+/**
  * Convert UIMessage format (from @ai-sdk/react v3) to CoreMessage format (for streamText).
  *
  * UIMessage uses `parts` array: { parts: [{ type: "text", text: "..." }], role, id }
- * CoreMessage uses `content` string: { role, content: "..." }
+ * CoreMessage uses `content` string or array: { role, content: "..." | Array<TextPart | ImagePart> }
  *
  * chat-session-sync-fix: Required because v3 sendMessage() sends UIMessage format,
  * but streamText() expects CoreMessage format.
+ *
+ * task-api-convert-images: Extended to handle file parts with image mediaTypes.
+ * File parts with image/* mediaType are converted to ImagePart format for Claude API.
  */
 function convertUIMessagesToCoreMessages(messages: any[]): ModelMessage[] {
   return messages.map((msg) => {
@@ -26,13 +41,41 @@ function convertUIMessagesToCoreMessages(messages: any[]): ModelMessage[] {
       return { role: msg.role, content: msg.content }
     }
 
-    // If message has parts array (UIMessage format), extract text content
+    // If message has parts array (UIMessage format), process all part types
     if (Array.isArray(msg.parts)) {
-      const textContent = msg.parts
-        .filter((part: any) => part.type === 'text')
-        .map((part: any) => part.text)
-        .join('')
-      return { role: msg.role, content: textContent }
+      const contentParts: Array<{ type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }> = []
+
+      for (const part of msg.parts) {
+        if (part.type === 'text' && part.text) {
+          // Text parts: extract text content
+          contentParts.push({ type: 'text', text: part.text })
+        } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
+          // File parts with image mediaType: convert to ImagePart
+          // The url field contains the data URL (data:image/png;base64,...)
+          const parsed = parseDataUrl(part.url || '')
+          if (parsed) {
+            contentParts.push({
+              type: 'image',
+              image: parsed.base64Data,
+              mimeType: parsed.mimeType,
+            })
+          }
+        }
+        // Non-image file parts are gracefully ignored
+      }
+
+      // If we only have text parts, return as simple string (backward compatible)
+      if (contentParts.length === 1 && contentParts[0].type === 'text') {
+        return { role: msg.role, content: contentParts[0].text }
+      }
+
+      // If we have mixed content or only images, return as array
+      if (contentParts.length > 0) {
+        return { role: msg.role, content: contentParts }
+      }
+
+      // Fallback: empty content
+      return { role: msg.role, content: '' }
     }
 
     // Fallback: return as-is (may fail validation, but better than silent data loss)
@@ -405,7 +448,11 @@ app.post('/api/chat', async (c) => {
     // Old message-filtering logic was removed in favor of passing full array
     const result = streamText({
       // Type assertion for ai-sdk-provider-claude-code compatibility with ai@6
-      model: claudeCode('sonnet', modelSettings) as Parameters<typeof streamText>[0]['model'],
+      // task-api-convert-images: streamingInput required for image support
+      model: claudeCode('sonnet', {
+        ...modelSettings,
+        streamingInput: 'always',  // Required for image parts to be sent to Claude
+      }) as Parameters<typeof streamText>[0]['model'],
       system: systemPrompt,
       messages: coreMessages,
     })

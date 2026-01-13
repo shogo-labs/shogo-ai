@@ -1,11 +1,14 @@
 /**
  * MessageContent Component
  * Task: task-chat-004
+ * Task: task-render-image-history (image attachment support)
  *
  * Renders message text with role-appropriate styling.
  * Integrates StreamingText for assistant messages during streaming.
+ * Displays image attachments from file parts with image mediaType.
  */
 
+import { useState, useCallback } from "react"
 import { cn } from "@/lib/utils"
 import type { Message } from "@ai-sdk/react"
 import { StreamingText } from "../streaming"
@@ -17,6 +20,12 @@ export interface MessageContentProps {
   isStreaming?: boolean
   /** Optional class name */
   className?: string
+}
+
+/** Represents an extracted image part from the message */
+interface ImagePart {
+  url: string
+  mediaType: string
 }
 
 /**
@@ -41,12 +50,82 @@ function extractTextContent(message: Message): string {
 }
 
 /**
+ * Extract image parts from a message.
+ * Detects file parts with image/* mediaType.
+ *
+ * task-render-image-history: New function for image detection
+ */
+function extractImageParts(message: Message): ImagePart[] {
+  if (!("parts" in message) || !Array.isArray((message as any).parts)) {
+    return []
+  }
+
+  return ((message as any).parts as any[])
+    .filter(
+      (part) =>
+        part.type === "file" &&
+        part.mediaType?.startsWith("image/") &&
+        part.url
+    )
+    .map((part) => ({
+      url: part.url,
+      mediaType: part.mediaType,
+    }))
+}
+
+/**
+ * Image thumbnail component with click-to-expand behavior
+ *
+ * task-render-image-history: Renders image with thumbnail sizing
+ */
+function ImageThumbnail({
+  url,
+  mediaType,
+  index,
+}: {
+  url: string
+  mediaType: string
+  index: number
+}) {
+  const [hasError, setHasError] = useState(false)
+
+  const handleClick = useCallback(() => {
+    // Open image in new tab for full view
+    window.open(url, "_blank")
+  }, [url])
+
+  const handleError = useCallback(() => {
+    setHasError(true)
+  }, [])
+
+  if (hasError) {
+    return (
+      <div className="max-w-[300px] rounded-lg border border-border bg-muted p-4 text-sm text-muted-foreground">
+        Failed to load image
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={url}
+      alt={`Image attachment ${index + 1}`}
+      className="max-w-[300px] max-h-[200px] rounded-lg border border-border object-contain cursor-pointer hover:opacity-90 transition-opacity"
+      onClick={handleClick}
+      onError={handleError}
+      data-testid="image-thumbnail"
+    />
+  )
+}
+
+/**
  * Renders message content with appropriate styling.
  *
  * Features:
  * - Role-based styling (user vs assistant)
  * - StreamingText integration for animated text reveal
  * - Whitespace preservation for formatted content
+ * - Image attachment display with thumbnails (task-render-image-history)
  *
  * @example
  * ```tsx
@@ -59,41 +138,64 @@ export function MessageContent({
   className,
 }: MessageContentProps) {
   const content = extractTextContent(message)
+  const images = extractImageParts(message)
   const isUser = message.role === "user"
 
-  // User messages: simple text display
+  // Render content based on role and content type
+  const baseClasses = cn(
+    "max-w-[85%] rounded-lg px-4 py-2 text-sm",
+    isUser ? "bg-primary text-primary-foreground ml-auto" : "bg-muted text-foreground mr-auto",
+    className
+  )
+
+  // User messages: text + images
   if (isUser) {
     return (
-      <div
-        className={cn(
-          "max-w-[85%] rounded-lg px-4 py-2 text-sm",
-          "bg-primary text-primary-foreground ml-auto",
-          "whitespace-pre-wrap break-words",
-          className
+      <div className={cn(baseClasses, "flex flex-col gap-2")}>
+        {content && (
+          <span className="whitespace-pre-wrap break-words">{content}</span>
         )}
-      >
-        {content}
+        {images.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {images.map((img, i) => (
+              <ImageThumbnail
+                key={`${message.id}-img-${i}`}
+                url={img.url}
+                mediaType={img.mediaType}
+                index={i}
+              />
+            ))}
+          </div>
+        )}
       </div>
     )
   }
 
-  // Assistant messages: use StreamingText when streaming
+  // Assistant messages: use StreamingText when streaming, plus images
   return (
-    <div
-      className={cn(
-        "max-w-[85%] rounded-lg px-4 py-2 text-sm",
-        "bg-muted text-foreground mr-auto",
-        className
+    <div className={cn(baseClasses, "flex flex-col gap-2")}>
+      {content && (
+        isStreaming ? (
+          <StreamingText
+            content={content}
+            isStreaming={isStreaming}
+            showCursor
+          />
+        ) : (
+          <span className="whitespace-pre-wrap break-words">{content}</span>
+        )
       )}
-    >
-      {isStreaming ? (
-        <StreamingText
-          content={content}
-          isStreaming={isStreaming}
-          showCursor
-        />
-      ) : (
-        <span className="whitespace-pre-wrap break-words">{content}</span>
+      {images.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {images.map((img, i) => (
+            <ImageThumbnail
+              key={`${message.id}-img-${i}`}
+              url={img.url}
+              mediaType={img.mediaType}
+              index={i}
+            />
+          ))}
+        </div>
       )}
     </div>
   )
