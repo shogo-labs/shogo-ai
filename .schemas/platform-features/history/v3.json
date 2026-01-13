@@ -1,9 +1,4 @@
 {
-  "id": "6d0df197-a84e-4ec0-aab1-3d7d825d4e6e",
-  "name": "platform-features",
-  "format": "enhanced-json-schema",
-  "createdAt": 1765197911179,
-  "version": 2,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "platform-features",
   "$defs": {
@@ -121,8 +116,7 @@
           "enum": [
             "must",
             "should",
-            "could",
-            "wont"
+            "could"
           ],
           "x-renderer": "priority-badge"
         },
@@ -134,21 +128,6 @@
             "implemented"
           ],
           "x-renderer": "requirement-status-badge"
-        },
-        "auditVerdict": {
-          "type": "string",
-          "description": "Audit verdict: OK (aligned), REVISE (needs reframe), DROP (redundant), MERGE (combine with another), DEFER (push to later phase)",
-          "enum": [
-            "OK",
-            "REVISE",
-            "DROP",
-            "MERGE",
-            "DEFER"
-          ]
-        },
-        "auditNotes": {
-          "type": "string",
-          "description": "Notes explaining the audit verdict"
         },
         "createdAt": {
           "type": "number"
@@ -806,19 +785,5 @@
   },
   "x-persistence": {
     "backend": "postgres"
-  },
-  "views": {
-    "discovery-view-composition": {
-      "type": "query",
-      "collection": "FeatureSession",
-      "filter": {},
-      "select": [
-        "id",
-        "name",
-        "intent",
-        "status",
-        "initialAssessment"
-      ]
-    }
   }
 }

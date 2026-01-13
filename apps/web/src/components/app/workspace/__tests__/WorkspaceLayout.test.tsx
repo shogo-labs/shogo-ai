@@ -328,7 +328,7 @@ describe("test-2-2-004-003: WorkspaceLayout uses useWorkspaceData as smart compo
     expect(componentSource).toMatch(/featuresByPhase/)
   })
 
-  test("Content area has overflow-auto and p-6 classes", async () => {
+  test("Content area has overflow-hidden for full-width layout (task-testbed-full-width)", async () => {
     const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
     const { WorkspaceLayout } = await import("../WorkspaceLayout")
     const { MemoryRouter } = await import("react-router-dom")
@@ -366,8 +366,10 @@ describe("test-2-2-004-003: WorkspaceLayout uses useWorkspaceData as smart compo
 
     const content = container.querySelector('[data-testid="workspace-content"]')
     expect(content).not.toBeNull()
-    expect(content?.className).toMatch(/overflow-auto/)
-    expect(content?.className).toMatch(/p-6/)
+    // Content area should use full width without padding constraint
+    expect(content?.className).toMatch(/overflow-hidden/)
+    // Should NOT have p-6 padding that restricts full-width content
+    expect(content?.className).not.toMatch(/p-6/)
   })
 })
 
@@ -1278,5 +1280,201 @@ describe("test-dcb-012-007: useComponentBuilderStore hook integration", () => {
 
     // ComponentCatalogSidebar should receive components prop
     expect(componentSource).toMatch(/<ComponentCatalogSidebar[^>]*components=/)
+  })
+})
+
+// ============================================================
+// Task testbed-full-width: Full-Width Layout Tests
+// ============================================================
+
+// ============================================================
+// Test testbed-full-width-001: Content area uses full available width
+// ============================================================
+
+describe("test-testbed-full-width-001: Content area uses full available width", () => {
+  test("Content area does not have p-6 padding class", async () => {
+    const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
+    const { WorkspaceLayout } = await import("../WorkspaceLayout")
+    const { MemoryRouter } = await import("react-router-dom")
+
+    const mockAuthService = new MockAuthService()
+    await mockAuthService.signUp({ email: "test@example.com", password: "test123" })
+
+    const env = createEnvironment({
+      persistence: mockPersistence,
+      auth: mockAuthService,
+    })
+
+    const domains = {
+      studioCore: studioCoreDomain,
+      platformFeatures: platformFeaturesDomain,
+    } as const
+
+    await act(async () => {
+      root.render(
+        <NuqsTestingAdapter>
+          <MemoryRouter>
+            <EnvironmentProvider env={env}>
+              <AuthProvider authService={mockAuthService}>
+                <DomainProvider domains={domains}>
+                  <WorkspaceLayout />
+                </DomainProvider>
+              </AuthProvider>
+            </EnvironmentProvider>
+          </MemoryRouter>
+        </NuqsTestingAdapter>
+      )
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    const content = container.querySelector('[data-testid="workspace-content"]')
+    expect(content).not.toBeNull()
+    // Content area should NOT have p-6 padding that restricts full-width content
+    expect(content?.className).not.toMatch(/\bp-6\b/)
+  })
+
+  test("Content area uses flex-1 to fill available width", async () => {
+    const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
+    const { WorkspaceLayout } = await import("../WorkspaceLayout")
+    const { MemoryRouter } = await import("react-router-dom")
+
+    const mockAuthService = new MockAuthService()
+    await mockAuthService.signUp({ email: "test@example.com", password: "test123" })
+
+    const env = createEnvironment({
+      persistence: mockPersistence,
+      auth: mockAuthService,
+    })
+
+    const domains = {
+      studioCore: studioCoreDomain,
+      platformFeatures: platformFeaturesDomain,
+    } as const
+
+    await act(async () => {
+      root.render(
+        <NuqsTestingAdapter>
+          <MemoryRouter>
+            <EnvironmentProvider env={env}>
+              <AuthProvider authService={mockAuthService}>
+                <DomainProvider domains={domains}>
+                  <WorkspaceLayout />
+                </DomainProvider>
+              </AuthProvider>
+            </EnvironmentProvider>
+          </MemoryRouter>
+        </NuqsTestingAdapter>
+      )
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    const content = container.querySelector('[data-testid="workspace-content"]')
+    expect(content).not.toBeNull()
+    // Content area should use flex-1 to fill available space
+    expect(content?.className).toMatch(/flex-1/)
+    // Should use min-w-0 to prevent overflow issues
+    expect(content?.className).toMatch(/min-w-0/)
+  })
+})
+
+// ============================================================
+// Test testbed-full-width-002: No visual regressions in existing views
+// ============================================================
+
+describe("test-testbed-full-width-002: No visual regressions in existing views", () => {
+  test("Layout structure remains intact with sidebar and content", async () => {
+    const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
+    const { WorkspaceLayout } = await import("../WorkspaceLayout")
+    const { MemoryRouter } = await import("react-router-dom")
+
+    const mockAuthService = new MockAuthService()
+    await mockAuthService.signUp({ email: "test@example.com", password: "test123" })
+
+    const env = createEnvironment({
+      persistence: mockPersistence,
+      auth: mockAuthService,
+    })
+
+    const domains = {
+      studioCore: studioCoreDomain,
+      platformFeatures: platformFeaturesDomain,
+    } as const
+
+    await act(async () => {
+      root.render(
+        <NuqsTestingAdapter>
+          <MemoryRouter>
+            <EnvironmentProvider env={env}>
+              <AuthProvider authService={mockAuthService}>
+                <DomainProvider domains={domains}>
+                  <WorkspaceLayout />
+                </DomainProvider>
+              </AuthProvider>
+            </EnvironmentProvider>
+          </MemoryRouter>
+        </NuqsTestingAdapter>
+      )
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    // Verify core structure remains intact
+    const layout = container.querySelector('[data-testid="workspace-layout"]')
+    expect(layout).not.toBeNull()
+    expect(layout?.className).toMatch(/flex/)
+    expect(layout?.className).toMatch(/h-full/)
+
+    const sidebar = container.querySelector('[data-testid="workspace-sidebar"]')
+    expect(sidebar).not.toBeNull()
+    expect(sidebar?.className).toMatch(/w-64/)
+    expect(sidebar?.className).toMatch(/border-r/)
+
+    const content = container.querySelector('[data-testid="workspace-content"]')
+    expect(content).not.toBeNull()
+    expect(content?.className).toMatch(/flex-1/)
+  })
+
+  test("Content area still handles overflow correctly", async () => {
+    const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
+    const { WorkspaceLayout } = await import("../WorkspaceLayout")
+    const { MemoryRouter } = await import("react-router-dom")
+
+    const mockAuthService = new MockAuthService()
+    await mockAuthService.signUp({ email: "test@example.com", password: "test123" })
+
+    const env = createEnvironment({
+      persistence: mockPersistence,
+      auth: mockAuthService,
+    })
+
+    const domains = {
+      studioCore: studioCoreDomain,
+      platformFeatures: platformFeaturesDomain,
+    } as const
+
+    await act(async () => {
+      root.render(
+        <NuqsTestingAdapter>
+          <MemoryRouter>
+            <EnvironmentProvider env={env}>
+              <AuthProvider authService={mockAuthService}>
+                <DomainProvider domains={domains}>
+                  <WorkspaceLayout />
+                </DomainProvider>
+              </AuthProvider>
+            </EnvironmentProvider>
+          </MemoryRouter>
+        </NuqsTestingAdapter>
+      )
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    const content = container.querySelector('[data-testid="workspace-content"]')
+    expect(content).not.toBeNull()
+    // Content area should handle overflow properly
+    expect(content?.className).toMatch(/overflow-hidden/)
   })
 })

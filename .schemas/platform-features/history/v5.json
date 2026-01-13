@@ -3,9 +3,10 @@
   "name": "platform-features",
   "format": "enhanced-json-schema",
   "createdAt": 1765197911179,
-  "version": 2,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "platform-features",
+  "x-persistence": {
+    "backend": "postgres"
+  },
   "$defs": {
     "FeatureSession": {
       "type": "object",
@@ -43,7 +44,10 @@
         },
         "affectedPackages": {
           "type": "array",
-          "description": "Which packages this feature touches"
+          "description": "Which packages this feature touches",
+          "items": {
+            "type": "string"
+          }
         },
         "schemaName": {
           "type": "string",
@@ -51,7 +55,33 @@
         },
         "initialAssessment": {
           "type": "object",
-          "description": "Preliminary archetype assessment from discovery (not finalized until classification)"
+          "description": "Preliminary archetype assessment from discovery (not finalized until classification)",
+          "properties": {
+            "likelyArchetype": {
+              "type": "string",
+              "enum": [
+                "service",
+                "domain",
+                "infrastructure",
+                "hybrid"
+              ],
+              "x-renderer": "archetype-badge"
+            },
+            "indicators": {
+              "type": "array",
+              "description": "Evidence observed during discovery",
+              "items": {
+                "type": "string"
+              }
+            },
+            "uncertainties": {
+              "type": "array",
+              "description": "What needs validation during classification",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
         },
         "featureArchetype": {
           "type": "string",
@@ -66,7 +96,10 @@
         },
         "applicablePatterns": {
           "type": "array",
-          "description": "Patterns applicable to this feature (set by classification skill)"
+          "description": "Patterns applicable to this feature (set by classification skill)",
+          "items": {
+            "type": "string"
+          }
         },
         "createdAt": {
           "type": "number"
@@ -549,14 +582,20 @@
         },
         "acceptanceCriteria": {
           "type": "array",
-          "description": "Conditions that must be met for task completion"
+          "description": "Conditions that must be met for task completion",
+          "items": {
+            "type": "string"
+          }
         },
         "dependencies": {
           "type": "array",
           "description": "Tasks that must complete before this one",
-          "x-arktype": "ImplementationTask",
+          "items": {
+            "type": "string"
+          },
           "x-mst-type": "reference",
           "x-reference-type": "array",
+          "x-arktype": "ImplementationTask",
           "x-reference-target": "ImplementationTask"
         },
         "status": {
@@ -623,7 +662,10 @@
         },
         "given": {
           "type": "array",
-          "description": "Preconditions for the test"
+          "description": "Preconditions for the test",
+          "items": {
+            "type": "string"
+          }
         },
         "when": {
           "type": "string",
@@ -631,7 +673,10 @@
         },
         "then": {
           "type": "array",
-          "description": "Expected outcomes"
+          "description": "Expected outcomes",
+          "items": {
+            "type": "string"
+          }
         },
         "testType": {
           "type": "string",
@@ -700,11 +745,17 @@
         },
         "completedTasks": {
           "type": "array",
-          "description": "IDs of successfully completed tasks"
+          "description": "IDs of successfully completed tasks",
+          "items": {
+            "type": "string"
+          }
         },
         "failedTasks": {
           "type": "array",
-          "description": "IDs of tasks that failed/blocked"
+          "description": "IDs of tasks that failed/blocked",
+          "items": {
+            "type": "string"
+          }
         },
         "startedAt": {
           "type": "number"
@@ -730,8 +781,8 @@
       "description": "Execution record for a single task attempt",
       "x-persistence": {
         "strategy": "entity-per-file",
-        "nested": true,
-        "partitionKey": "run"
+        "partitionKey": "run",
+        "nested": true
       },
       "properties": {
         "id": {
@@ -802,23 +853,6 @@
         "startedAt"
       ],
       "x-original-name": "TaskExecution"
-    }
-  },
-  "x-persistence": {
-    "backend": "postgres"
-  },
-  "views": {
-    "discovery-view-composition": {
-      "type": "query",
-      "collection": "FeatureSession",
-      "filter": {},
-      "select": [
-        "id",
-        "name",
-        "intent",
-        "status",
-        "initialAssessment"
-      ]
     }
   }
 }

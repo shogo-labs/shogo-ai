@@ -68,9 +68,9 @@ interface DesignContainerConfig {
 
   /**
    * Whether to allow the graph to expand to fill available vertical space.
-   * When true, removes min-height constraint and uses flex-1.
-   * When false (default), uses graphMinHeight for consistent sizing.
-   * Default: false
+   * When true (default), removes min-height constraint and uses flex-1.
+   * When false, uses graphMinHeight for consistent sizing.
+   * Default: true
    */
   expandGraph?: boolean
 
@@ -251,17 +251,20 @@ function SchemaTabContent({
   phaseColors,
   showStatistics = true,
   showLegend = true,
+  config,
 }: {
   feature: any
   phaseColors: ReturnType<typeof usePhaseColor>
   showStatistics?: boolean
   showLegend?: boolean
+  config?: Record<string, unknown>
 }) {
   // Manage selectedEntityId state via useState<string | null>(null)
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null)
 
-  // Extract schemaName from feature
-  const schemaName = feature?.schemaName
+  // Extract schemaName from config (panel-specific) or feature (shared)
+  // This allows split views to show different schemas per panel
+  const schemaName = (config?.schemaName as string | undefined) ?? feature?.schemaName
 
   // Use useSchemaData hook for async schema loading
   const { models, isLoading, error, refetch } = useSchemaData(schemaName)
@@ -427,7 +430,7 @@ export const DesignContainerSection = observer(function DesignContainerSection({
   // These options can be modified via MCP store.update to change UI behavior
   const designConfig = (config as DesignContainerConfig) ?? {}
   const defaultTab = designConfig.defaultTab ?? "schema"
-  const expandGraph = designConfig.expandGraph ?? false
+  const expandGraph = designConfig.expandGraph ?? true
   const showStatistics = designConfig.showStatistics ?? true
   const showLegend = designConfig.showLegend ?? true
   const graphMinHeight = designConfig.graphMinHeight ?? 400
@@ -503,6 +506,7 @@ export const DesignContainerSection = observer(function DesignContainerSection({
             phaseColors={phaseColors}
             showStatistics={showStatistics}
             showLegend={showLegend}
+            config={config}
           />
         </TabsContent>
 
