@@ -2,16 +2,17 @@
  * MessageContent Component
  * Task: task-chat-004
  * Task: task-render-image-history (image attachment support)
+ * Task: feat-chat-markdown-rendering (Streamdown markdown support)
  *
- * Renders message text with role-appropriate styling.
- * Integrates StreamingText for assistant messages during streaming.
+ * Renders message content with role-appropriate styling.
+ * Uses Streamdown for assistant messages (markdown rendering with streaming support).
  * Displays image attachments from file parts with image mediaType.
  */
 
 import { useState, useCallback } from "react"
 import { cn } from "@/lib/utils"
 import type { Message } from "@ai-sdk/react"
-import { StreamingText } from "../streaming"
+import { Streamdown } from "streamdown"
 
 export interface MessageContentProps {
   /** The message to render */
@@ -123,8 +124,8 @@ function ImageThumbnail({
  *
  * Features:
  * - Role-based styling (user vs assistant)
- * - StreamingText integration for animated text reveal
- * - Whitespace preservation for formatted content
+ * - Streamdown markdown rendering for assistant messages (GFM, code highlighting, math, mermaid)
+ * - Plain text for user messages
  * - Image attachment display with thumbnails (task-render-image-history)
  *
  * @example
@@ -142,9 +143,13 @@ export function MessageContent({
   const isUser = message.role === "user"
 
   // Render content based on role and content type
+  // User messages: bubble style with max-width
+  // Assistant messages: full width to accommodate markdown (code blocks, tables)
   const baseClasses = cn(
-    "max-w-[85%] rounded-lg px-4 py-2 text-sm",
-    isUser ? "bg-primary text-primary-foreground ml-auto" : "bg-muted text-foreground mr-auto",
+    "rounded-lg px-4 py-2 text-sm",
+    isUser
+      ? "max-w-[85%] bg-primary text-primary-foreground ml-auto"
+      : "w-full bg-muted text-foreground",
     className
   )
 
@@ -171,20 +176,11 @@ export function MessageContent({
     )
   }
 
-  // Assistant messages: use StreamingText when streaming, plus images
+  // Assistant messages: use Streamdown for markdown rendering
+  // Streamdown handles streaming natively (gracefully renders incomplete markdown)
   return (
     <div className={cn(baseClasses, "flex flex-col gap-2")}>
-      {content && (
-        isStreaming ? (
-          <StreamingText
-            content={content}
-            isStreaming={isStreaming}
-            showCursor
-          />
-        ) : (
-          <span className="whitespace-pre-wrap break-words">{content}</span>
-        )
-      )}
+      {content && <Streamdown>{content}</Streamdown>}
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {images.map((img, i) => (

@@ -4,6 +4,9 @@
 
 @import "tailwindcss";
 
+/* Streamdown markdown renderer - include Tailwind classes from dist */
+@source "../node_modules/streamdown/dist/*.js";
+
 /*
  * Theme CSS Variables (shadcn pattern)
  *
