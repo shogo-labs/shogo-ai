@@ -139,6 +139,10 @@ export interface ChatPanelProps {
   chatSessionId?: string | null
   /** Callback when chat session changes (for session picker integration) */
   onChatSessionChange?: (sessionId: string) => void
+  /** Optional controlled collapse state (for parent layout control) */
+  isCollapsed?: boolean
+  /** Callback when collapse state changes (for parent layout control) */
+  onCollapsedChange?: (collapsed: boolean) => void
 }
 
 // ============================================================
@@ -401,6 +405,8 @@ export const ChatPanel = observer(function ChatPanel({
   onOpenPanel,
   chatSessionId,
   onChatSessionChange,
+  isCollapsed: controlledIsCollapsed,
+  onCollapsedChange,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
@@ -409,8 +415,10 @@ export const ChatPanel = observer(function ChatPanel({
     componentBuilder: any
   }>()
 
-  // Panel state
-  const [isCollapsed, setIsCollapsed] = useState(() => getStoredCollapsed())
+  // Panel state - use controlled prop if provided, otherwise internal state
+  const [internalIsCollapsed, setInternalIsCollapsed] = useState(() => getStoredCollapsed())
+  const isCollapsed = controlledIsCollapsed ?? internalIsCollapsed
+  const setIsCollapsed = onCollapsedChange ?? setInternalIsCollapsed
   const [width, setWidth] = useState(() => getStoredWidth())
   const [isResizing, setIsResizing] = useState(false)
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
@@ -1347,12 +1355,15 @@ export const ChatPanel = observer(function ChatPanel({
     [handleSendMessage]
   )
 
-  // Collapse toggle
+  // Collapse toggle - persist to localStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {
     const newCollapsed = !isCollapsed
     setIsCollapsed(newCollapsed)
-    setStoredCollapsed(newCollapsed)
-  }, [isCollapsed])
+    // Only persist to localStorage if using internal state (not controlled)
+    if (!onCollapsedChange) {
+      setStoredCollapsed(newCollapsed)
+    }
+  }, [isCollapsed, setIsCollapsed, onCollapsedChange])
 
   // Resize handlers using mousedown/mousemove/mouseup pattern
   const handleResizeMouseDown = useCallback(

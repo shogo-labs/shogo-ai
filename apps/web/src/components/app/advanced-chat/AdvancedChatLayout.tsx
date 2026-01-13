@@ -15,11 +15,13 @@
  */
 
 import { observer } from "mobx-react-lite"
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useCallback, useState } from "react"
 import { useDomains } from "@/contexts/DomainProvider"
 import { ComposablePhaseView } from "../../rendering/composition/ComposablePhaseView"
 import { ChatPanel } from "../chat/ChatPanel"
 import { ChatSessionPicker, type ChatSession } from "../chat/ChatSessionPicker"
+import { useChatSessionNavigation } from "./hooks/useChatSessionNavigation"
+import { cn } from "@/lib/utils"
 
 // ============================================================
 // Constants
@@ -39,8 +41,11 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
     studioChat: any
   }>()
 
-  // Track current chat session (for session picker)
-  const [currentChatSessionId, setCurrentChatSessionId] = useState<string | null>(null)
+  // Track current chat session in URL (persists across refresh/hot reload)
+  const { chatSessionId, setChatSessionId } = useChatSessionNavigation()
+
+  // Lift chat panel collapse state to parent to control layout
+  const [isChatCollapsed, setIsChatCollapsed] = useState(false)
 
   // Get or create testbed session
   const testbedSession = platformFeatures?.featureSessionCollection?.get(TESTBED_SESSION_ID)
@@ -75,9 +80,9 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
   }))
 
   // Handler for session selection
-  const handleSelectSession = useCallback((sessionId: string) => {
-    setCurrentChatSessionId(sessionId)
-  }, [])
+  const handleSelectSession = useCallback(async (sessionId: string) => {
+    await setChatSessionId(sessionId)
+  }, [setChatSessionId])
 
   // Handler for creating a new session
   const handleCreateSession = useCallback(async () => {
@@ -87,13 +92,13 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
       contextType: "feature",
       contextId: TESTBED_SESSION_ID,
     })
-    setCurrentChatSessionId(newSession.id)
-  }, [studioChat])
+    await setChatSessionId(newSession.id)
+  }, [studioChat, setChatSessionId])
 
   // Sync from ChatPanel when it auto-creates a session
-  const handleChatSessionChange = useCallback((sessionId: string) => {
-    setCurrentChatSessionId(sessionId)
-  }, [])
+  const handleChatSessionChange = useCallback(async (sessionId: string) => {
+    await setChatSessionId(sessionId)
+  }, [setChatSessionId])
 
   // Handler for renaming a session
   const handleRenameSession = useCallback(async (sessionId: string, newName: string) => {
@@ -122,19 +127,24 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
         />
       </div>
 
-      {/* Chat Panel - fixed width on right */}
-      <div className="w-[400px] border-l flex-shrink-0 flex flex-col">
-        {/* Session Picker Header */}
-        <div className="px-3 py-2 border-b flex items-center justify-between bg-muted/30">
-          <span className="text-sm font-medium text-muted-foreground">Chat Sessions</span>
-          <ChatSessionPicker
-            sessions={testbedChatSessions}
-            currentSessionId={currentChatSessionId ?? undefined}
-            onSelect={handleSelectSession}
-            onCreate={handleCreateSession}
-            onRename={handleRenameSession}
-          />
-        </div>
+      {/* Chat Panel Container - dynamic width based on collapse state */}
+      <div className={cn(
+        "border-l flex-shrink-0 flex flex-col transition-all duration-200",
+        isChatCollapsed ? "w-16" : "w-[400px]"
+      )}>
+        {/* Session Picker Header - hide when collapsed */}
+        {!isChatCollapsed && (
+          <div className="px-3 py-2 border-b flex items-center justify-between bg-muted/30">
+            <span className="text-sm font-medium text-muted-foreground">Chat Sessions</span>
+            <ChatSessionPicker
+              sessions={testbedChatSessions}
+              currentSessionId={chatSessionId ?? undefined}
+              onSelect={handleSelectSession}
+              onCreate={handleCreateSession}
+              onRename={handleRenameSession}
+            />
+          </div>
+        )}
 
         {/* Chat Panel */}
         <div className="flex-1 min-h-0">
@@ -142,8 +152,10 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
             featureId={TESTBED_SESSION_ID}
             featureName="Advanced Chat Testbed"
             phase={null}
-            chatSessionId={currentChatSessionId}
+            chatSessionId={chatSessionId}
             onChatSessionChange={handleChatSessionChange}
+            isCollapsed={isChatCollapsed}
+            onCollapsedChange={setIsChatCollapsed}
           />
         </div>
       </div>
