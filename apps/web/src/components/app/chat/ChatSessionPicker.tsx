@@ -99,6 +99,8 @@ export function ChatSessionPicker({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Prevent Radix DropdownMenu typeahead navigation from intercepting keypresses
+    e.stopPropagation()
     if (e.key === "Enter" && editingSessionId && editValue.trim() && onRename) {
       onRename(editingSessionId, editValue.trim())
       setEditingSessionId(null)

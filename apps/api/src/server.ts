@@ -145,8 +145,9 @@ const virtualToolsServer = createSdkMcpServer({
         }
       }
     ),
-    // show_schema: Display a schema in the workspace (task-wpp)
-    // Client handler updates workspace Composition entity with DesignContainerSection
+    // DISABLED: v1 show_schema - replaced by v2 set_workspace
+    // Keeping for reference during v2 validation, will remove once v2 is confirmed
+    /*
     sdkTool(
       'show_schema',
       'Display a schema visualization in the advanced chat workspace. Use when user asks to see a schema like "show me the component-builder schema" or "display the platform-features schema".',
@@ -179,6 +180,7 @@ const virtualToolsServer = createSdkMcpServer({
         }
       }
     ),
+    */
     // set_workspace: Declaratively set workspace state (v2 architecture)
     // Client handler updates workspace Composition entity based on desired state
     // NOTE: Using z.any() for complex nested types to avoid SDK schema validation issues
@@ -273,7 +275,7 @@ const claudeCode = createClaudeCode({
     allowedTools: [
       // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
       'mcp__virtual-tools__navigate_to_phase',
-      'mcp__virtual-tools__show_schema',
+      // 'mcp__virtual-tools__show_schema',  // DISABLED: v1 replaced by v2 set_workspace
       'mcp__virtual-tools__set_workspace',
       'mcp__virtual-tools__execute',
       // File operations

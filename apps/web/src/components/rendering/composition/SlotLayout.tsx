@@ -204,7 +204,8 @@ function getGridColumnsClass(slots: SlotDefinition[]): string {
   // Basic 2-column layout - only apply if both left and right positions exist
   const hasLeft = positions.has("left")
   const hasRight = positions.has("right")
-  return hasLeft && hasRight ? "md:grid-cols-[1fr_300px]" : "grid-cols-1"
+  // Use equal 1fr columns for split view, creating a 50/50 split
+  return hasLeft && hasRight ? "md:grid-cols-2" : "grid-cols-1"
 }
 
 /**

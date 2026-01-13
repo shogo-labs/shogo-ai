@@ -415,6 +415,11 @@ export const ChatPanel = observer(function ChatPanel({
   const [isResizing, setIsResizing] = useState(false)
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
 
+  // Auto-scroll refs for messages container
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const isUserAtBottomRef = useRef(true)
+
   // Chat session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
 
@@ -1201,6 +1206,10 @@ export const ChatPanel = observer(function ChatPanel({
           content: msg.content,
         }))
         setMessages(aiMessages)
+        // Scroll to bottom after messages load - use setTimeout to ensure DOM has rendered
+        setTimeout(() => {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
+        }, 50)
       } else {
         setMessages([])
       }
@@ -1215,6 +1224,46 @@ export const ChatPanel = observer(function ChatPanel({
   useEffect(() => {
     onStreamingChange?.(isStreaming)
   }, [isStreaming, onStreamingChange])
+
+  // Auto-scroll to bottom when messages change or streaming updates
+  // Uses smooth scrolling during streaming, instant on first load
+  // Respects user scroll intent - won't auto-scroll if user scrolled up
+  const isFirstLoadRef = useRef(true)
+
+  // Reset first load flag when session changes to ensure scroll to bottom
+  useEffect(() => {
+    isFirstLoadRef.current = true
+    isUserAtBottomRef.current = true
+  }, [currentSessionId])
+
+  // Track scroll position to detect user scroll intent
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container
+      // Consider "at bottom" if within 100px of bottom
+      isUserAtBottomRef.current = scrollHeight - scrollTop - clientHeight < 100
+    }
+
+    container.addEventListener('scroll', handleScroll)
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [])
+
+  // Auto-scroll effect - respects user position
+  // Includes currentSessionId to trigger scroll when switching sessions
+  useEffect(() => {
+    // Only auto-scroll if user is at bottom (or first load)
+    if (messagesEndRef.current && (isFirstLoadRef.current || isUserAtBottomRef.current)) {
+      // Use requestAnimationFrame to ensure DOM is ready
+      requestAnimationFrame(() => {
+        const behavior = isFirstLoadRef.current ? 'instant' : 'smooth'
+        messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' })
+        isFirstLoadRef.current = false
+      })
+    }
+  }, [messages, isStreaming, currentSessionId])
 
   /**
    * Extract mediaType from a data URL.
@@ -1419,16 +1468,20 @@ export const ChatPanel = observer(function ChatPanel({
         />
 
         {/* Messages with Turn Grouping (task-chat-008) */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4">
           {messages.length > 0 ? (
-            <TurnList
-              messages={messages}
-              isStreaming={isStreaming}
-              phase={phase}
-              activeSubagents={Array.from(activeSubagents.values()) as SubagentProgressType[]}
-              recentTools={recentTools as RecentToolType[]}
-              subagentToolCalls={accumulatedSubagentTools}
-            />
+            <>
+              <TurnList
+                messages={messages}
+                isStreaming={isStreaming}
+                phase={phase}
+                activeSubagents={Array.from(activeSubagents.values()) as SubagentProgressType[]}
+                recentTools={recentTools as RecentToolType[]}
+                subagentToolCalls={accumulatedSubagentTools}
+              />
+              {/* Scroll anchor - invisible element at bottom for auto-scroll */}
+              <div ref={messagesEndRef} />
+            </>
           ) : !isStreaming ? (
             /* Phase-contextual empty state (task-chat-008) */
             <PhaseEmptyState
@@ -1457,6 +1510,8 @@ export const ChatPanel = observer(function ChatPanel({
                 <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.2s]" />
                 <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.4s]" />
               </div>
+              {/* Scroll anchor for loading state too */}
+              <div ref={messagesEndRef} />
             </div>
           )}
         </div>
