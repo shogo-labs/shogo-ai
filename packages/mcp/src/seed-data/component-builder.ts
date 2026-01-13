@@ -8,8 +8,8 @@
  * - COMPONENT_DEFINITIONS: 56 entries (display, visualization, section components)
  * - REGISTRIES: 2 entries (default, studio)
  * - RENDERER_BINDINGS: 32 entries (12 default + 20 studio)
- * - LAYOUT_TEMPLATES: 3 entries (layout-phase-two-column, layout-single-column, layout-two-column-compact)
- * - COMPOSITIONS: 7 entries (discovery, analysis, classification, design, spec, testing, implementation)
+ * - LAYOUT_TEMPLATES: 4 entries (layout-phase-two-column, layout-single-column, layout-two-column-compact, layout-workspace-flexible)
+ * - COMPOSITIONS: 8 entries (discovery, analysis, classification, design, spec, testing, implementation, workspace)
  *
  * All entities have proper id fields for idempotency checks.
  * TypeScript types match component-builder schema entity types.
@@ -693,6 +693,19 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     implementationRef: "LiveOutputTerminalSection",
     tags: ["section", "implementation-phase", "terminal"],
   },
+
+  // ---------------------------------------------------------------------------
+  // Workspace Section Components (1) - req-wpp-layout-refactor
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-workspace-blank-state-section",
+    name: "WorkspaceBlankStateSection",
+    category: "section",
+    description:
+      "Empty state displayed when workspace has no active content. Shows welcome message and guidance for using virtual tools. Replaced dynamically when show_schema or similar tools are invoked.",
+    implementationRef: "WorkspaceBlankStateSection",
+    tags: ["section", "workspace", "empty-state"],
+  },
 ]
 
 // =============================================================================
@@ -1086,6 +1099,15 @@ export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
     ],
     defaultBindings: {},
   },
+  // Workspace layout for advanced-chat dynamic workspace - task-wpp
+  {
+    id: "layout-workspace-flexible",
+    name: "layout-workspace-flexible",
+    description:
+      "Flexible single-slot layout for dynamic workspace composition. Content is controlled by virtual tools modifying the Composition entity. Supports future expansion to multi-slot layouts.",
+    slots: [{ name: "main", position: "center", required: false }],
+    defaultBindings: {},
+  },
 ]
 
 // =============================================================================
@@ -1218,5 +1240,20 @@ export const COMPOSITIONS: CompositionSeed[] = [
     ],
     dataContext: { phase: "implementation" },
     providerWrapper: "ImplementationPanelProvider",
+  },
+  // Workspace composition for advanced-chat - req-wpp-layout-refactor
+  // Pattern: Provider-wrapped with blank state that gets replaced by virtual tools
+  // Virtual tools (show_schema, etc.) replace slotContent to add actual sections
+  // MobX reactivity triggers re-render when Composition entity changes
+  {
+    id: "composition-workspace-blank",
+    name: "workspace",
+    layout: "layout-workspace-flexible",
+    slotContent: [
+      // Default blank state - replaced when virtual tools add actual content
+      { slot: "main", component: "comp-def-workspace-blank-state-section" },
+    ],
+    dataContext: { context: "workspace" },
+    providerWrapper: "WorkspaceProvider",
   },
 ]

@@ -162,15 +162,17 @@ export const studioChatDomain = domain({
 
         /**
          * Find session for specific feature and phase
+         * Note: null and undefined are treated as equivalent for phase matching
          */
-        findByFeatureAndPhase(featureId: string, phase: string): any {
+        findByFeatureAndPhase(featureId: string, phase: string | null | undefined): any {
           return self
             .all()
             .find(
               (s: any) =>
                 s.contextType === "feature" &&
                 s.contextId === featureId &&
-                s.phase === phase
+                // Treat null and undefined as equivalent for phase matching
+                (phase == null ? s.phase == null : s.phase === phase)
             ) ?? null
         },
 

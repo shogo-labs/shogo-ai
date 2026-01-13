@@ -50,6 +50,7 @@ export interface VirtualToolEvent {
  */
 export const VIRTUAL_TOOL_NAMES = [
   'navigate_to_phase',
+  'show_schema',
 ] as const
 
 export type VirtualToolName = typeof VIRTUAL_TOOL_NAMES[number]

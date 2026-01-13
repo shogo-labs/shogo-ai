@@ -4,12 +4,14 @@
  *
  * Renders a dropdown menu for selecting chat sessions.
  * Shows session name, message count, and relative time for each session.
- * Includes a "New Chat" option at the bottom.
+ * Includes a "New Chat" option at the bottom and optional rename functionality.
  */
 
 import * as React from "react"
+import { useState, useRef, useEffect } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,7 +19,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { ChevronDown, MessageSquare, Plus } from "lucide-react"
+import { ChevronDown, MessageSquare, Plus, Pencil, Check, X } from "lucide-react"
 
 export interface ChatSession {
   id: string
@@ -31,6 +33,8 @@ export interface ChatSessionPickerProps {
   currentSessionId?: string
   onSelect: (sessionId: string) => void
   onCreate: () => void
+  /** Optional callback to rename a session */
+  onRename?: (sessionId: string, newName: string) => void
 }
 
 /**
@@ -60,8 +64,48 @@ export function ChatSessionPicker({
   currentSessionId,
   onSelect,
   onCreate,
+  onRename,
 }: ChatSessionPickerProps) {
   const currentSession = sessions.find(s => s.id === currentSessionId)
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [editValue, setEditValue] = useState("")
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Focus input when editing starts
+  useEffect(() => {
+    if (editingSessionId && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [editingSessionId])
+
+  const handleStartEdit = (e: React.MouseEvent, session: ChatSession) => {
+    e.stopPropagation()
+    setEditingSessionId(session.id)
+    setEditValue(session.name)
+  }
+
+  const handleSaveEdit = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (editingSessionId && editValue.trim() && onRename) {
+      onRename(editingSessionId, editValue.trim())
+    }
+    setEditingSessionId(null)
+  }
+
+  const handleCancelEdit = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setEditingSessionId(null)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && editingSessionId && editValue.trim() && onRename) {
+      onRename(editingSessionId, editValue.trim())
+      setEditingSessionId(null)
+    } else if (e.key === "Escape") {
+      setEditingSessionId(null)
+    }
+  }
 
   return (
     <DropdownMenu>
@@ -81,28 +125,72 @@ export function ChatSessionPicker({
 
       <DropdownMenuContent
         data-testid="session-list"
-        align="start"
+        align="end"
         className="w-[280px]"
       >
         {sessions.map((session) => (
           <DropdownMenuItem
             key={session.id}
             data-session-id={session.id}
-            onClick={() => onSelect(session.id)}
+            onClick={() => editingSessionId !== session.id && onSelect(session.id)}
             className={cn(
               "flex flex-col items-start gap-1 cursor-pointer",
               session.id === currentSessionId && "bg-accent"
             )}
           >
-            <div className="flex items-center justify-between w-full">
-              <span className="font-medium truncate">{session.name}</span>
-              <span className="text-xs text-muted-foreground">
-                {formatRelativeTime(session.updatedAt)}
-              </span>
-            </div>
-            <span className="text-xs text-muted-foreground">
-              {session.messageCount} messages
-            </span>
+            {editingSessionId === session.id ? (
+              // Inline edit mode
+              <div className="flex items-center gap-1 w-full" onClick={(e) => e.stopPropagation()}>
+                <Input
+                  ref={inputRef}
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  className="h-7 text-sm flex-1"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={handleSaveEdit}
+                >
+                  <Check className="h-3 w-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={handleCancelEdit}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            ) : (
+              // Normal display mode
+              <>
+                <div className="flex items-center justify-between w-full">
+                  <span className="font-medium truncate flex-1">{session.name}</span>
+                  <div className="flex items-center gap-1">
+                    {onRename && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 opacity-0 group-hover:opacity-100 hover:opacity-100"
+                        onClick={(e) => handleStartEdit(e, session)}
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </Button>
+                    )}
+                    <span className="text-xs text-muted-foreground">
+                      {formatRelativeTime(session.updatedAt)}
+                    </span>
+                  </div>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {session.messageCount} messages
+                </span>
+              </>
+            )}
           </DropdownMenuItem>
         ))}
 

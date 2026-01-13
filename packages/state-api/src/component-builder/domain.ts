@@ -407,7 +407,6 @@ export const componentBuilderDomain = domain({
             layout: 0,
             section: 0,
             visualization: 0,
-            section: 0,
           }
           for (const c of self.componentDefinitionCollection.all()) {
             if (c.category in counts) {

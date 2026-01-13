@@ -4,7 +4,7 @@ import { streamText, createUIMessageStream, createUIMessageStreamResponse, type 
 import { z } from 'zod'
 import { EventEmitter } from 'events'
 import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
-import { isVirtualTool } from './types/progress'
+// isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
 import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
 import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-provider-claude-code'
 import { resolve } from 'path'
@@ -102,6 +102,40 @@ const virtualToolsServer = createSdkMcpServer({
         }
       }
     ),
+    // show_schema: Display a schema in the workspace (task-wpp)
+    // Client handler updates workspace Composition entity with DesignContainerSection
+    sdkTool(
+      'show_schema',
+      'Display a schema visualization in the advanced chat workspace. Use when user asks to see a schema like "show me the component-builder schema" or "display the platform-features schema".',
+      {
+        schemaName: z.string()
+          .describe('The name of the schema to display (e.g., "component-builder", "platform-features", "studio-core")'),
+        defaultTab: z.enum(['schema', 'decisions', 'hooks']).optional()
+          .describe('Initial tab to display (defaults to "schema")'),
+      },
+      async (args) => {
+        console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing show_schema:`, args)
+
+        // Emit event for client-side execution
+        // Client will update workspace Composition entity
+        const event: VirtualToolEvent = {
+          type: 'virtual-tool-execute',
+          toolUseId: `vt-${Date.now()}`,
+          toolName: 'show_schema',
+          args: args as Record<string, unknown>,
+          timestamp: Date.now(),
+        }
+        virtualToolEvents.emit('virtual-tool', event)
+        console.log(`${VT_LOG_PREFIX} ✅ Emitted show_schema virtual tool event`)
+
+        return {
+          content: [{
+            type: 'text',
+            text: `Displaying ${args.schemaName} schema in workspace`
+          }]
+        }
+      }
+    ),
   ]
 })
 
@@ -132,6 +166,7 @@ const claudeCode = createClaudeCode({
     allowedTools: [
       // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
       'mcp__virtual-tools__navigate_to_phase',
+      'mcp__virtual-tools__show_schema',
       // File operations
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
       // Skill and agent tools (required for /platform-feature-* skills)
@@ -195,49 +230,10 @@ const claudeCode = createClaudeCode({
     // Hooks for subagent progress streaming (task-subagent-progress-streaming)
     // and virtual tool interception (virtual-tools-domain Phase 0 PoC)
     hooks: {
-      // PreToolUse: Intercept virtual tool calls before they route to MCP
-      // Virtual tools are executed client-side, not via MCP
-      PreToolUse: [{
-        hooks: [async (rawInput: unknown) => {
-          const input = rawInput as PreToolUseHookInput
-          const toolName = input.tool_name
-
-          // Check if this is a virtual tool
-          if (isVirtualTool(toolName)) {
-            console.log(`${VT_LOG_PREFIX} 🎯 Intercepting virtual tool:`, {
-              toolName,
-              toolUseId: input.tool_use_id,
-              args: input.tool_input,
-            })
-
-            // Emit event for streaming to client
-            const event: VirtualToolEvent = {
-              type: 'virtual-tool-execute',
-              toolUseId: input.tool_use_id,
-              toolName,
-              args: input.tool_input as Record<string, unknown>,
-              timestamp: Date.now(),
-            }
-            virtualToolEvents.emit('virtual-tool', event)
-
-            // Return tool result immediately - don't route to MCP
-            // For navigate_to_phase, we acknowledge success
-            const result = toolName === 'navigate_to_phase'
-              ? `Navigation initiated to phase: ${(input.tool_input as any)?.phase ?? 'unknown'}`
-              : `Virtual tool ${toolName} executed successfully`
-
-            console.log(`${VT_LOG_PREFIX} ✅ Returning result:`, result)
-
-            return {
-              // Skip MCP execution - return our own result
-              toolResult: result,
-            }
-          }
-
-          // Not a virtual tool - continue to MCP
-          return { continue: true }
-        }]
-      }],
+      // PreToolUse: Currently unused - virtual tools handled via sdkTool()
+      // SDK tools (virtualToolsServer) are the single execution path for virtual tools.
+      // See: sdkTool('show_schema', ...) and sdkTool('navigate_to_phase', ...)
+      // Keeping hook structure for future non-virtual-tool interceptors if needed.
       SubagentStart: [{
         hooks: [async (rawInput: unknown) => {
           const input = rawInput as SubagentStartHookInput
@@ -350,10 +346,14 @@ You have access to the Wavesmith MCP server with these tools:
 - store_models - List available models in a schema
 - data_load, data_loadAll - Load data from persistence
 
-You also have access to virtual tools for UI navigation:
+You also have access to virtual tools for UI control:
 - navigate_to_phase: Navigate the user to a different pipeline phase
   Arguments: { phase: "discovery" | "analysis" | "classification" | "design" | "spec" | "testing" | "implementation" | "complete" }
   Example: When user says "take me to the design phase" or "let's move to implementation", call this tool.
+- show_schema: Display a schema visualization in the workspace
+  Arguments: { schemaName: string, defaultTab?: "schema" | "decisions" | "hooks" }
+  Example: When user says "show me the component-builder schema" or "display platform-features", call this tool.
+  This will render the schema graph and entity details in the workspace panel.
   
 Available schemas:
 - platform-features: Feature sessions, requirements, analysis findings, integration points, tasks, test specs

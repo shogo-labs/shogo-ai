@@ -117,6 +117,10 @@ export interface ChatPanelProps {
   onNavigateToPhase?: (phase: string) => void
   /** Callback to open a panel in workspace (task-testbed-chat-integration) */
   onOpenPanel?: (panel: WorkspacePanelData) => void
+  /** Optional explicit chat session ID (for session picker integration) */
+  chatSessionId?: string | null
+  /** Callback when chat session changes (for session picker integration) */
+  onChatSessionChange?: (sessionId: string) => void
 }
 
 // ============================================================
@@ -377,6 +381,8 @@ export const ChatPanel = observer(function ChatPanel({
   isPolling,
   onNavigateToPhase,
   onOpenPanel,
+  chatSessionId,
+  onChatSessionChange,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
@@ -402,11 +408,29 @@ export const ChatPanel = observer(function ChatPanel({
   // State updates are async, ref provides immediate access for append() calls
   const ccSessionIdRef = useRef<string | undefined>(undefined)
 
+  // Guard ref to prevent duplicate session creation (fixes race condition)
+  const sessionCreationInProgressRef = useRef<string | null>(null)
+
   // Find or create chat session for feature and phase (task-cpbi-005)
   // Session is uniquely identified by (featureId, phase) tuple
+  // If chatSessionId prop is provided, use it directly (for session picker integration)
   useEffect(() => {
+    // If explicit chatSessionId is provided, use it directly
+    if (chatSessionId !== undefined) {
+      setCurrentSessionId(chatSessionId)
+      return
+    }
+
     if (!featureId) {
       setCurrentSessionId(null)
+      return
+    }
+
+    // Create a key for this feature+phase combo to track creation in progress
+    const sessionKey = `${featureId}:${phase ?? 'null'}`
+
+    // Guard: if we're already creating a session for this key, skip
+    if (sessionCreationInProgressRef.current === sessionKey) {
       return
     }
 
@@ -416,28 +440,43 @@ export const ChatPanel = observer(function ChatPanel({
       const existingSession = studioChat.chatSessionCollection.findByFeatureAndPhase?.(featureId, phase)
       if (existingSession) {
         setCurrentSessionId(existingSession.id)
-      } else if (phase) {
-        // Auto-create session with phase (async per task-cpbi-002)
-        const newSession = await studioChat.createChatSession({
-          inferredName: `${featureName || featureId} - ${phase}`,
-          contextType: "feature",
-          contextId: featureId,
-          phase: phase,
-        })
-        setCurrentSessionId(newSession.id)
-      } else {
-        // No phase provided, create session without phase
-        const newSession = await studioChat.createChatSession({
-          inferredName: featureName || `Chat for ${featureId}`,
-          contextType: "feature",
-          contextId: featureId,
-        })
-        setCurrentSessionId(newSession.id)
+        onChatSessionChange?.(existingSession.id)
+        return
+      }
+
+      // Mark creation in progress BEFORE async operation
+      sessionCreationInProgressRef.current = sessionKey
+
+      try {
+        if (phase) {
+          // Auto-create session with phase (async per task-cpbi-002)
+          const newSession = await studioChat.createChatSession({
+            inferredName: `${featureName || featureId} - ${phase}`,
+            contextType: "feature",
+            contextId: featureId,
+            phase: phase,
+          })
+          setCurrentSessionId(newSession.id)
+          onChatSessionChange?.(newSession.id)
+        } else {
+          // No phase provided, create session without phase
+          const newSession = await studioChat.createChatSession({
+            inferredName: featureName || `Chat for ${featureId}`,
+            contextType: "feature",
+            contextId: featureId,
+          })
+          setCurrentSessionId(newSession.id)
+          onChatSessionChange?.(newSession.id)
+        }
+      } finally {
+        // Clear the guard after creation completes
+        sessionCreationInProgressRef.current = null
       }
     }
 
     loadOrCreateSession()
-  }, [featureId, featureName, phase, studioChat])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [featureId, featureName, phase, chatSessionId])
 
   // Get current session
   const currentSession = currentSessionId
@@ -502,7 +541,7 @@ export const ChatPanel = observer(function ChatPanel({
     // Server sends: { type: 'data-virtual-tool', id: string, data: VirtualToolEvent }
     // Session ID comes via message-metadata (handled in onFinish)
     // See: https://ai-sdk.dev/docs/ai-sdk-ui/streaming-data
-    onData: (dataPart) => {
+    onData: async (dataPart) => {
       console.log('[ChatPanel:onData] Received data part:', dataPart.type, dataPart)
 
       // Handle virtual tool events (virtual-tools-domain Phase 0 PoC)
@@ -543,6 +582,77 @@ export const ChatPanel = observer(function ChatPanel({
             })
           } else {
             console.warn('[ChatPanel:VirtualTool] ⚠️ open_panel called but no onOpenPanel callback provided')
+          }
+        } else if (event.toolName === 'show_schema') {
+          // req-wpp-show-schema-tool: Handle show_schema virtual tool
+          // Updates workspace Composition to display DesignContainerSection with the requested schema
+          const schemaName = event.args?.schemaName as string
+          const defaultTab = event.args?.defaultTab as string || 'schema'
+
+          if (!schemaName) {
+            console.warn('[ChatPanel:VirtualTool] ⚠️ show_schema called without schemaName')
+            return
+          }
+
+          console.log('[ChatPanel:VirtualTool] 📊 Showing schema:', schemaName, 'defaultTab:', defaultTab)
+
+          try {
+            // 1. Update the feature session's schemaName (DesignContainerSection reads from feature.schemaName)
+            // MST requires updates through collection methods, not direct property mutation
+            if (featureId && platformFeatures?.featureSessionCollection) {
+              await platformFeatures.featureSessionCollection.updateOne(featureId, {
+                schemaName: schemaName
+              })
+              console.log('[ChatPanel:VirtualTool] ✅ Updated session schemaName:', schemaName)
+            }
+
+            // 2. Update workspace Composition's slotContent to include DesignContainerSection
+            // This replaces the blank state with the schema display section
+            if (componentBuilder?.compositionCollection) {
+              const workspaceComposition = componentBuilder.compositionCollection.findByName?.('workspace')
+              if (workspaceComposition) {
+                // Check if DesignContainerSection is already in slotContent (by component ref)
+                const currentSlotContent = workspaceComposition.slotContent || []
+                const hasDesignSection = currentSlotContent.some?.(
+                  (slot: any) => slot.component === 'comp-design-container' ||
+                                 slot.sectionRef === 'DesignContainerSection'
+                )
+
+                if (!hasDesignSection) {
+                  // Replace all current content (including blank state) with DesignContainerSection
+                  // Using component reference format to match seed data pattern
+                  const newSlotContent = [
+                    {
+                      slot: 'main',
+                      component: 'comp-design-container',
+                      config: { defaultTab, expandGraph: true }
+                    }
+                  ]
+                  // MST requires updates through collection.updateOne, not direct property mutation
+                  await componentBuilder.compositionCollection.updateOne(workspaceComposition.id, {
+                    slotContent: newSlotContent
+                  })
+                  console.log('[ChatPanel:VirtualTool] ✅ Replaced workspace content with DesignContainerSection')
+                } else {
+                  // Update existing section's config
+                  const updatedSlotContent = currentSlotContent.map?.((slot: any) => {
+                    if (slot.component === 'comp-design-container' ||
+                        slot.sectionRef === 'DesignContainerSection') {
+                      return { ...slot, config: { ...slot.config, defaultTab } }
+                    }
+                    return slot
+                  })
+                  await componentBuilder.compositionCollection.updateOne(workspaceComposition.id, {
+                    slotContent: updatedSlotContent
+                  })
+                  console.log('[ChatPanel:VirtualTool] ✅ Updated DesignContainerSection config')
+                }
+              } else {
+                console.warn('[ChatPanel:VirtualTool] ⚠️ workspace Composition not found')
+              }
+            }
+          } catch (err) {
+            console.error('[ChatPanel:VirtualTool] ❌ Error handling show_schema:', err)
           }
         } else {
           console.warn('[ChatPanel:VirtualTool] ⚠️ Unknown virtual tool:', event.toolName)
@@ -593,17 +703,20 @@ export const ChatPanel = observer(function ChatPanel({
             return updated
           })
           // Accumulate for timeline persistence (task-chat-ux-fix)
-          // These persist even after streaming ends for display in ToolTimeline
-          setAccumulatedSubagentTools((prev) => [
-            ...prev,
-            {
-              id: event.toolUseId,
-              toolName: event.toolName,
-              category: getToolCategoryFromTools(event.toolName),
-              state: "success" as const,
-              timestamp: event.timestamp,
-            },
-          ])
+          // Deduplicate to prevent React key collisions when same event processed multiple times
+          setAccumulatedSubagentTools((prev) => {
+            if (prev.some(t => t.id === event.toolUseId)) return prev
+            return [
+              ...prev,
+              {
+                id: event.toolUseId,
+                toolName: event.toolName,
+                category: getToolCategoryFromTools(event.toolName),
+                state: "success" as const,
+                timestamp: event.timestamp,
+              },
+            ]
+          })
           // Increment tool count on all running subagents
           setActiveSubagents((prev) => {
             const next = new Map(prev)
@@ -853,17 +966,20 @@ export const ChatPanel = observer(function ChatPanel({
             return updated
           })
           // Accumulate for timeline persistence (task-chat-ux-fix)
-          // These persist even after streaming ends for display in ToolTimeline
-          setAccumulatedSubagentTools((prev) => [
-            ...prev,
-            {
-              id: event.toolUseId,
-              toolName: event.toolName,
-              category: getToolCategoryFromTools(event.toolName),
-              state: "success" as const,
-              timestamp: event.timestamp,
-            },
-          ])
+          // Deduplicate to prevent React key collisions when same event processed multiple times
+          setAccumulatedSubagentTools((prev) => {
+            if (prev.some(t => t.id === event.toolUseId)) return prev
+            return [
+              ...prev,
+              {
+                id: event.toolUseId,
+                toolName: event.toolName,
+                category: getToolCategoryFromTools(event.toolName),
+                state: "success" as const,
+                timestamp: event.timestamp,
+              },
+            ]
+          })
           // Increment tool count on all running subagents
           setActiveSubagents((prev) => {
             const next = new Map(prev)
@@ -949,6 +1065,9 @@ export const ChatPanel = observer(function ChatPanel({
   }, [isStreaming])
 
   // Load persisted messages when session changes
+  // Note: chatMessageCollection is a MobX observable - do NOT include it in deps array
+  // as that causes re-runs whenever messages are added/removed, resetting the UI state.
+  // This effect should only run when the SESSION changes (on mount or session switch).
   useEffect(() => {
     if (currentSessionId) {
       const persistedMessages = studioChat.chatMessageCollection.findBySession?.(currentSessionId) ?? []
@@ -965,7 +1084,8 @@ export const ChatPanel = observer(function ChatPanel({
     } else {
       setMessages([])
     }
-  }, [currentSessionId, studioChat.chatMessageCollection, setMessages])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSessionId, setMessages])
 
   // Notify parent of streaming state changes (task-3-1-007)
   // This allows WorkspaceLayout to pause polling during active streaming

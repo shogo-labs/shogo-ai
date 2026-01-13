@@ -53,6 +53,8 @@ import {
   TaskExecutionTimelineSection,
   LiveOutputTerminalSection,
 } from "./sections/implementation"
+// Workspace sections
+import { WorkspaceBlankStateSection } from "./sections/workspace/WorkspaceBlankStateSection"
 
 // Re-export SectionRendererProps from types.ts to avoid circular dependencies
 // (Analysis section components import from types.ts, not from this file)
@@ -122,6 +124,8 @@ export const sectionImplementationMap = new Map<
   ["ProgressDashboardSection", ProgressDashboardSection],
   ["TaskExecutionTimelineSection", TaskExecutionTimelineSection],
   ["LiveOutputTerminalSection", LiveOutputTerminalSection],
+  // Workspace sections
+  ["WorkspaceBlankStateSection", WorkspaceBlankStateSection],
 ])
 
 /**
