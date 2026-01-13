@@ -17,13 +17,15 @@ import { Pool } from "pg"
 
 // Port configuration from environment
 const API_PORT = process.env.API_PORT || "8002"
+const VITE_PORT = process.env.VITE_PORT || "3000"
 
 // Base URL for Better Auth - use BETTER_AUTH_URL in production, localhost in dev
+// In dev with proxy setup, use VITE_PORT so OAuth callbacks route through the frontend proxy
 const getBaseURL = (): string => {
   if (process.env.BETTER_AUTH_URL) {
     return process.env.BETTER_AUTH_URL
   }
-  return `http://localhost:${API_PORT}`
+  return `http://localhost:${VITE_PORT}`
 }
 
 // CORS origins from environment - supports comma-separated list
@@ -33,8 +35,8 @@ const getAllowedOrigins = (): string[] => {
   if (envOrigins) {
     return envOrigins.split(',').map(o => o.trim())
   }
-  // Default: localhost only (dev mode)
-  return [`http://localhost:${API_PORT}`]
+  // Default: localhost only (dev mode) - use VITE_PORT since requests originate from frontend
+  return [`http://localhost:${VITE_PORT}`]
 }
 
 export const auth = betterAuth({
