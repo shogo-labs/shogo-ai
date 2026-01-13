@@ -179,6 +179,70 @@ const virtualToolsServer = createSdkMcpServer({
         }
       }
     ),
+    // set_workspace: Declaratively set workspace state (v2 architecture)
+    // Client handler updates workspace Composition entity based on desired state
+    // NOTE: Using z.any() for complex nested types to avoid SDK schema validation issues
+    sdkTool(
+      'set_workspace',
+      'Set the workspace to a desired state. Describe what panels should be visible and how configured. Use for showing schemas, splitting layouts, or any workspace changes. Each panel has: slot (string: "main", "left", "right", "sidebar"), section (string: "DesignContainerSection", "WorkspaceBlankStateSection"), and optional config object (e.g., { schemaName: "platform-features" }).',
+      {
+        layout: z.enum(['single', 'split-h', 'split-v']).optional()
+          .describe('Layout mode for the workspace'),
+        panels: z.array(z.any())
+          .describe('Array of panel objects with slot, section, and optional config'),
+      },
+      async (args) => {
+        console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing set_workspace:`, args)
+
+        const event: VirtualToolEvent = {
+          type: 'virtual-tool-execute',
+          toolUseId: `vt-${Date.now()}`,
+          toolName: 'set_workspace',
+          args: args as Record<string, unknown>,
+          timestamp: Date.now(),
+        }
+        virtualToolEvents.emit('virtual-tool', event)
+        console.log(`${VT_LOG_PREFIX} ✅ Emitted set_workspace virtual tool event`)
+
+        return {
+          content: [{
+            type: 'text',
+            text: `Workspace updated with ${args.panels?.length ?? 0} panel(s)`
+          }]
+        }
+      }
+    ),
+    // execute: Generic domain operations (v2 architecture)
+    // Client handler executes state operations across domain stores
+    // NOTE: Using z.any() for complex nested types to avoid SDK schema validation issues
+    sdkTool(
+      'execute',
+      'Execute state operations on the client. Use for creating/updating/deleting entities across domains. Each operation has: domain ("component-builder"|"studio-chat"|"platform-features"), action ("create"|"update"|"delete"), model (string like "Composition", "FeatureSession"), optional id (required for update/delete), and data object.',
+      {
+        operations: z.array(z.any())
+          .describe('Array of operation objects with domain, action, model, optional id, and data'),
+      },
+      async (args) => {
+        console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing execute:`, args)
+
+        const event: VirtualToolEvent = {
+          type: 'virtual-tool-execute',
+          toolUseId: `vt-${Date.now()}`,
+          toolName: 'execute',
+          args: args as Record<string, unknown>,
+          timestamp: Date.now(),
+        }
+        virtualToolEvents.emit('virtual-tool', event)
+        console.log(`${VT_LOG_PREFIX} ✅ Emitted execute virtual tool event`)
+
+        return {
+          content: [{
+            type: 'text',
+            text: `Executed ${args.operations?.length ?? 0} operation(s)`
+          }]
+        }
+      }
+    ),
   ]
 })
 
@@ -210,6 +274,8 @@ const claudeCode = createClaudeCode({
       // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
       'mcp__virtual-tools__navigate_to_phase',
       'mcp__virtual-tools__show_schema',
+      'mcp__virtual-tools__set_workspace',
+      'mcp__virtual-tools__execute',
       // File operations
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
       // Skill and agent tools (required for /platform-feature-* skills)
@@ -393,11 +459,22 @@ You also have access to virtual tools for UI control:
 - navigate_to_phase: Navigate the user to a different pipeline phase
   Arguments: { phase: "discovery" | "analysis" | "classification" | "design" | "spec" | "testing" | "implementation" | "complete" }
   Example: When user says "take me to the design phase" or "let's move to implementation", call this tool.
-- show_schema: Display a schema visualization in the workspace
+- show_schema: Display a schema visualization in the workspace (v1 - prefer set_workspace)
   Arguments: { schemaName: string, defaultTab?: "schema" | "decisions" | "hooks" }
   Example: When user says "show me the component-builder schema" or "display platform-features", call this tool.
   This will render the schema graph and entity details in the workspace panel.
-  
+
+- set_workspace: Declaratively set workspace state (v2 - preferred)
+  Arguments: { layout?: "single"|"split-h"|"split-v", panels: [{ slot, section, config? }] }
+  Example: set_workspace({ panels: [{ slot: "main", section: "DesignContainerSection", config: { schemaName: "platform-features" } }] })
+  Use this to show schemas, change layouts, or display any combination of panels.
+  Available sections: DesignContainerSection, WorkspaceBlankStateSection
+
+- execute: Run domain operations on client state
+  Arguments: { operations: [{ domain, action, model, id?, data }] }
+  Example: execute({ operations: [{ domain: "platform-features", action: "update", model: "FeatureSession", id: "...", data: { status: "design" } }] })
+  Use for creating/updating/deleting entities. Domains: component-builder, studio-chat, platform-features
+
 Available schemas:
 - platform-features: Feature sessions, requirements, analysis findings, integration points, tasks, test specs
 - component-builder: UI composition system - ComponentDefinition, Composition, LayoutTemplate, Registry, RendererBinding

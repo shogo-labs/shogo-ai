@@ -8,7 +8,7 @@
  * - COMPONENT_DEFINITIONS: 56 entries (display, visualization, section components)
  * - REGISTRIES: 2 entries (default, studio)
  * - RENDERER_BINDINGS: 32 entries (12 default + 20 studio)
- * - LAYOUT_TEMPLATES: 4 entries (layout-phase-two-column, layout-single-column, layout-two-column-compact, layout-workspace-flexible)
+ * - LAYOUT_TEMPLATES: 6 entries (layout-phase-two-column, layout-single-column, layout-two-column-compact, layout-workspace-flexible, layout-workspace-split-h, layout-workspace-split-v)
  * - COMPOSITIONS: 8 entries (discovery, analysis, classification, design, spec, testing, implementation, workspace)
  *
  * All entities have proper id fields for idempotency checks.
@@ -1106,6 +1106,30 @@ export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
     description:
       "Flexible single-slot layout for dynamic workspace composition. Content is controlled by virtual tools modifying the Composition entity. Supports future expansion to multi-slot layouts.",
     slots: [{ name: "main", position: "center", required: false }],
+    defaultBindings: {},
+  },
+  // Horizontal split workspace layout for v2 virtual tools
+  {
+    id: "layout-workspace-split-h",
+    name: "layout-workspace-split-h",
+    description:
+      "Horizontal split layout for workspace with left and right panels. Used by set_workspace virtual tool for side-by-side views.",
+    slots: [
+      { name: "left", position: "left", required: false },
+      { name: "right", position: "right", required: false },
+    ],
+    defaultBindings: {},
+  },
+  // Vertical split workspace layout for v2 virtual tools
+  {
+    id: "layout-workspace-split-v",
+    name: "layout-workspace-split-v",
+    description:
+      "Vertical split layout for workspace with top and bottom panels. Used by set_workspace virtual tool for stacked views.",
+    slots: [
+      { name: "top", position: "top", required: false },
+      { name: "bottom", position: "bottom", required: false },
+    ],
     defaultBindings: {},
   },
 ]

@@ -68,9 +68,9 @@ interface DesignContainerConfig {
 
   /**
    * Whether to allow the graph to expand to fill available vertical space.
-   * When true, removes min-height constraint and uses flex-1.
-   * When false (default), uses graphMinHeight for consistent sizing.
-   * Default: false
+   * When true (default), removes min-height constraint and uses flex-1.
+   * When false, uses graphMinHeight for consistent sizing.
+   * Default: true
    */
   expandGraph?: boolean
 
@@ -427,7 +427,7 @@ export const DesignContainerSection = observer(function DesignContainerSection({
   // These options can be modified via MCP store.update to change UI behavior
   const designConfig = (config as DesignContainerConfig) ?? {}
   const defaultTab = designConfig.defaultTab ?? "schema"
-  const expandGraph = designConfig.expandGraph ?? false
+  const expandGraph = designConfig.expandGraph ?? true
   const showStatistics = designConfig.showStatistics ?? true
   const showLegend = designConfig.showLegend ?? true
   const graphMinHeight = designConfig.graphMinHeight ?? 400

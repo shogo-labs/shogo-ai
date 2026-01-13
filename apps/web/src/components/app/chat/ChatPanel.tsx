@@ -72,6 +72,24 @@ interface RecentToolCall {
   timestamp: number
 }
 
+// ============================================================
+// Virtual Tool v2 Mappings
+// ============================================================
+
+// Map section names (from set_workspace) to component-builder IDs
+const SECTION_TO_COMPONENT: Record<string, string> = {
+  'DesignContainerSection': 'comp-design-container',
+  'WorkspaceBlankStateSection': 'comp-workspace-blank-state',
+  // Add more as sections are registered
+}
+
+// Map layout names to layout template IDs
+const LAYOUT_TO_TEMPLATE: Record<string, string> = {
+  'single': 'layout-workspace-flexible',
+  'split-h': 'layout-workspace-split-h',
+  'split-v': 'layout-workspace-split-v',
+}
+
 // Helper to format tool names for display
 function formatToolName(name: string): string {
   // Handle MCP tool names: mcp__wavesmith__store_query -> wavesmith.store_query
@@ -653,6 +671,111 @@ export const ChatPanel = observer(function ChatPanel({
             }
           } catch (err) {
             console.error('[ChatPanel:VirtualTool] ❌ Error handling show_schema:', err)
+          }
+        } else if (event.toolName === 'set_workspace') {
+          // v2 architecture: Declarative workspace state
+          // Sets workspace Composition to desired state based on panels array
+          console.log('[ChatPanel:VirtualTool] 🏗️ Setting workspace state:', event.args)
+
+          const args = event.args as {
+            layout?: string
+            panels?: Array<{ slot: string; section: string; config?: Record<string, unknown> }>
+          }
+
+          try {
+            // Handle schemaName in config - DesignContainerSection reads from FeatureSession
+            // This maintains compatibility with existing section components
+            for (const panel of args.panels ?? []) {
+              if (panel.config?.schemaName && featureId) {
+                await platformFeatures?.featureSessionCollection?.updateOne(featureId, {
+                  schemaName: panel.config.schemaName as string
+                })
+                console.log('[ChatPanel:VirtualTool] ✅ Updated session schemaName:', panel.config.schemaName)
+              }
+            }
+
+            // Build slotContent from panels
+            const slotContent = (args.panels ?? []).map(panel => ({
+              slot: panel.slot,
+              component: SECTION_TO_COMPONENT[panel.section] ?? panel.section,
+              config: panel.config ?? {},
+            }))
+
+            // Update composition
+            if (componentBuilder?.compositionCollection) {
+              const workspaceComposition = componentBuilder.compositionCollection.findByName?.('workspace')
+              if (workspaceComposition) {
+                const updates: Record<string, unknown> = { slotContent }
+                if (args.layout && LAYOUT_TO_TEMPLATE[args.layout]) {
+                  updates.layout = LAYOUT_TO_TEMPLATE[args.layout]
+                }
+                await componentBuilder.compositionCollection.updateOne(workspaceComposition.id, updates)
+                console.log('[ChatPanel:VirtualTool] ✅ Workspace updated via set_workspace')
+              } else {
+                console.warn('[ChatPanel:VirtualTool] ⚠️ workspace Composition not found')
+              }
+            }
+          } catch (err) {
+            console.error('[ChatPanel:VirtualTool] ❌ Error handling set_workspace:', err)
+          }
+        } else if (event.toolName === 'execute') {
+          // v2 architecture: Generic domain operations
+          // Executes state operations across domain stores
+          console.log('[ChatPanel:VirtualTool] ⚡ Executing operations:', event.args)
+
+          const args = event.args as {
+            operations?: Array<{
+              domain: string
+              action: 'create' | 'update' | 'delete'
+              model: string
+              id?: string
+              data: Record<string, unknown>
+            }>
+          }
+
+          const domains: Record<string, any> = {
+            'component-builder': componentBuilder,
+            'studio-chat': studioChat,
+            'platform-features': platformFeatures,
+          }
+
+          for (const op of args.operations ?? []) {
+            try {
+              const store = domains[op.domain]
+              if (!store) {
+                console.warn(`[ChatPanel:VirtualTool] ⚠️ Unknown domain: ${op.domain}`)
+                continue
+              }
+
+              // Get collection by model name (e.g., "Composition" -> compositionCollection)
+              const collectionName = `${op.model.charAt(0).toLowerCase()}${op.model.slice(1)}Collection`
+              const collection = store[collectionName]
+              if (!collection) {
+                console.warn(`[ChatPanel:VirtualTool] ⚠️ Unknown collection: ${collectionName}`)
+                continue
+              }
+
+              switch (op.action) {
+                case 'create':
+                  await collection.insertOne(op.data)
+                  console.log(`[ChatPanel:VirtualTool] ✅ Created: ${op.domain}.${op.model}`)
+                  break
+                case 'update':
+                  if (op.id) {
+                    await collection.updateOne(op.id, op.data)
+                    console.log(`[ChatPanel:VirtualTool] ✅ Updated: ${op.domain}.${op.model} id=${op.id}`)
+                  }
+                  break
+                case 'delete':
+                  if (op.id) {
+                    await collection.deleteOne(op.id)
+                    console.log(`[ChatPanel:VirtualTool] ✅ Deleted: ${op.domain}.${op.model} id=${op.id}`)
+                  }
+                  break
+              }
+            } catch (err) {
+              console.error(`[ChatPanel:VirtualTool] ❌ Error executing ${op.action} on ${op.domain}.${op.model}:`, err)
+            }
           }
         } else {
           console.warn('[ChatPanel:VirtualTool] ⚠️ Unknown virtual tool:', event.toolName)
