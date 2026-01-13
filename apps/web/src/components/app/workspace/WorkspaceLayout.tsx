@@ -69,7 +69,7 @@ import type { PollableDomain } from "@/hooks/useFeaturePolling"
 
 // PERF FIX: Stable array reference for polling domains.
 // Inline arrays create new references on every render, causing useCallback deps to change.
-const POLLING_DOMAINS: PollableDomain[] = ["platformFeatures"]
+const POLLING_DOMAINS: PollableDomain[] = ["platformFeatures", "componentBuilder"]
 
 /**
  * WorkspaceLayout component
@@ -230,10 +230,11 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
         </div>
       </aside>
 
-      {/* Content area - flexible width with padding and scroll */}
+      {/* Content area - flexible width, full-width layout (task-testbed-full-width) */}
       {/* When feature selected: flex row layout, ChatPanel handles internal side-by-side */}
+      {/* NOTE: p-6 padding removed to enable full-width content for both /app and /app/advanced-chat */}
       <div
-        className={`flex-1 min-w-0 overflow-hidden p-6 ${featureId ? "flex" : ""}`}
+        className={`flex-1 min-w-0 overflow-hidden ${featureId ? "flex" : ""}`}
         data-testid="workspace-content"
       >
         {featureId && currentFeature ? (

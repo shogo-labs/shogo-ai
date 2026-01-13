@@ -385,11 +385,19 @@ describe("Component Builder Domain - Micro Test", () => {
       expect(registry.id).toBe("reg-default")
     })
 
-    test("defaultRegistry returns Default Registry", () => {
+    test("defaultRegistry returns default registry (looks for 'studio' or 'default' name)", () => {
+      // Add a registry with name "default" which defaultRegistry looks for
+      store.registryCollection.add({
+        id: "reg-actual-default",
+        name: "default",
+        createdAt: Date.now(),
+      })
+
       const registry = store.registryCollection.defaultRegistry
 
       expect(registry).toBeDefined()
-      expect(registry.id).toBe("reg-default")
+      expect(registry.name).toBe("default")
+      expect(registry.id).toBe("reg-actual-default")
     })
   })
 

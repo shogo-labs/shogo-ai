@@ -669,8 +669,9 @@ describe("test-cc-int-005: ChatPanel passes ccSessionId via append options", () 
     const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
     const source = fs.readFileSync(componentPath, "utf-8")
 
-    // v3 API: sendMessage({ text }, { body: { ... } })
-    expect(source).toMatch(/sendMessage\s*\(\s*\{[\s\S]*\}\s*,\s*\{[\s\S]*body\s*:/)
+    // v3 API: sendMessage(payload, { body: { ... } })
+    // Payload can be inline object or variable name (messagePayload)
+    expect(source).toMatch(/sendMessage\s*\(\s*[\w{][\s\S]*,\s*\{[\s\S]*body\s*:/)
   })
 
   test("body in sendMessage uses ccSessionIdRef.current (not state)", () => {
@@ -804,8 +805,9 @@ describe("test-cpbi-005-d: sendMessage options include featureId and phase for A
     const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
     const source = fs.readFileSync(componentPath, "utf-8")
 
-    // v3 API: sendMessage({ text }, { body: { ... } })
-    expect(source).toMatch(/sendMessage\s*\(\s*\{[\s\S]*\}\s*,\s*\{[\s\S]*body\s*:/)
+    // v3 API: sendMessage(payload, { body: { ... } })
+    // Payload can be inline object or variable name (messagePayload)
+    expect(source).toMatch(/sendMessage\s*\(\s*[\w{][\s\S]*,\s*\{[\s\S]*body\s*:/)
   })
 
   test("body in sendMessage includes featureId", () => {
@@ -947,8 +949,9 @@ describe("AI SDK v3 API Migration (chat-session-sync-fix)", () => {
       const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
       const source = fs.readFileSync(componentPath, "utf-8")
 
-      // v3 pattern: sendMessage({ text }, { body: { ccSessionId, featureId, phase } })
-      expect(source).toMatch(/sendMessage\s*\(\s*\{[\s\S]*\}\s*,\s*\{[\s\S]*body\s*:/)
+      // v3 pattern: sendMessage(payload, { body: { ccSessionId, featureId, phase } })
+      // Payload can be inline object or variable name (messagePayload)
+      expect(source).toMatch(/sendMessage\s*\(\s*[\w{][\s\S]*,\s*\{[\s\S]*body\s*:/)
     })
 
     test("Body includes ccSessionIdRef.current", () => {
@@ -1004,5 +1007,70 @@ describe("task-css-cleanup-markers: Marker extraction code removed", () => {
 
     // Should NOT have any CC_SESSION references
     expect(source).not.toMatch(/CC_SESSION/)
+  })
+})
+
+// ============================================================
+// Task: task-chatpanel-sendmessage - Image attachment support in handleSendMessage
+// ============================================================
+
+describe("task-chatpanel-sendmessage: handleSendMessage accepts imageData", () => {
+  test("handleSendMessage accepts optional imageData parameter", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // handleSendMessage should accept imageData as second parameter
+    // Pattern like: handleSendMessage(content: string, imageData?: string)
+    // or handleSendMessage = async (content: string, imageData?: string)
+    expect(source).toMatch(/handleSendMessage[\s\S]*imageData/)
+  })
+
+  test("handleInputSubmit passes imageData from ChatInput to handleSendMessage", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // handleInputSubmit should accept and forward imageData
+    expect(source).toMatch(/handleInputSubmit[\s\S]*imageData/)
+  })
+})
+
+describe("task-chatpanel-sendmessage: FileUIPart construction when image attached", () => {
+  test("sendMessage is called with files array when imageData provided", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // When imageData is present, should have files in messagePayload
+    // Pattern: messagePayload.files = [ or files?: Array
+    expect(source).toMatch(/\.files\s*=\s*\[|files\??\s*:\s*Array/)
+  })
+
+  test("FileUIPart has correct structure (type, mediaType, url)", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // FileUIPart should have type: 'file'
+    expect(source).toMatch(/type\s*:\s*['"]file['"]/)
+    // Should reference mediaType
+    expect(source).toMatch(/mediaType/)
+  })
+
+  test("mediaType is extracted from data URL prefix", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // Should have extractMediaType function that parses data URL
+    expect(source).toMatch(/extractMediaType/)
+    // Should have a regex pattern to extract data URL mediaType
+    expect(source).toMatch(/\^data:/)
+  })
+})
+
+describe("task-chatpanel-sendmessage: studioChat.addMessage called with imageData", () => {
+  test("addMessage is called with imageData parameter when present", () => {
+    const componentPath = path.resolve(import.meta.dir, "../ChatPanel.tsx")
+    const source = fs.readFileSync(componentPath, "utf-8")
+
+    // addMessage call should include imageData
+    expect(source).toMatch(/addMessage\s*\(\s*\{[\s\S]*imageData/)
   })
 })

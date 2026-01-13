@@ -42,6 +42,8 @@ export interface ColumnDef {
   defaultValue?: string
   /** Optional CHECK constraint SQL clause */
   checkConstraint?: string
+  /** Optional enum values for CHECK constraint generation */
+  enumValues?: string[]
 }
 
 /**

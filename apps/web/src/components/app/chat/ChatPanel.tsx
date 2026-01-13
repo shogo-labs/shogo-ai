@@ -32,7 +32,7 @@ import { ChatContextProvider, type ChatContextValue } from "./ChatContext"
 // Chat Panel UX Redesign - New component imports (task-chat-008)
 import { TurnList } from "./turns"
 import { PhaseEmptyState } from "./empty"
-import type { SubagentProgress as SubagentProgressType, RecentTool as RecentToolType } from "./subagent"
+import { SubagentPanel, type SubagentProgress as SubagentProgressType, type RecentTool as RecentToolType } from "./subagent"
 import { type ToolCallData, getToolCategory as getToolCategoryFromTools } from "./tools/types"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -48,6 +48,15 @@ type SubagentProgressEvent =
   | { type: 'subagent-stop'; agentId: string; timestamp: number }
   | { type: 'tool-complete'; toolName: string; toolUseId: string; timestamp: number }
 
+// Virtual tool event type from server (virtual-tools-domain Phase 0 PoC)
+interface VirtualToolEvent {
+  type: 'virtual-tool-execute'
+  toolUseId: string
+  toolName: string
+  args: Record<string, unknown>
+  timestamp: number
+}
+
 interface SubagentProgress {
   agentId: string
   agentType: string
@@ -61,6 +70,24 @@ interface RecentToolCall {
   id: string
   toolName: string
   timestamp: number
+}
+
+// ============================================================
+// Virtual Tool v2 Mappings
+// ============================================================
+
+// Map section names (from set_workspace) to component-builder IDs
+const SECTION_TO_COMPONENT: Record<string, string> = {
+  'DesignContainerSection': 'comp-design-container',
+  'WorkspaceBlankStateSection': 'comp-workspace-blank-state',
+  // Add more as sections are registered
+}
+
+// Map layout names to layout template IDs
+const LAYOUT_TO_TEMPLATE: Record<string, string> = {
+  'single': 'layout-workspace-flexible',
+  'split-h': 'layout-workspace-split-h',
+  'split-v': 'layout-workspace-split-v',
 }
 
 // Helper to format tool names for display
@@ -81,6 +108,10 @@ function getToolCategory(name: string): 'mcp' | 'file' | 'skill' | 'other' {
   return 'other'
 }
 
+// Re-export WorkspacePanelData from advanced-chat for workspace integration (task-testbed-chat-integration)
+import type { WorkspacePanelData } from "../advanced-chat/WorkspacePanel"
+export type { WorkspacePanelData }
+
 export interface ChatPanelProps {
   /** Feature session ID to link chat with */
   featureId: string | null
@@ -100,6 +131,18 @@ export interface ChatPanelProps {
   onStreamingChange?: (isStreaming: boolean) => void
   /** Whether data is being refreshed via polling - task-3-1-008 */
   isPolling?: boolean
+  /** Callback to navigate to a different phase (virtual-tools-domain Phase 0 PoC) */
+  onNavigateToPhase?: (phase: string) => void
+  /** Callback to open a panel in workspace (task-testbed-chat-integration) */
+  onOpenPanel?: (panel: WorkspacePanelData) => void
+  /** Optional explicit chat session ID (for session picker integration) */
+  chatSessionId?: string | null
+  /** Callback when chat session changes (for session picker integration) */
+  onChatSessionChange?: (sessionId: string) => void
+  /** Optional controlled collapse state (for parent layout control) */
+  isCollapsed?: boolean
+  /** Callback when collapse state changes (for parent layout control) */
+  onCollapsedChange?: (collapsed: boolean) => void
 }
 
 // ============================================================
@@ -244,6 +287,8 @@ const COMPONENT_BUILDER_MODEL_MAP: Record<string, string> = {
   ComponentDefinition: "componentDefinitionCollection",
   Registry: "registryCollection",
   RendererBinding: "rendererBindingCollection",
+  LayoutTemplate: "layoutTemplateCollection",
+  Composition: "compositionCollection",
 }
 
 /**
@@ -356,6 +401,12 @@ export const ChatPanel = observer(function ChatPanel({
   onRefresh,
   onStreamingChange,
   isPolling,
+  onNavigateToPhase,
+  onOpenPanel,
+  chatSessionId,
+  onChatSessionChange,
+  isCollapsed: controlledIsCollapsed,
+  onCollapsedChange,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
@@ -364,11 +415,18 @@ export const ChatPanel = observer(function ChatPanel({
     componentBuilder: any
   }>()
 
-  // Panel state
-  const [isCollapsed, setIsCollapsed] = useState(() => getStoredCollapsed())
+  // Panel state - use controlled prop if provided, otherwise internal state
+  const [internalIsCollapsed, setInternalIsCollapsed] = useState(() => getStoredCollapsed())
+  const isCollapsed = controlledIsCollapsed ?? internalIsCollapsed
+  const setIsCollapsed = onCollapsedChange ?? setInternalIsCollapsed
   const [width, setWidth] = useState(() => getStoredWidth())
   const [isResizing, setIsResizing] = useState(false)
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+
+  // Auto-scroll refs for messages container
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const isUserAtBottomRef = useRef(true)
 
   // Chat session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
@@ -381,11 +439,29 @@ export const ChatPanel = observer(function ChatPanel({
   // State updates are async, ref provides immediate access for append() calls
   const ccSessionIdRef = useRef<string | undefined>(undefined)
 
+  // Guard ref to prevent duplicate session creation (fixes race condition)
+  const sessionCreationInProgressRef = useRef<string | null>(null)
+
   // Find or create chat session for feature and phase (task-cpbi-005)
   // Session is uniquely identified by (featureId, phase) tuple
+  // If chatSessionId prop is provided, use it directly (for session picker integration)
   useEffect(() => {
+    // If explicit chatSessionId is provided, use it directly
+    if (chatSessionId !== undefined) {
+      setCurrentSessionId(chatSessionId)
+      return
+    }
+
     if (!featureId) {
       setCurrentSessionId(null)
+      return
+    }
+
+    // Create a key for this feature+phase combo to track creation in progress
+    const sessionKey = `${featureId}:${phase ?? 'null'}`
+
+    // Guard: if we're already creating a session for this key, skip
+    if (sessionCreationInProgressRef.current === sessionKey) {
       return
     }
 
@@ -395,28 +471,43 @@ export const ChatPanel = observer(function ChatPanel({
       const existingSession = studioChat.chatSessionCollection.findByFeatureAndPhase?.(featureId, phase)
       if (existingSession) {
         setCurrentSessionId(existingSession.id)
-      } else if (phase) {
-        // Auto-create session with phase (async per task-cpbi-002)
-        const newSession = await studioChat.createChatSession({
-          inferredName: `${featureName || featureId} - ${phase}`,
-          contextType: "feature",
-          contextId: featureId,
-          phase: phase,
-        })
-        setCurrentSessionId(newSession.id)
-      } else {
-        // No phase provided, create session without phase
-        const newSession = await studioChat.createChatSession({
-          inferredName: featureName || `Chat for ${featureId}`,
-          contextType: "feature",
-          contextId: featureId,
-        })
-        setCurrentSessionId(newSession.id)
+        onChatSessionChange?.(existingSession.id)
+        return
+      }
+
+      // Mark creation in progress BEFORE async operation
+      sessionCreationInProgressRef.current = sessionKey
+
+      try {
+        if (phase) {
+          // Auto-create session with phase (async per task-cpbi-002)
+          const newSession = await studioChat.createChatSession({
+            inferredName: `${featureName || featureId} - ${phase}`,
+            contextType: "feature",
+            contextId: featureId,
+            phase: phase,
+          })
+          setCurrentSessionId(newSession.id)
+          onChatSessionChange?.(newSession.id)
+        } else {
+          // No phase provided, create session without phase
+          const newSession = await studioChat.createChatSession({
+            inferredName: featureName || `Chat for ${featureId}`,
+            contextType: "feature",
+            contextId: featureId,
+          })
+          setCurrentSessionId(newSession.id)
+          onChatSessionChange?.(newSession.id)
+        }
+      } finally {
+        // Clear the guard after creation completes
+        sessionCreationInProgressRef.current = null
       }
     }
 
     loadOrCreateSession()
-  }, [featureId, featureName, phase, studioChat])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [featureId, featureName, phase, chatSessionId])
 
   // Get current session
   const currentSession = currentSessionId
@@ -461,7 +552,7 @@ export const ChatPanel = observer(function ChatPanel({
   const {
     messages,
     sendMessage,  // v3 API: sendMessage() replaces append()
-    isLoading,
+    status,       // v3 API: 'submitted' | 'streaming' | 'ready' | 'error'
     error,
     setMessages,
     reload,
@@ -475,6 +566,305 @@ export const ChatPanel = observer(function ChatPanel({
       // Critical: Handle errors to ensure isLoading gets cleared
       // Without this handler, errors leave isLoading=true indefinitely
       console.error("[ChatPanel] Stream error:", err)
+    },
+    // Handle transient data parts via AI SDK 6.x data-{name} format
+    // Server sends: { type: 'data-progress', id: string, data: SubagentProgressEvent }
+    // Server sends: { type: 'data-virtual-tool', id: string, data: VirtualToolEvent }
+    // Session ID comes via message-metadata (handled in onFinish)
+    // See: https://ai-sdk.dev/docs/ai-sdk-ui/streaming-data
+    onData: async (dataPart) => {
+      console.log('[ChatPanel:onData] Received data part:', dataPart.type, dataPart)
+
+      // Handle virtual tool events (virtual-tools-domain Phase 0 PoC)
+      // These are tools executed client-side rather than via MCP
+      if (dataPart.type === 'data-virtual-tool') {
+        const event = (dataPart as any).data as VirtualToolEvent
+        console.log('[ChatPanel:VirtualTool] 🎯 Received virtual tool event:', event)
+
+        // Execute the virtual tool based on toolName
+        if (event.toolName === 'navigate_to_phase') {
+          const targetPhase = event.args?.phase as string
+          if (targetPhase && onNavigateToPhase) {
+            console.log('[ChatPanel:VirtualTool] 🚀 Navigating to phase:', targetPhase)
+            onNavigateToPhase(targetPhase)
+          } else if (targetPhase) {
+            // Fallback: Update URL directly if no callback provided
+            console.log('[ChatPanel:VirtualTool] 🚀 Navigating via URL to phase:', targetPhase)
+            const url = new URL(window.location.href)
+            url.searchParams.set('phase', targetPhase)
+            window.history.pushState({}, '', url.toString())
+            // Dispatch popstate to trigger re-render (WorkspaceLayout listens to URL)
+            window.dispatchEvent(new PopStateEvent('popstate'))
+          }
+        } else if (event.toolName === 'open_panel') {
+          // task-testbed-chat-integration: Handle open_panel virtual tool
+          const panelId = event.args?.panelId as string || `panel-${event.toolUseId}`
+          const panelType = event.args?.type as string || 'preview'
+          const panelTitle = event.args?.title as string || 'Panel'
+          const panelContent = event.args?.content as unknown
+
+          if (onOpenPanel) {
+            console.log('[ChatPanel:VirtualTool] 📋 Opening panel:', panelId, panelType, panelTitle)
+            onOpenPanel({
+              id: panelId,
+              type: panelType,
+              title: panelTitle,
+              content: panelContent,
+            })
+          } else {
+            console.warn('[ChatPanel:VirtualTool] ⚠️ open_panel called but no onOpenPanel callback provided')
+          }
+        } else if (event.toolName === 'show_schema') {
+          // req-wpp-show-schema-tool: Handle show_schema virtual tool
+          // Updates workspace Composition to display DesignContainerSection with the requested schema
+          const schemaName = event.args?.schemaName as string
+          const defaultTab = event.args?.defaultTab as string || 'schema'
+
+          if (!schemaName) {
+            console.warn('[ChatPanel:VirtualTool] ⚠️ show_schema called without schemaName')
+            return
+          }
+
+          console.log('[ChatPanel:VirtualTool] 📊 Showing schema:', schemaName, 'defaultTab:', defaultTab)
+
+          try {
+            // 1. Update the feature session's schemaName (DesignContainerSection reads from feature.schemaName)
+            // MST requires updates through collection methods, not direct property mutation
+            if (featureId && platformFeatures?.featureSessionCollection) {
+              await platformFeatures.featureSessionCollection.updateOne(featureId, {
+                schemaName: schemaName
+              })
+              console.log('[ChatPanel:VirtualTool] ✅ Updated session schemaName:', schemaName)
+            }
+
+            // 2. Update workspace Composition's slotContent to include DesignContainerSection
+            // This replaces the blank state with the schema display section
+            if (componentBuilder?.compositionCollection) {
+              const workspaceComposition = componentBuilder.compositionCollection.findByName?.('workspace')
+              if (workspaceComposition) {
+                // Check if DesignContainerSection is already in slotContent (by component ref)
+                const currentSlotContent = workspaceComposition.slotContent || []
+                const hasDesignSection = currentSlotContent.some?.(
+                  (slot: any) => slot.component === 'comp-design-container' ||
+                                 slot.sectionRef === 'DesignContainerSection'
+                )
+
+                if (!hasDesignSection) {
+                  // Replace all current content (including blank state) with DesignContainerSection
+                  // Using component reference format to match seed data pattern
+                  const newSlotContent = [
+                    {
+                      slot: 'main',
+                      component: 'comp-design-container',
+                      config: { defaultTab, expandGraph: true }
+                    }
+                  ]
+                  // MST requires updates through collection.updateOne, not direct property mutation
+                  await componentBuilder.compositionCollection.updateOne(workspaceComposition.id, {
+                    slotContent: newSlotContent
+                  })
+                  console.log('[ChatPanel:VirtualTool] ✅ Replaced workspace content with DesignContainerSection')
+                } else {
+                  // Update existing section's config
+                  const updatedSlotContent = currentSlotContent.map?.((slot: any) => {
+                    if (slot.component === 'comp-design-container' ||
+                        slot.sectionRef === 'DesignContainerSection') {
+                      return { ...slot, config: { ...slot.config, defaultTab } }
+                    }
+                    return slot
+                  })
+                  await componentBuilder.compositionCollection.updateOne(workspaceComposition.id, {
+                    slotContent: updatedSlotContent
+                  })
+                  console.log('[ChatPanel:VirtualTool] ✅ Updated DesignContainerSection config')
+                }
+              } else {
+                console.warn('[ChatPanel:VirtualTool] ⚠️ workspace Composition not found')
+              }
+            }
+          } catch (err) {
+            console.error('[ChatPanel:VirtualTool] ❌ Error handling show_schema:', err)
+          }
+        } else if (event.toolName === 'set_workspace') {
+          // v2 architecture: Declarative workspace state
+          // Sets workspace Composition to desired state based on panels array
+          console.log('[ChatPanel:VirtualTool] 🏗️ Setting workspace state:', event.args)
+
+          const args = event.args as {
+            layout?: string
+            panels?: Array<{ slot: string; section: string; config?: Record<string, unknown> }>
+          }
+
+          try {
+            // Handle schemaName in config - DesignContainerSection reads from FeatureSession
+            // This maintains compatibility with existing section components
+            for (const panel of args.panels ?? []) {
+              if (panel.config?.schemaName && featureId) {
+                await platformFeatures?.featureSessionCollection?.updateOne(featureId, {
+                  schemaName: panel.config.schemaName as string
+                })
+                console.log('[ChatPanel:VirtualTool] ✅ Updated session schemaName:', panel.config.schemaName)
+              }
+            }
+
+            // Build slotContent from panels
+            const slotContent = (args.panels ?? []).map(panel => ({
+              slot: panel.slot,
+              component: SECTION_TO_COMPONENT[panel.section] ?? panel.section,
+              config: panel.config ?? {},
+            }))
+
+            // Update composition
+            if (componentBuilder?.compositionCollection) {
+              const workspaceComposition = componentBuilder.compositionCollection.findByName?.('workspace')
+              if (workspaceComposition) {
+                const updates: Record<string, unknown> = { slotContent }
+                if (args.layout && LAYOUT_TO_TEMPLATE[args.layout]) {
+                  updates.layout = LAYOUT_TO_TEMPLATE[args.layout]
+                }
+                await componentBuilder.compositionCollection.updateOne(workspaceComposition.id, updates)
+                console.log('[ChatPanel:VirtualTool] ✅ Workspace updated via set_workspace')
+              } else {
+                console.warn('[ChatPanel:VirtualTool] ⚠️ workspace Composition not found')
+              }
+            }
+          } catch (err) {
+            console.error('[ChatPanel:VirtualTool] ❌ Error handling set_workspace:', err)
+          }
+        } else if (event.toolName === 'execute') {
+          // v2 architecture: Generic domain operations
+          // Executes state operations across domain stores
+          console.log('[ChatPanel:VirtualTool] ⚡ Executing operations:', event.args)
+
+          const args = event.args as {
+            operations?: Array<{
+              domain: string
+              action: 'create' | 'update' | 'delete'
+              model: string
+              id?: string
+              data: Record<string, unknown>
+            }>
+          }
+
+          const domains: Record<string, any> = {
+            'component-builder': componentBuilder,
+            'studio-chat': studioChat,
+            'platform-features': platformFeatures,
+          }
+
+          for (const op of args.operations ?? []) {
+            try {
+              const store = domains[op.domain]
+              if (!store) {
+                console.warn(`[ChatPanel:VirtualTool] ⚠️ Unknown domain: ${op.domain}`)
+                continue
+              }
+
+              // Get collection by model name (e.g., "Composition" -> compositionCollection)
+              const collectionName = `${op.model.charAt(0).toLowerCase()}${op.model.slice(1)}Collection`
+              const collection = store[collectionName]
+              if (!collection) {
+                console.warn(`[ChatPanel:VirtualTool] ⚠️ Unknown collection: ${collectionName}`)
+                continue
+              }
+
+              switch (op.action) {
+                case 'create':
+                  await collection.insertOne(op.data)
+                  console.log(`[ChatPanel:VirtualTool] ✅ Created: ${op.domain}.${op.model}`)
+                  break
+                case 'update':
+                  if (op.id) {
+                    await collection.updateOne(op.id, op.data)
+                    console.log(`[ChatPanel:VirtualTool] ✅ Updated: ${op.domain}.${op.model} id=${op.id}`)
+                  }
+                  break
+                case 'delete':
+                  if (op.id) {
+                    await collection.deleteOne(op.id)
+                    console.log(`[ChatPanel:VirtualTool] ✅ Deleted: ${op.domain}.${op.model} id=${op.id}`)
+                  }
+                  break
+              }
+            } catch (err) {
+              console.error(`[ChatPanel:VirtualTool] ❌ Error executing ${op.action} on ${op.domain}.${op.model}:`, err)
+            }
+          }
+        } else {
+          console.warn('[ChatPanel:VirtualTool] ⚠️ Unknown virtual tool:', event.toolName)
+        }
+      }
+
+      // Handle subagent progress events (task-subagent-progress-streaming)
+      // AI SDK 6.x uses data-{name} format: { type: 'data-progress', id, data }
+      if (dataPart.type === 'data-progress') {
+        const event = (dataPart as any).data as SubagentProgressEvent
+        console.log('[ChatPanel:Progress] 📥 Received progress event:', event)
+
+        if (event.type === 'subagent-start') {
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            console.log('[ChatPanel:Progress] 🚀 Adding subagent to active map:', event.agentId, event.agentType)
+            next.set(event.agentId, {
+              agentId: event.agentId,
+              agentType: event.agentType,
+              startTime: event.timestamp,
+              status: 'running',
+              toolCount: 0,
+            })
+            console.log('[ChatPanel:Progress] 📊 Active subagents count:', next.size)
+            return next
+          })
+        } else if (event.type === 'subagent-stop') {
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            const existing = next.get(event.agentId)
+            console.log('[ChatPanel:Progress] 🛑 Stopping subagent:', event.agentId, 'existing:', !!existing)
+            if (existing) {
+              next.set(event.agentId, { ...existing, status: 'completed' })
+            }
+            console.log('[ChatPanel:Progress] 📊 Active subagents count:', next.size)
+            return next
+          })
+        } else if (event.type === 'tool-complete') {
+          console.log('[ChatPanel:Progress] 🔧 Tool complete:', event.toolName)
+          // Add to recent tools list (for live display in SubagentPanel)
+          setRecentTools((prev) => {
+            const newTool: RecentToolCall = {
+              id: event.toolUseId,
+              toolName: event.toolName,
+              timestamp: event.timestamp,
+            }
+            const updated = [newTool, ...prev].slice(0, MAX_RECENT_TOOLS)
+            return updated
+          })
+          // Accumulate for timeline persistence (task-chat-ux-fix)
+          // Deduplicate to prevent React key collisions when same event processed multiple times
+          setAccumulatedSubagentTools((prev) => {
+            if (prev.some(t => t.id === event.toolUseId)) return prev
+            return [
+              ...prev,
+              {
+                id: event.toolUseId,
+                toolName: event.toolName,
+                category: getToolCategoryFromTools(event.toolName),
+                state: "success" as const,
+                timestamp: event.timestamp,
+              },
+            ]
+          })
+          // Increment tool count on all running subagents
+          setActiveSubagents((prev) => {
+            const next = new Map(prev)
+            for (const [id, subagent] of next) {
+              if (subagent.status === 'running') {
+                next.set(id, { ...subagent, toolCount: subagent.toolCount + 1 })
+              }
+            }
+            return next
+          })
+        }
+      }
     },
     onFinish: async ({ message }) => {
       // chat-session-sync-fix: v3 API callback receives { message, messages, isAbort, ... } options object
@@ -527,7 +917,7 @@ export const ChatPanel = observer(function ChatPanel({
             sessionId: currentSessionId,
             toolName: toolCall.toolName,
             status: toolCall.state === "output-available" ? "complete" :
-                    toolCall.state === "output-error" ? "error" : "executing",
+              toolCall.state === "output-error" ? "error" : "executing",
             args: toolCall.args || {},
             result: toolCall.result,
           }).catch((err) => {
@@ -599,6 +989,9 @@ export const ChatPanel = observer(function ChatPanel({
     },
   })
 
+  // Derive isStreaming from v3 status for backward compatibility
+  const isStreaming = status === 'streaming' || status === 'submitted'
+
   // Idle timeout to force-complete hung streams
   // When Claude Code invokes skills/tools, the stream can hang indefinitely
   // because onFinish never fires. This detects idle state and calls stop().
@@ -610,7 +1003,7 @@ export const ChatPanel = observer(function ChatPanel({
     // Get current content to track changes
     const currentContent = messages.map(m => m.content).join("")
 
-    if (isLoading) {
+    if (isStreaming) {
       // Clear existing timeout
       if (idleTimeoutRef.current) {
         clearTimeout(idleTimeoutRef.current)
@@ -623,7 +1016,7 @@ export const ChatPanel = observer(function ChatPanel({
 
       // Set new timeout
       idleTimeoutRef.current = setTimeout(() => {
-        if (isLoading) {
+        if (isStreaming) {
           console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
           stop()
         }
@@ -642,7 +1035,7 @@ export const ChatPanel = observer(function ChatPanel({
         clearTimeout(idleTimeoutRef.current)
       }
     }
-  }, [isLoading, messages, stop])
+  }, [isStreaming, messages, stop])
 
   // Process progress events from message parts (task-subagent-progress-streaming)
   useEffect(() => {
@@ -709,17 +1102,20 @@ export const ChatPanel = observer(function ChatPanel({
             return updated
           })
           // Accumulate for timeline persistence (task-chat-ux-fix)
-          // These persist even after streaming ends for display in ToolTimeline
-          setAccumulatedSubagentTools((prev) => [
-            ...prev,
-            {
-              id: event.toolUseId,
-              toolName: event.toolName,
-              category: getToolCategoryFromTools(event.toolName),
-              state: "success" as const,
-              timestamp: event.timestamp,
-            },
-          ])
+          // Deduplicate to prevent React key collisions when same event processed multiple times
+          setAccumulatedSubagentTools((prev) => {
+            if (prev.some(t => t.id === event.toolUseId)) return prev
+            return [
+              ...prev,
+              {
+                id: event.toolUseId,
+                toolName: event.toolName,
+                category: getToolCategoryFromTools(event.toolName),
+                state: "success" as const,
+                timestamp: event.timestamp,
+              },
+            ]
+          })
           // Increment tool count on all running subagents
           setActiveSubagents((prev) => {
             const next = new Map(prev)
@@ -752,7 +1148,7 @@ export const ChatPanel = observer(function ChatPanel({
   // Instead of clearing immediately, we keep completed subagents visible for a few seconds
   // so users can see the final state before the panel disappears
   useEffect(() => {
-    if (!isLoading) {
+    if (!isStreaming) {
       // Set timeouts for each completed subagent (only if not already scheduled)
       const timeoutIds: ReturnType<typeof setTimeout>[] = []
 
@@ -782,7 +1178,7 @@ export const ChatPanel = observer(function ChatPanel({
         timeoutIds.push(toolsTimeoutId)
       }
 
-      // Cleanup timeouts if component unmounts or isLoading changes
+      // Cleanup timeouts if component unmounts or isStreaming changes
       return () => {
         timeoutIds.forEach((id) => clearTimeout(id))
       }
@@ -791,20 +1187,23 @@ export const ChatPanel = observer(function ChatPanel({
       scheduledCleanupRef.current.clear()
       toolsCleanupScheduledRef.current = false
     }
-  }, [isLoading, activeSubagents, recentTools.length])
+  }, [isStreaming, activeSubagents, recentTools.length])
 
   // Clear accumulated tools when a new stream starts (task-chat-ux-fix)
-  // We use a ref to track the previous isLoading state to detect stream start
-  const prevIsLoadingRef = useRef(false)
+  // We use a ref to track the previous isStreaming state to detect stream start
+  const prevIsStreamingRef = useRef(false)
   useEffect(() => {
-    // Detect stream start: isLoading transitions from false to true
-    if (isLoading && !prevIsLoadingRef.current) {
+    // Detect stream start: isStreaming transitions from false to true
+    if (isStreaming && !prevIsStreamingRef.current) {
       setAccumulatedSubagentTools([])
     }
-    prevIsLoadingRef.current = isLoading
-  }, [isLoading])
+    prevIsStreamingRef.current = isStreaming
+  }, [isStreaming])
 
   // Load persisted messages when session changes
+  // Note: chatMessageCollection is a MobX observable - do NOT include it in deps array
+  // as that causes re-runs whenever messages are added/removed, resetting the UI state.
+  // This effect should only run when the SESSION changes (on mount or session switch).
   useEffect(() => {
     if (currentSessionId) {
       const persistedMessages = studioChat.chatMessageCollection.findBySession?.(currentSessionId) ?? []
@@ -815,49 +1214,123 @@ export const ChatPanel = observer(function ChatPanel({
           content: msg.content,
         }))
         setMessages(aiMessages)
+        // Scroll to bottom after messages load - use setTimeout to ensure DOM has rendered
+        setTimeout(() => {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
+        }, 50)
       } else {
         setMessages([])
       }
     } else {
       setMessages([])
     }
-  }, [currentSessionId, studioChat.chatMessageCollection, setMessages])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSessionId, setMessages])
 
   // Notify parent of streaming state changes (task-3-1-007)
   // This allows WorkspaceLayout to pause polling during active streaming
   useEffect(() => {
-    onStreamingChange?.(isLoading)
-  }, [isLoading, onStreamingChange])
+    onStreamingChange?.(isStreaming)
+  }, [isStreaming, onStreamingChange])
+
+  // Auto-scroll to bottom when messages change or streaming updates
+  // Uses smooth scrolling during streaming, instant on first load
+  // Respects user scroll intent - won't auto-scroll if user scrolled up
+  const isFirstLoadRef = useRef(true)
+
+  // Reset first load flag when session changes to ensure scroll to bottom
+  useEffect(() => {
+    isFirstLoadRef.current = true
+    isUserAtBottomRef.current = true
+  }, [currentSessionId])
+
+  // Track scroll position to detect user scroll intent
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container
+      // Consider "at bottom" if within 100px of bottom
+      isUserAtBottomRef.current = scrollHeight - scrollTop - clientHeight < 100
+    }
+
+    container.addEventListener('scroll', handleScroll)
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [])
+
+  // Auto-scroll effect - respects user position
+  // Includes currentSessionId to trigger scroll when switching sessions
+  useEffect(() => {
+    // Only auto-scroll if user is at bottom (or first load)
+    if (messagesEndRef.current && (isFirstLoadRef.current || isUserAtBottomRef.current)) {
+      // Use requestAnimationFrame to ensure DOM is ready
+      requestAnimationFrame(() => {
+        const behavior = isFirstLoadRef.current ? 'instant' : 'smooth'
+        messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' })
+        isFirstLoadRef.current = false
+      })
+    }
+  }, [messages, isStreaming, currentSessionId])
+
+  /**
+   * Extract mediaType from a data URL.
+   * Example: "data:image/png;base64,..." -> "image/png"
+   */
+  const extractMediaType = useCallback((dataUrl: string): string => {
+    const match = dataUrl.match(/^data:([^;]+);/)
+    return match?.[1] || "image/png" // Default to PNG if parsing fails
+  }, [])
 
   // chat-session-sync-fix: Handle message submission using v3 sendMessage() API
   // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
+  // task-chatpanel-sendmessage: Extended to support imageData parameter
   const handleSendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, imageData?: string) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
       }
 
-      if (!content.trim()) {
+      if (!content.trim() && !imageData) {
         return
       }
 
       const trimmedContent = content.trim()
 
       // Persist user message to local store (fire-and-forget)
+      // task-chatpanel-sendmessage: Include imageData when present
       studioChat.addMessage({
         sessionId: currentSessionId,
         role: "user",
         content: trimmedContent,
+        imageData: imageData,
       }).catch((err) => console.warn("[ChatPanel] Failed to persist user message:", err))
 
+      // Build the sendMessage options
+      // task-chatpanel-sendmessage: Construct FileUIPart when image is attached
+      const messagePayload: { text: string; files?: Array<{ type: "file"; mediaType: string; url: string }> } = {
+        text: trimmedContent,
+      }
+
+      if (imageData) {
+        const mediaType = extractMediaType(imageData)
+        messagePayload.files = [
+          {
+            type: "file" as const,
+            mediaType,
+            url: imageData,
+          },
+        ]
+      }
+
       // chat-session-sync-fix: Send via v3 sendMessage() API
-      // - First arg: { text } object (not { role, content })
+      // - First arg: { text, files? } object
       // - Second arg: options with body for server-side data
       // - ccSessionIdRef.current ensures fresh session ID value
       try {
         await sendMessage(
-          { text: trimmedContent },
+          messagePayload,
           {
             body: {
               featureId,
@@ -870,23 +1343,27 @@ export const ChatPanel = observer(function ChatPanel({
         console.error("[ChatPanel] Failed to send message:", err)
       }
     },
-    [currentSessionId, studioChat, sendMessage, featureId, phase]
+    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType]
   )
 
   // Handle form submit from ChatInput
+  // task-chatpanel-sendmessage: Extended to support imageData parameter
   const handleInputSubmit = useCallback(
-    (content: string) => {
-      handleSendMessage(content)
+    (content: string, imageData?: string) => {
+      handleSendMessage(content, imageData)
     },
     [handleSendMessage]
   )
 
-  // Collapse toggle
+  // Collapse toggle - persist to localStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {
     const newCollapsed = !isCollapsed
     setIsCollapsed(newCollapsed)
-    setStoredCollapsed(newCollapsed)
-  }, [isCollapsed])
+    // Only persist to localStorage if using internal state (not controlled)
+    if (!onCollapsedChange) {
+      setStoredCollapsed(newCollapsed)
+    }
+  }, [isCollapsed, setIsCollapsed, onCollapsedChange])
 
   // Resize handlers using mousedown/mousemove/mouseup pattern
   const handleResizeMouseDown = useCallback(
@@ -919,7 +1396,7 @@ export const ChatPanel = observer(function ChatPanel({
 
       // Track last mouse X for final width calculation
       const trackMouseMove = (moveEvent: MouseEvent) => {
-        ;(window as any).lastMouseX = moveEvent.clientX
+        ; (window as any).lastMouseX = moveEvent.clientX
         handleMouseMove(moveEvent)
       }
 
@@ -948,7 +1425,7 @@ export const ChatPanel = observer(function ChatPanel({
       : null,
     messages: messageListMessages,
     sendMessage: handleSendMessage,
-    isLoading,
+    isLoading: isStreaming,
     isPolling, // task-3-1-008: Pass polling state to context for LoadingOverlay
     error: error?.message ?? null,
   }
@@ -996,39 +1473,56 @@ export const ChatPanel = observer(function ChatPanel({
         {/* Header */}
         <ChatHeader
           sessionName={currentSession?.name || featureName || "Chat"}
-          isLoading={isLoading}
+          isLoading={isStreaming}
           isCollapsed={isCollapsed}
           onToggleCollapse={handleToggleCollapse}
         />
 
         {/* Messages with Turn Grouping (task-chat-008) */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4">
           {messages.length > 0 ? (
-            <TurnList
-              messages={messages}
-              isStreaming={isLoading}
-              phase={phase}
-              activeSubagents={Array.from(activeSubagents.values()) as SubagentProgressType[]}
-              recentTools={recentTools as RecentToolType[]}
-              subagentToolCalls={accumulatedSubagentTools}
-            />
-          ) : !isLoading ? (
+            <>
+              <TurnList
+                messages={messages}
+                isStreaming={isStreaming}
+                phase={phase}
+                activeSubagents={Array.from(activeSubagents.values()) as SubagentProgressType[]}
+                recentTools={recentTools as RecentToolType[]}
+                subagentToolCalls={accumulatedSubagentTools}
+              />
+              {/* Scroll anchor - invisible element at bottom for auto-scroll */}
+              <div ref={messagesEndRef} />
+            </>
+          ) : !isStreaming ? (
             /* Phase-contextual empty state (task-chat-008) */
             <PhaseEmptyState
               phase={phase}
               onSuggestionClick={handleSendMessage}
             />
           ) : (
-            /* Loading indicator when no messages yet */
-            <div
-              data-testid="loading-indicator"
-              aria-label="Loading response"
-              aria-busy="true"
-              className="flex items-center gap-1 p-2"
-            >
-              <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse" />
-              <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.2s]" />
-              <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.4s]" />
+            /* Loading state when no messages yet - show SubagentPanel if subagents active */
+            <div className="space-y-3">
+              {/* Subagent panel during initial loading (before first message arrives) */}
+              {activeSubagents.size > 0 && (
+                <SubagentPanel
+                  subagents={Array.from(activeSubagents.values()) as SubagentProgressType[]}
+                  recentTools={recentTools as RecentToolType[]}
+                  defaultExpanded
+                />
+              )}
+              {/* Loading indicator */}
+              <div
+                data-testid="loading-indicator"
+                aria-label="Loading response"
+                aria-busy="true"
+                className="flex items-center gap-1 p-2"
+              >
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.2s]" />
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.4s]" />
+              </div>
+              {/* Scroll anchor for loading state too */}
+              <div ref={messagesEndRef} />
             </div>
           )}
         </div>
@@ -1056,8 +1550,10 @@ export const ChatPanel = observer(function ChatPanel({
         {/* Input */}
         <ChatInput
           onSubmit={handleInputSubmit}
-          disabled={isLoading || !currentSessionId}
+          disabled={!currentSessionId}
           placeholder={!featureId ? "Select a feature to start chatting..." : "Type a message..."}
+          isStreaming={isStreaming}
+          onStop={stop}
         />
       </div>
     </div>

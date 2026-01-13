@@ -12,7 +12,8 @@ export type {
   PropertyMetadata,
   ComponentEntry,
   DisplayRendererProps,
-  IComponentRegistry
+  IComponentRegistry,
+  SectionRendererProps
 } from "./types"
 
 // Registry
@@ -61,3 +62,13 @@ export {
   DEFAULT_BINDINGS,
   STUDIO_BINDINGS
 } from "./seedData"
+
+// Section implementations map (task-cpv-005)
+export { sectionImplementationMap, getSectionComponent } from "./sectionImplementations"
+// SectionRendererProps is exported from ./types above
+
+// Composition components (task-cpv-011, task-cpv-012)
+export { SlotLayout } from "./composition/SlotLayout"
+export type { SlotLayoutProps, SlotDefinition, LayoutTemplateData } from "./composition/SlotLayout"
+export { ComposablePhaseView } from "./composition/ComposablePhaseView"
+export type { ComposablePhaseViewProps } from "./composition/ComposablePhaseView"

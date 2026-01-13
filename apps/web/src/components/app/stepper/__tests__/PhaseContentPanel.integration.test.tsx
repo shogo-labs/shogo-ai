@@ -1,11 +1,12 @@
 /**
  * Integration Tests for PhaseContentPanel Component
- * Task: task-2-3b-011
+ * Task: task-2-3b-011, task-cpv-013
  *
  * TDD tests verifying PhaseContentPanel renders phase views based on selected phase.
  *
  * Test Specifications:
- * - test-2-3b-033: PhaseContentPanel renders DiscoveryView for phase='discovery'
+ * - test-2-3b-033: PhaseContentPanel renders discovery phase content
+ *   - Updated in task-cpv-013: Now uses ComposablePhaseView instead of DiscoveryView
  * - test-2-3b-034: PhaseContentPanel renders AnalysisView for phase='analysis'
  * - test-2-3b-035: PhaseContentPanel renders ClassificationView for phase='classification'
  * - test-2-3b-036: PhaseContentPanel renders EmptyPhaseContent for unimplemented phases
@@ -17,16 +18,17 @@ import fs from "fs"
 import path from "path"
 
 // ============================================================
-// Test 1: PhaseContentPanel renders DiscoveryView for phase='discovery'
-// (test-2-3b-033)
+// Test 1: PhaseContentPanel renders discovery phase content
+// (test-2-3b-033, updated in task-cpv-013)
 // ============================================================
 
-describe("test-2-3b-033: PhaseContentPanel renders DiscoveryView for phase='discovery'", () => {
-  test("PhaseContentPanel imports DiscoveryView", () => {
+describe("test-2-3b-033: PhaseContentPanel renders discovery phase content", () => {
+  test("PhaseContentPanel imports ComposablePhaseView for discovery", () => {
     const componentPath = path.resolve(import.meta.dir, "../PhaseContentPanel.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/DiscoveryView/)
+    // Updated: Now uses ComposablePhaseView instead of hardcoded DiscoveryView
+    expect(componentSource).toMatch(/ComposablePhaseView/)
   })
 
   test("PhaseContentPanel has discovery case in renderPhaseContent", () => {
@@ -37,11 +39,12 @@ describe("test-2-3b-033: PhaseContentPanel renders DiscoveryView for phase='disc
     expect(componentSource).toMatch(/["']discovery["']/)
   })
 
-  test("PhaseContentPanel passes feature to DiscoveryView", () => {
+  test("PhaseContentPanel passes feature to ComposablePhaseView for discovery", () => {
     const componentPath = path.resolve(import.meta.dir, "../PhaseContentPanel.tsx")
     const componentSource = fs.readFileSync(componentPath, "utf-8")
 
-    expect(componentSource).toMatch(/<DiscoveryView.*feature/)
+    // Updated: Discovery now uses ComposablePhaseView with phaseName="discovery"
+    expect(componentSource).toMatch(/<ComposablePhaseView.*phaseName=["']discovery["'].*feature=\{feature\}/)
   })
 })
 

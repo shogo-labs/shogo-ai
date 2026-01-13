@@ -6,7 +6,7 @@
 variable "aws_region" {
   description = "AWS region for deployment"
   type        = string
-  default     = "us-east-2"
+  default     = "us-east-1"
 }
 
 variable "environment" {
@@ -34,9 +34,9 @@ variable "vpc_cidr" {
 # EKS Configuration
 # -----------------------------------------------------------------------------
 variable "eks_cluster_version" {
-  description = "Kubernetes version for EKS cluster (latest stable: 1.31)"
+  description = "Kubernetes version for EKS cluster (latest stable: 1.33)"
   type        = string
-  default     = "1.31"  # Latest EKS supported version as of Jan 2026
+  default     = "1.33" # Latest EKS supported version as of Jan 2026
 }
 
 variable "node_instance_types" {
@@ -91,13 +91,19 @@ variable "redis_node_type" {
 # Knative Configuration
 # -----------------------------------------------------------------------------
 variable "knative_version" {
-  description = "Knative Serving version (latest stable: 1.16)"
+  description = "Knative Serving version (latest stable: 1.20)"
   type        = string
-  default     = "1.16.0"  # Latest Knative version as of Jan 2026
+  default     = "1.20.0" # Latest Knative version as of Jan 2026
 }
 
 variable "domain" {
   description = "Domain for Knative services (e.g., shogo.ai)"
+  type        = string
+  default     = ""
+}
+
+variable "ssl_certificate_domain" {
+  description = "Domain name to look up ACM certificate (e.g., *.shogo.ai)"
   type        = string
   default     = ""
 }

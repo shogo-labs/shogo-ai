@@ -1,18 +1,18 @@
 # =============================================================================
 # Shogo AI - Production EKS Deployment
 # =============================================================================
-# Region: us-east-2 (Ohio)
+# Region: us-east-1 (Ohio)
 # Architecture: Pod-per-Workspace with Knative scale-to-zero
 # Updated: January 2026 - Latest package versions
 # =============================================================================
 
 terraform {
-  required_version = ">= 1.5.0"  # Supports Homebrew's last open-source Terraform
+  required_version = ">= 1.5.0" # Supports Homebrew's last open-source Terraform
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.80"  # Latest stable 5.x (6.0 is beta)
+      version = "~> 5.80" # Latest stable 5.x (6.0 is beta)
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -40,7 +40,7 @@ terraform {
   # backend "s3" {
   #   bucket         = "shogo-terraform-state"
   #   key            = "production/terraform.tfstate"
-  #   region         = "us-east-2"
+  #   region         = "us-east-1"
   #   encrypt        = true
   #   dynamodb_table = "shogo-terraform-locks"
   # }
@@ -96,6 +96,17 @@ data "aws_availability_zones" "available" {
 }
 
 data "aws_caller_identity" "current" {}
+
+# -----------------------------------------------------------------------------
+# ACM Certificate Lookup (for SSL termination on load balancer)
+# -----------------------------------------------------------------------------
+data "aws_acm_certificate" "ssl" {
+  count       = var.ssl_certificate_domain != "" ? 1 : 0
+  domain      = var.ssl_certificate_domain
+  statuses    = ["ISSUED"]
+  most_recent = true
+  types       = ["AMAZON_ISSUED"]  # Prefer Amazon-issued over imported certificates
+}
 
 # -----------------------------------------------------------------------------
 # VPC Module
@@ -162,12 +173,13 @@ module "rds" {
 
   identifier = "${var.project_name}-${var.environment}"
 
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.private_subnet_ids
-  # Include both cluster and node security groups - pods use cluster SG
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnet_ids
+  # Include ALL EKS security groups: custom cluster SG, node SG, AND EKS-managed SG
   security_group_ids = [
     module.eks.cluster_security_group_id,
-    module.eks.node_security_group_id
+    module.eks.node_security_group_id,
+    module.eks.eks_managed_security_group_id
   ]
 
   instance_class    = var.rds_instance_class
@@ -197,12 +209,13 @@ module "elasticache" {
 
   cluster_id = "${var.project_name}-${var.environment}"
 
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.private_subnet_ids
-  # Include both cluster and node security groups - pods use cluster SG
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnet_ids
+  # Include ALL EKS security groups: custom cluster SG, node SG, AND EKS-managed SG
   security_group_ids = [
     module.eks.cluster_security_group_id,
-    module.eks.node_security_group_id
+    module.eks.node_security_group_id,
+    module.eks.eks_managed_security_group_id
   ]
 
   node_type       = var.redis_node_type
@@ -226,6 +239,12 @@ module "knative" {
 
   # Scale-to-zero configuration
   scale_to_zero_grace_period = "60s"
+
+  # SSL certificate for HTTPS termination on load balancer
+  ssl_certificate_arn = var.ssl_certificate_domain != "" ? data.aws_acm_certificate.ssl[0].arn : ""
+
+  # ECR registry - skip tag resolution (avoids auth issues with Knative controller)
+  ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
 }
 
 # -----------------------------------------------------------------------------
@@ -263,7 +282,8 @@ resource "kubernetes_secret" "postgres_credentials" {
   }
 
   data = {
-    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}"
+    # Include sslmode=require for AWS RDS SSL connections
+    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}?sslmode=require"
   }
 }
 
@@ -277,7 +297,8 @@ resource "kubernetes_secret" "postgres_credentials_workspaces" {
   }
 
   data = {
-    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}"
+    # Include sslmode=require for AWS RDS SSL connections
+    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}?sslmode=require"
   }
 }
 

@@ -52,15 +52,19 @@ RUN bun run build
 # =============================================================================
 FROM nginx:alpine
 
+# Default API upstream and host header (overridden by environment variables)
+ENV API_UPSTREAM=http://api.shogo-system.svc.cluster.local
+ENV API_HOST=api.shogo-system.svc.cluster.local
+
 # Copy built static files
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 
-# Copy nginx configuration
-COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
+# Copy nginx configuration template (NOT to templates/ dir - we handle envsubst ourselves)
+COPY apps/web/nginx.conf /etc/nginx/nginx.conf.template
 
 # Expose port 80
 EXPOSE 80
 
-# Nginx runs in foreground by default
-CMD ["nginx", "-g", "daemon off;"]
+# Custom entrypoint: run envsubst only on API_UPSTREAM and API_HOST, then start nginx
+CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_HOST}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
 

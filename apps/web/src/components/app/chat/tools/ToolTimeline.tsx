@@ -106,7 +106,7 @@ export function ToolTimeline({
 
               return (
                 <ToolCallDetail
-                  key={tool.id}
+                  key={`timeline-${tool.id}`}
                   tool={tool}
                   opacity={opacity}
                 />

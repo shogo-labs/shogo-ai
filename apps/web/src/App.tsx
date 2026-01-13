@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { AuthGate, AppShell } from '@/components/app'
 import { WorkspaceLayout } from '@/components/app/workspace'
+import { AdvancedChatLayout } from './components/app/advanced-chat'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
@@ -64,6 +65,8 @@ function App() {
                   }>
                     {/* WorkspaceLayout as index route */}
                     <Route index element={<WorkspaceLayout />} />
+                    {/* Advanced Chat testbed route (task-testbed-route) */}
+                    <Route path="advanced-chat" element={<AdvancedChatLayout />} />
                   </Route>
                 </Routes>
               </AuthProvider>

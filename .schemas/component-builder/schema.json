@@ -3,12 +3,9 @@
   "name": "component-builder",
   "format": "enhanced-json-schema",
   "createdAt": 1767839088233,
-  "version": 1,
+  "version": 2,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "component-builder",
-  "x-persistence": {
-    "backend": "postgres"
-  },
   "$defs": {
     "ComponentDefinition": {
       "type": "object",
@@ -33,7 +30,8 @@
             "display",
             "input",
             "layout",
-            "visualization"
+            "visualization",
+            "section"
           ],
           "x-renderer": "category-badge"
         },
@@ -59,9 +57,6 @@
         },
         "supportedConfig": {
           "type": "array",
-          "items": {
-            "type": "string"
-          },
           "description": "Config keys this component supports (e.g., ['variant', 'size', 'truncate'])"
         },
         "createdAt": {
@@ -273,6 +268,14 @@
           "type": "object",
           "description": "Shared data source definitions available to all slot components"
         },
+        "providerWrapper": {
+          "type": "string",
+          "description": "Optional provider component key to wrap the slot layout. References a provider in providerImplementationMap (e.g., 'AnalysisPanelProvider', 'TestingPanelProvider')"
+        },
+        "providerConfig": {
+          "type": "object",
+          "description": "Optional configuration passed to the provider wrapper component"
+        },
         "createdAt": {
           "type": "number"
         },
@@ -289,5 +292,8 @@
       ],
       "x-original-name": "Composition"
     }
+  },
+  "x-persistence": {
+    "backend": "postgres"
   }
 }

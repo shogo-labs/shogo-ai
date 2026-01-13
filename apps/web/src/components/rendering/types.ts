@@ -150,3 +150,38 @@ export interface IComponentRegistry {
   /** Get all registered entries */
   entries(): ComponentEntry[]
 }
+
+/**
+ * Props passed to section renderer components.
+ *
+ * Section components receive:
+ * - feature: The current FeatureSession data (required)
+ * - config: Optional configuration from slotContent entity
+ *
+ * Unlike DisplayRendererProps which render individual property values,
+ * SectionRendererProps provide access to the full feature context for
+ * rendering complete UI sections.
+ *
+ * Task: task-cpv-005
+ */
+export interface SectionRendererProps {
+  /**
+   * The current feature session data.
+   * Typed as 'any' to match codebase patterns for MST instance types.
+   * Contains id, name, status, requirements, tasks, etc.
+   */
+  feature: any
+
+  /**
+   * Optional configuration from the slotContent entity.
+   * Allows customization of section rendering behavior without
+   * creating new component implementations.
+   *
+   * @example
+   * ```typescript
+   * // SlotContent entity might specify:
+   * { showHeader: true, maxItems: 5, columns: 2 }
+   * ```
+   */
+  config?: Record<string, unknown>
+}

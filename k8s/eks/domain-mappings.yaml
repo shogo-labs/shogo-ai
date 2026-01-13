@@ -1,0 +1,29 @@
+# =============================================================================
+# Domain Mappings for shogo.ai (DEPRECATED)
+# =============================================================================
+# ⚠️  DEPRECATED: Use k8s/overlays/{staging,production}/domain-mappings.yaml
+# This file is kept for backwards compatibility only.
+# =============================================================================
+# Maps custom domains to Knative Services
+# =============================================================================
+apiVersion: serving.knative.dev/v1beta1
+kind: DomainMapping
+metadata:
+  name: api.shogo.ai
+  namespace: shogo-system
+spec:
+  ref:
+    name: api
+    kind: Service
+    apiVersion: serving.knative.dev/v1
+---
+apiVersion: serving.knative.dev/v1beta1
+kind: DomainMapping
+metadata:
+  name: studio.shogo.ai
+  namespace: shogo-system
+spec:
+  ref:
+    name: studio
+    kind: Service
+    apiVersion: serving.knative.dev/v1

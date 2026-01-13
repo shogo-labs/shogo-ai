@@ -1,12 +1,12 @@
 /**
  * Seed Data for Component Builder
- * Task: task-dcb-005, task-cbe-003
+ * Task: task-dcb-005, task-cbe-003, task-analysis-007
  *
  * Converts current defaultRegistry.ts and studioRegistry.ts entries into
  * ComponentDefinition, Registry, and RendererBinding entities.
  *
  * This module provides:
- * - COMPONENT_DEFINITIONS: 29 ComponentDefinition entries (11 primitive, 14 domain, 4 visualization)
+ * - COMPONENT_DEFINITIONS: 38 ComponentDefinition entries (11 primitive, 14 domain, 4 visualization, 9 section)
  * - REGISTRY_DEFINITIONS: 2 Registry entries ('default' and 'studio')
  * - DEFAULT_BINDINGS: 13 RendererBinding entries for default registry
  * - STUDIO_BINDINGS: 18 RendererBinding entries for studio registry
@@ -33,7 +33,7 @@
 interface ComponentDefinitionSeed {
   id: string
   name: string
-  category: "display" | "input" | "layout" | "visualization"
+  category: "display" | "input" | "layout" | "visualization" | "section"
   description: string
   implementationRef: string
   tags?: string[]
@@ -76,6 +76,8 @@ interface SeedSummary {
   componentDefinitions: number
   registries: number
   rendererBindings: number
+  layoutTemplates: number
+  compositions: number
 }
 
 // ============================================================================
@@ -332,6 +334,86 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders multi-stage status indicators with layout options",
     implementationRef: "StatusIndicator",
     tags: ["visualization", "status", "indicator", "readonly"],
+  },
+
+  // -------------------------------------------------------------------------
+  // Section Components (5) - Composable Phase Views
+  // -------------------------------------------------------------------------
+  {
+    id: "comp-def-intent-terminal-section",
+    name: "Intent Terminal Section",
+    category: "section",
+    description: "Displays session intent in a terminal-style format for discovery phase",
+    implementationRef: "IntentTerminalSection",
+    tags: ["section", "phase", "discovery", "intent"],
+  },
+  {
+    id: "comp-def-initial-assessment-section",
+    name: "Initial Assessment Section",
+    category: "section",
+    description: "Displays initial assessment details including archetype and indicators",
+    implementationRef: "InitialAssessmentSection",
+    tags: ["section", "phase", "discovery", "assessment"],
+  },
+  {
+    id: "comp-def-requirements-list-section",
+    name: "Requirements List Section",
+    category: "section",
+    description: "Lists requirements with status badges and priority indicators",
+    implementationRef: "RequirementsListSection",
+    tags: ["section", "phase", "discovery", "requirements"],
+  },
+  {
+    id: "comp-def-session-summary-section",
+    name: "Session Summary Section",
+    category: "section",
+    description: "Displays session summary with key metrics and status",
+    implementationRef: "SessionSummarySection",
+    tags: ["section", "phase", "summary"],
+  },
+  {
+    id: "comp-def-phase-actions-section",
+    name: "Phase Actions Section",
+    category: "section",
+    description: "Provides phase-specific action buttons and navigation",
+    implementationRef: "PhaseActionsSection",
+    tags: ["section", "phase", "actions", "navigation"],
+  },
+
+  // -------------------------------------------------------------------------
+  // Analysis Phase Section Components (4) - task-analysis-007
+  // -------------------------------------------------------------------------
+  {
+    id: "comp-def-evidence-board-header-section",
+    name: "EvidenceBoardHeaderSection",
+    category: "section",
+    description: "Header for Analysis Evidence Board with finding count and view mode toggle",
+    implementationRef: "EvidenceBoardHeaderSection",
+    tags: ["section", "analysis-phase", "evidence-board"],
+  },
+  {
+    id: "comp-def-location-heat-bar-section",
+    name: "LocationHeatBarSection",
+    category: "section",
+    description: "Stacked progress bar showing finding distribution by package location",
+    implementationRef: "LocationHeatBarSection",
+    tags: ["section", "analysis-phase", "evidence-board", "visualization"],
+  },
+  {
+    id: "comp-def-finding-matrix-section",
+    name: "FindingMatrixSection",
+    category: "section",
+    description: "Type x Location grid matrix with clickable cells for filtering findings",
+    implementationRef: "FindingMatrixSection",
+    tags: ["section", "analysis-phase", "evidence-board", "matrix"],
+  },
+  {
+    id: "comp-def-finding-list-section",
+    name: "FindingListSection",
+    category: "section",
+    description: "Filtered/grouped finding cards with filter indicator and expand/collapse",
+    implementationRef: "FindingListSection",
+    tags: ["section", "analysis-phase", "evidence-board", "list"],
   },
 ]
 
@@ -657,6 +739,164 @@ export const STUDIO_BINDINGS: RendererBindingSeed[] = [
 ]
 
 // ============================================================================
+// Layout Templates - Composable Phase Views
+// ============================================================================
+
+/**
+ * Slot definition type for LayoutTemplate
+ */
+interface SlotDefinitionSeed {
+  name: string
+  position: string
+  required?: boolean
+}
+
+/**
+ * LayoutTemplate seed data (without timestamps)
+ */
+interface LayoutTemplateSeed {
+  id: string
+  name: string
+  description?: string
+  slots: SlotDefinitionSeed[]
+}
+
+/**
+ * Layout templates for composable phase views.
+ */
+export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
+  {
+    id: "layout-phase-two-column",
+    name: "Phase Two Column",
+    description: "Two-column layout with header, main content, sidebar, and actions footer",
+    slots: [
+      { name: "header", position: "top", required: true },
+      { name: "main", position: "left", required: true },
+      { name: "sidebar", position: "right", required: false },
+      { name: "actions", position: "bottom", required: false },
+    ],
+  },
+  {
+    id: "layout-single-column",
+    name: "Single Column",
+    description: "Single-column full-width layout for container section phases",
+    slots: [{ name: "main", position: "center", required: true }],
+  },
+  {
+    id: "layout-two-column-compact",
+    name: "Two Column Compact",
+    description: "Compact two-column layout without header/actions rows. Main content on left, sidebar on right.",
+    slots: [
+      { name: "main", position: "left", required: true },
+      { name: "sidebar", position: "right", required: false },
+    ],
+  },
+]
+
+// ============================================================================
+// Compositions - Composable Phase Views
+// ============================================================================
+
+/**
+ * Slot content entry type for Composition
+ */
+interface SlotContentEntrySeed {
+  slot: string
+  component: string
+  config?: Record<string, unknown>
+}
+
+/**
+ * Composition seed data (without timestamps)
+ */
+interface CompositionSeed {
+  id: string
+  name: string
+  description?: string
+  layout: string
+  slotContent: SlotContentEntrySeed[]
+  dataContext?: Record<string, unknown>
+  providerWrapper?: string
+}
+
+/**
+ * Compositions for phase views.
+ */
+export const COMPOSITIONS: CompositionSeed[] = [
+  {
+    id: "composition-discovery",
+    name: "discovery",
+    description: "Discovery phase view composition",
+    layout: "layout-phase-two-column",
+    slotContent: [
+      { slot: "header", component: "comp-def-intent-terminal-section" },
+      { slot: "main", component: "comp-def-requirements-list-section" },
+      { slot: "sidebar", component: "comp-def-initial-assessment-section" },
+      { slot: "actions", component: "comp-def-phase-actions-section" },
+    ],
+    dataContext: { phase: "discovery" },
+  },
+  // Analysis phase composition - task-analysis-008
+  // Uses compact layout (no header/actions rows) for better space utilization
+  {
+    id: "composition-analysis",
+    name: "analysis",
+    description: "Analysis phase view composition",
+    layout: "layout-two-column-compact",
+    slotContent: [
+      // Main slot: Evidence Board header + Location heat bar + Finding matrix (stacked)
+      { slot: "main", component: "comp-def-evidence-board-header-section" },
+      { slot: "main", component: "comp-def-location-heat-bar-section" },
+      { slot: "main", component: "comp-def-finding-matrix-section" },
+      // Sidebar slot: Finding list (filtered/grouped)
+      { slot: "sidebar", component: "comp-def-finding-list-section" },
+    ],
+    dataContext: { phase: "analysis" },
+    providerWrapper: "AnalysisPanelProvider",
+  },
+  // Classification phase composition - no provider needed (pure slot composition)
+  // Uses compact layout (no header/actions rows) for better space utilization
+  {
+    id: "composition-classification",
+    name: "classification",
+    description: "Classification phase view composition",
+    layout: "layout-two-column-compact",
+    slotContent: [
+      // Main slot: All 6 sections stacked vertically (archetype transformation at top)
+      { slot: "main", component: "comp-def-archetype-transformation-section" },
+      { slot: "main", component: "comp-def-correction-note-section" },
+      { slot: "main", component: "comp-def-confidence-meters-section" },
+      { slot: "main", component: "comp-def-evidence-columns-section" },
+      { slot: "main", component: "comp-def-applicable-patterns-section" },
+      { slot: "main", component: "comp-def-classification-rationale-section" },
+    ],
+    dataContext: { phase: "classification" },
+  },
+  // Design phase composition - container section pattern (single slot)
+  // Config options enable MCP-driven UI customization
+  {
+    id: "composition-design",
+    name: "design",
+    description: "Design phase view composition with container section",
+    layout: "layout-single-column",
+    slotContent: [
+      {
+        slot: "main",
+        component: "comp-design-container",
+        config: {
+          defaultTab: "schema",
+          expandGraph: true, // Graph expands to fill available space
+          showStatistics: true,
+          showLegend: true,
+          graphMinHeight: 400,
+        },
+      },
+    ],
+    dataContext: { phase: "design" },
+  },
+]
+
+// ============================================================================
 // Seed Function
 // ============================================================================
 
@@ -664,9 +904,11 @@ export const STUDIO_BINDINGS: RendererBindingSeed[] = [
  * Seeds the component builder store with all required entities.
  *
  * Creates:
- * - 29 ComponentDefinition entities (11 primitive, 14 domain, 4 visualization)
+ * - 38 ComponentDefinition entities (11 primitive, 14 domain, 4 visualization, 9 section)
  * - 2 Registry entities ('default' and 'studio')
- * - 31 RendererBinding entities (13 default, 18 studio)
+ * - 30 RendererBinding entities (12 default, 18 studio)
+ * - 1 LayoutTemplate entity
+ * - 4 Composition entities (discovery, analysis, classification, design)
  *
  * @param store - A store with a create(collection, data) method
  * @returns Summary of created entities
@@ -676,7 +918,7 @@ export const STUDIO_BINDINGS: RendererBindingSeed[] = [
  * const store = createComponentBuilderStore()
  * const summary = seedComponentBuilderData(store)
  * console.log(summary)
- * // { componentDefinitions: 26, registries: 2, rendererBindings: 28 }
+ * // { componentDefinitions: 34, registries: 2, rendererBindings: 31, layoutTemplates: 1, compositions: 1 }
  * ```
  */
 export function seedComponentBuilderData(store: SeedableStore): SeedSummary {
@@ -714,9 +956,27 @@ export function seedComponentBuilderData(store: SeedableStore): SeedSummary {
     })
   }
 
+  // Create LayoutTemplate entities
+  for (const layout of LAYOUT_TEMPLATES) {
+    store.create("LayoutTemplate", {
+      ...layout,
+      createdAt: now,
+    })
+  }
+
+  // Create Composition entities
+  for (const comp of COMPOSITIONS) {
+    store.create("Composition", {
+      ...comp,
+      createdAt: now,
+    })
+  }
+
   return {
     componentDefinitions: COMPONENT_DEFINITIONS.length,
     registries: REGISTRY_DEFINITIONS.length,
     rendererBindings: DEFAULT_BINDINGS.length + STUDIO_BINDINGS.length,
+    layoutTemplates: LAYOUT_TEMPLATES.length,
+    compositions: COMPOSITIONS.length,
   }
 }
