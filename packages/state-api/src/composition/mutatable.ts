@@ -135,7 +135,7 @@ export const CollectionMutatable = types
 
         // Sync MST for remote executors (local already updates MST directly)
         if (result && isRemoteExecutor(executor)) {
-          const instance = (self as any).get(id)
+          const instance = (self as any).items.get(id)
           if (instance) {
             // Apply the returned entity data to MST instance
             applySnapshot(instance, result)
@@ -199,7 +199,7 @@ export const CollectionMutatable = types
 
           // Get MST instances by ID and update them
           for (const snapshot of matchingSnapshots) {
-            const instance = (self as any).get((snapshot as any).id)
+            const instance = (self as any).items.get((snapshot as any).id)
             if (instance) {
               const currentSnapshot = getSnapshot(instance) as Record<string, unknown>
               const updated = { ...currentSnapshot, ...changes }

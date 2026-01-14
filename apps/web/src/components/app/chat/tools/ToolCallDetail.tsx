@@ -8,7 +8,7 @@
 
 import { cn } from "@/lib/utils"
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react"
-import { type ToolCallData, formatToolName, getToolNamespace } from "./types"
+import { type ToolCallData, formatToolName, getToolNamespace, getToolKeyArg } from "./types"
 
 export interface ToolCallDetailProps {
   /** Tool call data to display */
@@ -37,6 +37,7 @@ export interface ToolCallDetailProps {
 export function ToolCallDetail({ tool, opacity = 1, className }: ToolCallDetailProps) {
   const displayName = formatToolName(tool.toolName)
   const namespace = getToolNamespace(tool.toolName)
+  const keyArg = getToolKeyArg(tool.toolName, tool.args)
 
   // State icon based on execution state
   const StateIcon = {
@@ -45,24 +46,20 @@ export function ToolCallDetail({ tool, opacity = 1, className }: ToolCallDetailP
     error: XCircle,
   }[tool.state]
 
-  // Truncate args preview
-  const argsPreview = tool.args
-    ? JSON.stringify(tool.args).slice(0, 60) + (JSON.stringify(tool.args).length > 60 ? "..." : "")
-    : null
-
   return (
     <div
       className={cn(
-        "flex items-start gap-2 py-1.5 px-2 rounded-md transition-colors",
+        "flex items-center gap-2 py-1.5 px-2 rounded-md transition-colors",
         "hover:bg-muted/50",
         className
       )}
       style={{ opacity }}
+      title={tool.args ? JSON.stringify(tool.args, null, 2) : undefined}
     >
       {/* Category color indicator */}
       <span
         className={cn(
-          "w-1.5 h-1.5 rounded-full shrink-0 mt-1.5",
+          "w-1.5 h-1.5 rounded-full shrink-0",
           tool.category === "mcp" && "bg-tool-mcp",
           tool.category === "file" && "bg-tool-file",
           tool.category === "skill" && "bg-tool-skill",
@@ -71,45 +68,28 @@ export function ToolCallDetail({ tool, opacity = 1, className }: ToolCallDetailP
         )}
       />
 
-      {/* Tool info */}
-      <div className="flex-1 min-w-0">
-        {/* Tool name with namespace */}
-        <div className="flex items-center gap-1.5">
-          <span
-            className="font-mono text-xs font-medium truncate"
-            style={{ fontFamily: "var(--font-display)" }}
-          >
-            {namespace && (
-              <span className="text-muted-foreground">{namespace}.</span>
-            )}
-            <span className="text-foreground">{displayName.replace(`${namespace}.`, "")}</span>
-          </span>
-
-          {/* Duration badge */}
-          {tool.duration !== undefined && (
-            <span className="text-[10px] text-muted-foreground">
-              {tool.duration}ms
-            </span>
-          )}
-        </div>
-
-        {/* Args preview */}
-        {argsPreview && (
-          <div
-            className="text-[10px] text-muted-foreground/70 truncate mt-0.5 font-mono"
-            title={JSON.stringify(tool.args, null, 2)}
-          >
-            {argsPreview}
-          </div>
+      {/* Tool name */}
+      <span
+        className="font-mono text-xs font-medium shrink-0"
+        style={{ fontFamily: "var(--font-display)" }}
+      >
+        {namespace && (
+          <span className="text-muted-foreground">{namespace}.</span>
         )}
+        <span className="text-foreground">{displayName.replace(`${namespace}.`, "")}</span>
+      </span>
 
-        {/* Error message */}
-        {tool.error && (
-          <div className="text-[10px] text-exec-error mt-0.5 truncate">
-            {tool.error}
-          </div>
-        )}
-      </div>
+      {/* Key argument - right aligned, muted, thin mono */}
+      {keyArg && (
+        <span
+          className="flex-1 text-[10px] text-muted-foreground/60 font-light truncate text-right font-mono"
+        >
+          {keyArg}
+        </span>
+      )}
+
+      {/* Spacer when no key arg */}
+      {!keyArg && <span className="flex-1" />}
 
       {/* State icon */}
       <StateIcon

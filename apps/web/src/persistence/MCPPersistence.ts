@@ -67,6 +67,8 @@ export class MCPPersistence implements IPersistenceService {
   /**
    * Load a schema by name via MCP.
    * Uses schema.load which creates the runtime store server-side.
+   * Converts the model descriptors response into enhanced JSON schema format
+   * that can be ingested by the meta-store.
    */
   async loadSchema(name: string, location?: string): Promise<{
     metadata: { name: string; id?: string; views?: Record<string, any> }
@@ -78,7 +80,12 @@ export class MCPPersistence implements IPersistenceService {
       const loadResult = await this.mcp.callTool<{
         ok: boolean
         schemaId?: string
-        models?: any[]
+        models?: Array<{
+          name: string
+          collectionName: string
+          fields: Array<{ name: string; type: string; required?: boolean }>
+          refs?: Array<{ name: string; target: string; type: 'single' | 'array' }>
+        }>
         error?: { message: string }
       }>('schema.load', { name, workspace: location })
 
@@ -87,14 +94,46 @@ export class MCPPersistence implements IPersistenceService {
         return null
       }
 
-      // Return metadata from load result
-      // Note: Full schema payload is available server-side via meta-store
+      // Convert model descriptors back to enhanced JSON schema format
+      // This allows the meta-store to ingest them properly
+      const $defs: Record<string, any> = {}
+
+      for (const model of loadResult.models || []) {
+        const properties: Record<string, any> = {}
+        const required: string[] = []
+
+        // Convert fields to properties
+        for (const field of model.fields || []) {
+          properties[field.name] = { type: field.type }
+          if (field.required) {
+            required.push(field.name)
+          }
+        }
+
+        // Convert refs to properties with x-reference-type
+        for (const ref of model.refs || []) {
+          properties[ref.name] = {
+            $ref: `#/$defs/${ref.target}`,
+            'x-reference-type': ref.type
+          }
+        }
+
+        $defs[model.name] = {
+          type: 'object',
+          properties,
+          ...(required.length > 0 ? { required } : {})
+        }
+      }
+
       return {
         metadata: {
           name,
           id: loadResult.schemaId
         },
-        enhanced: { models: loadResult.models }
+        enhanced: {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          $defs
+        }
       }
     } catch (error: any) {
       console.error('[MCPPersistence] loadSchema error:', error.message)

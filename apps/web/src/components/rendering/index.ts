@@ -63,8 +63,14 @@ export {
   STUDIO_BINDINGS
 } from "./seedData"
 
-// Section implementations map (task-cpv-005)
-export { sectionImplementationMap, getSectionComponent } from "./sectionImplementations"
+// Section implementations map (task-cpv-005, task-cb-ui-hot-registration)
+export {
+  sectionImplementationMap,
+  getSectionComponent,
+  useDynamicSection,
+  DynamicSectionRenderer
+} from "./sectionImplementations"
+export type { DynamicSectionResult, DynamicSectionRendererProps } from "./sectionImplementations"
 // SectionRendererProps is exported from ./types above
 
 // Composition components (task-cpv-011, task-cpv-012)

@@ -5,11 +5,11 @@
  * insertOne() operations via Wavesmith MCP tools.
  *
  * Exports:
- * - COMPONENT_DEFINITIONS: 56 entries (display, visualization, section components)
+ * - COMPONENT_DEFINITIONS: 67 entries (display, visualization, section components)
  * - REGISTRIES: 2 entries (default, studio)
  * - RENDERER_BINDINGS: 32 entries (12 default + 20 studio)
- * - LAYOUT_TEMPLATES: 6 entries (layout-phase-two-column, layout-single-column, layout-two-column-compact, layout-workspace-flexible, layout-workspace-split-h, layout-workspace-split-v)
- * - COMPOSITIONS: 8 entries (discovery, analysis, classification, design, spec, testing, implementation, workspace)
+ * - LAYOUT_TEMPLATES: 7 entries (layout-phase-two-column, layout-single-column, layout-two-column-compact, layout-workspace-flexible, layout-workspace-split-h, layout-workspace-split-v, layout-discovery-enhanced)
+ * - COMPOSITIONS: 9 entries (discovery-basic, discovery, analysis, classification, design, spec, testing, implementation, workspace)
  *
  * All entities have proper id fields for idempotency checks.
  * TypeScript types match component-builder schema entity types.
@@ -17,7 +17,7 @@
  * Tasks: task-sdr-v2-001, smart-component-expansion; task-cbe-003; task-cpv-003; task-cpv-004;
  *        task-analysis-007, task-analysis-008, task-prephase-005, task-design-009, task-design-010,
  *        task-testing-007, task-testing-008, task-spec-009, task-spec-010,
- *        task-implementation-007, task-implementation-008
+ *        task-implementation-007, task-implementation-008, virtual-tools-domain
  */
 
 // =============================================================================
@@ -695,7 +695,7 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
   },
 
   // ---------------------------------------------------------------------------
-  // Workspace Section Components (1) - req-wpp-layout-refactor
+  // Workspace Section Components (3) - req-wpp-layout-refactor, task-cb-ui
   // ---------------------------------------------------------------------------
   {
     id: "comp-def-workspace-blank-state-section",
@@ -705,6 +705,118 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
       "Empty state displayed when workspace has no active content. Shows welcome message and guidance for using virtual tools. Replaced dynamically when show_schema or similar tools are invoked.",
     implementationRef: "WorkspaceBlankStateSection",
     tags: ["section", "workspace", "empty-state"],
+  },
+  {
+    id: "comp-component-builder",
+    name: "ComponentBuilderSection",
+    category: "section",
+    description:
+      "Component Builder UI for creating and editing compositions. Use when users ask to visualize data as kanban, grid, or list. Supports definition mode with full builder layout (data source, layout picker, property list, preview) and preview mode for split-panel displays. Configure with suggestedDataSource, suggestedLayout, and suggestedGroupBy.",
+    implementationRef: "ComponentBuilderSection",
+    tags: ["section", "component-builder", "container", "workspace", "visualization"],
+  },
+  {
+    id: "comp-dynamic-composition",
+    name: "DynamicCompositionSection",
+    category: "section",
+    description:
+      "Renders any saved Composition by ID. Used for hot registration of user-created components. Takes compositionId in config and renders the composition using ComposablePhaseView pattern.",
+    implementationRef: "DynamicCompositionSection",
+    tags: ["section", "dynamic", "composition", "workspace"],
+  },
+  {
+    id: "comp-property-field-section",
+    name: "PropertyFieldSection",
+    category: "section",
+    description:
+      "Bridges Section pipeline to PropertyRenderer for field-level display. Used by ComponentBuilder preview to render selected properties. Receives property metadata via config and delegates to PropertyRenderer for resolution via RendererBinding system.",
+    implementationRef: "PropertyFieldSection",
+    tags: ["section", "component-builder", "property", "renderer"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Plan Preview Section Component (view-builder planning) - view-builder-spec
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-plan-preview-section",
+    name: "PlanPreviewSection",
+    category: "section",
+    description:
+      "Flexible wireframe renderer that displays ComponentSpec visually during planning. Shows spec name, intent, type badge, layout approximation based on componentType, data binding annotations, and status indicator. Used by view-builder skill to show evolving plans before implementation.",
+    implementationRef: "PlanPreviewSection",
+    tags: ["section", "view-builder", "planning", "preview", "wireframe"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Data Grid Section Component (generic collection renderer) - view-builder-implementation
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-data-grid-section",
+    name: "DataGridSection",
+    category: "section",
+    description:
+      "Generic data grid/table component that renders any Wavesmith collection in tabular format. Supports configurable columns, sorting, row selection, and uses PropertyRenderer for type-aware cell display. Works with any schema/model combination via config.",
+    implementationRef: "DataGridSection",
+    tags: ["section", "data-grid", "table", "collection", "generic", "workspace"],
+    supportedConfig: ["schema", "model", "columns", "title", "stickyFirstColumn", "onRowSelect"],
+  },
+
+  // ---------------------------------------------------------------------------
+  // Enhanced Discovery Phase Section Components (6) - virtual-tools-domain
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-def-phase-hero-section",
+    name: "PhaseHeroSection",
+    category: "section",
+    description:
+      "Hero section for phase views with dramatic styling and phase title. Displays session name, status badge, and progress indicator.",
+    implementationRef: "PhaseHeroSection",
+    tags: ["section", "discovery-phase", "enhanced", "hero"],
+  },
+  {
+    id: "comp-def-session-overview-card",
+    name: "SessionOverviewCard",
+    category: "section",
+    description:
+      "Session overview card displaying key metrics and session metadata including created date, updated date, and package count.",
+    implementationRef: "SessionOverviewCard",
+    tags: ["section", "discovery-phase", "enhanced", "overview"],
+  },
+  {
+    id: "comp-def-intent-rich-panel",
+    name: "IntentRichPanel",
+    category: "section",
+    description:
+      "Rich panel for displaying session intent with enhanced styling and formatting.",
+    implementationRef: "IntentRichPanel",
+    tags: ["section", "discovery-phase", "enhanced", "intent"],
+  },
+  {
+    id: "comp-def-requirements-grid-section",
+    name: "RequirementsGridSection",
+    category: "section",
+    description:
+      "Grid layout for requirements with card-based display. Shows requirement status and descriptions.",
+    implementationRef: "RequirementsGridSection",
+    tags: ["section", "discovery-phase", "enhanced", "requirements"],
+  },
+  {
+    id: "comp-def-insights-panel",
+    name: "InsightsPanel",
+    category: "section",
+    description:
+      "Panel displaying AI-generated insights including archetype classification and priority assessment.",
+    implementationRef: "InsightsPanel",
+    tags: ["section", "discovery-phase", "enhanced", "insights"],
+  },
+  {
+    id: "comp-def-context-footer",
+    name: "ContextFooter",
+    category: "section",
+    description:
+      "Footer section with contextual information including applicable patterns, requirement count, and task count.",
+    implementationRef: "ContextFooter",
+    tags: ["section", "discovery-phase", "enhanced", "footer"],
   },
 ]
 
@@ -1132,6 +1244,23 @@ export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
     ],
     defaultBindings: {},
   },
+  // Enhanced discovery layout for 3-column grid with hero - virtual-tools-domain
+  {
+    id: "layout-discovery-enhanced",
+    name: "layout-discovery-enhanced",
+    description:
+      "Enhanced 3-column grid layout for discovery phase with hero section, main content area, sidebar insights, and action footer. Provides dramatic visual presentation.",
+    slots: [
+      { name: "hero", position: "top-full", required: true },
+      { name: "overview", position: "left-top", required: true },
+      { name: "intent", position: "left-main", required: true },
+      { name: "requirements", position: "center-main", required: true },
+      { name: "insights", position: "right-sidebar", required: false },
+      { name: "context", position: "right-footer", required: false },
+      { name: "actions", position: "bottom-full", required: true },
+    ],
+    defaultBindings: {},
+  },
 ]
 
 // =============================================================================
@@ -1150,9 +1279,10 @@ export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
  * - testing: Testing phase with TestingPanelProvider context wrapper
  */
 export const COMPOSITIONS: CompositionSeed[] = [
+  // Basic discovery composition (original) - renamed to discovery-basic
   {
     id: "composition-discovery",
-    name: "discovery",
+    name: "discovery-basic",
     layout: "layout-phase-two-column",
     slotContent: [
       { slot: "header", component: "comp-def-intent-terminal-section" },
@@ -1161,6 +1291,31 @@ export const COMPOSITIONS: CompositionSeed[] = [
       { slot: "actions", component: "comp-def-phase-actions-section" },
     ],
     dataContext: { phase: "discovery" },
+  },
+  // Enhanced discovery composition with dramatic styling - virtual-tools-domain
+  // This is now the default "discovery" view
+  {
+    id: "composition-discovery-enhanced",
+    name: "discovery",
+    layout: "layout-discovery-enhanced",
+    slotContent: [
+      { slot: "hero", component: "comp-def-phase-hero-section" },
+      { slot: "overview", component: "comp-def-session-overview-card" },
+      { slot: "intent", component: "comp-def-intent-rich-panel" },
+      { slot: "requirements", component: "comp-def-requirements-grid-section" },
+      { slot: "insights", component: "comp-def-insights-panel" },
+      { slot: "context", component: "comp-def-context-footer" },
+      { slot: "actions", component: "comp-def-phase-actions-section" },
+    ],
+    dataContext: {
+      phase: "discovery",
+      theme: "midnight-neon",
+      style: {
+        glassCards: true,
+        glowingBorders: true,
+        dramaticEffects: true,
+      },
+    },
   },
   // Analysis phase composition - task-analysis-008
   // Uses compact layout (no header/actions rows) for better space utilization

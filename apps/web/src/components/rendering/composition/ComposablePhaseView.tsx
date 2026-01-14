@@ -1,6 +1,6 @@
 /**
  * ComposablePhaseView Component
- * Task: task-cpv-012
+ * Task: task-cpv-012, task-cb-ui-hot-registration
  *
  * Main renderer component that composes phase views from data-driven
  * section components. Looks up Composition by phase name, resolves
@@ -12,7 +12,7 @@
  * 2. compositionCollection.findByName(phaseName) -> Composition entity
  * 3. composition.layout -> LayoutTemplate reference
  * 4. composition.toSlotSpecs() -> SlotSpec[] (slotName, sectionRef, config)
- * 5. getSectionComponent(sectionRef) -> React Component
+ * 5. DynamicSectionRenderer(sectionRef) -> React Component (with hot registration support)
  * 6. <SlotLayout layout={template}>{slotChildren}</SlotLayout>
  *
  * @example
@@ -28,7 +28,7 @@ import { observer } from "mobx-react-lite"
 import type { ReactNode } from "react"
 import { useDomains } from "@/contexts/DomainProvider"
 import { SlotLayout } from "./SlotLayout"
-import { getSectionComponent } from "../sectionImplementations"
+import { DynamicSectionRenderer } from "../sectionImplementations"
 import { getProviderComponent } from "./providerImplementationMap"
 import type { SlotSpec } from "@shogo/state-api"
 
@@ -104,11 +104,16 @@ export const ComposablePhaseView = observer(function ComposablePhaseView({
 
   // 5. Resolve each sectionRef to a React component and build slot children
   // Group by slot name to support slot stacking (multiple sections in same slot)
+  // Uses DynamicSectionRenderer for hot registration support (task-cb-ui-hot-registration)
   const slotChildren: Record<string, ReactNode | ReactNode[]> = {}
   for (const spec of slotSpecs) {
-    const SectionComponent = getSectionComponent(spec.sectionRef)
     const element = (
-      <SectionComponent key={spec.sectionRef} feature={feature} config={spec.config} />
+      <DynamicSectionRenderer
+        key={spec.sectionRef}
+        sectionName={spec.sectionRef}
+        feature={feature}
+        config={spec.config}
+      />
     )
 
     // If slot already has content, convert to array or push to existing array

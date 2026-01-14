@@ -79,8 +79,12 @@ interface RecentToolCall {
 // Map section names (from set_workspace) to component-builder IDs
 const SECTION_TO_COMPONENT: Record<string, string> = {
   'DesignContainerSection': 'comp-design-container',
-  'WorkspaceBlankStateSection': 'comp-workspace-blank-state',
-  // Add more as sections are registered
+  'SpecContainerSection': 'comp-spec-container',
+  'WorkspaceBlankStateSection': 'comp-def-workspace-blank-state-section',
+  'ComponentBuilderSection': 'comp-component-builder',
+  'DynamicCompositionSection': 'comp-dynamic-composition',
+  'PlanPreviewSection': 'comp-plan-preview-section',
+  'DataGridSection': 'comp-data-grid-section',
 }
 
 // Map layout names to layout template IDs
@@ -143,6 +147,8 @@ export interface ChatPanelProps {
   isCollapsed?: boolean
   /** Callback when collapse state changes (for parent layout control) */
   onCollapsedChange?: (collapsed: boolean) => void
+  /** Callback when width changes (for parent layout control) */
+  onWidthChange?: (width: number) => void
 }
 
 // ============================================================
@@ -289,6 +295,7 @@ const COMPONENT_BUILDER_MODEL_MAP: Record<string, string> = {
   RendererBinding: "rendererBindingCollection",
   LayoutTemplate: "layoutTemplateCollection",
   Composition: "compositionCollection",
+  ComponentSpec: "componentSpecCollection",
 }
 
 /**
@@ -407,6 +414,7 @@ export const ChatPanel = observer(function ChatPanel({
   onChatSessionChange,
   isCollapsed: controlledIsCollapsed,
   onCollapsedChange,
+  onWidthChange,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
@@ -441,6 +449,12 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Guard ref to prevent duplicate session creation (fixes race condition)
   const sessionCreationInProgressRef = useRef<string | null>(null)
+
+  // Sync initial width to parent on mount (fixes width desync between parent and ChatPanel)
+  useEffect(() => {
+    onWidthChange?.(width)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // Only on mount - width from localStorage needs to sync to parent
 
   // Find or create chat session for feature and phase (task-cpbi-005)
   // Session is uniquely identified by (featureId, phase) tuple
@@ -739,10 +753,10 @@ export const ChatPanel = observer(function ChatPanel({
           const args = event.args as {
             operations?: Array<{
               domain: string
-              action: 'create' | 'update' | 'delete'
+              action: 'create' | 'update' | 'delete' | 'load'
               model: string
               id?: string
-              data: Record<string, unknown>
+              data?: Record<string, unknown>
             }>
           }
 
@@ -783,6 +797,15 @@ export const ChatPanel = observer(function ChatPanel({
                   if (op.id) {
                     await collection.deleteOne(op.id)
                     console.log(`[ChatPanel:VirtualTool] ✅ Deleted: ${op.domain}.${op.model} id=${op.id}`)
+                  }
+                  break
+                case 'load':
+                  // Load collection data via query() into client store
+                  if (collection.query) {
+                    const results = await collection.query().toArray()
+                    console.log(`[ChatPanel:VirtualTool] ✅ Loaded: ${op.domain}.${op.model} (${results?.length ?? 0} items)`)
+                  } else {
+                    console.warn(`[ChatPanel:VirtualTool] ⚠️ Collection ${collectionName} doesn't support query`)
                   }
                   break
               }
@@ -1380,6 +1403,7 @@ export const ChatPanel = observer(function ChatPanel({
         const delta = resizeRef.current.startX - moveEvent.clientX
         const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeRef.current.startWidth + delta))
         setWidth(newWidth)
+        onWidthChange?.(newWidth)
       }
 
       const handleMouseUp = () => {
@@ -1388,6 +1412,7 @@ export const ChatPanel = observer(function ChatPanel({
           const delta = resizeRef.current.startX - (window as any).lastMouseX || 0
           const finalWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeRef.current.startWidth + delta))
           setStoredWidth(finalWidth)
+          onWidthChange?.(finalWidth)
         }
         resizeRef.current = null
         document.removeEventListener("mousemove", handleMouseMove)
@@ -1403,7 +1428,7 @@ export const ChatPanel = observer(function ChatPanel({
       document.addEventListener("mousemove", trackMouseMove)
       document.addEventListener("mouseup", handleMouseUp)
     },
-    [width]
+    [width, onWidthChange]
   )
 
   // Error retry handler
