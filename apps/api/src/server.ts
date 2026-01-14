@@ -1,23 +1,40 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { streamText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
+import { z } from 'zod'
 import { EventEmitter } from 'events'
-import type { SubagentProgressEvent } from './types/progress'
-import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
-import { createClaudeCode } from 'ai-sdk-provider-claude-code'
+import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
+// isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
+import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
+import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-provider-claude-code'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { auth } from './auth'
 import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
 
 /**
+ * Parse a data URL to extract mediaType and base64 data.
+ * Example: "data:image/png;base64,iVBORw0..." -> { mediaType: "image/png", base64Data: "iVBORw0..." }
+ *
+ * task-api-convert-images: Helper for image part conversion
+ */
+function parseDataUrl(dataUrl: string): { mimeType: string; base64Data: string } | null {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
+  if (!match) return null
+  return { mimeType: match[1], base64Data: match[2] }
+}
+
+/**
  * Convert UIMessage format (from @ai-sdk/react v3) to CoreMessage format (for streamText).
  *
  * UIMessage uses `parts` array: { parts: [{ type: "text", text: "..." }], role, id }
- * CoreMessage uses `content` string: { role, content: "..." }
+ * CoreMessage uses `content` string or array: { role, content: "..." | Array<TextPart | ImagePart> }
  *
  * chat-session-sync-fix: Required because v3 sendMessage() sends UIMessage format,
  * but streamText() expects CoreMessage format.
+ *
+ * task-api-convert-images: Extended to handle file parts with image mediaTypes.
+ * File parts with image/* mediaType are converted to ImagePart format for Claude API.
  */
 function convertUIMessagesToCoreMessages(messages: any[]): ModelMessage[] {
   return messages.map((msg) => {
@@ -26,13 +43,41 @@ function convertUIMessagesToCoreMessages(messages: any[]): ModelMessage[] {
       return { role: msg.role, content: msg.content }
     }
 
-    // If message has parts array (UIMessage format), extract text content
+    // If message has parts array (UIMessage format), process all part types
     if (Array.isArray(msg.parts)) {
-      const textContent = msg.parts
-        .filter((part: any) => part.type === 'text')
-        .map((part: any) => part.text)
-        .join('')
-      return { role: msg.role, content: textContent }
+      const contentParts: Array<{ type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }> = []
+
+      for (const part of msg.parts) {
+        if (part.type === 'text' && part.text) {
+          // Text parts: extract text content
+          contentParts.push({ type: 'text', text: part.text })
+        } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
+          // File parts with image mediaType: convert to ImagePart
+          // The url field contains the data URL (data:image/png;base64,...)
+          const parsed = parseDataUrl(part.url || '')
+          if (parsed) {
+            contentParts.push({
+              type: 'image',
+              image: parsed.base64Data,
+              mimeType: parsed.mimeType,
+            })
+          }
+        }
+        // Non-image file parts are gracefully ignored
+      }
+
+      // If we only have text parts, return as simple string (backward compatible)
+      if (contentParts.length === 1 && contentParts[0].type === 'text') {
+        return { role: msg.role, content: contentParts[0].text }
+      }
+
+      // If we have mixed content or only images, return as array
+      if (contentParts.length > 0) {
+        return { role: msg.role, content: contentParts }
+      }
+
+      // Fallback: empty content
+      return { role: msg.role, content: '' }
     }
 
     // Fallback: return as-is (may fail validation, but better than silent data loss)
@@ -53,12 +98,119 @@ const PROJECT_ROOT = resolve(__filename, '../../../../')
 // Progress event emitter for streaming subagent updates (task-subagent-progress-streaming)
 const progressEvents = new EventEmitter()
 
+// Virtual tool event emitter for streaming client-side execution instructions
+// (virtual-tools-domain Phase 0 PoC)
+const virtualToolEvents = new EventEmitter()
+
 // Stream completion event emitter - signals when parent agent finishes (fixes subagent hang)
 // This is separate from progressEvents to avoid confusion between progress updates and completion signals
 const streamCompletionEvents = new EventEmitter()
 
 // Debug logging prefix for subagent progress
 const LOG_PREFIX = '[SubagentProgress]'
+const VT_LOG_PREFIX = '[VirtualTool]'
+
+// Create SDK MCP server for virtual tools (in-process, call-site defined)
+// These tools execute in our API server process and emit events for client-side effects
+const virtualToolsServer = createSdkMcpServer({
+  name: 'virtual-tools',
+  version: '1.0.0',
+  tools: [
+    sdkTool(
+      'navigate_to_phase',
+      'Navigate the user to a different pipeline phase in the Shogo Studio UI. Use when user asks to go to a different phase like "take me to design" or "let\'s move to implementation".',
+      {
+        phase: z.enum(['discovery', 'analysis', 'classification', 'design', 'spec', 'testing', 'implementation', 'complete'])
+          .describe('The target phase to navigate to'),
+      },
+      async (args) => {
+        console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing:`, args)
+
+        // Emit event for client-side execution
+        const event: VirtualToolEvent = {
+          type: 'virtual-tool-execute',
+          toolUseId: `vt-${Date.now()}`,
+          toolName: 'navigate_to_phase',
+          args: args as Record<string, unknown>,
+          timestamp: Date.now(),
+        }
+        virtualToolEvents.emit('virtual-tool', event)
+        console.log(`${VT_LOG_PREFIX} ✅ Emitted virtual tool event`)
+
+        return {
+          content: [{
+            type: 'text',
+            text: `Navigation initiated to ${args.phase} phase`
+          }]
+        }
+      }
+    ),
+    // set_workspace: Declaratively set workspace state (v2 architecture)
+    // Client handler updates workspace Composition entity based on desired state
+    // NOTE: Using z.any() for complex nested types to avoid SDK schema validation issues
+    sdkTool(
+      'set_workspace',
+      'Set the workspace to a desired state. Describe what panels should be visible and how configured. Use for showing schemas, splitting layouts, or any workspace changes. Each panel has: slot (string: "main", "left", "right", "sidebar"), section (string: "DesignContainerSection", "WorkspaceBlankStateSection"), and optional config object (e.g., { schemaName: "platform-features" }).',
+      {
+        layout: z.enum(['single', 'split-h', 'split-v']).optional()
+          .describe('Layout mode for the workspace'),
+        panels: z.array(z.any())
+          .describe('Array of panel objects with slot, section, and optional config'),
+      },
+      async (args) => {
+        console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing set_workspace:`, args)
+
+        const event: VirtualToolEvent = {
+          type: 'virtual-tool-execute',
+          toolUseId: `vt-${Date.now()}`,
+          toolName: 'set_workspace',
+          args: args as Record<string, unknown>,
+          timestamp: Date.now(),
+        }
+        virtualToolEvents.emit('virtual-tool', event)
+        console.log(`${VT_LOG_PREFIX} ✅ Emitted set_workspace virtual tool event`)
+
+        return {
+          content: [{
+            type: 'text',
+            text: `Workspace updated with ${args.panels?.length ?? 0} panel(s)`
+          }]
+        }
+      }
+    ),
+    // execute: Generic domain operations (v2 architecture)
+    // Client handler executes state operations across domain stores
+    // NOTE: Using z.any() for complex nested types to avoid SDK schema validation issues
+    sdkTool(
+      'execute',
+      'Execute state operations on the client. Use for creating/updating/deleting entities across domains. Each operation has: domain ("component-builder"|"studio-chat"|"platform-features"), action ("create"|"update"|"delete"), model (string like "Composition", "FeatureSession"), optional id (required for update/delete), and data object.',
+      {
+        operations: z.array(z.any())
+          .describe('Array of operation objects with domain, action, model, optional id, and data'),
+      },
+      async (args) => {
+        console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing execute:`, args)
+
+        const event: VirtualToolEvent = {
+          type: 'virtual-tool-execute',
+          toolUseId: `vt-${Date.now()}`,
+          toolName: 'execute',
+          args: args as Record<string, unknown>,
+          timestamp: Date.now(),
+        }
+        virtualToolEvents.emit('virtual-tool', event)
+        console.log(`${VT_LOG_PREFIX} ✅ Emitted execute virtual tool event`)
+
+        return {
+          content: [{
+            type: 'text',
+            text: `Executed ${args.operations?.length ?? 0} operation(s)`
+          }]
+        }
+      }
+    ),
+  ]
+})
 
 // Create Claude Code provider scoped to this project
 // This enables:
@@ -67,19 +219,28 @@ const LOG_PREFIX = '[SubagentProgress]'
 // - Project-specific settings
 const claudeCode = createClaudeCode({
   defaultSettings: {
+    // Enable streaming input - REQUIRED for hooks to fire
+    // See: https://ai-sdk.dev/providers/claude-code (hooks require streaming input)
+    streamingInput: 'always',
     // Set working directory to project root
     cwd: PROJECT_ROOT,
     // Load project settings (picks up .claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
-    // Wavesmith MCP server - matches .mcp.json config
+    // MCP servers - Wavesmith for data + Virtual tools for client-side effects
     mcpServers: {
       wavesmith: {
         command: 'bun',
         args: ['run', 'packages/mcp/src/server.ts'],
       },
+      // SDK MCP server for virtual tools (in-process, defined above)
+      'virtual-tools': virtualToolsServer,
     },
     // Allow MCP tools, file operations, and skill invocation
     allowedTools: [
+      // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
+      'mcp__virtual-tools__navigate_to_phase',
+      'mcp__virtual-tools__set_workspace',
+      'mcp__virtual-tools__execute',
       // File operations
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
       // Skill and agent tools (required for /platform-feature-* skills)
@@ -141,7 +302,12 @@ const claudeCode = createClaudeCode({
     // Bypass permission prompts for non-interactive API use
     permissionMode: 'bypassPermissions',
     // Hooks for subagent progress streaming (task-subagent-progress-streaming)
+    // and virtual tool interception (virtual-tools-domain Phase 0 PoC)
     hooks: {
+      // PreToolUse: Currently unused - virtual tools handled via sdkTool()
+      // SDK tools (virtualToolsServer) are the single execution path for virtual tools.
+      // See: sdkTool('set_workspace', ...), sdkTool('execute', ...), sdkTool('navigate_to_phase', ...)
+      // Keeping hook structure for future non-virtual-tool interceptors if needed.
       SubagentStart: [{
         hooks: [async (rawInput: unknown) => {
           const input = rawInput as SubagentStartHookInput
@@ -254,6 +420,21 @@ You have access to the Wavesmith MCP server with these tools:
 - store_models - List available models in a schema
 - data_load, data_loadAll - Load data from persistence
 
+You also have access to virtual tools for UI control:
+- navigate_to_phase: Navigate the user to a different pipeline phase
+  Arguments: { phase: "discovery" | "analysis" | "classification" | "design" | "spec" | "testing" | "implementation" | "complete" }
+  Example: When user says "take me to the design phase" or "let's move to implementation", call this tool.
+- set_workspace: Declaratively set workspace state
+  Arguments: { layout?: "single"|"split-h"|"split-v", panels: [{ slot, section, config? }] }
+  Example: set_workspace({ panels: [{ slot: "main", section: "DesignContainerSection", config: { schemaName: "platform-features" } }] })
+  Use this to show schemas, change layouts, or display any combination of panels.
+  Available sections: DesignContainerSection, WorkspaceBlankStateSection
+
+- execute: Run domain operations on client state
+  Arguments: { operations: [{ domain, action, model, id?, data }] }
+  Example: execute({ operations: [{ domain: "platform-features", action: "update", model: "FeatureSession", id: "...", data: { status: "design" } }] })
+  Use for creating/updating/deleting entities. Domains: component-builder, studio-chat, platform-features
+
 Available schemas:
 - platform-features: Feature sessions, requirements, analysis findings, integration points, tasks, test specs
 - component-builder: UI composition system - ComponentDefinition, Composition, LayoutTemplate, Registry, RendererBinding
@@ -266,8 +447,10 @@ You can help users:
 - Query and update data
 - Inspect and modify UI compositions (use component-builder schema)
 - Explain data modeling concepts and best practices
+- Navigate between pipeline phases when requested
 
 When users ask to create schemas or data, use the appropriate MCP tools.
+When users ask to navigate to a phase, use the navigate_to_phase tool.
 When users ask about phase views, compositions, or UI sections, query the component-builder schema.
 Be concise and practical. Show tool results when relevant.`
 
@@ -350,6 +533,8 @@ app.post('/api/chat', async (c) => {
     // task-subagent-progress-streaming: Buffer events BEFORE starting streamText
     // This fixes the race condition where SubagentStart fires before the stream listener is attached
     const eventBuffer: SubagentProgressEvent[] = []
+    // virtual-tools-domain: Buffer for virtual tool events
+    const virtualToolBuffer: VirtualToolEvent[] = []
     let streamWriter: { write: (data: any) => void } | null = null
 
     // Stream completion signal - resolves when Stop or SessionEnd hook fires
@@ -371,10 +556,11 @@ app.post('/api/chat', async (c) => {
       // Write final session event to stream before closing (if we have streamWriter)
       if (streamWriter && info.sessionId) {
         console.log(`${LOG_PREFIX} 📨 Writing final session event to stream:`, info.sessionId)
+        // Use message-metadata chunk type for session ID (AI SDK 6.x format)
         streamWriter.write({
-          type: 'data-session' as const,
-          data: { ccSessionId: info.sessionId },
-        } as any)
+          type: 'message-metadata',
+          messageMetadata: { ccSessionId: info.sessionId },
+        })
       }
       streamCompleteResolver?.()
     }
@@ -383,12 +569,14 @@ app.post('/api/chat', async (c) => {
     const onProgress = (event: SubagentProgressEvent) => {
       console.log(`${LOG_PREFIX} 📥 Received progress event:`, event)
       if (streamWriter) {
-        // Stream is ready, write directly
+        // Stream is ready, write directly using AI SDK 6.x data-{name} format
+        // The `data-progress` type allows custom data to flow through the stream
         streamWriter.write({
-          type: 'data-progress' as const,
+          type: 'data-progress',
+          id: `progress-${Date.now()}`,
           data: event,
-        } as any)
-        console.log(`${LOG_PREFIX} ✅ Wrote data-progress to stream (live)`)
+        })
+        console.log(`${LOG_PREFIX} ✅ Wrote data-progress part to stream (live)`)
       } else {
         // Stream not ready yet, buffer the event
         eventBuffer.push(event)
@@ -396,16 +584,40 @@ app.post('/api/chat', async (c) => {
       }
     }
 
-    // Attach listener BEFORE calling streamText
+    // virtual-tools-domain: Handle virtual tool events for client-side execution
+    const onVirtualTool = (event: VirtualToolEvent) => {
+      console.log(`${VT_LOG_PREFIX} 📥 Received virtual tool event:`, event)
+      if (streamWriter) {
+        // Stream is ready, write directly using AI SDK 6.x data-{name} format
+        streamWriter.write({
+          type: 'data-virtual-tool',
+          id: `vt-${Date.now()}`,
+          data: event,
+        })
+        console.log(`${VT_LOG_PREFIX} ✅ Wrote data-virtual-tool part to stream (live)`)
+      } else {
+        // Stream not ready yet, buffer the event
+        virtualToolBuffer.push(event)
+        console.log(`${VT_LOG_PREFIX} 📦 Buffered event (stream not ready), buffer size:`, virtualToolBuffer.length)
+      }
+    }
+
+    // Attach listeners BEFORE calling streamText
     console.log(`${LOG_PREFIX} 👂 Attaching progress listener BEFORE streamText`)
     progressEvents.on('progress', onProgress)
+    console.log(`${VT_LOG_PREFIX} 👂 Attaching virtual tool listener BEFORE streamText`)
+    virtualToolEvents.on('virtual-tool', onVirtualTool)
 
     // chat-session-sync-fix: Send FULL message history every time
     // Claude Code handles deduplication internally via its session files
     // Old message-filtering logic was removed in favor of passing full array
     const result = streamText({
       // Type assertion for ai-sdk-provider-claude-code compatibility with ai@6
-      model: claudeCode('sonnet', modelSettings) as Parameters<typeof streamText>[0]['model'],
+      // task-api-convert-images: streamingInput required for image support
+      model: claudeCode('sonnet', {
+        ...modelSettings,
+        streamingInput: 'always',  // Required for image parts to be sent to Claude
+      }) as Parameters<typeof streamText>[0]['model'],
       system: systemPrompt,
       messages: coreMessages,
     })
@@ -424,11 +636,25 @@ app.post('/api/chat', async (c) => {
           console.log(`${LOG_PREFIX} 📤 Flushing ${eventBuffer.length} buffered events`)
           for (const bufferedEvent of eventBuffer) {
             writer.write({
-              type: 'data-progress' as const,
+              type: 'data-progress',
+              id: `progress-${Date.now()}`,
               data: bufferedEvent,
-            } as any)
+            })
           }
           eventBuffer.length = 0 // Clear buffer
+        }
+
+        // virtual-tools-domain: Flush buffered virtual tool events
+        if (virtualToolBuffer.length > 0) {
+          console.log(`${VT_LOG_PREFIX} 📤 Flushing ${virtualToolBuffer.length} buffered virtual tool events`)
+          for (const bufferedEvent of virtualToolBuffer) {
+            writer.write({
+              type: 'data-virtual-tool',
+              id: `vt-${Date.now()}`,
+              data: bufferedEvent,
+            })
+          }
+          virtualToolBuffer.length = 0 // Clear buffer
         }
 
         try {
@@ -484,15 +710,18 @@ app.post('/api/chat', async (c) => {
           // Cleanup: remove progress listener to prevent memory leak
           console.log(`${LOG_PREFIX} 🧹 Removing progress listener (stream ending)`)
           progressEvents.off('progress', onProgress)
+          virtualToolEvents.off('virtual-tool', onVirtualTool)
           streamCompletionEvents.off('complete', onStreamComplete)
           streamWriter = null
           console.log(`${LOG_PREFIX} 📊 Remaining listener count:`, progressEvents.listenerCount('progress'))
+          console.log(`${VT_LOG_PREFIX} 📊 Remaining listener count:`, virtualToolEvents.listenerCount('virtual-tool'))
         }
       },
       onError: (error) => {
         console.error('[/api/chat] Stream error:', error)
         // Cleanup on error too
         progressEvents.off('progress', onProgress)
+        virtualToolEvents.off('virtual-tool', onVirtualTool)
         streamCompletionEvents.off('complete', onStreamComplete)
         streamWriter = null
         return 'An error occurred during streaming'

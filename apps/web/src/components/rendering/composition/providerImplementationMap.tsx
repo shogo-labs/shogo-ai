@@ -22,6 +22,7 @@ import type { ComponentType, ReactNode } from "react"
 import { AnalysisPanelProvider } from "../sections/analysis/AnalysisPanelContext"
 import { TestingPanelProvider } from "../sections/testing/TestingPanelContext"
 import { ImplementationPanelProvider } from "../sections/implementation/ImplementationPanelContext"
+import { WorkspaceProvider } from "../sections/workspace/WorkspaceContext"
 
 /**
  * Props passed to provider wrapper components.
@@ -80,6 +81,8 @@ export const providerImplementationMap = new Map<
   ["TestingPanelProvider", TestingPanelProvider],
   // Implementation phase provider - coordinates selectedExecutionId, latestRun, sortedExecutions, currentTDDStage
   ["ImplementationPanelProvider", ImplementationPanelProvider],
+  // Workspace provider - coordinates dynamic workspace state for advanced-chat
+  ["WorkspaceProvider", WorkspaceProvider],
 ])
 
 /**

@@ -3,6 +3,7 @@ import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { createClient } from '@supabase/supabase-js'
 import { AuthGate, AppShell } from '@/components/app'
 import { WorkspaceLayout } from '@/components/app/workspace'
+import { AdvancedChatLayout } from './components/app/advanced-chat'
 import { HomePage } from './pages/HomePage'
 import { Unit1Page } from './pages/Unit1Page'
 import { Unit2Page } from './pages/Unit2Page'
@@ -156,10 +157,8 @@ function App() {
                   }>
                     {/* WorkspaceLayout as index route (task-2-2-004) */}
                     <Route index element={<WorkspaceLayout />} />
-                    {/* Member management route */}
-                    <Route path="members" element={<AppMemberManagementPage />} />
-                    {/* User profile route */}
-                    <Route path="profile" element={<AppProfilePage />} />
+                    {/* Advanced Chat testbed route (task-testbed-route) */}
+                    <Route path="advanced-chat" element={<AdvancedChatLayout />} />
                   </Route>
                 </Routes>
               </AuthProvider>

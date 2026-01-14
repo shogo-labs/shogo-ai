@@ -33,6 +33,7 @@ export const StudioChatDomain = scope({
     session: "ChatSession", // Reference to ChatSession
     role: "'user' | 'assistant'",
     content: "string",
+    "imageData?": "string", // Optional data URL for image attachments (data:image/{type};base64,{data})
     createdAt: "number",
   },
 
@@ -93,6 +94,15 @@ export const studioChatDomain = domain({
           if (model) return `${self.toolName}: ${model}`
           if (schema) return `${self.toolName}: ${schema}`
           return self.toolName
+        },
+      })),
+
+      ChatMessage: models.ChatMessage.views((self: any) => ({
+        /**
+         * Returns true if this message has an attached image
+         */
+        get hasImage(): boolean {
+          return self.imageData != null && self.imageData !== ""
         },
       })),
 
@@ -162,15 +172,17 @@ export const studioChatDomain = domain({
 
         /**
          * Find session for specific feature and phase
+         * Note: null and undefined are treated as equivalent for phase matching
          */
-        findByFeatureAndPhase(featureId: string, phase: string): any {
+        findByFeatureAndPhase(featureId: string, phase: string | null | undefined): any {
           return self
             .all()
             .find(
               (s: any) =>
                 s.contextType === "feature" &&
                 s.contextId === featureId &&
-                s.phase === phase
+                // Treat null and undefined as equivalent for phase matching
+                (phase == null ? s.phase == null : s.phase === phase)
             ) ?? null
         },
 
@@ -261,6 +273,7 @@ export const studioChatDomain = domain({
           sessionId: string
           role: "user" | "assistant"
           content: string
+          imageData?: string // Optional data URL for image attachments
         }): Promise<any> {
           const session = self.chatSessionCollection.get(data.sessionId)
           if (!session) {
@@ -280,6 +293,7 @@ export const studioChatDomain = domain({
             session: data.sessionId,
             role: data.role,
             content: data.content,
+            imageData: data.imageData,
             createdAt: now,
           })
         },

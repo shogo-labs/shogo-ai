@@ -115,7 +115,7 @@ export function SubagentStats({
 
             return (
               <div
-                key={tool.id}
+                key={`subagent-${tool.id}`}
                 className="flex items-center gap-1.5 text-[10px]"
                 style={{ opacity }}
               >

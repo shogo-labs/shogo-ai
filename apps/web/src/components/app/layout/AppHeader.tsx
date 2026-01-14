@@ -20,6 +20,7 @@
  */
 
 import { observer } from "mobx-react-lite"
+import { ThemeToggle, AdvancedModeToggle } from "../shared"
 import { Link } from "react-router-dom"
 import { Users } from "lucide-react"
 import { ThemeToggle } from "../shared/ThemeToggle"
@@ -90,6 +91,7 @@ export const AppHeader = observer(function AppHeader() {
 
       {/* Right: Controls */}
       <div className="flex items-center gap-2">
+        <AdvancedModeToggle />
         <ThemeToggle />
         <UserMenu />
       </div>

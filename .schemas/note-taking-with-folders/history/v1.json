@@ -1,0 +1,109 @@
+{
+  "id": "0e9abaa2-c545-4b84-904c-3d21db824876",
+  "name": "note-taking-with-folders",
+  "format": "enhanced-json-schema",
+  "createdAt": 1767933742829,
+  "version": 1,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "note-taking-with-folders",
+  "$defs": {
+    "Note": {
+      "type": "object",
+      "description": "A user-created note with title and content",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "title": {
+          "type": "string",
+          "description": "Note title"
+        },
+        "content": {
+          "type": "string",
+          "description": "Note content (plain text, markdown, or HTML)"
+        },
+        "folder": {
+          "type": "string",
+          "description": "Optional parent folder",
+          "x-arktype": "Folder",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Folder"
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Timestamp when note was created"
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Timestamp when note was last modified"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "content",
+        "createdAt"
+      ],
+      "x-original-name": "Note"
+    },
+    "Folder": {
+      "type": "object",
+      "description": "A folder for organizing notes hierarchically",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "description": "Folder name"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Optional parent folder for nested hierarchy",
+          "x-arktype": "Folder",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Folder"
+        },
+        "notes": {
+          "type": "array",
+          "description": "Computed inverse array of notes in this folder",
+          "x-arktype": "Note[]",
+          "x-reference-type": "array",
+          "x-computed": true,
+          "x-inverse": "folder"
+        },
+        "subfolders": {
+          "type": "array",
+          "description": "Computed inverse array of child folders",
+          "x-arktype": "Folder[]",
+          "x-reference-type": "array",
+          "x-computed": true,
+          "x-inverse": "parent"
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Timestamp when folder was created"
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Timestamp when folder was last modified"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "createdAt"
+      ],
+      "x-original-name": "Folder"
+    }
+  },
+  "x-persistence": {
+    "backend": "postgres"
+  }
+}
