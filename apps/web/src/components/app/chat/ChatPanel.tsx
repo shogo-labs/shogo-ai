@@ -528,6 +528,16 @@ export const ChatPanel = observer(function ChatPanel({
     ? studioChat.chatSessionCollection.get(currentSessionId)
     : null
 
+  // Derive messages from MobX view (reactive due to observer)
+  // This is read during render, so MobX tracks it and triggers re-render when data changes
+  // Used for syncing persisted messages to AI SDK state
+  const persistedMessagesFromMobX = currentSessionId
+    ? studioChat.chatMessageCollection.findBySession?.(currentSessionId) ?? []
+    : []
+
+  // Loading guard ref to prevent duplicate message queries
+  const isLoadingMessagesRef = useRef(false)
+
   // Initialize ccSessionId from existing session (task-cc-chatpanel-integration)
   // This ensures session continuity when reloading the page or switching sessions
   useEffect(() => {
@@ -1223,32 +1233,41 @@ export const ChatPanel = observer(function ChatPanel({
     prevIsStreamingRef.current = isStreaming
   }, [isStreaming])
 
-  // Load persisted messages when session changes
-  // Note: chatMessageCollection is a MobX observable - do NOT include it in deps array
-  // as that causes re-runs whenever messages are added/removed, resetting the UI state.
-  // This effect should only run when the SESSION changes (on mount or session switch).
+  // Effect 1: Trigger data loading for chat messages
+  // query().toArray() syncs remote data to MST, MobX reactivity handles the rest
+  // Uses loading guard to prevent duplicate queries
   useEffect(() => {
-    if (currentSessionId) {
-      const persistedMessages = studioChat.chatMessageCollection.findBySession?.(currentSessionId) ?? []
-      if (persistedMessages.length > 0) {
-        const aiMessages = persistedMessages.map((msg: any) => ({
-          id: msg.id,
-          role: msg.role as "user" | "assistant",
-          content: msg.content,
-        }))
-        setMessages(aiMessages)
-        // Scroll to bottom after messages load - use setTimeout to ensure DOM has rendered
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
-        }, 50)
-      } else {
-        setMessages([])
-      }
-    } else {
+    if (currentSessionId && !isLoadingMessagesRef.current) {
+      isLoadingMessagesRef.current = true
+      studioChat.chatMessageCollection.query().toArray()
+        .catch(err => console.error('[ChatPanel] Failed to load messages:', err))
+        .finally(() => { isLoadingMessagesRef.current = false })
+    }
+  }, [currentSessionId])
+
+  // Effect 2: Sync MobX → AI SDK state when data arrives
+  // persistedMessagesFromMobX is derived from MobX (reactive due to observer)
+  // Using length as a stable primitive dep to detect when data changes
+  useEffect(() => {
+    if (persistedMessagesFromMobX.length > 0) {
+      const aiMessages = persistedMessagesFromMobX.map((msg: any) => ({
+        id: msg.id,
+        role: msg.role as "user" | "assistant",
+        content: msg.content,
+      }))
+      setMessages(aiMessages)
+      // Scroll to bottom after messages load - use setTimeout to ensure DOM has rendered
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
+      }, 50)
+    } else if (currentSessionId) {
+      // Only clear if we have a session but no messages
       setMessages([])
     }
+    // Note: persistedMessagesFromMobX.length used as stable primitive dep
+    // currentSessionId ensures effect runs on session switch even with same count
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSessionId, setMessages])
+  }, [currentSessionId, persistedMessagesFromMobX.length, setMessages])
 
   // Notify parent of streaming state changes (task-3-1-007)
   // This allows WorkspaceLayout to pause polling during active streaming
