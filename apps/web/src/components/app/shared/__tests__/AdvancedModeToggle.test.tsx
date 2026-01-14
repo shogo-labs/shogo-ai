@@ -4,7 +4,7 @@
  *
  * Tests verify:
  * 1. Toggle renders in header with correct icon based on current route
- * 2. Clicking navigates to correct route (/app or /app/advanced-chat)
+ * 2. Clicking navigates to correct route (/ or /advanced-chat)
  * 3. URL params (org, project) are preserved on navigation
  * 4. Preference is persisted to localStorage key 'advanced-chat-preferred'
  * 5. Uses shadcn Button with variant='ghost' size='icon'
@@ -61,12 +61,12 @@ function LocationDisplay() {
 }
 
 // Helper to render with router
-function renderWithRouter(initialPath: string = "/app") {
+function renderWithRouter(initialPath: string = "/") {
   return render(
     <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
-        <Route path="/app" element={<><AdvancedModeToggle /><LocationDisplay /></>} />
-        <Route path="/app/advanced-chat" element={<><AdvancedModeToggle /><LocationDisplay /></>} />
+        <Route path="/" element={<><AdvancedModeToggle /><LocationDisplay /></>} />
+        <Route path="/advanced-chat" element={<><AdvancedModeToggle /><LocationDisplay /></>} />
       </Routes>
     </MemoryRouter>
   )
@@ -77,34 +77,34 @@ function renderWithRouter(initialPath: string = "/app") {
 // ============================================================
 describe("AdvancedModeToggle Rendering", () => {
   test("renders without crashing", () => {
-    const { container } = renderWithRouter("/app")
+    const { container } = renderWithRouter("/")
     const button = container.querySelector("button")
     expect(button).not.toBeNull()
   })
 
   test("renders with ghost variant button styling", () => {
-    const { container } = renderWithRouter("/app")
+    const { container } = renderWithRouter("/")
     const button = container.querySelector("button")
     // Ghost variant has hover:bg-secondary class
     expect(button?.className).toContain("hover:bg-secondary")
   })
 
   test("renders as icon-sized button", () => {
-    const { container } = renderWithRouter("/app")
+    const { container } = renderWithRouter("/")
     const button = container.querySelector("button")
     // Icon size has h-9 w-9 classes
     expect(button?.className).toContain("h-9")
     expect(button?.className).toContain("w-9")
   })
 
-  test("shows LayoutGrid icon when on standard /app route", () => {
-    const { container } = renderWithRouter("/app")
+  test("shows LayoutGrid icon when on standard / route", () => {
+    const { container } = renderWithRouter("/")
     const layoutGridIcon = container.querySelector('[data-testid="layout-grid-icon"]')
     expect(layoutGridIcon).not.toBeNull()
   })
 
-  test("shows Sparkles icon when on /app/advanced-chat route", () => {
-    const { container } = renderWithRouter("/app/advanced-chat")
+  test("shows Sparkles icon when on /advanced-chat route", () => {
+    const { container } = renderWithRouter("/advanced-chat")
     const sparklesIcon = container.querySelector('[data-testid="sparkles-icon"]')
     expect(sparklesIcon).not.toBeNull()
   })
@@ -114,21 +114,21 @@ describe("AdvancedModeToggle Rendering", () => {
 // Test: Navigate to Advanced Chat (test-toggle-navigate-to-advanced)
 // ============================================================
 describe("AdvancedModeToggle Navigate to Advanced", () => {
-  test("navigates from /app to /app/advanced-chat when clicked", () => {
-    const { container } = renderWithRouter("/app")
+  test("navigates from / to /advanced-chat when clicked", () => {
+    const { container } = renderWithRouter("/")
     const button = container.querySelector("button")!
 
-    // Initially on /app
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/app")
+    // Initially on /
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/")
 
     fireEvent.click(button)
 
-    // Now on /app/advanced-chat
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/app/advanced-chat")
+    // Now on /advanced-chat
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/advanced-chat")
   })
 
   test("shows Sparkles icon after navigating to advanced mode", () => {
-    const { container } = renderWithRouter("/app")
+    const { container } = renderWithRouter("/")
     const button = container.querySelector("button")!
 
     // Initially shows LayoutGrid
@@ -143,30 +143,30 @@ describe("AdvancedModeToggle Navigate to Advanced", () => {
   })
 
   test("preserves org param when navigating to advanced", () => {
-    const { container } = renderWithRouter("/app?org=shogo")
+    const { container } = renderWithRouter("/?org=shogo")
     const button = container.querySelector("button")!
 
     fireEvent.click(button)
 
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/app/advanced-chat?org=shogo")
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/advanced-chat?org=shogo")
   })
 
   test("preserves project param when navigating to advanced", () => {
-    const { container } = renderWithRouter("/app?project=abc123")
+    const { container } = renderWithRouter("/?project=abc123")
     const button = container.querySelector("button")!
 
     fireEvent.click(button)
 
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/app/advanced-chat?project=abc123")
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/advanced-chat?project=abc123")
   })
 
   test("preserves org and project params when navigating to advanced", () => {
-    const { container } = renderWithRouter("/app?org=shogo&project=abc123")
+    const { container } = renderWithRouter("/?org=shogo&project=abc123")
     const button = container.querySelector("button")!
 
     fireEvent.click(button)
 
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/app/advanced-chat?org=shogo&project=abc123")
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/advanced-chat?org=shogo&project=abc123")
   })
 })
 
@@ -174,21 +174,21 @@ describe("AdvancedModeToggle Navigate to Advanced", () => {
 // Test: Navigate back to Standard (test-toggle-navigate-to-standard)
 // ============================================================
 describe("AdvancedModeToggle Navigate to Standard", () => {
-  test("navigates from /app/advanced-chat to /app when clicked", () => {
-    const { container } = renderWithRouter("/app/advanced-chat")
+  test("navigates from /advanced-chat to / when clicked", () => {
+    const { container } = renderWithRouter("/advanced-chat")
     const button = container.querySelector("button")!
 
-    // Initially on /app/advanced-chat
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/app/advanced-chat")
+    // Initially on /advanced-chat
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/advanced-chat")
 
     fireEvent.click(button)
 
-    // Now on /app
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/app")
+    // Now on /
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/")
   })
 
   test("shows LayoutGrid icon after navigating to standard mode", () => {
-    const { container } = renderWithRouter("/app/advanced-chat")
+    const { container } = renderWithRouter("/advanced-chat")
     const button = container.querySelector("button")!
 
     // Initially shows Sparkles
@@ -203,21 +203,21 @@ describe("AdvancedModeToggle Navigate to Standard", () => {
   })
 
   test("preserves org param when navigating to standard", () => {
-    const { container } = renderWithRouter("/app/advanced-chat?org=shogo")
+    const { container } = renderWithRouter("/advanced-chat?org=shogo")
     const button = container.querySelector("button")!
 
     fireEvent.click(button)
 
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/app?org=shogo")
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/?org=shogo")
   })
 
   test("preserves project param when navigating to standard", () => {
-    const { container } = renderWithRouter("/app/advanced-chat?project=abc123")
+    const { container } = renderWithRouter("/advanced-chat?project=abc123")
     const button = container.querySelector("button")!
 
     fireEvent.click(button)
 
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/app?project=abc123")
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/?project=abc123")
   })
 })
 
@@ -228,7 +228,7 @@ describe("AdvancedModeToggle localStorage Persistence", () => {
   test("saves 'true' to localStorage when switching to advanced mode", () => {
     window.localStorage.clear()
 
-    const { container } = renderWithRouter("/app")
+    const { container } = renderWithRouter("/")
     const button = container.querySelector("button")!
 
     fireEvent.click(button)
@@ -239,7 +239,7 @@ describe("AdvancedModeToggle localStorage Persistence", () => {
   test("saves 'false' to localStorage when switching to standard mode", () => {
     window.localStorage.clear()
 
-    const { container } = renderWithRouter("/app/advanced-chat")
+    const { container } = renderWithRouter("/advanced-chat")
     const button = container.querySelector("button")!
 
     fireEvent.click(button)
@@ -250,7 +250,7 @@ describe("AdvancedModeToggle localStorage Persistence", () => {
   test("uses localStorage key 'advanced-chat-preferred'", () => {
     window.localStorage.clear()
 
-    const { container } = renderWithRouter("/app")
+    const { container } = renderWithRouter("/")
     const button = container.querySelector("button")!
 
     fireEvent.click(button)
@@ -265,28 +265,28 @@ describe("AdvancedModeToggle localStorage Persistence", () => {
 // ============================================================
 describe("AdvancedModeToggle Accessibility", () => {
   test("has accessible button role", () => {
-    const { container } = renderWithRouter("/app")
+    const { container } = renderWithRouter("/")
     const button = container.querySelector("button")
     expect(button).not.toBeNull()
     expect(button?.tagName).toBe("BUTTON")
   })
 
   test("has aria-label for screen readers", () => {
-    const { container } = renderWithRouter("/app")
+    const { container } = renderWithRouter("/")
     const button = container.querySelector("button")
     expect(button?.getAttribute("aria-label")).not.toBeNull()
   })
 
   test("aria-label reflects current mode state", () => {
     // Test standard mode aria-label
-    const { container: standardContainer } = renderWithRouter("/app")
+    const { container: standardContainer } = renderWithRouter("/")
     const standardButton = standardContainer.querySelector("button")
     expect(standardButton?.getAttribute("aria-label")).toContain("advanced")
 
     cleanup()
 
     // Test advanced mode aria-label
-    const { container: advancedContainer } = renderWithRouter("/app/advanced-chat")
+    const { container: advancedContainer } = renderWithRouter("/advanced-chat")
     const advancedButton = advancedContainer.querySelector("button")
     expect(advancedButton?.getAttribute("aria-label")).toContain("standard")
   })

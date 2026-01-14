@@ -21,6 +21,7 @@ import { ComposablePhaseView } from "../../rendering/composition/ComposablePhase
 import { ChatPanel } from "../chat/ChatPanel"
 import { ChatSessionPicker, type ChatSession } from "../chat/ChatSessionPicker"
 import { useChatSessionNavigation } from "./hooks/useChatSessionNavigation"
+import { useWorkspaceNavigation } from "../workspace/hooks/useWorkspaceNavigation"
 import { cn } from "@/lib/utils"
 
 // ============================================================
@@ -43,6 +44,10 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
 
   // Track current chat session in URL (persists across refresh/hot reload)
   const { chatSessionId, setChatSessionId } = useChatSessionNavigation()
+
+  // Register workspace params with nuqs so they're preserved during navigation
+  // Even though we don't use these values, calling the hook ensures nuqs doesn't clear them
+  useWorkspaceNavigation()
 
   // Lift chat panel collapse state to parent to control layout
   const [isChatCollapsed, setIsChatCollapsed] = useState(false)

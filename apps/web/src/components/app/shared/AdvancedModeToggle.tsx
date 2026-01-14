@@ -2,7 +2,7 @@
  * AdvancedModeToggle - Mode switching component for standard/advanced chat
  * Task: task-testbed-mode-toggle
  *
- * Provides a button to toggle between standard (/app) and advanced (/app/advanced-chat) modes.
+ * Provides a button to toggle between standard (/) and advanced (/advanced-chat) modes.
  * Follows the ThemeToggle pattern.
  *
  * Implementation details (per dd-testbed-mode-toggle-behavior):
@@ -33,19 +33,20 @@ export function AdvancedModeToggle() {
   const isAdvanced = location.pathname.includes("/advanced-chat")
 
   const toggleMode = useCallback(() => {
-    // Get current search params to preserve
-    const searchParams = location.search
+    // Read search params directly from window.location (more reliable with nuqs)
+    // useLocation().search can be stale when nuqs updates URL via history API
+    const search = window.location.search
 
     if (isAdvanced) {
-      // Navigate to standard mode
-      navigate(`/app${searchParams}`)
+      // Navigate to standard mode, preserving search params
+      navigate({ pathname: "/", search })
       window.localStorage.setItem("advanced-chat-preferred", "false")
     } else {
-      // Navigate to advanced mode
-      navigate(`/app/advanced-chat${searchParams}`)
+      // Navigate to advanced mode, preserving search params
+      navigate({ pathname: "/advanced-chat", search })
       window.localStorage.setItem("advanced-chat-preferred", "true")
     }
-  }, [isAdvanced, location.search, navigate])
+  }, [isAdvanced, navigate])
 
   return (
     <Button
