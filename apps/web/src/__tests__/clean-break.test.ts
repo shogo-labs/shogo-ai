@@ -71,15 +71,10 @@ describe("test-2-2-001-004: Clean break - no Studio imports", () => {
     const appSource = fs.readFileSync(appPath, "utf-8")
 
     // Search for any reference to Studio components (not just imports)
+    // After demo cleanup, there should be zero Studio references
     const studioReferences = appSource.match(/Studio[A-Z][a-zA-Z]*(?=\s*[</>])/g)
 
-    // Filter out StudioPage, StudioCoreDemoPage, StudioChatDemoPage which are demo pages
-    // These are allowed because they are demo routes, not Studio App components
-    const filteredReferences = studioReferences?.filter(
-      (ref) => !["StudioPage", "StudioCoreDemoPage", "StudioChatDemoPage"].includes(ref)
-    )
-
-    expect(filteredReferences?.length ?? 0).toBe(0)
+    expect(studioReferences).toBeNull()
   })
 })
 

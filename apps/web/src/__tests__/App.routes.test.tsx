@@ -1,25 +1,23 @@
 /**
- * App.tsx Route Configuration Tests for task-2-1-014
+ * App.tsx Route Configuration Tests
  *
- * TDD tests for the /app route configuration with AuthGate wrapper.
- * Per dd-2-1-route-structure:
- * - /app route is protected by AuthGate
- * - AuthGate renders LoginPage for unauthenticated users inline (no /app/login route)
+ * TDD tests for the root route configuration with AuthGate wrapper.
+ * After demo cleanup:
+ * - Root route (/*) is protected by AuthGate
+ * - AuthGate renders LoginPage for unauthenticated users inline
  * - AppShell renders for authenticated users
- * - Outlet pattern supports future nested routes
- * - Existing demo routes remain functional
+ * - Outlet pattern supports nested routes
  *
- * These tests are written BEFORE implementation (RED phase).
+ * These tests verify the simplified App.tsx structure.
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test"
-import React from "react"
+import { describe, test, expect } from "bun:test"
 
 // ============================================================
 // Test 1: App.tsx imports components from @/components/app
 // ============================================================
 
-describe("test-2-1-014-imports: App.tsx imports from @/components/app", () => {
+describe("App.tsx imports from @/components/app", () => {
   test("AuthGate is exported from @/components/app", async () => {
     const components = await import("../components/app")
     expect(components.AuthGate).toBeDefined()
@@ -30,8 +28,8 @@ describe("test-2-1-014-imports: App.tsx imports from @/components/app", () => {
   test("AppShell is exported from @/components/app", async () => {
     const components = await import("../components/app")
     expect(components.AppShell).toBeDefined()
-    // AppShell is a regular function component
-    expect(typeof components.AppShell === "function").toBe(true)
+    // AppShell may be a function or MobX observer object
+    expect(typeof components.AppShell === "function" || typeof components.AppShell === "object").toBe(true)
   })
 
   test("All barrel exports are available", async () => {
@@ -53,10 +51,10 @@ describe("test-2-1-014-imports: App.tsx imports from @/components/app", () => {
 })
 
 // ============================================================
-// Test 2: /app route structure follows dd-2-1-route-structure
+// Test 2: Root route structure
 // ============================================================
 
-describe("test-2-1-014-route-structure: Route structure per design decision", () => {
+describe("Root route structure", () => {
   test("App.tsx source imports AuthGate and AppShell from @/components/app", async () => {
     const fs = await import("fs")
     const path = await import("path")
@@ -69,29 +67,28 @@ describe("test-2-1-014-route-structure: Route structure per design decision", ()
     expect(appSource).toMatch(/import\s*{[^}]*AppShell[^}]*}\s*from\s*['"]@\/components\/app['"]/)
   })
 
-  test("/app route exists with AuthGate wrapping AppShell", async () => {
+  test("Root route exists with AuthGate wrapping AppShell", async () => {
     const fs = await import("fs")
     const path = await import("path")
 
     const appPath = path.resolve(import.meta.dir, "../App.tsx")
     const appSource = fs.readFileSync(appPath, "utf-8")
 
-    // Check for /app route with AuthGate wrapper
-    // Pattern: <Route path="/app/*" element={<AuthGate><AppShell /></AuthGate>}>
-    expect(appSource).toMatch(/path=["']\/app\/\*["']/)
+    // Check for root route with AuthGate wrapper
+    expect(appSource).toMatch(/path=["']\/\*["']/)
     expect(appSource).toMatch(/<AuthGate>/)
     expect(appSource).toMatch(/<AppShell\s*\/>/)
   })
 
-  test("No /app/login route is defined - AuthGate handles unauthenticated inline", async () => {
+  test("No /login route is defined - AuthGate handles unauthenticated inline", async () => {
     const fs = await import("fs")
     const path = await import("path")
 
     const appPath = path.resolve(import.meta.dir, "../App.tsx")
     const appSource = fs.readFileSync(appPath, "utf-8")
 
-    // Should NOT have a /app/login route
-    expect(appSource).not.toMatch(/path=["']\/app\/login["']/)
+    // Should NOT have a separate /login route
+    expect(appSource).not.toMatch(/path=["']\/login["']/)
   })
 })
 
@@ -99,18 +96,17 @@ describe("test-2-1-014-route-structure: Route structure per design decision", ()
 // Test 3: Outlet pattern supports nested routes
 // ============================================================
 
-describe("test-2-1-014-outlet: Outlet pattern for nested routes", () => {
-  test("/app route uses element wrapper that contains AppShell with Outlet", async () => {
+describe("Outlet pattern for nested routes", () => {
+  test("Root route uses element wrapper that contains AppShell with Outlet", async () => {
     const fs = await import("fs")
     const path = await import("path")
 
     const appPath = path.resolve(import.meta.dir, "../App.tsx")
     const appSource = fs.readFileSync(appPath, "utf-8")
 
-    // The /app route should be structured to support nested routes
+    // The root route should be structured to support nested routes
     // AppShell contains <Outlet /> for rendering nested route content
-    // Pattern: <Route path="/app/*" element={...}> with child routes or index route
-    expect(appSource).toMatch(/<Route\s+path=["']\/app\/\*["']\s+element=/)
+    expect(appSource).toMatch(/<Route\s+path=["']\/\*["']\s+element=/)
     expect(appSource).toMatch(/<AuthGate>[\s\S]*<AppShell/)
   })
 
@@ -128,74 +124,83 @@ describe("test-2-1-014-outlet: Outlet pattern for nested routes", () => {
 })
 
 // ============================================================
-// Test 4: Existing demo routes remain functional
+// Test 4: Clean break - no demo imports
 // ============================================================
 
-describe("test-2-1-014-demo-routes: Existing demo routes preserved", () => {
-  test("All existing routes are still defined in App.tsx", async () => {
+describe("Clean break - no demo imports in App.tsx", () => {
+  test("No demo page imports in App.tsx", async () => {
     const fs = await import("fs")
     const path = await import("path")
 
     const appPath = path.resolve(import.meta.dir, "../App.tsx")
     const appSource = fs.readFileSync(appPath, "utf-8")
 
-    // Check that existing demo routes are preserved
-    const existingRoutes = [
-      "/",
-      "/unit1",
-      "/unit2",
-      "/unit3",
-      "/legacy-tests",
-      "/auth-demo",
-      "/better-auth-demo",
-      "/teams-demo",
-      "/tenant-demo",
-      "/feature-control-plane",
-      "/platform-features",
-      "/ai-chat-demo",
-      "/studio-core-demo",
-      "/studio-chat-demo",
-      "/studio",
-    ]
-
-    for (const route of existingRoutes) {
-      const routePattern = new RegExp(`path=["']${route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']`)
-      expect(appSource).toMatch(routePattern)
-    }
+    // Should NOT have any demo page imports
+    expect(appSource).not.toMatch(/from\s+['"]\.\/pages\//)
+    expect(appSource).not.toMatch(/HomePage/)
+    expect(appSource).not.toMatch(/Unit1Page/)
+    expect(appSource).not.toMatch(/Unit2Page/)
+    expect(appSource).not.toMatch(/Unit3Page/)
+    expect(appSource).not.toMatch(/AuthDemoPage/)
+    expect(appSource).not.toMatch(/StudioPage/)
   })
 
-  test("Demo routes are NOT wrapped by AuthGate", async () => {
+  test("No demo routes in App.tsx", async () => {
     const fs = await import("fs")
     const path = await import("path")
 
     const appPath = path.resolve(import.meta.dir, "../App.tsx")
     const appSource = fs.readFileSync(appPath, "utf-8")
 
-    // The existing routes should NOT be inside AuthGate
-    // Only /app route should have AuthGate
-    // Check that routes like /studio, /better-auth-demo use their page components directly
-    expect(appSource).toMatch(/path=["']\/studio["']\s+element=\{<StudioPage\s*\/>\}/)
-    expect(appSource).toMatch(/path=["']\/better-auth-demo["']\s+element=\{<BetterAuthDemoPage\s*\/>\}/)
+    // Should NOT have demo routes
+    expect(appSource).not.toMatch(/path=["']\/unit1["']/)
+    expect(appSource).not.toMatch(/path=["']\/unit2["']/)
+    expect(appSource).not.toMatch(/path=["']\/auth-demo["']/)
+    expect(appSource).not.toMatch(/path=["']\/teams-demo["']/)
+    expect(appSource).not.toMatch(/path=["']\/studio["']/)
+  })
+
+  test("Zero imports from '/components/Studio/' in App.tsx", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const appPath = path.resolve(import.meta.dir, "../App.tsx")
+    const appSource = fs.readFileSync(appPath, "utf-8")
+
+    // Check for imports from /components/Studio/ (case insensitive)
+    const hasStudioImport = /from\s+['"][^'"]*\/components\/Studio\/[^'"]*['"]/.test(appSource)
+    expect(hasStudioImport).toBe(false)
+  })
+
+  test("App.tsx imports from @/components/app for Studio App components", async () => {
+    const fs = await import("fs")
+    const path = await import("path")
+
+    const appPath = path.resolve(import.meta.dir, "../App.tsx")
+    const appSource = fs.readFileSync(appPath, "utf-8")
+
+    // Should import from @/components/app
+    expect(appSource).toMatch(/from\s+['"]@\/components\/app['"]/)
   })
 })
 
 // ============================================================
-// Test 5: New /app route is added alongside existing routes
+// Test 5: Root route configuration
 // ============================================================
 
-describe("test-2-1-014-app-route: /app route configuration", () => {
-  test("/app route is configured in Routes", async () => {
+describe("Root route configuration", () => {
+  test("Root route is configured in Routes", async () => {
     const fs = await import("fs")
     const path = await import("path")
 
     const appPath = path.resolve(import.meta.dir, "../App.tsx")
     const appSource = fs.readFileSync(appPath, "utf-8")
 
-    // /app route should exist (with wildcard for nested routes)
-    expect(appSource).toMatch(/path=["']\/app\/\*["']/)
+    // Root route should exist (with wildcard for nested routes)
+    expect(appSource).toMatch(/path=["']\/\*["']/)
   })
 
-  test("/app route element includes AuthGate wrapping AppShell", async () => {
+  test("Root route element includes AuthGate wrapping AppShell", async () => {
     const fs = await import("fs")
     const path = await import("path")
 
@@ -203,23 +208,21 @@ describe("test-2-1-014-app-route: /app route configuration", () => {
     const appSource = fs.readFileSync(appPath, "utf-8")
 
     // The element should be AuthGate wrapping AppShell
-    // Pattern: element={\n  <AuthGate>\n    <AppShell />\n  </AuthGate>\n}
     expect(appSource).toMatch(/<AuthGate>[\s\S]*<AppShell\s*\/>[\s\S]*<\/AuthGate>/)
   })
 
-  test("/app route structure allows for child routes (Route has closing tag)", async () => {
+  test("Root route structure allows for child routes (Route has closing tag)", async () => {
     const fs = await import("fs")
     const path = await import("path")
 
     const appPath = path.resolve(import.meta.dir, "../App.tsx")
     const appSource = fs.readFileSync(appPath, "utf-8")
 
-    // The /app/* route should have a closing </Route> tag (for nested routes)
-    // This allows adding child routes inside the Route element in future sessions
-    const hasAppRoute = appSource.includes('path="/app/*"')
-    expect(hasAppRoute).toBe(true)
+    // The root route should have a closing </Route> tag (for nested routes)
+    const hasRootRoute = appSource.includes('path="/*"')
+    expect(hasRootRoute).toBe(true)
 
-    // Should have closing Route tag after the /app/* route (not self-closing)
-    expect(appSource).toMatch(/path=["']\/app\/\*["'][\s\S]*<\/Route>/)
+    // Should have closing Route tag after the root route (not self-closing)
+    expect(appSource).toMatch(/path=["']\/\*["'][\s\S]*<\/Route>/)
   })
 })

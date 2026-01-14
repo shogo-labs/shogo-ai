@@ -3,10 +3,10 @@
  * Task: task-testbed-route
  * Requirement: req-testbed-route
  *
- * Tests for the /app/advanced-chat route configuration.
+ * Tests for the /advanced-chat route configuration.
  * Per dd-testbed-route-layout-adjustments:
  * - Route renders inside AppShell's Outlet, inheriting AuthGate protection
- * - Route path is "advanced-chat" (relative to /app/*)
+ * - Route path is "advanced-chat" (relative to /*)
  * - AdvancedChatLayout renders in main content area
  */
 
@@ -15,7 +15,7 @@ import fs from "fs"
 import path from "path"
 
 // ============================================================
-// Test 1: /app/advanced-chat route exists (test-route-exists)
+// Test 1: /advanced-chat route exists (test-route-exists)
 // ============================================================
 
 describe("test-route-exists: Advanced chat route is accessible", () => {
@@ -29,11 +29,11 @@ describe("test-route-exists: Advanced chat route is accessible", () => {
     )
   })
 
-  test("/app/advanced-chat route is defined as child of /app/* route", () => {
+  test("/advanced-chat route is defined as child of /* route", () => {
     const appPath = path.resolve(import.meta.dir, "../../../../App.tsx")
     const appSource = fs.readFileSync(appPath, "utf-8")
 
-    // Route should be defined with path="advanced-chat" as a child of /app/*
+    // Route should be defined with path="advanced-chat" as a child of /*
     expect(appSource).toMatch(/path=["']advanced-chat["']/)
   })
 
@@ -47,13 +47,13 @@ describe("test-route-exists: Advanced chat route is accessible", () => {
     )
   })
 
-  test("Route is positioned inside /app/* Route block (after index route)", () => {
+  test("Route is positioned inside /* Route block (after index route)", () => {
     const appPath = path.resolve(import.meta.dir, "../../../../App.tsx")
     const appSource = fs.readFileSync(appPath, "utf-8")
 
-    // The advanced-chat route should be inside the /app/* Route (between opening tag and </Route>)
-    // Pattern: /app/* route opening, then index route, then advanced-chat route, then </Route>
-    const appRouteBlockPattern = /path=["']\/app\/\*["'][^>]*>[\s\S]*?<Route\s+index[^>]*>[\s\S]*?<Route\s+path=["']advanced-chat["'][\s\S]*?<\/Route>/
+    // The advanced-chat route should be inside the /* Route (between opening tag and </Route>)
+    // Pattern: /* route opening, then index route, then advanced-chat route, then </Route>
+    const appRouteBlockPattern = /path=["']\/\*["'][^>]*>[\s\S]*?<Route\s+index[^>]*>[\s\S]*?<Route\s+path=["']advanced-chat["'][\s\S]*?<\/Route>/
     expect(appSource).toMatch(appRouteBlockPattern)
   })
 })
@@ -63,18 +63,18 @@ describe("test-route-exists: Advanced chat route is accessible", () => {
 // ============================================================
 
 describe("test-route-protected: Route requires authentication", () => {
-  test("advanced-chat route inherits AuthGate protection from parent /app/* route", () => {
+  test("advanced-chat route inherits AuthGate protection from parent /* route", () => {
     const appPath = path.resolve(import.meta.dir, "../../../../App.tsx")
     const appSource = fs.readFileSync(appPath, "utf-8")
 
-    // The /app/* route wraps AuthGate around AppShell
+    // The /* route wraps AuthGate around AppShell
     // Child routes (like advanced-chat) render in AppShell's Outlet
     // Therefore AuthGate protection is inherited
     expect(appSource).toMatch(
-      /path=["']\/app\/\*["'][\s\S]*element=\{[\s\S]*<AuthGate>[\s\S]*<AppShell\s*\/>[\s\S]*<\/AuthGate>[\s\S]*\}/
+      /path=["']\/\*["'][\s\S]*element=\{[\s\S]*<AuthGate>[\s\S]*<AppShell\s*\/>[\s\S]*<\/AuthGate>[\s\S]*\}/
     )
 
-    // And the advanced-chat route is a child of /app/*
+    // And the advanced-chat route is a child of /*
     expect(appSource).toMatch(/path=["']advanced-chat["']/)
   })
 
