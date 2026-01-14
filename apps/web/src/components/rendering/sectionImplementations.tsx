@@ -12,7 +12,9 @@
  * from SlotContent entities to actual React components.
  */
 
-import type { ComponentType } from "react"
+import type { ComponentType, ReactNode } from "react"
+import { useDomains } from "@/contexts/DomainProvider"
+import { observer } from "mobx-react-lite"
 import { IntentTerminalSection } from "./sections/IntentTerminalSection"
 import { InitialAssessmentSection } from "./sections/InitialAssessmentSection"
 import { PhaseActionsSection } from "./sections/PhaseActionsSection"
@@ -55,6 +57,14 @@ import {
 } from "./sections/implementation"
 // Workspace sections
 import { WorkspaceBlankStateSection } from "./sections/workspace/WorkspaceBlankStateSection"
+// Component Builder sections
+import { ComponentBuilderSection } from "./sections/component-builder"
+import { DynamicCompositionSection } from "./sections/DynamicCompositionSection"
+import { PropertyFieldSection } from "./sections/PropertyFieldSection"
+// View Builder sections
+import { PlanPreviewSection } from "./sections/PlanPreviewSection"
+// Data Grid section
+import { DataGridSection } from "./sections/DataGridSection"
 
 // Re-export SectionRendererProps from types.ts to avoid circular dependencies
 // (Analysis section components import from types.ts, not from this file)
@@ -126,6 +136,16 @@ export const sectionImplementationMap = new Map<
   ["LiveOutputTerminalSection", LiveOutputTerminalSection],
   // Workspace sections
   ["WorkspaceBlankStateSection", WorkspaceBlankStateSection],
+  // Component Builder sections
+  ["ComponentBuilderSection", ComponentBuilderSection],
+  // Dynamic composition rendering (enables hot registration)
+  ["DynamicCompositionSection", DynamicCompositionSection],
+  // Property field rendering (bridges Section pipeline to PropertyRenderer)
+  ["PropertyFieldSection", PropertyFieldSection],
+  // View Builder sections
+  ["PlanPreviewSection", PlanPreviewSection],
+  // Data Grid section (generic collection renderer)
+  ["DataGridSection", DataGridSection],
 ])
 
 /**
@@ -151,3 +171,148 @@ export function getSectionComponent(
   }
   return sectionImplementationMap.get(ref) ?? FallbackSection
 }
+
+/**
+ * Result from useDynamicSection hook
+ */
+export interface DynamicSectionResult {
+  /** The resolved section component (always defined - returns FallbackSection if not found) */
+  component: ComponentType<SectionRendererProps>
+  /** Config to merge with existing config (e.g., compositionId for DynamicCompositionSection) */
+  additionalConfig?: Record<string, unknown>
+  /** Whether this was resolved via hot registration (dynamic lookup) */
+  isHotRegistered: boolean
+}
+
+/**
+ * Hook for resolving sections with hot registration fallback.
+ * Task: task-cb-ui-hot-registration
+ *
+ * Resolution order:
+ * 1. First checks static sectionImplementationMap (fast path)
+ * 2. Falls back to componentBuilder.componentDefinitionCollection.findByName()
+ * 3. If found with implementationRef='DynamicCompositionSection', returns that
+ *    component with the compositionId from the ComponentDefinition
+ *
+ * This enables Claude to use user-created components by name (e.g., 'KanbanRequirements')
+ * without needing manual mapping updates.
+ *
+ * @param sectionName - The section name to resolve (e.g., 'RequirementsListSection' or 'KanbanRequirements')
+ * @returns Object with component, optional additionalConfig, and isHotRegistered flag
+ *
+ * @example
+ * ```tsx
+ * function MyComponent({ sectionName, feature, config }) {
+ *   const { component: SectionComponent, additionalConfig, isHotRegistered } = useDynamicSection(sectionName)
+ *   const mergedConfig = { ...config, ...additionalConfig }
+ *   return <SectionComponent feature={feature} config={mergedConfig} />
+ * }
+ * ```
+ */
+export function useDynamicSection(sectionName: string): DynamicSectionResult {
+  // Access componentBuilder domain for hot registration fallback
+  const domains = useDomains()
+  const componentBuilder = domains?.componentBuilder
+
+  // Fast path: Check static map first
+  const staticComponent = sectionImplementationMap.get(sectionName)
+  if (staticComponent) {
+    return {
+      component: staticComponent,
+      isHotRegistered: false,
+    }
+  }
+
+  // Hot registration fallback: Look up in componentBuilder
+  if (componentBuilder?.componentDefinitionCollection?.findByName) {
+    const componentDef = componentBuilder.componentDefinitionCollection.findByName(sectionName)
+
+    if (componentDef && componentDef.implementationRef === "DynamicCompositionSection") {
+      // User-created component that uses DynamicCompositionSection
+      // The ComponentDefinition should have a linked Composition
+      // We need to find the Composition by matching name or via stored reference
+
+      // Try to find a Composition with matching name
+      const composition = componentBuilder.compositionCollection?.findByName?.(sectionName)
+      const compositionId = composition?.id
+
+      return {
+        component: DynamicCompositionSection,
+        additionalConfig: compositionId ? { compositionId } : undefined,
+        isHotRegistered: true,
+      }
+    }
+
+    // If found but not DynamicCompositionSection, check if implementationRef maps to a static component
+    if (componentDef?.implementationRef) {
+      const resolvedComponent = sectionImplementationMap.get(componentDef.implementationRef)
+      if (resolvedComponent) {
+        return {
+          component: resolvedComponent,
+          isHotRegistered: true,
+        }
+      }
+    }
+  }
+
+  // Not found anywhere
+  return {
+    component: FallbackSection,
+    isHotRegistered: false,
+  }
+}
+
+/**
+ * Props for DynamicSectionRenderer
+ */
+export interface DynamicSectionRendererProps {
+  /** Section name to resolve (can be static or hot-registered) */
+  sectionName: string
+  /** The current feature session data */
+  feature: any
+  /** Optional configuration from slotContent */
+  config?: Record<string, unknown>
+}
+
+/**
+ * DynamicSectionRenderer - Wrapper component that enables hot registration in loops
+ * Task: task-cb-ui-hot-registration
+ *
+ * Use this component instead of calling getSectionComponent directly when you need
+ * hot registration support. This allows the hook to be called correctly (not in a loop).
+ *
+ * @example
+ * ```tsx
+ * // Instead of:
+ * for (const spec of slotSpecs) {
+ *   const Component = getSectionComponent(spec.sectionRef)  // No hot registration
+ *   elements.push(<Component ... />)
+ * }
+ *
+ * // Use:
+ * for (const spec of slotSpecs) {
+ *   elements.push(
+ *     <DynamicSectionRenderer
+ *       key={spec.sectionRef}
+ *       sectionName={spec.sectionRef}
+ *       feature={feature}
+ *       config={spec.config}
+ *     />
+ *   )
+ * }
+ * ```
+ */
+export const DynamicSectionRenderer = observer(function DynamicSectionRenderer({
+  sectionName,
+  feature,
+  config,
+}: DynamicSectionRendererProps): ReactNode {
+  const { component: SectionComponent, additionalConfig } = useDynamicSection(sectionName)
+
+  // Merge config: slotContent config takes precedence, additionalConfig fills in gaps
+  const mergedConfig = additionalConfig
+    ? { ...additionalConfig, ...config }
+    : config
+
+  return <SectionComponent feature={feature} config={mergedConfig} />
+})

@@ -79,8 +79,12 @@ interface RecentToolCall {
 // Map section names (from set_workspace) to component-builder IDs
 const SECTION_TO_COMPONENT: Record<string, string> = {
   'DesignContainerSection': 'comp-design-container',
-  'WorkspaceBlankStateSection': 'comp-workspace-blank-state',
-  // Add more as sections are registered
+  'SpecContainerSection': 'comp-spec-container',
+  'WorkspaceBlankStateSection': 'comp-def-workspace-blank-state-section',
+  'ComponentBuilderSection': 'comp-component-builder',
+  'DynamicCompositionSection': 'comp-dynamic-composition',
+  'PlanPreviewSection': 'comp-plan-preview-section',
+  'DataGridSection': 'comp-data-grid-section',
 }
 
 // Map layout names to layout template IDs
@@ -143,6 +147,8 @@ export interface ChatPanelProps {
   isCollapsed?: boolean
   /** Callback when collapse state changes (for parent layout control) */
   onCollapsedChange?: (collapsed: boolean) => void
+  /** Callback when width changes (for parent layout control) */
+  onWidthChange?: (width: number) => void
 }
 
 // ============================================================
@@ -289,6 +295,7 @@ const COMPONENT_BUILDER_MODEL_MAP: Record<string, string> = {
   RendererBinding: "rendererBindingCollection",
   LayoutTemplate: "layoutTemplateCollection",
   Composition: "compositionCollection",
+  ComponentSpec: "componentSpecCollection",
 }
 
 /**
@@ -407,6 +414,7 @@ export const ChatPanel = observer(function ChatPanel({
   onChatSessionChange,
   isCollapsed: controlledIsCollapsed,
   onCollapsedChange,
+  onWidthChange,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
@@ -441,6 +449,12 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Guard ref to prevent duplicate session creation (fixes race condition)
   const sessionCreationInProgressRef = useRef<string | null>(null)
+
+  // Sync initial width to parent on mount (fixes width desync between parent and ChatPanel)
+  useEffect(() => {
+    onWidthChange?.(width)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // Only on mount - width from localStorage needs to sync to parent
 
   // Find or create chat session for feature and phase (task-cpbi-005)
   // Session is uniquely identified by (featureId, phase) tuple
@@ -513,6 +527,16 @@ export const ChatPanel = observer(function ChatPanel({
   const currentSession = currentSessionId
     ? studioChat.chatSessionCollection.get(currentSessionId)
     : null
+
+  // Derive messages from MobX view (reactive due to observer)
+  // This is read during render, so MobX tracks it and triggers re-render when data changes
+  // Used for syncing persisted messages to AI SDK state
+  const persistedMessagesFromMobX = currentSessionId
+    ? studioChat.chatMessageCollection.findBySession?.(currentSessionId) ?? []
+    : []
+
+  // Loading guard ref to prevent duplicate message queries
+  const isLoadingMessagesRef = useRef(false)
 
   // Initialize ccSessionId from existing session (task-cc-chatpanel-integration)
   // This ensures session continuity when reloading the page or switching sessions
@@ -739,10 +763,10 @@ export const ChatPanel = observer(function ChatPanel({
           const args = event.args as {
             operations?: Array<{
               domain: string
-              action: 'create' | 'update' | 'delete'
+              action: 'create' | 'update' | 'delete' | 'load'
               model: string
               id?: string
-              data: Record<string, unknown>
+              data?: Record<string, unknown>
             }>
           }
 
@@ -783,6 +807,15 @@ export const ChatPanel = observer(function ChatPanel({
                   if (op.id) {
                     await collection.deleteOne(op.id)
                     console.log(`[ChatPanel:VirtualTool] ✅ Deleted: ${op.domain}.${op.model} id=${op.id}`)
+                  }
+                  break
+                case 'load':
+                  // Load collection data via query() into client store
+                  if (collection.query) {
+                    const results = await collection.query().toArray()
+                    console.log(`[ChatPanel:VirtualTool] ✅ Loaded: ${op.domain}.${op.model} (${results?.length ?? 0} items)`)
+                  } else {
+                    console.warn(`[ChatPanel:VirtualTool] ⚠️ Collection ${collectionName} doesn't support query`)
                   }
                   break
               }
@@ -1200,32 +1233,41 @@ export const ChatPanel = observer(function ChatPanel({
     prevIsStreamingRef.current = isStreaming
   }, [isStreaming])
 
-  // Load persisted messages when session changes
-  // Note: chatMessageCollection is a MobX observable - do NOT include it in deps array
-  // as that causes re-runs whenever messages are added/removed, resetting the UI state.
-  // This effect should only run when the SESSION changes (on mount or session switch).
+  // Effect 1: Trigger data loading for chat messages
+  // query().toArray() syncs remote data to MST, MobX reactivity handles the rest
+  // Uses loading guard to prevent duplicate queries
   useEffect(() => {
-    if (currentSessionId) {
-      const persistedMessages = studioChat.chatMessageCollection.findBySession?.(currentSessionId) ?? []
-      if (persistedMessages.length > 0) {
-        const aiMessages = persistedMessages.map((msg: any) => ({
-          id: msg.id,
-          role: msg.role as "user" | "assistant",
-          content: msg.content,
-        }))
-        setMessages(aiMessages)
-        // Scroll to bottom after messages load - use setTimeout to ensure DOM has rendered
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
-        }, 50)
-      } else {
-        setMessages([])
-      }
-    } else {
+    if (currentSessionId && !isLoadingMessagesRef.current) {
+      isLoadingMessagesRef.current = true
+      studioChat.chatMessageCollection.query().toArray()
+        .catch(err => console.error('[ChatPanel] Failed to load messages:', err))
+        .finally(() => { isLoadingMessagesRef.current = false })
+    }
+  }, [currentSessionId])
+
+  // Effect 2: Sync MobX → AI SDK state when data arrives
+  // persistedMessagesFromMobX is derived from MobX (reactive due to observer)
+  // Using length as a stable primitive dep to detect when data changes
+  useEffect(() => {
+    if (persistedMessagesFromMobX.length > 0) {
+      const aiMessages = persistedMessagesFromMobX.map((msg: any) => ({
+        id: msg.id,
+        role: msg.role as "user" | "assistant",
+        content: msg.content,
+      }))
+      setMessages(aiMessages)
+      // Scroll to bottom after messages load - use setTimeout to ensure DOM has rendered
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
+      }, 50)
+    } else if (currentSessionId) {
+      // Only clear if we have a session but no messages
       setMessages([])
     }
+    // Note: persistedMessagesFromMobX.length used as stable primitive dep
+    // currentSessionId ensures effect runs on session switch even with same count
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSessionId, setMessages])
+  }, [currentSessionId, persistedMessagesFromMobX.length, setMessages])
 
   // Notify parent of streaming state changes (task-3-1-007)
   // This allows WorkspaceLayout to pause polling during active streaming
@@ -1380,6 +1422,7 @@ export const ChatPanel = observer(function ChatPanel({
         const delta = resizeRef.current.startX - moveEvent.clientX
         const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeRef.current.startWidth + delta))
         setWidth(newWidth)
+        onWidthChange?.(newWidth)
       }
 
       const handleMouseUp = () => {
@@ -1388,6 +1431,7 @@ export const ChatPanel = observer(function ChatPanel({
           const delta = resizeRef.current.startX - (window as any).lastMouseX || 0
           const finalWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeRef.current.startWidth + delta))
           setStoredWidth(finalWidth)
+          onWidthChange?.(finalWidth)
         }
         resizeRef.current = null
         document.removeEventListener("mousemove", handleMouseMove)
@@ -1403,7 +1447,7 @@ export const ChatPanel = observer(function ChatPanel({
       document.addEventListener("mousemove", trackMouseMove)
       document.addEventListener("mouseup", handleMouseUp)
     },
-    [width]
+    [width, onWidthChange]
   )
 
   // Error retry handler
