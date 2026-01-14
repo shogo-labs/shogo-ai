@@ -8,7 +8,7 @@
 import { useState, useEffect } from "react"
 import { cn } from "@/lib/utils"
 import { Clock, Wrench } from "lucide-react"
-import { formatToolName, getToolCategory } from "../tools/types"
+import { formatToolName, getToolCategory, GRADIENT_CONFIG, getGradientOpacity } from "../tools/types"
 
 export interface RecentTool {
   id: string
@@ -107,11 +107,11 @@ export function SubagentStats({
       {/* Mini activity timeline */}
       {recentTools.length > 0 && (
         <div className="space-y-0.5">
-          {recentTools.slice(0, 4).map((tool, index) => {
+          {recentTools.slice(0, GRADIENT_CONFIG.maxItems).map((tool, index) => {
             const category = getToolCategory(tool.toolName)
             const displayName = formatToolName(tool.toolName)
-            // Gradient fade: 100%, 70%, 50%, 30%
-            const opacity = [1, 0.7, 0.5, 0.3][index] ?? 0.3
+            // Gradient fade using shared config
+            const opacity = getGradientOpacity(index)
 
             return (
               <div

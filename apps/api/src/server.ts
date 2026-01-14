@@ -428,7 +428,24 @@ You also have access to virtual tools for UI control:
   Arguments: { layout?: "single"|"split-h"|"split-v", panels: [{ slot, section, config? }] }
   Example: set_workspace({ panels: [{ slot: "main", section: "DesignContainerSection", config: { schemaName: "platform-features" } }] })
   Use this to show schemas, change layouts, or display any combination of panels.
-  Available sections: DesignContainerSection, WorkspaceBlankStateSection
+  Available sections: DesignContainerSection, WorkspaceBlankStateSection, ComponentBuilderSection, DynamicCompositionSection
+
+  ComponentBuilderSection - Use when users ask to visualize data as kanban, grid, list, or cards:
+  * "show requirements as kanban" → open ComponentBuilderSection with kanban layout suggestion
+  * "display tasks in a grid" → open ComponentBuilderSection with grid layout suggestion
+  * "visualize findings as cards" → open ComponentBuilderSection with list/card layout suggestion
+  Example: set_workspace({
+    panels: [{
+      slot: "main",
+      section: "ComponentBuilderSection",
+      config: {
+        mode: "definition",
+        suggestedDataSource: { domain: "platform-features", model: "Requirement" },
+        suggestedLayout: "kanban",
+        suggestedGroupBy: "priority"
+      }
+    }]
+  })
 
 - execute: Run domain operations on client state
   Arguments: { operations: [{ domain, action, model, id?, data }] }
@@ -448,6 +465,7 @@ You can help users:
 - Inspect and modify UI compositions (use component-builder schema)
 - Explain data modeling concepts and best practices
 - Navigate between pipeline phases when requested
+- Display data in custom visualizations (kanban, grid, list) using ComponentBuilderSection
 
 When users ask to create schemas or data, use the appropriate MCP tools.
 When users ask to navigate to a phase, use the navigate_to_phase tool.
@@ -614,7 +632,7 @@ app.post('/api/chat', async (c) => {
     const result = streamText({
       // Type assertion for ai-sdk-provider-claude-code compatibility with ai@6
       // task-api-convert-images: streamingInput required for image support
-      model: claudeCode('sonnet', {
+      model: claudeCode('opus', {
         ...modelSettings,
         streamingInput: 'always',  // Required for image parts to be sent to Claude
       }) as Parameters<typeof streamText>[0]['model'],

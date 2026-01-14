@@ -23,6 +23,7 @@ import { AnalysisPanelProvider } from "../sections/analysis/AnalysisPanelContext
 import { TestingPanelProvider } from "../sections/testing/TestingPanelContext"
 import { ImplementationPanelProvider } from "../sections/implementation/ImplementationPanelContext"
 import { WorkspaceProvider } from "../sections/workspace/WorkspaceContext"
+import { ComponentBuilderProvider } from "../sections/component-builder/ComponentBuilderContext"
 
 /**
  * Props passed to provider wrapper components.
@@ -83,6 +84,8 @@ export const providerImplementationMap = new Map<
   ["ImplementationPanelProvider", ImplementationPanelProvider],
   // Workspace provider - coordinates dynamic workspace state for advanced-chat
   ["WorkspaceProvider", WorkspaceProvider],
+  // Component Builder provider - coordinates UI state for component builder (layout, tabs, property selection)
+  ["ComponentBuilderProvider", ComponentBuilderProvider],
 ])
 
 /**

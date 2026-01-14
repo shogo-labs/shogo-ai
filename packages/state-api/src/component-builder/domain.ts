@@ -55,6 +55,82 @@ export interface SlotContentEntry {
   config?: unknown
 }
 
+// ============================================================
+// ComponentSpec Value Object Types
+// ============================================================
+
+/**
+ * Component requirement captured from planning dialogue.
+ * Value object nested within ComponentSpec.
+ */
+export interface ComponentRequirement {
+  id: string
+  description: string
+  priority: "must-have" | "should-have" | "could-have"
+  source: "user" | "inferred"
+}
+
+/**
+ * Layout decision made during component planning.
+ * Value object nested within ComponentSpec.
+ */
+export interface LayoutDecision {
+  id: string
+  question: string
+  decision: string
+  rationale: string
+  alternatives?: string[]
+}
+
+/**
+ * Data binding specification for a component.
+ * Value object nested within ComponentSpec.
+ */
+export interface DataBinding {
+  id: string
+  schema: string
+  model: string
+  purpose: string
+  queryPattern?: string
+}
+
+/**
+ * User interaction pattern for a component.
+ * Value object nested within ComponentSpec.
+ */
+export interface InteractionPattern {
+  id: string
+  interaction: "selection" | "drag" | "hover" | "click"
+  behavior: string
+  affectedState?: string
+}
+
+/**
+ * Reuse opportunity identified during planning.
+ * Value object nested within ComponentSpec.
+ */
+export interface ReuseOpportunity {
+  id: string
+  source: string
+  whatToReuse: string
+  adaptationNeeded?: string
+}
+
+/**
+ * Summary data for PlanPreviewSection rendering.
+ */
+export interface ComponentSpecPreviewSummary {
+  name: string
+  intent: string
+  componentType: "section" | "renderer" | "composition"
+  requirementCount: number
+  mustHaveCount: number
+  layoutDecisionCount: number
+  dataBindingCount: number
+  schemas: string[]
+  status: "draft" | "approved" | "implemented"
+}
+
 export const ComponentBuilderDomain = scope({
   ComponentDefinition: {
     id: "string",
@@ -117,6 +193,40 @@ export const ComponentBuilderDomain = scope({
     "providerWrapper?": "string",
     /** Optional configuration passed to the provider wrapper component */
     "providerConfig?": "unknown",
+    createdAt: "number",
+    "updatedAt?": "number",
+  },
+
+  /**
+   * ComponentSpec captures the intent, requirements, and design decisions
+   * for a component before implementation. Used by view-builder-spec skill
+   * to structure planning dialogue output for implementation.
+   */
+  ComponentSpec: {
+    id: "string",
+    name: "string",
+    /** Original user request that initiated this component spec */
+    intent: "string",
+    componentType: "'section' | 'renderer' | 'composition'",
+    /** Schemas involved in this component's data needs */
+    "schemas?": "string[]",
+    status: "'draft' | 'approved' | 'implemented'",
+
+    // Nested value objects (stored as frozen arrays)
+    /** Component requirements from planning dialogue */
+    "requirements?": "unknown[]",
+    /** Layout decisions with rationale */
+    "layoutDecisions?": "unknown[]",
+    /** Data binding specifications */
+    "dataBindings?": "unknown[]",
+    /** User interaction patterns */
+    "interactionPatterns?": "unknown[]",
+    /** Identified reuse opportunities */
+    "reuseOpportunities?": "unknown[]",
+
+    /** Reference to ComponentDefinition when implemented */
+    "implementedAs?": "ComponentDefinition",
+
     createdAt: "number",
     "updatedAt?": "number",
   },
@@ -227,6 +337,80 @@ export const componentBuilderDomain = domain({
         },
       })),
 
+      // ComponentSpec computed views
+      ComponentSpec: models.ComponentSpec.views((self: any) => ({
+        /**
+         * Get typed requirements array.
+         */
+        get typedRequirements(): ComponentRequirement[] {
+          return (self.requirements ?? []) as ComponentRequirement[]
+        },
+
+        /**
+         * Get must-have requirements count.
+         */
+        get mustHaveCount(): number {
+          return this.typedRequirements.filter(
+            (r) => r.priority === "must-have"
+          ).length
+        },
+
+        /**
+         * Get typed layout decisions array.
+         */
+        get typedLayoutDecisions(): LayoutDecision[] {
+          return (self.layoutDecisions ?? []) as LayoutDecision[]
+        },
+
+        /**
+         * Get typed data bindings array.
+         */
+        get typedDataBindings(): DataBinding[] {
+          return (self.dataBindings ?? []) as DataBinding[]
+        },
+
+        /**
+         * Get typed interaction patterns array.
+         */
+        get typedInteractionPatterns(): InteractionPattern[] {
+          return (self.interactionPatterns ?? []) as InteractionPattern[]
+        },
+
+        /**
+         * Get typed reuse opportunities array.
+         */
+        get typedReuseOpportunities(): ReuseOpportunity[] {
+          return (self.reuseOpportunities ?? []) as ReuseOpportunity[]
+        },
+
+        /**
+         * Check if spec is ready for implementation.
+         * Requires: at least one requirement, status is 'approved'
+         */
+        get isReadyForImplementation(): boolean {
+          return (
+            self.status === "approved" && this.typedRequirements.length > 0
+          )
+        },
+
+        /**
+         * Generate a summary for PlanPreviewSection rendering.
+         */
+        toPreviewSummary(): ComponentSpecPreviewSummary {
+          return {
+            name: self.name,
+            intent: self.intent,
+            componentType: self.componentType,
+            requirementCount: this.typedRequirements.length,
+            mustHaveCount: this.mustHaveCount,
+            layoutDecisionCount: this.typedLayoutDecisions.length,
+            dataBindingCount: this.typedDataBindings.length,
+            schemas: self.schemas ?? [],
+            status: self.status,
+          }
+        },
+      })),
+
       // Composition computed views
       Composition: models.Composition.views((self: any) => ({
         /**
@@ -310,6 +494,14 @@ export const componentBuilderDomain = domain({
               .all()
               .filter((c: any) => c.tags?.includes(tag))
           },
+
+          /**
+           * Find component by name.
+           * Used for hot registration to resolve user-created components by name.
+           */
+          findByName(name: string): any | undefined {
+            return self.all().find((c: any) => c.name === name)
+          },
         })
       ),
 
@@ -372,6 +564,62 @@ export const componentBuilderDomain = domain({
            */
           findByName(name: string): any | undefined {
             return self.all().find((c: any) => c.name === name)
+          },
+        })
+      ),
+
+      ComponentSpecCollection: collections.ComponentSpecCollection.actions(
+        (self: any) => ({
+          /**
+           * Query specs by status.
+           * @returns Promise<ComponentSpec[]>
+           */
+          async queryByStatus(
+            status: "draft" | "approved" | "implemented"
+          ): Promise<any[]> {
+            return await self.query().where({ status }).toArray()
+          },
+
+          /**
+           * Query specs by component type.
+           * @returns Promise<ComponentSpec[]>
+           */
+          async queryByComponentType(
+            type: "section" | "renderer" | "composition"
+          ): Promise<any[]> {
+            return await self.query().where({ componentType: type }).toArray()
+          },
+
+          /**
+           * Query spec by name.
+           * @returns Promise<ComponentSpec | undefined>
+           */
+          async queryByName(name: string): Promise<any | undefined> {
+            return await self.query().where({ name }).first()
+          },
+
+          /**
+           * Query all draft specs (pending approval).
+           * @returns Promise<ComponentSpec[]>
+           */
+          async queryDrafts(): Promise<any[]> {
+            return await self.query().where({ status: "draft" }).toArray()
+          },
+
+          /**
+           * Query all approved specs (ready for implementation).
+           * @returns Promise<ComponentSpec[]>
+           */
+          async queryApproved(): Promise<any[]> {
+            return await self.query().where({ status: "approved" }).toArray()
+          },
+
+          /**
+           * Query all implemented specs.
+           * @returns Promise<ComponentSpec[]>
+           */
+          async queryImplemented(): Promise<any[]> {
+            return await self.query().where({ status: "implemented" }).toArray()
           },
         })
       ),

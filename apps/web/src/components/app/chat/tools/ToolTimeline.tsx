@@ -9,16 +9,10 @@
 import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { ChevronUp } from "lucide-react"
-import { type ToolCallData } from "./types"
+import { type ToolCallData, GRADIENT_CONFIG, getGradientOpacity } from "./types"
 import { ToolCallDetail } from "./ToolCallDetail"
 import { ToolPill } from "./ToolPill"
 import { useReducedMotion } from "@/hooks/useReducedMotion"
-
-/** Opacity levels for gradient fade effect (most recent to oldest) */
-const GRADIENT_OPACITIES = [1, 0.85, 0.7, 0.55, 0.4]
-
-/** Maximum tools to show in collapsed state */
-const MAX_COLLAPSED_TOOLS = 5
 
 export interface ToolTimelineProps {
   /** Array of tool calls to display */
@@ -58,7 +52,7 @@ export function ToolTimeline({
   // Get tools to display (last N in collapsed, all in expanded)
   const displayTools = isExpanded
     ? tools
-    : tools.slice(-MAX_COLLAPSED_TOOLS)
+    : tools.slice(-GRADIENT_CONFIG.maxItems)
 
   // Reverse for display (most recent first)
   const sortedTools = [...displayTools].reverse()
@@ -100,9 +94,7 @@ export function ToolTimeline({
           <div className="py-1 max-h-64 overflow-y-auto">
             {sortedTools.map((tool, index) => {
               // Calculate opacity for gradient effect (collapsed view only)
-              const opacity = isExpanded
-                ? 1
-                : GRADIENT_OPACITIES[Math.min(index, GRADIENT_OPACITIES.length - 1)]
+              const opacity = isExpanded ? 1 : getGradientOpacity(index)
 
               return (
                 <ToolCallDetail
