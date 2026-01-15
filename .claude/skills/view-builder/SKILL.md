@@ -114,6 +114,8 @@ Apply explicit criteria to classify the user's request into one of four branches
 
 ## Phase 2: Execute Branch
 
+> **Guidance Discovery**: When selecting sections, query their `aiGuidance` field from ComponentDefinition. This contains configuration patterns, data binding notes, and usage examples that inform config building. See [[guidance-discovery-protocol]] for details.
+
 ### Branch A Execution: View Existing
 
 ```javascript
@@ -373,6 +375,7 @@ Performs CRUD operations on domain entities.
 - [[virtual-tools]] - Detailed tool usage and examples
 - [[decision-criteria]] - Explicit criteria for each branch
 - [[composition-patterns]] - Common composition templates
+- [[guidance-discovery-protocol]] - How to discover and apply aiGuidance from ComponentDefinitions
 
 ### Related Skills
 
@@ -385,6 +388,7 @@ Performs CRUD operations on domain entities.
 
 1. **Render First**: Always show something immediately, even if rough
 2. **Evidence Before Action**: Query domain state before deciding
-3. **Minimal Questions**: Infer when possible, ask max 1-2 questions
-4. **Explicit Criteria**: Use decision framework, not intuition
-5. **Feedback Welcome**: Every render is an invitation to refine
+3. **Discover Guidance**: Load aiGuidance from ComponentDefinitions to inform config building
+4. **Minimal Questions**: Infer when possible, ask max 1-2 questions
+5. **Explicit Criteria**: Use decision framework, not intuition
+6. **Feedback Welcome**: Every render is an invitation to refine

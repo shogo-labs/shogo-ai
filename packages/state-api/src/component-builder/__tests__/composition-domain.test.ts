@@ -173,6 +173,130 @@ describe("Composition Domain Enhancements - task-cpv-002", () => {
     })
   })
 
+  describe("AC-1b: toSlotSpecs() with section field (direct section name)", () => {
+    beforeEach(() => {
+      // Create a layout template
+      store.layoutTemplateCollection.add({
+        id: "layout-flexible",
+        name: "Flexible Layout",
+        slots: [
+          { name: "main", position: "center", required: true },
+          { name: "sidebar", position: "right", required: false },
+        ],
+        createdAt: Date.now(),
+      })
+
+      // Create a ComponentDefinition for backward compat tests
+      store.componentDefinitionCollection.add({
+        id: "comp-legacy-section",
+        name: "Legacy Section",
+        category: "section",
+        implementationRef: "LegacySection",
+        createdAt: Date.now(),
+      })
+    })
+
+    test("toSlotSpecs() returns section name directly when section field present", () => {
+      // New pattern: section field stores section name directly
+      store.compositionCollection.add({
+        id: "composition-section-field",
+        name: "Section Field Test",
+        layout: "layout-flexible",
+        slotContent: [
+          { slot: "main", section: "DirectSection" },
+        ],
+        createdAt: Date.now(),
+      })
+
+      const composition = store.compositionCollection.get("composition-section-field")
+      const specs: SlotSpec[] = composition.toSlotSpecs()
+
+      expect(specs.length).toBe(1)
+      expect(specs[0].slotName).toBe("main")
+      expect(specs[0].sectionRef).toBe("DirectSection")
+    })
+
+    test("toSlotSpecs() prefers section field over component field when both present", () => {
+      // Migration scenario: both fields present
+      store.compositionCollection.add({
+        id: "composition-both-fields",
+        name: "Both Fields Test",
+        layout: "layout-flexible",
+        slotContent: [
+          { slot: "main", section: "NewSection", component: "comp-legacy-section" },
+        ],
+        createdAt: Date.now(),
+      })
+
+      const composition = store.compositionCollection.get("composition-both-fields")
+      const specs: SlotSpec[] = composition.toSlotSpecs()
+
+      expect(specs.length).toBe(1)
+      expect(specs[0].sectionRef).toBe("NewSection") // section field wins
+    })
+
+    test("toSlotSpecs() falls back to component lookup when section field not present", () => {
+      // Backward compat: old pattern still works
+      store.compositionCollection.add({
+        id: "composition-legacy",
+        name: "Legacy Composition",
+        layout: "layout-flexible",
+        slotContent: [
+          { slot: "main", component: "comp-legacy-section" },
+        ],
+        createdAt: Date.now(),
+      })
+
+      const composition = store.compositionCollection.get("composition-legacy")
+      const specs: SlotSpec[] = composition.toSlotSpecs()
+
+      expect(specs.length).toBe(1)
+      expect(specs[0].sectionRef).toBe("LegacySection") // resolved via ComponentDefinition
+    })
+
+    test("toSlotSpecs() includes config when using section field", () => {
+      store.compositionCollection.add({
+        id: "composition-section-with-config",
+        name: "Section With Config",
+        layout: "layout-flexible",
+        slotContent: [
+          { slot: "main", section: "ConfiguredSection", config: { variant: "compact", showHeader: true } },
+        ],
+        createdAt: Date.now(),
+      })
+
+      const composition = store.compositionCollection.get("composition-section-with-config")
+      const specs: SlotSpec[] = composition.toSlotSpecs()
+
+      expect(specs[0].sectionRef).toBe("ConfiguredSection")
+      expect(specs[0].config).toEqual({ variant: "compact", showHeader: true })
+    })
+
+    test("toSlotSpecs() handles mixed section and component fields in same composition", () => {
+      store.compositionCollection.add({
+        id: "composition-mixed",
+        name: "Mixed Composition",
+        layout: "layout-flexible",
+        slotContent: [
+          { slot: "main", section: "NewMainSection" },
+          { slot: "sidebar", component: "comp-legacy-section" },
+        ],
+        createdAt: Date.now(),
+      })
+
+      const composition = store.compositionCollection.get("composition-mixed")
+      const specs: SlotSpec[] = composition.toSlotSpecs()
+
+      expect(specs.length).toBe(2)
+
+      const mainSpec = specs.find(s => s.slotName === "main")
+      const sidebarSpec = specs.find(s => s.slotName === "sidebar")
+
+      expect(mainSpec?.sectionRef).toBe("NewMainSection") // direct section field
+      expect(sidebarSpec?.sectionRef).toBe("LegacySection") // via component lookup
+    })
+  })
+
   describe("AC-2: CompositionCollection.findByName() view", () => {
     beforeEach(() => {
       // Create a layout template first

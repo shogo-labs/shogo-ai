@@ -3,7 +3,7 @@
   "name": "component-builder",
   "format": "enhanced-json-schema",
   "createdAt": 1767839088233,
-  "version": 3,
+  "version": 4,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "component-builder",
   "$defs": {
@@ -58,6 +58,10 @@
         "supportedConfig": {
           "type": "array",
           "description": "Config keys this component supports (e.g., ['variant', 'size', 'truncate'])"
+        },
+        "aiGuidance": {
+          "type": "string",
+          "description": "Semantic guidance for AI agents: configuration patterns, usage context, data binding notes, and examples. Markdown format. Discovered and folded into agent reasoning when working with this component."
         },
         "createdAt": {
           "type": "number"
