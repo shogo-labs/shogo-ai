@@ -158,7 +158,7 @@ Beyond code reuse, consider **architectural reuse** - where does this new compon
 | Level | What It Means | Example |
 |-------|---------------|---------|
 | **Code Reuse** | Copy/adapt code from source | Extract card rendering logic |
-| **Sub-component** | Embed inside existing container | DataGridPanel inside ComponentBuilderSection |
+| **Sub-component** | Embed inside existing container | TaskGraphPanel inside SpecContainerSection |
 | **Container Extension** | Add capability to existing container | New layout option for existing section |
 | **Standalone Section** | Independent, discoverable component | RequirementsListSection |
 
@@ -168,10 +168,10 @@ Before creating a standalone section, check if an existing container is the righ
 
 | Existing Container | Good Fit For | Bad Fit For |
 |--------------------|--------------|-------------|
-| `ComponentBuilderSection` | Layout/rendering variations of collection data | Unrelated data types, specialized visualizations |
 | `DesignContainerSection` | Schema-related views, design artifacts | Non-schema data |
-| `SpecContainerSection` | Implementation spec displays | Runtime data |
+| `SpecContainerSection` | Implementation spec displays, task graphs | Runtime data |
 | `DynamicCompositionSection` | Rendering saved compositions | New component logic |
+| `DataGridSection` | Tabular data display | Complex visualizations |
 
 ### Decision Framework
 
@@ -179,7 +179,7 @@ Before creating a standalone section, check if an existing container is the righ
 - Capability only makes sense within specific parent context
 - Parent already handles data loading, context, state
 - Users would never want this independently
-- Naming would be confusing as standalone (e.g., "CollectionKanbanSection" when ComponentBuilder already does collections)
+- Naming would be confusing as standalone (e.g., "TaskGraphSection" when SpecContainerSection already handles task graphs)
 
 **Consider standalone section when:**
 - Capability is independently useful in multiple contexts
@@ -191,35 +191,35 @@ Before creating a standalone section, check if an existing container is the righ
 
 **Anti-pattern 1: Suffix Confusion**
 ```
-❌ DataGridSection embedded in ComponentBuilderSection
+❌ TaskGraphSection embedded in SpecContainerSection
    - "Section" suffix implies standalone, but it's embedded
    - Creates discovery confusion
 
-✅ DataGridPanel embedded in ComponentBuilderSection
+✅ TaskGraphPanel embedded in SpecContainerSection
    - "Panel" suffix indicates internal component
    - Clear hierarchical relationship
 ```
 
 **Anti-pattern 2: Premature Standalone**
 ```
-❌ Creating KanbanLayoutSection when ComponentBuilderSection
-   already handles collection layouts
+❌ Creating DependencyGraphSection when SpecContainerSection
+   already handles task graphs
    - Duplicates data loading logic
-   - Fragments the component builder concept
+   - Fragments the spec container concept
 
-✅ Adding kanban as a layout option to ComponentBuilderSection
+✅ Adding dependency view as a feature of SpecContainerSection
    - Extends existing capability
-   - Single source of truth for collection rendering
+   - Single source of truth for spec visualization
 ```
 
 **Anti-pattern 3: Buried Capability**
 ```
-❌ Embedding a general-purpose DataGrid inside ComponentBuilderSection
+❌ Embedding a general-purpose DataGrid inside SpecContainerSection
    when datagrids would be useful in many contexts
    - Hides reusable capability
-   - Forces component builder dependency
+   - Forces spec container dependency
 
-✅ Creating standalone DataGridSection, used BY ComponentBuilderSection
+✅ Creating standalone DataGridSection, usable in any context
    - Maximizes reusability
    - Clear dependency direction
 ```

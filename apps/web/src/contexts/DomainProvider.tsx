@@ -43,6 +43,8 @@ export type DomainsMap = Record<string, DomainResult>
 /** Context value holds stores keyed the same as input domains */
 interface DomainProviderContextValue {
   stores: Record<string, any>
+  /** Maps schema name (e.g., "platform-features") to user-provided key (e.g., "platformFeatures") */
+  schemaNameToKey: Record<string, string>
 }
 
 // ============================================================================
@@ -83,10 +85,12 @@ export function DomainProvider<T extends DomainsMap>({
 }: DomainProviderProps<T>) {
   const env = useEnv() // Get environment from EnvironmentProvider (throws if missing)
   const storesRef = useRef<Record<string, any> | null>(null)
+  const schemaNameToKeyRef = useRef<Record<string, string> | null>(null)
 
   // Initialize all domain stores once (stable across re-renders)
   if (!storesRef.current) {
     const stores: Record<string, any> = {}
+    const schemaNameToKey: Record<string, string> = {}
 
     for (const [key, domain] of Object.entries(domains)) {
       // Build store-specific environment with domain's schemaName
@@ -100,9 +104,13 @@ export function DomainProvider<T extends DomainsMap>({
 
       // Create store and key by the user-provided key (not domain.name)
       stores[key] = domain.createStore(storeEnv)
+
+      // Build reverse lookup: schema name → user-provided key
+      schemaNameToKey[domain.name] = key
     }
 
     storesRef.current = stores
+    schemaNameToKeyRef.current = schemaNameToKey
   }
 
   // Load schemas and persisted data on mount
@@ -154,7 +162,10 @@ export function DomainProvider<T extends DomainsMap>({
   // storesRef.current is set once during initialization and never changes,
   // so we can safely memoize with empty deps.
   const contextValue = useMemo<DomainProviderContextValue>(
-    () => ({ stores: storesRef.current! }),
+    () => ({
+      stores: storesRef.current!,
+      schemaNameToKey: schemaNameToKeyRef.current!,
+    }),
     []
   )
 
@@ -192,4 +203,36 @@ export function useDomains<T extends DomainsMap = DomainsMap>(): {
     throw new Error("useDomains must be used within DomainProvider")
   }
   return ctx.stores as { [K in keyof T]: any }
+}
+
+/**
+ * Hook to access a domain store by schema name.
+ *
+ * This enables components to look up stores by schema name (e.g., "platform-features")
+ * without knowing the internal key used in DomainProvider (e.g., "platformFeatures").
+ *
+ * @param schemaName - The schema name (e.g., "platform-features", "studio-chat")
+ * @returns The domain store, or undefined if not found
+ *
+ * @example
+ * ```tsx
+ * function MyComponent() {
+ *   const platformFeatures = useDomainStore("platform-features")
+ *   const requirements = platformFeatures?.requirementCollection?.all() ?? []
+ * }
+ * ```
+ */
+export function useDomainStore(schemaName: string): any {
+  const ctx = useContext(DomainProviderContext)
+  if (!ctx) {
+    throw new Error("useDomainStore must be used within DomainProvider")
+  }
+
+  const key = ctx.schemaNameToKey[schemaName]
+  if (!key) {
+    // Not an error - schema might not be registered
+    return undefined
+  }
+
+  return ctx.stores[key]
 }

@@ -25,34 +25,49 @@
 3. Query: What grouping field?
    - Extracted: "priority"
 
-4. Query: Does kanban capability exist?
-   - Method: Knowledge of ComponentBuilderSection capabilities
-   - Result: Yes, ComponentBuilder supports kanban layout
+4. Query: Does a kanban section exist?
+   - Method: Query ComponentDefinitions for kanban-capable sections
+   - Result: Check for existing capability, if none exists → render approximation
 
-## Expected Action
+## Expected Action (Approximation Approach)
 
+**Step 1:** Check for existing kanban capability
+```javascript
+store_query({
+  schema: "component-builder",
+  model: "ComponentDefinition",
+  filter: { tags: { $in: ["kanban", "grid", "collection"] } },
+  terminal: "toArray"
+})
+```
+
+**Step 2a:** If no kanban section exists, render approximation:
 ```javascript
 set_workspace({
   layout: "single",
   panels: [{
     slot: "main",
-    section: "ComponentBuilderSection",
+    section: "DataGridSection",  // or DesignContainerSection as approximation
     config: {
-      suggestedDataSource: { schema: "platform-features", model: "Requirement" },
-      suggestedLayout: "kanban",
-      suggestedGroupBy: "priority"
+      schema: "platform-features",
+      model: "Requirement"
     }
   }]
 })
 ```
 
+**Step 2b:** Offer to build full capability:
+> "Here are your requirements in a table view. For a full kanban board with drag-and-drop grouped by priority, I can build that capability. Would you like me to?"
+
+**Step 3:** If user accepts, follow Branch D to plan and implement.
+
 ## Expected Response
 
-"I'll show requirements as a kanban board grouped by priority."
+"I'll show requirements for you. Let me check what visualization options are available..."
 
-[Workspace updates to show ComponentBuilder with kanban preview]
+[Renders approximation]
 
-"Here are your requirements organized by priority level. You can drag items between columns or click any requirement for details. Want me to adjust the columns or show additional fields on the cards?"
+"Here are your requirements in a data grid. For a full kanban board grouped by priority columns, I can build that visualization. Would you like me to create that component?"
 
 ## Validation Criteria
 
@@ -60,9 +75,10 @@ set_workspace({
 - [ ] Extracted data type (Requirement)
 - [ ] Extracted layout (kanban)
 - [ ] Extracted groupBy (priority)
-- [ ] Used `ComponentBuilderSection` with appropriate config
+- [ ] Checked for existing capability first
+- [ ] Rendered approximation using available sections
+- [ ] Offered to build full capability (routes to Branch D if accepted)
 - [ ] Did NOT ask clarifying questions (all info was in request)
-- [ ] Offered refinement options
 
 ## Variations to Test
 

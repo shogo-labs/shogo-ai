@@ -21,11 +21,11 @@ Catalog entry for a UI component.
 }
 ```
 
-**Seed Data (66 components):**
+**Seed Data (64 components):**
 - **Display (25)**: StringDisplay, NumberDisplay, BooleanDisplay, DateTimeDisplay, EmailDisplay, UriDisplay, EnumBadge, ReferenceDisplay, ComputedDisplay, ArrayDisplay, ObjectDisplay, plus domain badges (PriorityBadge, ArchetypeBadge, TaskStatusBadge, etc.)
 - **Visualization (4)**: ProgressBar, DataCard, GraphNode, StatusIndicator
 - **Section (27)**: Phase-specific sections (Discovery, Analysis, Classification, Design, Spec, Testing, Implementation)
-- **Workspace (3)**: ComponentBuilderSection, DynamicCompositionSection, PropertyFieldSection
+- **Workspace (4)**: WorkspaceBlankStateSection, DynamicCompositionSection, PlanPreviewSection, DataGridSection
 
 ---
 
@@ -209,8 +209,8 @@ store_query({
 ### Section Components (implementationRef values)
 - `DesignContainerSection` → Schema visualization
 - `SpecContainerSection` → ReactFlow dependency graph
-- `ComponentBuilderSection` → View builder UI
 - `DynamicCompositionSection` → Renders compositions by ID
+- `DataGridSection` → Generic data table
 - `RequirementsListSection` → Requirements display
 - `RequirementsGridSection` → Grid/kanban requirements
 - `FindingMatrixSection` → Analysis findings

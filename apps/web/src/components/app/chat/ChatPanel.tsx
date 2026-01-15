@@ -662,7 +662,7 @@ export const ChatPanel = observer(function ChatPanel({
                 const currentSlotContent = workspaceComposition.slotContent || []
                 const hasDesignSection = currentSlotContent.some?.(
                   (slot: any) => slot.component === 'comp-design-container' ||
-                                 slot.sectionRef === 'DesignContainerSection'
+                    slot.sectionRef === 'DesignContainerSection'
                 )
 
                 if (!hasDesignSection) {
@@ -684,7 +684,7 @@ export const ChatPanel = observer(function ChatPanel({
                   // Update existing section's config
                   const updatedSlotContent = currentSlotContent.map?.((slot: any) => {
                     if (slot.component === 'comp-design-container' ||
-                        slot.sectionRef === 'DesignContainerSection') {
+                      slot.sectionRef === 'DesignContainerSection') {
                       return { ...slot, config: { ...slot.config, defaultTab } }
                     }
                     return slot

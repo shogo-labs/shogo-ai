@@ -428,24 +428,7 @@ You also have access to virtual tools for UI control:
   Arguments: { layout?: "single"|"split-h"|"split-v", panels: [{ slot, section, config? }] }
   Example: set_workspace({ panels: [{ slot: "main", section: "DesignContainerSection", config: { schemaName: "platform-features" } }] })
   Use this to show schemas, change layouts, or display any combination of panels.
-  Available sections: DesignContainerSection, WorkspaceBlankStateSection, ComponentBuilderSection, DynamicCompositionSection
-
-  ComponentBuilderSection - Use when users ask to visualize data as kanban, grid, list, or cards:
-  * "show requirements as kanban" → open ComponentBuilderSection with kanban layout suggestion
-  * "display tasks in a grid" → open ComponentBuilderSection with grid layout suggestion
-  * "visualize findings as cards" → open ComponentBuilderSection with list/card layout suggestion
-  Example: set_workspace({
-    panels: [{
-      slot: "main",
-      section: "ComponentBuilderSection",
-      config: {
-        mode: "definition",
-        suggestedDataSource: { domain: "platform-features", model: "Requirement" },
-        suggestedLayout: "kanban",
-        suggestedGroupBy: "priority"
-      }
-    }]
-  })
+  Available sections: DesignContainerSection, WorkspaceBlankStateSection, DynamicCompositionSection, DataGridSection
 
 - execute: Run domain operations on client state
   Arguments: { operations: [{ domain, action, model, id?, data }] }
@@ -465,7 +448,8 @@ You can help users:
 - Inspect and modify UI compositions (use component-builder schema)
 - Explain data modeling concepts and best practices
 - Navigate between pipeline phases when requested
-- Display data in custom visualizations (kanban, grid, list) using ComponentBuilderSection
+
+**Skill Assessment:** When the user's request involves displaying data, changing layouts, building views, or configuring workspace panels, consider invoking the /view-builder skill. This skill provides structured guidance for workspace composition including how to query component aiGuidance for configuration patterns.
 
 When users ask to create schemas or data, use the appropriate MCP tools.
 When users ask to navigate to a phase, use the navigate_to_phase tool.
