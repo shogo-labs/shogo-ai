@@ -76,16 +76,8 @@ interface RecentToolCall {
 // Virtual Tool v2 Mappings
 // ============================================================
 
-// Map section names (from set_workspace) to component-builder IDs
-const SECTION_TO_COMPONENT: Record<string, string> = {
-  'DesignContainerSection': 'comp-design-container',
-  'SpecContainerSection': 'comp-spec-container',
-  'WorkspaceBlankStateSection': 'comp-def-workspace-blank-state-section',
-  'ComponentBuilderSection': 'comp-component-builder',
-  'DynamicCompositionSection': 'comp-dynamic-composition',
-  'PlanPreviewSection': 'comp-plan-preview-section',
-  'DataGridSection': 'comp-data-grid-section',
-}
+// Note: SECTION_TO_COMPONENT map removed - now using direct section names
+// in slotContent.section field. The toSlotSpecs() view handles resolution.
 
 // Map layout names to layout template IDs
 const LAYOUT_TO_TEMPLATE: Record<string, string> = {
@@ -731,10 +723,10 @@ export const ChatPanel = observer(function ChatPanel({
               }
             }
 
-            // Build slotContent from panels
+            // Build slotContent from panels - use section field directly
             const slotContent = (args.panels ?? []).map(panel => ({
               slot: panel.slot,
-              component: SECTION_TO_COMPONENT[panel.section] ?? panel.section,
+              section: panel.section, // Direct section name (toSlotSpecs handles resolution)
               config: panel.config ?? {},
             }))
 
