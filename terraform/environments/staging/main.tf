@@ -167,6 +167,11 @@ module "eks" {
   # Enable Karpenter for workspace autoscaling
   enable_karpenter = true
 
+  # Grant cluster-admin access to GitHub Actions role (shared with production)
+  admin_role_arns = [
+    "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-github-actions"
+  ]
+
   tags = {
     Environment = var.environment
   }
