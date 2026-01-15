@@ -16,6 +16,10 @@ export default defineConfig(({ mode }) => {
   const VITE_PORT = parseInt(env.VITE_PORT || '3000', 10)
   const API_PORT = parseInt(env.API_PORT || '8002', 10)
 
+  // HMR control: set VITE_HMR=false to disable hot module replacement
+  // Useful when working with AI chat to prevent stream interruption on code changes
+  const enableHMR = env.VITE_HMR !== 'false'
+
   // HMR configuration for Docker dev mode
   const hmrHost = env.VITE_HMR_HOST || undefined
   const hmrPort = env.VITE_HMR_PORT ? parseInt(env.VITE_HMR_PORT, 10) : undefined

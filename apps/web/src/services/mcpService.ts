@@ -250,8 +250,8 @@ export class MCPService {
 
   async listSchemas(): Promise<string[]> {
     const result = await this.callTool('schema.list', {})
-    // Result should be array of schema names
-    return result.schemas || []
+    // Result.schemas is array of {name, id, createdAt, path} objects - extract names
+    return (result.schemas || []).map((s: any) => s.name)
   }
 
   async loadSchema(schemaName: string, workspace?: string): Promise<any> {

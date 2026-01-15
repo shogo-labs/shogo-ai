@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:nohmr": "VITE_HMR=false vite",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"

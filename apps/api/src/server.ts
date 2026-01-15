@@ -428,7 +428,7 @@ You also have access to virtual tools for UI control:
   Arguments: { layout?: "single"|"split-h"|"split-v", panels: [{ slot, section, config? }] }
   Example: set_workspace({ panels: [{ slot: "main", section: "DesignContainerSection", config: { schemaName: "platform-features" } }] })
   Use this to show schemas, change layouts, or display any combination of panels.
-  Available sections: DesignContainerSection, WorkspaceBlankStateSection
+  Available sections: DesignContainerSection, WorkspaceBlankStateSection, DynamicCompositionSection, DataGridSection
 
 - execute: Run domain operations on client state
   Arguments: { operations: [{ domain, action, model, id?, data }] }
@@ -614,7 +614,7 @@ app.post('/api/chat', async (c) => {
     const result = streamText({
       // Type assertion for ai-sdk-provider-claude-code compatibility with ai@6
       // task-api-convert-images: streamingInput required for image support
-      model: claudeCode('sonnet', {
+      model: claudeCode('opus', {
         ...modelSettings,
         streamingInput: 'always',  // Required for image parts to be sent to Claude
       }) as Parameters<typeof streamText>[0]['model'],

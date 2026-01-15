@@ -21,6 +21,7 @@ import { ComposablePhaseView } from "../../rendering/composition/ComposablePhase
 import { ChatPanel } from "../chat/ChatPanel"
 import { ChatSessionPicker, type ChatSession } from "../chat/ChatSessionPicker"
 import { useChatSessionNavigation } from "./hooks/useChatSessionNavigation"
+import { useWorkspaceNavigation } from "../workspace/hooks/useWorkspaceNavigation"
 import { cn } from "@/lib/utils"
 
 // ============================================================
@@ -44,26 +45,48 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
   // Track current chat session in URL (persists across refresh/hot reload)
   const { chatSessionId, setChatSessionId } = useChatSessionNavigation()
 
+  // Register workspace params with nuqs so they're preserved during navigation
+  // Even though we don't use these values, calling the hook ensures nuqs doesn't clear them
+  useWorkspaceNavigation()
+
   // Lift chat panel collapse state to parent to control layout
   const [isChatCollapsed, setIsChatCollapsed] = useState(false)
 
-  // Get or create testbed session
-  const testbedSession = platformFeatures?.featureSessionCollection?.get(TESTBED_SESSION_ID)
+  // Lift chat panel width to parent for proper layout control
+  const [chatWidth, setChatWidth] = useState(400)
 
-  // Ensure testbed session exists (for ChatPanel and DesignContainerSection)
+  // Testbed session state (loaded async via query)
+  const [testbedSession, setTestbedSession] = useState<any>(null)
+
+  // Load or create testbed session (for ChatPanel and DesignContainerSection)
   useEffect(() => {
-    if (!platformFeatures?.featureSessionCollection) return
+    if (!platformFeatures?.featureSessionCollection?.query) return
 
-    const existing = platformFeatures.featureSessionCollection.get(TESTBED_SESSION_ID)
-    if (!existing) {
-      platformFeatures.featureSessionCollection.insertOne({
-        id: TESTBED_SESSION_ID,
-        name: "Advanced Chat Testbed",
-        intent: "Virtual tools development testbed",
-        status: "discovery",
-        createdAt: Date.now(),
-      })
-    }
+    ;(async () => {
+      try {
+        // Check if session exists using query()
+        const existing = await platformFeatures.featureSessionCollection
+          .query()
+          .where({ id: TESTBED_SESSION_ID })
+          .first()
+
+        if (existing) {
+          setTestbedSession(existing)
+        } else {
+          // Create if not exists
+          const created = await platformFeatures.featureSessionCollection.insertOne({
+            id: TESTBED_SESSION_ID,
+            name: "Advanced Chat Testbed",
+            intent: "Virtual tools development testbed",
+            status: "discovery",
+            createdAt: Date.now(),
+          })
+          setTestbedSession(created)
+        }
+      } catch (err) {
+        console.error('[AdvancedChatLayout] Failed to load/create testbed session:', err)
+      }
+    })()
   }, [platformFeatures])
 
   // Get workspace composition (for observability - triggers re-render when modified)
@@ -127,11 +150,14 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
         />
       </div>
 
-      {/* Chat Panel Container - dynamic width based on collapse state */}
-      <div className={cn(
-        "border-l flex-shrink-0 flex flex-col transition-all duration-200",
-        isChatCollapsed ? "w-16" : "w-[400px]"
-      )}>
+      {/* Chat Panel Container - dynamic width controlled by ChatPanel resize */}
+      <div
+        className={cn(
+          "border-l flex-shrink-0 flex flex-col transition-all duration-200",
+          isChatCollapsed && "w-16"
+        )}
+        style={!isChatCollapsed ? { width: `${chatWidth}px` } : undefined}
+      >
         {/* Session Picker Header - hide when collapsed */}
         {!isChatCollapsed && (
           <div className="px-3 py-2 border-b flex items-center justify-between bg-muted/30">
@@ -156,6 +182,7 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
             onChatSessionChange={handleChatSessionChange}
             isCollapsed={isChatCollapsed}
             onCollapsedChange={setIsChatCollapsed}
+            onWidthChange={setChatWidth}
           />
         </div>
       </div>

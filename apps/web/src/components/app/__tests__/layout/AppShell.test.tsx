@@ -112,12 +112,12 @@ function renderAppShell(authService: MockAuthService, nestedContent?: React.Reac
   const domains = { auth: betterAuthDomain } as const
 
   return render(
-    <MemoryRouter initialEntries={["/app"]}>
+    <MemoryRouter initialEntries={["/"]}>
       <EnvironmentProvider env={env}>
         <DomainProvider domains={domains}>
           <AuthInitializer>
             <Routes>
-              <Route path="/app" element={<AppShell />}>
+              <Route path="/" element={<AppShell />}>
                 <Route index element={nestedContent || <div data-testid="nested-content">Nested Route Content</div>} />
               </Route>
             </Routes>
