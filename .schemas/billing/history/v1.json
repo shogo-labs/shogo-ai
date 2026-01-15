@@ -1,0 +1,319 @@
+{
+  "id": "02695b34-1b47-4252-8df1-207c0cee9ad4",
+  "name": "billing",
+  "format": "enhanced-json-schema",
+  "createdAt": 1768386808298,
+  "version": 1,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "billing",
+  "$defs": {
+    "Subscription": {
+      "type": "object",
+      "description": "Stripe subscription synced to local state. Tracks plan, status, and billing period.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "organization": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reference to studio-core Organization (cross-schema string ID)"
+        },
+        "stripeSubscriptionId": {
+          "type": "string",
+          "description": "Stripe subscription ID (sub_xxx)"
+        },
+        "stripeCustomerId": {
+          "type": "string",
+          "description": "Stripe customer ID (cus_xxx)"
+        },
+        "planId": {
+          "type": "string",
+          "description": "Plan tier",
+          "enum": [
+            "pro",
+            "business",
+            "enterprise"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "description": "Subscription status from Stripe",
+          "enum": [
+            "active",
+            "past_due",
+            "canceled",
+            "trialing",
+            "paused"
+          ]
+        },
+        "billingInterval": {
+          "type": "string",
+          "description": "Billing cycle",
+          "enum": [
+            "monthly",
+            "annual"
+          ]
+        },
+        "currentPeriodStart": {
+          "type": "number",
+          "description": "Unix timestamp of billing period start"
+        },
+        "currentPeriodEnd": {
+          "type": "number",
+          "description": "Unix timestamp of billing period end"
+        },
+        "cancelAtPeriodEnd": {
+          "type": "boolean",
+          "description": "Whether subscription cancels at period end"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "organization",
+        "stripeSubscriptionId",
+        "stripeCustomerId",
+        "planId",
+        "status",
+        "billingInterval",
+        "currentPeriodStart",
+        "currentPeriodEnd",
+        "createdAt"
+      ],
+      "x-original-name": "Subscription"
+    },
+    "CreditLedger": {
+      "type": "object",
+      "description": "Credit balance tracking per organization. Supports monthly/daily credits with rollover.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "organization": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reference to studio-core Organization (cross-schema string ID)"
+        },
+        "monthlyCredits": {
+          "type": "number",
+          "description": "Remaining monthly credits (0-100+ with rollover)"
+        },
+        "dailyCredits": {
+          "type": "number",
+          "description": "Remaining daily credits (0-5, reset at midnight UTC)"
+        },
+        "rolloverCredits": {
+          "type": "number",
+          "description": "Credits rolled over from previous periods"
+        },
+        "anniversaryDay": {
+          "type": "number",
+          "description": "Day of month for monthly reset (1-31)"
+        },
+        "lastDailyReset": {
+          "type": "number",
+          "description": "Unix timestamp of last daily credit reset (for lazy calculation)"
+        },
+        "lastMonthlyReset": {
+          "type": "number",
+          "description": "Unix timestamp of last monthly credit allocation"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "organization",
+        "monthlyCredits",
+        "dailyCredits",
+        "rolloverCredits",
+        "anniversaryDay",
+        "lastDailyReset",
+        "lastMonthlyReset",
+        "createdAt"
+      ],
+      "x-original-name": "CreditLedger"
+    },
+    "Workspace": {
+      "type": "object",
+      "description": "Usage tracking container under organization. Members work within workspaces.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "organization": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reference to studio-core Organization (cross-schema string ID)"
+        },
+        "name": {
+          "type": "string",
+          "description": "Workspace display name"
+        },
+        "slug": {
+          "type": "string",
+          "description": "URL-safe identifier"
+        },
+        "description": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "organization",
+        "name",
+        "slug",
+        "createdAt"
+      ],
+      "x-original-name": "Workspace"
+    },
+    "UsageEvent": {
+      "type": "object",
+      "description": "Individual credit consumption record for tracking and analytics.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "organization": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reference to studio-core Organization (cross-schema string ID)"
+        },
+        "workspace": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reference to Workspace",
+          "x-arktype": "Workspace",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Workspace"
+        },
+        "memberId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reference to studio-core Member (cross-schema string ID)"
+        },
+        "actionType": {
+          "type": "string",
+          "description": "Type of action that consumed credits (e.g., 'chat_message', 'code_generation', 'analysis')"
+        },
+        "actionMetadata": {
+          "type": "object",
+          "description": "Additional context about the action (model used, tokens, etc.)"
+        },
+        "creditCost": {
+          "type": "number",
+          "description": "Credits consumed (0.5 to 2.0+)"
+        },
+        "creditSource": {
+          "type": "string",
+          "description": "Which credit pool was debited",
+          "enum": [
+            "daily",
+            "monthly"
+          ]
+        },
+        "balanceBefore": {
+          "type": "number",
+          "description": "Credit balance before consumption (for audit trail)"
+        },
+        "balanceAfter": {
+          "type": "number",
+          "description": "Credit balance after consumption (for audit trail)"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "organization",
+        "memberId",
+        "actionType",
+        "creditCost",
+        "creditSource",
+        "balanceBefore",
+        "balanceAfter",
+        "createdAt"
+      ],
+      "x-original-name": "UsageEvent"
+    }
+  },
+  "x-persistence": {
+    "backend": "postgres"
+  },
+  "views": {
+    "subscriptionByOrg": {
+      "type": "query",
+      "collection": "Subscription",
+      "filter": {
+        "organization": "{{organizationId}}"
+      },
+      "select": []
+    },
+    "creditLedgerByOrg": {
+      "type": "query",
+      "collection": "CreditLedger",
+      "filter": {
+        "organization": "{{organizationId}}"
+      },
+      "select": []
+    },
+    "workspacesByOrg": {
+      "type": "query",
+      "collection": "Workspace",
+      "filter": {
+        "organization": "{{organizationId}}"
+      },
+      "select": []
+    },
+    "usageByWorkspace": {
+      "type": "query",
+      "collection": "UsageEvent",
+      "filter": {
+        "workspace": "{{workspaceId}}"
+      },
+      "select": []
+    },
+    "usageByMember": {
+      "type": "query",
+      "collection": "UsageEvent",
+      "filter": {
+        "memberId": "{{memberId}}"
+      },
+      "select": []
+    },
+    "recentUsage": {
+      "type": "query",
+      "collection": "UsageEvent",
+      "filter": {
+        "organization": "{{organizationId}}"
+      },
+      "select": []
+    }
+  }
+}

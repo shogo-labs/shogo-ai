@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import Stripe from 'stripe'
 import { streamText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
 import { z } from 'zod'
 import { EventEmitter } from 'events'
@@ -737,6 +738,130 @@ app.post('/api/chat', async (c) => {
         code: error.code || 'CHAT_ERROR',
       }
     }, 500)
+  }
+})
+
+// =============================================================================
+// Billing routes (simplified - accepts organizationId in body)
+// =============================================================================
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '')
+
+// Stripe price IDs from environment
+const STRIPE_PRICES: Record<string, Record<string, string>> = {
+  pro: {
+    monthly: process.env.STRIPE_PRICE_PRO_MONTHLY || '',
+    annual: process.env.STRIPE_PRICE_PRO_ANNUAL || '',
+  },
+  business: {
+    monthly: process.env.STRIPE_PRICE_BUSINESS_MONTHLY || '',
+    annual: process.env.STRIPE_PRICE_BUSINESS_ANNUAL || '',
+  },
+}
+
+app.post('/api/billing/checkout', async (c) => {
+  try {
+    const body = await c.req.json()
+    const { organizationId, planId, billingInterval } = body
+
+    if (!organizationId || !planId || !billingInterval) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
+    }
+
+    // Get or map the plan type (pro, business)
+    const planType = planId.startsWith('business') ? 'business' : 'pro'
+    const priceId = STRIPE_PRICES[planType]?.[billingInterval]
+
+    if (!priceId) {
+      return c.json({ error: { code: 'invalid_plan', message: `No price found for ${planId} ${billingInterval}` } }, 400)
+    }
+
+    // Create Stripe checkout session
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: `http://localhost:${VITE_PORT}/billing?success=true&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `http://localhost:${VITE_PORT}/billing?canceled=true`,
+      metadata: {
+        organizationId,
+        planId,
+        billingInterval,
+      },
+    })
+
+    return c.json({ sessionId: session.id, url: session.url }, 200)
+  } catch (error: any) {
+    console.error('[Billing] Checkout error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+app.post('/api/billing/portal', async (c) => {
+  try {
+    const url = new URL(c.req.url)
+    const organizationId = url.searchParams.get('organizationId')
+
+    if (!organizationId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing organizationId' } }, 400)
+    }
+
+    // For now, return an error since we don't have customer ID stored
+    return c.json({ error: { code: 'not_implemented', message: 'Portal not yet implemented' } }, 501)
+  } catch (error: any) {
+    console.error('[Billing] Portal error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+// Stripe webhook endpoint
+app.post('/webhooks/stripe', async (c) => {
+  try {
+    const payload = await c.req.text()
+    const signature = c.req.header('stripe-signature') || ''
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || ''
+
+    let event: Stripe.Event
+    try {
+      event = stripe.webhooks.constructEvent(payload, signature, webhookSecret)
+    } catch (err: any) {
+      console.error('[Webhook] Signature verification failed:', err.message)
+      return c.json({ error: 'Invalid signature' }, 400)
+    }
+
+    console.log('[Webhook] Received event:', event.type)
+
+    // Handle subscription events
+    switch (event.type) {
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated': {
+        const subscription = event.data.object as Stripe.Subscription
+        console.log('[Webhook] Subscription event:', {
+          type: event.type,
+          subscriptionId: subscription.id,
+          status: subscription.status,
+          customerId: subscription.customer,
+          metadata: subscription.metadata,
+        })
+        break
+      }
+      case 'checkout.session.completed': {
+        const session = event.data.object as Stripe.Checkout.Session
+        console.log('[Webhook] Checkout completed:', {
+          sessionId: session.id,
+          subscriptionId: session.subscription,
+          customerId: session.customer,
+          metadata: session.metadata,
+        })
+        break
+      }
+      default:
+        console.log('[Webhook] Unhandled event type:', event.type)
+    }
+
+    return c.json({ received: true }, 200)
+  } catch (error: any) {
+    console.error('[Webhook] Error:', error)
+    return c.json({ error: 'Webhook error' }, 500)
   }
 })
 

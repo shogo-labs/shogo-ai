@@ -29,6 +29,9 @@ export * from './persistence'
 // Auth layer
 export * from './auth'
 
+// Billing layer
+export * from './billing'
+
 // BetterAuth layer
 export * from './better-auth'
 

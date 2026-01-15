@@ -20,11 +20,9 @@
  */
 
 import { observer } from "mobx-react-lite"
-import { ThemeToggle, AdvancedModeToggle } from "../shared"
+import { ThemeToggle, AdvancedModeToggle, UserMenu } from "../shared"
 import { Link } from "react-router-dom"
 import { Users } from "lucide-react"
-import { ThemeToggle } from "../shared/ThemeToggle"
-import { UserMenu } from "../shared/UserMenu"
 import { OrgSwitcher, ProjectSelector } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
 import { Button } from "@/components/ui/button"

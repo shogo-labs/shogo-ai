@@ -1,26 +1,27 @@
 /**
  * AppProfilePage - User profile page within the /app context
  *
- * Shows current user info and their organization memberships.
+ * Shows current user info, organization memberships, and billing/credits.
  */
 
 import { observer } from "mobx-react-lite"
 import { Link } from "react-router-dom"
-import { ArrowLeft, User, Building2, Mail, Calendar } from "lucide-react"
+import { ArrowLeft, User, Building2, Mail, Calendar, CreditCard, Zap, TrendingUp } from "lucide-react"
 
 import { useDomains } from "@/contexts/DomainProvider"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Progress } from "@/components/ui/progress"
 
 /**
  * AppProfilePage component
  *
- * User profile page showing user info and organization memberships.
+ * User profile page showing user info, organization memberships, and billing.
  */
 export const AppProfilePage = observer(function AppProfilePage() {
-  const { auth, studioCore } = useDomains()
+  const { auth, studioCore, billing } = useDomains()
 
   const currentUser = auth.currentUser
   const isLoading = auth.isLoading
@@ -125,7 +126,7 @@ export const AppProfilePage = observer(function AppProfilePage() {
       </Card>
 
       {/* Organizations Card */}
-      <Card>
+      <Card className="mb-6">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Building2 className="h-5 w-5" />
@@ -146,27 +147,114 @@ export const AppProfilePage = observer(function AppProfilePage() {
             </div>
           ) : (
             <div className="space-y-3">
-              {userOrgs.map((org: any) => (
-                <div
-                  key={org.id}
-                  className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
-                >
-                  <div>
-                    <p className="font-medium">{org.name}</p>
-                    <p className="text-sm text-muted-foreground">{org.slug}</p>
+              {userOrgs.map((org: any) => {
+                // Get billing info for this org
+                const subscription = billing.subscriptionCollection.findByOrg(org.id)[0]
+                const creditLedger = billing.creditLedgerCollection.findByOrg(org.id)
+                const effectiveBalance = creditLedger?.effectiveBalance
+
+                return (
+                  <div
+                    key={org.id}
+                    className="p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <p className="font-medium">{org.name}</p>
+                        <p className="text-sm text-muted-foreground">{org.slug}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={getRoleForOrg(org.id) === "owner" ? "default" : "secondary"}>
+                          {getRoleForOrg(org.id)}
+                        </Badge>
+                        <Link to={`/app/members?org=${org.slug}`}>
+                          <Button variant="ghost" size="sm">
+                            Manage
+                          </Button>
+                        </Link>
+                      </div>
+                    </div>
+
+                    {/* Billing Section for Org Owners */}
+                    {getRoleForOrg(org.id) === "owner" && (
+                      <div className="pt-3 border-t">
+                        {subscription ? (
+                          <div className="space-y-3">
+                            {/* Plan & Credits Row */}
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <CreditCard className="h-4 w-4 text-muted-foreground" />
+                                <span className="text-sm font-medium capitalize">
+                                  {subscription.planId} Plan
+                                </span>
+                                <Badge variant={subscription.isActive ? "default" : "secondary"} className="text-xs">
+                                  {subscription.status}
+                                </Badge>
+                              </div>
+                              <Link to="/app/billing">
+                                <Button variant="outline" size="sm">
+                                  <TrendingUp className="h-3 w-3 mr-1" />
+                                  Manage Plan
+                                </Button>
+                              </Link>
+                            </div>
+
+                            {/* Credits Display */}
+                            {effectiveBalance && (
+                              <div className="bg-muted/50 rounded-lg p-3">
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-sm font-medium flex items-center gap-1">
+                                    <Zap className="h-4 w-4 text-yellow-500" />
+                                    Credits
+                                  </span>
+                                  <span className="text-sm font-bold">
+                                    {effectiveBalance.total.toFixed(1)} total
+                                  </span>
+                                </div>
+                                <div className="grid grid-cols-3 gap-2 text-xs">
+                                  <div className="text-center p-2 bg-background rounded">
+                                    <div className="font-medium">{effectiveBalance.dailyCredits.toFixed(1)}</div>
+                                    <div className="text-muted-foreground">Daily</div>
+                                  </div>
+                                  <div className="text-center p-2 bg-background rounded">
+                                    <div className="font-medium">{effectiveBalance.monthlyCredits.toFixed(1)}</div>
+                                    <div className="text-muted-foreground">Monthly</div>
+                                  </div>
+                                  <div className="text-center p-2 bg-background rounded">
+                                    <div className="font-medium">{effectiveBalance.rolloverCredits.toFixed(1)}</div>
+                                    <div className="text-muted-foreground">Rollover</div>
+                                  </div>
+                                </div>
+                                <div className="mt-2">
+                                  <Progress
+                                    value={(effectiveBalance.monthlyCredits / 100) * 100}
+                                    className="h-1.5"
+                                  />
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {subscription.daysRemaining} days until renewal
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm text-muted-foreground">
+                              No active subscription
+                            </div>
+                            <Link to="/app/billing">
+                              <Button size="sm">
+                                <TrendingUp className="h-3 w-3 mr-1" />
+                                View Plans
+                              </Button>
+                            </Link>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={getRoleForOrg(org.id) === "owner" ? "default" : "secondary"}>
-                      {getRoleForOrg(org.id)}
-                    </Badge>
-                    <Link to={`/app/members?org=${org.slug}`}>
-                      <Button variant="ghost" size="sm">
-                        Manage
-                      </Button>
-                    </Link>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </CardContent>
