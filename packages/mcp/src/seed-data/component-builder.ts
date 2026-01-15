@@ -43,6 +43,8 @@ export interface ComponentDefinitionSeed {
   tags?: string[]
   /** Config keys this component supports (e.g., ['variant', 'size', 'truncate']) */
   supportedConfig?: string[]
+  /** Semantic guidance for AI agents: configuration patterns, usage context, and examples (markdown) */
+  aiGuidance?: string
 }
 
 /**
@@ -747,6 +749,55 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     implementationRef: "DataGridSection",
     tags: ["section", "data-grid", "table", "collection", "generic", "workspace"],
     supportedConfig: ["schema", "model", "columns", "title", "stickyFirstColumn", "onRowSelect"],
+    aiGuidance: `## DataGridSection Configuration Guide
+
+Displays any Wavesmith collection as a sortable, selectable data grid.
+
+### Required Config
+- \`schema\`: Schema name (e.g., "platform-features", "studio-chat")
+- \`model\`: Model name (e.g., "Requirement", "ChatSession")
+
+### Data Loading
+
+**Sync vs Async:** By default, reads from local MST store (sync). If the store is empty or you need filtering/sorting/pagination, add \`query: {}\` to use async path which queries the database directly.
+
+**Session Filtering:** When a feature context exists, \`sessionFilter: true\` (default) filters by \`feature.id\`. Set \`sessionFilter: false\` to show all data regardless of feature context.
+
+### Query Examples
+
+\`\`\`json
+// Show all data (async, no filter)
+{ "query": {} }
+
+// Filter by status
+{ "query": { "filter": { "status": "accepted" } } }
+
+// Sort by priority descending
+{ "query": { "orderBy": [{ "field": "priority", "direction": "desc" }] } }
+
+// Paginate (first 20 items)
+{ "query": { "skip": 0, "take": 20 } }
+
+// Combined: filter + sort + paginate
+{ "query": { "filter": { "status": { "$in": ["accepted", "pending"] } }, "orderBy": [{ "field": "createdAt", "direction": "desc" }], "take": 50 } }
+\`\`\`
+
+### Display Options
+- \`columns\`: Array of property names to display. If omitted, auto-detects from model metadata.
+- \`excludeColumns\`: Properties to hide from auto-detected columns.
+- \`title\`: Custom section header (defaults to "Model Data").
+- \`stickyFirstColumn\`: Keep first column visible on horizontal scroll.
+
+### When to Use
+- Displaying collections as tables/grids
+- Need sorting, row selection, or pagination
+- Showing data from any schema without custom UI
+- Workspace views for browsing entities
+
+### Common Patterns
+- "Show requirements" -> \`{ schema: "platform-features", model: "Requirement", query: {} }\`
+- "Show chat sessions" -> \`{ schema: "studio-chat", model: "ChatSession", query: {} }\`
+- "Show tasks in progress" -> \`{ schema: "platform-features", model: "ImplementationTask", query: { filter: { status: "in_progress" } } }\``,
   },
 
   // ---------------------------------------------------------------------------

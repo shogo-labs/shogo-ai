@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:nohmr": "VITE_HMR=false vite",
-    "build": "vite build",
+    "dev": "VITE_SHOGO_SKILLS=$(bun ../../scripts/list-skills.ts) vite",
+    "dev:nohmr": "VITE_SHOGO_SKILLS=$(bun ../../scripts/list-skills.ts) VITE_HMR=false vite",
+    "build": "VITE_SHOGO_SKILLS=$(bun ../../scripts/list-skills.ts) vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },
