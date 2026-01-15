@@ -13,7 +13,7 @@
 import { useState } from "react"
 import { observer } from "mobx-react-lite"
 import { useNavigate } from "react-router-dom"
-import { Paperclip, Palette, MessageSquare, Send, Sparkles } from "lucide-react"
+import { Paperclip, Palette, MessageSquare, Send, Sparkles, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
@@ -23,6 +23,8 @@ interface HomePageProps {
   userName?: string
   /** Callback when a new prompt is submitted */
   onPromptSubmit?: (prompt: string) => void
+  /** Loading state - true when creating project/feature from prompt */
+  isLoading?: boolean
 }
 
 /**
@@ -34,14 +36,16 @@ interface HomePageProps {
 export const HomePage = observer(function HomePage({
   userName = "there",
   onPromptSubmit,
+  isLoading = false,
 }: HomePageProps) {
   const [prompt, setPrompt] = useState("")
   const navigate = useNavigate()
 
   const handleSubmit = () => {
-    if (prompt.trim() && onPromptSubmit) {
+    if (prompt.trim() && onPromptSubmit && !isLoading) {
       onPromptSubmit(prompt)
-      setPrompt("")
+      // Don't clear prompt immediately - let the navigation happen first
+      // The component will unmount when navigating to the project
     }
   }
 
@@ -90,6 +94,7 @@ export const HomePage = observer(function HomePage({
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 onKeyDown={handleKeyDown}
+                disabled={isLoading}
                 className="min-h-[80px] resize-none border-0 bg-transparent p-0 text-base focus-visible:ring-0 placeholder:text-muted-foreground/60"
                 rows={3}
               />
@@ -129,9 +134,13 @@ export const HomePage = observer(function HomePage({
                   size="sm"
                   className="h-8 px-3"
                   onClick={handleSubmit}
-                  disabled={!prompt.trim()}
+                  disabled={!prompt.trim() || isLoading}
                 >
-                  <Send className="h-4 w-4" />
+                  {isLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
                 </Button>
               </div>
             </div>

@@ -1,13 +1,14 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import Stripe from 'stripe'
-import { streamText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
+import { streamText, generateText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
 import { z } from 'zod'
 import { EventEmitter } from 'events'
 import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
 // isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
 import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
 import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-provider-claude-code'
+import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { auth } from './auth'
@@ -508,6 +509,95 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 app.get('/api/health', (c) => c.json({ ok: true }))
 
 /**
+ * Generate a project name from a user prompt using a small language model.
+ * This endpoint provides a fast, lightweight way to generate meaningful project names
+ * without the overhead of the full chat interface.
+ * 
+ * Request body:
+ * - prompt: string - The user's description of what they want to build
+ * 
+ * Response:
+ * - name: string - A short, descriptive project name (2-4 words)
+ */
+/**
+ * Fallback function for generating project names when AI is unavailable.
+ * Extracts meaningful words from the prompt.
+ */
+function fallbackGenerateProjectName(prompt: string): string {
+  const fillerWords = new Set([
+    "a", "an", "the", "to", "for", "with", "that", "this", "is", "are",
+    "create", "build", "make", "design", "develop", "implement",
+    "please", "can", "you", "i", "want", "need", "would", "like",
+    "simple", "basic", "web", "app", "application", "website", "page"
+  ])
+  
+  const words = prompt.toLowerCase()
+    .replace(/[^\w\s]/g, "")
+    .split(/\s+/)
+    .filter(word => word.length > 2 && !fillerWords.has(word))
+  
+  const nameWords = words.slice(0, 3)
+  
+  if (nameWords.length === 0) {
+    return "New Project"
+  }
+  
+  return nameWords
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ")
+}
+
+app.post('/api/generate-project-name', async (c) => {
+  try {
+    const { prompt } = await c.req.json()
+    
+    if (!prompt || typeof prompt !== 'string') {
+      return c.json({ error: 'Prompt is required' }, 400)
+    }
+    
+    // Check if ANTHROPIC_API_KEY is available
+    if (!process.env.ANTHROPIC_API_KEY) {
+      console.log('[/api/generate-project-name] ANTHROPIC_API_KEY not set, using fallback')
+      return c.json({ name: fallbackGenerateProjectName(prompt) })
+    }
+    
+    // Use Claude Haiku - fastest and most cost-effective model for simple tasks
+    const anthropic = createAnthropic()
+    
+    const result = await generateText({
+      model: anthropic('claude-3-5-haiku-latest'),
+      system: `You are a project naming assistant. Given a user's description of what they want to build, generate a short, memorable project name.
+
+Rules:
+- Return ONLY the project name, nothing else
+- Use 2-4 words maximum
+- Make it descriptive but concise
+- Use Title Case (capitalize each word)
+- Do NOT include words like "App", "Application", "Project", "System" unless essential
+- Focus on the core functionality or domain
+
+Examples:
+- "create a todo app" → "Task Tracker"
+- "build a recipe manager" → "Recipe Book"
+- "make a chat application with video calls" → "Video Chat"
+- "create an e-commerce site for selling plants" → "Plant Shop"
+- "build a dashboard for monitoring servers" → "Server Monitor"`,
+      prompt: prompt.trim(),
+    })
+    
+    // Extract and clean the name
+    const name = result.text.trim().replace(/['"]/g, '') || 'New Project'
+    
+    return c.json({ name })
+  } catch (error: any) {
+    console.error('[/api/generate-project-name] Error:', error)
+    // Fall back to simple extraction on any error - return 200 with fallback name
+    const { prompt } = await c.req.json().catch(() => ({ prompt: '' }))
+    return c.json({ name: fallbackGenerateProjectName(prompt || '') })
+  }
+})
+
+/**
  * AI Chat endpoint using Vercel AI SDK with Claude Code provider
  * Streams Claude responses back to the client
  * Uses existing Claude Pro/Max subscription via Claude Code CLI
@@ -746,7 +836,10 @@ app.post('/api/chat', async (c) => {
 // =============================================================================
 // Billing routes (simplified - accepts workspaceId in body)
 // =============================================================================
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '')
+// Only initialize Stripe if the API key is set
+const stripe = process.env.STRIPE_SECRET_KEY 
+  ? new Stripe(process.env.STRIPE_SECRET_KEY)
+  : null
 
 // Stripe price IDs from environment
 const STRIPE_PRICES: Record<string, Record<string, string>> = {
@@ -762,6 +855,10 @@ const STRIPE_PRICES: Record<string, Record<string, string>> = {
 
 app.post('/api/billing/checkout', async (c) => {
   try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
     const body = await c.req.json()
     const { workspaceId, planId, billingInterval } = body
 
@@ -818,6 +915,10 @@ app.post('/api/billing/portal', async (c) => {
 // Stripe webhook endpoint
 app.post('/webhooks/stripe', async (c) => {
   try {
+    if (!stripe) {
+      return c.json({ error: 'Stripe is not configured' }, 503)
+    }
+
     const payload = await c.req.text()
     const signature = c.req.header('stripe-signature') || ''
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || ''
