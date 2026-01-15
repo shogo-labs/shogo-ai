@@ -177,7 +177,7 @@ export const HomePage = observer(function HomePage({
             variant="ghost"
             size="sm"
             className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => navigate("/app/templates")}
+            onClick={() => navigate("/templates")}
           >
             Browse all →
           </Button>

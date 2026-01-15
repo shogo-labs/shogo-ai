@@ -414,6 +414,31 @@ export const studioCoreDomain = domain({
           return project
         },
 
+        /**
+         * Update a project's properties.
+         *
+         * @param projectId - The ID of the project to update
+         * @param updates - The properties to update (name, description, status)
+         */
+        async updateProject(
+          projectId: string,
+          updates: { name?: string; description?: string; status?: string }
+        ): Promise<void> {
+          await self.projectCollection.updateOne(projectId, {
+            ...updates,
+            updatedAt: Date.now(),
+          })
+        },
+
+        /**
+         * Delete a project.
+         *
+         * @param projectId - The ID of the project to delete
+         */
+        async deleteProject(projectId: string): Promise<void> {
+          await self.projectCollection.deleteOne(projectId)
+        },
+
         // --------------------------------------------------------
         // Member Management Actions
         // --------------------------------------------------------

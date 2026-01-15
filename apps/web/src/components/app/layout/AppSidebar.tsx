@@ -244,8 +244,8 @@ export const AppSidebar = observer(function AppSidebar() {
           <NavItem
             icon={Home}
             label="Home"
-            to="/app"
-            active={isActive("/app")}
+            to="/"
+            active={isActive("/")}
             collapsed={collapsed}
           />
           <NavItem
@@ -263,29 +263,29 @@ export const AppSidebar = observer(function AppSidebar() {
             <NavItem
               icon={Clock}
               label="Recent"
-              to="/app"
-              active={isActive("/app")}
+              to="/"
+              active={isActive("/")}
               collapsed={collapsed}
             />
             <NavItem
               icon={LayoutGrid}
               label="All projects"
-              to="/app/projects"
-              active={isActive("/app/projects")}
+              to="/projects"
+              active={isActive("/projects")}
               collapsed={collapsed}
             />
             <NavItem
               icon={Star}
               label="Starred"
-              to="/app/starred"
-              active={isActive("/app/starred")}
+              to="/starred"
+              active={isActive("/starred")}
               collapsed={collapsed}
             />
             <NavItem
               icon={Users}
               label="Shared with me"
-              to="/app/shared"
-              active={isActive("/app/shared")}
+              to="/shared"
+              active={isActive("/shared")}
               collapsed={collapsed}
             />
           </div>
@@ -297,15 +297,15 @@ export const AppSidebar = observer(function AppSidebar() {
             <NavItem
               icon={Compass}
               label="Discover"
-              to="/app/discover"
-              active={isActive("/app/discover")}
+              to="/discover"
+              active={isActive("/discover")}
               collapsed={collapsed}
             />
             <NavItem
               icon={FileCode2}
               label="Templates"
-              to="/app/templates"
-              active={isActive("/app/templates")}
+              to="/templates"
+              active={isActive("/templates")}
               collapsed={collapsed}
             />
             <NavItem

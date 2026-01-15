@@ -21,8 +21,7 @@
  */
 
 import { observer } from "mobx-react-lite"
-import { ThemeToggle, AdvancedModeToggle, UserMenu } from "../shared"
-import { Link } from "react-router-dom"
+import { ThemeToggle, AdvancedModeToggle, UserMenu, useSettingsModal } from "../shared"
 import { Users, ChevronRight } from "lucide-react"
 import { ProjectSelector } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
@@ -43,6 +42,9 @@ export const AppHeader = observer(function AppHeader() {
   // Get workspace data derived from URL state and domains
   const { currentWorkspace, projects, currentProject, isLoading } =
     useWorkspaceData()
+
+  // Get settings modal
+  const { openSettings } = useSettingsModal()
 
   // Handle project change - updates URL which triggers data refresh
   const handleProjectChange = (id: string) => {
@@ -74,14 +76,18 @@ export const AppHeader = observer(function AppHeader() {
 
       {/* Right: Controls */}
       <div className="flex items-center gap-2">
-        {/* Members link - only show when workspace is selected */}
+        {/* Members button - opens settings modal on People tab */}
         {currentWorkspace && (
-          <Link to="/members" title="Manage members">
-            <Button variant="ghost" size="sm" className="h-9 gap-2">
-              <Users className="h-4 w-4" />
-              <span className="hidden sm:inline">Members</span>
-            </Button>
-          </Link>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-9 gap-2"
+            onClick={() => openSettings("people")}
+            title="Manage members"
+          >
+            <Users className="h-4 w-4" />
+            <span className="hidden sm:inline">Members</span>
+          </Button>
         )}
         <AdvancedModeToggle />
         <ThemeToggle />
