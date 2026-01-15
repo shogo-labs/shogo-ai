@@ -1,4 +1,9 @@
 {
+  "id": "9a7701c5-3c9b-4465-b273-f82a93d7cd38",
+  "name": "billing",
+  "format": "enhanced-json-schema",
+  "createdAt": 1768459896947,
+  "version": 8,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "billing",
   "$defs": {
@@ -215,5 +220,47 @@
   },
   "x-persistence": {
     "backend": "postgres"
+  },
+  "views": {
+    "subscriptionByWorkspace": {
+      "type": "query",
+      "collection": "Subscription",
+      "filter": {
+        "workspace": "{{workspaceId}}"
+      },
+      "select": []
+    },
+    "creditLedgerByWorkspace": {
+      "type": "query",
+      "collection": "CreditLedger",
+      "filter": {
+        "workspace": "{{workspaceId}}"
+      },
+      "select": []
+    },
+    "usageByProject": {
+      "type": "query",
+      "collection": "UsageEvent",
+      "filter": {
+        "projectId": "{{projectId}}"
+      },
+      "select": []
+    },
+    "usageByMember": {
+      "type": "query",
+      "collection": "UsageEvent",
+      "filter": {
+        "memberId": "{{memberId}}"
+      },
+      "select": []
+    },
+    "recentUsage": {
+      "type": "query",
+      "collection": "UsageEvent",
+      "filter": {
+        "workspace": "{{workspaceId}}"
+      },
+      "select": []
+    }
   }
 }
