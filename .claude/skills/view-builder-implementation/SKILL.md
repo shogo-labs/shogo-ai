@@ -36,7 +36,7 @@ namingConvention: "{Name}Section"
 
 ```
 registrationStrategy: "embedded"
-parentContainer: "ComponentBuilderSection"
+parentContainer: "SpecContainerSection"
 isDiscoverable: false
 namingConvention: "{Name}Panel"
 ```

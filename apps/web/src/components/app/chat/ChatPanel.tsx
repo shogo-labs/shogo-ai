@@ -81,7 +81,6 @@ const SECTION_TO_COMPONENT: Record<string, string> = {
   'DesignContainerSection': 'comp-design-container',
   'SpecContainerSection': 'comp-spec-container',
   'WorkspaceBlankStateSection': 'comp-def-workspace-blank-state-section',
-  'ComponentBuilderSection': 'comp-component-builder',
   'DynamicCompositionSection': 'comp-dynamic-composition',
   'PlanPreviewSection': 'comp-plan-preview-section',
   'DataGridSection': 'comp-data-grid-section',

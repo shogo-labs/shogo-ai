@@ -137,39 +137,43 @@ set_workspace({
 
 ### Branch B Execution: Change Presentation
 
-**Option 1: Use set_workspace with config**
+**Approach: First look for existing pieces, then offer to build if needed**
+
+1. **Check for existing capability:**
+   - Query ComponentDefinitions for sections matching the requested layout
+   - Check if a specialized section exists (e.g., DataGridSection for tabular data)
+   - Look for existing Compositions that match the request
+
+2. **If capability exists → Use it:**
 ```javascript
 set_workspace({
   panels: [{
     slot: "main",
-    section: "ComponentBuilderSection",
+    section: "DataGridSection",  // or other existing section
     config: {
-      suggestedDataSource: { schema: "platform-features", model: "Requirement" },
-      suggestedLayout: "kanban",
-      suggestedGroupBy: "priority"
+      schema: "platform-features",
+      model: "Requirement"
     }
   }]
 })
 ```
 
-**Option 2: Update composition directly**
+3. **If no exact match → Render approximation:**
 ```javascript
-execute({
-  operations: [{
-    domain: "component-builder",
-    action: "update",
-    model: "Composition",
-    id: "composition-workspace",
-    data: {
-      slotContent: [{
-        slot: "main",
-        component: "comp-collection-view",
-        config: { layout: "kanban", groupBy: "priority" }
-      }]
-    }
+// Show closest available approximation
+set_workspace({
+  panels: [{
+    slot: "main",
+    section: "DesignContainerSection",  // or list view
+    config: { schemaName: "platform-features" }
   }]
 })
 ```
+
+Then offer: "Here's [approximation]. For a full [kanban/grid/custom layout], I can build that capability. Would you like me to?"
+
+4. **If user wants full capability → Branch D:**
+Follow Branch D steps to plan and implement the visualization.
 
 ---
 
@@ -341,8 +345,8 @@ Changes what's displayed in the workspace.
 **Available sections:**
 - `DesignContainerSection` - Schema visualization
 - `WorkspaceBlankStateSection` - Empty state
-- `ComponentBuilderSection` - View builder UI
 - `DynamicCompositionSection` - Render saved compositions
+- `DataGridSection` - Generic data grid/table for any collection
 - `PlanPreviewSection` - Display ComponentSpec during planning (config: `{ specId: "..." }`)
 
 ### execute
