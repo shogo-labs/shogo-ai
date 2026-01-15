@@ -13,6 +13,7 @@ import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { auth } from './auth'
 import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
+import { getPriceId } from './config/stripe-prices'
 
 /**
  * Parse a data URL to extract mediaType and base64 data.
@@ -841,18 +842,6 @@ const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY)
   : null
 
-// Stripe price IDs from environment
-const STRIPE_PRICES: Record<string, Record<string, string>> = {
-  pro: {
-    monthly: process.env.STRIPE_PRICE_PRO_MONTHLY || '',
-    annual: process.env.STRIPE_PRICE_PRO_ANNUAL || '',
-  },
-  business: {
-    monthly: process.env.STRIPE_PRICE_BUSINESS_MONTHLY || '',
-    annual: process.env.STRIPE_PRICE_BUSINESS_ANNUAL || '',
-  },
-}
-
 app.post('/api/billing/checkout', async (c) => {
   try {
     if (!stripe) {
@@ -866,9 +855,8 @@ app.post('/api/billing/checkout', async (c) => {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
     }
 
-    // Get or map the plan type (pro, business)
-    const planType = planId.startsWith('business') ? 'business' : 'pro'
-    const priceId = STRIPE_PRICES[planType]?.[billingInterval]
+    // Get price ID from config (supports tiered pricing: pro, pro_200, business_1200, etc.)
+    const priceId = getPriceId(planId, billingInterval as 'monthly' | 'annual')
 
     if (!priceId) {
       return c.json({ error: { code: 'invalid_plan', message: `No price found for ${planId} ${billingInterval}` } }, 400)
