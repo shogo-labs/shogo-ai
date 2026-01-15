@@ -57,10 +57,8 @@ import {
 } from "./sections/implementation"
 // Workspace sections
 import { WorkspaceBlankStateSection } from "./sections/workspace/WorkspaceBlankStateSection"
-// Component Builder sections
-import { ComponentBuilderSection } from "./sections/component-builder"
+// Dynamic composition rendering
 import { DynamicCompositionSection } from "./sections/DynamicCompositionSection"
-import { PropertyFieldSection } from "./sections/PropertyFieldSection"
 // View Builder sections
 import { PlanPreviewSection } from "./sections/PlanPreviewSection"
 // Data Grid section
@@ -136,12 +134,8 @@ export const sectionImplementationMap = new Map<
   ["LiveOutputTerminalSection", LiveOutputTerminalSection],
   // Workspace sections
   ["WorkspaceBlankStateSection", WorkspaceBlankStateSection],
-  // Component Builder sections
-  ["ComponentBuilderSection", ComponentBuilderSection],
   // Dynamic composition rendering (enables hot registration)
   ["DynamicCompositionSection", DynamicCompositionSection],
-  // Property field rendering (bridges Section pipeline to PropertyRenderer)
-  ["PropertyFieldSection", PropertyFieldSection],
   // View Builder sections
   ["PlanPreviewSection", PlanPreviewSection],
   // Data Grid section (generic collection renderer)

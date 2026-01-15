@@ -31,8 +31,8 @@ set_workspace({
 **Variations:**
 - Schema visualization → `DesignContainerSection`
 - Empty state → `WorkspaceBlankStateSection`
-- Builder UI → `ComponentBuilderSection`
 - Saved view → `DynamicCompositionSection`
+- Data table → `DataGridSection`
 
 ---
 
@@ -139,51 +139,20 @@ execute({
 
 ---
 
-## Pattern 6: Dynamic Data View (via ComponentBuilder)
-
-**Use when:** User wants to configure data display
-
-```javascript
-set_workspace({
-  layout: "single",
-  panels: [{
-    slot: "main",
-    section: "ComponentBuilderSection",
-    config: {
-      suggestedDataSource: {
-        schema: "platform-features",
-        model: "Requirement"
-      },
-      suggestedLayout: "kanban",
-      suggestedGroupBy: "priority",
-      suggestedProperties: ["name", "status", "priority"]
-    }
-  }]
-})
-```
-
-**Config options:**
-- `suggestedDataSource` - Pre-select schema and model
-- `suggestedLayout` - Pre-select layout type (list/grid/kanban)
-- `suggestedGroupBy` - Pre-select grouping field
-- `suggestedProperties` - Pre-select visible properties
-
----
-
-## Pattern 7: Container Section with Internal Sub-components
+## Pattern 6: Container Section with Internal Sub-components
 
 **Use when:** Building complex sections with multiple internal panels that shouldn't be independently discoverable.
 
-**Example:** ComponentBuilderSection contains internal panels but is the only discoverable entry point.
+**Example:** SpecContainerSection contains internal panels for the dependency graph.
 
 ### Structure
 
 ```
-ComponentBuilderSection (discoverable)
-├── ComponentBuilderContext (provider)
-├── BuilderLayout (layout orchestrator)
-├── DefinitionPanel (internal - not discoverable)
-└── PreviewPanel (internal - not discoverable)
+SpecContainerSection (discoverable)
+├── SpecContext (provider)
+├── SpecLayout (layout orchestrator)
+├── TaskGraphPanel (internal - not discoverable)
+└── TaskDetailPanel (internal - not discoverable)
 ```
 
 ### Key Characteristics
@@ -195,28 +164,26 @@ ComponentBuilderSection (discoverable)
 
 2. **Sub-components use Panel/Display naming**
    ```
-   ✅ PreviewPanel, DefinitionPanel
-   ❌ PreviewSection, DefinitionSection
+   ✅ TaskGraphPanel, TaskDetailPanel
+   ❌ TaskGraphSection, TaskDetailSection
    ```
 
 3. **Don't export sub-components from barrel**
    ```typescript
    // index.ts
-   export { ComponentBuilderSection } from "./ComponentBuilderSection"
-   // Internal components NOT exported:
-   // export { PreviewPanel } from "./PreviewPanel"  // ❌
+   export { SpecContainerSection } from "./SpecContainerSection"
+   // Internal components NOT exported
    ```
 
 4. **File structure reflects containment**
    ```
    sections/
-   └── component-builder/
-       ├── index.ts           # Only exports container
-       ├── ComponentBuilderSection.tsx
-       ├── ComponentBuilderContext.tsx
-       ├── BuilderLayout.tsx
-       ├── PreviewPanel.tsx   # Internal
-       └── DefinitionPanel.tsx # Internal
+   └── spec/
+       ├── index.ts              # Only exports container
+       ├── SpecContainerSection.tsx
+       ├── SpecContext.tsx
+       ├── TaskGraphPanel.tsx    # Internal
+       └── TaskDetailPanel.tsx   # Internal
    ```
 
 ### When to Use This Pattern
@@ -231,25 +198,6 @@ ComponentBuilderSection (discoverable)
 - Sub-components would be useful in other contexts
 - You're trying to add a genuinely new visualization type
 - The "sub-component" handles different data than the container
-
-### Anti-Pattern: Section Inside Container
-
-```
-❌ WRONG: Creating DataGridSection inside ComponentBuilderSection
-   - "Section" suffix implies standalone
-   - Would need registration, seed data, etc.
-   - Creates confusion about discoverability
-
-✅ RIGHT: Creating DataGridPanel inside ComponentBuilderSection
-   - "Panel" suffix indicates internal
-   - No external registration needed
-   - Clear that it's part of ComponentBuilder
-
-✅ ALSO RIGHT: Creating standalone DataGridSection
-   - If datagrids should be independently usable
-   - Registered in sectionImplementationMap
-   - ComponentBuilder could USE it, not contain it
-```
 
 ### Implementation Checklist
 
@@ -271,8 +219,8 @@ When building a container section:
 | Section | Single | Split-H | Split-V | Dashboard |
 |---------|--------|---------|---------|-----------|
 | DesignContainerSection | Yes | Yes | Yes | As panel |
-| ComponentBuilderSection | Yes | Yes | No | No |
 | DynamicCompositionSection | Yes | Yes | Yes | As panel |
+| DataGridSection | Yes | Yes | Yes | As panel |
 | WorkspaceBlankStateSection | Yes | No | No | No |
 
 ---
@@ -284,18 +232,6 @@ When building a container section:
 // Avoid: Composition within composition within composition
 { component: "DynamicCompositionSection", config: { compositionId: "nested-1" } }
 // where nested-1 also contains DynamicCompositionSection
-```
-
-### Don't: Mix incompatible sections
-```javascript
-// Avoid: ComponentBuilder expects full width
-set_workspace({
-  layout: "split-h",
-  panels: [
-    { slot: "left", section: "ComponentBuilderSection" },  // Cramped
-    { slot: "right", section: "ComponentBuilderSection" }  // Cramped
-  ]
-})
 ```
 
 ### Don't: Use wrong slots for layout
@@ -329,4 +265,3 @@ set_workspace({
 - Always match slot names to the layout template
 - Provider wrappers are optional but enable cross-section state
 - DynamicCompositionSection can render any saved composition
-- ComponentBuilderSection config pre-populates the builder UI

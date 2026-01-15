@@ -707,15 +707,6 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     tags: ["section", "workspace", "empty-state"],
   },
   {
-    id: "comp-component-builder",
-    name: "ComponentBuilderSection",
-    category: "section",
-    description:
-      "Component Builder UI for creating and editing compositions. Use when users ask to visualize data as kanban, grid, or list. Supports definition mode with full builder layout (data source, layout picker, property list, preview) and preview mode for split-panel displays. Configure with suggestedDataSource, suggestedLayout, and suggestedGroupBy.",
-    implementationRef: "ComponentBuilderSection",
-    tags: ["section", "component-builder", "container", "workspace", "visualization"],
-  },
-  {
     id: "comp-dynamic-composition",
     name: "DynamicCompositionSection",
     category: "section",
@@ -723,15 +714,6 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
       "Renders any saved Composition by ID. Used for hot registration of user-created components. Takes compositionId in config and renders the composition using ComposablePhaseView pattern.",
     implementationRef: "DynamicCompositionSection",
     tags: ["section", "dynamic", "composition", "workspace"],
-  },
-  {
-    id: "comp-property-field-section",
-    name: "PropertyFieldSection",
-    category: "section",
-    description:
-      "Bridges Section pipeline to PropertyRenderer for field-level display. Used by ComponentBuilder preview to render selected properties. Receives property metadata via config and delegates to PropertyRenderer for resolution via RendererBinding system.",
-    implementationRef: "PropertyFieldSection",
-    tags: ["section", "component-builder", "property", "renderer"],
   },
 
   // ---------------------------------------------------------------------------

@@ -32,8 +32,9 @@ Changes the workspace layout and visible panels.
 |--------------|---------|--------|
 | `DesignContainerSection` | Schema visualization | `{ schemaName: string }` |
 | `WorkspaceBlankStateSection` | Empty state | none |
-| `ComponentBuilderSection` | View builder UI | `{ suggestedDataSource?, suggestedLayout?, suggestedGroupBy? }` |
 | `DynamicCompositionSection` | Render saved composition | `{ compositionId: string }` |
+| `DataGridSection` | Generic data grid/table | `{ schema: string, model: string }` |
+| `PlanPreviewSection` | Display ComponentSpec | `{ specId: string }` |
 
 ---
 
@@ -51,29 +52,13 @@ set_workspace({
 })
 ```
 
-**Open Component Builder with suggestions:**
-```javascript
-set_workspace({
-  layout: "single",
-  panels: [{
-    slot: "main",
-    section: "ComponentBuilderSection",
-    config: {
-      suggestedDataSource: { schema: "platform-features", model: "Requirement" },
-      suggestedLayout: "kanban",
-      suggestedGroupBy: "priority"
-    }
-  }]
-})
-```
-
 **Split view with two panels:**
 ```javascript
 set_workspace({
   layout: "split-h",
   panels: [
     { slot: "left", section: "DesignContainerSection", config: { schemaName: "platform-features" } },
-    { slot: "right", section: "ComponentBuilderSection", config: {} }
+    { slot: "right", section: "DataGridSection", config: { schema: "platform-features", model: "Requirement" } }
   ]
 })
 ```

@@ -192,7 +192,7 @@ See [reuse-analysis.md](references/reuse-analysis.md) for identifying reuse oppo
 ```javascript
 registrationStrategy = {
   strategy: "sectionImplementationMap",  // or "embedded", "rendererBindings", "compositionOnly"
-  parentContainer: null,  // If embedded: "ComponentBuilderSection"
+  parentContainer: null,  // If embedded: "SpecContainerSection" or other container
   isDiscoverable: true,   // Can users access via set_workspace?
   registrationLocation: "sectionImplementations.tsx",  // Where to register
   namingConvention: "{Name}Section"  // Expected naming pattern

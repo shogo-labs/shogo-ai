@@ -6,7 +6,7 @@
 ## Input
 
 ```
-"Build me a dashboard with the schema on the left and the component builder on the right"
+"Build me a dashboard with the schema on the left and a data grid on the right"
 ```
 
 ## Expected Classification
@@ -18,7 +18,7 @@
 
 1. Query: What components are needed?
    - Extracted: "schema" → DesignContainerSection
-   - Extracted: "component builder" → ComponentBuilderSection
+   - Extracted: "data grid" → DataGridSection
 
 2. Query: Do both components exist?
    - Result: Yes, both are available sections
@@ -33,18 +33,18 @@ set_workspace({
   layout: "split-h",
   panels: [
     { slot: "left", section: "DesignContainerSection", config: { schemaName: "platform-features" } },
-    { slot: "right", section: "ComponentBuilderSection", config: {} }
+    { slot: "right", section: "DataGridSection", config: { schema: "platform-features", model: "Requirement" } }
   ]
 })
 ```
 
 ## Expected Response
 
-"I'll create a split view with the schema on the left and the component builder on the right."
+"I'll create a split view with the schema on the left and the data grid on the right."
 
 [Workspace updates to show split layout]
 
-"Here's your dashboard. The schema visualization is on the left - you can explore entities and their relationships. The component builder on the right lets you create custom views. Would you like me to pre-configure the builder for a specific data type?"
+"Here's your dashboard. The schema visualization is on the left - you can explore entities and their relationships. The data grid on the right shows requirements in a table format. Would you like me to change the data model or adjust the layout?"
 
 ## Validation Criteria
 
@@ -59,14 +59,14 @@ set_workspace({
 
 1. "Show me requirements and findings side by side"
 2. "Create a view with tasks on top and test specs below"
-3. "Dashboard with schema, builder, and preview"
+3. "Dashboard with schema, grid, and preview"
 4. "Put the analysis view next to the design view"
 
 ## Edge Cases
 
 ### Variation: More than 2 components
 ```
-"Dashboard with schema, builder, and a preview panel"
+"Dashboard with schema, a data table, and a preview panel"
 ```
 
 Expected: May need to use `execute` to create a custom LayoutTemplate or Composition, then show via DynamicCompositionSection.
