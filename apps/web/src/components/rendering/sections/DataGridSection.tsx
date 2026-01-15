@@ -1,43 +1,68 @@
 /**
  * DataGridSection Component
- * Task: view-builder-implementation
- * Spec: spec-data-grid-section
  *
  * Renders any Wavesmith collection as a configurable data grid/table.
  * Generic, reusable component that works with any schema/model combination.
  *
- * Data bindings:
- * - (configurable).{model}: Primary data source - collection to render as grid rows
- * - component-builder meta introspection: PropertyMetadata for column types
+ * Uses platform abstractions:
+ * - Meta-store for column metadata (PropertyMetadata from model.properties)
+ * - DomainProvider for schema-name-based store lookup
+ * - Unified sync/async data loading hook
  *
  * Config options:
- * - schema: string - Schema name to query (e.g., "platform-features")
- * - model: string - Model/collection name (e.g., "Requirement")
- * - columns: string[] - Property names to display as columns
+ * - schema: string - Schema name (e.g., "platform-features")
+ * - model: string - Model name (e.g., "Requirement")
+ * - columns: string[] - Property names to display (auto-detect if omitted)
+ * - excludeColumns: string[] - Properties to exclude from auto-detect
+ * - sessionFilter: boolean - Filter by feature.id (default true when feature present)
+ * - staticFilter: object - Static filter using collection.where()
+ * - query: object - Async query with filter, orderBy, skip, take
  * - title: string - Optional section title
- * - onRowSelect: (entity: any) => void - Callback when row is clicked
  * - stickyFirstColumn: boolean - Keep first column visible on scroll
+ * - onRowSelect: (entity: any) => void - Callback when row is clicked
  */
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import { observer } from "mobx-react-lite"
-import { useDomains } from "@/contexts/DomainProvider"
 import { PropertyRenderer } from "../PropertyRenderer"
 import { cn } from "@/lib/utils"
 import type { SectionRendererProps } from "../sectionImplementations"
-import type { PropertyMetadata } from "../types"
+import { useDataGridMetadata, useDataGridData } from "./hooks"
 
 // ============================================================================
 // Types
 // ============================================================================
 
 interface DataGridConfig {
-  /** Schema name to query */
+  /** Schema name (e.g., "platform-features") */
   schema?: string
-  /** Model/collection name */
+  /** Schema name - alternate key for compatibility */
+  schemaName?: string
+  /** Model name (e.g., "Requirement") */
   model?: string
+
+  // Column configuration
   /** Property names to display as columns */
   columns?: string[]
+  /** Properties to exclude from auto-detect */
+  excludeColumns?: string[]
+
+  // Sync data filtering (MST views - reactive)
+  /** Use findBySession(feature.id) - default true when feature present */
+  sessionFilter?: boolean
+  /** Static filter using collection.where() */
+  staticFilter?: Record<string, any>
+
+  // Async query configuration (query builder)
+  /** Async query - if present, uses query builder instead of MST views */
+  query?: {
+    filter?: Record<string, any>
+    orderBy?: { field: string; direction: "asc" | "desc" }[]
+    skip?: number
+    take?: number
+  }
+
+  // Display options
   /** Optional section title */
   title?: string
   /** Whether first column should be sticky on horizontal scroll */
@@ -51,53 +76,6 @@ type SortDirection = "asc" | "desc" | null
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/**
- * Get collection name from model name (e.g., "Requirement" -> "requirementCollection")
- */
-function getCollectionName(model: string): string {
-  return `${model.charAt(0).toLowerCase()}${model.slice(1)}Collection`
-}
-
-/**
- * Infer PropertyMetadata from a value for type-aware rendering
- */
-function inferPropertyMetadata(key: string, value: any): PropertyMetadata {
-  // Basic type inference
-  let jsonType: PropertyMetadata["jsonType"] = "string"
-  let format: string | undefined
-
-  if (typeof value === "number") {
-    jsonType = "number"
-    // Check if it looks like a timestamp
-    if (key.toLowerCase().includes("at") && value > 1000000000000) {
-      format = "date-time"
-    }
-  } else if (typeof value === "boolean") {
-    jsonType = "boolean"
-  } else if (Array.isArray(value)) {
-    jsonType = "array"
-  } else if (value !== null && typeof value === "object") {
-    jsonType = "object"
-  } else if (typeof value === "string") {
-    // Check for common patterns
-    if (key.toLowerCase().includes("email")) {
-      format = "email"
-    } else if (key.toLowerCase().includes("url") || key.toLowerCase().includes("uri")) {
-      format = "uri"
-    } else if (key === "id") {
-      format = "identifier"
-    }
-  }
-
-  return {
-    name: key,
-    jsonType,
-    format,
-    required: false,
-    isComputed: false,
-  }
-}
 
 /**
  * Sort data by column
@@ -129,6 +107,37 @@ function sortData(data: any[], column: string | null, direction: SortDirection):
   })
 }
 
+/**
+ * Fallback: Infer PropertyMetadata from a value when meta-store doesn't have it
+ */
+function inferPropertyMetadata(key: string, value: any): any {
+  let type: string = "string"
+  let format: string | undefined
+
+  if (typeof value === "number") {
+    type = "number"
+    if (key.toLowerCase().includes("at") && value > 1000000000000) {
+      format = "date-time"
+    }
+  } else if (typeof value === "boolean") {
+    type = "boolean"
+  } else if (Array.isArray(value)) {
+    type = "array"
+  } else if (value !== null && typeof value === "object") {
+    type = "object"
+  } else if (typeof value === "string") {
+    if (key.toLowerCase().includes("email")) {
+      format = "email"
+    } else if (key.toLowerCase().includes("url") || key.toLowerCase().includes("uri")) {
+      format = "uri"
+    } else if (key === "id") {
+      format = "identifier"
+    }
+  }
+
+  return { name: key, type, format, required: false }
+}
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -137,16 +146,17 @@ function sortData(data: any[], column: string | null, direction: SortDirection):
  * DataGridSection Component
  *
  * Renders any Wavesmith collection as a data grid with configurable columns.
- * Uses PropertyRenderer for type-aware cell rendering.
- *
- * @param props - SectionRendererProps with feature and config
+ * Uses meta-store for column metadata and PropertyRenderer for type-aware cell rendering.
  */
 export const DataGridSection = observer(function DataGridSection({
   feature,
   config,
 }: SectionRendererProps) {
-  const domains = useDomains()
   const gridConfig = config as DataGridConfig | undefined
+
+  // ============================================================================
+  // ALL HOOKS FIRST (React requirement)
+  // ============================================================================
 
   // State for sorting
   const [sortColumn, setSortColumn] = useState<string | null>(null)
@@ -155,16 +165,104 @@ export const DataGridSection = observer(function DataGridSection({
   // State for row selection
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null)
 
-  // Extract config with defaults
-  const schema = gridConfig?.schema
-  const model = gridConfig?.model
-  const columns = gridConfig?.columns ?? []
-  const title = gridConfig?.title ?? (model ? `${model} Data` : "Data Grid")
+  // Extract config values
+  const schemaName = gridConfig?.schema ?? gridConfig?.schemaName
+  const modelName = gridConfig?.model
+  const configColumns = gridConfig?.columns ?? []
+  const excludeColumns = gridConfig?.excludeColumns ?? []
+  const title = gridConfig?.title ?? (modelName ? `${modelName} Data` : "Data Grid")
   const stickyFirstColumn = gridConfig?.stickyFirstColumn ?? false
   const onRowSelect = gridConfig?.onRowSelect
 
+  // 1. Get metadata from meta-store (handles async schema loading)
+  const { properties: metaProperties, collectionName, loading: metaLoading, error: metaError } =
+    useDataGridMetadata(schemaName, modelName)
+
+  // 2. Get data (handles sync vs async internally)
+  const { data: rawData, loading: dataLoading, error: dataError } = useDataGridData({
+    schemaName,
+    collectionName,
+    // Default to session filtering when feature is present, unless explicitly disabled
+    sessionId: gridConfig?.sessionFilter !== false ? feature?.id : undefined,
+    staticFilter: gridConfig?.staticFilter,
+    query: gridConfig?.query,
+  })
+
+  // 3. Determine columns from config or metadata
+  const effectiveColumns = useMemo(() => {
+    // Use explicit columns if provided
+    if (configColumns.length > 0) return configColumns
+
+    // Auto-detect from metadata
+    if (metaProperties.length > 0) {
+      const excludeSet = new Set(excludeColumns)
+      return metaProperties
+        .filter((p: any) => !excludeSet.has(p.name))
+        .filter((p: any) => !p.name.startsWith("$") && p.name !== "toJSON")
+        .map((p: any) => p.name)
+    }
+
+    // Fallback: detect from first data item
+    if (rawData.length > 0) {
+      const firstItem = rawData[0]
+      return Object.keys(firstItem).filter(
+        (key) => !key.startsWith("$") && key !== "toJSON"
+      )
+    }
+
+    return []
+  }, [configColumns, excludeColumns, metaProperties, rawData])
+
+  // 4. Build column metadata map (prefer meta-store, fallback to inference)
+  const columnMetadataMap = useMemo(() => {
+    const map = new Map<string, any>()
+    for (const prop of metaProperties) {
+      map.set(prop.name, prop)
+    }
+    return map
+  }, [metaProperties])
+
+  // 5. Sort the data
+  const sortedData = useMemo(() => {
+    return sortData(rawData, sortColumn, sortDirection)
+  }, [rawData, sortColumn, sortDirection])
+
+  // Handle column header click for sorting
+  const handleHeaderClick = useCallback(
+    (column: string) => {
+      if (sortColumn === column) {
+        // Cycle through: asc -> desc -> null
+        if (sortDirection === "asc") {
+          setSortDirection("desc")
+        } else if (sortDirection === "desc") {
+          setSortColumn(null)
+          setSortDirection(null)
+        }
+      } else {
+        setSortColumn(column)
+        setSortDirection("asc")
+      }
+    },
+    [sortColumn, sortDirection]
+  )
+
+  // Handle row click
+  const handleRowClick = useCallback(
+    (entity: any) => {
+      setSelectedRowId(entity.id)
+      onRowSelect?.(entity)
+    },
+    [onRowSelect]
+  )
+
+  // ============================================================================
+  // RENDER - Early returns after all hooks
+  // ============================================================================
+
+  const error = metaError || dataError
+
   // Handle missing configuration
-  if (!schema || !model) {
+  if (!schemaName || !modelName) {
     return (
       <section data-testid="data-grid-section" className="h-full">
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
@@ -182,102 +280,32 @@ export const DataGridSection = observer(function DataGridSection({
     )
   }
 
-  // Get the domain store based on schema name
-  // Map common schema names to domain keys
-  const domainKeyMap: Record<string, string> = {
-    "platform-features": "platformFeatures",
-    "component-builder": "componentBuilder",
-    "studio-core": "studioCore",
-    "studio-chat": "studioChat",
+  // Handle errors
+  if (error) {
+    return (
+      <section data-testid="data-grid-section" className="h-full">
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+          {title}
+        </h3>
+        <div className="p-4 bg-destructive/10 rounded-lg text-center">
+          <p className="text-sm text-destructive">{error}</p>
+        </div>
+      </section>
+    )
   }
 
-  const domainKey = domainKeyMap[schema] ?? schema
-  const domainStore = (domains as any)?.[domainKey]
-
-  if (!domainStore) {
+  // Handle loading state (metadata or data loading)
+  if (metaLoading || dataLoading) {
     return (
       <section data-testid="data-grid-section" className="h-full">
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
           {title}
         </h3>
         <div className="p-4 bg-muted/30 rounded-lg text-center">
-          <p className="text-sm text-muted-foreground">
-            Domain not found: {schema}
-          </p>
-          <p className="text-xs text-muted-foreground/60 mt-1">
-            Available: platform-features, component-builder, studio-core, studio-chat
-          </p>
+          <p className="text-sm text-muted-foreground">Loading...</p>
         </div>
       </section>
     )
-  }
-
-  // Get the collection
-  const collectionName = getCollectionName(model)
-  const collection = domainStore[collectionName]
-
-  if (!collection) {
-    return (
-      <section data-testid="data-grid-section" className="h-full">
-        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-          {title}
-        </h3>
-        <div className="p-4 bg-muted/30 rounded-lg text-center">
-          <p className="text-sm text-muted-foreground">
-            Collection not found: {collectionName}
-          </p>
-        </div>
-      </section>
-    )
-  }
-
-  // Fetch data - use all() to get everything, or filter by session if available
-  let rawData: any[] = []
-  if (feature && collection.findBySession) {
-    rawData = collection.findBySession(feature.id) ?? []
-  } else if (collection.all) {
-    rawData = collection.all() ?? []
-  } else if (collection.query) {
-    rawData = collection.query().toArray() ?? []
-  }
-
-  // Auto-detect columns if not specified
-  const effectiveColumns = useMemo(() => {
-    if (columns.length > 0) return columns
-    if (rawData.length === 0) return []
-
-    // Get keys from first item, excluding internal MST properties
-    const firstItem = rawData[0]
-    return Object.keys(firstItem).filter(
-      key => !key.startsWith("$") && key !== "toJSON"
-    )
-  }, [columns, rawData])
-
-  // Sort the data
-  const sortedData = useMemo(() => {
-    return sortData(rawData, sortColumn, sortDirection)
-  }, [rawData, sortColumn, sortDirection])
-
-  // Handle column header click for sorting
-  const handleHeaderClick = (column: string) => {
-    if (sortColumn === column) {
-      // Cycle through: asc -> desc -> null
-      if (sortDirection === "asc") {
-        setSortDirection("desc")
-      } else if (sortDirection === "desc") {
-        setSortColumn(null)
-        setSortDirection(null)
-      }
-    } else {
-      setSortColumn(column)
-      setSortDirection("asc")
-    }
-  }
-
-  // Handle row click
-  const handleRowClick = (entity: any) => {
-    setSelectedRowId(entity.id)
-    onRowSelect?.(entity)
   }
 
   // Handle empty data
@@ -288,9 +316,7 @@ export const DataGridSection = observer(function DataGridSection({
           {title}
         </h3>
         <div className="p-4 bg-muted/30 rounded-lg text-center">
-          <p className="text-sm text-muted-foreground">
-            No data available
-          </p>
+          <p className="text-sm text-muted-foreground">No data available</p>
         </div>
       </section>
     )
@@ -313,12 +339,16 @@ export const DataGridSection = observer(function DataGridSection({
                   onClick={() => handleHeaderClick(column)}
                   className={cn(
                     "px-3 py-2 text-left font-medium text-muted-foreground cursor-pointer hover:bg-muted transition-colors border-b",
-                    stickyFirstColumn && index === 0 && "sticky left-0 bg-muted/80 backdrop-blur-sm z-10",
+                    stickyFirstColumn &&
+                      index === 0 &&
+                      "sticky left-0 bg-muted/80 backdrop-blur-sm z-10",
                     sortColumn === column && "text-foreground"
                   )}
                 >
                   <div className="flex items-center gap-1">
-                    <span className="capitalize">{column.replace(/([A-Z])/g, " $1").trim()}</span>
+                    <span className="capitalize">
+                      {column.replace(/([A-Z])/g, " $1").trim()}
+                    </span>
                     {sortColumn === column && (
                       <span className="text-xs">
                         {sortDirection === "asc" ? "↑" : "↓"}
@@ -343,14 +373,18 @@ export const DataGridSection = observer(function DataGridSection({
               >
                 {effectiveColumns.map((column, index) => {
                   const value = entity[column]
-                  const propertyMeta = inferPropertyMetadata(column, value)
+                  // Prefer meta-store metadata, fallback to inference
+                  const propertyMeta =
+                    columnMetadataMap.get(column) ?? inferPropertyMetadata(column, value)
 
                   return (
                     <td
                       key={column}
                       className={cn(
                         "px-3 py-2",
-                        stickyFirstColumn && index === 0 && "sticky left-0 bg-background z-10"
+                        stickyFirstColumn &&
+                          index === 0 &&
+                          "sticky left-0 bg-background z-10"
                       )}
                     >
                       <PropertyRenderer

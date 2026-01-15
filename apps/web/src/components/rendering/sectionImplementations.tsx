@@ -63,6 +63,8 @@ import { DynamicCompositionSection } from "./sections/DynamicCompositionSection"
 import { PlanPreviewSection } from "./sections/PlanPreviewSection"
 // Data Grid section
 import { DataGridSection } from "./sections/DataGridSection"
+// Chart section
+import { ChartSection } from "./sections/ChartSection"
 
 // Re-export SectionRendererProps from types.ts to avoid circular dependencies
 // (Analysis section components import from types.ts, not from this file)
@@ -140,6 +142,8 @@ export const sectionImplementationMap = new Map<
   ["PlanPreviewSection", PlanPreviewSection],
   // Data Grid section (generic collection renderer)
   ["DataGridSection", DataGridSection],
+  // Chart section (D3-based visualizations)
+  ["ChartSection", ChartSection],
 ])
 
 /**

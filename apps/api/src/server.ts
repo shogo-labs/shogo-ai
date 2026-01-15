@@ -449,6 +449,8 @@ You can help users:
 - Explain data modeling concepts and best practices
 - Navigate between pipeline phases when requested
 
+**Skill Assessment:** When the user's request involves displaying data, changing layouts, building views, or configuring workspace panels, consider invoking the /view-builder skill. This skill provides structured guidance for workspace composition including how to query component aiGuidance for configuration patterns.
+
 When users ask to create schemas or data, use the appropriate MCP tools.
 When users ask to navigate to a phase, use the navigate_to_phase tool.
 When users ask about phase views, compositions, or UI sections, query the component-builder schema.

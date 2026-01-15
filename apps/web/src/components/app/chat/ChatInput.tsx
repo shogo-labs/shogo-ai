@@ -10,7 +10,7 @@
  */
 
 import * as React from "react"
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -18,6 +18,20 @@ import { Send, Square, Paperclip, X } from "lucide-react"
 
 // Maximum file size in bytes (4MB)
 const MAX_IMAGE_SIZE = 4 * 1024 * 1024
+
+// Skills loaded from VITE_SHOGO_SKILLS env var (set at build time)
+interface SkillOption {
+  name: string
+  description: string
+}
+
+const SKILLS: SkillOption[] = (() => {
+  try {
+    return JSON.parse(import.meta.env.VITE_SHOGO_SKILLS || "[]")
+  } catch {
+    return []
+  }
+})()
 
 export interface ChatInputProps {
   onSubmit: (content: string, imageData?: string) => void
@@ -42,6 +56,22 @@ export function ChatInput({
   // Image attachment state
   const [pendingImage, setPendingImage] = useState<string | undefined>(undefined)
   const [imageError, setImageError] = useState<string | null>(null)
+
+  // Skill picker state
+  const [showSkillPicker, setShowSkillPicker] = useState(false)
+  const [filterText, setFilterText] = useState("")
+  const [selectedIndex, setSelectedIndex] = useState(0)
+
+  // Filter skills based on user input
+  const filteredSkills = useMemo(() => {
+    if (!filterText) return SKILLS
+    const lower = filterText.toLowerCase()
+    return SKILLS.filter(
+      (s) =>
+        s.name.toLowerCase().includes(lower) ||
+        s.description.toLowerCase().includes(lower)
+    )
+  }, [filterText])
 
   /**
    * Process an image file and convert to base64 data URL
@@ -125,6 +155,41 @@ export function ChatInput({
     setImageError(null)
   }, [])
 
+  /**
+   * Handle input changes to detect slash commands
+   */
+  const handleInput = useCallback(
+    (e: React.FormEvent<HTMLTextAreaElement>) => {
+      const value = e.currentTarget.value
+      // Show picker when input starts with / and has no space yet
+      if (value.startsWith("/") && !value.includes(" ")) {
+        setShowSkillPicker(true)
+        setFilterText(value.slice(1).toLowerCase())
+        setSelectedIndex(0)
+      } else {
+        setShowSkillPicker(false)
+      }
+    },
+    []
+  )
+
+  /**
+   * Select a skill from the picker
+   */
+  const selectSkill = useCallback((skill: SkillOption) => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+
+    const currentValue = textarea.value
+    const spaceIndex = currentValue.indexOf(" ")
+    const afterPrefix = spaceIndex === -1 ? "" : currentValue.slice(spaceIndex)
+
+    textarea.value = `/${skill.name}${afterPrefix || " "}`
+    setShowSkillPicker(false)
+    textarea.focus()
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+  }, [])
+
   const handleSubmit = useCallback(() => {
     const textarea = textareaRef.current
     if (!textarea) return
@@ -143,13 +208,36 @@ export function ChatInput({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // Handle skill picker navigation when open
+      if (showSkillPicker && filteredSkills.length > 0) {
+        switch (e.key) {
+          case "ArrowDown":
+            e.preventDefault()
+            setSelectedIndex((i) => Math.min(i + 1, filteredSkills.length - 1))
+            return
+          case "ArrowUp":
+            e.preventDefault()
+            setSelectedIndex((i) => Math.max(i - 1, 0))
+            return
+          case "Enter":
+          case "Tab":
+            e.preventDefault()
+            selectSkill(filteredSkills[selectedIndex])
+            return
+          case "Escape":
+            e.preventDefault()
+            setShowSkillPicker(false)
+            return
+        }
+      }
+
       // Submit on Enter without Shift (Shift+Enter for newline)
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault()
         handleSubmit()
       }
     },
-    [handleSubmit]
+    [handleSubmit, showSkillPicker, filteredSkills, selectedIndex, selectSkill]
   )
 
   return (
@@ -190,7 +278,29 @@ export function ChatInput({
       )}
 
       {/* Input row */}
-      <div className="flex items-end gap-2">
+      <div className="relative flex items-end gap-2">
+        {/* Skill picker dropdown */}
+        {showSkillPicker && filteredSkills.length > 0 && (
+          <div className="absolute bottom-full left-0 right-0 mb-1 max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md z-50">
+            {filteredSkills.map((skill, index) => (
+              <button
+                key={skill.name}
+                type="button"
+                onClick={() => selectSkill(skill)}
+                className={cn(
+                  "w-full px-3 py-2 text-left text-sm hover:bg-accent",
+                  index === selectedIndex && "bg-accent"
+                )}
+              >
+                <div className="font-medium">/{skill.name}</div>
+                <div className="text-xs text-muted-foreground">
+                  {skill.description}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Hidden file input */}
         <input
           ref={fileInputRef}
@@ -217,6 +327,7 @@ export function ChatInput({
         <Textarea
           ref={textareaRef}
           onKeyDown={handleKeyDown}
+          onInput={handleInput}
           onPaste={handlePaste}
           placeholder={placeholder}
           disabled={disabled}

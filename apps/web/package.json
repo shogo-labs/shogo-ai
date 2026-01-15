@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:nohmr": "VITE_HMR=false vite",
-    "build": "vite build",
+    "dev": "VITE_SHOGO_SKILLS=$(bun ../../scripts/list-skills.ts) vite",
+    "dev:nohmr": "VITE_SHOGO_SKILLS=$(bun ../../scripts/list-skills.ts) VITE_HMR=false vite",
+    "build": "VITE_SHOGO_SKILLS=$(bun ../../scripts/list-skills.ts) vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },
@@ -27,6 +27,7 @@
     "better-auth": "^1.2.9",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "d3": "^7.9.0",
     "dagre": "^0.8.5",
     "lucide-react": "^0.561.0",
     "mobx": "^6.13.5",
@@ -42,6 +43,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.18",
     "@testing-library/react": "^16.3.0",
+    "@types/d3": "^7.4.3",
     "@types/dagre": "^0.7.53",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

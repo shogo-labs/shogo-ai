@@ -43,6 +43,8 @@ export interface ComponentDefinitionSeed {
   tags?: string[]
   /** Config keys this component supports (e.g., ['variant', 'size', 'truncate']) */
   supportedConfig?: string[]
+  /** Semantic guidance for AI agents: configuration patterns, usage context, and examples (markdown) */
+  aiGuidance?: string
 }
 
 /**
@@ -130,12 +132,18 @@ export interface LayoutTemplateSeed {
 /**
  * Slot content definition for Composition.
  * Matches component-builder schema $defs.Composition.slotContent.items
+ *
+ * Supports two patterns:
+ * - section: (preferred) Direct section name for sectionImplementationMap lookup
+ * - component: (deprecated) ComponentDefinition ID requiring lookup for implementationRef
  */
 export interface SlotContentSeed {
   /** Slot name this content fills (must match a slot in the layout) */
   slot: string
-  /** ComponentDefinition id to render in this slot (x-mst-type: reference) */
-  component: string
+  /** Section name directly (preferred) - e.g., "IntentTerminalSection" */
+  section?: string
+  /** ComponentDefinition id (deprecated) - e.g., "comp-def-intent-terminal-section" */
+  component?: string
   /** Optional configuration passed to the component */
   config?: Record<string, unknown>
 }
@@ -741,6 +749,69 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     implementationRef: "DataGridSection",
     tags: ["section", "data-grid", "table", "collection", "generic", "workspace"],
     supportedConfig: ["schema", "model", "columns", "title", "stickyFirstColumn", "onRowSelect"],
+    aiGuidance: `## DataGridSection Configuration Guide
+
+Displays any Wavesmith collection as a sortable, selectable data grid.
+
+### Required Config
+- \`schema\`: Schema name (e.g., "platform-features", "studio-chat")
+- \`model\`: Model name (e.g., "Requirement", "ChatSession")
+
+### Data Loading
+
+**Sync vs Async:** By default, reads from local MST store (sync). If the store is empty or you need filtering/sorting/pagination, add \`query: {}\` to use async path which queries the database directly.
+
+**Session Filtering:** When a feature context exists, \`sessionFilter: true\` (default) filters by \`feature.id\`. Set \`sessionFilter: false\` to show all data regardless of feature context.
+
+### Query Examples
+
+\`\`\`json
+// Show all data (async, no filter)
+{ "query": {} }
+
+// Filter by status
+{ "query": { "filter": { "status": "accepted" } } }
+
+// Sort by priority descending
+{ "query": { "orderBy": [{ "field": "priority", "direction": "desc" }] } }
+
+// Paginate (first 20 items)
+{ "query": { "skip": 0, "take": 20 } }
+
+// Combined: filter + sort + paginate
+{ "query": { "filter": { "status": { "$in": ["accepted", "pending"] } }, "orderBy": [{ "field": "createdAt", "direction": "desc" }], "take": 50 } }
+\`\`\`
+
+### Display Options
+- \`columns\`: Array of property names to display. If omitted, auto-detects from model metadata.
+- \`excludeColumns\`: Properties to hide from auto-detected columns.
+- \`title\`: Custom section header (defaults to "Model Data").
+- \`stickyFirstColumn\`: Keep first column visible on horizontal scroll.
+
+### When to Use
+- Displaying collections as tables/grids
+- Need sorting, row selection, or pagination
+- Showing data from any schema without custom UI
+- Workspace views for browsing entities
+
+### Common Patterns
+- "Show requirements" -> \`{ schema: "platform-features", model: "Requirement", query: {} }\`
+- "Show chat sessions" -> \`{ schema: "studio-chat", model: "ChatSession", query: {} }\`
+- "Show tasks in progress" -> \`{ schema: "platform-features", model: "ImplementationTask", query: { filter: { status: "in_progress" } } }\``,
+  },
+
+  // ---------------------------------------------------------------------------
+  // Chart Section Component (D3-based visualizations) - view-builder-implementation
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-chart-section",
+    name: "ChartSection",
+    category: "section",
+    description:
+      "Visualize data from arbitrary Wavesmith domains as charts and graphs using D3.js. Supports bar and line charts with count aggregation. Controllable via chat-driven virtual tools and composable into various use cases.",
+    implementationRef: "ChartSection",
+    tags: ["section", "chart", "visualization", "d3", "generic", "workspace"],
+    supportedConfig: ["schema", "model", "chartType", "xField", "yField", "title", "onDataPointSelect"],
   },
 
   // ---------------------------------------------------------------------------
@@ -1267,10 +1338,10 @@ export const COMPOSITIONS: CompositionSeed[] = [
     name: "discovery-basic",
     layout: "layout-phase-two-column",
     slotContent: [
-      { slot: "header", component: "comp-def-intent-terminal-section" },
-      { slot: "main", component: "comp-def-requirements-list-section" },
-      { slot: "sidebar", component: "comp-def-initial-assessment-section" },
-      { slot: "actions", component: "comp-def-phase-actions-section" },
+      { slot: "header", section: "IntentTerminalSection" },
+      { slot: "main", section: "RequirementsListSection" },
+      { slot: "sidebar", section: "InitialAssessmentSection" },
+      { slot: "actions", section: "PhaseActionsSection" },
     ],
     dataContext: { phase: "discovery" },
   },
@@ -1281,13 +1352,13 @@ export const COMPOSITIONS: CompositionSeed[] = [
     name: "discovery",
     layout: "layout-discovery-enhanced",
     slotContent: [
-      { slot: "hero", component: "comp-def-phase-hero-section" },
-      { slot: "overview", component: "comp-def-session-overview-card" },
-      { slot: "intent", component: "comp-def-intent-rich-panel" },
-      { slot: "requirements", component: "comp-def-requirements-grid-section" },
-      { slot: "insights", component: "comp-def-insights-panel" },
-      { slot: "context", component: "comp-def-context-footer" },
-      { slot: "actions", component: "comp-def-phase-actions-section" },
+      { slot: "hero", section: "PhaseHeroSection" },
+      { slot: "overview", section: "SessionOverviewCard" },
+      { slot: "intent", section: "IntentRichPanel" },
+      { slot: "requirements", section: "RequirementsGridSection" },
+      { slot: "insights", section: "InsightsPanel" },
+      { slot: "context", section: "ContextFooter" },
+      { slot: "actions", section: "PhaseActionsSection" },
     ],
     dataContext: {
       phase: "discovery",
@@ -1307,11 +1378,11 @@ export const COMPOSITIONS: CompositionSeed[] = [
     layout: "layout-two-column-compact",
     slotContent: [
       // Main slot: Evidence Board header + Location heat bar + Finding matrix (stacked)
-      { slot: "main", component: "comp-def-evidence-board-header-section" },
-      { slot: "main", component: "comp-def-location-heat-bar-section" },
-      { slot: "main", component: "comp-def-finding-matrix-section" },
+      { slot: "main", section: "EvidenceBoardHeaderSection" },
+      { slot: "main", section: "LocationHeatBarSection" },
+      { slot: "main", section: "FindingMatrixSection" },
       // Sidebar slot: Finding list (filtered/grouped)
-      { slot: "sidebar", component: "comp-def-finding-list-section" },
+      { slot: "sidebar", section: "FindingListSection" },
     ],
     dataContext: { phase: "analysis" },
     providerWrapper: "AnalysisPanelProvider",
@@ -1326,12 +1397,12 @@ export const COMPOSITIONS: CompositionSeed[] = [
     layout: "layout-two-column-compact",
     slotContent: [
       // Main slot: All 6 sections stacked vertically (archetype transformation at top)
-      { slot: "main", component: "comp-def-archetype-transformation-section" },
-      { slot: "main", component: "comp-def-correction-note-section" },
-      { slot: "main", component: "comp-def-confidence-meters-section" },
-      { slot: "main", component: "comp-def-evidence-columns-section" },
-      { slot: "main", component: "comp-def-applicable-patterns-section" },
-      { slot: "main", component: "comp-def-classification-rationale-section" },
+      { slot: "main", section: "ArchetypeTransformationSection" },
+      { slot: "main", section: "CorrectionNoteSection" },
+      { slot: "main", section: "ConfidenceMetersSection" },
+      { slot: "main", section: "EvidenceColumnsSection" },
+      { slot: "main", section: "ApplicablePatternsSection" },
+      { slot: "main", section: "ClassificationRationaleSection" },
     ],
     dataContext: { phase: "classification" },
     // NO providerWrapper - validates pure slot composition without React Context
@@ -1345,7 +1416,7 @@ export const COMPOSITIONS: CompositionSeed[] = [
     layout: "layout-single-column",
     slotContent: [
       // Main slot: Container section with internal tab navigation
-      { slot: "main", component: "comp-design-container", config: { defaultTab: "schema" } },
+      { slot: "main", section: "DesignContainerSection", config: { defaultTab: "schema" } },
     ],
     dataContext: { phase: "design" },
     // NO providerWrapper - Design uses container section pattern with internal React state
@@ -1359,7 +1430,7 @@ export const COMPOSITIONS: CompositionSeed[] = [
     layout: "layout-single-column",
     slotContent: [
       // Main slot: Container section with ReactFlow dependency graph and internal task selection
-      { slot: "main", component: "comp-spec-container" },
+      { slot: "main", section: "SpecContainerSection" },
     ],
     dataContext: { phase: "spec" },
     // NO providerWrapper - Spec uses container section pattern with internal React state (not shared context)
@@ -1374,11 +1445,11 @@ export const COMPOSITIONS: CompositionSeed[] = [
     layout: "layout-two-column-compact",
     slotContent: [
       // Main slot: Test pyramid + distribution visualizations (stacked)
-      { slot: "main", component: "comp-def-test-pyramid-section" },
-      { slot: "main", component: "comp-def-test-type-distribution-section" },
+      { slot: "main", section: "TestPyramidSection" },
+      { slot: "main", section: "TestTypeDistributionSection" },
       // Sidebar slot: Task coverage + scenario spotlight (stacked)
-      { slot: "sidebar", component: "comp-def-task-coverage-bar-section" },
-      { slot: "sidebar", component: "comp-def-scenario-spotlight-section" },
+      { slot: "sidebar", section: "TaskCoverageBarSection" },
+      { slot: "sidebar", section: "ScenarioSpotlightSection" },
     ],
     dataContext: { phase: "testing" },
     providerWrapper: "TestingPanelProvider",
@@ -1393,11 +1464,11 @@ export const COMPOSITIONS: CompositionSeed[] = [
     layout: "layout-two-column-compact",
     slotContent: [
       // Main slot: TDD stage + Progress dashboard + execution timeline (stacked)
-      { slot: "main", component: "comp-def-tdd-stage-indicator-section" },
-      { slot: "main", component: "comp-def-progress-dashboard-section" },
-      { slot: "main", component: "comp-def-task-execution-timeline-section" },
+      { slot: "main", section: "TDDStageIndicatorSection" },
+      { slot: "main", section: "ProgressDashboardSection" },
+      { slot: "main", section: "TaskExecutionTimelineSection" },
       // Sidebar slot: Live terminal output
-      { slot: "sidebar", component: "comp-def-live-output-terminal-section" },
+      { slot: "sidebar", section: "LiveOutputTerminalSection" },
     ],
     dataContext: { phase: "implementation" },
     providerWrapper: "ImplementationPanelProvider",
@@ -1412,7 +1483,7 @@ export const COMPOSITIONS: CompositionSeed[] = [
     layout: "layout-workspace-flexible",
     slotContent: [
       // Default blank state - replaced when virtual tools add actual content
-      { slot: "main", component: "comp-def-workspace-blank-state-section" },
+      { slot: "main", section: "WorkspaceBlankStateSection" },
     ],
     dataContext: { context: "workspace" },
     providerWrapper: "WorkspaceProvider",

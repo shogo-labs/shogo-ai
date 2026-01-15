@@ -47,11 +47,15 @@ export interface SlotDefinition {
 /**
  * Slot content entry type for Composition
  * Defined as TypeScript interface, not in scope - these are value objects, not entities
- * Note: component is stored as string ID reference to ComponentDefinition
+ *
+ * Supports two patterns:
+ * - section: (preferred) Direct section name for sectionImplementationMap lookup
+ * - component: (deprecated) ComponentDefinition ID requiring lookup for implementationRef
  */
 export interface SlotContentEntry {
   slot: string
-  component: string
+  section?: string // NEW: Section name directly (preferred)
+  component?: string // DEPRECATED: ComponentDefinition ID (backward compat)
   config?: unknown
 }
 
@@ -419,30 +423,28 @@ export const componentBuilderDomain = domain({
          *
          * Used by renderers to compose section components into layouts.
          *
-         * Note: slotContent.component is stored as a string ID (not a resolved MST reference)
-         * because it's a nested reference within an array. We look up the ComponentDefinition
-         * from the store to get the implementationRef.
+         * Supports two patterns:
+         * 1. entry.section (preferred): Direct section name used as-is
+         * 2. entry.component (deprecated): ComponentDefinition ID requiring lookup
          */
         toSlotSpecs(): SlotSpec[] {
           const slotContent = self.slotContent ?? []
           const rootStore = getRoot(self) as any
 
           return slotContent.map((entry: any) => {
-            // entry.component is a string ID, not a resolved reference
-            // Look up the ComponentDefinition from the store
-            const componentId = entry.component
             let sectionRef: string
 
-            if (componentId && rootStore?.componentDefinitionCollection) {
-              const component = rootStore.componentDefinitionCollection.get(componentId)
-              if (component && component.implementationRef) {
-                sectionRef = component.implementationRef
-              } else {
-                // Component not found, use fallback
-                sectionRef = "FallbackSection"
-              }
-            } else {
-              // No component ID or store not available
+            // Prefer section field (new pattern) - direct section name
+            if (entry.section) {
+              sectionRef = entry.section
+            }
+            // Fall back to component lookup (backward compat)
+            else if (entry.component && rootStore?.componentDefinitionCollection) {
+              const component = rootStore.componentDefinitionCollection.get(entry.component)
+              sectionRef = component?.implementationRef ?? "FallbackSection"
+            }
+            // No section or component specified
+            else {
               sectionRef = "FallbackSection"
             }
 
