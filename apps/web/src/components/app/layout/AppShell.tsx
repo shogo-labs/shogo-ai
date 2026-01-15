@@ -27,14 +27,31 @@
  * when domain bindings change (e.g., via BindingEditorPanel).
  */
 
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useRef, createContext, useContext } from "react"
 import { observer } from "mobx-react-lite"
 import { Outlet } from "react-router-dom"
 import { AppHeader } from "./AppHeader"
+import { AppSidebar } from "./AppSidebar"
 import { BindingEditorPanel } from "./BindingEditorPanel"
 import { ComponentRegistryProvider } from "@/components/rendering"
 import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
 import { useDomains } from "@/contexts/DomainProvider"
+import { CommandPalette, useCommandPalette, SettingsModalProvider } from "../shared"
+
+// Context to share command palette state with sidebar
+interface CommandPaletteContextValue {
+  openCommandPalette: () => void
+}
+
+const CommandPaletteContext = createContext<CommandPaletteContextValue | null>(null)
+
+export function useCommandPaletteContext() {
+  const context = useContext(CommandPaletteContext)
+  if (!context) {
+    throw new Error("useCommandPaletteContext must be used within AppShell")
+  }
+  return context
+}
 
 /**
  * AppShell component
@@ -59,6 +76,14 @@ export const AppShell = observer(function AppShell() {
 
   // State for BindingEditorPanel visibility
   const [isBindingEditorOpen, setIsBindingEditorOpen] = useState(false)
+
+  // Command palette state (global search)
+  const { open: isCommandPaletteOpen, setOpen: setCommandPaletteOpen } = useCommandPalette()
+  
+  // Context value for sharing with sidebar
+  const commandPaletteContextValue = {
+    openCommandPalette: () => setCommandPaletteOpen(true),
+  }
 
   // Toggle binding editor panel
   const toggleBindingEditor = useCallback(() => {
@@ -111,18 +136,34 @@ export const AppShell = observer(function AppShell() {
 
   return (
     <ComponentRegistryProvider registry={registry}>
-      <div className="h-screen flex flex-col">
-        <AppHeader />
-        <main className="flex-1 overflow-auto bg-background">
-          <Outlet />
-        </main>
-      </div>
+      <SettingsModalProvider>
+        <CommandPaletteContext.Provider value={commandPaletteContextValue}>
+          <div className="h-screen flex">
+            {/* Persistent navigation sidebar */}
+            <AppSidebar />
+            
+            {/* Main content area */}
+            <div className="flex-1 flex flex-col min-w-0">
+              <AppHeader />
+              <main className="flex-1 overflow-auto bg-background">
+                <Outlet />
+              </main>
+            </div>
+          </div>
 
-      {/* Debug Panel - BindingEditorPanel */}
-      <BindingEditorPanel
-        isOpen={isBindingEditorOpen}
-        onClose={() => setIsBindingEditorOpen(false)}
-      />
+          {/* Global search command palette */}
+          <CommandPalette
+            open={isCommandPaletteOpen}
+            onOpenChange={setCommandPaletteOpen}
+          />
+
+          {/* Debug Panel - BindingEditorPanel */}
+          <BindingEditorPanel
+            isOpen={isBindingEditorOpen}
+            onClose={() => setIsBindingEditorOpen(false)}
+          />
+        </CommandPaletteContext.Provider>
+      </SettingsModalProvider>
     </ComponentRegistryProvider>
   )
 })
