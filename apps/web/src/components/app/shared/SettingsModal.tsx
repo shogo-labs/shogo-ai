@@ -37,6 +37,7 @@ import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { useWorkspaceData } from "../workspace"
+import { useDomains } from "@/contexts/DomainProvider"
 
 type TabId = "workspace" | "people" | "billing" | "account" | "integrations"
 
@@ -80,6 +81,7 @@ function TabItem({ id, label, icon: Icon, active, onClick, badge }: TabItemProps
 // Workspace Settings Tab
 function WorkspaceTab() {
   const { currentWorkspace } = useWorkspaceData()
+  const { studioCore } = useDomains()
   const [name, setName] = useState(currentWorkspace?.name || "")
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle")
@@ -94,17 +96,17 @@ function WorkspaceTab() {
   }, [currentWorkspace?.name])
 
   const handleSave = async () => {
-    if (!hasChanges || !isValid) return
+    if (!hasChanges || !isValid || !currentWorkspace?.id) return
     
     setIsSaving(true)
     setSaveStatus("idle")
     
     try {
-      // TODO: Call API to update workspace name
-      // await updateWorkspace(currentWorkspace.slug, { name })
-      
-      // Simulate API call for now
-      await new Promise(resolve => setTimeout(resolve, 500))
+      // Update workspace name via MCP store.update
+      await studioCore?.workspaceCollection?.updateOne(currentWorkspace.id, {
+        name: name.trim(),
+        updatedAt: Date.now(),
+      })
       
       setSaveStatus("saved")
       // Clear the "saved" status after 2 seconds
