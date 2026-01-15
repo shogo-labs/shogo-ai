@@ -355,7 +355,7 @@ resource "kubernetes_secret" "api_secrets" {
 #   github_org   = var.github_org
 #   github_repo  = var.github_repo
 #
-#   eks_cluster_arn     = module.eks.cluster_arn
+#   eks_cluster_arns    = [module.eks.cluster_arn]
 #   ecr_repository_arns = [
 #     "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-mcp",
 #     "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-api",
