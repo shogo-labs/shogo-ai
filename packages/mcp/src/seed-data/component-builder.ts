@@ -5,10 +5,10 @@
  * insertOne() operations via Wavesmith MCP tools.
  *
  * Exports:
- * - COMPONENT_DEFINITIONS: 67 entries (display, visualization, section components)
+ * - COMPONENT_DEFINITIONS: 73 entries (display, visualization, section components)
  * - REGISTRIES: 2 entries (default, studio)
  * - RENDERER_BINDINGS: 32 entries (12 default + 20 studio)
- * - LAYOUT_TEMPLATES: 7 entries (layout-phase-two-column, layout-single-column, layout-two-column-compact, layout-workspace-flexible, layout-workspace-split-h, layout-workspace-split-v, layout-discovery-enhanced)
+ * - LAYOUT_TEMPLATES: 8 entries (layout-phase-two-column, layout-single-column, layout-two-column-compact, layout-workspace-flexible, layout-workspace-split-h, layout-workspace-split-v, layout-discovery-enhanced, layout-app-shell)
  * - COMPOSITIONS: 9 entries (discovery-basic, discovery, analysis, classification, design, spec, testing, implementation, workspace)
  *
  * All entities have proper id fields for idempotency checks.
@@ -815,6 +815,273 @@ Displays any Wavesmith collection as a sortable, selectable data grid.
   },
 
   // ---------------------------------------------------------------------------
+  // App Building Section Components (2) - view-builder-implementation
+  // ---------------------------------------------------------------------------
+  {
+    id: "comp-appbar-section",
+    name: "AppBarSection",
+    category: "section",
+    description:
+      "Reusable application header component with logo, horizontal navigation links, and action buttons. Standalone section for composing into app layouts. Supports theming, responsive mobile menu, and sticky positioning.",
+    implementationRef: "AppBarSection",
+    tags: ["section", "app-building", "header", "navigation", "workspace"],
+    supportedConfig: ["logo", "title", "navLinks", "actions", "sticky", "onNavigate", "onAction", "theme"],
+    aiGuidance: `## AppBarSection Configuration Guide
+
+Reusable application header with logo, navigation links, and action buttons.
+
+### Config Structure
+
+\`\`\`typescript
+{
+  logo?: { src?: string, alt?: string },  // Logo image
+  title?: string,                          // App title next to logo
+  navLinks?: Array<{                       // Horizontal nav links (center)
+    id: string,
+    label: string,
+    href?: string,
+    icon?: string,    // "home", "settings", "user", etc.
+    active?: boolean
+  }>,
+  actions?: Array<{                        // Action buttons (right side)
+    id: string,
+    icon: string,     // "bell", "search", "user", etc.
+    label?: string,
+    variant?: "default" | "ghost" | "outline"
+  }>,
+  sticky?: boolean,                        // Stick to top on scroll
+  theme?: {                                // Theme overrides
+    background?: string,
+    text?: string,
+    accent?: string
+  }
+}
+\`\`\`
+
+### Available Icons
+home, settings, user, bell, search, menu, panelLeft, panelLeftClose
+
+### Sidebar Toggle (when used with AppShellSection)
+When embedded in AppShellSection, extra props are automatically injected:
+- \`showSidebarToggle\`: boolean - Shows toggle button next to logo
+- \`sidebarCollapsed\`: boolean - Current collapsed state
+- \`onSidebarToggle\`: () => void - Callback to toggle sidebar
+
+### Example Configs
+
+**Basic header with logo and title:**
+\`\`\`json
+{ "title": "My App", "sticky": true }
+\`\`\`
+
+**Full navigation header:**
+\`\`\`json
+{
+  "logo": { "src": "/logo.png", "alt": "Logo" },
+  "title": "Dashboard",
+  "navLinks": [
+    { "id": "home", "label": "Home", "href": "/", "icon": "home", "active": true },
+    { "id": "projects", "label": "Projects", "href": "/projects" },
+    { "id": "settings", "label": "Settings", "href": "/settings", "icon": "settings" }
+  ],
+  "actions": [
+    { "id": "notifications", "icon": "bell" },
+    { "id": "profile", "icon": "user" }
+  ],
+  "sticky": true
+}
+\`\`\`
+
+### Mobile Behavior
+- Nav links collapse to hamburger menu on mobile
+- Actions remain visible
+- Logo scales down on small screens`,
+  },
+  {
+    id: "comp-sidenav-section",
+    name: "SideNavSection",
+    category: "section",
+    description:
+      "Reusable side navigation panel with flat links, grouped/collapsible sections, and icon-only rail mode. Standalone section for composing into app layouts. Supports theming, active item highlighting, and collapse toggle.",
+    implementationRef: "SideNavSection",
+    tags: ["section", "app-building", "navigation", "sidebar", "workspace"],
+    supportedConfig: ["items", "collapsed", "activeItem", "header", "showCollapseToggle", "onNavigate", "onCollapsedChange", "width", "theme"],
+    aiGuidance: `## SideNavSection Configuration Guide
+
+Reusable side navigation with flat links, grouped sections, and collapsible rail mode.
+
+### Config Structure
+
+\`\`\`typescript
+{
+  items?: Array<NavItem | NavGroup>,      // Navigation items
+  collapsed?: boolean,                     // Icon-only rail mode
+  activeItem?: string,                     // ID of active item
+  header?: {                               // Optional header
+    title?: string,
+    logo?: { src: string, alt?: string }
+  },
+  showCollapseToggle?: boolean,           // Show collapse button (default true)
+  width?: {                                // Width overrides
+    expanded?: number,  // default 256
+    collapsed?: number  // default 64
+  },
+  theme?: {
+    background?: string,
+    text?: string,
+    accent?: string
+  }
+}
+
+// NavItem structure
+{ type?: "item", id: string, label: string, href?: string, icon?: string, badge?: string|number, disabled?: boolean }
+
+// NavGroup structure
+{ type: "group", id: string, label: string, icon?: string, items: NavItem[], defaultExpanded?: boolean }
+\`\`\`
+
+### Available Icons
+home, settings, user, folder, file, star, bell, search, layout, database, code
+
+### Example Configs
+
+**Simple flat navigation:**
+\`\`\`json
+{
+  "header": { "title": "App Name" },
+  "items": [
+    { "id": "dashboard", "label": "Dashboard", "icon": "home", "href": "/" },
+    { "id": "projects", "label": "Projects", "icon": "folder", "href": "/projects" },
+    { "id": "settings", "label": "Settings", "icon": "settings", "href": "/settings" }
+  ],
+  "activeItem": "dashboard"
+}
+\`\`\`
+
+**Grouped navigation with collapsible sections:**
+\`\`\`json
+{
+  "header": { "title": "Admin Panel" },
+  "items": [
+    { "id": "home", "label": "Home", "icon": "home" },
+    {
+      "type": "group",
+      "id": "content",
+      "label": "Content",
+      "icon": "folder",
+      "defaultExpanded": true,
+      "items": [
+        { "id": "pages", "label": "Pages", "href": "/pages" },
+        { "id": "posts", "label": "Posts", "href": "/posts", "badge": "12" }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "system",
+      "label": "System",
+      "icon": "settings",
+      "items": [
+        { "id": "users", "label": "Users", "icon": "user" },
+        { "id": "database", "label": "Database", "icon": "database" }
+      ]
+    }
+  ],
+  "showCollapseToggle": true
+}
+\`\`\`
+
+### Rail Mode (Collapsed)
+When collapsed=true:
+- Shows only icons
+- Groups show group icon only
+- Hover shows tooltip with label
+- Width shrinks to 64px (or config.width.collapsed)`,
+  },
+  {
+    id: "comp-appshell-section",
+    name: "AppShellSection",
+    category: "section",
+    description:
+      "Composite section that combines AppBar + SideNav + Main content in a proper app shell layout. Header spans full width at top, sidebar sits below on left, main content fills remaining space. Use this instead of split layouts when building app-like interfaces.",
+    implementationRef: "AppShellSection",
+    tags: ["section", "app-building", "layout", "composite", "workspace"],
+    supportedConfig: ["appBar", "sideNav", "content", "showAppBar", "showSideNav"],
+    aiGuidance: `## AppShellSection Configuration Guide
+
+Composite layout that arranges AppBar, SideNav, and main content in the classic app shell pattern:
+
+\`\`\`
+┌─────────────────────────────────────────┐
+│              AppBar (header)            │
+├──────────┬──────────────────────────────┤
+│          │                              │
+│ SideNav  │         Main Content         │
+│          │                              │
+└──────────┴──────────────────────────────┘
+\`\`\`
+
+### Config Structure
+
+\`\`\`typescript
+{
+  appBar?: AppBarConfig,      // See AppBarSection for options
+  sideNav?: SideNavConfig,    // See SideNavSection for options
+  showAppBar?: boolean,       // Default: true
+  showSideNav?: boolean       // Default: true
+}
+\`\`\`
+
+### Built-in Sidebar Toggle
+AppShellSection manages sidebar collapsed state internally:
+- Toggle button automatically appears in AppBar (next to logo)
+- Clicking toggle collapses/expands the SideNav to icon-only rail mode
+- No external state management required
+- SideNav header is automatically hidden when used in AppShellSection
+
+### Example: Full App Shell
+
+\`\`\`json
+{
+  "appBar": {
+    "title": "My Dashboard",
+    "navLinks": [
+      { "id": "home", "label": "Home", "icon": "home", "active": true },
+      { "id": "reports", "label": "Reports", "icon": "file" }
+    ],
+    "actions": [{ "id": "profile", "icon": "user" }],
+    "sticky": true
+  },
+  "sideNav": {
+    "items": [
+      { "id": "dashboard", "label": "Dashboard", "icon": "home" },
+      { "type": "group", "id": "content", "label": "Content", "defaultExpanded": true, "items": [
+        { "id": "pages", "label": "Pages" },
+        { "id": "posts", "label": "Posts", "badge": "3" }
+      ]},
+      { "id": "settings", "label": "Settings", "icon": "settings" }
+    ],
+    "activeItem": "dashboard"
+  }
+}
+\`\`\`
+
+### Example: Header + Content Only (No Sidebar)
+
+\`\`\`json
+{
+  "appBar": { "title": "Simple App" },
+  "showSideNav": false
+}
+\`\`\`
+
+### When to Use
+- Building dashboard-style interfaces
+- Admin panels with navigation
+- Any app needing header + sidebar + content layout
+- Use this INSTEAD of split-h/split-v when you need the classic app shell pattern`,
+  },
+
+  // ---------------------------------------------------------------------------
   // Enhanced Discovery Phase Section Components (6) - virtual-tools-domain
   // ---------------------------------------------------------------------------
   {
@@ -1221,7 +1488,7 @@ export const RENDERER_BINDINGS: RendererBindingSeed[] = [
 ]
 
 // =============================================================================
-// Layout Templates (2 total) - task-cpv-004, task-prephase-005
+// Layout Templates (8 total) - task-cpv-004, task-prephase-005, view-builder-implementation
 // =============================================================================
 
 /**
@@ -1313,6 +1580,22 @@ export const LAYOUT_TEMPLATES: LayoutTemplateSeed[] = [
       { name: "actions", position: "bottom-full", required: true },
     ],
     defaultBindings: {},
+  },
+  // App shell layout for application building - view-builder-implementation
+  {
+    id: "layout-app-shell",
+    name: "layout-app-shell",
+    description:
+      "Full application shell layout with header (appbar), sidebar (sidenav), and main content area. Classic app layout pattern for dashboards, admin panels, and data-heavy applications.",
+    slots: [
+      { name: "header", position: "top-full", required: false },
+      { name: "sidebar", position: "left", required: false },
+      { name: "main", position: "center", required: true },
+    ],
+    defaultBindings: {
+      header: "AppBarSection",
+      sidebar: "SideNavSection",
+    },
   },
 ]
 
