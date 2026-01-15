@@ -65,6 +65,7 @@ import { ChatPanel } from "../chat/ChatPanel"
 import { FeatureSidebar } from "./sidebar"
 import { HomePage } from "./dashboard"
 import { DeleteFeatureDialog } from "./modals/DeleteFeatureDialog"
+import { NewFeatureModal } from "./modals/NewFeatureModal"
 import { RefreshCw } from "lucide-react"
 import type { PollableDomain } from "@/hooks/useFeaturePolling"
 
@@ -299,34 +300,16 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
         )}
       </div>
 
-      {/* NewFeatureModal placeholder - actual component in task-2-2-008 */}
-      {isModalOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-          data-testid="new-feature-modal"
-        >
-          <div className="bg-card p-6 rounded-lg shadow-lg max-w-md w-full mx-4">
-            <h2 className="text-lg font-semibold mb-4">New Feature</h2>
-            <p className="text-sm text-muted-foreground mb-4">
-              Create a new feature for project: {projectId || "none"}
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={onClose}
-                className="px-4 py-2 text-sm bg-secondary text-secondary-foreground rounded-md"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={onClose}
-                className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-md"
-              >
-                Create
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* NewFeatureModal - creates features and navigates to them */}
+      <NewFeatureModal
+        open={isModalOpen}
+        onOpenChange={setIsModalOpen}
+        projectId={projectId}
+        onSuccess={(newFeatureId) => {
+          // Navigate to the newly created feature
+          setFeatureId(newFeatureId)
+        }}
+      />
 
       {/* Delete feature confirmation dialog (task-delete-005) */}
       <DeleteFeatureDialog

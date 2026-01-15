@@ -393,14 +393,14 @@ export const studioCoreDomain = domain({
          * @param userId - The ID of the user creating the project
          * @returns The created Project instance
          */
-        createProject(
+        async createProject(
           name: string,
           workspaceId: string,
           description: string | undefined,
           userId: string
-        ): any {
-          // Create the project
-          const project = self.projectCollection.add({
+        ): Promise<any> {
+          // Create the project via insertOne to persist to backend
+          const project = await self.projectCollection.insertOne({
             id: crypto.randomUUID(),
             name,
             description,

@@ -47,8 +47,8 @@ export interface CreateProjectModalProps {
   onOpenChange: (open: boolean) => void
   /** The ID of the workspace to create the project in */
   workspaceId: string
-  /** Callback when project is successfully created */
-  onSuccess?: () => void
+  /** Callback when project is successfully created, receives the new project ID */
+  onSuccess?: (projectId: string) => void
 }
 
 /**
@@ -98,7 +98,7 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
 
     try {
       // Use domain action to create project
-      await studioCore.createProject(
+      const newProject = await studioCore.createProject(
         name.trim(),
         workspaceId,
         description.trim() || undefined,
@@ -109,9 +109,9 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
       setName("")
       setDescription("")
 
-      // Close modal and notify parent
+      // Close modal and notify parent with the new project ID
       onOpenChange(false)
-      onSuccess?.()
+      onSuccess?.(newProject.id)
     } catch (err) {
       console.error("[CreateProjectModal] Failed to create project:", err)
       setError(err instanceof Error ? err.message : "Failed to create project")

@@ -593,13 +593,14 @@ export const platformFeaturesDomain = domain({
         /**
          * Create a new feature session
          */
-        createFeatureSession(params: {
+        async createFeatureSession(params: {
           name: string
           intent: string
           project?: string
           affectedPackages?: string[]
-        }) {
-          const session = self.featureSessionCollection.add({
+        }): Promise<any> {
+          // Use insertOne to persist to backend via MCP
+          const session = await self.featureSessionCollection.insertOne({
             id: uuidv4(),
             name: params.name,
             intent: params.intent,

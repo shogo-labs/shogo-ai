@@ -150,6 +150,10 @@ export function ProjectSelector({
           open={showCreateModal}
           onOpenChange={setShowCreateModal}
           workspaceId={workspaceId}
+          onSuccess={(projectId) => {
+            // Navigate to the newly created project
+            onProjectChange(projectId)
+          }}
         />
       )}
     </>
