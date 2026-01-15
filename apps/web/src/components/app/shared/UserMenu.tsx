@@ -90,7 +90,7 @@ export const UserMenu = observer(function UserMenu() {
         <DropdownMenuSeparator />
 
         <DropdownMenuItem asChild className="cursor-pointer">
-          <Link to="/app/profile">
+          <Link to="/profile">
             <User className="mr-2 h-4 w-4" />
             <span>Profile</span>
           </Link>

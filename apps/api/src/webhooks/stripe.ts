@@ -19,7 +19,7 @@ export interface StripeWebhookConfig {
   billingStore: {
     syncFromStripe: (data: {
       subscriptionId: string
-      organizationId: string
+      workspaceId: string
       customerId?: string
       planId?: string
       status?: string
@@ -29,7 +29,7 @@ export interface StripeWebhookConfig {
       cancelAtPeriodEnd?: boolean
       isNew?: boolean
     }) => Promise<void>
-    allocateMonthlyCredits?: (orgId: string) => Promise<void>
+    allocateMonthlyCredits?: (workspaceId: string) => Promise<void>
   }
 }
 
@@ -109,17 +109,17 @@ async function handleSubscriptionCreated(
   event: WebhookEvent,
   billingStore: StripeWebhookConfig["billingStore"]
 ) {
-  const { subscriptionId, organizationId, planId, status, currentPeriodStart, currentPeriodEnd } =
+  const { subscriptionId, workspaceId, planId, status, currentPeriodStart, currentPeriodEnd } =
     event.data
 
-  if (!subscriptionId || !organizationId) {
+  if (!subscriptionId || !workspaceId) {
     console.error("[Webhook] Missing required data for subscription.created")
     return
   }
 
   await billingStore.syncFromStripe({
     subscriptionId,
-    organizationId,
+    workspaceId,
     planId: planId || "pro",
     status: status || "active",
     currentPeriodStart: currentPeriodStart || Date.now(),
@@ -127,7 +127,7 @@ async function handleSubscriptionCreated(
     isNew: true,
   })
 
-  console.log("[Webhook] Subscription created for org:", organizationId)
+  console.log("[Webhook] Subscription created for workspace:", workspaceId)
 }
 
 /**
@@ -138,7 +138,7 @@ async function handleSubscriptionUpdated(
   event: WebhookEvent,
   billingStore: StripeWebhookConfig["billingStore"]
 ) {
-  const { subscriptionId, organizationId, planId, status, currentPeriodStart, currentPeriodEnd } =
+  const { subscriptionId, workspaceId, planId, status, currentPeriodStart, currentPeriodEnd } =
     event.data
 
   if (!subscriptionId) {
@@ -148,7 +148,7 @@ async function handleSubscriptionUpdated(
 
   await billingStore.syncFromStripe({
     subscriptionId,
-    organizationId: organizationId || "",
+    workspaceId: workspaceId || "",
     planId,
     status,
     currentPeriodStart,
@@ -167,7 +167,7 @@ async function handleSubscriptionDeleted(
   event: WebhookEvent,
   billingStore: StripeWebhookConfig["billingStore"]
 ) {
-  const { subscriptionId, organizationId } = event.data
+  const { subscriptionId, workspaceId } = event.data
 
   if (!subscriptionId) {
     console.error("[Webhook] Missing subscriptionId for subscription.deleted")
@@ -176,7 +176,7 @@ async function handleSubscriptionDeleted(
 
   await billingStore.syncFromStripe({
     subscriptionId,
-    organizationId: organizationId || "",
+    workspaceId: workspaceId || "",
     status: "canceled",
     isNew: false,
   })
@@ -192,13 +192,13 @@ async function handlePaymentFailed(
   event: WebhookEvent,
   _billingStore: StripeWebhookConfig["billingStore"]
 ) {
-  const { invoiceId, failureMessage, organizationId } = event.data
+  const { invoiceId, failureMessage, workspaceId } = event.data
 
-  // Log the failure - in production, would also notify org admins
+  // Log the failure - in production, would also notify workspace admins
   console.warn("[Webhook] Payment failed:", {
     invoiceId,
     failureMessage,
-    organizationId,
+    workspaceId,
   })
 
   // Note: subscription status will be updated via subscription.updated event

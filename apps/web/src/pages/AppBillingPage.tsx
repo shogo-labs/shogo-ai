@@ -4,10 +4,10 @@
  * Allows users to view current plan, upgrade/downgrade, and manage billing.
  */
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { observer } from "mobx-react-lite"
-import { Link } from "react-router-dom"
-import { ArrowLeft, Check, Zap, Building2, Crown, ExternalLink } from "lucide-react"
+import { Link, useSearchParams } from "react-router-dom"
+import { ArrowLeft, Check, Zap, Building2, Crown, ExternalLink, CheckCircle2 } from "lucide-react"
 
 import { useDomains } from "@/contexts/DomainProvider"
 import { useWorkspaceData } from "@/components/app/workspace/hooks"
@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { cn } from "@/lib/utils"
 
 // Plan tier definitions
@@ -77,22 +78,43 @@ const ENTERPRISE_FEATURES = [
 export const AppBillingPage = observer(function AppBillingPage() {
   const { billing } = useDomains()
   const { data: session, isPending: isAuthLoading } = useSession()
-  const { currentOrg, isLoading: isWorkspaceLoading } = useWorkspaceData()
+  const { currentWorkspace, isLoading: isWorkspaceLoading } = useWorkspaceData()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [billingInterval, setBillingInterval] = useState<"monthly" | "annual">("monthly")
   const [selectedProTier, setSelectedProTier] = useState(0)
   const [selectedBusinessTier, setSelectedBusinessTier] = useState(4)
   const [isLoading, setIsLoading] = useState(false)
+  const [showSuccess, setShowSuccess] = useState(false)
 
   const currentUser = session?.user
 
+  // Check for successful checkout redirect
+  const isSuccess = searchParams.get("success") === "true"
+
+  // Handle successful checkout - show message and refresh subscription data
+  useEffect(() => {
+    if (isSuccess && currentWorkspace) {
+      setShowSuccess(true)
+      // Clear the success param from URL to prevent re-triggering
+      const newParams = new URLSearchParams(searchParams)
+      newParams.delete("success")
+      newParams.delete("session_id")
+      setSearchParams(newParams, { replace: true })
+
+      // Refresh subscription data from the server
+      billing.subscriptionCollection.query().toArray().catch(console.error)
+      billing.creditLedgerCollection.query().toArray().catch(console.error)
+    }
+  }, [isSuccess, currentWorkspace, searchParams, setSearchParams, billing])
+
   // Get current subscription
-  const subscription = currentOrg
-    ? billing.subscriptionCollection.findByOrg(currentOrg.id)[0]
+  const subscription = currentWorkspace
+    ? billing.subscriptionCollection.findByWorkspace(currentWorkspace.id)[0]
     : null
 
   const handleCheckout = async (planType: "pro" | "business", credits: number) => {
-    if (!currentOrg) return
+    if (!currentWorkspace) return
 
     setIsLoading(true)
     try {
@@ -105,7 +127,7 @@ export const AppBillingPage = observer(function AppBillingPage() {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          organizationId: currentOrg.id,
+          workspaceId: currentWorkspace.id,
           planId,
           billingInterval,
         }),
@@ -122,11 +144,11 @@ export const AppBillingPage = observer(function AppBillingPage() {
   }
 
   const handleManageBilling = async () => {
-    if (!currentOrg) return
+    if (!currentWorkspace) return
 
     setIsLoading(true)
     try {
-      const response = await fetch(`/api/billing/portal?organizationId=${currentOrg.id}`, {
+      const response = await fetch(`/api/billing/portal?workspaceId=${currentWorkspace.id}`, {
         method: 'POST',
         credentials: 'include',
       })
@@ -152,7 +174,7 @@ export const AppBillingPage = observer(function AppBillingPage() {
     )
   }
 
-  if (!currentUser || !currentOrg) {
+  if (!currentUser || !currentWorkspace) {
     return (
       <div className="p-6 max-w-6xl mx-auto text-center py-12">
         <Building2 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
@@ -186,7 +208,7 @@ export const AppBillingPage = observer(function AppBillingPage() {
           </Link>
           <div>
             <h1 className="text-2xl font-bold">Plans & Billing</h1>
-            <p className="text-muted-foreground">{currentOrg.name}</p>
+            <p className="text-muted-foreground">{currentWorkspace.name}</p>
           </div>
         </div>
         {subscription && (
@@ -196,6 +218,17 @@ export const AppBillingPage = observer(function AppBillingPage() {
           </Button>
         )}
       </div>
+
+      {/* Success Message */}
+      {showSuccess && (
+        <Alert className="mb-8 border-green-500 bg-green-50 dark:bg-green-950">
+          <CheckCircle2 className="h-5 w-5 text-green-600" />
+          <AlertTitle className="text-green-800 dark:text-green-200">Thank you for subscribing!</AlertTitle>
+          <AlertDescription className="text-green-700 dark:text-green-300">
+            Your subscription is now active. Your workspace has been upgraded and your credits are ready to use.
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Billing Interval Toggle */}
       <div className="flex justify-center mb-8">

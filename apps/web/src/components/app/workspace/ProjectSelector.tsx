@@ -3,7 +3,7 @@
  * Task: task-2-2-003
  *
  * Dropdown for project selection using shadcn Select.
- * Displays current project name, lists all organization projects.
+ * Displays current project name, lists all workspace projects.
  * Includes "Create Project" button at the bottom of the dropdown.
  *
  * Per design decision design-2-2-clean-break:
@@ -14,7 +14,7 @@
  * Per ip-2-2-008:
  * - Props: projects, currentProject, onProjectChange, disabled
  * - Shows project name
- * - Disabled when no org selected
+ * - Disabled when no workspace selected
  */
 
 import { useState } from "react"
@@ -44,18 +44,18 @@ export interface Project {
  * Props for ProjectSelector component
  */
 export interface ProjectSelectorProps {
-  /** List of projects in the current organization */
+  /** List of projects in the current workspace */
   projects: Project[]
   /** Currently selected project (by ID) */
   currentProject: Project | null
   /** Callback when user selects a different project */
   onProjectChange: (id: string) => void
-  /** Disabled state - true when no org selected */
+  /** Disabled state - true when no workspace selected */
   disabled?: boolean
   /** Loading state - disables selector while data fetches */
   isLoading?: boolean
-  /** Current organization ID - required for creating new projects */
-  organizationId?: string
+  /** Current workspace ID - required for creating new projects */
+  workspaceId?: string
 }
 
 /**
@@ -65,7 +65,7 @@ export interface ProjectSelectorProps {
  * Shows current project name as trigger, lists all projects in dropdown.
  * Calls onProjectChange(id) when selection changes.
  * Includes "Create Project" button at the bottom.
- * Disabled when no organization is selected.
+ * Disabled when no workspace is selected.
  *
  * @example
  * ```tsx
@@ -73,8 +73,8 @@ export interface ProjectSelectorProps {
  *   projects={[{ id: "1", name: "My Project" }]}
  *   currentProject={{ id: "1", name: "My Project" }}
  *   onProjectChange={(id) => setProjectId(id)}
- *   organizationId="org-123"
- *   disabled={!currentOrg}
+ *   workspaceId="ws-123"
+ *   disabled={!currentWorkspace}
  * />
  * ```
  */
@@ -84,7 +84,7 @@ export function ProjectSelector({
   onProjectChange,
   disabled = false,
   isLoading = false,
-  organizationId,
+  workspaceId,
 }: ProjectSelectorProps) {
   // State for Create Project modal
   const [showCreateModal, setShowCreateModal] = useState<boolean>(false)
@@ -135,7 +135,7 @@ export function ProjectSelector({
               size="sm"
               className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
               onClick={handleCreateClick}
-              disabled={!organizationId}
+              disabled={!workspaceId}
             >
               <Plus className="h-4 w-4" />
               Create Project
@@ -145,11 +145,11 @@ export function ProjectSelector({
       </Select>
 
       {/* Create Project Modal */}
-      {organizationId && (
+      {workspaceId && (
         <CreateProjectModal
           open={showCreateModal}
           onOpenChange={setShowCreateModal}
-          organizationId={organizationId}
+          workspaceId={workspaceId}
         />
       )}
     </>

@@ -55,7 +55,7 @@ export class StripeBillingService implements IBillingService {
    * Create a Stripe checkout session for subscribing to a plan
    */
   async createCheckoutSession(
-    organizationId: string,
+    workspaceId: string,
     planId: PlanId,
     billingInterval: BillingInterval
   ): Promise<CheckoutSessionResult> {
@@ -70,11 +70,11 @@ export class StripeBillingService implements IBillingService {
         },
       ],
       metadata: {
-        organizationId,
+        workspaceId,
       },
       subscription_data: {
         metadata: {
-          organizationId,
+          workspaceId,
         },
       },
       success_url: `${process.env.APP_URL || "http://localhost:3000"}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
@@ -156,18 +156,18 @@ export class StripeBillingService implements IBillingService {
   /**
    * Get URL for Stripe Customer Portal
    */
-  async getPortalUrl(organizationId: string): Promise<PortalSessionResult> {
-    // Look up customer ID from organization
+  async getPortalUrl(workspaceId: string): Promise<PortalSessionResult> {
+    // Look up customer ID from workspace
     // In real implementation, this would query your database
-    // For now, we assume organizationId is passed as customer metadata
+    // For now, we assume workspaceId is passed as customer metadata
     const customers = await this.stripe.customers.search({
-      query: `metadata['organizationId']:'${organizationId}'`,
+      query: `metadata['workspaceId']:'${workspaceId}'`,
     })
 
     if (customers.data.length === 0) {
       throw createBillingError(
         "customer_not_found",
-        `No Stripe customer found for organization ${organizationId}`
+        `No Stripe customer found for workspace ${workspaceId}`
       )
     }
 
@@ -181,12 +181,18 @@ export class StripeBillingService implements IBillingService {
 
   /**
    * Process incoming webhook event from Stripe
+   * Uses constructEventAsync for Bun compatibility (SubtleCrypto requires async)
    */
   async processWebhookEvent(payload: string, signature: string): Promise<WebhookEvent> {
     let event: Stripe.Event
 
     try {
-      event = this.stripe.webhooks.constructEvent(payload, signature, this.webhookSecret)
+      // Use async version for Bun/SubtleCrypto compatibility
+      event = await this.stripe.webhooks.constructEventAsync(
+        payload,
+        signature,
+        this.webhookSecret
+      )
     } catch (error: any) {
       throw createBillingError(
         "webhook_verification_failed",
@@ -236,7 +242,7 @@ export class StripeBillingService implements IBillingService {
 
     return {
       id: sub.id,
-      organizationId: (sub.metadata?.organizationId as string) || "",
+      workspaceId: (sub.metadata?.workspaceId as string) || "",
       stripeSubscriptionId: sub.id,
       stripeCustomerId: typeof sub.customer === "string" ? sub.customer : sub.customer.id,
       planId,
@@ -270,7 +276,7 @@ export class StripeBillingService implements IBillingService {
       const firstItem = sub.items?.data[0]
 
       data.subscriptionId = sub.id
-      data.organizationId = sub.metadata?.organizationId
+      data.workspaceId = sub.metadata?.workspaceId
       data.status = sub.status as Subscription["status"]
       // Get current period from subscription item
       data.currentPeriodStart = (firstItem?.current_period_start ?? sub.start_date) * 1000
@@ -282,11 +288,11 @@ export class StripeBillingService implements IBillingService {
     } else if (event.type === "invoice.payment_failed") {
       const invoice = event.data.object as Stripe.Invoice
       data.invoiceId = invoice.id || undefined
-      // Get customer info - organization lookup will need to happen via customer ID
+      // Get customer info - workspace lookup will need to happen via customer ID
       const customerId = typeof invoice.customer === 'string'
         ? invoice.customer
         : invoice.customer?.id
-      data.organizationId = customerId // Caller will need to resolve customer -> org
+      data.workspaceId = customerId // Caller will need to resolve customer -> org
       data.failureMessage = invoice.last_finalization_error?.message
     }
 

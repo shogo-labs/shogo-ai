@@ -22,7 +22,7 @@ import { domain } from "../domain"
 export const BillingDomain = scope({
   Subscription: {
     id: "string.uuid",
-    organization: "string", // Cross-schema loose string reference to Organization
+    workspace: "string", // Cross-schema loose string reference to Workspace
     stripeSubscriptionId: "string",
     stripeCustomerId: "string",
     planId: "'pro' | 'business' | 'enterprise'",
@@ -37,7 +37,7 @@ export const BillingDomain = scope({
 
   CreditLedger: {
     id: "string.uuid",
-    organization: "string", // Cross-schema loose string reference to Organization
+    workspace: "string", // Cross-schema loose string reference to Workspace
     monthlyCredits: "number",
     dailyCredits: "number",
     rolloverCredits: "number",
@@ -50,7 +50,7 @@ export const BillingDomain = scope({
 
   UsageEvent: {
     id: "string.uuid",
-    organization: "string", // Cross-schema loose string reference to Organization
+    workspace: "string", // Cross-schema loose string reference to Workspace
     "projectId?": "string", // Optional project attribution (loose string)
     memberId: "string", // Who performed the action (loose string)
     actionType: "string", // e.g., 'chat_message', 'code_generation'
@@ -162,30 +162,30 @@ export const billingDomain = domain({
 
       SubscriptionCollection: collections.SubscriptionCollection.views((self: any) => ({
         /**
-         * Find subscriptions for an organization
+         * Find subscriptions for a workspace
          */
-        findByOrg(organizationId: string): any[] {
-          return self.all().filter((s: any) => s.organization === organizationId)
+        findByWorkspace(workspaceId: string): any[] {
+          return self.all().filter((s: any) => s.workspace === workspaceId)
         },
       })),
 
       CreditLedgerCollection: collections.CreditLedgerCollection.views((self: any) => ({
         /**
-         * Find credit ledger for an organization
+         * Find credit ledger for a workspace
          */
-        findByOrg(organizationId: string): any | null {
-          return self.all().find((l: any) => l.organization === organizationId) || null
+        findByWorkspace(workspaceId: string): any | null {
+          return self.all().find((l: any) => l.workspace === workspaceId) || null
         },
       })),
 
       UsageEventCollection: collections.UsageEventCollection.views((self: any) => ({
         /**
-         * Find usage events for an organization
+         * Find usage events for a workspace
          */
-        recentForOrg(organizationId: string, limit: number = 50): any[] {
+        recentForWorkspace(workspaceId: string, limit: number = 50): any[] {
           return self
             .all()
-            .filter((e: any) => e.organization === organizationId)
+            .filter((e: any) => e.workspace === workspaceId)
             .sort((a: any, b: any) => b.createdAt - a.createdAt)
             .slice(0, limit)
         },
@@ -215,14 +215,14 @@ export const billingDomain = domain({
          * Allocate monthly credits for a new subscription or reset.
          * Creates CreditLedger if doesn't exist.
          *
-         * @param organizationId - The organization to allocate credits to
+         * @param workspaceId - The workspace to allocate credits to
          */
-        async allocateMonthlyCredits(organizationId: string): Promise<void> {
+        async allocateMonthlyCredits(workspaceId: string): Promise<void> {
           const now = Date.now()
           const today = new Date(now)
 
           // Check if ledger exists
-          const existingLedger = self.creditLedgerCollection.findByOrg(organizationId)
+          const existingLedger = self.creditLedgerCollection.findByWorkspace(workspaceId)
 
           if (existingLedger) {
             // Update existing ledger
@@ -230,7 +230,7 @@ export const billingDomain = domain({
             const rollover = existingLedger.monthlyCredits // Unused becomes rollover
 
             // Only rollover if there's an active subscription
-            const subscription = self.subscriptionCollection.findByOrg(organizationId)[0]
+            const subscription = self.subscriptionCollection.findByWorkspace(workspaceId)[0]
             const shouldRollover = subscription?.isActive ?? false
 
             existingLedger.monthlyCredits = newMonthly
@@ -244,7 +244,7 @@ export const billingDomain = domain({
             // Create new ledger
             self.creditLedgerCollection.add({
               id: crypto.randomUUID(),
-              organization: organizationId,
+              workspace: workspaceId,
               monthlyCredits: 100,
               dailyCredits: 5,
               rolloverCredits: 0,
@@ -261,7 +261,7 @@ export const billingDomain = domain({
          * Deducts from daily first, then monthly, then rollover.
          * Creates UsageEvent records for tracking.
          *
-         * @param organizationId - The organization consuming credits
+         * @param workspaceId - The workspace consuming credits
          * @param amount - Credits to consume
          * @param memberId - Who is consuming
          * @param actionType - What action is consuming credits
@@ -269,16 +269,16 @@ export const billingDomain = domain({
          * @param actionMetadata - Optional additional context
          */
         async consumeCredits(
-          organizationId: string,
+          workspaceId: string,
           amount: number,
           memberId: string,
           actionType: string,
           projectId?: string,
           actionMetadata?: unknown
         ): Promise<void> {
-          const ledger = self.creditLedgerCollection.findByOrg(organizationId)
+          const ledger = self.creditLedgerCollection.findByWorkspace(workspaceId)
           if (!ledger) {
-            throw new Error(`No credit ledger found for organization ${organizationId}`)
+            throw new Error(`No credit ledger found for workspace ${workspaceId}`)
           }
 
           const now = Date.now()
@@ -300,7 +300,7 @@ export const billingDomain = domain({
             // Create usage event for daily deduction
             self.usageEventCollection.add({
               id: crypto.randomUUID(),
-              organization: organizationId,
+              workspace: workspaceId,
               projectId,
               memberId,
               actionType,
@@ -323,7 +323,7 @@ export const billingDomain = domain({
             // Create usage event for monthly deduction
             self.usageEventCollection.add({
               id: crypto.randomUUID(),
-              organization: organizationId,
+              workspace: workspaceId,
               projectId,
               memberId,
               actionType,
@@ -346,7 +346,7 @@ export const billingDomain = domain({
             // Create usage event for rollover deduction
             self.usageEventCollection.add({
               id: crypto.randomUUID(),
-              organization: organizationId,
+              workspace: workspaceId,
               projectId,
               memberId,
               actionType,
@@ -377,7 +377,7 @@ export const billingDomain = domain({
          */
         async syncFromStripe(data: {
           subscriptionId: string
-          organizationId: string
+          workspaceId: string
           customerId: string
           planId: string
           status: string
@@ -407,7 +407,7 @@ export const billingDomain = domain({
             // Create new subscription
             self.subscriptionCollection.add({
               id: crypto.randomUUID(),
-              organization: data.organizationId,
+              workspace: data.workspaceId,
               stripeSubscriptionId: data.subscriptionId,
               stripeCustomerId: data.customerId,
               planId: data.planId,
@@ -421,7 +421,7 @@ export const billingDomain = domain({
 
             // Allocate credits for new subscription
             if (data.isNew || data.status === "active") {
-              await self.allocateMonthlyCredits(data.organizationId)
+              await self.allocateMonthlyCredits(data.workspaceId)
             }
           }
         },

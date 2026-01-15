@@ -52,13 +52,13 @@ export const PHASES: Phase[] = [
  * Return type for useWorkspaceData hook
  */
 export interface WorkspaceDataState {
-  /** Organizations the current user has access to */
-  orgs: any[]
-  /** Currently selected organization (by slug) */
-  currentOrg: any | undefined
-  /** Current user's role in the current organization */
-  currentOrgRole: "owner" | "admin" | "member" | "viewer" | undefined
-  /** Projects for the current organization */
+  /** Workspaces the current user has access to */
+  workspaces: any[]
+  /** Currently selected workspace (by slug) */
+  currentWorkspace: any | undefined
+  /** Current user's role in the current workspace */
+  currentWorkspaceRole: "owner" | "admin" | "member" | "viewer" | undefined
+  /** Projects for the current workspace */
   projects: any[]
   /** Currently selected project (by ID) */
   currentProject: any | undefined
@@ -70,8 +70,8 @@ export interface WorkspaceDataState {
   featuresByPhase: Record<string, any[]>
   /** Loading state */
   isLoading: boolean
-  /** Function to refetch organizations (call after creating org or signup) */
-  refetchOrgs: () => void
+  /** Function to refetch workspaces (call after creating workspace or signup) */
+  refetchWorkspaces: () => void
   /** Function to refetch projects (call after creating project) */
   refetchProjects: () => void
 }
@@ -80,16 +80,16 @@ export interface WorkspaceDataState {
  * Hook for accessing workspace data derived from URL state and API/domain queries.
  *
  * Combines:
- * - useWorkspaceNavigation() for URL state (org slug, project ID, feature ID)
+ * - useWorkspaceNavigation() for URL state (workspace slug, project ID, feature ID)
  * - useSession() for auth state
- * - API calls for organizations (/api/me/orgs)
+ * - API calls for workspaces (/api/me/workspaces)
  * - useDomains() for projects and features (studioCore, platformFeatures)
  *
  * @example
  * ```tsx
  * const {
- *   orgs,
- *   currentOrg,
+ *   workspaces,
+ *   currentWorkspace,
  *   projects,
  *   currentProject,
  *   features,
@@ -105,83 +105,100 @@ export interface WorkspaceDataState {
  * ```
  */
 export function useWorkspaceData(): WorkspaceDataState {
-  // Get URL state
-  const { org: orgSlug, projectId, featureId } = useWorkspaceNavigation()
+  // Get URL state (org is now workspace slug) and setters
+  const { org: workspaceSlug, projectId, featureId, setOrg } = useWorkspaceNavigation()
 
   // Get auth session from Better Auth
   const { data: session, isPending: isSessionLoading } = useSession()
 
-  // Get domains for orgs, projects, and features
+  // Get domains for workspaces, projects, and features
   const { studioCore, platformFeatures } = useDomains()
 
   // State for tracking loading and refetch
-  const [isLoadingOrgs, setIsLoadingOrgs] = useState(true)
+  const [isLoadingWorkspaces, setIsLoadingWorkspaces] = useState(true)
   const [isLoadingProjects, setIsLoadingProjects] = useState(false)
-  const [orgsRefetchCounter, setOrgsRefetchCounter] = useState(0)
+  const [workspacesRefetchCounter, setWorkspacesRefetchCounter] = useState(0)
   const [projectsRefetchCounter, setProjectsRefetchCounter] = useState(0)
 
   // User ID from session (stable reference for dependency tracking)
   const userId = session?.user?.id
 
-  // Reload organizations from MCP when user changes or refetch is triggered
+  // Reload workspaces from MCP when user changes or refetch is triggered
   useEffect(() => {
-    const loadOrgs = async () => {
-      if (!userId || !studioCore?.organizationCollection) {
-        setIsLoadingOrgs(false)
+    const loadWorkspaces = async () => {
+      if (!userId || !studioCore?.workspaceCollection) {
+        setIsLoadingWorkspaces(false)
         return
       }
 
       try {
-        setIsLoadingOrgs(true)
-        // Reload orgs and members from backend
-        await studioCore.organizationCollection.query().toArray()
+        setIsLoadingWorkspaces(true)
+        // Reload workspaces and members from backend
+        await studioCore.workspaceCollection.query().toArray()
         await studioCore.memberCollection.query().toArray()
       } catch (error) {
-        console.error("[useWorkspaceData] Error loading orgs:", error)
+        console.error("[useWorkspaceData] Error loading workspaces:", error)
       } finally {
-        setIsLoadingOrgs(false)
+        setIsLoadingWorkspaces(false)
       }
     }
 
-    loadOrgs()
-  }, [userId, studioCore, orgsRefetchCounter])
+    loadWorkspaces()
+  }, [userId, studioCore, workspacesRefetchCounter])
 
-  // Function to trigger a refetch of organizations
-  const refetchOrgs = useCallback(() => {
-    setOrgsRefetchCounter((c) => c + 1)
+  // Function to trigger a refetch of workspaces
+  const refetchWorkspaces = useCallback(() => {
+    setWorkspacesRefetchCounter((c) => c + 1)
   }, [])
 
-  // Get orgs for the current user from MCP
-  let orgs: any[] = []
-  if (userId && studioCore?.organizationCollection) {
+  // Get workspaces for the current user from MCP
+  let workspaces: any[] = []
+  if (userId && studioCore?.workspaceCollection) {
     try {
-      orgs = studioCore.organizationCollection.findByMembership(userId)
+      workspaces = studioCore.workspaceCollection.findByMembership(userId)
     } catch {
-      orgs = []
+      workspaces = []
     }
   }
 
-  // Find current organization by slug
-  const currentOrg = orgSlug ? orgs.find((org: any) => org.slug === orgSlug) : undefined
+  // Find current workspace by slug
+  const currentWorkspace = workspaceSlug ? workspaces.find((ws: any) => ws.slug === workspaceSlug) : undefined
 
-  // Get current user's role in the current org from memberCollection
-  let currentOrgRole: "owner" | "admin" | "member" | "viewer" | undefined = undefined
-  if (userId && currentOrg?.id && studioCore?.memberCollection) {
+  // Auto-select first workspace when user has workspaces but none is selected
+  // This ensures the user lands on a workspace after signup/login
+  useEffect(() => {
+    // Only auto-select when:
+    // 1. Data has finished loading
+    // 2. User has at least one workspace
+    // 3. No workspace is currently selected in URL
+    if (!isLoadingWorkspaces && workspaces.length > 0 && !workspaceSlug) {
+      // Prefer a "personal" workspace if one exists, otherwise use first
+      const personalWorkspace = workspaces.find((ws: any) =>
+        ws.slug?.includes("personal") || ws.name?.toLowerCase().includes("personal")
+      )
+      const workspaceToSelect = personalWorkspace || workspaces[0]
+      setOrg(workspaceToSelect.slug)
+    }
+  }, [isLoadingWorkspaces, workspaces.length, workspaceSlug, setOrg])
+
+  // Get current user's role in the current workspace from memberCollection
+  let currentWorkspaceRole: "owner" | "admin" | "member" | "viewer" | undefined = undefined
+  if (userId && currentWorkspace?.id && studioCore?.memberCollection) {
     try {
       const userMembers = studioCore.memberCollection.findByUserId(userId)
-      const orgMember = userMembers.find((m: any) => m.organization?.id === currentOrg.id)
-      if (orgMember) {
-        currentOrgRole = orgMember.role as "owner" | "admin" | "member" | "viewer"
+      const wsMember = userMembers.find((m: any) => m.workspace?.id === currentWorkspace.id)
+      if (wsMember) {
+        currentWorkspaceRole = wsMember.role as "owner" | "admin" | "member" | "viewer"
       }
     } catch {
-      currentOrgRole = undefined
+      currentWorkspaceRole = undefined
     }
   }
 
-  // Reload projects from MCP when org changes or refetch is triggered
+  // Reload projects from MCP when workspace changes or refetch is triggered
   useEffect(() => {
     const loadProjects = async () => {
-      if (!currentOrg?.id || !studioCore?.projectCollection) {
+      if (!currentWorkspace?.id || !studioCore?.projectCollection) {
         setIsLoadingProjects(false)
         return
       }
@@ -198,18 +215,18 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
 
     loadProjects()
-  }, [currentOrg?.id, studioCore, projectsRefetchCounter])
+  }, [currentWorkspace?.id, studioCore, projectsRefetchCounter])
 
   // Function to trigger a refetch of projects
   const refetchProjects = useCallback(() => {
     setProjectsRefetchCounter((c) => c + 1)
   }, [])
 
-  // Get projects for current organization from MCP
+  // Get projects for current workspace from MCP
   let projects: any[] = []
-  if (currentOrg?.id && studioCore?.projectCollection) {
+  if (currentWorkspace?.id && studioCore?.projectCollection) {
     try {
-      projects = studioCore.projectCollection.findByOrganization(currentOrg.id)
+      projects = studioCore.projectCollection.findByWorkspace(currentWorkspace.id)
     } catch {
       projects = []
     }
@@ -254,20 +271,20 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
   }
 
-  // Determine loading state - combines session loading, org loading, and project loading
-  const isLoading = isSessionLoading || isLoadingOrgs || isLoadingProjects
+  // Determine loading state - combines session loading, workspace loading, and project loading
+  const isLoading = isSessionLoading || isLoadingWorkspaces || isLoadingProjects
 
   return {
-    orgs,
-    currentOrg,
-    currentOrgRole,
+    workspaces,
+    currentWorkspace,
+    currentWorkspaceRole,
     projects,
     currentProject,
     features,
     currentFeature,
     featuresByPhase,
     isLoading,
-    refetchOrgs,
+    refetchWorkspaces,
     refetchProjects,
   }
 }

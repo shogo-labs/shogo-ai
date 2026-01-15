@@ -3,7 +3,7 @@
  * Task: task-invite-member-modal
  * Feature: member-management-invitation
  *
- * Modal dialog for inviting new members to an organization.
+ * Modal dialog for inviting new members to a workspace.
  * Uses MCP domain (studioCore) for invitation creation.
  */
 
@@ -39,8 +39,8 @@ export interface InviteMemberModalProps {
   open: boolean
   /** Callback when modal open state changes */
   onOpenChange: (open: boolean) => void
-  /** Organization ID to invite member to */
-  orgId: string
+  /** Workspace ID to invite member to */
+  workspaceId: string
   /** Callback after successful invitation */
   onSuccess?: () => void
 }
@@ -62,13 +62,13 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 /**
  * InviteMemberModal Component
  *
- * Renders a dialog for inviting new members to an organization.
+ * Renders a dialog for inviting new members to a workspace.
  * Uses MCP domain for invitation creation.
  */
 export function InviteMemberModal({
   open,
   onOpenChange,
-  orgId,
+  workspaceId,
   onSuccess,
 }: InviteMemberModalProps) {
   // Get studioCore domain
@@ -120,14 +120,14 @@ export function InviteMemberModal({
     try {
       // Check for existing pending invitation
       await studioCore.invitationCollection.query().toArray()
-      await studioCore.organizationCollection.query().toArray()
+      await studioCore.workspaceCollection.query().toArray()
 
       const existingInvitations = studioCore.invitationCollection.findByEmail(email)
-      const pendingForOrg = existingInvitations.find(
-        (i: any) => i.status === "pending" && i.organization?.id === orgId
+      const pendingForWorkspace = existingInvitations.find(
+        (i: any) => i.status === "pending" && i.workspace?.id === workspaceId
       )
 
-      if (pendingForOrg) {
+      if (pendingForWorkspace) {
         throw new Error("Invitation already pending for this email")
       }
 
@@ -138,7 +138,7 @@ export function InviteMemberModal({
         id: crypto.randomUUID(),
         email,
         role,
-        organizationId: orgId,
+        workspaceId: workspaceId,
         status: "pending",
         invitedBy: currentUserId,
         expiresAt,
@@ -181,7 +181,7 @@ export function InviteMemberModal({
           <DialogTitle>Invite Member</DialogTitle>
           <DialogDescription>
             Send an invitation to a new team member. They will receive an email
-            to join your organization.
+            to join your workspace.
           </DialogDescription>
         </DialogHeader>
 

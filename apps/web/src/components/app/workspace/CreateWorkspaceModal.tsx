@@ -1,27 +1,27 @@
 /**
- * CreateOrgModal Component
- * Task: task-org-005
+ * CreateWorkspaceModal Component
+ * Refactored from CreateOrgModal as part of Organization -> Workspace rename
  *
- * Modal dialog for creating new organizations.
+ * Modal dialog for creating new workspaces.
  * Uses shadcn Dialog component with form validation.
  *
  * Props:
  * - open: boolean - Whether the modal is open
  * - onOpenChange: (open: boolean) => void - Callback when modal open state changes
- * - onSuccess: () => void - Callback when organization is successfully created
+ * - onSuccess: () => void - Callback when workspace is successfully created
  *
  * Features:
  * - Name (required) and Description (optional) fields
  * - Form validation - name must not be empty
  * - Loading state during creation
  * - Error display if creation fails
- * - Uses MCP domain studioCore.createOrganization() for persistence
+ * - Uses MCP domain studioCore.createWorkspace() for persistence
  * - Closes modal and triggers onSuccess callback on success
  *
  * Design:
  * - Uses shadcn Dialog patterns
  * - Follows NewFeatureModal structure for consistency
- * - Creates org with current user as owner
+ * - Creates workspace with current user as owner
  */
 
 import { useState } from "react"
@@ -43,25 +43,25 @@ import { useDomains } from "@/contexts/DomainProvider"
 import { useSession } from "@/auth/client"
 
 /**
- * Props for CreateOrgModal component
+ * Props for CreateWorkspaceModal component
  */
-export interface CreateOrgModalProps {
+export interface CreateWorkspaceModalProps {
   /** Whether the modal is open */
   open: boolean
   /** Callback when modal open state changes */
   onOpenChange: (open: boolean) => void
-  /** Callback when organization is successfully created */
+  /** Callback when workspace is successfully created */
   onSuccess?: () => void
 }
 
 /**
- * CreateOrgModal Component
+ * CreateWorkspaceModal Component
  *
- * Renders a dialog for creating new organizations.
+ * Renders a dialog for creating new workspaces.
  * Uses shadcn Dialog with form validation, loading, and error states.
  */
-export function CreateOrgModal({ open, onOpenChange, onSuccess }: CreateOrgModalProps) {
-  // Get studioCore domain for creating organizations
+export function CreateWorkspaceModal({ open, onOpenChange, onSuccess }: CreateWorkspaceModalProps) {
+  // Get studioCore domain for creating workspaces
   const { studioCore } = useDomains()
 
   // Get current user session
@@ -80,14 +80,14 @@ export function CreateOrgModal({ open, onOpenChange, onSuccess }: CreateOrgModal
 
   /**
    * Handle form submission
-   * Creates new organization with current user as owner via MCP domain
+   * Creates new workspace with current user as owner via MCP domain
    */
   const handleSubmit = async () => {
     if (!isValid || isSubmitting) return
 
     const userId = session?.user?.id
     if (!userId) {
-      setError("You must be logged in to create an organization")
+      setError("You must be logged in to create a workspace")
       return
     }
 
@@ -95,8 +95,8 @@ export function CreateOrgModal({ open, onOpenChange, onSuccess }: CreateOrgModal
     setError(null)
 
     try {
-      // Use domain action to create organization with owner membership
-      await studioCore.createOrganization(
+      // Use domain action to create workspace with owner membership
+      await studioCore.createWorkspace(
         name.trim(),
         description.trim() || undefined,
         userId
@@ -110,8 +110,8 @@ export function CreateOrgModal({ open, onOpenChange, onSuccess }: CreateOrgModal
       onOpenChange(false)
       onSuccess?.()
     } catch (err) {
-      console.error("[CreateOrgModal] Failed to create organization:", err)
-      setError(err instanceof Error ? err.message : "Failed to create organization")
+      console.error("[CreateWorkspaceModal] Failed to create workspace:", err)
+      setError(err instanceof Error ? err.message : "Failed to create workspace")
     } finally {
       setIsSubmitting(false)
     }
@@ -134,9 +134,9 @@ export function CreateOrgModal({ open, onOpenChange, onSuccess }: CreateOrgModal
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle>Create Organization</DialogTitle>
+          <DialogTitle>Create Workspace</DialogTitle>
           <DialogDescription>
-            Create a new organization to collaborate with your team.
+            Create a new workspace to collaborate with your team.
           </DialogDescription>
         </DialogHeader>
 
@@ -156,11 +156,11 @@ export function CreateOrgModal({ open, onOpenChange, onSuccess }: CreateOrgModal
           <div className="grid gap-4 py-4">
             {/* Name Field (Required) */}
             <div className="grid gap-2">
-              <Label htmlFor="org-name">
+              <Label htmlFor="workspace-name">
                 Name <span className="text-destructive">*</span>
               </Label>
               <Input
-                id="org-name"
+                id="workspace-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g., Acme Corp"
@@ -174,12 +174,12 @@ export function CreateOrgModal({ open, onOpenChange, onSuccess }: CreateOrgModal
 
             {/* Description Field (Optional) */}
             <div className="grid gap-2">
-              <Label htmlFor="org-description">Description</Label>
+              <Label htmlFor="workspace-description">Description</Label>
               <Textarea
-                id="org-description"
+                id="workspace-description"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="A brief description of your organization..."
+                placeholder="A brief description of your workspace..."
                 disabled={isSubmitting}
                 className="min-h-[80px]"
               />
@@ -202,7 +202,7 @@ export function CreateOrgModal({ open, onOpenChange, onSuccess }: CreateOrgModal
                   Creating...
                 </>
               ) : (
-                "Create Organization"
+                "Create Workspace"
               )}
             </Button>
           </DialogFooter>

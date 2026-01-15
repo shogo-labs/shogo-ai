@@ -12,7 +12,7 @@ import type { IBillingService, Subscription } from "@shogo/state-api"
 // Mock subscription for testing
 const mockSubscription: Subscription = {
   id: "sub-internal-id",
-  organizationId: "org_test_123",
+  workspaceId: "ws_test_123",
   stripeSubscriptionId: "sub_stripe_123",
   stripeCustomerId: "cus_stripe_456",
   planId: "pro",
@@ -39,16 +39,16 @@ const mockBillingService: IBillingService = {
   getPortalUrl: mock(() =>
     Promise.resolve({ url: "https://billing.stripe.com/session/test" })
   ),
-  processWebhookEvent: mock(() => Promise.resolve({ type: "subscription.created", data: {} })),
+  processWebhookEvent: mock(() => Promise.resolve({ type: "subscription.created" as const, data: {} as any })),
 }
 
 // Mock billing store
 const mockBillingStore = {
   subscriptionCollection: {
-    findByOrg: mock(() => [mockSubscription]),
+    findByWorkspace: mock(() => [mockSubscription]),
   },
   creditLedgerCollection: {
-    findByOrg: mock(() => ({
+    findByWorkspace: mock(() => ({
       monthlyCredits: 100,
       dailyCredits: 5,
       rolloverCredits: 10,
@@ -65,12 +65,17 @@ const mockBillingStore = {
 // Mock auth context
 const mockAuthContext = {
   userId: "user_123",
-  organizationId: "org_test_123",
+  workspaceId: "ws_test_123",
   isBillingAdmin: true,
 }
 
+// Type for custom context variables
+type Variables = {
+  auth: { userId: string; workspaceId: string; isBillingAdmin: boolean }
+}
+
 describe("Billing API Routes", () => {
-  let app: Hono
+  let app: Hono<{ Variables: Variables }>
 
   beforeEach(() => {
     // Reset mocks
@@ -79,7 +84,7 @@ describe("Billing API Routes", () => {
     ;(mockBillingService.getPortalUrl as any).mockClear()
 
     // Create fresh Hono app with billing routes
-    app = new Hono()
+    app = new Hono<{ Variables: Variables }>()
 
     // Mock authentication middleware
     app.use("/api/billing/*", async (c, next) => {

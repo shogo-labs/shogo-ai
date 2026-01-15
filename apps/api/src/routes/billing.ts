@@ -6,8 +6,18 @@
  */
 
 import { Hono } from "hono"
+import type { Context } from "hono"
 import type { IBillingService, BillingError, PlanId, BillingInterval } from "@shogo/state-api"
 import { isBillingError } from "@shogo/state-api"
+
+/**
+ * Auth context expected from authentication middleware
+ */
+interface AuthContext {
+  workspaceId: string
+  userId?: string
+  isBillingAdmin?: boolean
+}
 
 /**
  * Billing route configuration
@@ -18,10 +28,10 @@ export interface BillingRoutesConfig {
   /** Billing domain store for local state queries */
   billingStore: {
     subscriptionCollection: {
-      findByOrg: (orgId: string) => any[]
+      findByWorkspace: (workspaceId: string) => any[]
     }
     creditLedgerCollection: {
-      findByOrg: (orgId: string) => any | null
+      findByWorkspace: (workspaceId: string) => any | null
     }
   }
 }
@@ -49,9 +59,9 @@ export function billingRoutes(config: BillingRoutesConfig) {
    */
   router.post("/checkout", async (c) => {
     try {
-      const auth = c.get("auth") as { organizationId: string } | undefined
-      if (!auth?.organizationId) {
-        return c.json({ error: { code: "unauthorized", message: "Missing organization context" } }, 401)
+      const auth = c.get("auth" as never) as AuthContext | undefined
+      if (!auth?.workspaceId) {
+        return c.json({ error: { code: "unauthorized", message: "Missing workspace context" } }, 401)
       }
 
       const body = await c.req.json<{ planId: PlanId; billingInterval: BillingInterval }>()
@@ -65,7 +75,7 @@ export function billingRoutes(config: BillingRoutesConfig) {
       }
 
       const result = await billingService.createCheckoutSession(
-        auth.organizationId,
+        auth.workspaceId,
         planId,
         billingInterval
       )
@@ -85,17 +95,17 @@ export function billingRoutes(config: BillingRoutesConfig) {
    */
   router.get("/subscription", async (c) => {
     try {
-      const auth = c.get("auth") as { organizationId: string } | undefined
-      if (!auth?.organizationId) {
-        return c.json({ error: { code: "unauthorized", message: "Missing organization context" } }, 401)
+      const auth = c.get("auth" as never) as AuthContext | undefined
+      if (!auth?.workspaceId) {
+        return c.json({ error: { code: "unauthorized", message: "Missing workspace context" } }, 401)
       }
 
       // Get subscription from local store
-      const subscriptions = billingStore.subscriptionCollection.findByOrg(auth.organizationId)
+      const subscriptions = billingStore.subscriptionCollection.findByWorkspace(auth.workspaceId)
       const subscription = subscriptions[0] || null
 
       // Get credit balance from local store
-      const ledger = billingStore.creditLedgerCollection.findByOrg(auth.organizationId)
+      const ledger = billingStore.creditLedgerCollection.findByWorkspace(auth.workspaceId)
       const credits = ledger
         ? ledger.effectiveBalance || {
             dailyCredits: ledger.dailyCredits,
@@ -119,12 +129,12 @@ export function billingRoutes(config: BillingRoutesConfig) {
    */
   router.post("/portal", async (c) => {
     try {
-      const auth = c.get("auth") as { organizationId: string } | undefined
-      if (!auth?.organizationId) {
-        return c.json({ error: { code: "unauthorized", message: "Missing organization context" } }, 401)
+      const auth = c.get("auth" as never) as AuthContext | undefined
+      if (!auth?.workspaceId) {
+        return c.json({ error: { code: "unauthorized", message: "Missing workspace context" } }, 401)
       }
 
-      const result = await billingService.getPortalUrl(auth.organizationId)
+      const result = await billingService.getPortalUrl(auth.workspaceId)
       return c.json(result, 200)
     } catch (error) {
       return handleBillingError(c, error)
@@ -139,13 +149,13 @@ export function billingRoutes(config: BillingRoutesConfig) {
    */
   router.post("/cancel", async (c) => {
     try {
-      const auth = c.get("auth") as { organizationId: string } | undefined
-      if (!auth?.organizationId) {
-        return c.json({ error: { code: "unauthorized", message: "Missing organization context" } }, 401)
+      const auth = c.get("auth" as never) as AuthContext | undefined
+      if (!auth?.workspaceId) {
+        return c.json({ error: { code: "unauthorized", message: "Missing workspace context" } }, 401)
       }
 
       // Get current subscription
-      const subscriptions = billingStore.subscriptionCollection.findByOrg(auth.organizationId)
+      const subscriptions = billingStore.subscriptionCollection.findByWorkspace(auth.workspaceId)
       const subscription = subscriptions[0]
 
       if (!subscription) {

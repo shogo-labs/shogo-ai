@@ -1,7 +1,7 @@
 /**
  * AppProfilePage - User profile page within the /app context
  *
- * Shows current user info, organization memberships, and billing/credits.
+ * Shows current user info, workspace memberships, and billing/credits.
  */
 
 import { observer } from "mobx-react-lite"
@@ -18,7 +18,7 @@ import { Progress } from "@/components/ui/progress"
 /**
  * AppProfilePage component
  *
- * User profile page showing user info, organization memberships, and billing.
+ * User profile page showing user info, workspace memberships, and billing.
  */
 export const AppProfilePage = observer(function AppProfilePage() {
   const { auth, studioCore, billing } = useDomains()
@@ -26,9 +26,9 @@ export const AppProfilePage = observer(function AppProfilePage() {
   const currentUser = auth.currentUser
   const isLoading = auth.isLoading
 
-  // Get user's organizations via their memberships
-  const userOrgs = currentUser
-    ? studioCore.organizationCollection.findByMembership(currentUser.id)
+  // Get user's workspaces via their memberships
+  const userWorkspaces = currentUser
+    ? studioCore.workspaceCollection.findByMembership(currentUser.id)
     : []
 
   // Get membership details for role display
@@ -36,10 +36,10 @@ export const AppProfilePage = observer(function AppProfilePage() {
     ? studioCore.memberCollection.findByUserId(currentUser.id)
     : []
 
-  // Helper to get role for an org
-  const getRoleForOrg = (orgId: string) => {
+  // Helper to get role for a workspace
+  const getRoleForWorkspace = (workspaceId: string) => {
     const membership = userMemberships.find(
-      (m: any) => m.organization?.id === orgId
+      (m: any) => m.workspace?.id === workspaceId
     )
     return membership?.role || "member"
   }
@@ -125,49 +125,49 @@ export const AppProfilePage = observer(function AppProfilePage() {
         </CardContent>
       </Card>
 
-      {/* Organizations Card */}
+      {/* Workspaces Card */}
       <Card className="mb-6">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Building2 className="h-5 w-5" />
-            Organizations
+            Workspaces
           </CardTitle>
           <CardDescription>
-            Organizations you belong to ({userOrgs.length})
+            Workspaces you belong to ({userWorkspaces.length})
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {userOrgs.length === 0 ? (
+          {userWorkspaces.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
               <Building2 className="h-8 w-8 mx-auto mb-2 opacity-50" />
-              <p>You don't belong to any organizations yet.</p>
+              <p>You don't belong to any workspaces yet.</p>
               <p className="text-sm mt-1">
-                Create one using the org switcher in the header.
+                Create one using the workspace switcher in the header.
               </p>
             </div>
           ) : (
             <div className="space-y-3">
-              {userOrgs.map((org: any) => {
-                // Get billing info for this org
-                const subscription = billing.subscriptionCollection.findByOrg(org.id)[0]
-                const creditLedger = billing.creditLedgerCollection.findByOrg(org.id)
+              {userWorkspaces.map((workspace: any) => {
+                // Get billing info for this workspace
+                const subscription = billing.subscriptionCollection.findByWorkspace(workspace.id)[0]
+                const creditLedger = billing.creditLedgerCollection.findByWorkspace(workspace.id)
                 const effectiveBalance = creditLedger?.effectiveBalance
 
                 return (
                   <div
-                    key={org.id}
+                    key={workspace.id}
                     className="p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
                   >
                     <div className="flex items-center justify-between mb-3">
                       <div>
-                        <p className="font-medium">{org.name}</p>
-                        <p className="text-sm text-muted-foreground">{org.slug}</p>
+                        <p className="font-medium">{workspace.name}</p>
+                        <p className="text-sm text-muted-foreground">{workspace.slug}</p>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Badge variant={getRoleForOrg(org.id) === "owner" ? "default" : "secondary"}>
-                          {getRoleForOrg(org.id)}
+                        <Badge variant={getRoleForWorkspace(workspace.id) === "owner" ? "default" : "secondary"}>
+                          {getRoleForWorkspace(workspace.id)}
                         </Badge>
-                        <Link to={`/app/members?org=${org.slug}`}>
+                        <Link to={`/members?org=${workspace.slug}`}>
                           <Button variant="ghost" size="sm">
                             Manage
                           </Button>
@@ -175,8 +175,8 @@ export const AppProfilePage = observer(function AppProfilePage() {
                       </div>
                     </div>
 
-                    {/* Billing Section for Org Owners */}
-                    {getRoleForOrg(org.id) === "owner" && (
+                    {/* Billing Section for Workspace Owners */}
+                    {getRoleForWorkspace(workspace.id) === "owner" && (
                       <div className="pt-3 border-t">
                         {subscription ? (
                           <div className="space-y-3">
@@ -191,7 +191,7 @@ export const AppProfilePage = observer(function AppProfilePage() {
                                   {subscription.status}
                                 </Badge>
                               </div>
-                              <Link to="/app/billing">
+                              <Link to="/billing">
                                 <Button variant="outline" size="sm">
                                   <TrendingUp className="h-3 w-3 mr-1" />
                                   Manage Plan
@@ -242,7 +242,7 @@ export const AppProfilePage = observer(function AppProfilePage() {
                             <div className="text-sm text-muted-foreground">
                               No active subscription
                             </div>
-                            <Link to="/app/billing">
+                            <Link to="/billing">
                               <Button size="sm">
                                 <TrendingUp className="h-3 w-3 mr-1" />
                                 View Plans

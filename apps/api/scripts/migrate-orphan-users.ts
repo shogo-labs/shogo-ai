@@ -3,11 +3,11 @@
  * Task: task-org-006
  *
  * One-time migration script that finds users without Member records
- * and creates personal organizations for them.
+ * and creates personal workspaces for them.
  *
  * This handles the case where:
  * - Users were created before the databaseHooks.user.create.after hook was added
- * - Users exist but have no organization membership
+ * - Users exist but have no workspace membership
  *
  * Usage:
  *   bun run apps/api/scripts/migrate-orphan-users.ts
@@ -64,11 +64,11 @@ async function createDomainStore(databaseUrl: string) {
  *
  * Algorithm:
  * 1. Query Better Auth users who have no corresponding Member records
- * 2. For each orphaned user, create a personal organization via domain
+ * 2. For each orphaned user, create a personal workspace via domain
  * 3. Log progress and summary
  *
  * @param pool - PostgreSQL connection pool (for user query)
- * @param store - Domain store (for creating orgs)
+ * @param store - Domain store (for creating workspaces)
  * @returns Number of users migrated
  */
 export async function migrateOrphanUsers(
@@ -101,14 +101,14 @@ export async function migrateOrphanUsers(
 
   for (const user of orphanedUsers) {
     try {
-      console.log(`[migrate-orphan-users] Creating personal org for user ${user.email}...`)
+      console.log(`[migrate-orphan-users] Creating personal workspace for user ${user.email}...`)
 
-      await store.createPersonalOrganization(user.id, user.name || "User")
+      await store.createPersonalWorkspace(user.id, user.name || "User")
 
       migratedCount++
     } catch (error) {
       console.error(
-        `[migrate-orphan-users] Failed to create org for ${user.email}:`,
+        `[migrate-orphan-users] Failed to create workspace for ${user.email}:`,
         error instanceof Error ? error.message : String(error)
       )
       // Continue with other users even if one fails
@@ -136,7 +136,7 @@ async function main() {
     connectionString: process.env.DATABASE_URL,
   })
 
-  // Create domain store for org creation
+  // Create domain store for workspace creation
   const store = await createDomainStore(process.env.DATABASE_URL)
 
   try {

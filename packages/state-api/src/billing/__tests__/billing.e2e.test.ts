@@ -82,7 +82,7 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
     // Create a test customer for portal tests
     const customer = await stripe.customers.create({
       email: `test-${Date.now()}@example.com`,
-      metadata: { organizationId: `org-test-${Date.now()}` },
+      metadata: { workspaceId: `org-test-${Date.now()}` },
     })
     testCustomerId = customer.id
   })
@@ -168,7 +168,7 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
 
       await store.allocateMonthlyCredits(orgId)
 
-      const ledger = store.creditLedgerCollection.findByOrg(orgId)
+      const ledger = store.creditLedgerCollection.findByWorkspace(orgId)
       expect(ledger).toBeDefined()
       expect(ledger.monthlyCredits).toBe(100)
       expect(ledger.dailyCredits).toBe(5)
@@ -185,12 +185,12 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
       // Consume 3 credits
       await store.consumeCredits(orgId, 3, memberId, "chat_message")
 
-      const ledger = store.creditLedgerCollection.findByOrg(orgId)
+      const ledger = store.creditLedgerCollection.findByWorkspace(orgId)
       expect(ledger.dailyCredits).toBe(2) // 5 - 3
       expect(ledger.monthlyCredits).toBe(100) // unchanged
 
       // Check usage event was created
-      const events = store.usageEventCollection.recentForOrg(orgId)
+      const events = store.usageEventCollection.recentForWorkspace(orgId)
       expect(events.length).toBe(1)
       expect(events[0].creditSource).toBe("daily")
       expect(events[0].creditCost).toBe(3)
@@ -206,12 +206,12 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
       // Consume more than daily (7 credits = 5 daily + 2 monthly)
       await store.consumeCredits(orgId, 7, memberId, "code_generation")
 
-      const ledger = store.creditLedgerCollection.findByOrg(orgId)
+      const ledger = store.creditLedgerCollection.findByWorkspace(orgId)
       expect(ledger.dailyCredits).toBe(0)
       expect(ledger.monthlyCredits).toBe(98) // 100 - 2
 
       // Should have 2 usage events
-      const events = store.usageEventCollection.recentForOrg(orgId)
+      const events = store.usageEventCollection.recentForWorkspace(orgId)
       expect(events.length).toBe(2)
     })
 
@@ -222,7 +222,7 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
       // Create ledger with depleted daily and stale reset
       store.creditLedgerCollection.add({
         id: crypto.randomUUID(),
-        organization: orgId,
+        workspace: orgId,
         monthlyCredits: 50,
         dailyCredits: 0, // depleted
         rolloverCredits: 0,
@@ -232,7 +232,7 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
         createdAt: Date.now(),
       })
 
-      const ledger = store.creditLedgerCollection.findByOrg(orgId)
+      const ledger = store.creditLedgerCollection.findByWorkspace(orgId)
       const balance = ledger.effectiveBalance
 
       // Lazy reset should show 5 daily credits
@@ -246,7 +246,7 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
 
       await store.syncFromStripe({
         subscriptionId: `sub_test_${Date.now()}`,
-        organizationId: orgId,
+        workspaceId: orgId,
         customerId: `cus_test_${Date.now()}`,
         planId: "pro",
         status: "active",
@@ -257,13 +257,13 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
       })
 
       // Subscription should exist
-      const subscriptions = store.subscriptionCollection.findByOrg(orgId)
+      const subscriptions = store.subscriptionCollection.findByWorkspace(orgId)
       expect(subscriptions.length).toBe(1)
       expect(subscriptions[0].planId).toBe("pro")
       expect(subscriptions[0].isActive).toBe(true)
 
       // Credits should be allocated
-      const ledger = store.creditLedgerCollection.findByOrg(orgId)
+      const ledger = store.creditLedgerCollection.findByWorkspace(orgId)
       expect(ledger).toBeDefined()
       expect(ledger.monthlyCredits).toBe(100)
     })
@@ -275,7 +275,7 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
 
       store.subscriptionCollection.add({
         id: crypto.randomUUID(),
-        organization: orgId,
+        workspace: orgId,
         stripeSubscriptionId: "sub_days_test",
         stripeCustomerId: "cus_days_test",
         planId: "pro",
@@ -286,7 +286,7 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
         createdAt: now,
       })
 
-      const subscription = store.subscriptionCollection.findByOrg(orgId)[0]
+      const subscription = store.subscriptionCollection.findByWorkspace(orgId)[0]
       expect(subscription.daysRemaining).toBe(10)
     })
   })
@@ -298,7 +298,7 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
       // Create subscription
       store.subscriptionCollection.add({
         id: crypto.randomUUID(),
-        organization: orgId,
+        workspace: orgId,
         stripeSubscriptionId: "sub_rollover_test",
         stripeCustomerId: "cus_rollover_test",
         planId: "pro",
@@ -316,14 +316,14 @@ describe.skipIf(!shouldRun)("Billing E2E Integration Tests", () => {
       await store.consumeCredits(orgId, 50, "member-1", "analysis")
 
       // Should have 55 monthly left (100 - 45, since 5 came from daily)
-      let ledger = store.creditLedgerCollection.findByOrg(orgId)
+      let ledger = store.creditLedgerCollection.findByWorkspace(orgId)
       expect(ledger.monthlyCredits).toBe(55)
 
       // Simulate month end - allocate new credits
       await store.allocateMonthlyCredits(orgId)
 
       // Should have 100 new monthly + 55 rollover (unused monthly from previous period)
-      ledger = store.creditLedgerCollection.findByOrg(orgId)
+      ledger = store.creditLedgerCollection.findByWorkspace(orgId)
       expect(ledger.monthlyCredits).toBe(100)
       expect(ledger.rolloverCredits).toBe(55)
     })

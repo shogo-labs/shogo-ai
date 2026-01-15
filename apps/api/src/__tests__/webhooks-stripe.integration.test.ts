@@ -21,7 +21,7 @@ const mockBillingService: IBillingService = {
     type: "subscription.created" as const,
     data: {
       subscriptionId: "sub_test_123",
-      organizationId: "org_test_456",
+      workspaceId: "ws_test_456",
       planId: "pro" as const,
       status: "active" as const,
       currentPeriodStart: Date.now(),
@@ -35,11 +35,11 @@ const mockBillingStore = {
   syncFromStripe: mock(() => Promise.resolve()),
   allocateMonthlyCredits: mock(() => Promise.resolve()),
   subscriptionCollection: {
-    findByOrg: mock(() => []),
+    findByWorkspace: mock(() => []),
     all: mock(() => []),
   },
   creditLedgerCollection: {
-    findByOrg: mock(() => null),
+    findByWorkspace: mock(() => null),
   },
 }
 
@@ -114,7 +114,7 @@ describe("POST /api/webhooks/stripe", () => {
       type: "subscription.created",
       data: {
         subscriptionId: "sub_new_123",
-        organizationId: "org_test_456",
+        workspaceId: "ws_test_456",
         planId: "pro",
         status: "active",
         currentPeriodStart: Date.now(),
@@ -209,7 +209,7 @@ describe("POST /api/webhooks/stripe", () => {
 
     ;(mockBillingService.processWebhookEvent as any).mockResolvedValueOnce({
       type: "subscription.created",
-      data: { subscriptionId: "sub_test", organizationId: "org_nonexistent" },
+      data: { subscriptionId: "sub_test", workspaceId: "ws_nonexistent" },
     })
 
     const res = await app.request("/api/webhooks/stripe", {

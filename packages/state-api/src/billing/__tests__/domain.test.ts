@@ -46,7 +46,7 @@ describe("Subscription.isActive computed view", () => {
     // This is a type-level test - actual runtime test needs store
     const subscription = {
       id: "sub-1",
-      organization: "org-1",
+      workspace: "org-1",
       stripeSubscriptionId: "sub_test",
       stripeCustomerId: "cus_test",
       planId: "pro",
@@ -65,7 +65,7 @@ describe("CreditLedger.hasCredits computed view", () => {
   test("returns true when dailyCredits > 0", () => {
     const ledger = {
       id: "ledger-1",
-      organization: "org-1",
+      workspace: "org-1",
       monthlyCredits: 0,
       dailyCredits: 5,
       rolloverCredits: 0,

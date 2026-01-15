@@ -45,7 +45,7 @@ const getAllowedOrigins = (): string[] => {
   return [`http://localhost:${VITE_PORT}`]
 }
 
-// Domain store singleton for database hooks (used to create personal orgs)
+// Domain store singleton for database hooks (used to create personal workspaces)
 // Uses studioCoreDomain with PostgreSQL backend via backendRegistry
 let domainStore: ReturnType<typeof studioCoreDomain.createStore> | null = null
 
@@ -161,28 +161,28 @@ export const auth = betterAuth({
   // Trusted origins for CORS - configured via ALLOWED_ORIGINS env var
   trustedOrigins: getAllowedOrigins(),
 
-  // Database hooks for auto-creating personal organization on user signup
+  // Database hooks for auto-creating personal workspace on user signup
   // Task: task-org-002
   databaseHooks: {
     user: {
       create: {
         /**
-         * After a new user is created, automatically create their personal organization.
-         * This ensures every user has at least one org to work in immediately after signup.
+         * After a new user is created, automatically create their personal workspace.
+         * This ensures every user has at least one workspace to work in immediately after signup.
          *
-         * Uses studioCoreDomain.createPersonalOrganization() action via MCP domain layer.
+         * Uses studioCoreDomain.createPersonalWorkspace() action via MCP domain layer.
          *
          * Errors are logged but do not block user creation (graceful degradation).
          */
         after: async (user) => {
           try {
             const store = await getDomainStore()
-            await store.createPersonalOrganization(user.id, user.name || "User")
-            console.log(`Created personal org for user ${user.email}`)
+            await store.createPersonalWorkspace(user.id, user.name || "User")
+            console.log(`Created personal workspace for user ${user.email}`)
           } catch (error) {
             // Log error but don't block user creation
             console.error(
-              `Failed to create personal org for user ${user.email}:`,
+              `Failed to create personal workspace for user ${user.email}:`,
               error instanceof Error ? error.message : String(error)
             )
           }

@@ -742,7 +742,7 @@ app.post('/api/chat', async (c) => {
 })
 
 // =============================================================================
-// Billing routes (simplified - accepts organizationId in body)
+// Billing routes (simplified - accepts workspaceId in body)
 // =============================================================================
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '')
 
@@ -761,9 +761,9 @@ const STRIPE_PRICES: Record<string, Record<string, string>> = {
 app.post('/api/billing/checkout', async (c) => {
   try {
     const body = await c.req.json()
-    const { organizationId, planId, billingInterval } = body
+    const { workspaceId, planId, billingInterval } = body
 
-    if (!organizationId || !planId || !billingInterval) {
+    if (!workspaceId || !planId || !billingInterval) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
     }
 
@@ -783,7 +783,7 @@ app.post('/api/billing/checkout', async (c) => {
       success_url: `http://localhost:${VITE_PORT}/billing?success=true&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `http://localhost:${VITE_PORT}/billing?canceled=true`,
       metadata: {
-        organizationId,
+        workspaceId,
         planId,
         billingInterval,
       },
@@ -799,10 +799,10 @@ app.post('/api/billing/checkout', async (c) => {
 app.post('/api/billing/portal', async (c) => {
   try {
     const url = new URL(c.req.url)
-    const organizationId = url.searchParams.get('organizationId')
+    const workspaceId = url.searchParams.get('workspaceId')
 
-    if (!organizationId) {
-      return c.json({ error: { code: 'invalid_request', message: 'Missing organizationId' } }, 400)
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
     }
 
     // For now, return an error since we don't have customer ID stored
@@ -822,7 +822,8 @@ app.post('/webhooks/stripe', async (c) => {
 
     let event: Stripe.Event
     try {
-      event = stripe.webhooks.constructEvent(payload, signature, webhookSecret)
+      // Use async version for Bun/SubtleCrypto compatibility
+      event = await stripe.webhooks.constructEventAsync(payload, signature, webhookSecret)
     } catch (err: any) {
       console.error('[Webhook] Signature verification failed:', err.message)
       return c.json({ error: 'Invalid signature' }, 400)

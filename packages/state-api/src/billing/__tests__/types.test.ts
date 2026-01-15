@@ -25,7 +25,7 @@ describe("IBillingService interface", () => {
   test("exports createCheckoutSession method signature", () => {
     // Type-level test: verify the interface shape compiles
     const mockService: IBillingService = {
-      createCheckoutSession: async (organizationId, planId, billingInterval) => ({
+      createCheckoutSession: async (workspaceId, planId, billingInterval) => ({
         sessionId: "cs_test_123",
         url: "https://checkout.stripe.com/cs_test_123",
       }),
@@ -46,7 +46,7 @@ describe("IBillingService interface", () => {
       getSubscription: async (subscriptionId: string) => null,
       updateSubscription: async (subscriptionId: string, updates: { planId?: PlanId; billingInterval?: BillingInterval }) => ({} as any),
       cancelSubscription: async (subscriptionId: string) => ({} as any),
-      getPortalUrl: async (organizationId: string) => ({ url: "" }),
+      getPortalUrl: async (workspaceId: string) => ({ url: "" }),
       processWebhookEvent: async () => ({ type: "subscription.created" as const, data: {} as any }),
     }
 

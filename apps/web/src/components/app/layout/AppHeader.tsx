@@ -4,7 +4,7 @@
  *
  * Renders the application header with:
  * - Logo/brand on left side
- * - OrgSwitcher and ProjectSelector in middle (Session 2.2)
+ * - WorkspaceSwitcher and ProjectSelector in middle (Session 2.2)
  * - ThemeToggle and UserMenu on right side
  *
  * Implementation details (per ip-2-1-app-header, ip-2-2-002):
@@ -12,7 +12,7 @@
  * - border-b for visual separation
  * - bg-card background color
  * - Uses Tailwind flex layout: flex items-center
- * - OrgSwitcher and ProjectSelector use useWorkspaceNavigation/useWorkspaceData hooks
+ * - WorkspaceSwitcher and ProjectSelector use useWorkspaceNavigation/useWorkspaceData hooks
  *
  * IMPORTANT: This component MUST be wrapped with observer() because useWorkspaceData
  * accesses MST observables (memberCollection, etc). Without observer(), the component
@@ -23,29 +23,29 @@ import { observer } from "mobx-react-lite"
 import { ThemeToggle, AdvancedModeToggle, UserMenu } from "../shared"
 import { Link } from "react-router-dom"
 import { Users } from "lucide-react"
-import { OrgSwitcher, ProjectSelector } from "../workspace"
+import { WorkspaceSwitcher, ProjectSelector } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
 import { Button } from "@/components/ui/button"
 
 /**
  * AppHeader component
  *
- * Renders the main application header bar with logo, org/project selectors,
+ * Renders the main application header bar with logo, workspace/project selectors,
  * theme toggle, and user menu.
  *
  * Wrapped with observer() to react to MST observable changes from useWorkspaceData.
  */
 export const AppHeader = observer(function AppHeader() {
   // Get navigation functions from URL state
-  const { setOrg, setProjectId } = useWorkspaceNavigation()
+  const { setOrg: setWorkspace, setProjectId } = useWorkspaceNavigation()
 
   // Get workspace data derived from URL state and domains
-  const { orgs, currentOrg, projects, currentProject, isLoading } =
+  const { workspaces, currentWorkspace, projects, currentProject, isLoading } =
     useWorkspaceData()
 
-  // Handle org change - updates URL which triggers data refresh
-  const handleOrgChange = (slug: string) => {
-    setOrg(slug)
+  // Handle workspace change - updates URL which triggers data refresh
+  const handleWorkspaceChange = (slug: string) => {
+    setWorkspace(slug)
   }
 
   // Handle project change - updates URL which triggers data refresh
@@ -60,25 +60,25 @@ export const AppHeader = observer(function AppHeader() {
         <span className="font-semibold">Shogo Studio</span>
       </div>
 
-      {/* Middle: Org/Project Selectors (Session 2.2) */}
+      {/* Middle: Workspace/Project Selectors (Session 2.2) */}
       <div className="flex items-center gap-4 flex-1 ml-6">
-        <OrgSwitcher
-          orgs={orgs}
-          currentOrg={currentOrg ?? null}
-          onOrgChange={handleOrgChange}
+        <WorkspaceSwitcher
+          workspaces={workspaces}
+          currentWorkspace={currentWorkspace ?? null}
+          onWorkspaceChange={handleWorkspaceChange}
           isLoading={isLoading}
         />
         <ProjectSelector
           projects={projects}
           currentProject={currentProject ?? null}
           onProjectChange={handleProjectChange}
-          disabled={!currentOrg}
+          disabled={!currentWorkspace}
           isLoading={isLoading}
-          organizationId={currentOrg?.id}
+          workspaceId={currentWorkspace?.id}
         />
-        {/* Members link - only show when org is selected */}
-        {currentOrg && (
-          <Link to="/app/members" title="Manage members">
+        {/* Members link - only show when workspace is selected */}
+        {currentWorkspace && (
+          <Link to="/members" title="Manage members">
             <Button variant="ghost" size="icon" className="h-9 w-9">
               <Users className="h-4 w-4" />
               <span className="sr-only">Members</span>

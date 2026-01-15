@@ -1,9 +1,9 @@
 /**
  * Studio Core Domain Store
  *
- * Uses the domain() composition API to define Organization, Team, Project, Member,
+ * Uses the domain() composition API to define Workspace, Project, Member,
  * BillingAccount, Invitation entities with enhancement hooks for computed views (level, isExpired),
- * collection queries (findByUserId, findForResource, findByOrganization, findPending),
+ * collection queries (findByUserId, findForResource, findByWorkspace, findPending),
  * and permission resolution.
  */
 
@@ -27,7 +27,7 @@ export const RoleLevels: Record<string, number> = {
 // ============================================================
 
 export const StudioCoreDomain = scope({
-  Organization: {
+  Workspace: {
     id: "string.uuid",
     name: "string",
     slug: "string",
@@ -37,21 +37,11 @@ export const StudioCoreDomain = scope({
     "updatedAt?": "number",
   },
 
-  Team: {
-    id: "string.uuid",
-    name: "string",
-    "description?": "string",
-    organization: "Organization", // Reference to Organization
-    "parent?": "Team", // Optional self-reference for nested hierarchy
-    createdAt: "number",
-    "updatedAt?": "number",
-  },
-
   Project: {
     id: "string.uuid",
     name: "string",
     "description?": "string",
-    organization: "Organization", // Reference to Organization
+    workspace: "Workspace", // Reference to Workspace
     tier: "'starter' | 'pro' | 'enterprise' | 'internal'",
     status: "'draft' | 'active' | 'archived'",
     "schemas?": "string[]", // Array of schema names
@@ -64,8 +54,7 @@ export const StudioCoreDomain = scope({
     id: "string.uuid",
     userId: "string", // Loose string ref to AuthUser.id
     role: "'owner' | 'admin' | 'member' | 'viewer'",
-    "organization?": "Organization", // Polymorphic: exactly one of org/team/project
-    "team?": "Team",
+    "workspace?": "Workspace", // Polymorphic: exactly one of workspace/project
     "project?": "Project",
     "isBillingAdmin?": "boolean",
     createdAt: "number",
@@ -74,7 +63,7 @@ export const StudioCoreDomain = scope({
 
   BillingAccount: {
     id: "string.uuid",
-    organization: "Organization", // Reference to Organization
+    workspace: "Workspace", // Reference to Workspace
     "stripeCustomerId?": "string",
     "taxId?": "string",
     "creditsBalance?": "number",
@@ -86,8 +75,7 @@ export const StudioCoreDomain = scope({
     id: "string.uuid",
     email: "string",
     role: "'owner' | 'admin' | 'member' | 'viewer'",
-    "organization?": "Organization", // Polymorphic like Member
-    "team?": "Team",
+    "workspace?": "Workspace", // Polymorphic like Member
     "project?": "Project",
     status: "'pending' | 'accepted' | 'declined' | 'expired' | 'cancelled'",
     "invitedBy?": "string", // Loose string ref to userId who sent invitation
@@ -152,27 +140,27 @@ export const studioCoreDomain = domain({
     collections: (collections) => ({
       ...collections,
 
-      OrganizationCollection: collections.OrganizationCollection.views((self: any) => ({
+      WorkspaceCollection: collections.WorkspaceCollection.views((self: any) => ({
         /**
-         * Find all organizations where a user has direct membership.
-         * This is used by the org switcher UI to show available orgs.
+         * Find all workspaces where a user has direct membership.
+         * This is used by the workspace switcher UI to show available workspaces.
          *
-         * @param userId - The user ID to find organizations for
-         * @returns Array of Organization instances
+         * @param userId - The user ID to find workspaces for
+         * @returns Array of Workspace instances
          */
         findByMembership(userId: string): any[] {
-          // Get all members for this user that have org membership
+          // Get all members for this user that have workspace membership
           const root = getRoot(self) as any
           const userMembers = root.memberCollection.findByUserId(userId)
 
-          // Filter to only org memberships and get the org instances
-          const orgs: any[] = []
+          // Filter to only workspace memberships and get the workspace instances
+          const workspaces: any[] = []
           for (const member of userMembers) {
-            if (member.organization) {
-              orgs.push(member.organization)
+            if (member.workspace) {
+              workspaces.push(member.workspace)
             }
           }
-          return orgs
+          return workspaces
         },
       })),
 
@@ -185,14 +173,12 @@ export const studioCoreDomain = domain({
         },
 
         /**
-         * Find all members for a given resource (organization, team, or project)
+         * Find all members for a given resource (workspace or project)
          */
-        findForResource(resourceType: "organization" | "team" | "project", resourceId: string): any[] {
+        findForResource(resourceType: "workspace" | "project", resourceId: string): any[] {
           return self.all().filter((m: any) => {
-            if (resourceType === "organization") {
-              return m.organization?.id === resourceId
-            } else if (resourceType === "team") {
-              return m.team?.id === resourceId
+            if (resourceType === "workspace") {
+              return m.workspace?.id === resourceId
             } else if (resourceType === "project") {
               return m.project?.id === resourceId
             }
@@ -203,10 +189,10 @@ export const studioCoreDomain = domain({
 
       ProjectCollection: collections.ProjectCollection.views((self: any) => ({
         /**
-         * Find all projects for a given organization
+         * Find all projects for a given workspace
          */
-        findByOrganization(orgId: string): any[] {
-          return self.all().filter((p: any) => p.organization?.id === orgId)
+        findByWorkspace(workspaceId: string): any[] {
+          return self.all().filter((p: any) => p.workspace?.id === workspaceId)
         },
       })),
 
@@ -219,14 +205,12 @@ export const studioCoreDomain = domain({
         },
 
         /**
-         * Find all invitations for a given resource (organization, team, or project)
+         * Find all invitations for a given resource (workspace or project)
          */
-        findForResource(resourceType: "organization" | "team" | "project", resourceId: string): any[] {
+        findForResource(resourceType: "workspace" | "project", resourceId: string): any[] {
           return self.all().filter((i: any) => {
-            if (resourceType === "organization") {
-              return i.organization?.id === resourceId
-            } else if (resourceType === "team") {
-              return i.team?.id === resourceId
+            if (resourceType === "workspace") {
+              return i.workspace?.id === resourceId
             } else if (resourceType === "project") {
               return i.project?.id === resourceId
             }
@@ -250,32 +234,26 @@ export const studioCoreDomain = domain({
       RootModel.views((self: any) => ({
         /**
          * Resolve effective permissions for a user on a resource.
-         * Walks up the hierarchy (team → parent team → org) and returns
-         * the highest role the user has at any level.
+         * Returns the highest role the user has at any level.
          *
          * @param userId - The user to check permissions for
-         * @param resourceType - "organization" | "team" | "project"
+         * @param resourceType - "workspace" | "project"
          * @param resourceId - The ID of the resource
          * @returns The highest role, or null if no permissions
          */
         resolvePermissions(
           userId: string,
-          resourceType: "organization" | "team" | "project",
+          resourceType: "workspace" | "project",
           resourceId: string
         ): string | null {
           let maxLevel = 0
           let maxRole: string | null = null
 
           // Helper to check user members directly
-          const checkUserMembers = (type: "organization" | "team" | "project", id: string) => {
+          const checkUserMembers = (type: "workspace" | "project", id: string) => {
             const userMembers = self.memberCollection.findByUserId(userId)
             for (const m of userMembers) {
-              if (type === "organization" && m.organization?.id === id) {
-                if (m.level > maxLevel) {
-                  maxLevel = m.level
-                  maxRole = m.role
-                }
-              } else if (type === "team" && m.team?.id === id) {
+              if (type === "workspace" && m.workspace?.id === id) {
                 if (m.level > maxLevel) {
                   maxLevel = m.level
                   maxRole = m.role
@@ -289,26 +267,9 @@ export const studioCoreDomain = domain({
             }
           }
 
-          if (resourceType === "organization") {
-            // Check direct org membership
-            checkUserMembers("organization", resourceId)
-          } else if (resourceType === "team") {
-            // Get the team
-            const team = self.teamCollection.get(resourceId)
-            if (!team) return null
-
-            // Check direct team membership
-            checkUserMembers("team", resourceId)
-
-            // Walk up parent teams
-            let currentTeam = team
-            while (currentTeam.parent) {
-              checkUserMembers("team", currentTeam.parent.id)
-              currentTeam = currentTeam.parent
-            }
-
-            // Check org-level membership (highest in hierarchy)
-            checkUserMembers("organization", team.organization.id)
+          if (resourceType === "workspace") {
+            // Check direct workspace membership
+            checkUserMembers("workspace", resourceId)
           } else if (resourceType === "project") {
             // Get the project
             const project = self.projectCollection.get(resourceId)
@@ -317,8 +278,8 @@ export const studioCoreDomain = domain({
             // Check direct project membership
             checkUserMembers("project", resourceId)
 
-            // Check org-level membership (projects are directly under orgs in this schema)
-            checkUserMembers("organization", project.organization.id)
+            // Check workspace-level membership (projects are directly under workspaces in this schema)
+            checkUserMembers("workspace", project.workspace.id)
           }
 
           return maxRole
@@ -326,51 +287,51 @@ export const studioCoreDomain = domain({
       })).actions((self: any) => ({
         /**
          * Create a member with polymorphic validation.
-         * Ensures exactly one of organization/team/project is set.
+         * Ensures exactly one of workspace/project is set.
          */
         createMember(data: any): any {
-          const resourceCount = [data.organization, data.team, data.project].filter(Boolean).length
+          const resourceCount = [data.workspace, data.project].filter(Boolean).length
           if (resourceCount !== 1) {
-            throw new Error("Member must have exactly one of: organization, team, or project")
+            throw new Error("Member must have exactly one of: workspace or project")
           }
           return self.memberCollection.add(data)
         },
 
         /**
          * Create an invitation with polymorphic validation.
-         * Ensures exactly one of organization/team/project is set.
+         * Ensures exactly one of workspace/project is set.
          */
         createInvitation(data: any): any {
-          const resourceCount = [data.organization, data.team, data.project].filter(Boolean).length
+          const resourceCount = [data.workspace, data.project].filter(Boolean).length
           if (resourceCount !== 1) {
-            throw new Error("Invitation must have exactly one of: organization, team, or project")
+            throw new Error("Invitation must have exactly one of: workspace or project")
           }
           return self.invitationCollection.add(data)
         },
 
         /**
-         * Create a personal organization for a user (auto-created on signup).
+         * Create a personal workspace for a user (auto-created on signup).
          * Uses special naming and slug conventions.
          *
          * @param userId - The user's ID
          * @param userName - The user's display name
-         * @returns The created Organization instance
+         * @returns The created Workspace instance
          */
-        async createPersonalOrganization(userId: string, userName: string): Promise<any> {
+        async createPersonalWorkspace(userId: string, userName: string): Promise<any> {
           // Generate slug from userId prefix (first 8 chars, no dashes)
           const userIdPrefix = userId.substring(0, 8).replace(/-/g, "")
           const slug = `user-${userIdPrefix}-personal`
 
-          // Organization name: "{userName} Personal"
-          const orgName = `${userName || "User"} Personal`
+          // Workspace name: "{userName} Personal"
+          const workspaceName = `${userName || "User"} Personal`
 
           const now = Date.now()
-          const orgId = crypto.randomUUID()
+          const workspaceId = crypto.randomUUID()
 
-          // Create the organization
-          await self.organizationCollection.insertOne({
-            id: orgId,
-            name: orgName,
+          // Create the workspace
+          await self.workspaceCollection.insertOne({
+            id: workspaceId,
+            name: workspaceName,
             slug,
             createdAt: now,
           })
@@ -380,30 +341,30 @@ export const studioCoreDomain = domain({
             id: crypto.randomUUID(),
             userId,
             role: "owner",
-            organizationId: orgId,
+            workspaceId: workspaceId,
             createdAt: now,
           })
 
-          return self.organizationCollection.get(orgId)
+          return self.workspaceCollection.get(workspaceId)
         },
 
         /**
-         * Create a new organization and add the creator as owner.
+         * Create a new workspace and add the creator as owner.
          *
-         * @param name - The organization name
+         * @param name - The workspace name
          * @param description - Optional description
-         * @param userId - The ID of the user creating the org (becomes owner)
-         * @returns The created Organization instance
+         * @param userId - The ID of the user creating the workspace (becomes owner)
+         * @returns The created Workspace instance
          */
-        createOrganization(name: string, description: string | undefined, userId: string): any {
+        createWorkspace(name: string, description: string | undefined, userId: string): any {
           // Generate slug from name (lowercase, replace spaces and special chars with dashes)
           const slug = name
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, "-")
             .replace(/^-+|-+$/g, "")
 
-          // Create the organization first
-          const org = self.organizationCollection.add({
+          // Create the workspace first
+          const workspace = self.workspaceCollection.add({
             id: crypto.randomUUID(),
             name,
             slug,
@@ -416,25 +377,25 @@ export const studioCoreDomain = domain({
             id: crypto.randomUUID(),
             userId,
             role: "owner",
-            organization: org.id,
+            workspace: workspace.id,
             createdAt: Date.now(),
           })
 
-          return org
+          return workspace
         },
 
         /**
-         * Create a new project within an organization.
+         * Create a new project within a workspace.
          *
          * @param name - The project name
-         * @param organizationId - The ID of the organization to create the project in
+         * @param workspaceId - The ID of the workspace to create the project in
          * @param description - Optional description
          * @param userId - The ID of the user creating the project
          * @returns The created Project instance
          */
         createProject(
           name: string,
-          organizationId: string,
+          workspaceId: string,
           description: string | undefined,
           userId: string
         ): any {
@@ -443,7 +404,7 @@ export const studioCoreDomain = domain({
             id: crypto.randomUUID(),
             name,
             description,
-            organization: organizationId,
+            workspace: workspaceId,
             tier: "starter",
             status: "active",
             createdBy: userId,
@@ -478,15 +439,12 @@ export const studioCoreDomain = domain({
           }
 
           // Determine the resource for permission check
-          let resourceType: "organization" | "team" | "project"
+          let resourceType: "workspace" | "project"
           let resourceId: string
 
-          if (targetMember.organizationId) {
-            resourceType = "organization"
-            resourceId = targetMember.organizationId
-          } else if (targetMember.teamId) {
-            resourceType = "team"
-            resourceId = targetMember.teamId
+          if (targetMember.workspaceId) {
+            resourceType = "workspace"
+            resourceId = targetMember.workspaceId
           } else if (targetMember.projectId) {
             resourceType = "project"
             resourceId = targetMember.projectId
@@ -525,7 +483,7 @@ export const studioCoreDomain = domain({
         },
 
         /**
-         * Remove a member from an organization/team/project.
+         * Remove a member from a workspace/project.
          * Validates that acting user has permission and prevents removing the last owner.
          *
          * @param memberId - The ID of the member to remove
@@ -539,15 +497,12 @@ export const studioCoreDomain = domain({
           }
 
           // Determine the resource for permission check
-          let resourceType: "organization" | "team" | "project"
+          let resourceType: "workspace" | "project"
           let resourceId: string
 
-          if (targetMember.organizationId) {
-            resourceType = "organization"
-            resourceId = targetMember.organizationId
-          } else if (targetMember.teamId) {
-            resourceType = "team"
-            resourceId = targetMember.teamId
+          if (targetMember.workspaceId) {
+            resourceType = "workspace"
+            resourceId = targetMember.workspaceId
           } else if (targetMember.projectId) {
             resourceType = "project"
             resourceId = targetMember.projectId
@@ -573,11 +528,11 @@ export const studioCoreDomain = domain({
           }
 
           // If target is an owner, check last-owner protection
-          if (targetMember.role === "owner" && resourceType === "organization") {
+          if (targetMember.role === "owner" && resourceType === "workspace") {
             const allMembers = self.memberCollection.findForResource(resourceType, resourceId)
             const owners = allMembers.filter((m: any) => m.role === "owner")
             if (owners.length <= 1) {
-              throw new Error("Cannot remove the last owner of an organization")
+              throw new Error("Cannot remove the last owner of a workspace")
             }
           }
 
@@ -623,10 +578,8 @@ export const studioCoreDomain = domain({
             createdAt: Date.now(),
           }
 
-          if (invitation.organizationId) {
-            memberData.organizationId = invitation.organizationId
-          } else if (invitation.teamId) {
-            memberData.teamId = invitation.teamId
+          if (invitation.workspaceId) {
+            memberData.workspaceId = invitation.workspaceId
           } else if (invitation.projectId) {
             memberData.projectId = invitation.projectId
           }
@@ -675,15 +628,12 @@ export const studioCoreDomain = domain({
           }
 
           // Determine resource for permission check
-          let resourceType: "organization" | "team" | "project"
+          let resourceType: "workspace" | "project"
           let resourceId: string
 
-          if (invitation.organizationId) {
-            resourceType = "organization"
-            resourceId = invitation.organizationId
-          } else if (invitation.teamId) {
-            resourceType = "team"
-            resourceId = invitation.teamId
+          if (invitation.workspaceId) {
+            resourceType = "workspace"
+            resourceId = invitation.workspaceId
           } else if (invitation.projectId) {
             resourceType = "project"
             resourceId = invitation.projectId

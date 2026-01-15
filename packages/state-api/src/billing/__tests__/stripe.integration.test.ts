@@ -72,7 +72,7 @@ describe("StripeBillingService", () => {
           cancel_at: null,
           cancel_at_period_end: false,
           created: 1704067200,
-          metadata: { organizationId: "org_123" },
+          metadata: { workspaceId: "org_123" },
         })),
         update: mock(() => Promise.resolve({
           id: "sub_test_123",
@@ -89,7 +89,7 @@ describe("StripeBillingService", () => {
           cancel_at: null,
           cancel_at_period_end: false,
           created: 1704067200,
-          metadata: { organizationId: "org_123" },
+          metadata: { workspaceId: "org_123" },
         })),
       },
       customers: {
@@ -111,7 +111,7 @@ describe("StripeBillingService", () => {
             object: {
               id: "sub_test_123",
               status: "active",
-              metadata: { organizationId: "org_123" },
+              metadata: { workspaceId: "org_123" },
             },
           },
         })),
@@ -195,7 +195,7 @@ describe("StripeBillingService", () => {
         cancel_at: null,
         cancel_at_period_end: true,
         created: 1704067200,
-        metadata: { organizationId: "org_123" },
+        metadata: { workspaceId: "org_123" },
       }))
 
       const result = await service.cancelSubscription("sub_test_123")

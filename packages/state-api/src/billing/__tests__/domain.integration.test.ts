@@ -38,33 +38,33 @@ describe("billingDomain store operations", () => {
 
   describe("allocateMonthlyCredits", () => {
     test("creates CreditLedger with 100 monthly and 5 daily credits", async () => {
-      const orgId = "org-test-123"
+      const workspaceId = "ws-test-123"
 
-      await store.allocateMonthlyCredits(orgId)
+      await store.allocateMonthlyCredits(workspaceId)
 
-      const ledger = store.creditLedgerCollection.all().find((l: any) => l.organization === orgId)
+      const ledger = store.creditLedgerCollection.all().find((l: any) => l.workspace === workspaceId)
       expect(ledger).toBeDefined()
       expect(ledger.monthlyCredits).toBe(100)
       expect(ledger.dailyCredits).toBe(5)
     })
 
     test("sets anniversaryDay to current day of month", async () => {
-      const orgId = "org-test-456"
+      const workspaceId = "ws-test-456"
 
-      await store.allocateMonthlyCredits(orgId)
+      await store.allocateMonthlyCredits(workspaceId)
 
-      const ledger = store.creditLedgerCollection.all().find((l: any) => l.organization === orgId)
+      const ledger = store.creditLedgerCollection.all().find((l: any) => l.workspace === workspaceId)
       const today = new Date()
       expect(ledger.anniversaryDay).toBe(today.getUTCDate())
     })
 
     test("sets lastMonthlyReset to current timestamp", async () => {
-      const orgId = "org-test-789"
+      const workspaceId = "ws-test-789"
       const before = Date.now()
 
-      await store.allocateMonthlyCredits(orgId)
+      await store.allocateMonthlyCredits(workspaceId)
 
-      const ledger = store.creditLedgerCollection.all().find((l: any) => l.organization === orgId)
+      const ledger = store.creditLedgerCollection.all().find((l: any) => l.workspace === workspaceId)
       expect(ledger.lastMonthlyReset).toBeGreaterThanOrEqual(before)
     })
   })
@@ -76,7 +76,7 @@ describe("billingDomain store operations", () => {
       // Create ledger with today's reset
       store.creditLedgerCollection.add({
         id: crypto.randomUUID(),
-        organization: orgId,
+        workspace: orgId,
         monthlyCredits: 50,
         dailyCredits: 3,
         rolloverCredits: 0,
@@ -86,7 +86,7 @@ describe("billingDomain store operations", () => {
         createdAt: Date.now(),
       })
 
-      const ledger = store.creditLedgerCollection.all().find((l: any) => l.organization === orgId)
+      const ledger = store.creditLedgerCollection.all().find((l: any) => l.workspace === orgId)
       const balance = ledger.effectiveBalance
 
       expect(balance.dailyCredits).toBe(3)
@@ -100,7 +100,7 @@ describe("billingDomain store operations", () => {
       // Create ledger with yesterday's reset and depleted daily
       store.creditLedgerCollection.add({
         id: crypto.randomUUID(),
-        organization: orgId,
+        workspace: orgId,
         monthlyCredits: 50,
         dailyCredits: 0,  // Depleted
         rolloverCredits: 0,
@@ -110,7 +110,7 @@ describe("billingDomain store operations", () => {
         createdAt: Date.now(),
       })
 
-      const ledger = store.creditLedgerCollection.all().find((l: any) => l.organization === orgId)
+      const ledger = store.creditLedgerCollection.all().find((l: any) => l.workspace === orgId)
       const balance = ledger.effectiveBalance
 
       // Should show 5 daily credits due to lazy reset
@@ -127,7 +127,7 @@ describe("billingDomain store operations", () => {
       // Setup ledger
       store.creditLedgerCollection.add({
         id: crypto.randomUUID(),
-        organization: orgId,
+        workspace: orgId,
         monthlyCredits: 100,
         dailyCredits: 5,
         rolloverCredits: 0,
@@ -139,7 +139,7 @@ describe("billingDomain store operations", () => {
 
       await store.consumeCredits(orgId, 3, memberId, "chat_message")
 
-      const ledger = store.creditLedgerCollection.all().find((l: any) => l.organization === orgId)
+      const ledger = store.creditLedgerCollection.all().find((l: any) => l.workspace === orgId)
       expect(ledger.dailyCredits).toBe(2)
       expect(ledger.monthlyCredits).toBe(100) // Unchanged
 
@@ -159,7 +159,7 @@ describe("billingDomain store operations", () => {
       // Setup ledger with depleted daily
       store.creditLedgerCollection.add({
         id: crypto.randomUUID(),
-        organization: orgId,
+        workspace: orgId,
         monthlyCredits: 100,
         dailyCredits: 2,  // Only 2 daily left
         rolloverCredits: 0,
@@ -171,7 +171,7 @@ describe("billingDomain store operations", () => {
 
       await store.consumeCredits(orgId, 5, memberId, "code_generation")
 
-      const ledger = store.creditLedgerCollection.all().find((l: any) => l.organization === orgId)
+      const ledger = store.creditLedgerCollection.all().find((l: any) => l.workspace === orgId)
       expect(ledger.dailyCredits).toBe(0)
       expect(ledger.monthlyCredits).toBe(97) // 100 - 3 overflow
 
@@ -185,7 +185,7 @@ describe("billingDomain store operations", () => {
     test("creates Subscription entity from webhook data", async () => {
       const webhookData = {
         subscriptionId: "sub_test_123",
-        organizationId: "org-sync-test",
+        workspaceId: "org-sync-test",
         customerId: "cus_test_456",
         planId: "pro",
         status: "active",
@@ -207,7 +207,7 @@ describe("billingDomain store operations", () => {
     test("triggers credit allocation on new subscription", async () => {
       const webhookData = {
         subscriptionId: "sub_new_123",
-        organizationId: "org-new-sub",
+        workspaceId: "org-new-sub",
         customerId: "cus_new_456",
         planId: "business",
         status: "active",
@@ -226,7 +226,7 @@ describe("billingDomain store operations", () => {
       expect(subscription).toBeDefined()
 
       const ledger = store.creditLedgerCollection.all().find(
-        (l: any) => l.organization === "org-new-sub"
+        (l: any) => l.workspace === "org-new-sub"
       )
       expect(ledger).toBeDefined()
       expect(ledger.monthlyCredits).toBe(100)
@@ -234,11 +234,11 @@ describe("billingDomain store operations", () => {
   })
 
   describe("Collection queries", () => {
-    test("subscriptionCollection.findByOrg returns subscriptions for organization", async () => {
+    test("subscriptionCollection.findByWorkspace returns subscriptions for workspace", async () => {
       // Add subscriptions
       store.subscriptionCollection.add({
         id: crypto.randomUUID(),
-        organization: "org-a",
+        workspace: "org-a",
         stripeSubscriptionId: "sub_a",
         stripeCustomerId: "cus_a",
         planId: "pro",
@@ -251,7 +251,7 @@ describe("billingDomain store operations", () => {
 
       store.subscriptionCollection.add({
         id: crypto.randomUUID(),
-        organization: "org-b",
+        workspace: "org-b",
         stripeSubscriptionId: "sub_b",
         stripeCustomerId: "cus_b",
         planId: "business",
@@ -262,18 +262,18 @@ describe("billingDomain store operations", () => {
         createdAt: Date.now(),
       })
 
-      const orgASubscriptions = store.subscriptionCollection.findByOrg("org-a")
+      const orgASubscriptions = store.subscriptionCollection.findByWorkspace("org-a")
       expect(orgASubscriptions.length).toBe(1)
       expect(orgASubscriptions[0].stripeSubscriptionId).toBe("sub_a")
     })
 
-    test("usageEventCollection.recentForOrg returns events for organization", async () => {
+    test("usageEventCollection.recentForWorkspace returns events for workspace", async () => {
       const orgId = "org-usage-test"
 
       // Add usage events
       store.usageEventCollection.add({
         id: crypto.randomUUID(),
-        organization: orgId,
+        workspace: orgId,
         memberId: "member-1",
         actionType: "chat_message",
         creditCost: 1,
@@ -285,7 +285,7 @@ describe("billingDomain store operations", () => {
 
       store.usageEventCollection.add({
         id: crypto.randomUUID(),
-        organization: "other-org",
+        workspace: "other-org",
         memberId: "member-2",
         actionType: "chat_message",
         creditCost: 1,
@@ -295,9 +295,9 @@ describe("billingDomain store operations", () => {
         createdAt: Date.now(),
       })
 
-      const events = store.usageEventCollection.recentForOrg(orgId)
+      const events = store.usageEventCollection.recentForWorkspace(orgId)
       expect(events.length).toBe(1)
-      expect(events[0].organization).toBe(orgId)
+      expect(events[0].workspace).toBe(orgId)
     })
   })
 })

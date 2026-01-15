@@ -1,13 +1,13 @@
 /**
  * CreateProjectModal Component
  *
- * Modal dialog for creating new projects within an organization.
+ * Modal dialog for creating new projects within a workspace.
  * Uses shadcn Dialog component with form validation.
  *
  * Props:
  * - open: boolean - Whether the modal is open
  * - onOpenChange: (open: boolean) => void - Callback when modal open state changes
- * - organizationId: string - The ID of the organization to create the project in
+ * - workspaceId: string - The ID of the workspace to create the project in
  * - onSuccess: () => void - Callback when project is successfully created
  *
  * Features:
@@ -45,8 +45,8 @@ export interface CreateProjectModalProps {
   open: boolean
   /** Callback when modal open state changes */
   onOpenChange: (open: boolean) => void
-  /** The ID of the organization to create the project in */
-  organizationId: string
+  /** The ID of the workspace to create the project in */
+  workspaceId: string
   /** Callback when project is successfully created */
   onSuccess?: () => void
 }
@@ -57,7 +57,7 @@ export interface CreateProjectModalProps {
  * Renders a dialog for creating new projects.
  * Uses shadcn Dialog with form validation, loading, and error states.
  */
-export function CreateProjectModal({ open, onOpenChange, organizationId, onSuccess }: CreateProjectModalProps) {
+export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess }: CreateProjectModalProps) {
   // Get studioCore domain for creating projects
   const { studioCore } = useDomains()
 
@@ -77,7 +77,7 @@ export function CreateProjectModal({ open, onOpenChange, organizationId, onSucce
 
   /**
    * Handle form submission
-   * Creates new project in the organization via MCP domain
+   * Creates new project in the workspace via MCP domain
    */
   const handleSubmit = async () => {
     if (!isValid || isSubmitting) return
@@ -88,8 +88,8 @@ export function CreateProjectModal({ open, onOpenChange, organizationId, onSucce
       return
     }
 
-    if (!organizationId) {
-      setError("No organization selected")
+    if (!workspaceId) {
+      setError("No workspace selected")
       return
     }
 
@@ -100,7 +100,7 @@ export function CreateProjectModal({ open, onOpenChange, organizationId, onSucce
       // Use domain action to create project
       await studioCore.createProject(
         name.trim(),
-        organizationId,
+        workspaceId,
         description.trim() || undefined,
         userId
       )
@@ -139,7 +139,7 @@ export function CreateProjectModal({ open, onOpenChange, organizationId, onSucce
         <DialogHeader>
           <DialogTitle>Create Project</DialogTitle>
           <DialogDescription>
-            Create a new project in this organization.
+            Create a new project in this workspace.
           </DialogDescription>
         </DialogHeader>
 

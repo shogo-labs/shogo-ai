@@ -29,7 +29,7 @@ export type SubscriptionStatus = "active" | "canceled" | "past_due" | "unpaid"
  */
 export interface Subscription {
   id: string
-  organizationId: string
+  workspaceId: string
   stripeSubscriptionId: string
   stripeCustomerId: string
   planId: PlanId
@@ -93,7 +93,7 @@ export interface WebhookEvent {
   type: WebhookEventType
   data: {
     subscriptionId?: string
-    organizationId?: string
+    workspaceId?: string
     planId?: PlanId
     status?: SubscriptionStatus
     currentPeriodStart?: number
@@ -167,13 +167,13 @@ export interface IBillingService {
   /**
    * Create a Stripe checkout session for subscribing to a plan
    *
-   * @param organizationId - The organization subscribing
+   * @param workspaceId - The workspace subscribing
    * @param planId - The plan to subscribe to
    * @param billingInterval - Monthly or annual billing
    * @returns Checkout session with redirect URL
    */
   createCheckoutSession(
-    organizationId: string,
+    workspaceId: string,
     planId: PlanId,
     billingInterval: BillingInterval
   ): Promise<CheckoutSessionResult>
@@ -209,10 +209,10 @@ export interface IBillingService {
   /**
    * Get URL for Stripe Customer Portal
    *
-   * @param organizationId - The organization (maps to Stripe customer)
+   * @param workspaceId - The workspace (maps to Stripe customer)
    * @returns Portal session with redirect URL
    */
-  getPortalUrl(organizationId: string): Promise<PortalSessionResult>
+  getPortalUrl(workspaceId: string): Promise<PortalSessionResult>
 
   /**
    * Process incoming webhook event from Stripe
