@@ -1,11 +1,8 @@
 {
-  "id": "b83de179-8e15-4f6d-a02c-a8b69faa39ff",
-  "name": "studio-core",
-  "format": "enhanced-json-schema",
-  "createdAt": 1767399249034,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-core",
   "$defs": {
-    "Organization": {
+    "Workspace": {
       "type": "object",
       "x-persistence": {
         "strategy": "entity-per-file",
@@ -46,56 +43,7 @@
         "slug",
         "createdAt"
       ],
-      "x-original-name": "Organization"
-    },
-    "Team": {
-      "type": "object",
-      "x-persistence": {
-        "strategy": "entity-per-file",
-        "displayKey": "name",
-        "nested": true
-      },
-      "properties": {
-        "id": {
-          "type": "string",
-          "format": "uuid",
-          "x-mst-type": "identifier"
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "description": {
-          "type": "string"
-        },
-        "organization": {
-          "type": "string",
-          "x-arktype": "Organization",
-          "x-mst-type": "reference",
-          "x-reference-type": "single",
-          "x-reference-target": "Organization"
-        },
-        "parent": {
-          "type": "string",
-          "x-arktype": "Team",
-          "x-mst-type": "maybe-reference",
-          "x-reference-type": "single",
-          "x-reference-target": "Team"
-        },
-        "createdAt": {
-          "type": "number"
-        },
-        "updatedAt": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "organization",
-        "createdAt"
-      ],
-      "x-original-name": "Team"
+      "x-original-name": "Workspace"
     },
     "Project": {
       "type": "object",
@@ -117,12 +65,12 @@
         "description": {
           "type": "string"
         },
-        "organization": {
+        "workspace": {
           "type": "string",
-          "x-arktype": "Organization",
+          "x-arktype": "Workspace",
           "x-mst-type": "reference",
           "x-reference-type": "single",
-          "x-reference-target": "Organization"
+          "x-reference-target": "Workspace"
         },
         "tier": {
           "type": "string",
@@ -159,7 +107,7 @@
       "required": [
         "id",
         "name",
-        "organization",
+        "workspace",
         "tier",
         "status",
         "createdAt"
@@ -192,19 +140,12 @@
             "viewer"
           ]
         },
-        "organization": {
+        "workspace": {
           "type": "string",
-          "x-arktype": "Organization",
+          "x-arktype": "Workspace",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single",
-          "x-reference-target": "Organization"
-        },
-        "team": {
-          "type": "string",
-          "x-arktype": "Team",
-          "x-mst-type": "maybe-reference",
-          "x-reference-type": "single",
-          "x-reference-target": "Team"
+          "x-reference-target": "Workspace"
         },
         "project": {
           "type": "string",
@@ -244,12 +185,12 @@
           "format": "uuid",
           "x-mst-type": "identifier"
         },
-        "organization": {
+        "workspace": {
           "type": "string",
-          "x-arktype": "Organization",
+          "x-arktype": "Workspace",
           "x-mst-type": "reference",
           "x-reference-type": "single",
-          "x-reference-target": "Organization"
+          "x-reference-target": "Workspace"
         },
         "stripeCustomerId": {
           "type": "string"
@@ -269,7 +210,7 @@
       },
       "required": [
         "id",
-        "organization",
+        "workspace",
         "createdAt"
       ],
       "x-original-name": "BillingAccount"
@@ -300,19 +241,12 @@
             "viewer"
           ]
         },
-        "organization": {
+        "workspace": {
           "type": "string",
-          "x-arktype": "Organization",
+          "x-arktype": "Workspace",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single",
-          "x-reference-target": "Organization"
-        },
-        "team": {
-          "type": "string",
-          "x-arktype": "Team",
-          "x-mst-type": "maybe-reference",
-          "x-reference-type": "single",
-          "x-reference-target": "Team"
+          "x-reference-target": "Workspace"
         },
         "project": {
           "type": "string",

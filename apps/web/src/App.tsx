@@ -3,12 +3,15 @@ import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { AuthGate, AppShell } from '@/components/app'
 import { WorkspaceLayout } from '@/components/app/workspace'
 import { AdvancedChatLayout } from './components/app/advanced-chat'
+import { AppProfilePage } from './pages/AppProfilePage'
+import { AppBillingPage } from './pages/AppBillingPage'
+import { AppMemberManagementPage } from './pages/AppMemberManagementPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { MCPBackend } from './query/MCPBackend'
-import { MockAuthService, createBackendRegistry, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, BetterAuthService } from '@shogo/state-api'
+import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
 import { mcpService } from './services/mcpService'
 import { Toaster } from '@/components/ui/toaster'
@@ -39,13 +42,17 @@ const env = createEnvironment({
 })
 
 // Domain configuration - keys become property names in useDomains()
-// Access via: const { auth, platformFeatures, componentBuilder, studioChat, studioCore } = useDomains()
+// Access via: const { teams, auth, chat, componentBuilder, ... } = useDomains()
 const domains = {
-  auth: betterAuthDomain,
-  platformFeatures: platformFeaturesDomain,
-  componentBuilder: componentBuilderDomain,
-  studioChat: studioChatDomain,
+  teams: teamsDomain,
+  multiTenancy: teamsMultiTenancyDomain,
+  chat: chatDomain,
   studioCore: studioCoreDomain,
+  studioChat: studioChatDomain,
+  platformFeatures: platformFeaturesDomain,
+  auth: betterAuthDomain,
+  componentBuilder: componentBuilderDomain,
+  billing: billingDomain,
 } as const
 
 function App() {
@@ -67,6 +74,12 @@ function App() {
                     <Route index element={<WorkspaceLayout />} />
                     {/* Advanced Chat testbed route (task-testbed-route) */}
                     <Route path="advanced-chat" element={<AdvancedChatLayout />} />
+                    {/* Profile page */}
+                    <Route path="profile" element={<AppProfilePage />} />
+                    {/* Billing management */}
+                    <Route path="billing" element={<AppBillingPage />} />
+                    {/* Member management */}
+                    <Route path="members" element={<AppMemberManagementPage />} />
                   </Route>
                 </Routes>
               </AuthProvider>

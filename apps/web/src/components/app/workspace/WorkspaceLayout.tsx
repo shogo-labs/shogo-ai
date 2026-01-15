@@ -63,6 +63,7 @@ import { ToastAction } from "@/components/ui/toast"
 import { PhaseContentPanel } from "../stepper"
 import { ChatPanel } from "../chat/ChatPanel"
 import { FeatureSidebar } from "./sidebar"
+import { HomePage } from "./dashboard"
 import { DeleteFeatureDialog } from "./modals/DeleteFeatureDialog"
 import { RefreshCw } from "lucide-react"
 import type { PollableDomain } from "@/hooks/useFeaturePolling"
@@ -269,14 +270,12 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
             </div>
           </ChatPanel>
         ) : (
-          // No feature selected - render ProjectDashboard placeholder (no ChatPanel)
-          <div data-testid="project-dashboard">
-            {/* ProjectDashboard placeholder - actual component in task-2-2-007 */}
-            <div className="space-y-4">
-              <h2 className="text-2xl font-bold">
-                {currentProject?.name || "Select a Project"}
-              </h2>
-              {currentProject && (
+          // No feature selected - render HomePage or ProjectDashboard
+          <div data-testid="project-dashboard" className="h-full">
+            {currentProject ? (
+              // Project selected but no feature - show project summary
+              <div className="p-6 space-y-4">
+                <h2 className="text-2xl font-bold">{currentProject.name}</h2>
                 <div className="grid gap-4">
                   <div className="p-4 bg-card rounded-lg border">
                     <h3 className="font-semibold mb-2">Features Summary</h3>
@@ -285,8 +284,17 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
                     </p>
                   </div>
                 </div>
-              )}
-            </div>
+              </div>
+            ) : (
+              // No project selected - show engaging home page
+              <HomePage
+                userName={currentOrg?.name?.split(" ")[0] || "there"}
+                onPromptSubmit={(prompt) => {
+                  // TODO: Handle prompt submission - create new project or open chat
+                  console.log("Prompt submitted:", prompt)
+                }}
+              />
+            )}
           </div>
         )}
       </div>

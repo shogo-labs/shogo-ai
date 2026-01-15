@@ -1,6 +1,6 @@
 /**
  * Better Auth Server Configuration
- * Task: task-ba-006
+ * Task: task-ba-006, task-org-002
  *
  * Configures Better Auth with:
  * - PostgreSQL database via pg Pool from DATABASE_URL
@@ -10,10 +10,16 @@
  * - JWT sessions with 7-day expiry
  * - Google OAuth social provider
  * - Trusted origins for CORS
+ * - Database hooks for auto-creating personal organization on signup (via MCP domain)
  */
 
 import { betterAuth } from "better-auth"
 import { Pool } from "pg"
+import { studioCoreDomain } from "@shogo/state-api/studio-core/domain"
+import { BunPostgresExecutor } from "@shogo/state-api/query/execution/bun-postgres"
+import { createBackendRegistry } from "@shogo/state-api/query/registry"
+import { SqlBackend } from "@shogo/state-api/query/backends/sql"
+import { NullPersistence } from "@shogo/state-api/persistence/null"
 
 // Port configuration from environment
 const API_PORT = process.env.API_PORT || "8002"
@@ -37,6 +43,44 @@ const getAllowedOrigins = (): string[] => {
   }
   // Default: localhost only (dev mode) - use VITE_PORT since requests originate from frontend
   return [`http://localhost:${VITE_PORT}`]
+}
+
+// Domain store singleton for database hooks (used to create personal workspaces)
+// Uses studioCoreDomain with PostgreSQL backend via backendRegistry
+let domainStore: ReturnType<typeof studioCoreDomain.createStore> | null = null
+
+async function getDomainStore(): Promise<ReturnType<typeof studioCoreDomain.createStore>> {
+  if (domainStore) {
+    return domainStore
+  }
+
+  const DATABASE_URL = process.env.DATABASE_URL
+  if (!DATABASE_URL) {
+    throw new Error("DATABASE_URL environment variable is required")
+  }
+
+  const isSupabase = DATABASE_URL.includes("supabase")
+  const executor = new BunPostgresExecutor(DATABASE_URL, {
+    tls: isSupabase,
+    max: 5,
+  })
+
+  const registry = createBackendRegistry()
+  const sqlBackend = new SqlBackend({ dialect: "pg", executor })
+  registry.register("postgres", sqlBackend)
+  registry.setDefault("postgres")
+
+  domainStore = studioCoreDomain.createStore({
+    services: {
+      persistence: new NullPersistence(),
+      backendRegistry: registry,
+    },
+    context: {
+      schemaName: "studio-core",
+    },
+  })
+
+  return domainStore
 }
 
 export const auth = betterAuth({
@@ -116,6 +160,36 @@ export const auth = betterAuth({
 
   // Trusted origins for CORS - configured via ALLOWED_ORIGINS env var
   trustedOrigins: getAllowedOrigins(),
+
+  // Database hooks for auto-creating personal workspace on user signup
+  // Task: task-org-002
+  databaseHooks: {
+    user: {
+      create: {
+        /**
+         * After a new user is created, automatically create their personal workspace.
+         * This ensures every user has at least one workspace to work in immediately after signup.
+         *
+         * Uses studioCoreDomain.createPersonalWorkspace() action via MCP domain layer.
+         *
+         * Errors are logged but do not block user creation (graceful degradation).
+         */
+        after: async (user) => {
+          try {
+            const store = await getDomainStore()
+            await store.createPersonalWorkspace(user.id, user.name || "User")
+            console.log(`Created personal workspace for user ${user.email}`)
+          } catch (error) {
+            // Log error but don't block user creation
+            console.error(
+              `Failed to create personal workspace for user ${user.email}:`,
+              error instanceof Error ? error.message : String(error)
+            )
+          }
+        },
+      },
+    },
+  },
 })
 
 // Export the Auth type for use in route handlers

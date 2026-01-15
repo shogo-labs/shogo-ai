@@ -14,6 +14,7 @@
 
 import type { IPersistenceService } from '../persistence/types'
 import type { IAuthService } from '../auth/types'
+import type { IBillingService } from '../billing/types'
 import type { IBackendRegistry } from '../query/registry'
 import type { IQueryValidator } from '../query/validation/types'
 import type { ColumnPropertyMap, PropertyTypeMap } from '../query/execution/utils'
@@ -79,6 +80,22 @@ export interface IEnvironment {
      * Optional - not all stores need authentication.
      */
     auth?: IAuthService
+
+    /**
+     * Billing service for subscription and payment operations.
+     *
+     * Implementation can be:
+     * - StripeBillingService (real Stripe integration)
+     * - MockBillingService (in-memory, for testing)
+     *
+     * Optional - only needed for stores that handle billing operations.
+     * Domain actions like consumeCredits, allocateMonthlyCredits can
+     * access this service via getEnv(self).services.billing.
+     *
+     * @see IBillingService for interface details
+     * @see StripeBillingService for production implementation
+     */
+    billing?: IBillingService
 
     /**
      * Backend registry for query execution.

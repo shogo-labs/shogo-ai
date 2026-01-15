@@ -12,7 +12,7 @@
  *
  * Usage:
  *   import { AuthGate, AppShell, LoginPage } from "@/components/app"
- *   import { OrgSwitcher, WorkspaceLayout } from "@/components/app"
+ *   import { WorkspaceSwitcher, WorkspaceLayout } from "@/components/app"
  */
 
 // Layout components

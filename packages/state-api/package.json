@@ -10,6 +10,18 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
+    "./studio-core/domain": {
+      "import": "./src/studio-core/domain.ts",
+      "types": "./src/studio-core/domain.ts"
+    },
+    "./query/registry": {
+      "import": "./src/query/registry.ts",
+      "types": "./src/query/registry.ts"
+    },
+    "./query/backends/sql": {
+      "import": "./src/query/backends/sql.ts",
+      "types": "./src/query/backends/sql.ts"
+    },
     "./query/execution/bun-postgres": {
       "import": "./src/query/execution/bun-postgres.ts",
       "types": "./src/query/execution/bun-postgres.ts"
@@ -17,6 +29,10 @@
     "./query/execution/bun-sql": {
       "import": "./src/query/execution/bun-sql.ts",
       "types": "./src/query/execution/bun-sql.ts"
+    },
+    "./persistence/null": {
+      "import": "./src/persistence/null.ts",
+      "types": "./src/persistence/null.ts"
     }
   },
   "scripts": {
@@ -35,6 +51,7 @@
     "mobx": "^6.13.5",
     "mobx-state-tree": "^6.0.1",
     "nunjucks": "^3.2.4",
+    "stripe": "^20.1.2",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
