@@ -1103,6 +1103,10 @@ app.post('/api/billing/checkout', async (c) => {
 
 app.post('/api/billing/portal', async (c) => {
   try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
     const url = new URL(c.req.url)
     const workspaceId = url.searchParams.get('workspaceId')
 
@@ -1110,8 +1114,38 @@ app.post('/api/billing/portal', async (c) => {
       return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
     }
 
-    // For now, return an error since we don't have customer ID stored
-    return c.json({ error: { code: 'not_implemented', message: 'Portal not yet implemented' } }, 501)
+    // Get return URL from request body if provided
+    let returnUrl = `http://localhost:${VITE_PORT}/app/billing`
+    try {
+      const body = await c.req.json<{ returnUrl?: string }>()
+      if (body?.returnUrl) {
+        returnUrl = body.returnUrl
+      }
+    } catch {
+      // Body parsing failed, use default return URL
+    }
+
+    // Look up customer ID from workspace metadata
+    const customers = await stripe.customers.search({
+      query: `metadata['workspaceId']:'${workspaceId}'`,
+    })
+
+    if (customers.data.length === 0) {
+      return c.json({ 
+        error: { 
+          code: 'customer_not_found', 
+          message: `No Stripe customer found for workspace ${workspaceId}` 
+        } 
+      }, 404)
+    }
+
+    // Create Stripe billing portal session
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customers.data[0].id,
+      return_url: returnUrl,
+    })
+
+    return c.json({ url: session.url }, 200)
   } catch (error: any) {
     console.error('[Billing] Portal error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)

@@ -156,7 +156,7 @@ export class StripeBillingService implements IBillingService {
   /**
    * Get URL for Stripe Customer Portal
    */
-  async getPortalUrl(workspaceId: string): Promise<PortalSessionResult> {
+  async getPortalUrl(workspaceId: string, returnUrl?: string): Promise<PortalSessionResult> {
     // Look up customer ID from workspace
     // In real implementation, this would query your database
     // For now, we assume workspaceId is passed as customer metadata
@@ -171,9 +171,10 @@ export class StripeBillingService implements IBillingService {
       )
     }
 
+    const defaultReturnUrl = `${process.env.APP_URL || "http://localhost:3000"}/app/billing`
     const session = await this.stripe.billingPortal.sessions.create({
       customer: customers.data[0].id,
-      return_url: `${process.env.APP_URL || "http://localhost:3000"}/billing`,
+      return_url: returnUrl || defaultReturnUrl,
     })
 
     return { url: session.url }
