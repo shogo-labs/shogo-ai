@@ -6,10 +6,12 @@
  * collection queries, and domain actions.
  *
  * Credit rules:
+ * - Free tier: 5 daily credits only (no monthly, no rollover)
  * - Pro/Business: $25/$50 per month, 100 monthly + 5 daily credits
  * - Daily credits reset at midnight UTC (lazy calculation)
- * - Deduction order: daily first, then monthly
+ * - Deduction order: daily first, then monthly, then rollover
  * - Unused monthly credits roll over (active subscriptions only)
+ * - Free tier ledger is auto-created on first credit consumption
  */
 
 import { scope } from "arktype"
@@ -257,9 +259,51 @@ export const billingDomain = domain({
         },
 
         /**
+         * Allocate free tier credits for a workspace.
+         * Creates a CreditLedger with 5 daily credits and 0 monthly credits.
+         * Used for workspaces without a paid subscription.
+         *
+         * @param workspaceId - The workspace to allocate free credits to
+         * @returns The created or existing ledger
+         */
+        async allocateFreeCredits(workspaceId: string): Promise<any> {
+          const now = Date.now()
+          const today = new Date(now)
+
+          // Check if ledger exists
+          const existingLedger = self.creditLedgerCollection.findByWorkspace(workspaceId)
+
+          if (existingLedger) {
+            // Ledger exists - just reset daily credits if needed
+            if (isDifferentUTCDay(existingLedger.lastDailyReset, now)) {
+              existingLedger.dailyCredits = 5
+              existingLedger.lastDailyReset = now
+              existingLedger.updatedAt = now
+            }
+            return existingLedger
+          }
+
+          // Create new free tier ledger
+          const ledger = {
+            id: crypto.randomUUID(),
+            workspace: workspaceId,
+            monthlyCredits: 0, // Free tier gets no monthly credits
+            dailyCredits: 5,   // Free tier gets 5 daily credits
+            rolloverCredits: 0,
+            anniversaryDay: today.getUTCDate(),
+            lastDailyReset: now,
+            lastMonthlyReset: now,
+            createdAt: now,
+          }
+          self.creditLedgerCollection.add(ledger)
+          return ledger
+        },
+
+        /**
          * Consume credits for an action.
          * Deducts from daily first, then monthly, then rollover.
          * Creates UsageEvent records for tracking.
+         * Auto-creates a free tier ledger if none exists.
          *
          * @param workspaceId - The workspace consuming credits
          * @param amount - Credits to consume
@@ -276,9 +320,11 @@ export const billingDomain = domain({
           projectId?: string,
           actionMetadata?: unknown
         ): Promise<void> {
-          const ledger = self.creditLedgerCollection.findByWorkspace(workspaceId)
+          let ledger = self.creditLedgerCollection.findByWorkspace(workspaceId)
+          
+          // Auto-create free tier ledger if none exists
           if (!ledger) {
-            throw new Error(`No credit ledger found for workspace ${workspaceId}`)
+            ledger = await self.allocateFreeCredits(workspaceId)
           }
 
           const now = Date.now()
