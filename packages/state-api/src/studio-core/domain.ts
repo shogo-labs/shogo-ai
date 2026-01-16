@@ -440,7 +440,7 @@ export const studioCoreDomain = domain({
             id: crypto.randomUUID(),
             userId,
             role: "owner",
-            workspaceId: workspaceId,
+            workspace: workspaceId,
             createdAt: now,
           })
 
@@ -479,7 +479,7 @@ export const studioCoreDomain = domain({
             id: crypto.randomUUID(),
             userId,
             role: "owner",
-            workspaceId: workspaceId,
+            workspace: workspaceId,
             createdAt: now,
           })
 

@@ -37,11 +37,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const { projectId } = useParams<{ projectId: string }>()
   const { data: session } = useSession()
 
-  const { platformFeatures, componentBuilder, studioChat, studioCore } = useDomains<{
+  const { platformFeatures, componentBuilder, studioChat, studioCore, billing } = useDomains<{
     platformFeatures: any
     componentBuilder: any
     studioChat: any
     studioCore: any
+    billing: any
   }>()
 
   // Create component registry from domain (same pattern as AppShell)
@@ -260,6 +261,19 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const currentUserName = session?.user?.name?.split(" ")[0] || "You"
   const userInitial = session?.user?.name?.charAt(0).toUpperCase() || "U"
 
+  // Get workspace ID for credit lookup
+  const workspaceId = project
+    ? (typeof project.workspace === 'string' ? project.workspace : project.workspace?.id)
+    : null
+
+  // Get credits from billing domain
+  const creditLedger = workspaceId
+    ? billing?.creditLedgerCollection?.findByWorkspace?.(workspaceId)
+    : null
+  const effectiveBalance = creditLedger?.effectiveBalance
+  const creditsRemaining = effectiveBalance?.total ?? 5
+  const maxCredits = effectiveBalance ? (effectiveBalance.dailyCredits + effectiveBalance.monthlyCredits + effectiveBalance.rolloverCredits) : 5
+
   // Loading state
   if (isLoading || !project || !featureSession) {
     return (
@@ -288,6 +302,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
         <ProjectTopBar
           projectName={project.name}
           projectId={projectId || ""}
+          credits={creditsRemaining}
+          maxCredits={maxCredits}
           currentUserName={currentUserName}
           userInitial={userInitial}
           showChatSessions={showChatSessions}

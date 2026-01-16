@@ -72,7 +72,6 @@ import { useWorkspaceData, useWorkspaceNavigation } from "@/components/app/works
 import { Label } from "@/components/ui/label"
 import { useDomains } from "@/contexts/DomainProvider"
 import { useSession } from "@/auth/client"
-import { CreateProjectModal } from "@/components/app/workspace/CreateProjectModal"
 import { cn } from "@/lib/utils"
 
 // Types
@@ -137,7 +136,6 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("grid")
   const [visibilityFilter, setVisibilityFilter] = useState<VisibilityFilter>("any")
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("any")
-  const [showCreateModal, setShowCreateModal] = useState(false)
   
   // Delete dialog state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -256,11 +254,6 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   const handleProjectClick = useCallback((project: Project) => {
     // Navigate to the full-screen project view
     navigate(`/projects/${project.id}`)
-  }, [navigate])
-
-  const handleCreateProject = useCallback((projectId: string) => {
-    // Navigate to the new project view
-    navigate(`/projects/${projectId}`)
   }, [navigate])
 
   const handleToggleStar = useCallback(async (projectId: string, e: React.MouseEvent) => {
@@ -635,10 +628,6 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
             {/* Create new project card */}
             <Link
               to="/"
-              onClick={(e) => {
-                e.preventDefault()
-                setShowCreateModal(true)
-              }}
               className="group flex flex-col rounded-xl border-2 border-dashed border-muted-foreground/20 hover:border-primary/40 transition-colors overflow-hidden"
             >
               <div className="relative aspect-[16/10] flex flex-col items-center justify-center gap-2 bg-muted/30">
@@ -990,9 +979,11 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
             <p className="text-sm text-muted-foreground mb-4">
               Create your first project to get started
             </p>
-            <Button size="sm" onClick={() => setShowCreateModal(true)}>
-              <Plus className="mr-2 h-4 w-4" />
-              Create project
+            <Button size="sm" asChild>
+              <Link to="/">
+                <Plus className="mr-2 h-4 w-4" />
+                Create project
+              </Link>
             </Button>
           </div>
         )}
@@ -1010,14 +1001,6 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
           </div>
         )}
       </div>
-
-      {/* Create Project Modal */}
-      <CreateProjectModal
-        open={showCreateModal}
-        onOpenChange={setShowCreateModal}
-        workspaceId={currentWorkspace?.id || ""}
-        onSuccess={handleCreateProject}
-      />
 
       {/* Rename Dialog */}
       <AlertDialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
