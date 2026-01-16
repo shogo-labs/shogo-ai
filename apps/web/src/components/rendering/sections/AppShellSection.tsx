@@ -93,7 +93,7 @@ const SectionBrowserView = observer(function SectionBrowserView({
 
   if (!componentDef) {
     return (
-      <div className="h-full flex items-center justify-center p-8">
+      <div className="flex items-center justify-center p-8 min-h-[300px]">
         <div className="text-center max-w-md">
           <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mx-auto mb-4">
             <FileText className="w-8 h-8 text-muted-foreground" />
@@ -109,7 +109,7 @@ const SectionBrowserView = observer(function SectionBrowserView({
   }
 
   return (
-    <div className="h-full overflow-auto p-6">
+    <div className="p-6">
       <div className="max-w-3xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex items-start gap-4">
@@ -191,7 +191,7 @@ const SectionBrowserView = observer(function SectionBrowserView({
                 with example config
               </span>
             </div>
-            <div className="h-[400px] overflow-auto bg-background">
+            <div className="min-h-[200px] max-h-[500px] overflow-auto bg-background">
               <DynamicSectionRenderer
                 sectionName={sectionName}
                 feature={feature}
@@ -250,7 +250,7 @@ function MainContent({
   // No active item selected - show welcome
   if (!activeItem) {
     return (
-      <div className="h-full flex items-center justify-center p-8">
+      <div className="flex items-center justify-center p-8 min-h-[300px]">
         <div className="text-center max-w-md">
           <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
             <Layout className="w-8 h-8 text-primary" />
