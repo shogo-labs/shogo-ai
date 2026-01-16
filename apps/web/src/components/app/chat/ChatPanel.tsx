@@ -1023,6 +1023,11 @@ export const ChatPanel = observer(function ChatPanel({
   // Derive isStreaming from v3 status for backward compatibility
   const isStreaming = status === 'streaming' || status === 'submitted'
 
+  // Ref to track streaming status for effects that shouldn't re-run on streaming changes
+  // but need to check current streaming state (e.g., message sync guard)
+  const isStreamingRef = useRef(false)
+  isStreamingRef.current = isStreaming
+
   // Idle timeout to force-complete hung streams
   // When Claude Code invokes skills/tools, the stream can hang indefinitely
   // because onFinish never fires. This detects idle state and calls stop().
@@ -1272,6 +1277,12 @@ export const ChatPanel = observer(function ChatPanel({
   // tool calls disappear because parts are lost.
   useEffect(() => {
     if (persistedMessagesFromMobX.length > 0) {
+      // Don't overwrite during active streaming - calling setMessages while AI SDK
+      // is streaming causes "Maximum update depth exceeded" as our state update
+      // conflicts with the SDK's internal replaceMessage calls
+      if (isStreamingRef.current) {
+        return
+      }
       // Don't overwrite if we've received messages with parts - they contain tool invocations
       // that aren't persisted and would be lost
       if (hasReceivedPartsRef.current) {
