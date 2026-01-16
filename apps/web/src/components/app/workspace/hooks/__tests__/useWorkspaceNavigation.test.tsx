@@ -3,11 +3,11 @@
  * Task: task-2-2-002
  *
  * TDD tests for the workspace navigation hook that manages URL state
- * for org/project/feature selection using nuqs.
+ * for workspace/project/feature selection using nuqs and localStorage.
  *
  * Test Specifications:
  * - test-2-2-002-001: Hook exports all required state and setters
- * - test-2-2-002-002: Changing org cascades to clear project and feature
+ * - test-2-2-002-002: Changing workspace cascades to clear project and feature
  * - test-2-2-002-003: Changing project cascades to clear feature only
  *
  * @jest-environment happy-dom
@@ -50,6 +50,8 @@ beforeEach(() => {
   container.id = "root"
   window.document.body.appendChild(container)
   root = createRoot(container)
+  // Clear localStorage before each test
+  window.localStorage.clear()
 })
 
 afterEach(() => {
@@ -65,7 +67,7 @@ afterEach(() => {
 // ============================================================
 
 describe("test-2-2-002-001: useWorkspaceNavigation exports all required state and setters", () => {
-  test("Hook returns org and setOrg", async () => {
+  test("Hook returns workspaceSlug and setWorkspaceSlug", async () => {
     const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
     const { useWorkspaceNavigation } = await import("../useWorkspaceNavigation")
 
@@ -87,9 +89,9 @@ describe("test-2-2-002-001: useWorkspaceNavigation exports all required state an
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     expect(hookResult).not.toBeNull()
-    expect(hookResult).toHaveProperty("org")
-    expect(hookResult).toHaveProperty("setOrg")
-    expect(typeof hookResult!.setOrg).toBe("function")
+    expect(hookResult).toHaveProperty("workspaceSlug")
+    expect(hookResult).toHaveProperty("setWorkspaceSlug")
+    expect(typeof hookResult!.setWorkspaceSlug).toBe("function")
   })
 
   test("Hook returns projectId and setProjectId", async () => {
@@ -178,6 +180,9 @@ describe("test-2-2-002-001: useWorkspaceNavigation exports all required state an
     const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
     const { useWorkspaceNavigation } = await import("../useWorkspaceNavigation")
 
+    // Set workspace in localStorage (workspace is stored in localStorage, not URL)
+    window.localStorage.setItem("shogo-current-workspace", "shogo")
+
     let hookResult: ReturnType<typeof useWorkspaceNavigation> | null = null
 
     const TestComponent: React.FC = () => {
@@ -187,7 +192,7 @@ describe("test-2-2-002-001: useWorkspaceNavigation exports all required state an
 
     await act(async () => {
       root.render(
-        <NuqsTestingAdapter searchParams="?org=shogo&project=proj-123&feature=feat-456">
+        <NuqsTestingAdapter searchParams="?project=proj-123&feature=feat-456">
           <TestComponent />
         </NuqsTestingAdapter>
       )
@@ -196,7 +201,7 @@ describe("test-2-2-002-001: useWorkspaceNavigation exports all required state an
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     expect(hookResult).not.toBeNull()
-    expect(hookResult!.org).toBe("shogo")
+    expect(hookResult!.workspaceSlug).toBe("shogo")
     expect(hookResult!.projectId).toBe("proj-123")
     expect(hookResult!.featureId).toBe("feat-456")
   })
@@ -223,21 +228,24 @@ describe("test-2-2-002-001: useWorkspaceNavigation exports all required state an
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     expect(hookResult).not.toBeNull()
-    expect(hookResult!.org).toBeNull()
+    expect(hookResult!.workspaceSlug).toBeNull()
     expect(hookResult!.projectId).toBeNull()
     expect(hookResult!.featureId).toBeNull()
   })
 })
 
 // ============================================================
-// Test 2: Changing org cascades to clear project and feature
+// Test 2: Changing workspace cascades to clear project and feature
 // (test-2-2-002-002)
 // ============================================================
 
-describe("test-2-2-002-002: Changing org cascades to clear project and feature", () => {
-  test("setOrg clears projectId and featureId", async () => {
+describe("test-2-2-002-002: Changing workspace cascades to clear project and feature", () => {
+  test("setWorkspaceSlug clears projectId and featureId", async () => {
     const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
     const { useWorkspaceNavigation } = await import("../useWorkspaceNavigation")
+
+    // Set initial workspace in localStorage
+    window.localStorage.setItem("shogo-current-workspace", "workspace1")
 
     let hookResult: ReturnType<typeof useWorkspaceNavigation> | null = null
 
@@ -245,7 +253,7 @@ describe("test-2-2-002-002: Changing org cascades to clear project and feature",
       hookResult = useWorkspaceNavigation()
       return (
         <div>
-          <span data-testid="org">{hookResult.org ?? "null"}</span>
+          <span data-testid="workspace">{hookResult.workspaceSlug ?? "null"}</span>
           <span data-testid="project">{hookResult.projectId ?? "null"}</span>
           <span data-testid="feature">{hookResult.featureId ?? "null"}</span>
         </div>
@@ -254,7 +262,7 @@ describe("test-2-2-002-002: Changing org cascades to clear project and feature",
 
     await act(async () => {
       root.render(
-        <NuqsTestingAdapter searchParams="?org=org1&project=proj1&feature=feat1">
+        <NuqsTestingAdapter searchParams="?project=proj1&feature=feat1">
           <TestComponent />
         </NuqsTestingAdapter>
       )
@@ -263,26 +271,29 @@ describe("test-2-2-002-002: Changing org cascades to clear project and feature",
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     // Verify initial state
-    expect(hookResult!.org).toBe("org1")
+    expect(hookResult!.workspaceSlug).toBe("workspace1")
     expect(hookResult!.projectId).toBe("proj1")
     expect(hookResult!.featureId).toBe("feat1")
 
-    // Change org - should cascade clear project and feature
+    // Change workspace - should cascade clear project and feature
     await act(async () => {
-      await hookResult!.setOrg("org2")
+      hookResult!.setWorkspaceSlug("workspace2")
     })
 
     await new Promise((resolve) => setTimeout(resolve, 100))
 
-    // Verify org changed and project/feature cleared
-    expect(hookResult!.org).toBe("org2")
+    // Verify workspace changed and project/feature cleared
+    expect(hookResult!.workspaceSlug).toBe("workspace2")
     expect(hookResult!.projectId).toBeNull()
     expect(hookResult!.featureId).toBeNull()
   })
 
-  test("setOrg to null clears all navigation state", async () => {
+  test("setWorkspaceSlug to null clears all navigation state", async () => {
     const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
     const { useWorkspaceNavigation } = await import("../useWorkspaceNavigation")
+
+    // Set initial workspace in localStorage
+    window.localStorage.setItem("shogo-current-workspace", "workspace1")
 
     let hookResult: ReturnType<typeof useWorkspaceNavigation> | null = null
 
@@ -293,7 +304,7 @@ describe("test-2-2-002-002: Changing org cascades to clear project and feature",
 
     await act(async () => {
       root.render(
-        <NuqsTestingAdapter searchParams="?org=org1&project=proj1&feature=feat1">
+        <NuqsTestingAdapter searchParams="?project=proj1&feature=feat1">
           <TestComponent />
         </NuqsTestingAdapter>
       )
@@ -301,15 +312,15 @@ describe("test-2-2-002-002: Changing org cascades to clear project and feature",
 
     await new Promise((resolve) => setTimeout(resolve, 50))
 
-    // Set org to null
+    // Set workspace to null
     await act(async () => {
-      await hookResult!.setOrg(null)
+      hookResult!.setWorkspaceSlug(null)
     })
 
     await new Promise((resolve) => setTimeout(resolve, 100))
 
     // All should be null
-    expect(hookResult!.org).toBeNull()
+    expect(hookResult!.workspaceSlug).toBeNull()
     expect(hookResult!.projectId).toBeNull()
     expect(hookResult!.featureId).toBeNull()
   })
@@ -321,9 +332,12 @@ describe("test-2-2-002-002: Changing org cascades to clear project and feature",
 // ============================================================
 
 describe("test-2-2-002-003: Changing project cascades to clear feature only", () => {
-  test("setProjectId clears featureId but preserves org", async () => {
+  test("setProjectId clears featureId but preserves workspaceSlug", async () => {
     const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
     const { useWorkspaceNavigation } = await import("../useWorkspaceNavigation")
+
+    // Set initial workspace in localStorage
+    window.localStorage.setItem("shogo-current-workspace", "workspace1")
 
     let hookResult: ReturnType<typeof useWorkspaceNavigation> | null = null
 
@@ -334,7 +348,7 @@ describe("test-2-2-002-003: Changing project cascades to clear feature only", ()
 
     await act(async () => {
       root.render(
-        <NuqsTestingAdapter searchParams="?org=org1&project=proj1&feature=feat1">
+        <NuqsTestingAdapter searchParams="?project=proj1&feature=feat1">
           <TestComponent />
         </NuqsTestingAdapter>
       )
@@ -343,26 +357,29 @@ describe("test-2-2-002-003: Changing project cascades to clear feature only", ()
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     // Verify initial state
-    expect(hookResult!.org).toBe("org1")
+    expect(hookResult!.workspaceSlug).toBe("workspace1")
     expect(hookResult!.projectId).toBe("proj1")
     expect(hookResult!.featureId).toBe("feat1")
 
-    // Change project - should clear feature but preserve org
+    // Change project - should clear feature but preserve workspace
     await act(async () => {
       await hookResult!.setProjectId("proj2")
     })
 
     await new Promise((resolve) => setTimeout(resolve, 100))
 
-    // Verify project changed, feature cleared, org preserved
-    expect(hookResult!.org).toBe("org1")
+    // Verify project changed, feature cleared, workspace preserved
+    expect(hookResult!.workspaceSlug).toBe("workspace1")
     expect(hookResult!.projectId).toBe("proj2")
     expect(hookResult!.featureId).toBeNull()
   })
 
-  test("clearProject clears projectId and featureId but preserves org", async () => {
+  test("clearProject clears projectId and featureId but preserves workspaceSlug", async () => {
     const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
     const { useWorkspaceNavigation } = await import("../useWorkspaceNavigation")
+
+    // Set initial workspace in localStorage
+    window.localStorage.setItem("shogo-current-workspace", "workspace1")
 
     let hookResult: ReturnType<typeof useWorkspaceNavigation> | null = null
 
@@ -373,7 +390,7 @@ describe("test-2-2-002-003: Changing project cascades to clear feature only", ()
 
     await act(async () => {
       root.render(
-        <NuqsTestingAdapter searchParams="?org=org1&project=proj1&feature=feat1">
+        <NuqsTestingAdapter searchParams="?project=proj1&feature=feat1">
           <TestComponent />
         </NuqsTestingAdapter>
       )
@@ -388,8 +405,8 @@ describe("test-2-2-002-003: Changing project cascades to clear feature only", ()
 
     await new Promise((resolve) => setTimeout(resolve, 100))
 
-    // Verify org preserved, project and feature cleared
-    expect(hookResult!.org).toBe("org1")
+    // Verify workspace preserved, project and feature cleared
+    expect(hookResult!.workspaceSlug).toBe("workspace1")
     expect(hookResult!.projectId).toBeNull()
     expect(hookResult!.featureId).toBeNull()
   })
@@ -397,6 +414,9 @@ describe("test-2-2-002-003: Changing project cascades to clear feature only", ()
   test("clearFeature only clears featureId", async () => {
     const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
     const { useWorkspaceNavigation } = await import("../useWorkspaceNavigation")
+
+    // Set initial workspace in localStorage
+    window.localStorage.setItem("shogo-current-workspace", "workspace1")
 
     let hookResult: ReturnType<typeof useWorkspaceNavigation> | null = null
 
@@ -407,7 +427,7 @@ describe("test-2-2-002-003: Changing project cascades to clear feature only", ()
 
     await act(async () => {
       root.render(
-        <NuqsTestingAdapter searchParams="?org=org1&project=proj1&feature=feat1">
+        <NuqsTestingAdapter searchParams="?project=proj1&feature=feat1">
           <TestComponent />
         </NuqsTestingAdapter>
       )
@@ -423,14 +443,17 @@ describe("test-2-2-002-003: Changing project cascades to clear feature only", ()
     await new Promise((resolve) => setTimeout(resolve, 100))
 
     // Verify only feature cleared
-    expect(hookResult!.org).toBe("org1")
+    expect(hookResult!.workspaceSlug).toBe("workspace1")
     expect(hookResult!.projectId).toBe("proj1")
     expect(hookResult!.featureId).toBeNull()
   })
 
-  test("setFeatureId does not affect org or projectId", async () => {
+  test("setFeatureId does not affect workspaceSlug or projectId", async () => {
     const { NuqsTestingAdapter } = await import("nuqs/adapters/testing")
     const { useWorkspaceNavigation } = await import("../useWorkspaceNavigation")
+
+    // Set initial workspace in localStorage
+    window.localStorage.setItem("shogo-current-workspace", "workspace1")
 
     let hookResult: ReturnType<typeof useWorkspaceNavigation> | null = null
 
@@ -441,7 +464,7 @@ describe("test-2-2-002-003: Changing project cascades to clear feature only", ()
 
     await act(async () => {
       root.render(
-        <NuqsTestingAdapter searchParams="?org=org1&project=proj1&feature=feat1">
+        <NuqsTestingAdapter searchParams="?project=proj1&feature=feat1">
           <TestComponent />
         </NuqsTestingAdapter>
       )
@@ -457,7 +480,7 @@ describe("test-2-2-002-003: Changing project cascades to clear feature only", ()
     await new Promise((resolve) => setTimeout(resolve, 100))
 
     // Verify only feature changed
-    expect(hookResult!.org).toBe("org1")
+    expect(hookResult!.workspaceSlug).toBe("workspace1")
     expect(hookResult!.projectId).toBe("proj1")
     expect(hookResult!.featureId).toBe("feat2")
   })

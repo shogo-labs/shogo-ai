@@ -127,8 +127,8 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   const navigate = useNavigate()
   const { data: session } = useSession()
   const { studioCore } = useDomains()
-  const { currentWorkspace, projects, folders, currentFolder, folderBreadcrumbs, refetchProjects, refetchFolders } = useWorkspaceData()
-  const { setProjectId, folderId, setFolderId, clearFolder } = useWorkspaceNavigation()
+  const { currentWorkspace, projects, folders, currentFolder, folderBreadcrumbs, refetchProjects, refetchFolders, starredProjectIds, toggleStarProject: toggleStar } = useWorkspaceData()
+  const { folderId, setFolderId, clearFolder } = useWorkspaceNavigation()
 
   // State
   const [searchQuery, setSearchQuery] = useState("")
@@ -149,9 +149,6 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   const [projectToRename, setProjectToRename] = useState<Project | null>(null)
   const [newName, setNewName] = useState("")
   const [isRenaming, setIsRenaming] = useState(false)
-
-  // Starred projects (local state for now)
-  const [starredIds, setStarredIds] = useState<Set<string>>(new Set())
 
   // Folder dialog state
   const [createFolderDialogOpen, setCreateFolderDialogOpen] = useState(false)
@@ -256,29 +253,21 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   }, [projects, folderId, searchQuery, sortBy, sortOrder, statusFilter])
 
   // Handlers
-  const handleProjectClick = useCallback(async (project: Project) => {
-    // Set project ID first, then navigate with preserved params
-    const params = await setProjectId(project.id)
-    navigate(`/?${params.toString()}`)
-  }, [setProjectId, navigate])
+  const handleProjectClick = useCallback((project: Project) => {
+    // Navigate to the full-screen project view
+    navigate(`/projects/${project.id}`)
+  }, [navigate])
 
-  const handleCreateProject = useCallback(async (projectId: string) => {
-    const params = await setProjectId(projectId)
-    navigate(`/?${params.toString()}`)
-  }, [setProjectId, navigate])
+  const handleCreateProject = useCallback((projectId: string) => {
+    // Navigate to the new project view
+    navigate(`/projects/${projectId}`)
+  }, [navigate])
 
-  const handleToggleStar = useCallback((projectId: string, e: React.MouseEvent) => {
+  const handleToggleStar = useCallback(async (projectId: string, e: React.MouseEvent) => {
     e.stopPropagation()
-    setStarredIds(prev => {
-      const next = new Set(prev)
-      if (next.has(projectId)) {
-        next.delete(projectId)
-      } else {
-        next.add(projectId)
-      }
-      return next
-    })
-  }, [])
+    if (!currentWorkspace?.id) return
+    await toggleStar(projectId, currentWorkspace.id)
+  }, [currentWorkspace?.id, toggleStar])
 
   const handleRename = useCallback(async () => {
     if (!projectToRename || !newName.trim() || !studioCore) return
@@ -736,13 +725,13 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                     onClick={(e) => handleToggleStar(project.id, e)}
                     className={cn(
                       "absolute top-2 right-2 p-1.5 rounded-md transition-all",
-                      starredIds.has(project.id)
+                      starredProjectIds.has(project.id)
                         ? "bg-yellow-500/90 text-white opacity-100"
                         : "bg-black/30 text-white/90 opacity-0 group-hover:opacity-100 hover:bg-black/50"
                     )}
-                    title={starredIds.has(project.id) ? "Remove from favorites" : "Add to favorites"}
+                    title={starredProjectIds.has(project.id) ? "Remove from favorites" : "Add to favorites"}
                   >
-                    <Star className={cn("h-3.5 w-3.5", starredIds.has(project.id) && "fill-current")} />
+                    <Star className={cn("h-3.5 w-3.5", starredProjectIds.has(project.id) && "fill-current")} />
                   </button>
                 </div>
 
@@ -818,6 +807,73 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
               <div>Created by</div>
             </div>
 
+            {/* Folder rows */}
+            <div className="space-y-0">
+              {currentFolders.map((folder) => (
+                <div
+                  key={folder.id}
+                  onClick={() => handleFolderClick(folder)}
+                  className="group grid grid-cols-[1fr_120px_140px] gap-4 px-3 py-2.5 rounded-lg hover:bg-accent/50 transition-colors items-center cursor-pointer"
+                >
+                  {/* Name column with folder icon */}
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex-shrink-0 w-12 h-8 rounded-md bg-muted flex items-center justify-center">
+                      <FolderOpen className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-sm truncate">{folder.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {(projects as Project[]).filter(p => p.folderId === folder.id).length} projects
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Created at column */}
+                  <div className="text-sm text-muted-foreground">
+                    {folder.createdAt ? getTimeAgo(folder.createdAt) : "—"}
+                  </div>
+
+                  {/* Actions column */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">—</span>
+                    
+                    {/* Actions */}
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                            }}
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={(e) => openRenameFolderDialog(folder, e as any)}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Rename
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={(e) => openDeleteFolderDialog(folder, e as any)}
+                            className="text-destructive"
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
             {/* Project rows */}
             <div className="space-y-0">
               {filteredProjects.map((project) => (
@@ -877,7 +933,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                       >
                         <Star className={cn(
                           "h-4 w-4",
-                          starredIds.has(project.id) && "fill-yellow-500 text-yellow-500"
+                          starredProjectIds.has(project.id) && "fill-yellow-500 text-yellow-500"
                         )} />
                       </Button>
                       <DropdownMenu>

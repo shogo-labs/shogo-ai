@@ -149,7 +149,7 @@ export function MessageContent({
     "rounded-lg px-4 py-2 text-sm",
     isUser
       ? "max-w-[85%] bg-primary text-primary-foreground ml-auto"
-      : "w-full bg-muted text-foreground",
+      : "w-full bg-transparent text-foreground",
     className
   )
 

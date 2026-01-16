@@ -33,6 +33,10 @@
     "./persistence/null": {
       "import": "./src/persistence/null.ts",
       "types": "./src/persistence/null.ts"
+    },
+    "./billing/domain": {
+      "import": "./src/billing/domain.ts",
+      "types": "./src/billing/domain.ts"
     }
   },
   "scripts": {

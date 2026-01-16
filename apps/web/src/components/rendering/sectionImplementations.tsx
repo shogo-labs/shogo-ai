@@ -65,6 +65,10 @@ import { PlanPreviewSection } from "./sections/PlanPreviewSection"
 import { DataGridSection } from "./sections/DataGridSection"
 // Chart section
 import { ChartSection } from "./sections/ChartSection"
+// App building sections
+import { AppBarSection } from "./sections/AppBarSection"
+import { SideNavSection } from "./sections/SideNavSection"
+import { AppShellSection } from "./sections/AppShellSection"
 
 // Re-export SectionRendererProps from types.ts to avoid circular dependencies
 // (Analysis section components import from types.ts, not from this file)
@@ -144,6 +148,10 @@ export const sectionImplementationMap = new Map<
   ["DataGridSection", DataGridSection],
   // Chart section (D3-based visualizations)
   ["ChartSection", ChartSection],
+  // App building sections
+  ["AppBarSection", AppBarSection],
+  ["SideNavSection", SideNavSection],
+  ["AppShellSection", AppShellSection],
 ])
 
 /**

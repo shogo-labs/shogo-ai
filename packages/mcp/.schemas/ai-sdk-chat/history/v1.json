@@ -1,0 +1,161 @@
+{
+  "id": "f1a54d9a-cded-4e01-b6b4-da9dd3c4a15b",
+  "name": "ai-sdk-chat",
+  "format": "enhanced-json-schema",
+  "createdAt": 1766002943778,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-persistence": {
+    "backend": "postgres"
+  },
+  "$defs": {
+    "ChatSession": {
+      "type": "object",
+      "description": "A conversation session with Claude",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name"
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "description": "User-friendly name for the chat session"
+        },
+        "claudeSessionId": {
+          "type": "string",
+          "description": "Session ID from Claude Code for multi-turn context"
+        },
+        "project": {
+          "type": "string",
+          "description": "Loose ref to Project.id"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Loose ref to AuthUser.id"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "completed",
+            "error"
+          ]
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "status",
+        "createdAt"
+      ],
+      "x-original-name": "ChatSession"
+    },
+    "ChatMessage": {
+      "type": "object",
+      "description": "A message in a chat session",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "id",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "x-arktype": "ChatSession",
+          "x-mst-type": "reference",
+          "x-reference-type": "single",
+          "x-reference-target": "ChatSession"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "user",
+            "assistant"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "description": "Message text content"
+        },
+        "toolCalls": {
+          "type": "array",
+          "description": "Tool calls made by assistant"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "role",
+        "content",
+        "createdAt"
+      ],
+      "x-original-name": "ChatMessage"
+    },
+    "CreatedArtifact": {
+      "type": "object",
+      "description": "Tracks artifacts created by a chat session",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "artifactName",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-mst-type": "identifier"
+        },
+        "session": {
+          "type": "string",
+          "x-arktype": "ChatSession",
+          "x-mst-type": "reference",
+          "x-reference-type": "single",
+          "x-reference-target": "ChatSession"
+        },
+        "artifactType": {
+          "type": "string",
+          "enum": [
+            "schema",
+            "entity",
+            "other"
+          ]
+        },
+        "artifactName": {
+          "type": "string",
+          "description": "Name of the created artifact"
+        },
+        "toolName": {
+          "type": "string",
+          "description": "Tool that created this artifact"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "artifactType",
+        "artifactName",
+        "toolName",
+        "createdAt"
+      ],
+      "x-original-name": "CreatedArtifact"
+    }
+  }
+}

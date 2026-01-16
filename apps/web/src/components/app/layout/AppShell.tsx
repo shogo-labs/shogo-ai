@@ -29,7 +29,7 @@
 
 import { useState, useEffect, useCallback, useRef, createContext, useContext } from "react"
 import { observer } from "mobx-react-lite"
-import { Outlet } from "react-router-dom"
+import { Outlet, useSearchParams } from "react-router-dom"
 import { AppHeader } from "./AppHeader"
 import { AppSidebar } from "./AppSidebar"
 import { BindingEditorPanel } from "./BindingEditorPanel"
@@ -37,6 +37,8 @@ import { ComponentRegistryProvider } from "@/components/rendering"
 import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
 import { useDomains } from "@/contexts/DomainProvider"
 import { CommandPalette, useCommandPalette, SettingsModalProvider } from "../shared"
+import { useWorkspaceNavigation } from "../workspace/hooks"
+import { useToast } from "@/hooks/use-toast"
 
 // Context to share command palette state with sidebar
 interface CommandPaletteContextValue {
@@ -72,13 +74,65 @@ export function useCommandPaletteContext() {
  */
 export const AppShell = observer(function AppShell() {
   // Access componentBuilder domain from DomainProvider
-  const { componentBuilder } = useDomains()
+  const { componentBuilder, studioCore } = useDomains()
+  const { setWorkspaceSlug, projectId } = useWorkspaceNavigation()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const { toast } = useToast()
+  
+  // Determine if we're on the home view (no project selected)
+  // On home view, we hide the header for a cleaner Lovable-style layout
+  const isHomeView = !projectId
 
   // State for BindingEditorPanel visibility
   const [isBindingEditorOpen, setIsBindingEditorOpen] = useState(false)
 
   // Command palette state (global search)
   const { open: isCommandPaletteOpen, setOpen: setCommandPaletteOpen } = useCommandPalette()
+
+  // Handle checkout redirect params (workspace, checkout=success|canceled)
+  useEffect(() => {
+    const workspaceId = searchParams.get("workspace")
+    const checkoutStatus = searchParams.get("checkout")
+
+    if (workspaceId && checkoutStatus) {
+      // Find workspace by ID and get its slug
+      const workspace = studioCore?.workspaceCollection?.all()?.find(
+        (w: any) => w.id === workspaceId
+      )
+
+      if (checkoutStatus === "success") {
+        // Switch to the newly created workspace
+        if (workspace) {
+          setWorkspaceSlug(workspace.slug)
+          toast({
+            title: "Subscription activated",
+            description: `Your workspace "${workspace.name}" is now on a paid plan.`,
+          })
+        } else {
+          // Workspace not found in local state yet - store ID temporarily
+          // The workspace should appear after a data refresh
+          toast({
+            title: "Subscription activated",
+            description: "Your subscription is now active.",
+          })
+        }
+      } else if (checkoutStatus === "canceled") {
+        // User canceled checkout - optionally delete the workspace
+        // For now, just notify them
+        toast({
+          title: "Checkout canceled",
+          description: "No charges were made. The workspace was not upgraded.",
+          variant: "destructive",
+        })
+      }
+
+      // Clean up URL params
+      searchParams.delete("workspace")
+      searchParams.delete("checkout")
+      searchParams.delete("session_id")
+      setSearchParams(searchParams, { replace: true })
+    }
+  }, [searchParams, setSearchParams, studioCore, setWorkspaceSlug, toast])
   
   // Context value for sharing with sidebar
   const commandPaletteContextValue = {
@@ -144,7 +198,8 @@ export const AppShell = observer(function AppShell() {
             
             {/* Main content area */}
             <div className="flex-1 flex flex-col min-w-0">
-              <AppHeader />
+              {/* Header - hidden on home view for cleaner Lovable-style layout */}
+              {!isHomeView && <AppHeader />}
               <main className="flex-1 overflow-auto bg-background">
                 <Outlet />
               </main>
