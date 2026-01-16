@@ -686,14 +686,14 @@ app.post('/api/chat', async (c) => {
       const store = await getBillingStore()
 
       // Query the SQL backend directly for the credit ledger
-      // Use .toArray() to execute the query and get results
-      const ledgers = await store.creditLedgerCollection.query({ workspace: workspaceId }).toArray()
+      // Use .where() for filtering, then .toArray() to execute the query
+      const ledgers = await store.creditLedgerCollection.query().where({ workspace: workspaceId }).toArray()
       let ledger = ledgers[0]
 
       // If no ledger exists, allocate free tier credits
       if (!ledger) {
         await store.allocateFreeCredits(workspaceId)
-        const newLedgers = await store.creditLedgerCollection.query({ workspace: workspaceId }).toArray()
+        const newLedgers = await store.creditLedgerCollection.query().where({ workspace: workspaceId }).toArray()
         ledger = newLedgers[0]
       }
 

@@ -137,11 +137,17 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
     return "Free"
   }, [getActiveSubscription])
 
-  // TODO: Get actual member count and credits from domain
+  // Get actual credit values from billing domain
+  const creditLedger = currentWorkspace
+    ? billing?.creditLedgerCollection?.findByWorkspace?.(currentWorkspace.id)
+    : null
+  const effectiveBalance = creditLedger?.effectiveBalance
+
+  // TODO: Get actual member count from domain
   const memberCount = 1
-  const creditsUsed = 0
+  const creditsRemaining = effectiveBalance?.total ?? (subscription ? 105 : 5)
   const creditsTotal = subscription ? 105 : 5 // Pro gets 100 monthly + 5 daily
-  const creditsPercent = (creditsUsed / creditsTotal) * 100
+  const creditsPercent = ((creditsTotal - creditsRemaining) / creditsTotal) * 100
 
   // Show skeleton during loading
   if (isLoading) {
@@ -232,12 +238,19 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
               <div className="px-3 py-2.5 space-y-2">
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">Credits</span>
-                  <span className="font-medium">{creditsTotal - creditsUsed} left</span>
+                  <span className="font-medium">{creditsRemaining.toFixed(1)} left</span>
                 </div>
                 <Progress value={100 - creditsPercent} className="h-1.5" />
-                <div className="text-xs text-muted-foreground">
-                  Daily credits reset at midnight UTC
-                </div>
+                {effectiveBalance && (
+                  <div className="text-xs text-muted-foreground">
+                    Daily: {effectiveBalance.dailyCredits.toFixed(1)} • Monthly: {effectiveBalance.monthlyCredits.toFixed(1)}
+                  </div>
+                )}
+                {!effectiveBalance && (
+                  <div className="text-xs text-muted-foreground">
+                    Daily credits reset at midnight UTC
+                  </div>
+                )}
               </div>
               <DropdownMenuSeparator />
             </>
