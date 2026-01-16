@@ -44,6 +44,86 @@ import { FieldCondition, CompoundCondition, Condition } from '@ucast/core'
 import type { SerializedCondition } from './types'
 
 /**
+ * PCRE/Python inline flags that JavaScript RegExp doesn't support.
+ * These appear at the start of a pattern like (?i) for case-insensitive.
+ */
+const PCRE_INLINE_FLAG_PATTERN = /^\(\?([imsluxUXJ]+)\)/
+
+/**
+ * Map PCRE inline flags to JavaScript RegExp flags where possible.
+ * Not all PCRE flags have JS equivalents.
+ */
+const PCRE_TO_JS_FLAG_MAP: Record<string, string> = {
+  i: 'i', // case-insensitive
+  m: 'm', // multiline
+  s: 's', // dotAll (. matches newline)
+  // x, l, u, U, X, J have no direct JS equivalents
+}
+
+/**
+ * Normalize a regex pattern by converting PCRE inline flags to JS flags.
+ *
+ * @param pattern - The regex pattern string (may contain PCRE inline flags)
+ * @param existingFlags - Any existing flags from $options
+ * @returns Object with normalized pattern and flags
+ *
+ * @example
+ * normalizeRegexPattern('(?i)(foo|bar)', '')
+ * // => { pattern: '(foo|bar)', flags: 'i' }
+ *
+ * normalizeRegexPattern('(?im)pattern', 'g')
+ * // => { pattern: 'pattern', flags: 'gim' }
+ */
+function normalizeRegexPattern(
+  pattern: string,
+  existingFlags: string
+): { pattern: string; flags: string } {
+  const match = PCRE_INLINE_FLAG_PATTERN.exec(pattern)
+
+  if (!match) {
+    return { pattern, flags: existingFlags }
+  }
+
+  const pcreFlags = match[1]
+  const normalizedPattern = pattern.slice(match[0].length)
+
+  // Convert PCRE flags to JS flags where possible
+  let additionalFlags = ''
+  for (const flag of pcreFlags) {
+    const jsFlag = PCRE_TO_JS_FLAG_MAP[flag]
+    if (jsFlag && !existingFlags.includes(jsFlag)) {
+      additionalFlags += jsFlag
+    }
+  }
+
+  return {
+    pattern: normalizedPattern,
+    flags: existingFlags + additionalFlags
+  }
+}
+
+/**
+ * Safely create a RegExp, returning null if the pattern is invalid.
+ * Logs a warning for debugging purposes.
+ *
+ * @param pattern - The regex pattern string
+ * @param flags - Optional regex flags
+ * @returns RegExp instance or null if invalid
+ */
+function safeCreateRegExp(pattern: string, flags: string): RegExp | null {
+  try {
+    return new RegExp(pattern, flags)
+  } catch (error) {
+    console.warn(
+      `[Query Serialization] Invalid regex pattern: /${pattern}/${flags}. ` +
+      `Error: ${error instanceof Error ? error.message : String(error)}. ` +
+      `The query will match nothing.`
+    )
+    return null
+  }
+}
+
+/**
  * Serialize a Condition AST node to JSON-safe format.
  *
  * Converts FieldCondition and CompoundCondition instances to plain objects
@@ -141,10 +221,18 @@ export function deserializeCondition(json: any): Condition {
       typeof json.value === 'object' &&
       '$regex' in json.value
     ) {
-      deserializedValue = new RegExp(
+      // Normalize PCRE inline flags (like (?i)) to JS flags
+      const { pattern, flags } = normalizeRegexPattern(
         json.value.$regex,
         json.value.$options || ''
       )
+
+      // Safely create the RegExp - returns null on invalid patterns
+      const regex = safeCreateRegExp(pattern, flags)
+
+      // If regex creation failed, use a pattern that matches nothing
+      // This prevents crashes while still allowing the query to execute
+      deserializedValue = regex ?? /(?!)/  // Negative lookahead matches nothing
     }
 
     return new FieldCondition(

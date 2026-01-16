@@ -66,9 +66,8 @@ export class MCPPersistence implements IPersistenceService {
 
   /**
    * Load a schema by name via MCP.
-   * Uses schema.load which creates the runtime store server-side.
-   * Converts the model descriptors response into enhanced JSON schema format
-   * that can be ingested by the meta-store.
+   * Uses schema.load which creates the runtime store server-side and returns
+   * the full enhanced JSON schema (preserving x-renderer, format, and all extensions).
    */
   async loadSchema(name: string, location?: string): Promise<{
     metadata: { name: string; id?: string; views?: Record<string, any> }
@@ -76,10 +75,11 @@ export class MCPPersistence implements IPersistenceService {
   } | null> {
     await this.ensureInitialized()
     try {
-      // Load schema (triggers server-side caching and returns metadata)
+      // Load schema (triggers server-side caching and returns full enhanced schema)
       const loadResult = await this.mcp.callTool<{
         ok: boolean
         schemaId?: string
+        enhanced?: any  // Full enhanced JSON schema with all x-* extensions
         models?: Array<{
           name: string
           collectionName: string
@@ -94,34 +94,41 @@ export class MCPPersistence implements IPersistenceService {
         return null
       }
 
-      // Convert model descriptors back to enhanced JSON schema format
-      // This allows the meta-store to ingest them properly
-      const $defs: Record<string, any> = {}
+      // Use the full enhanced schema directly (preserves x-renderer, format, etc.)
+      // Fall back to reconstructing from model descriptors for backward compatibility
+      let enhanced = loadResult.enhanced
+      if (!enhanced) {
+        console.warn('[MCPPersistence] No enhanced schema in response, falling back to model descriptors')
+        const $defs: Record<string, any> = {}
 
-      for (const model of loadResult.models || []) {
-        const properties: Record<string, any> = {}
-        const required: string[] = []
+        for (const model of loadResult.models || []) {
+          const properties: Record<string, any> = {}
+          const required: string[] = []
 
-        // Convert fields to properties
-        for (const field of model.fields || []) {
-          properties[field.name] = { type: field.type }
-          if (field.required) {
-            required.push(field.name)
+          for (const field of model.fields || []) {
+            properties[field.name] = { type: field.type }
+            if (field.required) {
+              required.push(field.name)
+            }
+          }
+
+          for (const ref of model.refs || []) {
+            properties[ref.name] = {
+              $ref: `#/$defs/${ref.target}`,
+              'x-reference-type': ref.type
+            }
+          }
+
+          $defs[model.name] = {
+            type: 'object',
+            properties,
+            ...(required.length > 0 ? { required } : {})
           }
         }
 
-        // Convert refs to properties with x-reference-type
-        for (const ref of model.refs || []) {
-          properties[ref.name] = {
-            $ref: `#/$defs/${ref.target}`,
-            'x-reference-type': ref.type
-          }
-        }
-
-        $defs[model.name] = {
-          type: 'object',
-          properties,
-          ...(required.length > 0 ? { required } : {})
+        enhanced = {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          $defs
         }
       }
 
@@ -130,10 +137,7 @@ export class MCPPersistence implements IPersistenceService {
           name,
           id: loadResult.schemaId
         },
-        enhanced: {
-          $schema: 'https://json-schema.org/draft/2020-12/schema',
-          $defs
-        }
+        enhanced
       }
     } catch (error: any) {
       console.error('[MCPPersistence] loadSchema error:', error.message)

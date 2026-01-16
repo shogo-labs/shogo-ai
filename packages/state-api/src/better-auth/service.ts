@@ -83,6 +83,8 @@ function mapUser(baUser: BetterAuthUser | BetterAuthUserData): AuthUser {
   return {
     id: baUser.id,
     email: baUser.email,
+    name: baUser.name,
+    image: baUser.image,
     emailVerified: baUser.emailVerified,
     createdAt:
       typeof baUser.createdAt === "string"

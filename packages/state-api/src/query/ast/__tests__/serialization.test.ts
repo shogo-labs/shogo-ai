@@ -227,4 +227,111 @@ describe('serialization.test.ts - AST Serialization', () => {
       expect(restoredField.value.flags).toContain('i')
     })
   })
+
+  describe('PCRE inline flags handling', () => {
+    test('converts (?i) inline flag to JS case-insensitive flag', () => {
+      // This tests the fix for Python/PCRE-style inline flags
+      // which JavaScript RegExp doesn't support
+      const serializedJson = {
+        type: 'field',
+        operator: 'regex',
+        field: 'name',
+        value: { $regex: '(?i)(image|photo|avatar)', $options: '' }
+      }
+
+      const condition = deserializeCondition(serializedJson)
+      const fieldCondition = condition as FieldCondition<RegExp>
+
+      // Should convert (?i) to 'i' flag
+      expect(fieldCondition.value).toBeInstanceOf(RegExp)
+      expect(fieldCondition.value.flags).toBe('i')
+      // Pattern should have the (?i) prefix removed
+      expect(fieldCondition.value.source).toBe('(image|photo|avatar)')
+    })
+
+    test('converts (?im) multiple inline flags to JS flags', () => {
+      const serializedJson = {
+        type: 'field',
+        operator: 'regex',
+        field: 'content',
+        value: { $regex: '(?im)^start.*end$', $options: '' }
+      }
+
+      const condition = deserializeCondition(serializedJson)
+      const fieldCondition = condition as FieldCondition<RegExp>
+
+      expect(fieldCondition.value).toBeInstanceOf(RegExp)
+      expect(fieldCondition.value.flags).toContain('i')
+      expect(fieldCondition.value.flags).toContain('m')
+      expect(fieldCondition.value.source).toBe('^start.*end$')
+    })
+
+    test('merges PCRE flags with existing $options flags', () => {
+      const serializedJson = {
+        type: 'field',
+        operator: 'regex',
+        field: 'name',
+        value: { $regex: '(?i)test', $options: 'g' }
+      }
+
+      const condition = deserializeCondition(serializedJson)
+      const fieldCondition = condition as FieldCondition<RegExp>
+
+      expect(fieldCondition.value.flags).toContain('g')
+      expect(fieldCondition.value.flags).toContain('i')
+      expect(fieldCondition.value.source).toBe('test')
+    })
+
+    test('does not duplicate flags when already in $options', () => {
+      const serializedJson = {
+        type: 'field',
+        operator: 'regex',
+        field: 'name',
+        value: { $regex: '(?i)test', $options: 'i' }
+      }
+
+      const condition = deserializeCondition(serializedJson)
+      const fieldCondition = condition as FieldCondition<RegExp>
+
+      // Should not have 'ii'
+      expect(fieldCondition.value.flags).toBe('i')
+    })
+
+    test('handles invalid regex patterns gracefully without crashing', () => {
+      // An invalid regex that can't be converted (has unsupported PCRE features)
+      const serializedJson = {
+        type: 'field',
+        operator: 'regex',
+        field: 'name',
+        // This pattern has an unbalanced parenthesis after flag stripping
+        value: { $regex: '(?i)(unbalanced', $options: '' }
+      }
+
+      // Should not throw - returns a never-matching regex instead
+      expect(() => deserializeCondition(serializedJson)).not.toThrow()
+
+      const condition = deserializeCondition(serializedJson)
+      const fieldCondition = condition as FieldCondition<RegExp>
+
+      // Should return a regex that matches nothing
+      expect(fieldCondition.value).toBeInstanceOf(RegExp)
+      // The fallback regex /(?!)/ matches nothing
+      expect('anything'.match(fieldCondition.value)).toBeNull()
+    })
+
+    test('preserves patterns without PCRE flags', () => {
+      const serializedJson = {
+        type: 'field',
+        operator: 'regex',
+        field: 'name',
+        value: { $regex: '(image|photo)', $options: 'i' }
+      }
+
+      const condition = deserializeCondition(serializedJson)
+      const fieldCondition = condition as FieldCondition<RegExp>
+
+      expect(fieldCondition.value.source).toBe('(image|photo)')
+      expect(fieldCondition.value.flags).toBe('i')
+    })
+  })
 })

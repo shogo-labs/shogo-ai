@@ -96,6 +96,17 @@ export class ComponentRegistry implements IComponentRegistry {
    */
   resolve(property: PropertyMetadata): ComponentType<DisplayRendererProps> {
     const entry = this.getEntry(property)
+    // DEBUG: Log resolution for image-related fields
+    if (property.name === "image" || property.name === "avatar") {
+      console.log("[ComponentRegistry] Resolving image-related field:", {
+        name: property.name,
+        type: property.type,
+        format: property.format,
+        xRenderer: property.xRenderer,
+        matchedEntry: entry?.id ?? "none (using default)",
+        allEntryIds: this.entries_.map(e => e.id)
+      })
+    }
     return entry?.component ?? this.defaultComponent
   }
 
