@@ -9,7 +9,7 @@
  * Features:
  * - Workspace persisted in localStorage, not URL
  * - Type-safe URL state via nuqs parseAsString
- * - Cascade clearing: changing org clears project+feature, changing project clears feature
+ * - Cascade clearing: changing workspace clears project+feature, changing project clears feature
  * - Clean utility functions: clearFeature, clearProject
  */
 
@@ -23,9 +23,9 @@ const WORKSPACE_STORAGE_KEY = "shogo-current-workspace"
  */
 export interface WorkspaceNavigationState {
   /** Current workspace slug from localStorage */
-  org: string | null
+  workspaceSlug: string | null
   /** Set workspace slug (cascades to clear project, feature, and folder) */
-  setOrg: (org: string | null) => void
+  setWorkspaceSlug: (slug: string | null) => void
   /** Current project ID from URL */
   projectId: string | null
   /** Set project ID (cascades to clear feature) */
@@ -38,9 +38,9 @@ export interface WorkspaceNavigationState {
   folderId: string | null
   /** Set folder ID for navigating into folders */
   setFolderId: (folderId: string | null) => Promise<URLSearchParams>
-  /** Clear feature ID (keeps org and project) */
+  /** Clear feature ID (keeps workspace and project) */
   clearFeature: () => Promise<URLSearchParams>
-  /** Clear project ID and feature ID (keeps org) */
+  /** Clear project ID and feature ID (keeps workspace) */
   clearProject: () => Promise<URLSearchParams>
   /** Clear folder ID (navigate to root of All Projects) */
   clearFolder: () => Promise<URLSearchParams>
@@ -58,10 +58,10 @@ export interface WorkspaceNavigationState {
  *
  * @example
  * ```tsx
- * const { org, setOrg, projectId, setProjectId, featureId } = useWorkspaceNavigation()
+ * const { workspaceSlug, setWorkspaceSlug, projectId, setProjectId, featureId } = useWorkspaceNavigation()
  *
  * // Navigate to a different workspace (clears project and feature)
- * setOrg('new-workspace')
+ * setWorkspaceSlug('new-workspace')
  *
  * // Select a project (clears feature)
  * await setProjectId('project-123')
@@ -72,7 +72,7 @@ export interface WorkspaceNavigationState {
  */
 export function useWorkspaceNavigation(): WorkspaceNavigationState {
   // Workspace slug stored in localStorage
-  const [org, setOrgState] = useState<string | null>(() => {
+  const [workspaceSlug, setWorkspaceSlugState] = useState<string | null>(() => {
     if (typeof window === "undefined") return null
     return localStorage.getItem(WORKSPACE_STORAGE_KEY)
   })
@@ -81,13 +81,13 @@ export function useWorkspaceNavigation(): WorkspaceNavigationState {
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === WORKSPACE_STORAGE_KEY) {
-        setOrgState(e.newValue)
+        setWorkspaceSlugState(e.newValue)
       }
     }
 
     // Custom event for same-window localStorage updates
     const handleCustomStorageChange = (e: CustomEvent<string | null>) => {
-      setOrgState(e.detail)
+      setWorkspaceSlugState(e.detail)
     }
 
     window.addEventListener("storage", handleStorageChange)
@@ -111,19 +111,19 @@ export function useWorkspaceNavigation(): WorkspaceNavigationState {
   /**
    * Set workspace - cascades to clear project, feature, and folder
    */
-  const setOrg = useCallback(
-    (newOrg: string | null) => {
+  const setWorkspaceSlug = useCallback(
+    (newSlug: string | null) => {
       // Update localStorage
-      if (newOrg) {
-        localStorage.setItem(WORKSPACE_STORAGE_KEY, newOrg)
+      if (newSlug) {
+        localStorage.setItem(WORKSPACE_STORAGE_KEY, newSlug)
       } else {
         localStorage.removeItem(WORKSPACE_STORAGE_KEY)
       }
-      setOrgState(newOrg)
+      setWorkspaceSlugState(newSlug)
 
       // Dispatch custom event to notify other hook instances in the same window
       // (storage event only fires for other tabs/windows, not the same window)
-      window.dispatchEvent(new CustomEvent("workspace-changed", { detail: newOrg }))
+      window.dispatchEvent(new CustomEvent("workspace-changed", { detail: newSlug }))
 
       // Clear URL params when workspace changes
       setProjectIdRaw(null)
@@ -188,8 +188,8 @@ export function useWorkspaceNavigation(): WorkspaceNavigationState {
   }, [setFolderIdRaw])
 
   return {
-    org,
-    setOrg,
+    workspaceSlug,
+    setWorkspaceSlug,
     projectId,
     setProjectId,
     featureId,

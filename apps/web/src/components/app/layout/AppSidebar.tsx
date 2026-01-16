@@ -386,7 +386,7 @@ function FolderItem({ folder, projects, collapsed, onNavigate, onRename, onDelet
 export const AppSidebar = observer(function AppSidebar() {
   const location = useLocation()
   const navigate = useNavigate()
-  const { setOrg: setWorkspace, setFolderId } = useWorkspaceNavigation()
+  const { setWorkspaceSlug, setFolderId } = useWorkspaceNavigation()
   const { workspaces, currentWorkspace, projects, folders, isLoading, refetchFolders } = useWorkspaceData()
   const { openCommandPalette } = useCommandPaletteContext()
   const { studioCore, billing, auth } = useDomains()
@@ -435,7 +435,7 @@ export const AppSidebar = observer(function AppSidebar() {
 
   // Handle workspace change
   const handleWorkspaceChange = (slug: string) => {
-    setWorkspace(slug)
+    setWorkspaceSlug(slug)
   }
 
   // Check if current path matches

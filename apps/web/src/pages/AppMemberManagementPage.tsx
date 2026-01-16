@@ -1,7 +1,7 @@
 /**
  * AppMemberManagementPage - Member management within the /app context
  *
- * Uses the current organization from workspace URL state.
+ * Uses the current workspace from URL state.
  * Renders member list, invite modal, and pending invitations.
  */
 
@@ -51,9 +51,9 @@ export const AppMemberManagementPage = observer(function AppMemberManagementPage
       <div className="p-6">
         <div className="text-center py-12">
           <Users className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-          <h2 className="text-xl font-semibold mb-2">No Organization Selected</h2>
+          <h2 className="text-xl font-semibold mb-2">No Workspace Selected</h2>
           <p className="text-muted-foreground mb-4">
-            Select an organization from the dropdown to manage members.
+            Select a workspace from the dropdown to manage members.
           </p>
           <Link to="/app">
             <Button variant="outline">

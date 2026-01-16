@@ -7,12 +7,12 @@
  *
  * Per design decision design-2-2-data-flow:
  * - Components receive derived data, don't call domains directly
- * - orgs fetched from MCP (studioCore.organizationCollection)
+ * - workspaces fetched from MCP (studioCore.workspaceCollection)
  * - projects fetched from MCP (studioCore.projectCollection)
  * - features from MCP (platformFeatures.featureSessionCollection)
  * - features grouped by StatusToPhase map into featuresByPhase
  *
- * Note: This hook triggers MCP reload when userId/orgId changes.
+ * Note: This hook triggers MCP reload when userId/workspaceId changes.
  */
 
 import { useState, useEffect, useCallback } from "react"
@@ -113,8 +113,8 @@ export interface WorkspaceDataState {
  * ```
  */
 export function useWorkspaceData(): WorkspaceDataState {
-  // Get URL state (org is now workspace slug) and setters
-  const { org: workspaceSlug, projectId, featureId, folderId, setOrg } = useWorkspaceNavigation()
+  // Get URL state and setters
+  const { workspaceSlug, projectId, featureId, folderId, setWorkspaceSlug } = useWorkspaceNavigation()
 
   // Get auth session from Better Auth
   const { data: session, isPending: isSessionLoading } = useSession()
@@ -187,9 +187,9 @@ export function useWorkspaceData(): WorkspaceDataState {
         ws.slug?.includes("personal") || ws.name?.toLowerCase().includes("personal")
       )
       const workspaceToSelect = personalWorkspace || workspaces[0]
-      setOrg(workspaceToSelect.slug)
+      setWorkspaceSlug(workspaceToSelect.slug)
     }
-  }, [isLoadingWorkspaces, workspaces.length, workspaceSlug, setOrg])
+  }, [isLoadingWorkspaces, workspaces.length, workspaceSlug, setWorkspaceSlug])
 
   // Get current user's role in the current workspace from memberCollection
   let currentWorkspaceRole: "owner" | "admin" | "member" | "viewer" | undefined = undefined

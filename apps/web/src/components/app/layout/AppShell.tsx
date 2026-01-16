@@ -75,7 +75,7 @@ export function useCommandPaletteContext() {
 export const AppShell = observer(function AppShell() {
   // Access componentBuilder domain from DomainProvider
   const { componentBuilder, studioCore } = useDomains()
-  const { setOrg, projectId } = useWorkspaceNavigation()
+  const { setWorkspaceSlug, projectId } = useWorkspaceNavigation()
   const [searchParams, setSearchParams] = useSearchParams()
   const { toast } = useToast()
   
@@ -103,7 +103,7 @@ export const AppShell = observer(function AppShell() {
       if (checkoutStatus === "success") {
         // Switch to the newly created workspace
         if (workspace) {
-          setOrg(workspace.slug)
+          setWorkspaceSlug(workspace.slug)
           toast({
             title: "Subscription activated",
             description: `Your workspace "${workspace.name}" is now on a paid plan.`,
@@ -132,7 +132,7 @@ export const AppShell = observer(function AppShell() {
       searchParams.delete("session_id")
       setSearchParams(searchParams, { replace: true })
     }
-  }, [searchParams, setSearchParams, studioCore, setOrg, toast])
+  }, [searchParams, setSearchParams, studioCore, setWorkspaceSlug, toast])
   
   // Context value for sharing with sidebar
   const commandPaletteContextValue = {

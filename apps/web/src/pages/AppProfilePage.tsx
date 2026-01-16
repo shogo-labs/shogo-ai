@@ -25,7 +25,7 @@ import { useWorkspaceNavigation } from "@/components/app/workspace"
 export const AppProfilePage = observer(function AppProfilePage() {
   const { auth, studioCore, billing } = useDomains()
   const { openSettings } = useSettingsModal()
-  const { setOrg } = useWorkspaceNavigation()
+  const { setWorkspaceSlug } = useWorkspaceNavigation()
 
   const currentUser = auth.currentUser
   const isLoading = auth.isLoading
@@ -176,7 +176,7 @@ export const AppProfilePage = observer(function AppProfilePage() {
                           size="sm"
                           onClick={() => {
                             // Switch to this workspace and open settings
-                            setOrg(workspace.slug)
+                            setWorkspaceSlug(workspace.slug)
                             openSettings("workspace")
                           }}
                         >
