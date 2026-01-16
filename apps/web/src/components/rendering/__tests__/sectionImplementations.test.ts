@@ -84,6 +84,12 @@ describe("sectionImplementationMap", () => {
     expect(sectionImplementationMap.has("PhaseActionsSection")).toBe(true)
   })
 
+  test("contains DataGridSection and FormSection for generic data handling", () => {
+    // Generic section components for data display and editing
+    expect(sectionImplementationMap.has("DataGridSection")).toBe(true)
+    expect(sectionImplementationMap.has("FormSection")).toBe(true)
+  })
+
   test("contains Analysis phase sections", () => {
     // Analysis phase sections registered for Evidence Board view
     expect(sectionImplementationMap.has("EvidenceBoardHeaderSection")).toBe(true)

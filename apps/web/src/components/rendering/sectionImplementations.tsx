@@ -65,6 +65,8 @@ import { PlanPreviewSection } from "./sections/PlanPreviewSection"
 import { DataGridSection } from "./sections/DataGridSection"
 // Chart section
 import { ChartSection } from "./sections/ChartSection"
+// Form section
+import { FormSection } from "./sections/FormSection"
 // App building sections
 import { AppBarSection } from "./sections/AppBarSection"
 import { SideNavSection } from "./sections/SideNavSection"
@@ -149,6 +151,8 @@ export const sectionImplementationMap = new Map<
   ["DataGridSection", DataGridSection],
   // Chart section (D3-based visualizations)
   ["ChartSection", ChartSection],
+  // Form section (JSON Forms-based entity editor)
+  ["FormSection", FormSection],
   // App building sections
   ["AppBarSection", AppBarSection],
   ["SideNavSection", SideNavSection],
