@@ -6,7 +6,7 @@
 
 import { observer } from "mobx-react-lite"
 import { Link } from "react-router-dom"
-import { ArrowLeft, User, Building2, Mail, Calendar, CreditCard, Zap, TrendingUp } from "lucide-react"
+import { ArrowLeft, User, Building2, Mail, Calendar, CreditCard, Zap, TrendingUp, Settings } from "lucide-react"
 
 import { useDomains } from "@/contexts/DomainProvider"
 import { Button } from "@/components/ui/button"
@@ -14,6 +14,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Progress } from "@/components/ui/progress"
+import { useSettingsModal } from "@/components/app/shared"
+import { useWorkspaceNavigation } from "@/components/app/workspace"
 
 /**
  * AppProfilePage component
@@ -22,6 +24,8 @@ import { Progress } from "@/components/ui/progress"
  */
 export const AppProfilePage = observer(function AppProfilePage() {
   const { auth, studioCore, billing } = useDomains()
+  const { openSettings } = useSettingsModal()
+  const { setOrg } = useWorkspaceNavigation()
 
   const currentUser = auth.currentUser
   const isLoading = auth.isLoading
@@ -167,11 +171,18 @@ export const AppProfilePage = observer(function AppProfilePage() {
                         <Badge variant={getRoleForWorkspace(workspace.id) === "owner" ? "default" : "secondary"}>
                           {getRoleForWorkspace(workspace.id)}
                         </Badge>
-                        <Link to="/members">
-                          <Button variant="ghost" size="sm">
-                            Manage
-                          </Button>
-                        </Link>
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => {
+                            // Switch to this workspace and open settings
+                            setOrg(workspace.slug)
+                            openSettings("workspace")
+                          }}
+                        >
+                          <Settings className="h-4 w-4 mr-1" />
+                          Manage
+                        </Button>
                       </div>
                     </div>
 
