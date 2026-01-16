@@ -115,6 +115,10 @@ export interface ChatPanelProps {
   featureName?: string
   /** Current phase from WorkspaceLayout navigation (task-cpbi-004) */
   phase: string | null
+  /** Current workspace ID for billing/credit tracking */
+  workspaceId?: string
+  /** Current user ID for billing/credit tracking */
+  userId?: string
   /** Children to render inside ChatContextProvider */
   children?: React.ReactNode
   /** Optional class name */
@@ -147,7 +151,7 @@ export interface ChatPanelProps {
 // Constants
 // ============================================================
 
-const DEFAULT_WIDTH = 400
+const DEFAULT_WIDTH = 480
 const MIN_WIDTH = 280
 const MAX_WIDTH = 800
 const STORAGE_KEY_COLLAPSED = "chat-panel-collapsed"
@@ -394,6 +398,8 @@ export const ChatPanel = observer(function ChatPanel({
   featureId,
   featureName,
   phase,
+  workspaceId,
+  userId,
   children,
   className,
   onSchemaRefresh,
@@ -1362,6 +1368,7 @@ export const ChatPanel = observer(function ChatPanel({
       // - First arg: { text, files? } object
       // - Second arg: options with body for server-side data
       // - ccSessionIdRef.current ensures fresh session ID value
+      // credit-tracking: Include workspaceId and userId for credit deduction
       try {
         await sendMessage(
           messagePayload,
@@ -1370,6 +1377,8 @@ export const ChatPanel = observer(function ChatPanel({
               featureId,
               phase,
               ccSessionId: ccSessionIdRef.current,
+              workspaceId,
+              userId,
             },
           }
         )
@@ -1377,7 +1386,7 @@ export const ChatPanel = observer(function ChatPanel({
         console.error("[ChatPanel] Failed to send message:", err)
       }
     },
-    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType]
+    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId]
   )
 
   // Handle form submit from ChatInput
@@ -1507,12 +1516,12 @@ export const ChatPanel = observer(function ChatPanel({
         />
 
         {/* Header */}
-        <ChatHeader
+        {/* <ChatHeader
           sessionName={currentSession?.name || featureName || "Chat"}
           isLoading={isStreaming}
           isCollapsed={isCollapsed}
           onToggleCollapse={handleToggleCollapse}
-        />
+        /> */}
 
         {/* Messages with Turn Grouping (task-chat-008) */}
         <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4">
@@ -1587,7 +1596,7 @@ export const ChatPanel = observer(function ChatPanel({
         <ChatInput
           onSubmit={handleInputSubmit}
           disabled={!currentSessionId}
-          placeholder={!featureId ? "Select a feature to start chatting..." : "Type a message..."}
+          placeholder={!featureId ? "Select a feature to start chatting..." : "Ask Shogo..."}
           isStreaming={isStreaming}
           onStop={stop}
         />

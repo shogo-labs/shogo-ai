@@ -63,17 +63,18 @@ interface ComponentBuilderSeedResult {
  */
 async function seedStudioCore(store: any): Promise<SeedResult> {
   // Check idempotency via .query()
-  const existingOrg = await store.organizationCollection
+  // Note: studio-core uses Workspace (not Organization)
+  const existingWorkspace = await store.workspaceCollection
     .query()
     .where({ id: SHOGO_ORG_ID })
     .first()
 
-  if (existingOrg) {
+  if (existingWorkspace) {
     return { alreadySeeded: true }
   }
 
   // Insert via .insertOne() - syncs to backend
-  await store.organizationCollection.insertOne({
+  await store.workspaceCollection.insertOne({
     id: SHOGO_ORG_ID,
     name: "Shogo",
     slug: "shogo",
@@ -84,7 +85,7 @@ async function seedStudioCore(store: any): Promise<SeedResult> {
   await store.projectCollection.insertOne({
     id: PLATFORM_PROJECT_ID,
     name: "shogo-platform",
-    organization: SHOGO_ORG_ID,
+    workspaceId: SHOGO_ORG_ID,
     description: "Internal platform development",
     tier: "internal",
     status: "active",

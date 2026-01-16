@@ -3,7 +3,7 @@
  * Task: task-member-list-ui
  * Feature: member-management-invitation
  *
- * Displays a list of organization members with role management capabilities.
+ * Displays a list of workspace members with role management capabilities.
  * Admins and owners can update roles and remove members.
  *
  * Uses MCP domain (studioCore) for all data operations.
@@ -49,11 +49,11 @@ interface Member {
  * Props for MemberList component
  */
 export interface MemberListProps {
-  /** Organization ID to fetch members for */
+  /** Workspace ID to fetch members for */
   orgId: string
   /** Current user's ID */
   currentUserId: string
-  /** Current user's role in this organization */
+  /** Current user's role in this workspace */
   currentUserRole: "owner" | "admin" | "member" | "viewer"
   /** Callback when member list changes (e.g., role updated or member removed) */
   onMembersChange?: () => void
@@ -82,7 +82,7 @@ const roleBadgeVariant: Record<string, "default" | "secondary" | "outline"> = {
 /**
  * MemberList Component
  *
- * Renders a table of organization members with role management.
+ * Renders a table of workspace members with role management.
  * Uses MCP domain for data operations.
  */
 export function MemberList({ orgId, currentUserId, currentUserRole, onMembersChange }: MemberListProps) {
@@ -361,7 +361,7 @@ export function MemberList({ orgId, currentUserId, currentUserRole, onMembersCha
           <AlertDialogHeader>
             <AlertDialogTitle>Remove Member</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to remove this member from the organization?
+              Are you sure you want to remove this member from the workspace?
               This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>

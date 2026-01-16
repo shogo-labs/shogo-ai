@@ -3,7 +3,7 @@
  * Task: task-pending-invitations-ui
  * Feature: member-management-invitation
  *
- * Displays pending invitations for an organization (admin/owner view).
+ * Displays pending invitations for a workspace (admin/owner view).
  * Allows cancellation of pending invitations.
  *
  * Uses MCP domain (studioCore) for all data operations.
@@ -45,7 +45,7 @@ interface Invitation {
  * Props for PendingInvitationsView component
  */
 export interface PendingInvitationsViewProps {
-  /** Organization ID to fetch invitations for */
+  /** Workspace ID to fetch invitations for */
   orgId: string
   /** Callback when invitations change */
   onInvitationsChange?: () => void
@@ -91,7 +91,7 @@ function formatRelativeTime(timestamp: number): string {
 /**
  * PendingInvitationsView Component
  *
- * Renders a list of pending invitations for organization admins/owners.
+ * Renders a list of pending invitations for workspace admins/owners.
  * Uses MCP domain for data operations.
  */
 export function PendingInvitationsView({

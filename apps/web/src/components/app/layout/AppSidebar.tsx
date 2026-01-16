@@ -12,7 +12,7 @@
  * Inspired by Lovable.dev's sidebar design for better navigation UX.
  */
 
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, useMemo } from "react"
 import { observer } from "mobx-react-lite"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import {
@@ -34,6 +34,8 @@ import {
   Folder,
   FolderPlus,
   MoreHorizontal,
+  Inbox,
+  Gift,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -41,6 +43,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
@@ -68,6 +71,21 @@ import { WorkspaceSwitcher } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
 import { useCommandPaletteContext } from "./AppShell"
 import { useDomains } from "@/contexts/DomainProvider"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { LogOut, User } from "lucide-react"
+
+/**
+ * Get user initials from name
+ */
+function getInitials(name: string | null | undefined): string {
+  if (!name) return "?"
+  return name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2)
+}
 
 interface NavItemProps {
   icon: React.ElementType
@@ -257,26 +275,18 @@ interface ProjectItemProps {
   workspaceSlug?: string
 }
 
-function ProjectItem({ name, projectId, collapsed, workspaceSlug }: ProjectItemProps) {
-  const navigate = useNavigate()
-
+function ProjectItem({ name, projectId, collapsed }: Omit<ProjectItemProps, 'workspaceSlug'>) {
   if (collapsed) return null
 
-  const handleClick = () => {
-    const url = workspaceSlug
-      ? `/projects?org=${workspaceSlug}&project=${projectId}`
-      : `/projects?project=${projectId}`
-    navigate(url)
-  }
-
+  // Navigate to the full-screen project view
   return (
-    <button
-      onClick={handleClick}
+    <Link
+      to={`/projects/${projectId}`}
       className="flex items-center gap-2 py-1 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded-md w-full truncate"
       title={name}
     >
       <span className="truncate">{name}</span>
-    </button>
+    </Link>
   )
 }
 
@@ -284,13 +294,12 @@ interface FolderItemProps {
   folder: { id: string; name: string; parentId?: string }
   projects: any[]
   collapsed?: boolean
-  workspaceSlug?: string
   onNavigate: (folderId: string) => void
   onRename: (folder: { id: string; name: string }) => void
   onDelete: (folder: { id: string; name: string }) => void
 }
 
-function FolderItem({ folder, projects, collapsed, workspaceSlug, onNavigate, onRename, onDelete }: FolderItemProps) {
+function FolderItem({ folder, projects, collapsed, onNavigate, onRename, onDelete }: FolderItemProps) {
   const [expanded, setExpanded] = useState(false)
 
   // Get projects in this folder
@@ -355,7 +364,6 @@ function FolderItem({ folder, projects, collapsed, workspaceSlug, onNavigate, on
               name={project.name}
               projectId={project.id}
               collapsed={collapsed}
-              workspaceSlug={workspaceSlug}
             />
           ))}
         </div>
@@ -378,10 +386,10 @@ function FolderItem({ folder, projects, collapsed, workspaceSlug, onNavigate, on
 export const AppSidebar = observer(function AppSidebar() {
   const location = useLocation()
   const navigate = useNavigate()
-  const { setOrg: setWorkspace, setFolderId } = useWorkspaceNavigation()
+  const { setWorkspaceSlug, setFolderId } = useWorkspaceNavigation()
   const { workspaces, currentWorkspace, projects, folders, isLoading, refetchFolders } = useWorkspaceData()
   const { openCommandPalette } = useCommandPaletteContext()
-  const { studioCore } = useDomains()
+  const { studioCore, billing, auth } = useDomains()
 
   // Sidebar collapse state - persisted to localStorage
   const [collapsed, setCollapsed] = useState(() => {
@@ -396,6 +404,26 @@ export const AppSidebar = observer(function AppSidebar() {
   const [newFolderName, setNewFolderName] = useState("")
   const [renameFolderName, setRenameFolderName] = useState("")
 
+  // Get active subscription for current workspace from billing domain
+  // Uses MST observer pattern - component re-renders when billing data changes
+  const getActiveSubscription = useCallback((workspaceId: string | undefined) => {
+    if (!workspaceId || !billing?.subscriptionCollection) return null
+    try {
+      const subscriptions = billing.subscriptionCollection.findByWorkspace(workspaceId)
+      // Find active or trialing subscription
+      return subscriptions.find((s: any) => s.status === 'active' || s.status === 'trialing') || null
+    } catch {
+      return null
+    }
+  }, [billing])
+
+  const subscription = getActiveSubscription(currentWorkspace?.id)
+
+  // Determine if current workspace is on a paid plan
+  const isPaidPlan = useMemo(() => {
+    return subscription && subscription.planId !== "free"
+  }, [subscription])
+
   // Persist collapse state
   useEffect(() => {
     localStorage.setItem("app-sidebar-collapsed", String(collapsed))
@@ -407,7 +435,7 @@ export const AppSidebar = observer(function AppSidebar() {
 
   // Handle workspace change
   const handleWorkspaceChange = (slug: string) => {
-    setWorkspace(slug)
+    setWorkspaceSlug(slug)
   }
 
   // Check if current path matches
@@ -423,7 +451,7 @@ export const AppSidebar = observer(function AppSidebar() {
 
   // Handle folder navigation
   const handleFolderNavigate = (folderId: string) => {
-    navigate(`/projects?org=${currentWorkspace?.slug}&folder=${folderId}`)
+    navigate(`/projects?folder=${folderId}`)
   }
 
   // Handle create folder
@@ -577,7 +605,6 @@ export const AppSidebar = observer(function AppSidebar() {
                   name={project.name}
                   projectId={project.id}
                   collapsed={collapsed}
-                  workspaceSlug={currentWorkspace?.slug}
                 />
               ))}
             </ExpandableNavItem>
@@ -608,7 +635,6 @@ export const AppSidebar = observer(function AppSidebar() {
                   folder={folder}
                   projects={projects}
                   collapsed={collapsed}
-                  workspaceSlug={currentWorkspace?.slug}
                   onNavigate={handleFolderNavigate}
                   onRename={openRenameDialog}
                   onDelete={setFolderToDelete}
@@ -661,23 +687,98 @@ export const AppSidebar = observer(function AppSidebar() {
         </NavSection>
       </nav>
 
-      {/* Bottom section - upgrade CTA */}
-      {!collapsed && (
-        <div className="p-3 border-t border-border">
-          <Link
-            to="/billing"
-            className="flex items-center gap-2 px-3 py-2 rounded-md bg-gradient-to-r from-blue-500/10 to-purple-500/10 hover:from-blue-500/20 hover:to-purple-500/20 transition-colors"
-          >
-            <div className="h-5 w-5 rounded bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-              <Plus className="h-3 w-3 text-white" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium">Upgrade to Pro</div>
-              <div className="text-xs text-muted-foreground">Unlock more features</div>
-            </div>
-          </Link>
+      {/* Bottom section - promotional cards and user avatar */}
+      <div className="mt-auto border-t border-border">
+        {/* Share card */}
+        {!collapsed && (
+          <div className="p-2">
+            <button className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-card hover:bg-accent/50 transition-colors text-left">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium">Share Shogo</div>
+                <div className="text-xs text-muted-foreground">Get 10 credits each</div>
+              </div>
+              <Gift className="h-4 w-4 text-muted-foreground" />
+            </button>
+          </div>
+        )}
+
+        {/* Upgrade CTA (hidden for paid plans) */}
+        {!collapsed && !isPaidPlan && (
+          <div className="px-2 pb-2">
+            <Link
+              to="/billing"
+              className="flex items-center gap-2 px-3 py-2 rounded-md bg-gradient-to-r from-blue-500/10 to-purple-500/10 hover:from-blue-500/20 hover:to-purple-500/20 transition-colors"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium">Upgrade to Pro</div>
+                <div className="text-xs text-muted-foreground">Unlock more benefits</div>
+              </div>
+              <Plus className="h-4 w-4 text-primary" />
+            </Link>
+          </div>
+        )}
+
+        {/* User avatar and inbox - bottom left like Lovable */}
+        <div className={cn(
+          "flex items-center gap-2 p-2 border-t border-border",
+          collapsed ? "justify-center" : "px-3"
+        )}>
+          {/* User dropdown menu */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="flex items-center justify-center rounded-full focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 hover:opacity-80 transition-opacity"
+                aria-label="User menu"
+                title={auth.currentUser?.name || "User menu"}
+              >
+                <Avatar className="h-8 w-8">
+                  {auth.currentUser?.image && (
+                    <AvatarImage src={auth.currentUser.image} alt={auth.currentUser?.name || "User"} />
+                  )}
+                  <AvatarFallback className="text-xs">{getInitials(auth.currentUser?.name)}</AvatarFallback>
+                </Avatar>
+              </button>
+            </DropdownMenuTrigger>
+
+            <DropdownMenuContent align="start" side="top" className="w-56">
+              <DropdownMenuLabel className="font-normal">
+                <div className="flex flex-col space-y-1">
+                  <p className="text-sm font-medium leading-none">{auth.currentUser?.name || "User"}</p>
+                  <p className="text-xs leading-none text-muted-foreground">
+                    {auth.currentUser?.email || ""}
+                  </p>
+                </div>
+              </DropdownMenuLabel>
+
+              <DropdownMenuSeparator />
+
+              <DropdownMenuItem asChild className="cursor-pointer">
+                <Link to="/profile">
+                  <User className="mr-2 h-4 w-4" />
+                  <span>Profile</span>
+                </Link>
+              </DropdownMenuItem>
+
+              <DropdownMenuItem onClick={() => auth.signOut()} className="cursor-pointer">
+                <LogOut className="mr-2 h-4 w-4" />
+                <span>Sign Out</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Inbox button */}
+          {!collapsed && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 ml-auto"
+              title="Inbox"
+            >
+              <Inbox className="h-4 w-4" />
+            </Button>
+          )}
         </div>
-      )}
+      </div>
 
       {/* Create Folder Dialog */}
       <Dialog open={createFolderOpen} onOpenChange={setCreateFolderOpen}>

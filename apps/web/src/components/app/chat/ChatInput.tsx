@@ -3,9 +3,11 @@
  * Task: task-2-4-002 (chat-presentational-components)
  * Task: task-chatinput-image-capture (image attachment support)
  *
- * Renders a textarea with submit button for chat input.
- * Uses shadcn components. Calls onSubmit with content and clears input.
- * Supports disabled state and stop button during streaming.
+ * Lovable.dev-style chat input with:
+ * - Rounded container with subtle border
+ * - Clean textarea with "Ask Shogo..." placeholder
+ * - Bottom toolbar with action buttons
+ *
  * Supports image attachments via paste (Ctrl/Cmd+V) or file picker.
  */
 
@@ -14,7 +16,15 @@ import { useCallback, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Send, Square, Paperclip, X } from "lucide-react"
+import {
+  ArrowUp,
+  Plus,
+  Square,
+  X,
+  MessageSquare,
+  BarChart3,
+  Sparkles,
+} from "lucide-react"
 
 // Maximum file size in bytes (4MB)
 const MAX_IMAGE_SIZE = 4 * 1024 * 1024
@@ -46,7 +56,7 @@ export interface ChatInputProps {
 export function ChatInput({
   onSubmit,
   disabled = false,
-  placeholder = "Type a message...",
+  placeholder = "Ask Shogo...",
   isStreaming = false,
   onStop,
 }: ChatInputProps) {
@@ -241,12 +251,12 @@ export function ChatInput({
   )
 
   return (
-    <div className="flex flex-col gap-2 p-2">
-      {/* Image preview */}
+    <div className="p-3">
+      {/* Image preview - shown above the input container */}
       {pendingImage && (
         <div
           data-testid="image-preview"
-          className="relative inline-block max-w-[200px]"
+          className="relative inline-block max-w-[200px] mb-2"
         >
           <img
             src={pendingImage}
@@ -271,14 +281,14 @@ export function ChatInput({
       {imageError && (
         <div
           data-testid="image-error"
-          className="text-sm text-destructive"
+          className="text-sm text-destructive mb-2"
         >
           {imageError}
         </div>
       )}
 
-      {/* Input row */}
-      <div className="relative flex items-end gap-2">
+      {/* Main input container - Lovable.dev style */}
+      <div className="relative rounded-xl border border-border/60 bg-muted/30 overflow-hidden">
         {/* Skill picker dropdown */}
         {showSkillPicker && filteredSkills.length > 0 && (
           <div className="absolute bottom-full left-0 right-0 mb-1 max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md z-50">
@@ -310,20 +320,7 @@ export function ChatInput({
           className="hidden"
         />
 
-        {/* Attach button */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          onClick={handleAttachClick}
-          disabled={disabled}
-          className="h-[60px] w-[40px] shrink-0"
-          data-testid="attach-image-button"
-        >
-          <Paperclip className="h-5 w-5" />
-          <span className="sr-only">Attach image</span>
-        </Button>
-
+        {/* Textarea - clean, borderless */}
         <Textarea
           ref={textareaRef}
           onKeyDown={handleKeyDown}
@@ -332,37 +329,100 @@ export function ChatInput({
           placeholder={placeholder}
           disabled={disabled}
           className={cn(
-            "min-h-[60px] max-h-[200px] resize-none flex-1",
+            "min-h-[60px] max-h-[200px] resize-none w-full",
+            "border-0 bg-transparent shadow-none focus-visible:ring-0",
+            "px-4 pt-4 pb-2 text-base",
             disabled && "cursor-not-allowed opacity-50"
           )}
           rows={1}
         />
-        {isStreaming ? (
-          <Button
-            type="button"
-            onClick={onStop}
-            variant="destructive"
-            size="icon"
-            className="h-[60px] w-[60px] shrink-0"
-          >
-            <Square className="h-5 w-5" />
-            <span className="sr-only">Stop generation</span>
-          </Button>
-        ) : (
-          <Button
-            type="submit"
-            onClick={handleSubmit}
-            disabled={disabled}
-            size="icon"
-            className={cn(
-              "h-[60px] w-[60px] shrink-0",
-              disabled && "pointer-events-none opacity-50"
+
+        {/* Bottom toolbar */}
+        <div className="flex items-center justify-between px-2 pb-2">
+          {/* Left side buttons */}
+          <div className="flex items-center gap-1">
+            {/* Add/Attach button */}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={handleAttachClick}
+              disabled={disabled}
+              className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
+              data-testid="attach-image-button"
+            >
+              <Plus className="h-4 w-4" />
+              <span className="sr-only">Attach</span>
+            </Button>
+
+            {/* Visual edits button */}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={disabled}
+              className="h-8 gap-1.5 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted px-3"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span className="text-xs">Visual edits</span>
+            </Button>
+          </div>
+
+          {/* Right side buttons */}
+          <div className="flex items-center gap-1">
+            {/* Chat mode button */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={disabled}
+              className="h-8 gap-1.5 rounded-full px-3 border-border/60"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              <span className="text-xs">Chat</span>
+            </Button>
+
+            {/* Activity button */}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              disabled={disabled}
+              className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
+            >
+              <BarChart3 className="h-4 w-4" />
+              <span className="sr-only">Activity</span>
+            </Button>
+
+            {/* Send/Stop button */}
+            {isStreaming ? (
+              <Button
+                type="button"
+                onClick={onStop}
+                variant="destructive"
+                size="icon"
+                className="h-8 w-8 rounded-full"
+              >
+                <Square className="h-3.5 w-3.5" />
+                <span className="sr-only">Stop generation</span>
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                onClick={handleSubmit}
+                disabled={disabled}
+                size="icon"
+                className={cn(
+                  "h-8 w-8 rounded-full",
+                  disabled && "pointer-events-none opacity-50"
+                )}
+              >
+                <ArrowUp className="h-4 w-4" />
+                <span className="sr-only">Send message</span>
+              </Button>
             )}
-          >
-            <Send className="h-5 w-5" />
-            <span className="sr-only">Send message</span>
-          </Button>
-        )}
+          </div>
+        </div>
       </div>
     </div>
   )

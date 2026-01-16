@@ -115,16 +115,41 @@ function TabItem({ id, label, icon: Icon, active, onClick, badge }: TabItemProps
 }
 
 // Workspace Settings Tab
-function WorkspaceTab() {
-  const { currentWorkspace } = useWorkspaceData()
+function WorkspaceTab({ onClose }: { onClose?: () => void }) {
+  const navigate = useNavigate()
+  const { currentWorkspace, workspaces } = useWorkspaceData()
   const { studioCore } = useDomains()
+  const { data: session } = useSession()
   const [name, setName] = useState(currentWorkspace?.name || "")
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle")
+  
+  // Delete workspace state
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState("")
 
   const originalName = currentWorkspace?.name || ""
   const hasChanges = name !== originalName
   const isValid = name.trim().length > 0 && name.length <= 50
+  
+  // Check if user is the owner of this workspace
+  const currentUserId = session?.user?.id
+  const members = currentWorkspace?.id 
+    ? studioCore?.memberCollection?.findForResource("workspace", currentWorkspace.id) || []
+    : []
+  const currentUserMember = members.find((m: any) => m.userId === currentUserId)
+  const isOwner = currentUserMember?.role === "owner"
+  
+  // Check if this is a personal workspace (cannot be deleted)
+  const isPersonalWorkspace = 
+    currentWorkspace?.slug?.includes("personal") || 
+    currentWorkspace?.name?.toLowerCase().includes("personal")
+  
+  // Can only delete if owner, have more than one workspace, and not a personal workspace
+  const canDelete = isOwner && workspaces.length > 1 && !isPersonalWorkspace
+  const deleteConfirmRequired = currentWorkspace?.name || "delete"
+  const isDeleteConfirmed = deleteConfirmText === deleteConfirmRequired
 
   useEffect(() => {
     setName(currentWorkspace?.name || "")
@@ -152,6 +177,34 @@ function WorkspaceTab() {
       setSaveStatus("error")
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  const handleDeleteWorkspace = async () => {
+    if (!currentWorkspace?.id || !isDeleteConfirmed || !studioCore) return
+    
+    setIsDeleting(true)
+    
+    try {
+      // Delete all members of the workspace first
+      const workspaceMembers = studioCore.memberCollection.findForResource("workspace", currentWorkspace.id)
+      for (const member of workspaceMembers) {
+        await studioCore.memberCollection.deleteOne(member.id)
+      }
+      
+      // Delete the workspace
+      await studioCore.workspaceCollection.deleteOne(currentWorkspace.id)
+      
+      // Close the dialog and modal
+      setIsDeleteDialogOpen(false)
+      onClose?.()
+      
+      // Navigate to home - the workspace switcher will select the next available workspace
+      navigate("/")
+    } catch (error) {
+      console.error("Failed to delete workspace:", error)
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -215,21 +268,107 @@ function WorkspaceTab() {
           )}
         </div>
 
-        {/* Leave workspace */}
-        <div className="pt-4">
-          <div className="flex items-start justify-between">
+        <Separator className="my-6" />
+
+        {/* Danger zone */}
+        <div className="space-y-4">
+          <div>
+            <h4 className="text-sm font-medium text-destructive">Danger zone</h4>
+            <p className="text-xs text-muted-foreground">
+              Irreversible and destructive actions.
+            </p>
+          </div>
+
+          {/* Leave workspace */}
+          <div className="flex items-start justify-between p-4 rounded-lg border border-destructive/20 bg-destructive/5">
             <div>
-              <Label className="text-destructive">Leave workspace</Label>
+              <Label>Leave workspace</Label>
               <p className="text-xs text-muted-foreground">
-                You cannot leave your last workspace.
+                Remove yourself from this workspace. You cannot leave your last workspace.
               </p>
             </div>
-            <Button variant="destructive" size="sm" disabled>
-              Leave workspace
+            <Button variant="outline" size="sm" disabled className="border-destructive/50 text-destructive hover:bg-destructive/10">
+              Leave
             </Button>
           </div>
+
+          {/* Delete workspace - only for owners */}
+          {isOwner && (
+            <div className="flex items-start justify-between p-4 rounded-lg border border-destructive/20 bg-destructive/5">
+              <div>
+                <Label className="text-destructive">Delete workspace</Label>
+                <p className="text-xs text-muted-foreground">
+                  {canDelete 
+                    ? "Permanently delete this workspace and all its data. This action cannot be undone."
+                    : isPersonalWorkspace
+                    ? "Your personal workspace cannot be deleted."
+                    : "You cannot delete your only workspace. Create another workspace first."}
+                </p>
+              </div>
+              <Button 
+                variant="destructive" 
+                size="sm" 
+                disabled={!canDelete}
+                onClick={() => setIsDeleteDialogOpen(true)}
+              >
+                <Trash2 className="h-4 w-4 mr-1" />
+                Delete
+              </Button>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Delete Workspace Confirmation Dialog */}
+      <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive">Delete workspace</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-3">
+              <p>
+                This action <strong>cannot be undone</strong>. This will permanently delete the 
+                workspace <strong>{currentWorkspace?.name}</strong> and remove all associated data including:
+              </p>
+              <ul className="list-disc list-inside text-sm space-y-1">
+                <li>All projects and their contents</li>
+                <li>All member access and invitations</li>
+                <li>All billing and subscription data</li>
+              </ul>
+              <p className="pt-2">
+                Please type <strong>{deleteConfirmRequired}</strong> to confirm.
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Input
+            value={deleteConfirmText}
+            onChange={(e) => setDeleteConfirmText(e.target.value)}
+            placeholder={`Type "${deleteConfirmRequired}" to confirm`}
+            className="mt-2"
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting} onClick={() => setDeleteConfirmText("")}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteWorkspace}
+              disabled={!isDeleteConfirmed || isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete workspace
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
@@ -884,7 +1023,7 @@ export const SettingsModal = observer(function SettingsModal({
 
           {/* Content */}
           <div className="flex-1 overflow-y-auto p-6">
-            {activeTab === "workspace" && <WorkspaceTab />}
+            {activeTab === "workspace" && <WorkspaceTab onClose={() => onOpenChange(false)} />}
             {activeTab === "people" && <PeopleTab />}
             {activeTab === "billing" && <BillingTab />}
             {activeTab === "account" && <AccountTab />}

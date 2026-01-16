@@ -1,9 +1,4 @@
 {
-  "id": "30a25e4a-ac79-47da-aba0-2f4409e45279",
-  "name": "studio-core",
-  "format": "enhanced-json-schema",
-  "createdAt": 1768459871893,
-  "version": 1,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "studio-core",
   "$defs": {
@@ -107,6 +102,11 @@
         },
         "updatedAt": {
           "type": "number"
+        },
+        "folderId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "ID of folder this project belongs to, null for root-level projects"
         }
       },
       "required": [
@@ -118,6 +118,47 @@
         "createdAt"
       ],
       "x-original-name": "Project"
+    },
+    "StarredProject": {
+      "type": "object",
+      "description": "Tracks which projects a user has starred for quick access",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "id",
+        "nested": false
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "The user who starred this project (ref to AuthUser.id)"
+        },
+        "projectId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The project being starred (ref to Project.id)"
+        },
+        "workspaceId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Workspace containing the project (for filtering)"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "projectId",
+        "workspaceId",
+        "createdAt"
+      ],
+      "x-original-name": "StarredProject"
     },
     "Member": {
       "type": "object",
@@ -292,6 +333,54 @@
         "createdAt"
       ],
       "x-original-name": "Invitation"
+    },
+    "Folder": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace": {
+          "type": "string",
+          "x-arktype": "Workspace",
+          "x-mst-type": "reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Workspace"
+        },
+        "parentId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "ID of parent folder for nesting, null for root-level folders"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Loose string ref to AuthUser.id"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "workspace",
+        "createdAt"
+      ],
+      "x-original-name": "Folder"
     }
   },
   "x-persistence": {
