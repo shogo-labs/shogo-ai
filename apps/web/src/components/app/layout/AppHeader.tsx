@@ -21,7 +21,7 @@
  */
 
 import { observer } from "mobx-react-lite"
-import { ThemeToggle, AdvancedModeToggle, UserMenu, useSettingsModal } from "../shared"
+import { ThemeToggle, AdvancedModeToggle, useSettingsModal } from "../shared"
 import { Users, ChevronRight } from "lucide-react"
 import { ProjectSelector } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
@@ -91,7 +91,6 @@ export const AppHeader = observer(function AppHeader() {
         )}
         <AdvancedModeToggle />
         <ThemeToggle />
-        <UserMenu />
       </div>
     </header>
   )

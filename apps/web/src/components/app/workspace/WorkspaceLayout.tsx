@@ -53,7 +53,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef, useMemo } from "react"
-import { Outlet } from "react-router-dom"
+import { Outlet, useNavigate } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { useWorkspaceData, useWorkspaceNavigation, useDeleteFeature } from "./hooks"
 import { useDomains } from "@/contexts/DomainProvider"
@@ -143,6 +143,9 @@ function fallbackGenerateProjectName(prompt: string): string {
 }
 
 export const WorkspaceLayout = observer(function WorkspaceLayout() {
+  // React Router navigation for /projects/:id route
+  const navigate = useNavigate()
+  
   // Get workspace data from hook (smart component pattern)
   const {
     currentWorkspace,
@@ -255,8 +258,9 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   
   /**
    * Handle prompt submission from home page
-   * Creates a new project and feature immediately, then navigates to the feature
+   * Creates a new project and feature immediately, then navigates to /projects/:id
    * This follows the lovable.dev flow where submitting a prompt creates everything at once
+   * and navigates to the full-screen project view
    */
   const handlePromptSubmit = useCallback(async (prompt: string) => {
     const userId = session?.user?.id
@@ -287,7 +291,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       )
       
       // 3. Create a feature in the project with the prompt as the intent
-      const newFeature = await platformFeatures.createFeatureSession({
+      await platformFeatures.createFeatureSession({
         name: projectName, // Use same name for now, could extract differently
         intent: prompt,
         project: newProject.id,
@@ -296,63 +300,68 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       // 4. Trigger refetch so the project shows in the list
       refetchProjects()
       
-      // 5. Navigate to the new project and feature
-      await setProjectId(newProject.id)
-      await setFeatureId(newFeature.id)
+      // 5. Navigate to the full-screen project view (like Lovable does)
+      // This takes the user to /projects/:id which renders ProjectLayout
+      navigate(`/projects/${newProject.id}`)
       
     } catch (error) {
       console.error("[WorkspaceLayout] Failed to create from prompt:", error)
     } finally {
       setIsCreatingFromPrompt(false)
     }
-  }, [session?.user?.id, currentWorkspace?.id, studioCore, platformFeatures, refetchProjects, setProjectId, setFeatureId])
+  }, [session?.user?.id, currentWorkspace?.id, studioCore, platformFeatures, refetchProjects, navigate])
+
+  // Determine if we're on the home view (no project selected)
+  const isHomeView = !currentProject && !projectId
 
   return (
     <div className="flex h-full" data-testid="workspace-layout">
-      {/* Sidebar area - fixed width with border separator */}
-      <aside
-        className="w-64 border-r border-border bg-card flex flex-col"
-        data-testid="workspace-sidebar"
-      >
-        {/* Polling status indicator (task-3-1-007) */}
-        {featureId && (
-          <div className="flex items-center justify-end px-3 py-2 text-xs text-muted-foreground border-b border-border">
-            <div className="flex items-center gap-1.5">
-              {isPolling && (
-                <RefreshCw
-                  className="h-3 w-3 animate-spin"
-                  data-testid="polling-indicator"
-                  aria-label="Syncing data"
-                />
-              )}
-              {lastRefresh && (
-                <span
-                  className="text-[10px] opacity-60"
-                  title={`Last refresh: ${new Date(lastRefresh).toLocaleTimeString()}`}
-                >
-                  {new Date(lastRefresh).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Scrollable container for both sidebar sections (task-dcb-012) */}
-        <div
-          className="flex-1 overflow-y-auto"
-          data-testid="sidebar-scroll-container"
+      {/* Sidebar area - only show when a project is selected (not on home view) */}
+      {!isHomeView && (
+        <aside
+          className="w-64 border-r border-border bg-card flex flex-col"
+          data-testid="workspace-sidebar"
         >
-          {/* FeatureSidebar with delete support (task-delete-005) */}
-          <FeatureSidebar
-            featuresByPhase={featuresByPhase}
-            currentFeatureId={featureId}
-            onFeatureSelect={setFeatureId}
-            onNewFeature={handleOpenModal}
-            projectId={projectId}
-            onDeleteFeature={handleDeleteFeature}
-          />
-        </div>
-      </aside>
+          {/* Polling status indicator (task-3-1-007) */}
+          {featureId && (
+            <div className="flex items-center justify-end px-3 py-2 text-xs text-muted-foreground border-b border-border">
+              <div className="flex items-center gap-1.5">
+                {isPolling && (
+                  <RefreshCw
+                    className="h-3 w-3 animate-spin"
+                    data-testid="polling-indicator"
+                    aria-label="Syncing data"
+                  />
+                )}
+                {lastRefresh && (
+                  <span
+                    className="text-[10px] opacity-60"
+                    title={`Last refresh: ${new Date(lastRefresh).toLocaleTimeString()}`}
+                  >
+                    {new Date(lastRefresh).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Scrollable container for both sidebar sections (task-dcb-012) */}
+          <div
+            className="flex-1 overflow-y-auto"
+            data-testid="sidebar-scroll-container"
+          >
+            {/* FeatureSidebar with delete support (task-delete-005) */}
+            <FeatureSidebar
+              featuresByPhase={featuresByPhase}
+              currentFeatureId={featureId}
+              onFeatureSelect={setFeatureId}
+              onNewFeature={handleOpenModal}
+              projectId={projectId}
+              onDeleteFeature={handleDeleteFeature}
+            />
+          </div>
+        </aside>
+      )}
 
       {/* Content area - flexible width, full-width layout (task-testbed-full-width) */}
       {/* When feature selected: flex row layout, ChatPanel handles internal side-by-side */}
@@ -410,8 +419,9 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
               </div>
             ) : (
               // No project selected - show engaging home page
+              // Use user's first name for greeting (like Lovable), fallback to "there"
               <HomePage
-                userName={currentWorkspace?.name?.split(" ")[0] || "there"}
+                userName={session?.user?.name?.split(" ")[0] || "there"}
                 onPromptSubmit={handlePromptSubmit}
                 isLoading={isCreatingFromPrompt}
               />

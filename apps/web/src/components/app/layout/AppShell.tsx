@@ -75,9 +75,13 @@ export function useCommandPaletteContext() {
 export const AppShell = observer(function AppShell() {
   // Access componentBuilder domain from DomainProvider
   const { componentBuilder, studioCore } = useDomains()
-  const { setOrg } = useWorkspaceNavigation()
+  const { setOrg, projectId } = useWorkspaceNavigation()
   const [searchParams, setSearchParams] = useSearchParams()
   const { toast } = useToast()
+  
+  // Determine if we're on the home view (no project selected)
+  // On home view, we hide the header for a cleaner Lovable-style layout
+  const isHomeView = !projectId
 
   // State for BindingEditorPanel visibility
   const [isBindingEditorOpen, setIsBindingEditorOpen] = useState(false)
@@ -194,7 +198,8 @@ export const AppShell = observer(function AppShell() {
             
             {/* Main content area */}
             <div className="flex-1 flex flex-col min-w-0">
-              <AppHeader />
+              {/* Header - hidden on home view for cleaner Lovable-style layout */}
+              {!isHomeView && <AppHeader />}
               <main className="flex-1 overflow-auto bg-background">
                 <Outlet />
               </main>
