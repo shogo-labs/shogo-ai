@@ -66,8 +66,10 @@ import { PhaseContentPanel } from "../stepper"
 import { ChatPanel } from "../chat/ChatPanel"
 import { FeatureSidebar } from "./sidebar"
 import { HomePage } from "./dashboard"
+import { ComposingWorkspaceView } from "./dashboard/ComposingWorkspaceView"
 import { DeleteFeatureDialog } from "./modals/DeleteFeatureDialog"
 import { NewFeatureModal } from "./modals/NewFeatureModal"
+import { useHomeToWorkspaceTransition } from "@/hooks/useHomeToWorkspaceTransition"
 import { RefreshCw } from "lucide-react"
 import type { PollableDomain } from "@/hooks/useFeaturePolling"
 
@@ -255,30 +257,44 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   
   // State for prompt submission (creating project from home page)
   const [isCreatingFromPrompt, setIsCreatingFromPrompt] = useState(false)
+
+  // Home to workspace transition animation state
+  const {
+    transitionPhase,
+    pendingPrompt,
+    startTransition,
+    isComplete: isTransitionComplete,
+  } = useHomeToWorkspaceTransition()
+
+  // The feature session created during the transition animation
+  const [composingSession, setComposingSession] = useState<any>(null)
   
   /**
    * Handle prompt submission from home page
-   * Creates a new project and feature immediately, then navigates to /projects/:id
-   * This follows the lovable.dev flow where submitting a prompt creates everything at once
-   * and navigates to the full-screen project view
+   * Starts the transition animation immediately, then creates project/feature in parallel.
+   * Instead of navigating away, morphs the HomePage into a split-panel workspace view.
    */
   const handlePromptSubmit = useCallback(async (prompt: string) => {
     const userId = session?.user?.id
     const workspaceId = currentWorkspace?.id
-    
+
     if (!userId || !workspaceId) {
       console.error("[WorkspaceLayout] Cannot create from prompt: missing userId or workspaceId")
       return
     }
-    
+
     if (!studioCore || !platformFeatures) {
       console.error("[WorkspaceLayout] Cannot create from prompt: domains not available")
       return
     }
-    
+
     setIsCreatingFromPrompt(true)
-    
+
+    // Start the transition animation immediately (runs in parallel with session creation)
+    const transitionPromise = startTransition(prompt)
+
     try {
+      // Create session in parallel with the animation
       // 1. Generate a project name from the prompt using AI
       const projectName = await generateProjectNameFromPrompt(prompt)
 
@@ -289,27 +305,30 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
         prompt, // Use the full prompt as description
         userId
       )
-      
+
       // 3. Create a feature in the project with the prompt as the intent
-      await platformFeatures.createFeatureSession({
-        name: projectName, // Use same name for now, could extract differently
+      const newFeature = await platformFeatures.createFeatureSession({
+        name: projectName,
         intent: prompt,
         project: newProject.id,
       })
-      
-      // 4. Trigger refetch so the project shows in the list
+
+      // 4. Store the feature session for ComposingWorkspaceView
+      setComposingSession(newFeature)
+
+      // 5. Trigger refetch so the project shows in the sidebar
       refetchProjects()
-      
-      // 5. Navigate to the full-screen project view (like Lovable does)
-      // This takes the user to /projects/:id which renders ProjectLayout
-      navigate(`/projects/${newProject.id}`)
-      
+
+      // Wait for animation to complete before finalizing
+      await transitionPromise
+
     } catch (error) {
       console.error("[WorkspaceLayout] Failed to create from prompt:", error)
+      // On error, we should reset the transition - but for now just log
     } finally {
       setIsCreatingFromPrompt(false)
     }
-  }, [session?.user?.id, currentWorkspace?.id, studioCore, platformFeatures, refetchProjects, navigate])
+  }, [session?.user?.id, currentWorkspace?.id, studioCore, platformFeatures, refetchProjects, startTransition])
 
   // Determine if we're on the home view (no project selected)
   const isHomeView = !currentProject && !projectId
@@ -408,7 +427,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
             </div>
           </ChatPanel>
         ) : (
-          // No feature selected - render HomePage or ProjectDashboard
+          // No feature selected - render HomePage, ComposingWorkspaceView, or ProjectDashboard
           <div data-testid="project-dashboard" className="h-full">
             {currentProject ? (
               // Project selected but no feature - show project summary
@@ -423,8 +442,23 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
                   </div>
                 </div>
               </div>
+            ) : transitionPhase !== "idle" && ["emerge", "settle", "complete"].includes(transitionPhase) ? (
+              // Transition has reached emerge phase - show ComposingWorkspaceView
+              <ComposingWorkspaceView
+                featureSession={composingSession}
+                initialMessage={pendingPrompt}
+                transitionPhase={transitionPhase}
+              />
+            ) : transitionPhase !== "idle" ? (
+              // Transition is in commit/dissolve/transform phase - show HomePage with animation
+              <HomePage
+                userName={session?.user?.name?.split(" ")[0] || "there"}
+                onPromptSubmit={handlePromptSubmit}
+                isLoading={true}
+                transitionPhase={transitionPhase}
+              />
             ) : (
-              // No project selected - show engaging home page
+              // No project selected, no transition - show engaging home page
               // Use user's first name for greeting (like Lovable), fallback to "there"
               <HomePage
                 userName={session?.user?.name?.split(" ")[0] || "there"}

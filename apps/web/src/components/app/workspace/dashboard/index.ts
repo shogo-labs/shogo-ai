@@ -12,3 +12,7 @@ export { StatsCards, STAT_PHASES } from "./StatsCards"
 export type { StatsCardsProps, StatPhase } from "./StatsCards"
 
 export { HomePage } from "./HomePage"
+export type { TransitionPhase } from "./HomePage"
+
+export { ComposingWorkspaceView } from "./ComposingWorkspaceView"
+export type { ComposingWorkspaceViewProps } from "./ComposingWorkspaceView"

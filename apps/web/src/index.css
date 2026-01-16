@@ -447,3 +447,153 @@ body {
     transition: none;
   }
 }
+
+/*
+ * =====================================================
+ * HomePage to Workspace Transition Animation System
+ * =====================================================
+ *
+ * Choreographed 5-phase animation when user submits from HomePage:
+ * 1. commit (150ms)    - Input lifts, gains shadow
+ * 2. dissolve (300ms)  - Non-essential elements fade out
+ * 3. transform (400ms) - Input slides to right panel position
+ * 4. emerge (350ms)    - Workspace panel slides in from left
+ * 5. settle (200ms)    - Final polish, chat header appears
+ *
+ * Uses data-transition-phase attribute on [data-home-element="root"]
+ */
+
+/* Base transition setup - all elements start with transition properties */
+[data-transition-phase] .home-greeting,
+[data-transition-phase] .home-suggestions,
+[data-transition-phase] .home-templates,
+[data-transition-phase] .home-gradient-orb,
+[data-transition-phase] .home-input-card {
+  transition-property: opacity, transform, box-shadow;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ===== PHASE 1: COMMIT (150ms) ===== */
+/* Input lifts slightly, gains elevated shadow */
+[data-transition-phase="commit"] .home-input-card,
+[data-transition-phase="dissolve"] .home-input-card,
+[data-transition-phase="transform"] .home-input-card {
+  transform: translateY(-4px);
+  box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.25);
+  transition-duration: 150ms;
+}
+
+/* ===== PHASE 2: DISSOLVE (300ms) ===== */
+/* Greeting fades out */
+[data-transition-phase="dissolve"] .home-greeting,
+[data-transition-phase="transform"] .home-greeting,
+[data-transition-phase="emerge"] .home-greeting,
+[data-transition-phase="settle"] .home-greeting,
+[data-transition-phase="complete"] .home-greeting {
+  opacity: 0;
+  transform: translateY(-10px);
+  transition-duration: 300ms;
+}
+
+/* Suggestions fade out */
+[data-transition-phase="dissolve"] .home-suggestions,
+[data-transition-phase="transform"] .home-suggestions,
+[data-transition-phase="emerge"] .home-suggestions,
+[data-transition-phase="settle"] .home-suggestions,
+[data-transition-phase="complete"] .home-suggestions {
+  opacity: 0;
+  transform: translateY(10px);
+  transition-duration: 300ms;
+}
+
+/* Templates slide down and fade */
+[data-transition-phase="dissolve"] .home-templates,
+[data-transition-phase="transform"] .home-templates,
+[data-transition-phase="emerge"] .home-templates,
+[data-transition-phase="settle"] .home-templates,
+[data-transition-phase="complete"] .home-templates {
+  opacity: 0;
+  transform: translateY(20px);
+  transition-duration: 300ms;
+}
+
+/* Gradient orbs fade out */
+[data-transition-phase="dissolve"] .home-gradient-orb,
+[data-transition-phase="transform"] .home-gradient-orb,
+[data-transition-phase="emerge"] .home-gradient-orb,
+[data-transition-phase="settle"] .home-gradient-orb,
+[data-transition-phase="complete"] .home-gradient-orb {
+  opacity: 0;
+  transition-duration: 400ms;
+}
+
+/* ===== PHASE 3: TRANSFORM (400ms) ===== */
+/* Input card transforms - handled by React component swap to ComposingWorkspaceView */
+
+/* ===== PHASE 4: EMERGE (350ms) ===== */
+/* Workspace panel slide-in animation */
+@keyframes workspace-emerge {
+  from {
+    transform: translateX(-30px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-workspace-emerge {
+  animation: workspace-emerge 350ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* Chat panel border fade-in */
+@keyframes border-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-border-fade {
+  animation: border-fade-in 200ms ease-out forwards;
+}
+
+/* ===== PHASE 5: SETTLE (200ms) ===== */
+/* Chat header fade-in animation */
+@keyframes header-settle {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-header-settle {
+  animation: header-settle 200ms ease-out forwards;
+}
+
+/* ===== REDUCED MOTION ===== */
+/* Respect user preference - instant transitions */
+@media (prefers-reduced-motion: reduce) {
+  [data-transition-phase] .home-greeting,
+  [data-transition-phase] .home-suggestions,
+  [data-transition-phase] .home-templates,
+  [data-transition-phase] .home-gradient-orb,
+  [data-transition-phase] .home-input-card {
+    transition: none !important;
+  }
+
+  .animate-workspace-emerge,
+  .animate-border-fade,
+  .animate-header-settle {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+}

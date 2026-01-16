@@ -78,3 +78,14 @@ export { SlotLayout } from "./composition/SlotLayout"
 export type { SlotLayoutProps, SlotDefinition, LayoutTemplateData } from "./composition/SlotLayout"
 export { ComposablePhaseView } from "./composition/ComposablePhaseView"
 export type { ComposablePhaseViewProps } from "./composition/ComposablePhaseView"
+
+// Contexts for nested sections (view-builder-implementation)
+export {
+  AppShellProvider,
+  useAppShell,
+  useAppShellRequired,
+} from "./contexts"
+export type { NavItem, AppShellContextValue } from "./contexts"
+
+// Data loading hooks for sections
+export { useSideNavData } from "./sections/hooks"
