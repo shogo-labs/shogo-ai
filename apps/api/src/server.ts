@@ -1,16 +1,19 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
+import Stripe from 'stripe'
+import { streamText, generateText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
 import { z } from 'zod'
 import { EventEmitter } from 'events'
 import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
 // isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
 import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
 import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-provider-claude-code'
+import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { auth } from './auth'
 import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
+import { getPriceId } from './config/stripe-prices'
 
 /**
  * Parse a data URL to extract mediaType and base64 data.
@@ -507,6 +510,95 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 app.get('/api/health', (c) => c.json({ ok: true }))
 
 /**
+ * Generate a project name from a user prompt using a small language model.
+ * This endpoint provides a fast, lightweight way to generate meaningful project names
+ * without the overhead of the full chat interface.
+ * 
+ * Request body:
+ * - prompt: string - The user's description of what they want to build
+ * 
+ * Response:
+ * - name: string - A short, descriptive project name (2-4 words)
+ */
+/**
+ * Fallback function for generating project names when AI is unavailable.
+ * Extracts meaningful words from the prompt.
+ */
+function fallbackGenerateProjectName(prompt: string): string {
+  const fillerWords = new Set([
+    "a", "an", "the", "to", "for", "with", "that", "this", "is", "are",
+    "create", "build", "make", "design", "develop", "implement",
+    "please", "can", "you", "i", "want", "need", "would", "like",
+    "simple", "basic", "web", "app", "application", "website", "page"
+  ])
+  
+  const words = prompt.toLowerCase()
+    .replace(/[^\w\s]/g, "")
+    .split(/\s+/)
+    .filter(word => word.length > 2 && !fillerWords.has(word))
+  
+  const nameWords = words.slice(0, 3)
+  
+  if (nameWords.length === 0) {
+    return "New Project"
+  }
+  
+  return nameWords
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ")
+}
+
+app.post('/api/generate-project-name', async (c) => {
+  try {
+    const { prompt } = await c.req.json()
+    
+    if (!prompt || typeof prompt !== 'string') {
+      return c.json({ error: 'Prompt is required' }, 400)
+    }
+    
+    // Check if ANTHROPIC_API_KEY is available
+    if (!process.env.ANTHROPIC_API_KEY) {
+      console.log('[/api/generate-project-name] ANTHROPIC_API_KEY not set, using fallback')
+      return c.json({ name: fallbackGenerateProjectName(prompt) })
+    }
+    
+    // Use Claude Haiku - fastest and most cost-effective model for simple tasks
+    const anthropic = createAnthropic()
+    
+    const result = await generateText({
+      model: anthropic('claude-3-5-haiku-latest'),
+      system: `You are a project naming assistant. Given a user's description of what they want to build, generate a short, memorable project name.
+
+Rules:
+- Return ONLY the project name, nothing else
+- Use 2-4 words maximum
+- Make it descriptive but concise
+- Use Title Case (capitalize each word)
+- Do NOT include words like "App", "Application", "Project", "System" unless essential
+- Focus on the core functionality or domain
+
+Examples:
+- "create a todo app" → "Task Tracker"
+- "build a recipe manager" → "Recipe Book"
+- "make a chat application with video calls" → "Video Chat"
+- "create an e-commerce site for selling plants" → "Plant Shop"
+- "build a dashboard for monitoring servers" → "Server Monitor"`,
+      prompt: prompt.trim(),
+    })
+    
+    // Extract and clean the name
+    const name = result.text.trim().replace(/['"]/g, '') || 'New Project'
+    
+    return c.json({ name })
+  } catch (error: any) {
+    console.error('[/api/generate-project-name] Error:', error)
+    // Fall back to simple extraction on any error - return 200 with fallback name
+    const { prompt } = await c.req.json().catch(() => ({ prompt: '' }))
+    return c.json({ name: fallbackGenerateProjectName(prompt || '') })
+  }
+})
+
+/**
  * AI Chat endpoint using Vercel AI SDK with Claude Code provider
  * Streams Claude responses back to the client
  * Uses existing Claude Pro/Max subscription via Claude Code CLI
@@ -739,6 +831,129 @@ app.post('/api/chat', async (c) => {
         code: error.code || 'CHAT_ERROR',
       }
     }, 500)
+  }
+})
+
+// =============================================================================
+// Billing routes (simplified - accepts workspaceId in body)
+// =============================================================================
+// Only initialize Stripe if the API key is set
+const stripe = process.env.STRIPE_SECRET_KEY 
+  ? new Stripe(process.env.STRIPE_SECRET_KEY)
+  : null
+
+app.post('/api/billing/checkout', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const body = await c.req.json()
+    const { workspaceId, planId, billingInterval } = body
+
+    if (!workspaceId || !planId || !billingInterval) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
+    }
+
+    // Get price ID from config (supports tiered pricing: pro, pro_200, business_1200, etc.)
+    const priceId = getPriceId(planId, billingInterval as 'monthly' | 'annual')
+
+    if (!priceId) {
+      return c.json({ error: { code: 'invalid_plan', message: `No price found for ${planId} ${billingInterval}` } }, 400)
+    }
+
+    // Create Stripe checkout session
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: `http://localhost:${VITE_PORT}/billing?success=true&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `http://localhost:${VITE_PORT}/billing?canceled=true`,
+      metadata: {
+        workspaceId,
+        planId,
+        billingInterval,
+      },
+    })
+
+    return c.json({ sessionId: session.id, url: session.url }, 200)
+  } catch (error: any) {
+    console.error('[Billing] Checkout error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+app.post('/api/billing/portal', async (c) => {
+  try {
+    const url = new URL(c.req.url)
+    const workspaceId = url.searchParams.get('workspaceId')
+
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+
+    // For now, return an error since we don't have customer ID stored
+    return c.json({ error: { code: 'not_implemented', message: 'Portal not yet implemented' } }, 501)
+  } catch (error: any) {
+    console.error('[Billing] Portal error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+// Stripe webhook endpoint
+app.post('/webhooks/stripe', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: 'Stripe is not configured' }, 503)
+    }
+
+    const payload = await c.req.text()
+    const signature = c.req.header('stripe-signature') || ''
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || ''
+
+    let event: Stripe.Event
+    try {
+      // Use async version for Bun/SubtleCrypto compatibility
+      event = await stripe.webhooks.constructEventAsync(payload, signature, webhookSecret)
+    } catch (err: any) {
+      console.error('[Webhook] Signature verification failed:', err.message)
+      return c.json({ error: 'Invalid signature' }, 400)
+    }
+
+    console.log('[Webhook] Received event:', event.type)
+
+    // Handle subscription events
+    switch (event.type) {
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated': {
+        const subscription = event.data.object as Stripe.Subscription
+        console.log('[Webhook] Subscription event:', {
+          type: event.type,
+          subscriptionId: subscription.id,
+          status: subscription.status,
+          customerId: subscription.customer,
+          metadata: subscription.metadata,
+        })
+        break
+      }
+      case 'checkout.session.completed': {
+        const session = event.data.object as Stripe.Checkout.Session
+        console.log('[Webhook] Checkout completed:', {
+          sessionId: session.id,
+          subscriptionId: session.subscription,
+          customerId: session.customer,
+          metadata: session.metadata,
+        })
+        break
+      }
+      default:
+        console.log('[Webhook] Unhandled event type:', event.type)
+    }
+
+    return c.json({ received: true }, 200)
+  } catch (error: any) {
+    console.error('[Webhook] Error:', error)
+    return c.json({ error: 'Webhook error' }, 500)
   }
 })
 

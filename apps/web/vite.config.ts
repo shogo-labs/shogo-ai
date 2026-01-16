@@ -20,6 +20,10 @@ export default defineConfig(({ mode }) => {
   // Useful when working with AI chat to prevent stream interruption on code changes
   const enableHMR = env.VITE_HMR !== 'false'
 
+  // HMR configuration for Docker dev mode
+  const hmrHost = env.VITE_HMR_HOST || undefined
+  const hmrPort = env.VITE_HMR_PORT ? parseInt(env.VITE_HMR_PORT, 10) : undefined
+
   return {
     plugins: [react(), tailwindcss()],
     root: __dirname, // Serve from the client directory
@@ -27,12 +31,21 @@ export default defineConfig(({ mode }) => {
     server: {
       port: VITE_PORT,
       strictPort: true, // Fail if port is in use instead of auto-incrementing
-      hmr: enableHMR, // Disable HMR when VITE_HMR=false
+      host: true, // Listen on all addresses (needed for Docker)
+      // HMR config for Docker - client connects to host machine
+      hmr: hmrHost ? {
+        host: hmrHost,
+        port: hmrPort || VITE_PORT,
+      } : undefined,
       proxy: {
         '/api': {
           target: `http://localhost:${API_PORT}`,
           changeOrigin: true,
         },
+      },
+      // Watch config for Docker volumes (polling needed on macOS)
+      watch: {
+        usePolling: env.VITE_USE_POLLING === 'true' || env.CHOKIDAR_USEPOLLING === 'true',
       },
     },
     resolve: {

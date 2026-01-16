@@ -61,6 +61,12 @@ variable "tags" {
   default     = {}
 }
 
+variable "admin_role_arns" {
+  description = "List of IAM role ARNs to grant cluster-admin access (e.g., GitHub Actions role)"
+  type        = list(string)
+  default     = []
+}
+
 # -----------------------------------------------------------------------------
 # EKS Cluster IAM Role
 # -----------------------------------------------------------------------------
@@ -119,6 +125,12 @@ resource "aws_eks_cluster" "main" {
     security_group_ids      = [aws_security_group.cluster.id]
     endpoint_private_access = true
     endpoint_public_access  = true
+  }
+
+  # Enable EKS access entries (modern IAM authentication)
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
   }
 
   # Enable EKS add-ons
@@ -273,6 +285,34 @@ resource "aws_iam_openid_connect_provider" "cluster" {
   url             = aws_eks_cluster.main.identity[0].oidc[0].issuer
 
   tags = var.tags
+}
+
+# -----------------------------------------------------------------------------
+# EKS Access Entries (IAM to Kubernetes RBAC mapping via EKS API)
+# This is the modern approach (EKS 1.24+) replacing aws-auth ConfigMap
+# -----------------------------------------------------------------------------
+resource "aws_eks_access_entry" "admin_roles" {
+  for_each = toset(var.admin_role_arns)
+
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.value
+  type          = "STANDARD"
+
+  depends_on = [aws_eks_cluster.main]
+}
+
+resource "aws_eks_access_policy_association" "admin_roles" {
+  for_each = toset(var.admin_role_arns)
+
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.value
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.admin_roles]
 }
 
 # -----------------------------------------------------------------------------

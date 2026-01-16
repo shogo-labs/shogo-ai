@@ -9,7 +9,7 @@
  * - Zero re-exports from /components/Studio/
  *
  * Usage:
- *   import { OrgSwitcher, WorkspaceLayout } from "@/components/app/workspace"
+ *   import { WorkspaceSwitcher, WorkspaceLayout } from "@/components/app/workspace"
  *   import { FeatureSidebar, NewFeatureModal } from "@/components/app/workspace"
  */
 
@@ -17,10 +17,14 @@
 // Core Workspace Components
 // ============================================================
 export { WorkspaceLayout } from "./WorkspaceLayout"
-export { OrgSwitcher } from "./OrgSwitcher"
-export type { OrgSwitcherProps, Organization } from "./OrgSwitcher"
+export { WorkspaceSwitcher } from "./WorkspaceSwitcher"
+export type { WorkspaceSwitcherProps, Workspace } from "./WorkspaceSwitcher"
+export { CreateWorkspaceModal } from "./CreateWorkspaceModal"
+export type { CreateWorkspaceModalProps } from "./CreateWorkspaceModal"
 export { ProjectSelector } from "./ProjectSelector"
 export type { ProjectSelectorProps, Project } from "./ProjectSelector"
+export { CreateProjectModal } from "./CreateProjectModal"
+export type { CreateProjectModalProps } from "./CreateProjectModal"
 
 // ============================================================
 // Sidebar Components

@@ -1,0 +1,224 @@
+# =============================================================================
+# Shogo AI - Local Development Environment (with Hot Reload)
+# =============================================================================
+# Usage:
+#   docker-compose -f docker-compose.dev.yml up -d    # Start all services
+#   docker-compose -f docker-compose.dev.yml logs -f  # Follow all logs
+#   docker-compose -f docker-compose.dev.yml down     # Stop all services
+#
+# Infra-only mode (run apps locally with native hot reload):
+#   docker-compose -f docker-compose.dev.yml up -d postgres redis minio
+#   bun run dev  # Run all apps locally
+#
+# This config provides:
+#   - Hot reload for web (Vite), API (bun --watch), and MCP
+#   - Source code mounted as volumes
+#   - Infrastructure services (postgres, redis, minio) remain unchanged
+#
+# Access points:
+#   - Web:      http://localhost:5173
+#   - API:      http://localhost:8002
+#   - MCP:      http://localhost:3100
+#   - Postgres: localhost:5432
+#   - Redis:    localhost:6379
+#   - MinIO:    http://localhost:9001 (console)
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database (Control Plane + Workspace Data)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: shogo-postgres-dev
+    environment:
+      POSTGRES_USER: shogo
+      POSTGRES_PASSWORD: shogo_dev
+      POSTGRES_DB: shogo
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shogo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shogo-dev-network
+
+  # ---------------------------------------------------------------------------
+  # MinIO (S3-compatible storage)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: shogo-minio-dev
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data_dev:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shogo-dev-network
+
+  # ---------------------------------------------------------------------------
+  # Redis (BetterAuth session cache)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: shogo-redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data_dev:/data
+    networks:
+      - shogo-dev-network
+
+  # ---------------------------------------------------------------------------
+  # Shogo MCP Server - Development Mode with Hot Reload
+  # ---------------------------------------------------------------------------
+  mcp:
+    image: oven/bun:1.2-alpine
+    container_name: shogo-mcp-dev
+    working_dir: /app
+    command: sh -c "bun install && bun --watch packages/mcp/src/server-http.ts"
+    ports:
+      - "3100:3100"
+    environment:
+      MCP_PORT: "3100"
+      NODE_ENV: development
+      DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
+      SCHEMAS_PATH: /app/.schemas
+      WORKSPACE_ID: workspace-1
+      TENANT_ID: tenant-a
+    volumes:
+      # Mount source code for hot reload
+      - .:/app
+      # Preserve node_modules in container
+      - mcp_node_modules:/app/node_modules
+      - state_api_node_modules:/app/packages/state-api/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -q --spider http://localhost:3100/mcp 2>/dev/null || wget -q --spider http://localhost:3100/sse 2>/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - shogo-dev-network
+
+  # ---------------------------------------------------------------------------
+  # Shogo API Server - Development Mode with Hot Reload
+  # ---------------------------------------------------------------------------
+  api:
+    image: oven/bun:1.2-alpine
+    container_name: shogo-api-dev
+    working_dir: /app
+    command: sh -c "bun install && cd packages/state-api && bun run build && cd /app && bun --watch apps/api/src/server.ts"
+    ports:
+      - "8002:8002"
+    environment:
+      API_PORT: "8002"
+      NODE_ENV: development
+      DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
+      MCP_URL: http://mcp:3100
+      VITE_PORT: "5173"
+      BETTER_AUTH_SECRET: shogo-local-dev-secret-32-chars-minimum-ok
+      BETTER_AUTH_URL: http://localhost:8002
+      REDIS_URL: redis://redis:6379
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:3000
+    volumes:
+      # Mount source code for hot reload
+      - .:/app
+      # Preserve node_modules in container
+      - api_node_modules:/app/node_modules
+      - state_api_node_modules:/app/packages/state-api/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -q --spider http://localhost:8002/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - shogo-dev-network
+
+  # ---------------------------------------------------------------------------
+  # Shogo Web Frontend - Vite Dev Server with Hot Reload
+  # ---------------------------------------------------------------------------
+  web:
+    image: oven/bun:1.2-alpine
+    container_name: shogo-web-dev
+    working_dir: /app
+    command: sh -c "bun install && cd packages/state-api && bun run build && cd /app/apps/web && bun run dev --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_PORT: "5173"
+      VITE_API_URL: http://localhost:8002
+      VITE_MCP_URL: http://localhost:3100
+      VITE_BETTER_AUTH_URL: http://localhost:8002
+      VITE_WORKSPACE: workspace-1
+      # HMR configuration for Docker
+      VITE_HMR_HOST: localhost
+      VITE_HMR_PORT: "5173"
+      # Enable polling for file watching (needed for Docker on macOS)
+      VITE_USE_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      # Mount source code for hot reload
+      - .:/app
+      # Preserve node_modules in container
+      - web_node_modules:/app/node_modules
+      - state_api_node_modules:/app/packages/state-api/node_modules
+      - web_app_node_modules:/app/apps/web/node_modules
+    depends_on:
+      - api
+      - mcp
+    networks:
+      - shogo-dev-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data_dev:
+    name: shogo-postgres-data-dev
+  minio_data_dev:
+    name: shogo-minio-data-dev
+  redis_data_dev:
+    name: shogo-redis-data-dev
+  # Node modules volumes to avoid host/container conflicts
+  mcp_node_modules:
+    name: shogo-mcp-node-modules-dev
+  api_node_modules:
+    name: shogo-api-node-modules-dev
+  web_node_modules:
+    name: shogo-web-node-modules-dev
+  state_api_node_modules:
+    name: shogo-state-api-node-modules-dev
+  web_app_node_modules:
+    name: shogo-web-app-node-modules-dev
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  shogo-dev-network:
+    name: shogo-dev-network
+    driver: bridge

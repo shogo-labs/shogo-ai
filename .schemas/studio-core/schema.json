@@ -1,11 +1,13 @@
 {
-  "id": "b83de179-8e15-4f6d-a02c-a8b69faa39ff",
+  "id": "30a25e4a-ac79-47da-aba0-2f4409e45279",
   "name": "studio-core",
   "format": "enhanced-json-schema",
-  "createdAt": 1767399249034,
+  "createdAt": 1768459871893,
+  "version": 1,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-core",
   "$defs": {
-    "Organization": {
+    "Workspace": {
       "type": "object",
       "x-persistence": {
         "strategy": "entity-per-file",
@@ -46,56 +48,7 @@
         "slug",
         "createdAt"
       ],
-      "x-original-name": "Organization"
-    },
-    "Team": {
-      "type": "object",
-      "x-persistence": {
-        "strategy": "entity-per-file",
-        "displayKey": "name",
-        "nested": true
-      },
-      "properties": {
-        "id": {
-          "type": "string",
-          "format": "uuid",
-          "x-mst-type": "identifier"
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "description": {
-          "type": "string"
-        },
-        "organization": {
-          "type": "string",
-          "x-arktype": "Organization",
-          "x-mst-type": "reference",
-          "x-reference-type": "single",
-          "x-reference-target": "Organization"
-        },
-        "parent": {
-          "type": "string",
-          "x-arktype": "Team",
-          "x-mst-type": "maybe-reference",
-          "x-reference-type": "single",
-          "x-reference-target": "Team"
-        },
-        "createdAt": {
-          "type": "number"
-        },
-        "updatedAt": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "organization",
-        "createdAt"
-      ],
-      "x-original-name": "Team"
+      "x-original-name": "Workspace"
     },
     "Project": {
       "type": "object",
@@ -117,12 +70,12 @@
         "description": {
           "type": "string"
         },
-        "organization": {
+        "workspace": {
           "type": "string",
-          "x-arktype": "Organization",
+          "x-arktype": "Workspace",
           "x-mst-type": "reference",
           "x-reference-type": "single",
-          "x-reference-target": "Organization"
+          "x-reference-target": "Workspace"
         },
         "tier": {
           "type": "string",
@@ -154,12 +107,17 @@
         },
         "updatedAt": {
           "type": "number"
+        },
+        "folderId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "ID of folder this project belongs to, null for root-level projects"
         }
       },
       "required": [
         "id",
         "name",
-        "organization",
+        "workspace",
         "tier",
         "status",
         "createdAt"
@@ -192,19 +150,12 @@
             "viewer"
           ]
         },
-        "organization": {
+        "workspace": {
           "type": "string",
-          "x-arktype": "Organization",
+          "x-arktype": "Workspace",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single",
-          "x-reference-target": "Organization"
-        },
-        "team": {
-          "type": "string",
-          "x-arktype": "Team",
-          "x-mst-type": "maybe-reference",
-          "x-reference-type": "single",
-          "x-reference-target": "Team"
+          "x-reference-target": "Workspace"
         },
         "project": {
           "type": "string",
@@ -244,12 +195,12 @@
           "format": "uuid",
           "x-mst-type": "identifier"
         },
-        "organization": {
+        "workspace": {
           "type": "string",
-          "x-arktype": "Organization",
+          "x-arktype": "Workspace",
           "x-mst-type": "reference",
           "x-reference-type": "single",
-          "x-reference-target": "Organization"
+          "x-reference-target": "Workspace"
         },
         "stripeCustomerId": {
           "type": "string"
@@ -269,7 +220,7 @@
       },
       "required": [
         "id",
-        "organization",
+        "workspace",
         "createdAt"
       ],
       "x-original-name": "BillingAccount"
@@ -300,19 +251,12 @@
             "viewer"
           ]
         },
-        "organization": {
+        "workspace": {
           "type": "string",
-          "x-arktype": "Organization",
+          "x-arktype": "Workspace",
           "x-mst-type": "maybe-reference",
           "x-reference-type": "single",
-          "x-reference-target": "Organization"
-        },
-        "team": {
-          "type": "string",
-          "x-arktype": "Team",
-          "x-mst-type": "maybe-reference",
-          "x-reference-type": "single",
-          "x-reference-target": "Team"
+          "x-reference-target": "Workspace"
         },
         "project": {
           "type": "string",
@@ -353,6 +297,54 @@
         "createdAt"
       ],
       "x-original-name": "Invitation"
+    },
+    "Folder": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace": {
+          "type": "string",
+          "x-arktype": "Workspace",
+          "x-mst-type": "reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Workspace"
+        },
+        "parentId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "ID of parent folder for nesting, null for root-level folders"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Loose string ref to AuthUser.id"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "workspace",
+        "createdAt"
+      ],
+      "x-original-name": "Folder"
     }
   },
   "x-persistence": {

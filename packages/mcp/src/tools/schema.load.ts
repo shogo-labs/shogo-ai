@@ -23,8 +23,12 @@ export function registerSchemaLoad(server: FastMCP) {
     execute: async (args: any) => {
       const { name, workspace } = args as { name: string; workspace?: string }
 
+      // Debug: Log received workspace value
+      console.log('[schema.load] Received request:', { name, workspace, workspaceType: typeof workspace })
+
       // If no workspace provided, use monorepo's .schemas directory
       const effectiveWorkspace = getEffectiveWorkspace(workspace)
+      console.log('[schema.load] Effective workspace:', effectiveWorkspace)
 
       try {
         const metaStore = getMetaStore()

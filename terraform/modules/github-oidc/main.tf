@@ -20,9 +20,9 @@ variable "github_repo" {
   type        = string
 }
 
-variable "eks_cluster_arn" {
-  description = "ARN of the EKS cluster"
-  type        = string
+variable "eks_cluster_arns" {
+  description = "List of EKS cluster ARNs to grant access to"
+  type        = list(string)
 }
 
 variable "ecr_repository_arns" {
@@ -127,7 +127,7 @@ resource "aws_iam_role_policy" "eks_access" {
           "eks:DescribeCluster",
           "eks:ListClusters"
         ]
-        Resource = var.eks_cluster_arn
+        Resource = var.eks_cluster_arns
       }
     ]
   })

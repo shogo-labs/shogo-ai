@@ -164,7 +164,7 @@ describe("barrel exports - workspace components via app barrel (Session 2.2)", (
     const exportedNames = Object.keys(barrel)
 
     // Workspace components should be re-exported via app barrel
-    expect(exportedNames).toContain("OrgSwitcher")
+    expect(exportedNames).toContain("WorkspaceSwitcher")
     expect(exportedNames).toContain("ProjectSelector")
     expect(exportedNames).toContain("WorkspaceLayout")
   })
@@ -174,7 +174,7 @@ describe("barrel exports - workspace components via app barrel (Session 2.2)", (
     const exportedNames = Object.keys(barrel)
 
     // Workspace components
-    expect(exportedNames).toContain("OrgSwitcher")
+    expect(exportedNames).toContain("WorkspaceSwitcher")
     expect(exportedNames).toContain("ProjectSelector")
     expect(exportedNames).toContain("WorkspaceLayout")
 
@@ -199,7 +199,7 @@ describe("barrel exports - workspace components via app barrel (Session 2.2)", (
 
   test("workspace/index.ts exports all workspace components", async () => {
     const workspace = await import("@/components/app/workspace")
-    expect(workspace.OrgSwitcher).toBeDefined()
+    expect(workspace.WorkspaceSwitcher).toBeDefined()
     expect(workspace.ProjectSelector).toBeDefined()
     expect(workspace.WorkspaceLayout).toBeDefined()
   })

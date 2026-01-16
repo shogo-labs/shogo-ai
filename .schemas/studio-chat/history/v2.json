@@ -1,4 +1,9 @@
 {
+  "id": "283c8276-75a0-402b-a9f0-0813e1ea962a",
+  "name": "studio-chat",
+  "format": "enhanced-json-schema",
+  "createdAt": 1768258106608,
+  "version": 1,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "studio-chat",
   "$defs": {
@@ -39,6 +44,10 @@
         "phase": {
           "type": "string",
           "description": "Optional phase association (discovery, design, etc.)"
+        },
+        "claudeCodeSessionId": {
+          "type": "string",
+          "description": "Claude Code session ID for conversation continuity/resume"
         },
         "createdAt": {
           "type": "number"
@@ -85,6 +94,10 @@
         },
         "content": {
           "type": "string"
+        },
+        "imageData": {
+          "type": "string",
+          "description": "Optional image attachment as data URL (data:image/{type};base64,{data}). Stores base64-encoded image with embedded mediaType. Max ~4MB recommended."
         },
         "createdAt": {
           "type": "number"

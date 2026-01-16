@@ -25,7 +25,7 @@ import { useCallback } from "react"
 export interface WorkspaceNavigationState {
   /** Current organization slug from URL */
   org: string | null
-  /** Set organization slug (cascades to clear project and feature) */
+  /** Set organization slug (cascades to clear project, feature, and folder) */
   setOrg: (org: string | null) => Promise<URLSearchParams>
   /** Current project ID from URL */
   projectId: string | null
@@ -35,10 +35,16 @@ export interface WorkspaceNavigationState {
   featureId: string | null
   /** Set feature ID */
   setFeatureId: (featureId: string | null) => Promise<URLSearchParams>
+  /** Current folder ID from URL (for All Projects page) */
+  folderId: string | null
+  /** Set folder ID for navigating into folders */
+  setFolderId: (folderId: string | null) => Promise<URLSearchParams>
   /** Clear feature ID (keeps org and project) */
   clearFeature: () => Promise<URLSearchParams>
   /** Clear project ID and feature ID (keeps org) */
   clearProject: () => Promise<URLSearchParams>
+  /** Clear folder ID (navigate to root of All Projects) */
+  clearFolder: () => Promise<URLSearchParams>
 }
 
 /**
@@ -73,17 +79,21 @@ export function useWorkspaceNavigation(): WorkspaceNavigationState {
   // URL state for feature ID
   const [featureId, setFeatureIdRaw] = useQueryState("feature", parseAsString)
 
+  // URL state for folder ID (All Projects page navigation)
+  const [folderId, setFolderIdRaw] = useQueryState("folder", parseAsString)
+
   /**
-   * Set organization - cascades to clear project and feature
+   * Set organization - cascades to clear project, feature, and folder
    */
   const setOrg = useCallback(
     async (newOrg: string | null): Promise<URLSearchParams> => {
-      // Clear project and feature when org changes
+      // Clear project, feature, and folder when org changes
       await setProjectIdRaw(null)
       await setFeatureIdRaw(null)
+      await setFolderIdRaw(null)
       return setOrgRaw(newOrg)
     },
-    [setOrgRaw, setProjectIdRaw, setFeatureIdRaw]
+    [setOrgRaw, setProjectIdRaw, setFeatureIdRaw, setFolderIdRaw]
   )
 
   /**
@@ -123,6 +133,23 @@ export function useWorkspaceNavigation(): WorkspaceNavigationState {
     return setProjectIdRaw(null)
   }, [setProjectIdRaw, setFeatureIdRaw])
 
+  /**
+   * Set folder ID - no cascade (stays within same workspace)
+   */
+  const setFolderId = useCallback(
+    async (newFolderId: string | null): Promise<URLSearchParams> => {
+      return setFolderIdRaw(newFolderId)
+    },
+    [setFolderIdRaw]
+  )
+
+  /**
+   * Clear folder ID (navigate to root of All Projects)
+   */
+  const clearFolder = useCallback(async (): Promise<URLSearchParams> => {
+    return setFolderIdRaw(null)
+  }, [setFolderIdRaw])
+
   return {
     org,
     setOrg,
@@ -130,7 +157,10 @@ export function useWorkspaceNavigation(): WorkspaceNavigationState {
     setProjectId,
     featureId,
     setFeatureId,
+    folderId,
+    setFolderId,
     clearFeature,
     clearProject,
+    clearFolder,
   }
 }

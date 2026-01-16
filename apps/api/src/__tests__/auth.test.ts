@@ -212,4 +212,24 @@ describe("Better Auth Server Configuration", () => {
       expect(hasLocalhost).toBe(true)
     })
   })
+
+  // test-org-002: Database hooks for auto-creating personal org
+  describe("Database Hooks Configuration (test-org-002)", () => {
+    test("databaseHooks is configured", () => {
+      expect(auth.options.databaseHooks).toBeDefined()
+    })
+
+    test("databaseHooks.user is configured", () => {
+      expect(auth.options.databaseHooks?.user).toBeDefined()
+    })
+
+    test("databaseHooks.user.create is configured", () => {
+      expect(auth.options.databaseHooks?.user?.create).toBeDefined()
+    })
+
+    test("databaseHooks.user.create.after callback is defined", () => {
+      expect(auth.options.databaseHooks?.user?.create?.after).toBeDefined()
+      expect(typeof auth.options.databaseHooks?.user?.create?.after).toBe("function")
+    })
+  })
 })
