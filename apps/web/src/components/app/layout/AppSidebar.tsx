@@ -1,20 +1,20 @@
 /**
  * AppSidebar - Persistent navigation sidebar component
- * 
+ *
  * Renders the main navigation sidebar with:
  * - Logo and sidebar collapse toggle at top
  * - Workspace switcher
  * - Navigation sections (Home, Search)
- * - Projects section (Recent, All projects, Starred, Shared with me)
+ * - Projects section with expandable Recent and All projects
  * - Resources section (Discover, Templates, Learn)
  * - User avatar and inbox at bottom
- * 
+ *
  * Inspired by Lovable.dev's sidebar design for better navigation UX.
  */
 
 import { useState, useCallback, useEffect } from "react"
 import { observer } from "mobx-react-lite"
-import { Link, useLocation } from "react-router-dom"
+import { Link, useLocation, useNavigate } from "react-router-dom"
 import {
   Home,
   Search,
@@ -31,12 +31,43 @@ import {
   PanelLeft,
   ExternalLink,
   Plus,
+  Folder,
+  FolderPlus,
+  MoreHorizontal,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { WorkspaceSwitcher } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
 import { useCommandPaletteContext } from "./AppShell"
+import { useDomains } from "@/contexts/DomainProvider"
 
 interface NavItemProps {
   icon: React.ElementType
@@ -133,6 +164,211 @@ function NavSection({ title, children, collapsed, defaultExpanded = true }: NavS
   )
 }
 
+interface ExpandableNavItemProps {
+  icon: React.ElementType
+  label: string
+  to?: string
+  active?: boolean
+  collapsed?: boolean
+  defaultExpanded?: boolean
+  children?: React.ReactNode
+}
+
+function ExpandableNavItem({
+  icon: Icon,
+  label,
+  to,
+  active,
+  collapsed,
+  defaultExpanded = false,
+  children,
+}: ExpandableNavItemProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+
+  const handleToggle = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setExpanded(!expanded)
+  }
+
+  const className = cn(
+    "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors w-full",
+    active
+      ? "bg-accent text-accent-foreground"
+      : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground",
+    collapsed && "justify-center px-2"
+  )
+
+  const content = (
+    <>
+      <button
+        onClick={handleToggle}
+        className="flex items-center shrink-0"
+      >
+        {expanded ? (
+          <ChevronDown className="h-3 w-3 mr-1" />
+        ) : (
+          <ChevronRight className="h-3 w-3 mr-1" />
+        )}
+        <Icon className="h-4 w-4" />
+      </button>
+      {!collapsed && <span className="truncate">{label}</span>}
+    </>
+  )
+
+  if (collapsed) {
+    return (
+      <div>
+        {to ? (
+          <Link to={to} className={className} title={label}>
+            <Icon className="h-4 w-4" />
+          </Link>
+        ) : (
+          <button onClick={handleToggle} className={className} title={label}>
+            <Icon className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      {to ? (
+        <Link to={to} className={className}>
+          {content}
+        </Link>
+      ) : (
+        <button onClick={handleToggle} className={className}>
+          {content}
+        </button>
+      )}
+      {expanded && children && (
+        <div className="ml-7 pl-2 mt-1 space-y-0.5 border-l border-border/50">{children}</div>
+      )}
+    </div>
+  )
+}
+
+interface ProjectItemProps {
+  name: string
+  projectId: string
+  collapsed?: boolean
+  workspaceSlug?: string
+}
+
+function ProjectItem({ name, projectId, collapsed, workspaceSlug }: ProjectItemProps) {
+  const navigate = useNavigate()
+
+  if (collapsed) return null
+
+  const handleClick = () => {
+    const url = workspaceSlug
+      ? `/projects?org=${workspaceSlug}&project=${projectId}`
+      : `/projects?project=${projectId}`
+    navigate(url)
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      className="flex items-center gap-2 py-1 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded-md w-full truncate"
+      title={name}
+    >
+      <span className="truncate">{name}</span>
+    </button>
+  )
+}
+
+interface FolderItemProps {
+  folder: { id: string; name: string; parentId?: string }
+  projects: any[]
+  collapsed?: boolean
+  workspaceSlug?: string
+  onNavigate: (folderId: string) => void
+  onRename: (folder: { id: string; name: string }) => void
+  onDelete: (folder: { id: string; name: string }) => void
+}
+
+function FolderItem({ folder, projects, collapsed, workspaceSlug, onNavigate, onRename, onDelete }: FolderItemProps) {
+  const [expanded, setExpanded] = useState(false)
+
+  // Get projects in this folder
+  const folderProjects = projects.filter((p: any) => p.folderId === folder.id)
+
+  if (collapsed) return null
+
+  const handleToggle = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setExpanded(!expanded)
+  }
+
+  return (
+    <div>
+      <div className="group flex items-center gap-1 py-1 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded-md w-full">
+        <button
+          onClick={handleToggle}
+          className="flex items-center justify-center h-4 w-4 shrink-0"
+        >
+          {expanded ? (
+            <ChevronDown className="h-3 w-3" />
+          ) : (
+            <ChevronRight className="h-3 w-3" />
+          )}
+        </button>
+        <button
+          onClick={() => onNavigate(folder.id)}
+          className="flex items-center gap-1.5 flex-1 truncate"
+          title={folder.name}
+        >
+          <Folder className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">{folder.name}</span>
+        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="h-5 w-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-accent"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuItem onClick={() => onRename(folder)}>
+              Rename
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => onDelete(folder)}
+              className="text-destructive focus:text-destructive"
+            >
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      {expanded && folderProjects.length > 0 && (
+        <div className="ml-4 pl-2 mt-0.5 space-y-0.5 border-l border-border/50">
+          {folderProjects.map((project: any) => (
+            <ProjectItem
+              key={project.id}
+              name={project.name}
+              projectId={project.id}
+              collapsed={collapsed}
+              workspaceSlug={workspaceSlug}
+            />
+          ))}
+        </div>
+      )}
+      {expanded && folderProjects.length === 0 && (
+        <div className="ml-4 pl-2 py-1 text-xs text-muted-foreground/60 italic border-l border-border/50">
+          No projects
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * AppSidebar component
  * 
@@ -141,15 +377,24 @@ function NavSection({ title, children, collapsed, defaultExpanded = true }: NavS
  */
 export const AppSidebar = observer(function AppSidebar() {
   const location = useLocation()
-  const { setOrg: setWorkspace } = useWorkspaceNavigation()
-  const { workspaces, currentWorkspace, isLoading } = useWorkspaceData()
+  const navigate = useNavigate()
+  const { setOrg: setWorkspace, setFolderId } = useWorkspaceNavigation()
+  const { workspaces, currentWorkspace, projects, folders, isLoading, refetchFolders } = useWorkspaceData()
   const { openCommandPalette } = useCommandPaletteContext()
+  const { studioCore } = useDomains()
 
   // Sidebar collapse state - persisted to localStorage
   const [collapsed, setCollapsed] = useState(() => {
     const saved = localStorage.getItem("app-sidebar-collapsed")
     return saved === "true"
   })
+
+  // Folder dialog state
+  const [createFolderOpen, setCreateFolderOpen] = useState(false)
+  const [folderToRename, setFolderToRename] = useState<{ id: string; name: string } | null>(null)
+  const [folderToDelete, setFolderToDelete] = useState<{ id: string; name: string } | null>(null)
+  const [newFolderName, setNewFolderName] = useState("")
+  const [renameFolderName, setRenameFolderName] = useState("")
 
   // Persist collapse state
   useEffect(() => {
@@ -167,6 +412,63 @@ export const AppSidebar = observer(function AppSidebar() {
 
   // Check if current path matches
   const isActive = (path: string) => location.pathname === path
+
+  // Get recent projects (sorted by updatedAt, limit to 5)
+  const recentProjects = [...projects]
+    .sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt))
+    .slice(0, 5)
+
+  // Get root-level folders only for the sidebar
+  const rootFolders = folders.filter((f: any) => !f.parentId)
+
+  // Handle folder navigation
+  const handleFolderNavigate = (folderId: string) => {
+    navigate(`/projects?org=${currentWorkspace?.slug}&folder=${folderId}`)
+  }
+
+  // Handle create folder
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim() || !currentWorkspace?.id || !studioCore) return
+    try {
+      await studioCore.createFolder(newFolderName.trim(), currentWorkspace.id, undefined)
+      setCreateFolderOpen(false)
+      setNewFolderName("")
+      refetchFolders()
+    } catch (error) {
+      console.error("Failed to create folder:", error)
+    }
+  }
+
+  // Handle rename folder
+  const handleRenameFolder = async () => {
+    if (!renameFolderName.trim() || !folderToRename || !studioCore) return
+    try {
+      await studioCore.updateFolder(folderToRename.id, { name: renameFolderName.trim() })
+      setFolderToRename(null)
+      setRenameFolderName("")
+      refetchFolders()
+    } catch (error) {
+      console.error("Failed to rename folder:", error)
+    }
+  }
+
+  // Handle delete folder
+  const handleDeleteFolder = async () => {
+    if (!folderToDelete || !studioCore) return
+    try {
+      await studioCore.deleteFolder(folderToDelete.id)
+      setFolderToDelete(null)
+      refetchFolders()
+    } catch (error) {
+      console.error("Failed to delete folder:", error)
+    }
+  }
+
+  // Open rename dialog
+  const openRenameDialog = (folder: { id: string; name: string }) => {
+    setFolderToRename(folder)
+    setRenameFolderName(folder.name)
+  }
 
   return (
     <aside
@@ -260,20 +562,60 @@ export const AppSidebar = observer(function AppSidebar() {
         {/* Projects section */}
         <NavSection title="Projects" collapsed={collapsed}>
           <div className="px-2">
-            <NavItem
+            {/* Recent - expandable with recent projects */}
+            <ExpandableNavItem
               icon={Clock}
               label="Recent"
               to="/"
               active={isActive("/")}
               collapsed={collapsed}
-            />
-            <NavItem
+              defaultExpanded={true}
+            >
+              {recentProjects.map((project: any) => (
+                <ProjectItem
+                  key={project.id}
+                  name={project.name}
+                  projectId={project.id}
+                  collapsed={collapsed}
+                  workspaceSlug={currentWorkspace?.slug}
+                />
+              ))}
+            </ExpandableNavItem>
+
+            {/* All projects - expandable with folders */}
+            <ExpandableNavItem
               icon={LayoutGrid}
               label="All projects"
               to="/projects"
               active={isActive("/projects")}
               collapsed={collapsed}
-            />
+              defaultExpanded={true}
+            >
+              {/* New folder button */}
+              {!collapsed && (
+                <button
+                  onClick={() => setCreateFolderOpen(true)}
+                  className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded-md w-full"
+                >
+                  <FolderPlus className="h-3.5 w-3.5" />
+                  <span>New folder</span>
+                </button>
+              )}
+              {/* Folders list */}
+              {rootFolders.map((folder: any) => (
+                <FolderItem
+                  key={folder.id}
+                  folder={folder}
+                  projects={projects}
+                  collapsed={collapsed}
+                  workspaceSlug={currentWorkspace?.slug}
+                  onNavigate={handleFolderNavigate}
+                  onRename={openRenameDialog}
+                  onDelete={setFolderToDelete}
+                />
+              ))}
+            </ExpandableNavItem>
+
             <NavItem
               icon={Star}
               label="Starred"
@@ -336,6 +678,79 @@ export const AppSidebar = observer(function AppSidebar() {
           </Link>
         </div>
       )}
+
+      {/* Create Folder Dialog */}
+      <Dialog open={createFolderOpen} onOpenChange={setCreateFolderOpen}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>Create new folder</DialogTitle>
+            <DialogDescription>
+              Create a new folder to organize your projects
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <Label htmlFor="folder-name">Folder name</Label>
+            <Input
+              id="folder-name"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              placeholder="Enter folder name"
+              className="mt-2"
+              onKeyDown={(e) => e.key === "Enter" && handleCreateFolder()}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateFolderOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateFolder} disabled={!newFolderName.trim()}>
+              Create folder
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rename Folder Dialog */}
+      <AlertDialog open={!!folderToRename} onOpenChange={(open) => !open && setFolderToRename(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rename folder</AlertDialogTitle>
+            <AlertDialogDescription>
+              Enter a new name for this folder.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Input
+            value={renameFolderName}
+            onChange={(e) => setRenameFolderName(e.target.value)}
+            placeholder="Folder name"
+            onKeyDown={(e) => e.key === "Enter" && handleRenameFolder()}
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleRenameFolder} disabled={!renameFolderName.trim()}>
+              Rename
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Folder Dialog */}
+      <AlertDialog open={!!folderToDelete} onOpenChange={(open) => !open && setFolderToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete folder</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{folderToDelete?.name}"? Projects inside will be moved to the parent folder.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteFolder} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </aside>
   )
 })

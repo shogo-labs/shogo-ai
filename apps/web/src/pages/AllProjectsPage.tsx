@@ -7,11 +7,14 @@
  * - View toggle (Grid/List)
  * - Project cards with star, timestamps, and action menus
  * - "Create new project" card
+ * - Folder system with create, rename, delete, move
+ * - Multi-select mode with bulk operations
+ * - Breadcrumb navigation for folder views
  */
 
-import { useState, useMemo, useCallback } from "react"
+import { useState, useMemo, useCallback, useEffect } from "react"
 import { observer } from "mobx-react-lite"
-import { useNavigate, Link } from "react-router-dom"
+import { useNavigate, Link, useSearchParams } from "react-router-dom"
 import { formatDistanceToNow } from "date-fns"
 import {
   Search,
@@ -21,15 +24,24 @@ import {
   LayoutGrid,
   List,
   ChevronDown,
+  ChevronRight,
   Check,
   Pencil,
   Settings,
   Trash2,
   FolderOpen,
+  FolderPlus,
+  FolderInput,
+  FolderX,
   CheckSquare,
+  Square,
+  ArrowLeft,
+  Copy,
+  X,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -48,7 +60,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { useWorkspaceData, useWorkspaceNavigation } from "@/components/app/workspace/hooks"
+import { Label } from "@/components/ui/label"
 import { useDomains } from "@/contexts/DomainProvider"
 import { useSession } from "@/auth/client"
 import { CreateProjectModal } from "@/components/app/workspace/CreateProjectModal"
@@ -69,6 +90,16 @@ interface Project {
   updatedAt?: number
   status?: string
   starred?: boolean
+  folderId?: string | null
+}
+
+interface Folder {
+  id: string
+  name: string
+  parentId?: string | null
+  workspace?: { id: string }
+  createdAt: number
+  updatedAt?: number
 }
 
 // Helper to get time ago text
@@ -96,8 +127,8 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   const navigate = useNavigate()
   const { data: session } = useSession()
   const { studioCore } = useDomains()
-  const { currentWorkspace, projects, refetchProjects } = useWorkspaceData()
-  const { setProjectId } = useWorkspaceNavigation()
+  const { currentWorkspace, projects, folders, currentFolder, folderBreadcrumbs, refetchProjects, refetchFolders } = useWorkspaceData()
+  const { setProjectId, folderId, setFolderId, clearFolder } = useWorkspaceNavigation()
 
   // State
   const [searchQuery, setSearchQuery] = useState("")
@@ -122,6 +153,26 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   // Starred projects (local state for now)
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set())
 
+  // Folder dialog state
+  const [createFolderDialogOpen, setCreateFolderDialogOpen] = useState(false)
+  const [newFolderName, setNewFolderName] = useState("")
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false)
+
+  const [renameFolderDialogOpen, setRenameFolderDialogOpen] = useState(false)
+  const [folderToRename, setFolderToRename] = useState<Folder | null>(null)
+  const [renameFolderName, setRenameFolderName] = useState("")
+  const [isRenamingFolder, setIsRenamingFolder] = useState(false)
+
+  const [deleteFolderDialogOpen, setDeleteFolderDialogOpen] = useState(false)
+  const [folderToDelete, setFolderToDelete] = useState<Folder | null>(null)
+  const [isDeletingFolder, setIsDeletingFolder] = useState(false)
+
+  // Move project to folder dialog state
+  const [moveProjectDialogOpen, setMoveProjectDialogOpen] = useState(false)
+  const [projectToMove, setProjectToMove] = useState<Project | null>(null)
+  const [targetFolderId, setTargetFolderId] = useState<string | null>(null)
+  const [isMovingProject, setIsMovingProject] = useState(false)
+
   // Get sort label
   const sortLabel = useMemo(() => {
     switch (sortBy) {
@@ -131,14 +182,45 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
     }
   }, [sortBy])
 
-  // Filter and sort projects
-  const filteredProjects = useMemo(() => {
-    let result = [...projects] as Project[]
+  // Filter folders to show in current view
+  const currentFolders = useMemo(() => {
+    let result = (folders as Folder[]).filter(f => {
+      // Show folders that match the current location
+      if (folderId) {
+        return f.parentId === folderId
+      }
+      // At root level, show folders with no parent
+      return !f.parentId
+    })
 
     // Search filter
     if (searchQuery) {
       const query = searchQuery.toLowerCase()
-      result = result.filter(p => 
+      result = result.filter(f => f.name.toLowerCase().includes(query))
+    }
+
+    // Sort folders by name
+    result.sort((a, b) => a.name.localeCompare(b.name))
+
+    return result
+  }, [folders, folderId, searchQuery])
+
+  // Filter and sort projects
+  const filteredProjects = useMemo(() => {
+    let result = [...projects] as Project[]
+
+    // Filter by current folder
+    if (folderId) {
+      result = result.filter(p => p.folderId === folderId)
+    } else {
+      // At root level, show projects with no folder
+      result = result.filter(p => !p.folderId)
+    }
+
+    // Search filter
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase()
+      result = result.filter(p =>
         p.name.toLowerCase().includes(query) ||
         p.description?.toLowerCase().includes(query)
       )
@@ -146,9 +228,9 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
 
     // Status filter
     if (statusFilter !== "any") {
-      result = result.filter(p => 
-        statusFilter === "active" 
-          ? p.status !== "archived" 
+      result = result.filter(p =>
+        statusFilter === "active"
+          ? p.status !== "archived"
           : p.status === "archived"
       )
     }
@@ -171,7 +253,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
     })
 
     return result
-  }, [projects, searchQuery, sortBy, sortOrder, statusFilter])
+  }, [projects, folderId, searchQuery, sortBy, sortOrder, statusFilter])
 
   // Handlers
   const handleProjectClick = useCallback(async (project: Project) => {
@@ -245,6 +327,116 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
     setDeleteDialogOpen(true)
   }
 
+  // Folder handlers
+  const handleCreateFolder = useCallback(async () => {
+    if (!newFolderName.trim() || !studioCore || !currentWorkspace?.id || !session?.user?.id) return
+
+    setIsCreatingFolder(true)
+    try {
+      await studioCore.createFolder(
+        newFolderName.trim(),
+        currentWorkspace.id,
+        folderId || null,
+        session.user.id
+      )
+      refetchFolders()
+      setCreateFolderDialogOpen(false)
+      setNewFolderName("")
+    } catch (error) {
+      console.error("Failed to create folder:", error)
+    } finally {
+      setIsCreatingFolder(false)
+    }
+  }, [newFolderName, studioCore, currentWorkspace?.id, session?.user?.id, folderId, refetchFolders])
+
+  const handleRenameFolder = useCallback(async () => {
+    if (!folderToRename || !renameFolderName.trim() || !studioCore) return
+
+    setIsRenamingFolder(true)
+    try {
+      await studioCore.updateFolder(folderToRename.id, { name: renameFolderName.trim() })
+      refetchFolders()
+      setRenameFolderDialogOpen(false)
+      setFolderToRename(null)
+      setRenameFolderName("")
+    } catch (error) {
+      console.error("Failed to rename folder:", error)
+    } finally {
+      setIsRenamingFolder(false)
+    }
+  }, [folderToRename, renameFolderName, studioCore, refetchFolders])
+
+  const handleDeleteFolder = useCallback(async () => {
+    if (!folderToDelete || !studioCore) return
+
+    setIsDeletingFolder(true)
+    try {
+      await studioCore.deleteFolder(folderToDelete.id)
+      refetchFolders()
+      refetchProjects() // Projects may have moved
+      setDeleteFolderDialogOpen(false)
+      setFolderToDelete(null)
+    } catch (error) {
+      console.error("Failed to delete folder:", error)
+    } finally {
+      setIsDeletingFolder(false)
+    }
+  }, [folderToDelete, studioCore, refetchFolders, refetchProjects])
+
+  const handleMoveProjectToFolder = useCallback(async () => {
+    if (!projectToMove || !studioCore) return
+
+    setIsMovingProject(true)
+    try {
+      await studioCore.moveProjectToFolder(projectToMove.id, targetFolderId)
+      refetchProjects()
+      setMoveProjectDialogOpen(false)
+      setProjectToMove(null)
+      setTargetFolderId(null)
+    } catch (error) {
+      console.error("Failed to move project:", error)
+    } finally {
+      setIsMovingProject(false)
+    }
+  }, [projectToMove, targetFolderId, studioCore, refetchProjects])
+
+  const openRenameFolderDialog = (folder: Folder, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setFolderToRename(folder)
+    setRenameFolderName(folder.name)
+    setRenameFolderDialogOpen(true)
+  }
+
+  const openDeleteFolderDialog = (folder: Folder, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setFolderToDelete(folder)
+    setDeleteFolderDialogOpen(true)
+  }
+
+  const openMoveProjectDialog = (project: Project, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setProjectToMove(project)
+    setTargetFolderId(project.folderId || null)
+    setMoveProjectDialogOpen(true)
+  }
+
+  const handleFolderClick = useCallback((folder: Folder) => {
+    setFolderId(folder.id)
+  }, [setFolderId])
+
+  const handleBackToRoot = useCallback(() => {
+    clearFolder()
+  }, [clearFolder])
+
+  const handleBreadcrumbClick = useCallback((folder: Folder) => {
+    setFolderId(folder.id)
+  }, [setFolderId])
+
+  // Get root folders for move dialog
+  const rootFolders = useMemo(() => {
+    return (folders as Folder[]).filter(f => !f.parentId)
+  }, [folders])
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -259,13 +451,47 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
-              <DropdownMenuItem onClick={() => refetchProjects()}>
+              <DropdownMenuItem onClick={() => { refetchProjects(); refetchFolders(); }}>
                 Refresh
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
       </nav>
+
+      {/* Breadcrumb Navigation */}
+      {(currentFolder || folderBreadcrumbs.length > 0) && (
+        <div className="flex items-center gap-1 px-6 py-2 border-b text-sm">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleBackToRoot}
+            className="h-7 px-2 gap-1 text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            All Projects
+          </Button>
+          {folderBreadcrumbs.map((folder: Folder) => (
+            <div key={folder.id} className="flex items-center gap-1">
+              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleBreadcrumbClick(folder)}
+                className="h-7 px-2 text-muted-foreground hover:text-foreground"
+              >
+                {folder.name}
+              </Button>
+            </div>
+          ))}
+          {currentFolder && (
+            <div className="flex items-center gap-1">
+              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="px-2 font-medium">{currentFolder.name}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Filters Bar */}
       <div className="flex flex-wrap items-center gap-2 px-6 py-2">
@@ -373,6 +599,17 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
           </DropdownMenu>
         </div>
 
+        {/* New folder button */}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1 text-xs"
+          onClick={() => setCreateFolderDialogOpen(true)}
+        >
+          <FolderPlus className="h-3.5 w-3.5" />
+          New folder
+        </Button>
+
         {/* Select projects button */}
         <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
           <CheckSquare className="h-4 w-4" />
@@ -425,6 +662,58 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
               </div>
             </Link>
 
+            {/* Folder cards */}
+            {currentFolders.map((folder) => (
+              <div
+                key={folder.id}
+                onClick={() => handleFolderClick(folder)}
+                className="group flex flex-col rounded-xl bg-card overflow-hidden hover:shadow-md transition-all cursor-pointer"
+              >
+                {/* Folder preview area */}
+                <div className="relative aspect-[16/10] bg-muted flex items-center justify-center">
+                  <FolderOpen className="h-12 w-12 text-muted-foreground/40" />
+                </div>
+
+                {/* Info area */}
+                <div className="flex items-start gap-2.5 p-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-sm truncate leading-tight">{folder.name}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {(projects as Project[]).filter(p => p.folderId === folder.id).length} projects
+                    </p>
+                  </div>
+
+                  {/* Folder actions menu */}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={(e) => openRenameFolderDialog(folder, e as any)}>
+                        <Pencil className="mr-2 h-4 w-4" />
+                        Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={(e) => openDeleteFolderDialog(folder, e as any)}
+                        className="text-destructive"
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+            ))}
+
             {/* Project cards */}
             {filteredProjects.map((project) => (
               <div
@@ -441,7 +730,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                   <div className="absolute inset-0 flex items-center justify-center">
                     <FolderOpen className="h-10 w-10 text-white/30" />
                   </div>
-                  
+
                   {/* Star button - shows on hover */}
                   <button
                     onClick={(e) => handleToggleStar(project.id, e)}
@@ -489,6 +778,11 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={(e) => openMoveProjectDialog(project, e as any)}>
+                        <FolderInput className="mr-2 h-4 w-4" />
+                        Move to folder
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={(e) => openRenameDialog(project, e as any)}>
                         <Pencil className="mr-2 h-4 w-4" />
                         Rename
@@ -717,6 +1011,136 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Create Folder Dialog */}
+      <Dialog open={createFolderDialogOpen} onOpenChange={setCreateFolderDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create new folder</DialogTitle>
+            <DialogDescription>
+              {currentFolder ? `Create a subfolder in "${currentFolder.name}"` : "Create a new folder to organize your projects"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="folder-name">Folder name</Label>
+              <Input
+                id="folder-name"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                placeholder="Enter folder name"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateFolderDialogOpen(false)} disabled={isCreatingFolder}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateFolder} disabled={isCreatingFolder || !newFolderName.trim()}>
+              {isCreatingFolder ? "Creating..." : "Create folder"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rename Folder Dialog */}
+      <AlertDialog open={renameFolderDialogOpen} onOpenChange={setRenameFolderDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rename folder</AlertDialogTitle>
+            <AlertDialogDescription>
+              Enter a new name for this folder.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Input
+            value={renameFolderName}
+            onChange={(e) => setRenameFolderName(e.target.value)}
+            placeholder="Folder name"
+            className="mt-2"
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isRenamingFolder}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleRenameFolder}
+              disabled={isRenamingFolder || !renameFolderName.trim()}
+            >
+              {isRenamingFolder ? "Renaming..." : "Rename"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Folder Dialog */}
+      <AlertDialog open={deleteFolderDialogOpen} onOpenChange={setDeleteFolderDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete folder</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{folderToDelete?.name}"? Projects inside will be moved to the parent folder.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingFolder}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteFolder}
+              disabled={isDeletingFolder}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeletingFolder ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Move Project to Folder Dialog */}
+      <Dialog open={moveProjectDialogOpen} onOpenChange={setMoveProjectDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Move to folder</DialogTitle>
+            <DialogDescription>
+              Select a folder to move "{projectToMove?.name}" to.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Select folder</Label>
+              <div className="border rounded-md max-h-[200px] overflow-auto">
+                <button
+                  onClick={() => setTargetFolderId(null)}
+                  className={cn(
+                    "w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-center gap-2",
+                    targetFolderId === null && "bg-accent"
+                  )}
+                >
+                  <FolderOpen className="h-4 w-4 text-muted-foreground" />
+                  Root (no folder)
+                </button>
+                {rootFolders.map((folder) => (
+                  <button
+                    key={folder.id}
+                    onClick={() => setTargetFolderId(folder.id)}
+                    className={cn(
+                      "w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-center gap-2",
+                      targetFolderId === folder.id && "bg-accent"
+                    )}
+                  >
+                    <FolderOpen className="h-4 w-4 text-muted-foreground" />
+                    {folder.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMoveProjectDialogOpen(false)} disabled={isMovingProject}>
+              Cancel
+            </Button>
+            <Button onClick={handleMoveProjectToFolder} disabled={isMovingProject}>
+              {isMovingProject ? "Moving..." : "Move"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 })

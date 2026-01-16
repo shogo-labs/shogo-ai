@@ -62,6 +62,12 @@ export interface WorkspaceDataState {
   projects: any[]
   /** Currently selected project (by ID) */
   currentProject: any | undefined
+  /** Folders for the current workspace */
+  folders: any[]
+  /** Currently selected folder (by ID from URL) */
+  currentFolder: any | undefined
+  /** Breadcrumb path to current folder (ancestor chain from root) */
+  folderBreadcrumbs: any[]
   /** Features for the current project */
   features: any[]
   /** Currently selected feature (by ID) */
@@ -74,6 +80,8 @@ export interface WorkspaceDataState {
   refetchWorkspaces: () => void
   /** Function to refetch projects (call after creating project) */
   refetchProjects: () => void
+  /** Function to refetch folders (call after creating/deleting folder) */
+  refetchFolders: () => void
 }
 
 /**
@@ -106,7 +114,7 @@ export interface WorkspaceDataState {
  */
 export function useWorkspaceData(): WorkspaceDataState {
   // Get URL state (org is now workspace slug) and setters
-  const { org: workspaceSlug, projectId, featureId, setOrg } = useWorkspaceNavigation()
+  const { org: workspaceSlug, projectId, featureId, folderId, setOrg } = useWorkspaceNavigation()
 
   // Get auth session from Better Auth
   const { data: session, isPending: isSessionLoading } = useSession()
@@ -117,8 +125,10 @@ export function useWorkspaceData(): WorkspaceDataState {
   // State for tracking loading and refetch
   const [isLoadingWorkspaces, setIsLoadingWorkspaces] = useState(true)
   const [isLoadingProjects, setIsLoadingProjects] = useState(false)
+  const [isLoadingFolders, setIsLoadingFolders] = useState(false)
   const [workspacesRefetchCounter, setWorkspacesRefetchCounter] = useState(0)
   const [projectsRefetchCounter, setProjectsRefetchCounter] = useState(0)
+  const [foldersRefetchCounter, setFoldersRefetchCounter] = useState(0)
 
   // User ID from session (stable reference for dependency tracking)
   const userId = session?.user?.id
@@ -222,6 +232,56 @@ export function useWorkspaceData(): WorkspaceDataState {
     setProjectsRefetchCounter((c) => c + 1)
   }, [])
 
+  // Reload folders from MCP when workspace changes or refetch is triggered
+  useEffect(() => {
+    const loadFolders = async () => {
+      if (!currentWorkspace?.id || !studioCore?.folderCollection) {
+        setIsLoadingFolders(false)
+        return
+      }
+
+      try {
+        setIsLoadingFolders(true)
+        // Reload folders from backend
+        await studioCore.folderCollection.query().toArray()
+      } catch (error) {
+        console.error("[useWorkspaceData] Error loading folders:", error)
+      } finally {
+        setIsLoadingFolders(false)
+      }
+    }
+
+    loadFolders()
+  }, [currentWorkspace?.id, studioCore, foldersRefetchCounter])
+
+  // Function to trigger a refetch of folders
+  const refetchFolders = useCallback(() => {
+    setFoldersRefetchCounter((c) => c + 1)
+  }, [])
+
+  // Get folders for current workspace from MCP
+  let folders: any[] = []
+  if (currentWorkspace?.id && studioCore?.folderCollection) {
+    try {
+      folders = studioCore.folderCollection.findByWorkspace(currentWorkspace.id)
+    } catch {
+      folders = []
+    }
+  }
+
+  // Find current folder by ID
+  const currentFolder = folderId ? folders.find((f: any) => f.id === folderId) : undefined
+
+  // Get breadcrumb path to current folder (ancestor chain)
+  let folderBreadcrumbs: any[] = []
+  if (currentFolder && studioCore?.folderCollection) {
+    try {
+      folderBreadcrumbs = studioCore.folderCollection.getAncestors(currentFolder.id)
+    } catch {
+      folderBreadcrumbs = []
+    }
+  }
+
   // Get projects for current workspace from MCP
   let projects: any[] = []
   if (currentWorkspace?.id && studioCore?.projectCollection) {
@@ -271,8 +331,8 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
   }
 
-  // Determine loading state - combines session loading, workspace loading, and project loading
-  const isLoading = isSessionLoading || isLoadingWorkspaces || isLoadingProjects
+  // Determine loading state - combines session loading, workspace loading, project loading, and folder loading
+  const isLoading = isSessionLoading || isLoadingWorkspaces || isLoadingProjects || isLoadingFolders
 
   return {
     workspaces,
@@ -280,11 +340,15 @@ export function useWorkspaceData(): WorkspaceDataState {
     currentWorkspaceRole,
     projects,
     currentProject,
+    folders,
+    currentFolder,
+    folderBreadcrumbs,
     features,
     currentFeature,
     featuresByPhase,
     isLoading,
     refetchWorkspaces,
     refetchProjects,
+    refetchFolders,
   }
 }
