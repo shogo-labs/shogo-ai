@@ -1,9 +1,11 @@
 /**
  * TurnGroup Component
  * Task: task-chat-004
+ * Task: feat-chat-tool-interleaving
  *
  * Container for a complete conversation turn (user message + tool calls + assistant response).
  * Left border accent matches current phase color.
+ * Now renders tool calls interleaved within assistant content.
  */
 
 import { cn } from "@/lib/utils"
@@ -11,6 +13,7 @@ import { usePhaseColor } from "@/hooks/usePhaseColor"
 import type { ConversationTurn } from "./types"
 import { TurnHeader } from "./TurnHeader"
 import { MessageContent } from "./MessageContent"
+import { AssistantContent } from "./AssistantContent"
 import { ToolTimeline } from "../tools"
 import { SubagentPanel, type SubagentProgress, type RecentTool } from "../subagent"
 
@@ -23,6 +26,8 @@ export interface TurnGroupProps {
   activeSubagents?: SubagentProgress[]
   /** Recent tool calls for subagent panel */
   recentTools?: RecentTool[]
+  /** Show tool calls in a separate timeline above content (legacy mode) */
+  showToolTimeline?: boolean
   /** Optional class name */
   className?: string
 }
@@ -30,7 +35,12 @@ export interface TurnGroupProps {
 /**
  * Renders a complete conversation turn as an atomic unit.
  *
- * Layout:
+ * Layout (default interleaved mode):
+ * 1. User message (if present)
+ * 2. Subagent panel (if subagents active)
+ * 3. Assistant content with interleaved tool widgets
+ *
+ * Layout (legacy mode with showToolTimeline=true):
  * 1. User message (if present)
  * 2. Tool timeline (if tool calls present)
  * 3. Subagent panel (if subagents active)
@@ -38,7 +48,8 @@ export interface TurnGroupProps {
  *
  * Features:
  * - Left border accent using phase color
- * - Tool timeline integration
+ * - Interleaved tool calls within assistant content (default)
+ * - Optional separate tool timeline (legacy mode)
  * - Subagent panel integration
  * - Streaming support for assistant message
  *
@@ -57,6 +68,7 @@ export function TurnGroup({
   phase,
   activeSubagents = [],
   recentTools = [],
+  showToolTimeline = false,
   className,
 }: TurnGroupProps) {
   const colors = usePhaseColor(phase || "")
@@ -77,8 +89,8 @@ export function TurnGroup({
         </div>
       )}
 
-      {/* Tool timeline */}
-      {turn.toolCalls.length > 0 && (
+      {/* Tool timeline (legacy mode only) */}
+      {showToolTimeline && turn.toolCalls.length > 0 && (
         <ToolTimeline
           tools={turn.toolCalls}
           defaultExpanded={turn.toolCalls.length <= 3}
@@ -94,14 +106,21 @@ export function TurnGroup({
         />
       )}
 
-      {/* Assistant message */}
+      {/* Assistant message with interleaved tools (default) or plain content (legacy) */}
       {turn.assistantMessage && (
         <div className="space-y-1">
           <TurnHeader role="assistant" phase={phase} />
-          <MessageContent
-            message={turn.assistantMessage}
-            isStreaming={turn.isStreaming}
-          />
+          {showToolTimeline ? (
+            <MessageContent
+              message={turn.assistantMessage}
+              isStreaming={turn.isStreaming}
+            />
+          ) : (
+            <AssistantContent
+              message={turn.assistantMessage}
+              isStreaming={turn.isStreaming}
+            />
+          )}
         </div>
       )}
 

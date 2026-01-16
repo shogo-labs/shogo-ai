@@ -12,7 +12,7 @@
     "@ai-sdk/anthropic": "^3.0.13",
     "@shogo/state-api": "workspace:*",
     "ai": "^6.0.23",
-    "ai-sdk-provider-claude-code": "^2.2.4",
+    "ai-sdk-provider-claude-code": "^3.3.0",
     "better-auth": "^1.2.8",
     "hono": "^4.7.10",
     "pg": "^8.13.1"
