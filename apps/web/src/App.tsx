@@ -6,6 +6,7 @@ import { AdvancedChatLayout } from './components/app/advanced-chat'
 import { AppProfilePage } from './pages/AppProfilePage'
 import { AppBillingPage } from './pages/AppBillingPage'
 import { AppMemberManagementPage } from './pages/AppMemberManagementPage'
+import { AllProjectsPage } from './pages/AllProjectsPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
@@ -80,6 +81,16 @@ function App() {
                     <Route path="billing" element={<AppBillingPage />} />
                     {/* Member management */}
                     <Route path="members" element={<AppMemberManagementPage />} />
+                    {/* All projects page */}
+                    <Route path="projects" element={<AllProjectsPage />} />
+                    {/* Starred projects */}
+                    <Route path="starred" element={<AllProjectsPage />} />
+                    {/* Shared projects */}
+                    <Route path="shared" element={<AllProjectsPage />} />
+                    {/* Discover */}
+                    <Route path="discover" element={<AllProjectsPage />} />
+                    {/* Templates */}
+                    <Route path="templates" element={<AllProjectsPage />} />
                   </Route>
                 </Routes>
               </AuthProvider>

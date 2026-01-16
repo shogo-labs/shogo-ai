@@ -48,6 +48,17 @@ export const StudioCoreDomain = scope({
     "createdBy?": "string", // Loose string ref to AuthUser.id
     createdAt: "number",
     "updatedAt?": "number",
+    "folderId?": "string", // Optional folder ID (loose string ref)
+  },
+
+  Folder: {
+    id: "string.uuid",
+    name: "string",
+    workspace: "Workspace", // Reference to Workspace
+    "parentId?": "string", // Optional parent folder ID (loose string ref)
+    "createdBy?": "string", // Loose string ref to AuthUser.id
+    createdAt: "number",
+    "updatedAt?": "number",
   },
 
   Member: {
@@ -193,6 +204,56 @@ export const studioCoreDomain = domain({
          */
         findByWorkspace(workspaceId: string): any[] {
           return self.all().filter((p: any) => p.workspace?.id === workspaceId)
+        },
+
+        /**
+         * Find all projects in a specific folder
+         */
+        findByFolder(folderId: string): any[] {
+          return self.all().filter((p: any) => p.folderId === folderId)
+        },
+
+        /**
+         * Find all root-level projects (no folder) for a workspace
+         */
+        findRootProjects(workspaceId: string): any[] {
+          return self.all().filter((p: any) => p.workspace?.id === workspaceId && !p.folderId)
+        },
+      })),
+
+      FolderCollection: collections.FolderCollection.views((self: any) => ({
+        /**
+         * Find all folders for a given workspace
+         */
+        findByWorkspace(workspaceId: string): any[] {
+          return self.all().filter((f: any) => f.workspace?.id === workspaceId)
+        },
+
+        /**
+         * Find root-level folders (no parent) for a workspace
+         */
+        findRootFolders(workspaceId: string): any[] {
+          return self.all().filter((f: any) => f.workspace?.id === workspaceId && !f.parentId)
+        },
+
+        /**
+         * Find child folders of a given parent
+         */
+        findByParent(parentId: string): any[] {
+          return self.all().filter((f: any) => f.parentId === parentId)
+        },
+
+        /**
+         * Get folder hierarchy path (breadcrumb trail from root to folder)
+         */
+        getAncestors(folderId: string): any[] {
+          const ancestors: any[] = []
+          let current = self.get(folderId)
+          while (current?.parentId) {
+            current = self.get(current.parentId)
+            if (current) ancestors.unshift(current)
+          }
+          return ancestors
         },
       })),
 
@@ -393,14 +454,14 @@ export const studioCoreDomain = domain({
          * @param userId - The ID of the user creating the project
          * @returns The created Project instance
          */
-        createProject(
+        async createProject(
           name: string,
           workspaceId: string,
           description: string | undefined,
           userId: string
-        ): any {
-          // Create the project
-          const project = self.projectCollection.add({
+        ): Promise<any> {
+          // Create the project via insertOne to persist to backend
+          const project = await self.projectCollection.insertOne({
             id: crypto.randomUUID(),
             name,
             description,
@@ -412,6 +473,154 @@ export const studioCoreDomain = domain({
           })
 
           return project
+        },
+
+        /**
+         * Update a project's properties.
+         *
+         * @param projectId - The ID of the project to update
+         * @param updates - The properties to update (name, description, status)
+         */
+        async updateProject(
+          projectId: string,
+          updates: { name?: string; description?: string; status?: string }
+        ): Promise<void> {
+          await self.projectCollection.updateOne(projectId, {
+            ...updates,
+            updatedAt: Date.now(),
+          })
+        },
+
+        /**
+         * Delete a project.
+         *
+         * @param projectId - The ID of the project to delete
+         */
+        async deleteProject(projectId: string): Promise<void> {
+          await self.projectCollection.deleteOne(projectId)
+        },
+
+        // --------------------------------------------------------
+        // Folder Management Actions
+        // --------------------------------------------------------
+
+        /**
+         * Create a new folder within a workspace.
+         *
+         * @param name - The folder name
+         * @param workspaceId - The ID of the workspace to create the folder in
+         * @param parentId - Optional parent folder ID for nesting
+         * @param userId - The ID of the user creating the folder
+         * @returns The created Folder instance
+         */
+        async createFolder(
+          name: string,
+          workspaceId: string,
+          parentId: string | null,
+          userId: string
+        ): Promise<any> {
+          const folder = await self.folderCollection.insertOne({
+            id: crypto.randomUUID(),
+            name,
+            workspace: workspaceId,
+            parentId: parentId || undefined,
+            createdBy: userId,
+            createdAt: Date.now(),
+          })
+          return folder
+        },
+
+        /**
+         * Update a folder's properties.
+         *
+         * @param folderId - The ID of the folder to update
+         * @param updates - The properties to update (name, parentId)
+         */
+        async updateFolder(
+          folderId: string,
+          updates: { name?: string; parentId?: string | null }
+        ): Promise<void> {
+          const updateData: any = { updatedAt: Date.now() }
+          if (updates.name !== undefined) updateData.name = updates.name
+          if (updates.parentId !== undefined) {
+            updateData.parentId = updates.parentId || undefined
+          }
+          await self.folderCollection.updateOne(folderId, updateData)
+        },
+
+        /**
+         * Delete a folder and move its contents to parent (or root).
+         * Projects inside move to parent folder; subfolders move to parent.
+         *
+         * @param folderId - The ID of the folder to delete
+         */
+        async deleteFolder(folderId: string): Promise<void> {
+          const folder = self.folderCollection.get(folderId)
+          if (!folder) throw new Error("Folder not found")
+
+          const targetParentId = folder.parentId || null
+
+          // Move all projects in this folder to parent
+          const projectsInFolder = self.projectCollection.findByFolder(folderId)
+          for (const project of projectsInFolder) {
+            await self.projectCollection.updateOne(project.id, {
+              folderId: targetParentId || undefined,
+              updatedAt: Date.now(),
+            })
+          }
+
+          // Move all subfolders to parent
+          const subfolders = self.folderCollection.findByParent(folderId)
+          for (const subfolder of subfolders) {
+            await self.folderCollection.updateOne(subfolder.id, {
+              parentId: targetParentId || undefined,
+              updatedAt: Date.now(),
+            })
+          }
+
+          // Delete the folder
+          await self.folderCollection.deleteOne(folderId)
+        },
+
+        /**
+         * Move a project to a folder (or root if folderId is null).
+         *
+         * @param projectId - The ID of the project to move
+         * @param folderId - The target folder ID, or null for root
+         */
+        async moveProjectToFolder(
+          projectId: string,
+          folderId: string | null
+        ): Promise<void> {
+          await self.projectCollection.updateOne(projectId, {
+            folderId: folderId || undefined,
+            updatedAt: Date.now(),
+          })
+        },
+
+        /**
+         * Move a folder to a new parent (or root if parentId is null).
+         * Validates against circular references.
+         *
+         * @param folderId - The ID of the folder to move
+         * @param newParentId - The target parent folder ID, or null for root
+         */
+        async moveFolderToParent(
+          folderId: string,
+          newParentId: string | null
+        ): Promise<void> {
+          // Prevent circular reference
+          if (newParentId) {
+            const ancestors = self.folderCollection.getAncestors(newParentId)
+            if (ancestors.some((a: any) => a.id === folderId) || newParentId === folderId) {
+              throw new Error("Cannot move folder into its own descendant")
+            }
+          }
+
+          await self.folderCollection.updateOne(folderId, {
+            parentId: newParentId || undefined,
+            updatedAt: Date.now(),
+          })
         },
 
         // --------------------------------------------------------

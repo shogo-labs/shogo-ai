@@ -52,10 +52,12 @@
  * CLEAN BREAK: This file lives in /components/app/workspace/, zero imports from /components/Studio/
  */
 
-import { useState, useCallback, useEffect, useRef } from "react"
+import { useState, useCallback, useEffect, useRef, useMemo } from "react"
 import { Outlet } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { useWorkspaceData, useWorkspaceNavigation, useDeleteFeature } from "./hooks"
+import { useDomains } from "@/contexts/DomainProvider"
+import { useSession } from "@/auth/client"
 import { usePhaseNavigation } from "../stepper/hooks/usePhaseNavigation"
 import { useFeaturePolling } from "@/hooks/useFeaturePolling"
 import { useToast } from "@/hooks/use-toast"
@@ -65,6 +67,7 @@ import { ChatPanel } from "../chat/ChatPanel"
 import { FeatureSidebar } from "./sidebar"
 import { HomePage } from "./dashboard"
 import { DeleteFeatureDialog } from "./modals/DeleteFeatureDialog"
+import { NewFeatureModal } from "./modals/NewFeatureModal"
 import { RefreshCw } from "lucide-react"
 import type { PollableDomain } from "@/hooks/useFeaturePolling"
 
@@ -82,21 +85,84 @@ const POLLING_DOMAINS: PollableDomain[] = ["platformFeatures", "componentBuilder
  * - No feature selected (featureId is null): Render ProjectDashboard
  * - Feature selected (featureId is set): Render Outlet for feature detail routes
  */
+/**
+ * Generate a project name from a prompt using a small language model.
+ * Calls the /api/generate-project-name endpoint which uses Claude to create
+ * a meaningful, concise project name from the user's description.
+ * 
+ * Falls back to a simple extraction if the API call fails.
+ */
+async function generateProjectNameFromPrompt(prompt: string): Promise<string> {
+  try {
+    const response = await fetch('/api/generate-project-name', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    })
+    
+    const data = await response.json()
+    
+    if (data.name && typeof data.name === 'string') {
+      return data.name
+    }
+    
+    // Fallback if response doesn't have a name
+    return fallbackGenerateProjectName(prompt)
+  } catch (error) {
+    console.warn('[generateProjectNameFromPrompt] API call failed, using fallback:', error)
+    return fallbackGenerateProjectName(prompt)
+  }
+}
+
+/**
+ * Fallback name generation using simple string extraction.
+ * Used when the API call fails or is unavailable.
+ */
+function fallbackGenerateProjectName(prompt: string): string {
+  const fillerWords = new Set([
+    "a", "an", "the", "to", "for", "with", "that", "this", "is", "are",
+    "create", "build", "make", "design", "develop", "implement",
+    "please", "can", "you", "i", "want", "need", "would", "like",
+    "simple", "basic", "web", "app", "application", "website", "page"
+  ])
+  
+  const words = prompt.toLowerCase()
+    .replace(/[^\w\s]/g, "")
+    .split(/\s+/)
+    .filter(word => word.length > 2 && !fillerWords.has(word))
+  
+  const nameWords = words.slice(0, 3)
+  
+  if (nameWords.length === 0) {
+    return "New Project"
+  }
+  
+  return nameWords
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ")
+}
+
 export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // Get workspace data from hook (smart component pattern)
   const {
-    orgs,
-    currentOrg,
+    currentWorkspace,
     projects,
     currentProject,
     features,
     currentFeature,
     featuresByPhase,
     isLoading,
+    refetchProjects,
   } = useWorkspaceData()
 
   // Get navigation state for conditional rendering
-  const { featureId, projectId, setFeatureId, clearFeature } = useWorkspaceNavigation()
+  const { featureId, projectId, setFeatureId, setProjectId, clearFeature } = useWorkspaceNavigation()
+  
+  // Get domains for creating projects and features
+  const { studioCore, platformFeatures } = useDomains()
+  
+  // Get user session
+  const { data: session } = useSession()
 
   // Get phase navigation state (task-cpbi-004)
   // Pass feature status as fallback when feature is loaded, otherwise "discovery"
@@ -183,6 +249,63 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // Handlers for modal - onClose callback pattern
   const handleOpenModal = () => setIsModalOpen(true)
   const onClose = () => setIsModalOpen(false)
+  
+  // State for prompt submission (creating project from home page)
+  const [isCreatingFromPrompt, setIsCreatingFromPrompt] = useState(false)
+  
+  /**
+   * Handle prompt submission from home page
+   * Creates a new project and feature immediately, then navigates to the feature
+   * This follows the lovable.dev flow where submitting a prompt creates everything at once
+   */
+  const handlePromptSubmit = useCallback(async (prompt: string) => {
+    const userId = session?.user?.id
+    const workspaceId = currentWorkspace?.id
+    
+    if (!userId || !workspaceId) {
+      console.error("[WorkspaceLayout] Cannot create from prompt: missing userId or workspaceId")
+      return
+    }
+    
+    if (!studioCore || !platformFeatures) {
+      console.error("[WorkspaceLayout] Cannot create from prompt: domains not available")
+      return
+    }
+    
+    setIsCreatingFromPrompt(true)
+    
+    try {
+      // 1. Generate a project name from the prompt using AI
+      const projectName = await generateProjectNameFromPrompt(prompt)
+
+      // 2. Create the project
+      const newProject = await studioCore.createProject(
+        projectName,
+        workspaceId,
+        prompt, // Use the full prompt as description
+        userId
+      )
+      
+      // 3. Create a feature in the project with the prompt as the intent
+      const newFeature = await platformFeatures.createFeatureSession({
+        name: projectName, // Use same name for now, could extract differently
+        intent: prompt,
+        project: newProject.id,
+      })
+      
+      // 4. Trigger refetch so the project shows in the list
+      refetchProjects()
+      
+      // 5. Navigate to the new project and feature
+      await setProjectId(newProject.id)
+      await setFeatureId(newFeature.id)
+      
+    } catch (error) {
+      console.error("[WorkspaceLayout] Failed to create from prompt:", error)
+    } finally {
+      setIsCreatingFromPrompt(false)
+    }
+  }, [session?.user?.id, currentWorkspace?.id, studioCore, platformFeatures, refetchProjects, setProjectId, setFeatureId])
 
   return (
     <div className="flex h-full" data-testid="workspace-layout">
@@ -288,45 +411,25 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
             ) : (
               // No project selected - show engaging home page
               <HomePage
-                userName={currentOrg?.name?.split(" ")[0] || "there"}
-                onPromptSubmit={(prompt) => {
-                  // TODO: Handle prompt submission - create new project or open chat
-                  console.log("Prompt submitted:", prompt)
-                }}
+                userName={currentWorkspace?.name?.split(" ")[0] || "there"}
+                onPromptSubmit={handlePromptSubmit}
+                isLoading={isCreatingFromPrompt}
               />
             )}
           </div>
         )}
       </div>
 
-      {/* NewFeatureModal placeholder - actual component in task-2-2-008 */}
-      {isModalOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-          data-testid="new-feature-modal"
-        >
-          <div className="bg-card p-6 rounded-lg shadow-lg max-w-md w-full mx-4">
-            <h2 className="text-lg font-semibold mb-4">New Feature</h2>
-            <p className="text-sm text-muted-foreground mb-4">
-              Create a new feature for project: {projectId || "none"}
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={onClose}
-                className="px-4 py-2 text-sm bg-secondary text-secondary-foreground rounded-md"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={onClose}
-                className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-md"
-              >
-                Create
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* NewFeatureModal - creates features and navigates to them */}
+      <NewFeatureModal
+        open={isModalOpen}
+        onOpenChange={setIsModalOpen}
+        projectId={projectId}
+        onSuccess={(newFeatureId) => {
+          // Navigate to the newly created feature
+          setFeatureId(newFeatureId)
+        }}
+      />
 
       {/* Delete feature confirmation dialog (task-delete-005) */}
       <DeleteFeatureDialog

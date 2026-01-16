@@ -11,9 +11,10 @@
  * Inspired by Lovable.dev's settings modal design.
  */
 
-import { useState, useEffect, createContext, useContext } from "react"
+import { useState, useEffect, useCallback, createContext, useContext } from "react"
 import { observer } from "mobx-react-lite"
 import { useNavigate } from "react-router-dom"
+import { format } from "date-fns"
 import {
   Building2,
   Users,
@@ -23,6 +24,14 @@ import {
   Github,
   Settings,
   ExternalLink,
+  Search,
+  UserPlus,
+  Download,
+  MoreHorizontal,
+  Loader2,
+  Trash2,
+  ChevronDown,
+  Check,
 } from "lucide-react"
 import {
   Dialog,
@@ -35,9 +44,36 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { useWorkspaceData } from "../workspace"
 import { useDomains } from "@/contexts/DomainProvider"
+import { useSession } from "@/auth/client"
+import { InviteMemberModal } from "../workspace/members/InviteMemberModal"
 
 type TabId = "workspace" | "people" | "billing" | "account" | "integrations"
 
@@ -198,28 +234,357 @@ function WorkspaceTab() {
   )
 }
 
-// People Tab
+// Role level mapping for permission checks
+const RoleLevels: Record<string, number> = {
+  owner: 40,
+  admin: 30,
+  member: 20,
+  viewer: 10,
+}
+
+// Member interface
+interface Member {
+  id: string
+  userId: string
+  role: "owner" | "admin" | "member" | "viewer"
+  createdAt: number
+  updatedAt?: number
+}
+
+// People Tab - Full member management
 function PeopleTab() {
-  const navigate = useNavigate()
+  const { currentWorkspace } = useWorkspaceData()
+  const { studioCore } = useDomains()
+  const { data: session } = useSession()
+  const currentUserId = session?.user?.id || ""
+  const currentUserName = session?.user?.name || "User"
+  const currentUserEmail = session?.user?.email || ""
+
+  // State
+  const [members, setMembers] = useState<Member[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [roleFilter, setRoleFilter] = useState<string>("all")
+  const [activeSubTab, setActiveSubTab] = useState("all")
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false)
+  const [memberToRemove, setMemberToRemove] = useState<Member | null>(null)
+  const [isRemoving, setIsRemoving] = useState(false)
+  const [updatingMemberId, setUpdatingMemberId] = useState<string | null>(null)
+
+  // Determine current user's role
+  const currentUserMember = members.find(m => m.userId === currentUserId)
+  const currentUserRole = currentUserMember?.role || "viewer"
+  const currentUserLevel = RoleLevels[currentUserRole] ?? 0
+  const canManageMembers = currentUserLevel >= RoleLevels.admin
+
+  // Load members
+  const loadMembers = useCallback(async () => {
+    if (!studioCore?.memberCollection || !currentWorkspace?.id) {
+      setIsLoading(false)
+      return
+    }
+
+    setIsLoading(true)
+    try {
+      await studioCore.memberCollection.query().toArray()
+      const workspaceMembers = studioCore.memberCollection.findForResource("workspace", currentWorkspace.id)
+      setMembers(workspaceMembers.map((m: any) => ({
+        id: m.id,
+        userId: m.userId,
+        role: m.role,
+        createdAt: m.createdAt,
+        updatedAt: m.updatedAt,
+      })))
+    } catch (err) {
+      console.error("[PeopleTab] Failed to load members:", err)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [studioCore, currentWorkspace?.id])
+
+  useEffect(() => {
+    loadMembers()
+  }, [loadMembers])
+
+  // Filter members
+  const filteredMembers = members.filter(member => {
+    if (roleFilter !== "all" && member.role !== roleFilter) return false
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase()
+      return member.userId.toLowerCase().includes(query)
+    }
+    return true
+  })
+
+  // Check if current user can manage a specific member
+  const canManageMember = (member: Member): boolean => {
+    if (member.userId === currentUserId) return false
+    const memberLevel = RoleLevels[member.role] ?? 0
+    return currentUserLevel > memberLevel
+  }
+
+  // Get available roles for a member
+  const getAvailableRoles = (member: Member): string[] => {
+    if (member.role === "owner" && currentUserRole !== "owner") return []
+    return Object.keys(RoleLevels).filter((role) => {
+      if (role === "owner" && currentUserRole !== "owner") return false
+      return RoleLevels[role] <= currentUserLevel
+    })
+  }
+
+  // Handle role change
+  const handleRoleChange = async (memberId: string, newRole: string) => {
+    if (!studioCore) return
+    setUpdatingMemberId(memberId)
+    try {
+      await studioCore.updateMemberRole(memberId, newRole, currentUserId)
+      await loadMembers()
+    } catch (err) {
+      console.error("[PeopleTab] Failed to update role:", err)
+    } finally {
+      setUpdatingMemberId(null)
+    }
+  }
+
+  // Handle member removal
+  const handleRemoveMember = async () => {
+    if (!memberToRemove || !studioCore) return
+    setIsRemoving(true)
+    try {
+      await studioCore.removeMember(memberToRemove.id, currentUserId)
+      setMembers(prev => prev.filter(m => m.id !== memberToRemove.id))
+      setMemberToRemove(null)
+    } catch (err) {
+      console.error("[PeopleTab] Failed to remove member:", err)
+    } finally {
+      setIsRemoving(false)
+    }
+  }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
+      {/* Header */}
       <div>
         <h3 className="text-lg font-semibold">People</h3>
         <p className="text-sm text-muted-foreground">
-          Manage workspace members and invitations.
+          Inviting people to <strong>{currentWorkspace?.name}</strong> gives access to workspace shared projects and credits.
+          You have {members.length} {members.length === 1 ? "builder" : "builders"} in this workspace.
         </p>
       </div>
 
-      <div className="p-4 bg-muted/50 rounded-lg text-center space-y-3">
-        <Users className="h-8 w-8 mx-auto text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">
-          Manage your team members and send invitations.
-        </p>
-        <Button onClick={() => navigate("/members")}>
-          Go to Members Page
-        </Button>
+      {/* Sub-tabs and actions bar */}
+      <div className="space-y-3">
+        <Tabs value={activeSubTab} onValueChange={setActiveSubTab}>
+          <div className="flex items-center justify-between gap-4">
+            <TabsList className="h-8">
+              <TabsTrigger value="all" className="text-xs px-3 h-7">All</TabsTrigger>
+              <TabsTrigger value="invitations" className="text-xs px-3 h-7">Invitations</TabsTrigger>
+            </TabsList>
+
+            {/* Search and actions */}
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-8 h-8 w-40 text-sm"
+                />
+              </div>
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8 gap-1">
+                    {roleFilter === "all" ? "All roles" : roleFilter.charAt(0).toUpperCase() + roleFilter.slice(1)}
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setRoleFilter("all")}>
+                    All roles
+                    {roleFilter === "all" && <Check className="ml-auto h-4 w-4" />}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {["owner", "admin", "member", "viewer"].map(role => (
+                    <DropdownMenuItem key={role} onClick={() => setRoleFilter(role)}>
+                      {role.charAt(0).toUpperCase() + role.slice(1)}
+                      {roleFilter === role && <Check className="ml-auto h-4 w-4" />}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              <Button variant="outline" size="sm" className="h-8 gap-1">
+                <Download className="h-3.5 w-3.5" />
+                Export
+              </Button>
+
+              <Button size="sm" className="h-8 gap-1" onClick={() => setIsInviteModalOpen(true)}>
+                <UserPlus className="h-3.5 w-3.5" />
+                Invite members
+              </Button>
+            </div>
+          </div>
+
+          <TabsContent value="all" className="mt-3">
+            {isLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                <span className="ml-2 text-sm text-muted-foreground">Loading members...</span>
+              </div>
+            ) : filteredMembers.length === 0 ? (
+              <div className="text-center py-8 text-sm text-muted-foreground">
+                {searchQuery ? "No members found matching your search" : "No members found"}
+              </div>
+            ) : (
+              <div className="rounded-md border overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/50">
+                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Name</th>
+                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Role</th>
+                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Joined date</th>
+                      <th className="px-3 py-2 w-10"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredMembers.map((member) => {
+                      const isCurrentUser = member.userId === currentUserId
+                      const canManage = canManageMembers && canManageMember(member)
+                      const availableRoles = getAvailableRoles(member)
+
+                      return (
+                        <tr key={member.id} className={cn("border-b last:border-b-0", isCurrentUser && "bg-primary/5")}>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-2">
+                              <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center text-xs font-medium shrink-0">
+                                {isCurrentUser ? currentUserName[0]?.toUpperCase() : member.userId[0]?.toUpperCase() || "U"}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-medium truncate">
+                                  {isCurrentUser ? `${currentUserName} (you)` : `User ${member.userId.slice(0, 8)}`}
+                                </div>
+                                <div className="text-xs text-muted-foreground truncate">
+                                  {isCurrentUser ? currentUserEmail : `${member.userId.slice(0, 16)}...`}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2">
+                            {canManage && availableRoles.length > 1 ? (
+                              <Select
+                                value={member.role}
+                                onValueChange={(value) => handleRoleChange(member.id, value)}
+                                disabled={updatingMemberId === member.id}
+                              >
+                                <SelectTrigger className="h-7 w-24 text-xs">
+                                  {updatingMemberId === member.id ? (
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                  ) : (
+                                    <SelectValue />
+                                  )}
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {availableRoles.map((role) => (
+                                    <SelectItem key={role} value={role} className="text-xs">
+                                      {role.charAt(0).toUpperCase() + role.slice(1)}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <Badge variant="outline" className="text-xs font-normal">
+                                {member.role.charAt(0).toUpperCase() + member.role.slice(1)}
+                              </Badge>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {format(new Date(member.createdAt), "MMM d, yyyy")}
+                          </td>
+                          <td className="px-3 py-2">
+                            {canManage && (
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button variant="ghost" size="icon" className="h-7 w-7">
+                                    <MoreHorizontal className="h-4 w-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem
+                                    onClick={() => setMemberToRemove(member)}
+                                    className="text-destructive"
+                                  >
+                                    <Trash2 className="mr-2 h-4 w-4" />
+                                    Remove member
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="invitations" className="mt-3">
+            <div className="text-center py-8 text-sm text-muted-foreground">
+              <UserPlus className="h-8 w-8 mx-auto mb-2 opacity-50" />
+              <p>No pending invitations</p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                onClick={() => setIsInviteModalOpen(true)}
+              >
+                Invite members
+              </Button>
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
+
+      {/* Invite Member Modal */}
+      <InviteMemberModal
+        open={isInviteModalOpen}
+        onOpenChange={setIsInviteModalOpen}
+        workspaceId={currentWorkspace?.id || ""}
+        onSuccess={loadMembers}
+      />
+
+      {/* Remove Member Confirmation Dialog */}
+      <AlertDialog open={!!memberToRemove} onOpenChange={(open) => !open && setMemberToRemove(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Member</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to remove this member from the workspace?
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isRemoving}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleRemoveMember}
+              disabled={isRemoving}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isRemoving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Removing...
+                </>
+              ) : (
+                "Remove"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
@@ -283,47 +648,143 @@ function BillingTab() {
 
 // Account Tab
 function AccountTab() {
+  const { data: session } = useSession()
+  const { auth } = useDomains()
+  const user = session?.user
+  
+  // Form state
+  const [name, setName] = useState(user?.name || "")
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle")
+
+  // Track original values for change detection
+  const originalName = user?.name || ""
+  const hasChanges = name !== originalName
+  const isValid = name.trim().length > 0
+
+  // Reset form when user data changes
+  useEffect(() => {
+    setName(user?.name || "")
+    setSaveStatus("idle")
+  }, [user?.name])
+
+  // Handle cancel - reset to original values
+  const handleCancel = () => {
+    setName(originalName)
+    setSaveStatus("idle")
+  }
+
+  // Handle save
+  const handleSave = async () => {
+    if (!hasChanges || !isValid || isSaving || !user?.id) return
+
+    setIsSaving(true)
+    setSaveStatus("idle")
+
+    try {
+      // Update user profile via domain collection (MCP persistence)
+      await auth?.userCollection?.updateOne(user.id, {
+        name: name.trim(),
+        updatedAt: new Date().toISOString(),
+      })
+
+      setSaveStatus("saved")
+      setTimeout(() => setSaveStatus("idle"), 2000)
+    } catch (error) {
+      console.error("Failed to save account settings:", error)
+      setSaveStatus("error")
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-lg font-semibold">Account settings</h3>
-        <p className="text-sm text-muted-foreground">
-          Personalize how others see and interact with you.
-        </p>
-      </div>
+    <div className="flex flex-col h-full">
+      <div className="flex-1 space-y-6">
+        <div>
+          <h3 className="text-lg font-semibold">Account settings</h3>
+          <p className="text-sm text-muted-foreground">
+            Personalize how others see and interact with you.
+          </p>
+        </div>
 
-      <div className="space-y-4">
-        {/* Avatar */}
-        <div className="flex items-start justify-between">
-          <div>
-            <Label>Your avatar</Label>
+        <div className="space-y-4">
+          {/* Avatar */}
+          <div className="flex items-start justify-between">
+            <div>
+              <Label>Your avatar</Label>
+              <p className="text-xs text-muted-foreground">
+                Your avatar is automatically generated.
+              </p>
+            </div>
+            <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center text-lg font-medium">
+              {user?.name?.[0]?.toUpperCase() || "U"}
+            </div>
+          </div>
+
+          {/* Email */}
+          <div className="space-y-2">
+            <Label>Email</Label>
             <p className="text-xs text-muted-foreground">
-              Your avatar is automatically generated.
+              Your email address associated with your account.
             </p>
+            <Input value={user?.email || ""} disabled className="max-w-md" />
           </div>
-          <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center text-lg font-medium">
-            U
+
+          {/* Name */}
+          <div className="space-y-2">
+            <Label htmlFor="account-name">Name</Label>
+            <p className="text-xs text-muted-foreground">
+              Your full name, as visible to others.
+            </p>
+            <Input
+              id="account-name"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value)
+                setSaveStatus("idle")
+              }}
+              placeholder="Enter your name"
+              className="max-w-md"
+              maxLength={100}
+            />
+            {saveStatus === "saved" && (
+              <p className="text-xs text-green-600">Changes saved successfully!</p>
+            )}
+            {saveStatus === "error" && (
+              <p className="text-xs text-destructive">Failed to save changes. Please try again.</p>
+            )}
           </div>
-        </div>
-
-        {/* Email */}
-        <div className="space-y-2">
-          <Label>Email</Label>
-          <p className="text-xs text-muted-foreground">
-            Your email address associated with your account.
-          </p>
-          <Input value="user@example.com" disabled className="max-w-md" />
-        </div>
-
-        {/* Name */}
-        <div className="space-y-2">
-          <Label>Name</Label>
-          <p className="text-xs text-muted-foreground">
-            Your full name, as visible to others.
-          </p>
-          <Input placeholder="Enter your name" className="max-w-md" />
         </div>
       </div>
+
+      {/* Bottom toolbar - shows when there are unsaved changes */}
+      {hasChanges && (
+        <div className="flex items-center justify-end gap-2 pt-4 mt-4 border-t">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleCancel}
+            disabled={isSaving}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={!isValid || isSaving}
+          >
+            {isSaving ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              "Save changes"
+            )}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
@@ -399,7 +860,7 @@ export const SettingsModal = observer(function SettingsModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl p-0 gap-0 h-[600px] overflow-hidden">
+      <DialogContent className="max-w-[80%] p-0 gap-0 h-[80%] overflow-hidden">
         <DialogTitle className="sr-only">Settings</DialogTitle>
 
         <div className="flex h-full">
