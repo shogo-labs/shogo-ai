@@ -76,6 +76,9 @@ export class MCPPersistence implements IPersistenceService {
   } | null> {
     await this.ensureInitialized()
     try {
+      // Default workspace to "workspace" if not provided
+      const workspace = location || 'workspace'
+      
       // Load schema (triggers server-side caching and returns metadata)
       const loadResult = await this.mcp.callTool<{
         ok: boolean
@@ -87,7 +90,7 @@ export class MCPPersistence implements IPersistenceService {
           refs?: Array<{ name: string; target: string; type: 'single' | 'array' }>
         }>
         error?: { message: string }
-      }>('schema.load', { name, workspace: location })
+      }>('schema.load', { name, workspace })
 
       if (!loadResult?.ok) {
         console.warn('[MCPPersistence] schema.load failed:', loadResult?.error?.message)

@@ -529,8 +529,8 @@ const getAllowedOrigins = (): string[] => {
   if (envOrigins) {
     return envOrigins.split(',').map(o => o.trim())
   }
-  // Default: localhost only (dev mode)
-  return [`http://localhost:${VITE_PORT}`]
+  // Default: localhost on any port (dev mode) - allows playwright and vite
+  return [`http://localhost:${VITE_PORT}`, 'http://localhost:*']
 }
 
 // Enable CORS for development and production
@@ -539,6 +539,10 @@ app.use('/*', cors({
   origin: (origin) => {
     // Allow requests with no origin (like mobile apps or curl)
     if (!origin) return `http://localhost:${VITE_PORT}`
+    // In dev mode, allow any localhost origin (for playwright, vite, etc.)
+    if (process.env.NODE_ENV !== 'production' && origin?.startsWith('http://localhost:')) {
+      return origin
+    }
     // Check if origin is in allowed list
     return allowedOrigins.includes(origin) ? origin : allowedOrigins[0]
   },

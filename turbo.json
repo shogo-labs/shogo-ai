@@ -7,8 +7,7 @@
     },
     "dev": {
       "cache": false,
-      "persistent": true,
-      "passThroughEnv": ["DATABASE_URL", "MCP_PORT", "SCHEMAS_PATH"]
+      "persistent": true
     },
     "test": {
       "dependsOn": ["^build"]
