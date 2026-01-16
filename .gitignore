@@ -68,3 +68,7 @@ _tmp/
 *.tfstate.*
 .terraform.lock.hcl
 tfplan
+
+apps/web/playwright-report/
+
+apps/web/test-results/

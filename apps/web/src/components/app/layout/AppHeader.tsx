@@ -26,6 +26,7 @@ import { Users, ChevronRight } from "lucide-react"
 import { ProjectSelector } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
 import { Button } from "@/components/ui/button"
+import { NotificationBanner } from "@/components/notifications"
 
 /**
  * AppHeader component
@@ -76,6 +77,8 @@ export const AppHeader = observer(function AppHeader() {
 
       {/* Right: Controls */}
       <div className="flex items-center gap-2">
+        {/* Notification bell */}
+        <NotificationBanner />
         {/* Members button - opens settings modal on People tab */}
         {currentWorkspace && (
           <Button

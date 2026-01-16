@@ -8,8 +8,10 @@
  */
 
 import { scope } from "arktype"
-import { getRoot } from "mobx-state-tree"
+import { getEnv, getRoot } from "mobx-state-tree"
 import { domain } from "../domain"
+import type { IEnvironment } from "../environment/types"
+import { renderInvitationEmail } from "../email/templates"
 
 // ============================================================
 // 1. ROLE LEVELS (for permission comparison)
@@ -89,10 +91,25 @@ export const StudioCoreDomain = scope({
     "workspace?": "Workspace", // Polymorphic like Member
     "project?": "Project",
     status: "'pending' | 'accepted' | 'declined' | 'expired' | 'cancelled'",
+    "emailStatus?": "'not_sent' | 'sent' | 'failed'", // Email delivery tracking
+    "emailSentAt?": "number", // Timestamp when email was sent
+    "emailError?": "string", // Error message if email failed
     "invitedBy?": "string", // Loose string ref to userId who sent invitation
     expiresAt: "number",
     createdAt: "number",
     "updatedAt?": "number",
+  },
+
+  Notification: {
+    id: "string.uuid",
+    userId: "string", // The user this notification is for
+    type: "'invitation_pending' | 'invitation_accepted' | 'member_joined' | 'member_left' | 'workspace_updated'",
+    title: "string",
+    message: "string",
+    "metadata?": "unknown", // Type-specific data (invitationId, workspaceId, etc.)
+    "actionUrl?": "string", // URL to navigate when notification is clicked
+    "readAt?": "number", // Timestamp when marked as read
+    createdAt: "number",
   },
 
   StarredProject: {
@@ -142,13 +159,38 @@ export const studioCoreDomain = domain({
         },
       })),
 
-      // Invitation.isExpired - check if invitation has expired
+      // Invitation - computed views for expiry and email status
       Invitation: models.Invitation.views((self: any) => ({
         /**
          * Check if invitation is expired by comparing expiresAt to current time
          */
         get isExpired(): boolean {
           return Date.now() > self.expiresAt
+        },
+        /**
+         * Human-readable display of email delivery status
+         */
+        get emailStatusDisplay(): string {
+          const status = self.emailStatus || "not_sent"
+          switch (status) {
+            case "sent":
+              return "Email sent"
+            case "failed":
+              return `Email failed: ${self.emailError || "Unknown error"}`
+            case "not_sent":
+            default:
+              return "Email not sent"
+          }
+        },
+      })),
+
+      // Notification - computed view for unread status
+      Notification: models.Notification.views((self: any) => ({
+        /**
+         * Check if notification is unread (readAt is undefined/null)
+         */
+        get isUnread(): boolean {
+          return self.readAt === undefined || self.readAt === null
         },
       })),
     }),
@@ -274,6 +316,15 @@ export const studioCoreDomain = domain({
         },
 
         /**
+         * Find all pending invitations for a specific email address
+         */
+        findPendingForEmail(email: string): any[] {
+          return self.all().filter(
+            (i: any) => i.status === "pending" && i.email.toLowerCase() === email.toLowerCase()
+          )
+        },
+
+        /**
          * Find all invitations for a given resource (workspace or project)
          */
         findForResource(resourceType: "workspace" | "project", resourceId: string): any[] {
@@ -292,6 +343,29 @@ export const studioCoreDomain = domain({
          */
         findByEmail(email: string): any[] {
           return self.all().filter((i: any) => i.email === email)
+        },
+      })),
+
+      NotificationCollection: collections.NotificationCollection.views((self: any) => ({
+        /**
+         * Find all notifications for a given user
+         */
+        forUser(userId: string): any[] {
+          return self.all().filter((n: any) => n.userId === userId)
+        },
+
+        /**
+         * Find all unread notifications for a given user
+         */
+        unreadForUser(userId: string): any[] {
+          return self.all().filter((n: any) => n.userId === userId && n.isUnread)
+        },
+
+        /**
+         * Get count of unread notifications for a user
+         */
+        unreadCountForUser(userId: string): number {
+          return self.unreadForUser(userId).length
         },
       })),
 
@@ -829,9 +903,9 @@ export const studioCoreDomain = domain({
           }
 
           if (invitation.workspaceId) {
-            memberData.workspaceId = invitation.workspaceId
+            memberData.workspace = invitation.workspaceId
           } else if (invitation.projectId) {
-            memberData.projectId = invitation.projectId
+            memberData.project = invitation.projectId
           }
 
           // Create the member
@@ -977,6 +1051,268 @@ export const studioCoreDomain = domain({
             })
             return true
           }
+        },
+
+        // --------------------------------------------------------
+        // Email and Notification Actions
+        // --------------------------------------------------------
+
+        /**
+         * Send an invitation email.
+         * Gracefully handles missing email service configuration.
+         *
+         * @param invitationId - The ID of the invitation to send email for
+         * @returns Object with success status and optional error message
+         */
+        async sendInvitationEmail(invitationId: string): Promise<{ success: boolean; error?: string }> {
+          // Get the invitation
+          const invitation = await self.invitationCollection.query().where({ id: invitationId }).first()
+          if (!invitation) {
+            return { success: false, error: "Invitation not found" }
+          }
+
+          // Check if email service is available
+          const env = getEnv<IEnvironment>(self)
+          const emailService = env.services.email
+
+          if (!emailService || !emailService.isConfigured()) {
+            // Graceful degradation - log warning but don't throw
+            console.warn("[sendInvitationEmail] Email service not configured, skipping email send")
+            return { success: false, error: "Email service not configured" }
+          }
+
+          try {
+            // Get workspace name for the email
+            let workspaceName = "Workspace"
+            if (invitation.workspaceId) {
+              const workspace = self.workspaceCollection.get(invitation.workspaceId)
+              if (workspace) {
+                workspaceName = workspace.name
+              }
+            }
+
+            // Get inviter name (placeholder if not available)
+            const inviterName = invitation.invitedBy || "A team member"
+
+            // Generate accept URL
+            const appUrl = process.env.APP_URL || "http://localhost:3000"
+            const acceptUrl = `${appUrl}/invitations/${invitation.id}/accept`
+
+            // Render the email template
+            const html = renderInvitationEmail({
+              workspaceName,
+              inviterName,
+              role: invitation.role,
+              acceptUrl,
+            })
+
+            // Send the email
+            const result = await emailService.sendEmail({
+              to: invitation.email,
+              subject: `You've been invited to join ${workspaceName}`,
+              html,
+            })
+
+            // Update invitation email status
+            if (result.success) {
+              await self.invitationCollection.updateOne(invitationId, {
+                emailStatus: "sent",
+                emailSentAt: Date.now(),
+                emailError: undefined,
+                updatedAt: Date.now(),
+              })
+              return { success: true }
+            } else {
+              await self.invitationCollection.updateOne(invitationId, {
+                emailStatus: "failed",
+                emailError: result.error || "Unknown error",
+                updatedAt: Date.now(),
+              })
+              return { success: false, error: result.error }
+            }
+          } catch (error: any) {
+            // Update invitation with error
+            await self.invitationCollection.updateOne(invitationId, {
+              emailStatus: "failed",
+              emailError: error.message || "Failed to send email",
+              updatedAt: Date.now(),
+            })
+            return { success: false, error: error.message }
+          }
+        },
+
+        /**
+         * Resend a failed or not-sent invitation email.
+         *
+         * @param invitationId - The ID of the invitation to resend
+         * @returns Object with success status and optional error message
+         */
+        async resendInvitation(invitationId: string): Promise<{ success: boolean; error?: string }> {
+          // Get the invitation
+          const invitation = await self.invitationCollection.query().where({ id: invitationId }).first()
+          if (!invitation) {
+            return { success: false, error: "Invitation not found" }
+          }
+
+          // Check invitation is in a resendable state
+          if (invitation.status !== "pending") {
+            return { success: false, error: "Can only resend pending invitations" }
+          }
+
+          // Use the same sendInvitationEmail logic
+          return self.sendInvitationEmail(invitationId)
+        },
+
+        /**
+         * Leave a workspace voluntarily.
+         * Validates user can only leave themselves and prevents last owner from leaving.
+         *
+         * @param memberId - The ID of the member to remove
+         * @param userId - The ID of the user requesting to leave (must match member's userId)
+         */
+        async leaveWorkspace(memberId: string, userId: string): Promise<void> {
+          // Get the member
+          const member = await self.memberCollection.query().where({ id: memberId }).first()
+          if (!member) {
+            throw new Error("Member not found")
+          }
+
+          // Verify user can only leave themselves
+          if (member.userId !== userId) {
+            throw new Error("You can only leave a workspace yourself")
+          }
+
+          // Get workspace ID
+          const workspaceId = member.workspaceId
+          if (!workspaceId) {
+            throw new Error("Member is not a workspace member")
+          }
+
+          // Load all members to check for last owner
+          await self.memberCollection.loadAll()
+
+          // If member is an owner, check they're not the last one
+          if (member.role === "owner") {
+            const allMembers = self.memberCollection.findForResource("workspace", workspaceId)
+            const owners = allMembers.filter((m: any) => m.role === "owner")
+            if (owners.length <= 1) {
+              throw new Error("Cannot leave: you are the last owner of this workspace. Transfer ownership first.")
+            }
+          }
+
+          // Get workspace name for notification
+          const workspace = self.workspaceCollection.get(workspaceId)
+          const workspaceName = workspace?.name || "Workspace"
+
+          // Delete the member
+          await self.memberCollection.deleteOne(memberId)
+
+          // Create notifications for workspace admins/owners
+          const allMembers = self.memberCollection.findForResource("workspace", workspaceId)
+          const adminsAndOwners = allMembers.filter(
+            (m: any) => m.role === "owner" || m.role === "admin"
+          )
+
+          for (const admin of adminsAndOwners) {
+            await self.createNotification({
+              userId: admin.userId,
+              type: "member_left",
+              title: "Member left workspace",
+              message: `A member has left ${workspaceName}`,
+              metadata: { workspaceId, memberId },
+            })
+          }
+        },
+
+        /**
+         * Create a notification for a user.
+         *
+         * @param params - Notification parameters
+         * @returns The created notification
+         */
+        async createNotification(params: {
+          userId: string
+          type: "invitation_pending" | "invitation_accepted" | "member_joined" | "member_left" | "workspace_updated"
+          title: string
+          message: string
+          metadata?: Record<string, any>
+          actionUrl?: string
+        }): Promise<any> {
+          const notification = await self.notificationCollection.insertOne({
+            id: crypto.randomUUID(),
+            userId: params.userId,
+            type: params.type,
+            title: params.title,
+            message: params.message,
+            metadata: params.metadata,
+            actionUrl: params.actionUrl,
+            createdAt: Date.now(),
+          })
+          return notification
+        },
+
+        /**
+         * Mark a notification as read.
+         *
+         * @param notificationId - The ID of the notification to mark as read
+         */
+        async markNotificationRead(notificationId: string): Promise<void> {
+          await self.notificationCollection.updateOne(notificationId, {
+            readAt: Date.now(),
+          })
+        },
+
+        /**
+         * Check for pending invitations on login and create notifications.
+         * Called after successful authentication.
+         *
+         * @param userId - The authenticated user's ID
+         * @param email - The authenticated user's email
+         * @returns Number of notifications created
+         */
+        async checkPendingInvitationsOnLogin(userId: string, email: string): Promise<number> {
+          // Load all invitations
+          await self.invitationCollection.loadAll()
+
+          // Find pending invitations for this email
+          const pendingInvitations = self.invitationCollection.findPendingForEmail(email)
+
+          let notificationsCreated = 0
+
+          for (const invitation of pendingInvitations) {
+            // Skip expired invitations
+            if (invitation.isExpired) continue
+
+            // Get workspace/project name
+            let resourceName = "a workspace"
+            let actionUrl = `/invitations/${invitation.id}`
+
+            if (invitation.workspaceId) {
+              const workspace = self.workspaceCollection.get(invitation.workspaceId)
+              if (workspace) {
+                resourceName = workspace.name
+              }
+            }
+
+            // Create notification
+            await self.createNotification({
+              userId,
+              type: "invitation_pending",
+              title: "Pending Invitation",
+              message: `You have a pending invitation to join ${resourceName} as ${invitation.role}`,
+              metadata: {
+                invitationId: invitation.id,
+                workspaceId: invitation.workspaceId,
+                workspaceName: resourceName,
+                role: invitation.role,
+              },
+              actionUrl,
+            })
+
+            notificationsCreated++
+          }
+
+          return notificationsCreated
         },
       })),
   },

@@ -16,7 +16,7 @@ export class MCPPersistence implements IPersistenceService {
   private initialized = false
   private initPromise: Promise<void> | null = null
 
-  constructor(private mcp: MCPService) {}
+  constructor(private mcp: MCPService) { }
 
   // === Lazy Initialization ===
 
@@ -76,6 +76,9 @@ export class MCPPersistence implements IPersistenceService {
     await this.ensureInitialized()
     try {
       // Load schema (triggers server-side caching and returns full enhanced schema)
+      // Default workspace to "workspace" if not provided
+      const workspace = location || 'workspace'
+
       const loadResult = await this.mcp.callTool<{
         ok: boolean
         schemaId?: string
@@ -87,7 +90,7 @@ export class MCPPersistence implements IPersistenceService {
           refs?: Array<{ name: string; target: string; type: 'single' | 'array' }>
         }>
         error?: { message: string }
-      }>('schema.load', { name, workspace: location })
+      }>('schema.load', { name, workspace })
 
       if (!loadResult?.ok) {
         console.warn('[MCPPersistence] schema.load failed:', loadResult?.error?.message)

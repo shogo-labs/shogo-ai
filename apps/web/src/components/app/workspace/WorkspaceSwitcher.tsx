@@ -47,7 +47,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { useSettingsModal } from "../shared"
 import { PlanSelector } from "../billing/PlanSelector"
 
 /**
@@ -88,7 +87,6 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
   isLoading = false,
 }: WorkspaceSwitcherProps) {
   const navigate = useNavigate()
-  const { openSettings } = useSettingsModal()
   const { studioCore, billing } = useDomains()
   const { data: session } = useSession()
   const [isOpen, setIsOpen] = useState(false)
@@ -209,7 +207,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
                   className="flex-1 h-8 text-xs"
                   onClick={() => {
                     setIsOpen(false)
-                    openSettings("workspace")
+                    navigate("/settings?tab=workspace")
                   }}
                 >
                   <Settings className="h-3.5 w-3.5 mr-1.5" />
@@ -221,7 +219,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
                   className="flex-1 h-8 text-xs"
                   onClick={() => {
                     setIsOpen(false)
-                    navigate("/members")
+                    navigate("/settings?tab=people")
                   }}
                 >
                   <Users className="h-3.5 w-3.5 mr-1.5" />
@@ -266,7 +264,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
                   className="w-full h-9 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700"
                   onClick={() => {
                     setIsOpen(false)
-                    navigate("/billing")
+                    navigate("/settings?tab=billing")
                   }}
                 >
                   <Zap className="h-4 w-4 mr-2" />
