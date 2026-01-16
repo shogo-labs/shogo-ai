@@ -115,6 +115,10 @@ export interface ChatPanelProps {
   featureName?: string
   /** Current phase from WorkspaceLayout navigation (task-cpbi-004) */
   phase: string | null
+  /** Current workspace ID for billing/credit tracking */
+  workspaceId?: string
+  /** Current user ID for billing/credit tracking */
+  userId?: string
   /** Children to render inside ChatContextProvider */
   children?: React.ReactNode
   /** Optional class name */
@@ -394,6 +398,8 @@ export const ChatPanel = observer(function ChatPanel({
   featureId,
   featureName,
   phase,
+  workspaceId,
+  userId,
   children,
   className,
   onSchemaRefresh,
@@ -1362,6 +1368,7 @@ export const ChatPanel = observer(function ChatPanel({
       // - First arg: { text, files? } object
       // - Second arg: options with body for server-side data
       // - ccSessionIdRef.current ensures fresh session ID value
+      // credit-tracking: Include workspaceId and userId for credit deduction
       try {
         await sendMessage(
           messagePayload,
@@ -1370,6 +1377,8 @@ export const ChatPanel = observer(function ChatPanel({
               featureId,
               phase,
               ccSessionId: ccSessionIdRef.current,
+              workspaceId,
+              userId,
             },
           }
         )
@@ -1377,7 +1386,7 @@ export const ChatPanel = observer(function ChatPanel({
         console.error("[ChatPanel] Failed to send message:", err)
       }
     },
-    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType]
+    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId]
   )
 
   // Handle form submit from ChatInput

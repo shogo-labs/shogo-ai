@@ -641,6 +641,25 @@ Examples:
 })
 
 /**
+ * Calculate credit cost based on total tokens consumed.
+ * 
+ * Pricing: 0.1 credits per 5,000 tokens
+ * - Round up to nearest 0.1 credits
+ * - Minimum charge: 0.5 credits
+ * 
+ * @param totalTokens - Combined input + output tokens
+ * @returns Credits to charge (minimum 0.5)
+ */
+function calculateCreditCost(totalTokens: number): number {
+  // Rate: 0.1 credits per 5000 tokens
+  const rawCredits = (totalTokens / 5000) * 0.1
+  // Round up to nearest 0.1
+  const rounded = Math.ceil(rawCredits * 10) / 10
+  // Enforce minimum of 0.5 credits
+  return Math.max(rounded, 0.5)
+}
+
+/**
  * AI Chat endpoint using Vercel AI SDK with Claude Code provider
  * Streams Claude responses back to the client
  * Uses existing Claude Pro/Max subscription via Claude Code CLI
@@ -650,10 +669,15 @@ Examples:
  * - Accepts optional `ccSessionId` in request body
  * - When provided, passes it as `resume` parameter to Claude Code
  * - This allows continuing previous Claude Code conversations
+ * 
+ * Credit Charging (after completion):
+ * - Credits are charged AFTER the response completes
+ * - Cost is based on total tokens (input + output)
+ * - Rate: 0.1 credits per 5,000 tokens, minimum 0.5 credits
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, phase, ccSessionId } = await c.req.json()
+    const { messages, phase, ccSessionId, workspaceId, userId } = await c.req.json()
 
     // Build dynamic system prompt based on current pipeline phase
     const systemPrompt = buildSystemPrompt(phase)
@@ -851,6 +875,40 @@ app.post('/api/chat', async (c) => {
           streamWriter = null
           console.log(`${LOG_PREFIX} 📊 Remaining listener count:`, progressEvents.listenerCount('progress'))
           console.log(`${VT_LOG_PREFIX} 📊 Remaining listener count:`, virtualToolEvents.listenerCount('virtual-tool'))
+
+          // credit-tracking: Charge credits AFTER stream completes based on token usage
+          // Fire-and-forget pattern - don't block the stream response
+          if (workspaceId && userId) {
+            (async () => {
+              try {
+                const usage = await result.usage as any
+                // AI SDK usage may have totalTokens, promptTokens/completionTokens, or inputTokens/outputTokens
+                const inputTokens = usage?.promptTokens ?? usage?.inputTokens ?? 0
+                const outputTokens = usage?.completionTokens ?? usage?.outputTokens ?? 0
+                const totalTokens = usage?.totalTokens ?? (inputTokens + outputTokens)
+                const creditCost = calculateCreditCost(totalTokens)
+                
+                const store = await getBillingStore()
+                await store.consumeCredits(
+                  workspaceId,
+                  creditCost,
+                  userId,
+                  'chat_message',
+                  undefined, // projectId
+                  { 
+                    phase, 
+                    ccSessionId,
+                    inputTokens,
+                    outputTokens,
+                    totalTokens,
+                  }
+                )
+                console.log(`[/api/chat] 💰 Charged ${creditCost} credits (${totalTokens} tokens) for workspace ${workspaceId}`)
+              } catch (creditError: any) {
+                console.error(`[/api/chat] ⚠️ Failed to charge credits:`, creditError.message)
+              }
+            })()
+          }
         }
       },
       onError: (error) => {

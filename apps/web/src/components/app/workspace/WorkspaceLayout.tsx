@@ -376,10 +376,13 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
           // Polling integration (task-3-1-007): pass refresh for smart triggers, track streaming state
           // Loading states (task-3-1-008): pass isPolling for subtle loading overlay
           // Phase prop threading (task-cpbi-004): pass phase from usePhaseNavigation
+          // credit-tracking: pass workspaceId and userId for billing
           <ChatPanel
             featureId={featureId}
             featureName={currentFeature.name}
             phase={phase}
+            workspaceId={currentWorkspace?.id}
+            userId={session?.user?.id}
             className="flex-1 min-w-0"
             onRefresh={refresh}
             onStreamingChange={handleStreamingChange}
@@ -389,9 +392,12 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
           </ChatPanel>
         ) : featureId ? (
           // Feature ID in URL but no data yet - render Outlet as fallback with ChatPanel
+          // credit-tracking: pass workspaceId and userId for billing
           <ChatPanel
             featureId={featureId}
             phase={phase}
+            workspaceId={currentWorkspace?.id}
+            userId={session?.user?.id}
             className="flex-1 min-w-0"
             onRefresh={refresh}
             onStreamingChange={handleStreamingChange}
