@@ -36,10 +36,10 @@ function isValidComponent(component: unknown): boolean {
 }
 
 describe("workspace barrel exports - workspace components", () => {
-  test("OrgSwitcher can be imported from workspace barrel", async () => {
-    const { OrgSwitcher } = await import("@/components/app/workspace")
-    expect(OrgSwitcher).toBeDefined()
-    expect(isValidComponent(OrgSwitcher)).toBe(true)
+  test("WorkspaceSwitcher can be imported from workspace barrel", async () => {
+    const { WorkspaceSwitcher } = await import("@/components/app/workspace")
+    expect(WorkspaceSwitcher).toBeDefined()
+    expect(isValidComponent(WorkspaceSwitcher)).toBe(true)
   })
 
   test("ProjectSelector can be imported from workspace barrel", async () => {
@@ -134,7 +134,7 @@ describe("workspace barrel exports - all exports", () => {
     const exportedNames = Object.keys(barrel)
 
     // Workspace components
-    expect(exportedNames).toContain("OrgSwitcher")
+    expect(exportedNames).toContain("WorkspaceSwitcher")
     expect(exportedNames).toContain("ProjectSelector")
     expect(exportedNames).toContain("WorkspaceLayout")
 

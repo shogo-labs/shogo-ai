@@ -29,18 +29,13 @@ function createTestEnv(): IEnvironment {
 }
 
 // ============================================================
-// Test: StudioCoreDomain ArkType scope defines all 6 entities
+// Test: StudioCoreDomain ArkType scope defines all entities
 // ============================================================
 describe("StudioCoreDomain ArkType scope defines all entities", () => {
-  test("Scope includes Organization entity", () => {
+  test("Scope includes Workspace entity", () => {
     expect(StudioCoreDomain).toBeDefined()
     const types = StudioCoreDomain.export()
-    expect(types.Organization).toBeDefined()
-  })
-
-  test("Scope includes Team entity", () => {
-    const types = StudioCoreDomain.export()
-    expect(types.Team).toBeDefined()
+    expect(types.Workspace).toBeDefined()
   })
 
   test("Scope includes Project entity", () => {
@@ -77,22 +72,22 @@ describe("Entity identifiers use string.uuid type", () => {
     store = createStore(env)
   })
 
-  test("Organization accepts valid UUID id", () => {
-    const org = store.organizationCollection.add({
+  test("Workspace accepts valid UUID id", () => {
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "Test Org",
-      slug: "test-org",
+      name: "Test Workspace",
+      slug: "test-workspace",
       createdAt: Date.now(),
     })
-    expect(org).toBeDefined()
-    expect(org.id).toBe("550e8400-e29b-41d4-a716-446655440001")
+    expect(ws).toBeDefined()
+    expect(ws.id).toBe("550e8400-e29b-41d4-a716-446655440001")
   })
 
   test("Member accepts valid UUID id", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "Test Org",
-      slug: "test-org",
+      name: "Test Workspace",
+      slug: "test-workspace",
       createdAt: Date.now(),
     })
 
@@ -100,7 +95,7 @@ describe("Entity identifiers use string.uuid type", () => {
       id: "550e8400-e29b-41d4-a716-446655440010",
       userId: "user-123",
       role: "admin",
-      organization: org.id,
+      workspace: ws.id,
       createdAt: Date.now(),
     })
     expect(member.id).toBe("550e8400-e29b-41d4-a716-446655440010")
@@ -120,49 +115,25 @@ describe("Entity references use entity name directly", () => {
     store = createStore(env)
   })
 
-  test("Team.organization resolves to Organization instance", () => {
-    const org = store.organizationCollection.add({
+  test("Project.workspace resolves to Workspace instance", () => {
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
       createdAt: Date.now(),
     })
 
-    const team = store.teamCollection.add({
+    const project = store.projectCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Engineering",
-      organization: org.id,
+      name: "My Project",
+      workspace: ws.id,
+      tier: "pro",
+      status: "active",
       createdAt: Date.now(),
     })
 
-    expect(team.organization).toBe(org)
-    expect(team.organization?.name).toBe("Acme Corp")
-  })
-
-  test("Team.parent resolves to Team instance", () => {
-    const org = store.organizationCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "Acme Corp",
-      slug: "acme",
-      createdAt: Date.now(),
-    })
-
-    const parentTeam = store.teamCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Engineering",
-      organization: org.id,
-      createdAt: Date.now(),
-    })
-
-    const childTeam = store.teamCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440003",
-      name: "Frontend",
-      organization: org.id,
-      parent: parentTeam.id,
-      createdAt: Date.now(),
-    })
-
-    expect(childTeam.parent).toBe(parentTeam)
+    expect(project.workspace).toBe(ws)
+    expect(project.workspace?.name).toBe("Acme Corp")
   })
 })
 
@@ -201,7 +172,7 @@ describe("Member.level computed view returns numeric role value", () => {
   })
 
   test("Owner role returns 40", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -212,7 +183,7 @@ describe("Member.level computed view returns numeric role value", () => {
       id: "550e8400-e29b-41d4-a716-446655440010",
       userId: "user-123",
       role: "owner",
-      organization: org.id,
+      workspace: ws.id,
       createdAt: Date.now(),
     })
 
@@ -220,7 +191,7 @@ describe("Member.level computed view returns numeric role value", () => {
   })
 
   test("Admin role returns 30", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -231,7 +202,7 @@ describe("Member.level computed view returns numeric role value", () => {
       id: "550e8400-e29b-41d4-a716-446655440010",
       userId: "user-123",
       role: "admin",
-      organization: org.id,
+      workspace: ws.id,
       createdAt: Date.now(),
     })
 
@@ -239,7 +210,7 @@ describe("Member.level computed view returns numeric role value", () => {
   })
 
   test("Member role returns 20", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -250,7 +221,7 @@ describe("Member.level computed view returns numeric role value", () => {
       id: "550e8400-e29b-41d4-a716-446655440010",
       userId: "user-123",
       role: "member",
-      organization: org.id,
+      workspace: ws.id,
       createdAt: Date.now(),
     })
 
@@ -258,7 +229,7 @@ describe("Member.level computed view returns numeric role value", () => {
   })
 
   test("Viewer role returns 10", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -269,7 +240,7 @@ describe("Member.level computed view returns numeric role value", () => {
       id: "550e8400-e29b-41d4-a716-446655440010",
       userId: "user-123",
       role: "viewer",
-      organization: org.id,
+      workspace: ws.id,
       createdAt: Date.now(),
     })
 
@@ -291,7 +262,7 @@ describe("Invitation.isExpired computed view works", () => {
   })
 
   test("Past expiration returns true", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -302,7 +273,7 @@ describe("Invitation.isExpired computed view works", () => {
       id: "550e8400-e29b-41d4-a716-446655440020",
       email: "invitee@example.com",
       role: "member",
-      organization: org.id,
+      workspace: ws.id,
       status: "pending",
       expiresAt: Date.now() - 3600000, // 1 hour ago
       createdAt: Date.now(),
@@ -312,7 +283,7 @@ describe("Invitation.isExpired computed view works", () => {
   })
 
   test("Future expiration returns false", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -323,7 +294,7 @@ describe("Invitation.isExpired computed view works", () => {
       id: "550e8400-e29b-41d4-a716-446655440020",
       email: "invitee@example.com",
       role: "member",
-      organization: org.id,
+      workspace: ws.id,
       status: "pending",
       expiresAt: Date.now() + 3600000, // 1 hour from now
       createdAt: Date.now(),
@@ -347,17 +318,19 @@ describe("MemberCollection.findByUserId query works", () => {
   })
 
   test("Returns array of members for user", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "Acme Corp",
-      slug: "acme",
+      name: "Test Workspace",
+      slug: "test-workspace",
       createdAt: Date.now(),
     })
 
-    const team = store.teamCollection.add({
+    const project = store.projectCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440002",
       name: "Engineering",
-      organization: org.id,
+      workspace: ws.id,
+      tier: "pro",
+      status: "active",
       createdAt: Date.now(),
     })
 
@@ -366,7 +339,7 @@ describe("MemberCollection.findByUserId query works", () => {
       id: "550e8400-e29b-41d4-a716-446655440010",
       userId: "user-1",
       role: "admin",
-      organization: org.id,
+      workspace: ws.id,
       createdAt: Date.now(),
     })
 
@@ -374,7 +347,7 @@ describe("MemberCollection.findByUserId query works", () => {
       id: "550e8400-e29b-41d4-a716-446655440011",
       userId: "user-1",
       role: "member",
-      team: team.id,
+      project: project.id,
       createdAt: Date.now(),
     })
 
@@ -383,7 +356,7 @@ describe("MemberCollection.findByUserId query works", () => {
       id: "550e8400-e29b-41d4-a716-446655440012",
       userId: "user-2",
       role: "viewer",
-      organization: org.id,
+      workspace: ws.id,
       createdAt: Date.now(),
     })
 
@@ -406,18 +379,18 @@ describe("MemberCollection.findForResource query works", () => {
     store = createStore(env)
   })
 
-  test("Returns only members with matching organization", () => {
-    const org1 = store.organizationCollection.add({
+  test("Returns only members with matching workspace", () => {
+    const ws1 = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "Org 1",
-      slug: "org-1",
+      name: "Workspace 1",
+      slug: "workspace-1",
       createdAt: Date.now(),
     })
 
-    const org2 = store.organizationCollection.add({
+    const ws2 = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Org 2",
-      slug: "org-2",
+      name: "Workspace 2",
+      slug: "workspace-2",
       createdAt: Date.now(),
     })
 
@@ -425,7 +398,7 @@ describe("MemberCollection.findForResource query works", () => {
       id: "550e8400-e29b-41d4-a716-446655440010",
       userId: "user-1",
       role: "admin",
-      organization: org1.id,
+      workspace: ws1.id,
       createdAt: Date.now(),
     })
 
@@ -433,45 +406,17 @@ describe("MemberCollection.findForResource query works", () => {
       id: "550e8400-e29b-41d4-a716-446655440011",
       userId: "user-2",
       role: "admin",
-      organization: org2.id,
+      workspace: ws2.id,
       createdAt: Date.now(),
     })
 
-    const orgMembers = store.memberCollection.findForResource("organization", org1.id)
-    expect(orgMembers).toHaveLength(1)
-    expect(orgMembers[0].userId).toBe("user-1")
-  })
-
-  test("Returns only members with matching team", () => {
-    const org = store.organizationCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "Acme Corp",
-      slug: "acme",
-      createdAt: Date.now(),
-    })
-
-    const team = store.teamCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Engineering",
-      organization: org.id,
-      createdAt: Date.now(),
-    })
-
-    store.memberCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440010",
-      userId: "user-1",
-      role: "member",
-      team: team.id,
-      createdAt: Date.now(),
-    })
-
-    const teamMembers = store.memberCollection.findForResource("team", team.id)
-    expect(teamMembers).toHaveLength(1)
-    expect(teamMembers[0].userId).toBe("user-1")
+    const wsMembers = store.memberCollection.findForResource("workspace", ws1.id)
+    expect(wsMembers).toHaveLength(1)
+    expect(wsMembers[0].userId).toBe("user-1")
   })
 
   test("Returns only members with matching project", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -481,7 +426,7 @@ describe("MemberCollection.findForResource query works", () => {
     const project = store.projectCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440003",
       name: "Web App",
-      organization: org.id,
+      workspace: ws.id,
       tier: "pro",
       status: "active",
       createdAt: Date.now(),
@@ -502,9 +447,9 @@ describe("MemberCollection.findForResource query works", () => {
 })
 
 // ============================================================
-// Test: ProjectCollection.findByOrganization query
+// Test: ProjectCollection.findByWorkspace query
 // ============================================================
-describe("ProjectCollection.findByOrganization query works", () => {
+describe("ProjectCollection.findByWorkspace query works", () => {
   let env: IEnvironment
   let store: any
 
@@ -514,25 +459,25 @@ describe("ProjectCollection.findByOrganization query works", () => {
     store = createStore(env)
   })
 
-  test("Returns all projects for organization", () => {
-    const org1 = store.organizationCollection.add({
+  test("Returns all projects for workspace", () => {
+    const ws1 = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "Org 1",
-      slug: "org-1",
+      name: "Workspace 1",
+      slug: "workspace-1",
       createdAt: Date.now(),
     })
 
-    const org2 = store.organizationCollection.add({
+    const ws2 = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Org 2",
-      slug: "org-2",
+      name: "Workspace 2",
+      slug: "workspace-2",
       createdAt: Date.now(),
     })
 
     store.projectCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440010",
       name: "Project 1",
-      organization: org1.id,
+      workspace: ws1.id,
       tier: "pro",
       status: "active",
       createdAt: Date.now(),
@@ -541,7 +486,7 @@ describe("ProjectCollection.findByOrganization query works", () => {
     store.projectCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440011",
       name: "Project 2",
-      organization: org1.id,
+      workspace: ws1.id,
       tier: "starter",
       status: "active",
       createdAt: Date.now(),
@@ -550,14 +495,14 @@ describe("ProjectCollection.findByOrganization query works", () => {
     store.projectCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440012",
       name: "Project 3",
-      organization: org2.id,
+      workspace: ws2.id,
       tier: "pro",
       status: "active",
       createdAt: Date.now(),
     })
 
-    const org1Projects = store.projectCollection.findByOrganization(org1.id)
-    expect(org1Projects).toHaveLength(2)
+    const ws1Projects = store.projectCollection.findByWorkspace(ws1.id)
+    expect(ws1Projects).toHaveLength(2)
   })
 })
 
@@ -575,7 +520,7 @@ describe("InvitationCollection.findPending query works", () => {
   })
 
   test("Returns only invitations with status=pending", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -586,7 +531,7 @@ describe("InvitationCollection.findPending query works", () => {
       id: "550e8400-e29b-41d4-a716-446655440010",
       email: "user1@example.com",
       role: "member",
-      organization: org.id,
+      workspace: ws.id,
       status: "pending",
       expiresAt: Date.now() + 3600000,
       createdAt: Date.now(),
@@ -596,7 +541,7 @@ describe("InvitationCollection.findPending query works", () => {
       id: "550e8400-e29b-41d4-a716-446655440011",
       email: "user2@example.com",
       role: "member",
-      organization: org.id,
+      workspace: ws.id,
       status: "accepted",
       expiresAt: Date.now() + 3600000,
       createdAt: Date.now(),
@@ -606,7 +551,7 @@ describe("InvitationCollection.findPending query works", () => {
       id: "550e8400-e29b-41d4-a716-446655440012",
       email: "user3@example.com",
       role: "member",
-      organization: org.id,
+      workspace: ws.id,
       status: "pending",
       expiresAt: Date.now() + 3600000,
       createdAt: Date.now(),
@@ -631,100 +576,20 @@ describe("resolvePermissions returns max role across hierarchy", () => {
     store = createStore(env)
   })
 
-  test("Returns higher role from org level when checking team", () => {
-    const org = store.organizationCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "Acme Corp",
-      slug: "acme",
-      createdAt: Date.now(),
-    })
-
-    const team = store.teamCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Engineering",
-      organization: org.id,
-      createdAt: Date.now(),
-    })
-
-    // User has admin at org level
-    store.memberCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440010",
-      userId: "user-1",
-      role: "admin",
-      organization: org.id,
-      createdAt: Date.now(),
-    })
-
-    // User has member at team level (lower)
-    store.memberCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440011",
-      userId: "user-1",
-      role: "member",
-      team: team.id,
-      createdAt: Date.now(),
-    })
-
-    const effectiveRole = store.resolvePermissions("user-1", "team", team.id)
-    expect(effectiveRole).toBe("admin") // Higher role wins
-  })
-
-  test("Returns owner inherited from parent team", () => {
-    const org = store.organizationCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "Acme Corp",
-      slug: "acme",
-      createdAt: Date.now(),
-    })
-
-    const parentTeam = store.teamCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Engineering",
-      organization: org.id,
-      createdAt: Date.now(),
-    })
-
-    const childTeam = store.teamCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440003",
-      name: "Frontend",
-      organization: org.id,
-      parent: parentTeam.id,
-      createdAt: Date.now(),
-    })
-
-    // User has owner at parent team only
-    store.memberCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440010",
-      userId: "user-1",
-      role: "owner",
-      team: parentTeam.id,
-      createdAt: Date.now(),
-    })
-
-    const effectiveRole = store.resolvePermissions("user-1", "team", childTeam.id)
-    expect(effectiveRole).toBe("owner") // Inherited from parent
-  })
-
   test("Returns null when user has no permissions", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
       createdAt: Date.now(),
     })
 
-    const team = store.teamCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Engineering",
-      organization: org.id,
-      createdAt: Date.now(),
-    })
-
-    const effectiveRole = store.resolvePermissions("user-1", "team", team.id)
+    const effectiveRole = store.resolvePermissions("user-1", "workspace", ws.id)
     expect(effectiveRole).toBeNull()
   })
 
   test("Resolves permissions for project resource", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -734,18 +599,18 @@ describe("resolvePermissions returns max role across hierarchy", () => {
     const project = store.projectCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440003",
       name: "Web App",
-      organization: org.id,
+      workspace: ws.id,
       tier: "pro",
       status: "active",
       createdAt: Date.now(),
     })
 
-    // User has admin at org level
+    // User has admin at workspace level
     store.memberCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440010",
       userId: "user-1",
       role: "admin",
-      organization: org.id,
+      workspace: ws.id,
       createdAt: Date.now(),
     })
 
@@ -767,8 +632,8 @@ describe("createMember action validates polymorphic references", () => {
     store = createStore(env)
   })
 
-  test("Creates member with organization reference", () => {
-    const org = store.organizationCollection.add({
+  test("Creates member with workspace reference", () => {
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -779,43 +644,16 @@ describe("createMember action validates polymorphic references", () => {
       id: "550e8400-e29b-41d4-a716-446655440010",
       userId: "user-1",
       role: "admin",
-      organization: org.id,
+      workspace: ws.id,
       createdAt: Date.now(),
     })
 
     expect(member).toBeDefined()
-    expect(member.organization).toBe(org)
-  })
-
-  test("Creates member with team reference", () => {
-    const org = store.organizationCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "Acme Corp",
-      slug: "acme",
-      createdAt: Date.now(),
-    })
-
-    const team = store.teamCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Engineering",
-      organization: org.id,
-      createdAt: Date.now(),
-    })
-
-    const member = store.createMember({
-      id: "550e8400-e29b-41d4-a716-446655440010",
-      userId: "user-1",
-      role: "member",
-      team: team.id,
-      createdAt: Date.now(),
-    })
-
-    expect(member).toBeDefined()
-    expect(member.team).toBe(team)
+    expect(member.workspace).toBe(ws)
   })
 
   test("Creates member with project reference", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -825,7 +663,7 @@ describe("createMember action validates polymorphic references", () => {
     const project = store.projectCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440003",
       name: "Web App",
-      organization: org.id,
+      workspace: ws.id,
       tier: "pro",
       status: "active",
       createdAt: Date.now(),
@@ -855,17 +693,19 @@ describe("createMember action validates polymorphic references", () => {
   })
 
   test("Throws error when multiple resource references provided", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
       createdAt: Date.now(),
     })
 
-    const team = store.teamCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Engineering",
-      organization: org.id,
+    const project = store.projectCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440003",
+      name: "Web App",
+      workspace: ws.id,
+      tier: "pro",
+      status: "active",
       createdAt: Date.now(),
     })
 
@@ -874,8 +714,8 @@ describe("createMember action validates polymorphic references", () => {
         id: "550e8400-e29b-41d4-a716-446655440010",
         userId: "user-1",
         role: "admin",
-        organization: org.id,
-        team: team.id,
+        workspace: ws.id,
+        project: project.id,
         createdAt: Date.now(),
       })
     }).toThrow(/exactly one/)
@@ -895,8 +735,8 @@ describe("createInvitation action validates polymorphic references", () => {
     store = createStore(env)
   })
 
-  test("Creates invitation with organization reference", () => {
-    const org = store.organizationCollection.add({
+  test("Creates invitation with workspace reference", () => {
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
@@ -907,14 +747,14 @@ describe("createInvitation action validates polymorphic references", () => {
       id: "550e8400-e29b-41d4-a716-446655440020",
       email: "user@example.com",
       role: "admin",
-      organization: org.id,
+      workspace: ws.id,
       status: "pending",
       expiresAt: Date.now() + 3600000,
       createdAt: Date.now(),
     })
 
     expect(invitation).toBeDefined()
-    expect(invitation.organization).toBe(org)
+    expect(invitation.workspace).toBe(ws)
   })
 
   test("Throws error when no resource reference provided", () => {
@@ -931,17 +771,19 @@ describe("createInvitation action validates polymorphic references", () => {
   })
 
   test("Throws error when multiple resource references provided", () => {
-    const org = store.organizationCollection.add({
+    const ws = store.workspaceCollection.add({
       id: "550e8400-e29b-41d4-a716-446655440001",
       name: "Acme Corp",
       slug: "acme",
       createdAt: Date.now(),
     })
 
-    const team = store.teamCollection.add({
-      id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "Engineering",
-      organization: org.id,
+    const project = store.projectCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440003",
+      name: "Web App",
+      workspace: ws.id,
+      tier: "pro",
+      status: "active",
       createdAt: Date.now(),
     })
 
@@ -950,12 +792,206 @@ describe("createInvitation action validates polymorphic references", () => {
         id: "550e8400-e29b-41d4-a716-446655440020",
         email: "user@example.com",
         role: "admin",
-        organization: org.id,
-        team: team.id,
+        workspace: ws.id,
+        project: project.id,
         status: "pending",
         expiresAt: Date.now() + 3600000,
         createdAt: Date.now(),
       })
     }).toThrow(/exactly one/)
+  })
+})
+
+// ============================================================
+// Test: WorkspaceCollection.findByMembership query
+// ============================================================
+describe("WorkspaceCollection.findByMembership query works", () => {
+  let env: IEnvironment
+  let store: any
+
+  beforeEach(() => {
+    env = createTestEnv()
+    const { createStore } = createStudioCoreStore()
+    store = createStore(env)
+  })
+
+  test("Returns workspaces where user has membership", () => {
+    // Create two workspaces
+    const ws1 = store.workspaceCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Workspace 1",
+      slug: "workspace-1",
+      createdAt: Date.now(),
+    })
+
+    const ws2 = store.workspaceCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      name: "Workspace 2",
+      slug: "workspace-2",
+      createdAt: Date.now(),
+    })
+
+    const ws3 = store.workspaceCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440003",
+      name: "Workspace 3",
+      slug: "workspace-3",
+      createdAt: Date.now(),
+    })
+
+    // User 1 has membership in ws1 and ws2
+    store.memberCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      userId: "user-1",
+      role: "owner",
+      workspace: ws1.id,
+      createdAt: Date.now(),
+    })
+
+    store.memberCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440011",
+      userId: "user-1",
+      role: "member",
+      workspace: ws2.id,
+      createdAt: Date.now(),
+    })
+
+    // User 2 has membership in ws3 only
+    store.memberCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440012",
+      userId: "user-2",
+      role: "owner",
+      workspace: ws3.id,
+      createdAt: Date.now(),
+    })
+
+    const user1Workspaces = store.workspaceCollection.findByMembership("user-1")
+    expect(user1Workspaces).toHaveLength(2)
+    expect(user1Workspaces.map((ws: any) => ws.id)).toContain(ws1.id)
+    expect(user1Workspaces.map((ws: any) => ws.id)).toContain(ws2.id)
+    expect(user1Workspaces.map((ws: any) => ws.id)).not.toContain(ws3.id)
+  })
+
+  test("Returns empty array for user with no memberships", () => {
+    store.workspaceCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Workspace 1",
+      slug: "workspace-1",
+      createdAt: Date.now(),
+    })
+
+    const noMemberWorkspaces = store.workspaceCollection.findByMembership("nonexistent-user")
+    expect(noMemberWorkspaces).toHaveLength(0)
+    expect(Array.isArray(noMemberWorkspaces)).toBe(true)
+  })
+
+  test("Does not include workspaces without direct membership", () => {
+    const ws = store.workspaceCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "Acme Corp",
+      slug: "acme",
+      createdAt: Date.now(),
+    })
+
+    const project = store.projectCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      name: "Engineering",
+      workspace: ws.id,
+      tier: "pro",
+      status: "active",
+      createdAt: Date.now(),
+    })
+
+    // User has project membership but NOT workspace membership
+    store.memberCollection.add({
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      userId: "user-1",
+      role: "member",
+      project: project.id,
+      createdAt: Date.now(),
+    })
+
+    // findByMembership should return only direct workspace memberships
+    const user1Workspaces = store.workspaceCollection.findByMembership("user-1")
+    expect(user1Workspaces).toHaveLength(0)
+  })
+})
+
+// ============================================================
+// Test: rootStore.createWorkspace action
+// ============================================================
+describe("rootStore.createWorkspace action works", () => {
+  let env: IEnvironment
+  let store: any
+
+  beforeEach(() => {
+    env = createTestEnv()
+    const { createStore } = createStudioCoreStore()
+    store = createStore(env)
+  })
+
+  test("Creates workspace and owner membership with name and description", () => {
+    const userId = "user-123"
+    const ws = store.createWorkspace("My New Workspace", "A great workspace", userId)
+
+    // Workspace should be created
+    expect(ws).toBeDefined()
+    expect(ws.name).toBe("My New Workspace")
+    expect(ws.description).toBe("A great workspace")
+    expect(ws.slug).toBeDefined()
+
+    // Owner membership should be created
+    const members = store.memberCollection.findByUserId(userId)
+    expect(members).toHaveLength(1)
+    expect(members[0].role).toBe("owner")
+    expect(members[0].workspace?.id).toBe(ws.id)
+  })
+
+  test("Works without description (optional)", () => {
+    const userId = "user-456"
+    const ws = store.createWorkspace("Simple Workspace", undefined, userId)
+
+    expect(ws).toBeDefined()
+    expect(ws.name).toBe("Simple Workspace")
+    expect(ws.description).toBeUndefined()
+
+    // Owner membership should still be created
+    const members = store.memberCollection.findByUserId(userId)
+    expect(members).toHaveLength(1)
+    expect(members[0].role).toBe("owner")
+  })
+
+  test("Creates workspace before member (correct sequence)", () => {
+    const userId = "user-789"
+    const ws = store.createWorkspace("Sequenced Workspace", undefined, userId)
+
+    // Verify workspace exists
+    const storedWs = store.workspaceCollection.get(ws.id)
+    expect(storedWs).toBeDefined()
+    expect(storedWs.name).toBe("Sequenced Workspace")
+
+    // Verify member references the workspace correctly
+    const members = store.memberCollection.findByUserId(userId)
+    expect(members[0].workspace).toBe(storedWs)
+  })
+
+  test("Returns the created Workspace instance", () => {
+    const userId = "user-abc"
+    const ws = store.createWorkspace("Return Test Workspace", undefined, userId)
+
+    // Should return the workspace instance
+    expect(ws.id).toBeDefined()
+    expect(typeof ws.id).toBe("string")
+
+    // Should be the same instance as stored
+    const storedWs = store.workspaceCollection.get(ws.id)
+    expect(ws).toBe(storedWs)
+  })
+
+  test("Generates unique slug from name", () => {
+    const userId = "user-xyz"
+    const ws = store.createWorkspace("Test Workspace!", undefined, userId)
+
+    // Slug should be lowercase with dashes
+    expect(ws.slug).toMatch(/^[a-z0-9-]+$/)
   })
 })

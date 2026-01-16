@@ -10,6 +10,10 @@ export { UserMenu } from "./UserMenu"
 export { ThemeToggle } from "./ThemeToggle"
 export { AdvancedModeToggle } from "./AdvancedModeToggle"
 export { SplashScreen } from "./SplashScreen"
+export { CommandPalette, useCommandPalette } from "./CommandPalette"
+export { SettingsModal, SettingsModalProvider, useSettingsModal } from "./SettingsModal"
+export { EmptyState } from "./EmptyState"
+export type { EmptyStateVariant } from "./EmptyState"
 
 // Phase view shared cards (Session 2.3B)
 export { RequirementCard, priorityBadgeVariants } from "./RequirementCard"

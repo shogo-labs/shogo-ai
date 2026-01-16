@@ -10,3 +10,5 @@ export type { ProjectDashboardProps } from "./ProjectDashboard"
 
 export { StatsCards, STAT_PHASES } from "./StatsCards"
 export type { StatsCardsProps, StatPhase } from "./StatsCards"
+
+export { HomePage } from "./HomePage"

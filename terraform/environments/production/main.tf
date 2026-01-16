@@ -160,6 +160,11 @@ module "eks" {
   # Enable Karpenter for workspace autoscaling
   enable_karpenter = true
 
+  # Grant cluster-admin access to GitHub Actions role
+  admin_role_arns = [
+    "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-github-actions"
+  ]
+
   tags = {
     Environment = var.environment
   }
@@ -326,7 +331,11 @@ module "github_oidc" {
   github_org   = var.github_org
   github_repo  = var.github_repo
 
-  eks_cluster_arn     = module.eks.cluster_arn
+  # Grant access to both production and staging EKS clusters
+  eks_cluster_arns = [
+    module.eks.cluster_arn,
+    "arn:aws:eks:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${var.project_name}-staging"
+  ]
   ecr_repository_arns = values(module.ecr.repository_arns)
 }
 

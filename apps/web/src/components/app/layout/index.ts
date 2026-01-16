@@ -8,4 +8,5 @@
 export { AuthGate } from "./AuthGate"
 export { AppShell } from "./AppShell"
 export { AppHeader } from "./AppHeader"
+export { AppSidebar } from "./AppSidebar"
 export { BindingEditorPanel } from "./BindingEditorPanel"
