@@ -274,18 +274,21 @@ export const billingDomain = domain({
           const existingLedger = self.creditLedgerCollection.findByWorkspace(workspaceId)
 
           if (existingLedger) {
-            // Ledger exists - just reset daily credits if needed
+            // Ledger exists - just reset daily credits if needed via updateOne
             if (isDifferentUTCDay(existingLedger.lastDailyReset, now)) {
-              existingLedger.dailyCredits = 5
-              existingLedger.lastDailyReset = now
-              existingLedger.updatedAt = now
+              await self.creditLedgerCollection.updateOne(existingLedger.id, {
+                dailyCredits: 5,
+                lastDailyReset: now,
+                updatedAt: now,
+              })
             }
-            return existingLedger
+            return self.creditLedgerCollection.findByWorkspace(workspaceId)
           }
 
           // Create new free tier ledger
-          const ledger = {
-            id: crypto.randomUUID(),
+          const ledgerId = crypto.randomUUID()
+          await self.creditLedgerCollection.insertOne({
+            id: ledgerId,
             workspace: workspaceId,
             monthlyCredits: 0, // Free tier gets no monthly credits
             dailyCredits: 5,   // Free tier gets 5 daily credits
@@ -294,9 +297,8 @@ export const billingDomain = domain({
             lastDailyReset: now,
             lastMonthlyReset: now,
             createdAt: now,
-          }
-          self.creditLedgerCollection.add(ledger)
-          return ledger
+          })
+          return self.creditLedgerCollection.get(ledgerId)
         },
 
         /**
@@ -321,30 +323,41 @@ export const billingDomain = domain({
           actionMetadata?: unknown
         ): Promise<void> {
           let ledger = self.creditLedgerCollection.findByWorkspace(workspaceId)
-          
+
           // Auto-create free tier ledger if none exists
           if (!ledger) {
-            ledger = await self.allocateFreeCredits(workspaceId)
+            await self.allocateFreeCredits(workspaceId)
+            ledger = self.creditLedgerCollection.findByWorkspace(workspaceId)
+          }
+
+          if (!ledger) {
+            throw new Error(`Failed to create or find credit ledger for workspace ${workspaceId}`)
           }
 
           const now = Date.now()
           let remaining = amount
 
+          // Get current credit values (may need daily reset)
+          let dailyCredits = ledger.dailyCredits
+          let monthlyCredits = ledger.monthlyCredits
+          let rolloverCredits = ledger.rolloverCredits
+          let lastDailyReset = ledger.lastDailyReset
+
           // Check if daily reset is needed (lazy reset)
-          if (isDifferentUTCDay(ledger.lastDailyReset, now)) {
-            ledger.dailyCredits = 5
-            ledger.lastDailyReset = now
+          if (isDifferentUTCDay(lastDailyReset, now)) {
+            dailyCredits = 5
+            lastDailyReset = now
           }
 
           // Deduct from daily credits first
-          if (remaining > 0 && ledger.dailyCredits > 0) {
-            const fromDaily = Math.min(remaining, ledger.dailyCredits)
-            const balanceBefore = ledger.dailyCredits
-            ledger.dailyCredits -= fromDaily
+          if (remaining > 0 && dailyCredits > 0) {
+            const fromDaily = Math.min(remaining, dailyCredits)
+            const balanceBefore = dailyCredits
+            dailyCredits -= fromDaily
             remaining -= fromDaily
 
             // Create usage event for daily deduction
-            self.usageEventCollection.add({
+            await self.usageEventCollection.insertOne({
               id: crypto.randomUUID(),
               workspace: workspaceId,
               projectId,
@@ -354,20 +367,20 @@ export const billingDomain = domain({
               creditCost: fromDaily,
               creditSource: "daily",
               balanceBefore,
-              balanceAfter: ledger.dailyCredits,
+              balanceAfter: dailyCredits,
               createdAt: now,
             })
           }
 
           // Deduct from monthly credits if needed
-          if (remaining > 0 && ledger.monthlyCredits > 0) {
-            const fromMonthly = Math.min(remaining, ledger.monthlyCredits)
-            const balanceBefore = ledger.monthlyCredits
-            ledger.monthlyCredits -= fromMonthly
+          if (remaining > 0 && monthlyCredits > 0) {
+            const fromMonthly = Math.min(remaining, monthlyCredits)
+            const balanceBefore = monthlyCredits
+            monthlyCredits -= fromMonthly
             remaining -= fromMonthly
 
             // Create usage event for monthly deduction
-            self.usageEventCollection.add({
+            await self.usageEventCollection.insertOne({
               id: crypto.randomUUID(),
               workspace: workspaceId,
               projectId,
@@ -377,20 +390,20 @@ export const billingDomain = domain({
               creditCost: fromMonthly,
               creditSource: "monthly",
               balanceBefore,
-              balanceAfter: ledger.monthlyCredits,
+              balanceAfter: monthlyCredits,
               createdAt: now,
             })
           }
 
           // Deduct from rollover if still remaining
-          if (remaining > 0 && ledger.rolloverCredits > 0) {
-            const fromRollover = Math.min(remaining, ledger.rolloverCredits)
-            const balanceBefore = ledger.rolloverCredits
-            ledger.rolloverCredits -= fromRollover
+          if (remaining > 0 && rolloverCredits > 0) {
+            const fromRollover = Math.min(remaining, rolloverCredits)
+            const balanceBefore = rolloverCredits
+            rolloverCredits -= fromRollover
             remaining -= fromRollover
 
             // Create usage event for rollover deduction
-            self.usageEventCollection.add({
+            await self.usageEventCollection.insertOne({
               id: crypto.randomUUID(),
               workspace: workspaceId,
               projectId,
@@ -400,7 +413,7 @@ export const billingDomain = domain({
               creditCost: fromRollover,
               creditSource: "monthly", // Rollover counts as monthly
               balanceBefore,
-              balanceAfter: ledger.rolloverCredits,
+              balanceAfter: rolloverCredits,
               createdAt: now,
             })
           }
@@ -411,7 +424,14 @@ export const billingDomain = domain({
             )
           }
 
-          ledger.updatedAt = now
+          // Update ledger via collection's updateOne method (proper MST action handling)
+          await self.creditLedgerCollection.updateOne(ledger.id, {
+            dailyCredits,
+            monthlyCredits,
+            rolloverCredits,
+            lastDailyReset,
+            updatedAt: now,
+          })
         },
 
         /**

@@ -679,6 +679,47 @@ app.post('/api/chat', async (c) => {
   try {
     const { messages, phase, ccSessionId, workspaceId, userId } = await c.req.json()
 
+    // credit-limit-enforcement: Pre-check credits BEFORE calling AI
+    // This prevents users from sending messages when they have no credits remaining
+    if (workspaceId) {
+      const store = await getBillingStore()
+
+      // Query the SQL backend directly for the credit ledger
+      // Use .toArray() to execute the query and get results
+      const ledgers = await store.creditLedgerCollection.query({ workspace: workspaceId }).toArray()
+      let ledger = ledgers[0]
+
+      // If no ledger exists, allocate free tier credits
+      if (!ledger) {
+        await store.allocateFreeCredits(workspaceId)
+        const newLedgers = await store.creditLedgerCollection.query({ workspace: workspaceId }).toArray()
+        ledger = newLedgers[0]
+      }
+
+      if (ledger) {
+        // Calculate effective balance with lazy daily reset
+        const now = Date.now()
+        const lastResetDay = new Date(ledger.lastDailyReset).setUTCHours(0, 0, 0, 0)
+        const todayStart = new Date(now).setUTCHours(0, 0, 0, 0)
+        const needsReset = lastResetDay !== todayStart
+
+        const dailyCredits = needsReset ? 5 : ledger.dailyCredits
+        const total = dailyCredits + ledger.monthlyCredits + ledger.rolloverCredits
+
+        // Minimum credit cost is 0.5, so check if total >= 0.5
+        if (total < 0.5) {
+          return c.json(
+            {
+              error: 'Insufficient credits',
+              message: 'You have run out of daily credits. Credits reset at midnight UTC.',
+              creditsRemaining: total,
+            },
+            402 // Payment Required
+          )
+        }
+      }
+    }
+
     // Build dynamic system prompt based on current pipeline phase
     const systemPrompt = buildSystemPrompt(phase)
 

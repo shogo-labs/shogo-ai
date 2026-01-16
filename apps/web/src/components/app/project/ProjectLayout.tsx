@@ -146,6 +146,41 @@ export const ProjectLayout = observer(function ProjectLayout() {
       }))
     : []
 
+  // Auto-select last chat session or create one if none exists
+  // This runs when the project loads and there's no session in the URL
+  useEffect(() => {
+    if (!featureId || !studioChat?.chatSessionCollection || chatSessionId) {
+      // Already have a session selected, or not ready yet
+      return
+    }
+
+    const initializeChatSession = async () => {
+      // Query database directly for existing sessions (in-memory may not be loaded yet)
+      const existingSessions = await studioChat.chatSessionCollection
+        .query({ contextId: featureId })
+        .toArray()
+
+      if (existingSessions.length > 0) {
+        // Sort by lastActiveAt descending and select the most recent
+        const sortedSessions = [...existingSessions].sort(
+          (a: any, b: any) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0)
+        )
+        const mostRecent = sortedSessions[0]
+        await setChatSessionId(mostRecent.id)
+      } else {
+        // No existing sessions - create a new one
+        const newSession = await studioChat.createChatSession({
+          inferredName: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
+          contextType: "feature",
+          contextId: featureId,
+        })
+        await setChatSessionId(newSession.id)
+      }
+    }
+
+    initializeChatSession()
+  }, [featureId, studioChat, chatSessionId, setChatSessionId])
+
   // Session handlers
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
@@ -295,6 +330,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   />
                 ) : (
                   // Chat Panel (no header)
+                  // credit-tracking: Pass workspaceId and userId for credit deduction
+                  // Handle both resolved MST reference (object with .id) and unresolved (string)
                   <ChatPanel
                     featureId={featureId}
                     featureName={project.name}
@@ -304,6 +341,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
                     isCollapsed={isChatCollapsed}
                     onCollapsedChange={setIsChatCollapsed}
                     onWidthChange={setChatWidth}
+                    workspaceId={typeof project.workspace === 'string' ? project.workspace : project.workspace?.id}
+                    userId={session?.user?.id}
                     className="flex-1 min-h-0"
                   />
                 )}
