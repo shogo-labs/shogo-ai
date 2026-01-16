@@ -14,6 +14,48 @@ import { fileURLToPath } from 'url'
 import { auth } from './auth'
 import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
 import { getPriceId } from './config/stripe-prices'
+import { billingDomain } from '@shogo/state-api/billing/domain'
+import { BunPostgresExecutor } from '@shogo/state-api/query/execution/bun-postgres'
+import { createBackendRegistry } from '@shogo/state-api/query/registry'
+import { SqlBackend } from '@shogo/state-api/query/backends/sql'
+import { NullPersistence } from '@shogo/state-api/persistence/null'
+
+// Billing domain store singleton for webhook handling
+let billingStore: ReturnType<typeof billingDomain.createStore> | null = null
+
+async function getBillingStore(): Promise<ReturnType<typeof billingDomain.createStore>> {
+  if (billingStore) {
+    return billingStore
+  }
+
+  const DATABASE_URL = process.env.DATABASE_URL
+  if (!DATABASE_URL) {
+    throw new Error("DATABASE_URL environment variable is required")
+  }
+
+  const isSupabase = DATABASE_URL.includes("supabase")
+  const executor = new BunPostgresExecutor(DATABASE_URL, {
+    tls: isSupabase,
+    max: 5,
+  })
+
+  const registry = createBackendRegistry()
+  const sqlBackend = new SqlBackend({ dialect: "pg", executor })
+  registry.register("postgres", sqlBackend)
+  registry.setDefault("postgres")
+
+  billingStore = billingDomain.createStore({
+    services: {
+      persistence: new NullPersistence(),
+      backendRegistry: registry,
+    },
+    context: {
+      schemaName: "billing",
+    },
+  })
+
+  return billingStore
+}
 
 /**
  * Parse a data URL to extract mediaType and base64 data.
@@ -849,7 +891,7 @@ app.post('/api/billing/checkout', async (c) => {
     }
 
     const body = await c.req.json()
-    const { workspaceId, planId, billingInterval } = body
+    const { workspaceId, planId, billingInterval, userEmail } = body
 
     if (!workspaceId || !planId || !billingInterval) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
@@ -862,18 +904,27 @@ app.post('/api/billing/checkout', async (c) => {
       return c.json({ error: { code: 'invalid_plan', message: `No price found for ${planId} ${billingInterval}` } }, 400)
     }
 
+    // Build metadata
+    const metadata: Record<string, string> = {
+      workspaceId,
+      planId,
+      billingInterval,
+    }
+
+    // Include workspace ID in URLs for proper navigation after checkout
+    const successUrl = `http://localhost:${VITE_PORT}/app?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = `http://localhost:${VITE_PORT}/app?workspace=${workspaceId}&checkout=canceled`
+
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `http://localhost:${VITE_PORT}/billing?success=true&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `http://localhost:${VITE_PORT}/billing?canceled=true`,
-      metadata: {
-        workspaceId,
-        planId,
-        billingInterval,
-      },
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata,
+      // Pre-fill customer email to skip the email field in checkout
+      ...(userEmail && { customer_email: userEmail }),
     })
 
     return c.json({ sessionId: session.id, url: session.url }, 200)
@@ -944,6 +995,42 @@ app.post('/webhooks/stripe', async (c) => {
           customerId: session.customer,
           metadata: session.metadata,
         })
+
+        // Create subscription in billing domain
+        const { workspaceId, planId, billingInterval } = session.metadata || {}
+        if (workspaceId && planId && billingInterval && session.subscription && session.customer) {
+          try {
+            // Fetch the full subscription details from Stripe
+            const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string)
+
+            // Convert Stripe timestamps (seconds) to milliseconds, with fallbacks
+            const now = Date.now()
+            const currentPeriodStart = stripeSubscription.current_period_start
+              ? stripeSubscription.current_period_start * 1000
+              : now
+            const currentPeriodEnd = stripeSubscription.current_period_end
+              ? stripeSubscription.current_period_end * 1000
+              : now + (30 * 24 * 60 * 60 * 1000) // Default to 30 days from now
+
+            const store = await getBillingStore()
+            await store.subscriptionCollection.insertOne({
+              id: crypto.randomUUID(),
+              workspace: workspaceId,
+              stripeSubscriptionId: stripeSubscription.id,
+              stripeCustomerId: session.customer as string,
+              planId: planId as 'pro' | 'business' | 'enterprise',
+              status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
+              billingInterval: billingInterval as 'monthly' | 'annual',
+              currentPeriodStart,
+              currentPeriodEnd,
+              cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
+              createdAt: now,
+            })
+            console.log('[Webhook] Subscription created for workspace:', workspaceId)
+          } catch (err: any) {
+            console.error('[Webhook] Failed to create subscription:', err.message)
+          }
+        }
         break
       }
       default:

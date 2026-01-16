@@ -12,7 +12,7 @@
  * Inspired by Lovable.dev's sidebar design for better navigation UX.
  */
 
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, useMemo } from "react"
 import { observer } from "mobx-react-lite"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import {
@@ -257,26 +257,18 @@ interface ProjectItemProps {
   workspaceSlug?: string
 }
 
-function ProjectItem({ name, projectId, collapsed, workspaceSlug }: ProjectItemProps) {
-  const navigate = useNavigate()
-
+function ProjectItem({ name, projectId, collapsed }: Omit<ProjectItemProps, 'workspaceSlug'>) {
   if (collapsed) return null
 
-  const handleClick = () => {
-    const url = workspaceSlug
-      ? `/projects?org=${workspaceSlug}&project=${projectId}`
-      : `/projects?project=${projectId}`
-    navigate(url)
-  }
-
+  // Navigate to the full-screen project view
   return (
-    <button
-      onClick={handleClick}
+    <Link
+      to={`/projects/${projectId}`}
       className="flex items-center gap-2 py-1 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded-md w-full truncate"
       title={name}
     >
       <span className="truncate">{name}</span>
-    </button>
+    </Link>
   )
 }
 
@@ -284,13 +276,12 @@ interface FolderItemProps {
   folder: { id: string; name: string; parentId?: string }
   projects: any[]
   collapsed?: boolean
-  workspaceSlug?: string
   onNavigate: (folderId: string) => void
   onRename: (folder: { id: string; name: string }) => void
   onDelete: (folder: { id: string; name: string }) => void
 }
 
-function FolderItem({ folder, projects, collapsed, workspaceSlug, onNavigate, onRename, onDelete }: FolderItemProps) {
+function FolderItem({ folder, projects, collapsed, onNavigate, onRename, onDelete }: FolderItemProps) {
   const [expanded, setExpanded] = useState(false)
 
   // Get projects in this folder
@@ -355,7 +346,6 @@ function FolderItem({ folder, projects, collapsed, workspaceSlug, onNavigate, on
               name={project.name}
               projectId={project.id}
               collapsed={collapsed}
-              workspaceSlug={workspaceSlug}
             />
           ))}
         </div>
@@ -381,7 +371,7 @@ export const AppSidebar = observer(function AppSidebar() {
   const { setOrg: setWorkspace, setFolderId } = useWorkspaceNavigation()
   const { workspaces, currentWorkspace, projects, folders, isLoading, refetchFolders } = useWorkspaceData()
   const { openCommandPalette } = useCommandPaletteContext()
-  const { studioCore } = useDomains()
+  const { studioCore, billing } = useDomains()
 
   // Sidebar collapse state - persisted to localStorage
   const [collapsed, setCollapsed] = useState(() => {
@@ -395,6 +385,26 @@ export const AppSidebar = observer(function AppSidebar() {
   const [folderToDelete, setFolderToDelete] = useState<{ id: string; name: string } | null>(null)
   const [newFolderName, setNewFolderName] = useState("")
   const [renameFolderName, setRenameFolderName] = useState("")
+
+  // Get active subscription for current workspace from billing domain
+  // Uses MST observer pattern - component re-renders when billing data changes
+  const getActiveSubscription = useCallback((workspaceId: string | undefined) => {
+    if (!workspaceId || !billing?.subscriptionCollection) return null
+    try {
+      const subscriptions = billing.subscriptionCollection.findByWorkspace(workspaceId)
+      // Find active or trialing subscription
+      return subscriptions.find((s: any) => s.status === 'active' || s.status === 'trialing') || null
+    } catch {
+      return null
+    }
+  }, [billing])
+
+  const subscription = getActiveSubscription(currentWorkspace?.id)
+
+  // Determine if current workspace is on a paid plan
+  const isPaidPlan = useMemo(() => {
+    return subscription && subscription.planId !== "free"
+  }, [subscription])
 
   // Persist collapse state
   useEffect(() => {
@@ -423,7 +433,7 @@ export const AppSidebar = observer(function AppSidebar() {
 
   // Handle folder navigation
   const handleFolderNavigate = (folderId: string) => {
-    navigate(`/projects?org=${currentWorkspace?.slug}&folder=${folderId}`)
+    navigate(`/projects?folder=${folderId}`)
   }
 
   // Handle create folder
@@ -577,7 +587,6 @@ export const AppSidebar = observer(function AppSidebar() {
                   name={project.name}
                   projectId={project.id}
                   collapsed={collapsed}
-                  workspaceSlug={currentWorkspace?.slug}
                 />
               ))}
             </ExpandableNavItem>
@@ -608,7 +617,6 @@ export const AppSidebar = observer(function AppSidebar() {
                   folder={folder}
                   projects={projects}
                   collapsed={collapsed}
-                  workspaceSlug={currentWorkspace?.slug}
                   onNavigate={handleFolderNavigate}
                   onRename={openRenameDialog}
                   onDelete={setFolderToDelete}
@@ -661,8 +669,8 @@ export const AppSidebar = observer(function AppSidebar() {
         </NavSection>
       </nav>
 
-      {/* Bottom section - upgrade CTA */}
-      {!collapsed && (
+      {/* Bottom section - upgrade CTA (hidden for paid plans) */}
+      {!collapsed && !isPaidPlan && (
         <div className="p-3 border-t border-border">
           <Link
             to="/billing"

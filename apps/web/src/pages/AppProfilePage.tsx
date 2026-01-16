@@ -167,7 +167,7 @@ export const AppProfilePage = observer(function AppProfilePage() {
                         <Badge variant={getRoleForWorkspace(workspace.id) === "owner" ? "default" : "secondary"}>
                           {getRoleForWorkspace(workspace.id)}
                         </Badge>
-                        <Link to={`/members?org=${workspace.slug}`}>
+                        <Link to="/members">
                           <Button variant="ghost" size="sm">
                             Manage
                           </Button>

@@ -128,7 +128,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   const { data: session } = useSession()
   const { studioCore } = useDomains()
   const { currentWorkspace, projects, folders, currentFolder, folderBreadcrumbs, refetchProjects, refetchFolders } = useWorkspaceData()
-  const { setProjectId, folderId, setFolderId, clearFolder } = useWorkspaceNavigation()
+  const { folderId, setFolderId, clearFolder } = useWorkspaceNavigation()
 
   // State
   const [searchQuery, setSearchQuery] = useState("")
@@ -256,16 +256,15 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   }, [projects, folderId, searchQuery, sortBy, sortOrder, statusFilter])
 
   // Handlers
-  const handleProjectClick = useCallback(async (project: Project) => {
-    // Set project ID first, then navigate with preserved params
-    const params = await setProjectId(project.id)
-    navigate(`/?${params.toString()}`)
-  }, [setProjectId, navigate])
+  const handleProjectClick = useCallback((project: Project) => {
+    // Navigate to the full-screen project view
+    navigate(`/projects/${project.id}`)
+  }, [navigate])
 
-  const handleCreateProject = useCallback(async (projectId: string) => {
-    const params = await setProjectId(projectId)
-    navigate(`/?${params.toString()}`)
-  }, [setProjectId, navigate])
+  const handleCreateProject = useCallback((projectId: string) => {
+    // Navigate to the new project view
+    navigate(`/projects/${projectId}`)
+  }, [navigate])
 
   const handleToggleStar = useCallback((projectId: string, e: React.MouseEvent) => {
     e.stopPropagation()

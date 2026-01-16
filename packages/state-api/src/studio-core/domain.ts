@@ -417,32 +417,35 @@ export const studioCoreDomain = domain({
          * @param userId - The ID of the user creating the workspace (becomes owner)
          * @returns The created Workspace instance
          */
-        createWorkspace(name: string, description: string | undefined, userId: string): any {
+        async createWorkspace(name: string, description: string | undefined, userId: string): Promise<any> {
           // Generate slug from name (lowercase, replace spaces and special chars with dashes)
           const slug = name
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, "-")
             .replace(/^-+|-+$/g, "")
 
-          // Create the workspace first
-          const workspace = self.workspaceCollection.add({
-            id: crypto.randomUUID(),
+          const now = Date.now()
+          const workspaceId = crypto.randomUUID()
+
+          // Create the workspace first (insertOne persists to backend)
+          await self.workspaceCollection.insertOne({
+            id: workspaceId,
             name,
             slug,
             description,
-            createdAt: Date.now(),
+            createdAt: now,
           })
 
           // Then create the owner membership
-          self.memberCollection.add({
+          await self.memberCollection.insertOne({
             id: crypto.randomUUID(),
             userId,
             role: "owner",
-            workspace: workspace.id,
-            createdAt: Date.now(),
+            workspaceId: workspaceId,
+            createdAt: now,
           })
 
-          return workspace
+          return self.workspaceCollection.get(workspaceId)
         },
 
         /**

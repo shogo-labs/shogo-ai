@@ -19,9 +19,12 @@
  * Inspired by Lovable.dev's workspace dropdown design.
  */
 
-import { useState } from "react"
+import { useState, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
-import { Plus, Settings, Users, ChevronDown, Check, Zap } from "lucide-react"
+import { observer } from "mobx-react-lite"
+import { Plus, Settings, Users, ChevronDown, Check, Zap, ArrowLeft } from "lucide-react"
+import { useDomains } from "@/contexts/DomainProvider"
+import { useSession } from "@/auth/client"
 
 import {
   DropdownMenu,
@@ -30,13 +33,22 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { CreateWorkspaceModal } from "./CreateWorkspaceModal"
 import { useSettingsModal } from "../shared"
-import { cn } from "@/lib/utils"
+import { PlanSelector } from "../billing/PlanSelector"
 
 /**
  * Workspace entity shape (from studioCore domain)
@@ -66,8 +78,10 @@ export interface WorkspaceSwitcherProps {
  *
  * Uses shadcn DropdownMenu for richer dropdown content.
  * Shows workspace info, plan, credits, and quick actions.
+ *
+ * Wrapped with observer() to react to billing domain changes.
  */
-export function WorkspaceSwitcher({
+export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
   workspaces,
   currentWorkspace,
   onWorkspaceChange,
@@ -75,17 +89,58 @@ export function WorkspaceSwitcher({
 }: WorkspaceSwitcherProps) {
   const navigate = useNavigate()
   const { openSettings } = useSettingsModal()
-  
-  // State for Create Workspace modal
-  const [showCreateModal, setShowCreateModal] = useState<boolean>(false)
+  const { studioCore, billing } = useDomains()
+  const { data: session } = useSession()
   const [isOpen, setIsOpen] = useState(false)
+  const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
+  const [selectPlanOpen, setSelectPlanOpen] = useState(false)
+  const [newWorkspaceName, setNewWorkspaceName] = useState("")
 
-  // Mock data for demonstration (in real app, this comes from billing domain)
-  // TODO: Connect to actual billing data from useWorkspaceData
-  const planType = "Free"
+  // Callback to create workspace before checkout
+  const handleCreateWorkspace = useCallback(async (name: string): Promise<string> => {
+    const userId = session?.user?.id
+    if (!userId) {
+      throw new Error("You must be logged in to create a workspace")
+    }
+    const workspace = await studioCore.createWorkspace(name, undefined, userId)
+    // Switch to the new workspace
+    onWorkspaceChange(workspace.slug)
+    return workspace.id
+  }, [studioCore, session?.user?.id, onWorkspaceChange])
+
+  // Get subscription for current workspace from billing domain
+  // Uses MST observer pattern - component re-renders when billing data changes
+  const getActiveSubscription = useCallback((workspaceId: string) => {
+    if (!billing?.subscriptionCollection) return null
+    try {
+      const subscriptions = billing.subscriptionCollection.findByWorkspace(workspaceId)
+      // Find active or trialing subscription
+      return subscriptions.find((s: any) => s.status === 'active' || s.status === 'trialing') || null
+    } catch {
+      return null
+    }
+  }, [billing])
+
+  const subscription = currentWorkspace ? getActiveSubscription(currentWorkspace.id) : null
+
+  // Determine plan type from subscription
+  const planType = subscription
+    ? subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1) // Capitalize: pro -> Pro
+    : "Free"
+
+  // Helper to get plan type for any workspace
+  const getPlanTypeForWorkspace = useCallback((workspaceId: string) => {
+    const sub = getActiveSubscription(workspaceId)
+    if (sub) {
+      return sub.planId.charAt(0).toUpperCase() + sub.planId.slice(1)
+    }
+    return "Free"
+  }, [getActiveSubscription])
+
+  // TODO: Get actual member count and credits from domain
   const memberCount = 1
   const creditsUsed = 0
-  const creditsTotal = 5
+  const creditsTotal = subscription ? 105 : 5 // Pro gets 100 monthly + 5 daily
   const creditsPercent = (creditsUsed / creditsTotal) * 100
 
   // Show skeleton during loading
@@ -227,13 +282,11 @@ export function WorkspaceSwitcher({
                   {workspace.name[0]?.toUpperCase() ?? "W"}
                 </div>
                 <span className="flex-1 truncate">{workspace.name}</span>
+                <Badge variant="secondary" className="text-[10px] h-5 mr-2">
+                  {getPlanTypeForWorkspace(workspace.id)}
+                </Badge>
                 {workspace.slug === currentWorkspace?.slug && (
-                  <>
-                    <Badge variant="secondary" className="text-[10px] h-5 mr-2">
-                      {planType}
-                    </Badge>
-                    <Check className="h-4 w-4 text-primary" />
-                  </>
+                  <Check className="h-4 w-4 text-primary" />
                 )}
               </DropdownMenuItem>
             ))}
@@ -241,12 +294,12 @@ export function WorkspaceSwitcher({
 
           <DropdownMenuSeparator />
 
-          {/* Create workspace button */}
+          {/* Create workspace button - opens modal first */}
           <div className="p-1">
             <DropdownMenuItem
               onClick={() => {
                 setIsOpen(false)
-                setShowCreateModal(true)
+                setCreateWorkspaceOpen(true)
               }}
               className="px-3 py-2 cursor-pointer"
             >
@@ -257,11 +310,91 @@ export function WorkspaceSwitcher({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {/* Create Workspace Modal */}
-      <CreateWorkspaceModal
-        open={showCreateModal}
-        onOpenChange={setShowCreateModal}
-      />
+      {/* Step 1: Create Workspace Modal - Name entry */}
+      <Dialog open={createWorkspaceOpen} onOpenChange={setCreateWorkspaceOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Create new workspace</DialogTitle>
+            <DialogDescription>
+              Name your workspace. You'll select a plan next.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <Label htmlFor="workspace-name">Workspace name</Label>
+            <Input
+              id="workspace-name"
+              value={newWorkspaceName}
+              onChange={(e) => setNewWorkspaceName(e.target.value)}
+              placeholder="My Workspace"
+              className="mt-2"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newWorkspaceName.trim()) {
+                  setCreateWorkspaceOpen(false)
+                  setSelectPlanOpen(true)
+                }
+              }}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCreateWorkspaceOpen(false)
+                setNewWorkspaceName("")
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (newWorkspaceName.trim()) {
+                  setCreateWorkspaceOpen(false)
+                  setSelectPlanOpen(true)
+                }
+              }}
+              disabled={!newWorkspaceName.trim()}
+            >
+              Continue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Step 2: Select Plan Modal */}
+      <Dialog open={selectPlanOpen} onOpenChange={(open) => {
+        setSelectPlanOpen(open)
+        if (!open) setNewWorkspaceName("")
+      }}>
+        <DialogContent className="sm:max-w-[800px]">
+          <DialogHeader>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => {
+                  setSelectPlanOpen(false)
+                  setCreateWorkspaceOpen(true)
+                }}
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+              <div>
+                <DialogTitle>Select a plan</DialogTitle>
+                <DialogDescription>
+                  Choose a plan for "{newWorkspaceName}"
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <PlanSelector
+            workspaceName={newWorkspaceName.trim()}
+            onCreateWorkspace={handleCreateWorkspace}
+            onCheckoutStart={() => setSelectPlanOpen(false)}
+          />
+        </DialogContent>
+      </Dialog>
     </>
   )
-}
+})

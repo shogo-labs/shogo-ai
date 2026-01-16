@@ -3,6 +3,7 @@ import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { AuthGate, AppShell } from '@/components/app'
 import { WorkspaceLayout } from '@/components/app/workspace'
 import { AdvancedChatLayout } from './components/app/advanced-chat'
+import { ProjectLayout } from './components/app/project'
 import { AppProfilePage } from './pages/AppProfilePage'
 import { AppBillingPage } from './pages/AppBillingPage'
 import { AppMemberManagementPage } from './pages/AppMemberManagementPage'
@@ -65,6 +66,13 @@ function App() {
             <WavesmithMetaStoreProvider>
               <AuthProvider authService={authService}>
                 <Routes>
+                  {/* Project view route - full screen without sidebar */}
+                  <Route path="/projects/:projectId" element={
+                    <AuthGate>
+                      <ProjectLayout />
+                    </AuthGate>
+                  } />
+
                   {/* Protected root route - Shogo Studio App */}
                   <Route path="/*" element={
                     <AuthGate>
