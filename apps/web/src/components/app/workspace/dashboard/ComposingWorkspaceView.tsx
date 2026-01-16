@@ -52,7 +52,9 @@ export const ComposingWorkspaceView = observer(function ComposingWorkspaceView({
   // Chat panel state - lifted to parent for layout control
   const [chatWidth, setChatWidth] = useState(400)
   const [isChatCollapsed, setIsChatCollapsed] = useState(false)
-  const [chatSessionId, setChatSessionId] = useState<string | null>(null)
+  // Use undefined initially to let ChatPanel auto-create a session
+  // (ChatPanel treats null as "explicit null" vs undefined as "not provided")
+  const [chatSessionId, setChatSessionId] = useState<string | undefined>(undefined)
 
   // Determine which elements to show based on transition phase
   const showWorkspace = ["emerge", "settle", "complete"].includes(transitionPhase)
