@@ -563,6 +563,11 @@ export const ChatPanel = observer(function ChatPanel({
   // These persist even after streaming ends, unlike recentTools which are for live display
   const [accumulatedSubagentTools, setAccumulatedSubagentTools] = useState<ToolCallData[]>([])
 
+  // Track processed progress event IDs to prevent duplicate handling
+  // Events can be processed by both onData callback and useEffect (from message.parts)
+  // This ref ensures each event is only handled once, preventing infinite loops
+  const processedProgressEventsRef = useRef<Set<string>>(new Set())
+
   // chat-session-sync-fix: v3 API requires DefaultChatTransport for proper metadata handling
   // The transport must be memoized to prevent re-creation on every render
   const chatTransport = useMemo(
@@ -830,6 +835,19 @@ export const ChatPanel = observer(function ChatPanel({
       // AI SDK 6.x uses data-{name} format: { type: 'data-progress', id, data }
       if (dataPart.type === 'data-progress') {
         const event = (dataPart as any).data as SubagentProgressEvent
+
+        // Create unique event ID for deduplication
+        // Events can arrive via onData and also appear in message.parts (processed by useEffect)
+        const eventId = event.type === 'tool-complete'
+          ? `tool:${event.toolUseId}`
+          : `${event.type}:${event.agentId}`
+
+        // Skip if already processed (prevents infinite loops from duplicate handlers)
+        if (processedProgressEventsRef.current.has(eventId)) {
+          return
+        }
+        processedProgressEventsRef.current.add(eventId)
+
         console.log('[ChatPanel:Progress] 📥 Received progress event:', event)
 
         if (event.type === 'subagent-start') {
@@ -870,9 +888,7 @@ export const ChatPanel = observer(function ChatPanel({
             return updated
           })
           // Accumulate for timeline persistence (task-chat-ux-fix)
-          // Deduplicate to prevent React key collisions when same event processed multiple times
           setAccumulatedSubagentTools((prev) => {
-            if (prev.some(t => t.id === event.toolUseId)) return prev
             return [
               ...prev,
               {
@@ -1105,6 +1121,17 @@ export const ChatPanel = observer(function ChatPanel({
       if (part.type === 'data-progress') {
         const event = part.data as SubagentProgressEvent
 
+        // Create unique event ID for deduplication (same logic as onData handler)
+        const eventId = event.type === 'tool-complete'
+          ? `tool:${event.toolUseId}`
+          : `${event.type}:${event.agentId}`
+
+        // Skip if already processed by onData handler (prevents infinite loops)
+        if (processedProgressEventsRef.current.has(eventId)) {
+          return
+        }
+        processedProgressEventsRef.current.add(eventId)
+
         if (event.type === 'subagent-start') {
           setActiveSubagents((prev) => {
             const next = new Map(prev)
@@ -1138,9 +1165,7 @@ export const ChatPanel = observer(function ChatPanel({
             return updated
           })
           // Accumulate for timeline persistence (task-chat-ux-fix)
-          // Deduplicate to prevent React key collisions when same event processed multiple times
           setAccumulatedSubagentTools((prev) => {
-            if (prev.some(t => t.id === event.toolUseId)) return prev
             return [
               ...prev,
               {
@@ -1262,9 +1287,10 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [messages])
 
-  // Reset the ref when session changes
+  // Reset refs when session changes
   useEffect(() => {
     hasReceivedPartsRef.current = false
+    processedProgressEventsRef.current.clear()
   }, [currentSessionId])
 
   // Effect 2: Sync MobX → AI SDK state when data arrives
