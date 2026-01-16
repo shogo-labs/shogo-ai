@@ -82,6 +82,7 @@ import { useWorkspaceData } from "@/components/app/workspace"
 import { useDomains } from "@/contexts/DomainProvider"
 import { useSession } from "@/auth/client"
 import { InviteMemberModal } from "@/components/app/workspace/members/InviteMemberModal"
+import { PlanSelector } from "@/components/app/billing/PlanSelector"
 
 // Tab types
 type TabId =
@@ -1052,10 +1053,35 @@ function PeopleTab() {
 // BILLING TAB
 // ============================================================================
 function BillingTab() {
-  const navigate = useNavigate()
-  const planType = "Free"
-  const creditsUsed = 0
-  const creditsTotal = 5
+  const { currentWorkspace } = useWorkspaceData()
+  const { billing } = useDomains()
+
+  // Get subscription for current workspace
+  const getActiveSubscription = (workspaceId: string) => {
+    if (!billing?.subscriptionCollection) return null
+    try {
+      const subscriptions = billing.subscriptionCollection.findByWorkspace(workspaceId)
+      return subscriptions.find((s: any) => s.status === 'active' || s.status === 'trialing') || null
+    } catch {
+      return null
+    }
+  }
+
+  const subscription = currentWorkspace ? getActiveSubscription(currentWorkspace.id) : null
+  const currentPlanId = subscription?.planId || undefined
+
+  // Get credit info
+  const creditLedger = currentWorkspace
+    ? billing?.creditLedgerCollection?.findByWorkspace?.(currentWorkspace.id)
+    : null
+  const effectiveBalance = creditLedger?.effectiveBalance
+
+  const planType = subscription
+    ? subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)
+    : "Free"
+
+  const creditsRemaining = effectiveBalance?.total ?? (subscription ? 105 : 5)
+  const creditsTotal = subscription ? 105 : 5
 
   return (
     <div className="space-y-6">
@@ -1083,32 +1109,37 @@ function BillingTab() {
             </div>
             <div>
               <div className="font-medium">You're on {planType} Plan</div>
-              <div className="text-sm text-muted-foreground">Upgrade anytime</div>
+              <div className="text-sm text-muted-foreground">
+                {subscription ? "Manage your subscription" : "Upgrade anytime"}
+              </div>
             </div>
-          </div>
-          <div className="mt-4">
-            <Button variant="outline" onClick={() => navigate("/billing")}>
-              Manage
-            </Button>
           </div>
         </div>
 
         <div className="p-4 bg-card rounded-lg border border-border space-y-3">
           <div className="flex justify-between">
             <span className="text-sm text-muted-foreground">Credits remaining</span>
-            <span className="text-sm font-medium">{creditsTotal - creditsUsed} of {creditsTotal}</span>
+            <span className="text-sm font-medium">{creditsRemaining.toFixed(1)} of {creditsTotal}</span>
           </div>
-          <Progress value={((creditsTotal - creditsUsed) / creditsTotal) * 100} className="h-2" />
-          <div className="flex items-center gap-4 text-xs text-muted-foreground">
-            <div className="flex items-center gap-1">
-              <div className="h-2 w-2 rounded-full bg-blue-500" />
-              Daily credits used first
+          <Progress value={(creditsRemaining / creditsTotal) * 100} className="h-2" />
+          {effectiveBalance && (
+            <div className="text-xs text-muted-foreground">
+              Daily: {effectiveBalance.dailyCredits.toFixed(1)} • Monthly: {effectiveBalance.monthlyCredits.toFixed(1)}
             </div>
-          </div>
+          )}
           <div className="space-y-1 text-xs text-muted-foreground">
             <div className="flex items-center gap-2">
-              <span>×</span>
-              No credits will rollover
+              {subscription ? (
+                <>
+                  <Check className="h-3 w-3" />
+                  Credits rollover to next month
+                </>
+              ) : (
+                <>
+                  <span>×</span>
+                  No credits will rollover
+                </>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <Check className="h-3 w-3" />
@@ -1118,80 +1149,13 @@ function BillingTab() {
         </div>
       </div>
 
-      {/* Pricing tiers */}
-      <div className="grid grid-cols-3 gap-4">
-        {/* Pro */}
-        <div className="p-4 bg-card rounded-lg border border-border space-y-4">
-          <div>
-            <h4 className="font-semibold">Pro</h4>
-            <p className="text-sm text-muted-foreground">
-              Designed for fast-moving teams building together in real time.
-            </p>
-          </div>
-          <div>
-            <span className="text-2xl font-bold">$25</span>
-            <span className="text-muted-foreground"> per month</span>
-            <p className="text-xs text-muted-foreground">shared across unlimited users</p>
-          </div>
-          <Button className="w-full">Upgrade</Button>
-          <div className="space-y-2 text-sm">
-            <p className="text-muted-foreground">All features in Free, plus:</p>
-            <ul className="space-y-1">
-              <li className="flex items-center gap-2"><Check className="h-4 w-4 text-green-500" /> 100 monthly credits</li>
-              <li className="flex items-center gap-2"><Check className="h-4 w-4 text-green-500" /> 5 daily credits</li>
-              <li className="flex items-center gap-2"><Check className="h-4 w-4 text-green-500" /> Credit rollovers</li>
-              <li className="flex items-center gap-2"><Check className="h-4 w-4 text-green-500" /> Custom domains</li>
-            </ul>
-          </div>
-        </div>
-
-        {/* Business */}
-        <div className="p-4 bg-card rounded-lg border border-border space-y-4">
-          <div>
-            <h4 className="font-semibold">Business</h4>
-            <p className="text-sm text-muted-foreground">
-              Advanced controls and power features for growing departments
-            </p>
-          </div>
-          <div>
-            <span className="text-2xl font-bold">$50</span>
-            <span className="text-muted-foreground"> per month</span>
-            <p className="text-xs text-muted-foreground">shared across unlimited users</p>
-          </div>
-          <Button variant="outline" className="w-full">Upgrade</Button>
-          <div className="space-y-2 text-sm">
-            <p className="text-muted-foreground">All features in Pro, plus:</p>
-            <ul className="space-y-1">
-              <li className="flex items-center gap-2"><Check className="h-4 w-4 text-green-500" /> SSO</li>
-              <li className="flex items-center gap-2"><Check className="h-4 w-4 text-green-500" /> Personal Projects</li>
-              <li className="flex items-center gap-2"><Check className="h-4 w-4 text-green-500" /> Opt out of data training</li>
-            </ul>
-          </div>
-        </div>
-
-        {/* Enterprise */}
-        <div className="p-4 bg-card rounded-lg border border-border space-y-4">
-          <div>
-            <h4 className="font-semibold">Enterprise</h4>
-            <p className="text-sm text-muted-foreground">
-              Built for large orgs needing flexibility, scale, and governance.
-            </p>
-          </div>
-          <div>
-            <span className="text-2xl font-bold">Custom</span>
-            <p className="text-xs text-muted-foreground">Flexible plans</p>
-          </div>
-          <Button variant="outline" className="w-full">Book a demo</Button>
-          <div className="space-y-2 text-sm">
-            <p className="text-muted-foreground">All features in Business, plus:</p>
-            <ul className="space-y-1">
-              <li className="flex items-center gap-2"><Check className="h-4 w-4 text-green-500" /> Dedicated support</li>
-              <li className="flex items-center gap-2"><Check className="h-4 w-4 text-green-500" /> Onboarding services</li>
-              <li className="flex items-center gap-2"><Check className="h-4 w-4 text-green-500" /> SCIM</li>
-            </ul>
-          </div>
-        </div>
-      </div>
+      {/* Plan Selector */}
+      {currentWorkspace && (
+        <PlanSelector
+          workspaceId={currentWorkspace.id}
+          currentPlanId={currentPlanId}
+        />
+      )}
     </div>
   )
 }
@@ -1965,9 +1929,9 @@ export const SettingsPage = observer(function SettingsPage() {
     <div className="flex h-full bg-background">
       {/* Sidebar */}
       <div className="w-56 border-r border-border p-3 space-y-4 overflow-y-auto">
-        {/* Go back button */}
+        {/* Go back button - navigate to project or home, not browser history */}
         <button
-          onClick={() => navigate(-1)}
+          onClick={() => navigate(projectId ? `/projects/${projectId}` : "/")}
           className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           <ArrowLeft className="h-4 w-4" />
