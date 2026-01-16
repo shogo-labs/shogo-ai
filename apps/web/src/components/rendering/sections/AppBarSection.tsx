@@ -145,7 +145,7 @@ function NavLinks({
   className,
 }: {
   links: NavLink[]
-  onNavigate?: (href: string) => void
+  onNavigate?: (linkIdOrHref: string) => void
   className?: string
 }) {
   return (
@@ -155,7 +155,7 @@ function NavLinks({
         return (
           <button
             key={link.id}
-            onClick={() => link.href && onNavigate?.(link.href)}
+            onClick={() => onNavigate?.(link.href ?? link.id)}
             className={cn(
               "flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors",
               link.active
@@ -250,7 +250,7 @@ function MobileMenu({
               <button
                 key={link.id}
                 onClick={() => {
-                  link.href && onNavigate?.(link.href)
+                  onNavigate?.(link.href ?? link.id)
                   onClose()
                 }}
                 className={cn(

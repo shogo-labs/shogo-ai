@@ -69,6 +69,7 @@ import { ChartSection } from "./sections/ChartSection"
 import { AppBarSection } from "./sections/AppBarSection"
 import { SideNavSection } from "./sections/SideNavSection"
 import { AppShellSection } from "./sections/AppShellSection"
+import { SectionBrowserSection } from "./sections/SectionBrowserSection"
 
 // Re-export SectionRendererProps from types.ts to avoid circular dependencies
 // (Analysis section components import from types.ts, not from this file)
@@ -152,6 +153,7 @@ export const sectionImplementationMap = new Map<
   ["AppBarSection", AppBarSection],
   ["SideNavSection", SideNavSection],
   ["AppShellSection", AppShellSection],
+  ["SectionBrowserSection", SectionBrowserSection],
 ])
 
 /**

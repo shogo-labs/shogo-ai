@@ -1771,9 +1771,15 @@ export const COMPOSITIONS: CompositionSeed[] = [
     dataContext: { context: "workspace" },
     providerWrapper: "WorkspaceProvider",
   },
-  // Component Showcase - interactive browser for all 70 components
-  // Pattern: AppShell with section-browser navigation mode
+  // Component Showcase - interactive browser for all components
+  // Pattern: AppShell with dataSource-driven sidebar and SectionBrowserSection for details
   // Usage: "load component-showcase" or "show me the component showcase"
+  //
+  // This demonstrates the new composable architecture:
+  // - sideNav.dataSource loads ComponentDefinitions dynamically from Wavesmith store
+  // - Items are grouped by category automatically via groupBy
+  // - contentComposition uses SectionBrowserSection which reads activeItem from AppShellContext
+  // - Example configs provide live previews for components that support them
   {
     id: "composition-component-showcase",
     name: "component-showcase",
@@ -1786,261 +1792,216 @@ export const COMPOSITIONS: CompositionSeed[] = [
           appBar: {
             title: "Component Showcase",
             navLinks: [
-              { id: "sections", label: "Sections", active: true },
-              { id: "display", label: "Display Components" },
-              { id: "visualization", label: "Visualization" },
+              { id: "all", label: "All Components", active: true },
+              { id: "sections", label: "Sections" },
+              { id: "display", label: "Display" },
             ],
             actions: [{ id: "search", icon: "search" }],
             sticky: true,
           },
           sideNav: {
             header: { title: "Components" },
-            items: [
+            // Dynamic data source - loads ComponentDefinitions from component-builder schema
+            // This replaces the static 200+ line items array with a single query
+            dataSource: {
+              schema: "component-builder",
+              model: "ComponentDefinition",
+              idField: "name",  // Use component name as ID (matches implementationRef)
+              labelField: "name",
+              groupBy: "category",  // Groups: section, display, visualization, layout, input
+              orderBy: [{ field: "name", direction: "asc" }],
+            },
+          },
+          // Composition mode with SectionBrowserSection reading from context
+          navigationMode: "composition",
+          contentComposition: {
+            layout: "single",
+            panels: [
               {
-                type: "group",
-                id: "workspace",
-                label: "Workspace & Generic",
-                icon: "layout",
-                defaultExpanded: true,
-                items: [
-                  { id: "WorkspaceBlankStateSection", label: "Blank State" },
-                  { id: "DataGridSection", label: "DataGrid" },
-                  { id: "ChartSection", label: "Chart" },
-                  { id: "DynamicCompositionSection", label: "Dynamic Composition" },
-                ],
-              },
-              {
-                type: "group",
-                id: "app-building",
-                label: "App Building",
-                icon: "layout",
-                defaultExpanded: true,
-                items: [
-                  { id: "AppBarSection", label: "AppBar" },
-                  { id: "SideNavSection", label: "SideNav" },
-                  { id: "AppShellSection", label: "AppShell" },
-                ],
-              },
-              {
-                type: "group",
-                id: "view-builder",
-                label: "View Builder",
-                icon: "file",
-                defaultExpanded: false,
-                items: [{ id: "PlanPreviewSection", label: "Plan Preview" }],
-              },
-              {
-                type: "group",
-                id: "discovery",
-                label: "Discovery Phase",
-                icon: "star",
-                defaultExpanded: false,
-                items: [
-                  { id: "IntentTerminalSection", label: "Intent Terminal" },
-                  { id: "InitialAssessmentSection", label: "Initial Assessment" },
-                  { id: "RequirementsListSection", label: "Requirements List" },
-                  { id: "SessionSummarySection", label: "Session Summary" },
-                  { id: "PhaseActionsSection", label: "Phase Actions" },
-                  { id: "PhaseHeroSection", label: "Phase Hero" },
-                  { id: "SessionOverviewCard", label: "Session Overview" },
-                  { id: "IntentRichPanel", label: "Intent Rich Panel" },
-                  { id: "RequirementsGridSection", label: "Requirements Grid" },
-                  { id: "InsightsPanel", label: "Insights Panel" },
-                  { id: "ContextFooter", label: "Context Footer" },
-                ],
-              },
-              {
-                type: "group",
-                id: "analysis",
-                label: "Analysis Phase",
-                icon: "search",
-                defaultExpanded: false,
-                items: [
-                  { id: "EvidenceBoardHeaderSection", label: "Evidence Board Header" },
-                  { id: "LocationHeatBarSection", label: "Location Heat Bar" },
-                  { id: "FindingMatrixSection", label: "Finding Matrix" },
-                  { id: "FindingListSection", label: "Finding List" },
-                ],
-              },
-              {
-                type: "group",
-                id: "classification",
-                label: "Classification Phase",
-                icon: "folder",
-                defaultExpanded: false,
-                items: [
-                  { id: "ArchetypeTransformationSection", label: "Archetype Transformation" },
-                  { id: "CorrectionNoteSection", label: "Correction Note" },
-                  { id: "ConfidenceMetersSection", label: "Confidence Meters" },
-                  { id: "EvidenceColumnsSection", label: "Evidence Columns" },
-                  { id: "ApplicablePatternsSection", label: "Applicable Patterns" },
-                  { id: "ClassificationRationaleSection", label: "Classification Rationale" },
-                ],
-              },
-              {
-                type: "group",
-                id: "design-spec",
-                label: "Design & Spec Phase",
-                icon: "code",
-                defaultExpanded: false,
-                items: [
-                  { id: "DesignContainerSection", label: "Design Container" },
-                  { id: "SpecContainerSection", label: "Spec Container" },
-                ],
-              },
-              {
-                type: "group",
-                id: "testing",
-                label: "Testing Phase",
-                icon: "file",
-                defaultExpanded: false,
-                items: [
-                  { id: "TestPyramidSection", label: "Test Pyramid" },
-                  { id: "TestTypeDistributionSection", label: "Test Type Distribution" },
-                  { id: "TaskCoverageBarSection", label: "Task Coverage Bar" },
-                  { id: "ScenarioSpotlightSection", label: "Scenario Spotlight" },
-                ],
-              },
-              {
-                type: "group",
-                id: "implementation",
-                label: "Implementation Phase",
-                icon: "code",
-                defaultExpanded: false,
-                items: [
-                  { id: "TDDStageIndicatorSection", label: "TDD Stage Indicator" },
-                  { id: "ProgressDashboardSection", label: "Progress Dashboard" },
-                  { id: "TaskExecutionTimelineSection", label: "Task Execution Timeline" },
-                  { id: "LiveOutputTerminalSection", label: "Live Output Terminal" },
-                ],
-              },
-              {
-                type: "group",
-                id: "display-primitives",
-                label: "Display - Primitives",
-                icon: "database",
-                defaultExpanded: false,
-                items: [
-                  { id: "StringDisplay", label: "String Display" },
-                  { id: "NumberDisplay", label: "Number Display" },
-                  { id: "BooleanDisplay", label: "Boolean Display" },
-                  { id: "DateTimeDisplay", label: "DateTime Display" },
-                  { id: "EmailDisplay", label: "Email Display" },
-                  { id: "UriDisplay", label: "URI Display" },
-                  { id: "EnumBadge", label: "Enum Badge" },
-                  { id: "ReferenceDisplay", label: "Reference Display" },
-                  { id: "ComputedDisplay", label: "Computed Display" },
-                  { id: "ArrayDisplay", label: "Array Display" },
-                  { id: "ObjectDisplay", label: "Object Display" },
-                  { id: "StringArrayDisplay", label: "String Array Display" },
-                  { id: "LongTextDisplay", label: "Long Text Display" },
-                ],
-              },
-              {
-                type: "group",
-                id: "display-domain",
-                label: "Display - Domain Badges",
-                icon: "star",
-                defaultExpanded: false,
-                items: [
-                  { id: "CodePathDisplay", label: "Code Path Display" },
-                  { id: "PriorityBadge", label: "Priority Badge" },
-                  { id: "ArchetypeBadge", label: "Archetype Badge" },
-                  { id: "FindingTypeBadge", label: "Finding Type Badge" },
-                  { id: "TaskStatusBadge", label: "Task Status Badge" },
-                  { id: "TestTypeBadge", label: "Test Type Badge" },
-                  { id: "SessionStatusBadge", label: "Session Status Badge" },
-                  { id: "RequirementStatusBadge", label: "Requirement Status Badge" },
-                  { id: "RunStatusBadge", label: "Run Status Badge" },
-                  { id: "ExecutionStatusBadge", label: "Execution Status Badge" },
-                  { id: "TestCaseStatusBadge", label: "Test Case Status Badge" },
-                  { id: "ChangeTypeBadge", label: "Change Type Badge" },
-                  { id: "PhaseStatusRenderer", label: "Phase Status Renderer" },
-                  { id: "TaskRenderer", label: "Task Renderer" },
-                ],
-              },
-              {
-                type: "group",
-                id: "visualization",
-                label: "Visualization Components",
-                icon: "layout",
-                defaultExpanded: false,
-                items: [
-                  { id: "ProgressBar", label: "Progress Bar" },
-                  { id: "DataCard", label: "Data Card" },
-                  { id: "GraphNode", label: "Graph Node" },
-                  { id: "StatusIndicator", label: "Status Indicator" },
-                ],
+                slot: "main",
+                section: "SectionBrowserSection",
+                config: {
+                  useActiveItem: true,  // Reads activeItem from AppShellContext
+                  // Comprehensive example configs for live previews (keyed by component name)
+                  // Categories: Easy (static), Medium (query data), Hard (need feature session - show empty states)
+                  exampleConfigs: {
+                    // ===============================
+                    // EASY - Static config, no data needed
+                    // ===============================
+                    WorkspaceBlankStateSection: {},
+
+                    AppBarSection: {
+                      title: "Example App",
+                      logo: { alt: "Logo" },
+                      navLinks: [
+                        { id: "home", label: "Home", icon: "home", active: true },
+                        { id: "projects", label: "Projects", icon: "folder" },
+                        { id: "analytics", label: "Analytics", icon: "file" },
+                        { id: "settings", label: "Settings", icon: "settings" },
+                      ],
+                      actions: [
+                        { id: "search", icon: "search" },
+                        { id: "notifications", icon: "bell" },
+                        { id: "profile", icon: "user" },
+                      ],
+                      sticky: true,
+                    },
+
+                    SideNavSection: {
+                      header: { title: "Admin Panel" },
+                      items: [
+                        { id: "dashboard", label: "Dashboard", icon: "home" },
+                        { id: "analytics", label: "Analytics", icon: "layout" },
+                        {
+                          type: "group",
+                          id: "content",
+                          label: "Content",
+                          icon: "folder",
+                          defaultExpanded: true,
+                          items: [
+                            { id: "pages", label: "Pages", icon: "file" },
+                            { id: "posts", label: "Posts", badge: "12" },
+                            { id: "media", label: "Media" },
+                          ],
+                        },
+                        {
+                          type: "group",
+                          id: "system",
+                          label: "System",
+                          icon: "settings",
+                          items: [
+                            { id: "users", label: "Users", icon: "user" },
+                            { id: "database", label: "Database", icon: "database" },
+                            { id: "code", label: "Code", icon: "code" },
+                          ],
+                        },
+                      ],
+                      activeItem: "dashboard",
+                      showCollapseToggle: true,
+                    },
+
+                    AppShellSection: {
+                      appBar: {
+                        title: "Demo Dashboard",
+                        navLinks: [
+                          { id: "overview", label: "Overview", active: true },
+                          { id: "reports", label: "Reports" },
+                        ],
+                        actions: [{ id: "profile", icon: "user" }],
+                      },
+                      sideNav: {
+                        header: { title: "Navigation" },
+                        items: [
+                          { id: "home", label: "Home", icon: "home" },
+                          { id: "data", label: "Data", icon: "database" },
+                          { id: "settings", label: "Settings", icon: "settings" },
+                        ],
+                      },
+                      navigationMode: "static",
+                      showAppBar: true,
+                      showSideNav: true,
+                    },
+
+                    PlanPreviewSection: {
+                      spec: {
+                        name: "Example Component",
+                        intent: "Display user profile information with avatar and details",
+                        componentType: "card",
+                        status: "draft",
+                      },
+                    },
+
+                    // ===============================
+                    // MEDIUM - Needs schema data (query stores)
+                    // ===============================
+                    DataGridSection: {
+                      schema: "component-builder",
+                      model: "ComponentDefinition",
+                      title: "Component Definitions",
+                      columns: ["name", "category", "description", "implementationRef"],
+                      query: { orderBy: [{ field: "name", direction: "asc" }], take: 15 },
+                      stickyFirstColumn: true,
+                    },
+
+                    ChartSection: {
+                      schema: "component-builder",
+                      model: "ComponentDefinition",
+                      chartType: "bar",
+                      xField: "category",
+                      yField: "$count",
+                      title: "Components by Category",
+                    },
+
+                    DesignContainerSection: {
+                      defaultTab: "schema",
+                      showStatistics: true,
+                      showLegend: true,
+                    },
+
+                    SectionBrowserSection: {
+                      sectionName: "WorkspaceBlankStateSection",
+                    },
+
+                    // ===============================
+                    // HARD - Need feature session (show empty states)
+                    // ===============================
+
+                    // Discovery Phase
+                    IntentTerminalSection: {},
+                    InitialAssessmentSection: {},
+                    RequirementsListSection: { layout: "list" },
+                    SessionSummarySection: {},
+                    PhaseActionsSection: {},
+                    PhaseHeroSection: {},
+                    SessionOverviewCard: {},
+                    IntentRichPanel: {},
+                    RequirementsGridSection: {},
+                    InsightsPanel: {},
+                    ContextFooter: {},
+
+                    // Analysis Phase
+                    EvidenceBoardHeaderSection: {},
+                    LocationHeatBarSection: {},
+                    FindingMatrixSection: {},
+                    FindingListSection: {},
+
+                    // Classification Phase
+                    ArchetypeTransformationSection: {},
+                    CorrectionNoteSection: {},
+                    ConfidenceMetersSection: {},
+                    EvidenceColumnsSection: {},
+                    ApplicablePatternsSection: {},
+                    ClassificationRationaleSection: {},
+
+                    // Spec Phase
+                    SpecContainerSection: {},
+
+                    // Testing Phase
+                    TestPyramidSection: {},
+                    TestTypeDistributionSection: {},
+                    TaskCoverageBarSection: {},
+                    ScenarioSpotlightSection: {},
+
+                    // Implementation Phase
+                    TDDStageIndicatorSection: {},
+                    ProgressDashboardSection: {},
+                    TaskExecutionTimelineSection: {},
+                    LiveOutputTerminalSection: {},
+
+                    // Dynamic
+                    DynamicCompositionSection: {},
+                  },
+                },
               },
             ],
-          },
-          navigationMode: "section-browser",
-          defaultActiveItem: "WorkspaceBlankStateSection",
-          exampleConfigs: {
-            WorkspaceBlankStateSection: {},
-            DataGridSection: {
-              schema: "studio-chat",
-              model: "ChatSession",
-              title: "Chat Sessions",
-              query: { orderBy: [{ field: "name", direction: "asc" }], take: 10 },
-            },
-            ChartSection: {
-              schema: "studio-chat",
-              model: "ChatSession",
-              chartType: "bar",
-              xField: "name",
-              yField: "count",
-              title: "Chat Sessions by Name",
-            },
-            AppBarSection: {
-              title: "Example App",
-              navLinks: [
-                { id: "home", label: "Home", icon: "home", active: true },
-                { id: "projects", label: "Projects", icon: "folder" },
-                { id: "settings", label: "Settings", icon: "settings" },
-              ],
-              actions: [
-                { id: "notifications", icon: "bell" },
-                { id: "profile", icon: "user" },
-              ],
-              sticky: true,
-            },
-            SideNavSection: {
-              header: { title: "Navigation" },
-              items: [
-                { id: "dashboard", label: "Dashboard", icon: "home" },
-                {
-                  type: "group",
-                  id: "content",
-                  label: "Content",
-                  icon: "folder",
-                  defaultExpanded: true,
-                  items: [
-                    { id: "pages", label: "Pages" },
-                    { id: "posts", label: "Posts", badge: "12" },
-                  ],
-                },
-                { id: "settings", label: "Settings", icon: "settings" },
-              ],
-              activeItem: "dashboard",
-              showCollapseToggle: true,
-            },
-            DesignContainerSection: {},
-            PlanPreviewSection: {
-              spec: {
-                name: "Example Component",
-                intent: "Display user profile information with avatar and details",
-                componentType: "card",
-                status: "draft",
-              },
-            },
           },
         },
       },
     ],
     dataContext: {
-      description: "Interactive showcase of all 70 components with live previews for 7 sections",
+      description: "Interactive showcase of all components with dynamic sidebar and live previews",
       context: "showcase",
+      pattern: "dataSource-driven AppShell with composition mode",
     },
   },
 ]
