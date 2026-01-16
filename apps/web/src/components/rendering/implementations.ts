@@ -27,6 +27,7 @@ import {
   ObjectDisplay,
   StringArrayDisplay,
   LongTextDisplay,
+  ImageDisplay,
 } from "./displays"
 
 // Domain-specific renderers
@@ -59,7 +60,7 @@ import {
  * Map of implementationRef strings to React components.
  *
  * This map contains all registered display renderers:
- * - 13 primitive renderers (StringDisplay, NumberDisplay, StringArrayDisplay, LongTextDisplay, etc.)
+ * - 14 primitive renderers (StringDisplay, NumberDisplay, StringArrayDisplay, LongTextDisplay, ImageDisplay, etc.)
  * - 14 domain renderers (PriorityBadge, TaskStatusBadge, CodePathDisplay, ChangeTypeBadge, PhaseStatusRenderer, etc.)
  * - 4 visualization renderers (ProgressBar, DataCard, etc.)
  */
@@ -81,6 +82,7 @@ export const componentImplementationMap = new Map<
   ["ObjectDisplay", ObjectDisplay],
   ["StringArrayDisplay", StringArrayDisplay],
   ["LongTextDisplay", LongTextDisplay],
+  ["ImageDisplay", ImageDisplay],
 
   // Domain-specific renderers
   ["PriorityBadge", PriorityBadge],

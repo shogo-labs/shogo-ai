@@ -20,6 +20,10 @@ export interface AuthCredentials {
 export interface AuthUser {
   id: string
   email: string
+  /** User's display name (optional) */
+  name?: string
+  /** Profile image URL (optional) */
+  image?: string | null
   emailVerified: boolean
   createdAt: string
 }

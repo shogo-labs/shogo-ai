@@ -86,12 +86,25 @@ const interpret = ucastCreateJsInterpreter(allInterpreters)
 // ============================================================================
 
 /**
+ * Cache for failed expressions to avoid repeated error logging.
+ * Stores expression objects that failed to parse.
+ */
+const failedExpressions = new WeakSet<object>()
+
+/**
+ * A matcher that always returns false (used as fallback for invalid expressions).
+ */
+const NEVER_MATCHES: PropertyMatcher = () => false
+
+/**
  * Create a matcher function from a MongoDB-style match expression.
  *
  * The returned function evaluates PropertyMetadata objects against
  * the match expression, returning true if the metadata matches.
  *
  * Parsed AST is cached per expression object (via WeakMap) for performance.
+ * If parsing fails (e.g., invalid regex), returns a matcher that always
+ * returns false and logs a warning.
  *
  * @param matchExpression - MongoDB-style query object
  * @returns Matcher function (meta: PropertyMetadata) => boolean
@@ -118,14 +131,33 @@ const interpret = ucastCreateJsInterpreter(allInterpreters)
 export function createMatcherFromExpression(
   matchExpression: MatchExpression
 ): PropertyMatcher {
+  // Return cached fallback for known-failed expressions
+  if (failedExpressions.has(matchExpression)) {
+    return NEVER_MATCHES
+  }
+
   // Check cache first (using object identity)
   let ast = astCache.get(matchExpression)
 
   if (!ast) {
-    // Parse the expression into a ucast AST
-    ast = parseQuery(matchExpression)
-    // Cache for future calls with the same expression object
-    astCache.set(matchExpression, ast)
+    try {
+      // Parse the expression into a ucast AST
+      ast = parseQuery(matchExpression)
+      // Cache for future calls with the same expression object
+      astCache.set(matchExpression, ast)
+    } catch (error) {
+      // Cache the failure to avoid repeated error logging
+      failedExpressions.add(matchExpression)
+
+      console.warn(
+        `[MatchExpression] Failed to parse match expression. ` +
+        `Error: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Expression: ${JSON.stringify(matchExpression)}. ` +
+        `This binding will never match.`
+      )
+
+      return NEVER_MATCHES
+    }
   }
 
   // Return a matcher function that interprets the AST against metadata

@@ -154,8 +154,18 @@ export function useDataGridMetadata(
 
   // Return Property entities directly - they have all fields PropertyMetadata needs:
   // name, type, format, enum, xReferenceType, xReferenceTarget, xComputed, xRenderer, required
+  const properties = model.properties ?? []
+
+  // DEBUG: Log properties to verify format and xRenderer are present
+  if (properties.some((p: any) => p.name === "avatar" || p.name === "image")) {
+    console.log("[useDataGridMetadata] Properties with image-related names:",
+      properties.filter((p: any) => p.name === "avatar" || p.name === "image")
+        .map((p: any) => ({ name: p.name, type: p.type, format: p.format, xRenderer: p.xRenderer }))
+    )
+  }
+
   return {
-    properties: model.properties ?? [],
+    properties,
     collectionName: model.collectionName ?? null,
     loading: false,
     error: null,

@@ -259,9 +259,22 @@ export const componentBuilderDomain = domain({
         /**
          * Get matcher function from matchExpression.
          * Uses createMatcherFromExpression with AST caching.
+         *
+         * Returns a function that always returns false if parsing fails
+         * (createMatcherFromExpression handles errors gracefully).
          */
         get matcher(): (meta: PropertyMetadata) => boolean {
-          return createMatcherFromExpression(self.matchExpression)
+          try {
+            return createMatcherFromExpression(self.matchExpression)
+          } catch (error) {
+            // Defense in depth: if createMatcherFromExpression somehow throws,
+            // return a no-op matcher to prevent UI crashes
+            console.error(
+              `[RendererBinding] Unexpected error creating matcher for binding "${self.id}":`,
+              error
+            )
+            return () => false
+          }
         },
 
         /**

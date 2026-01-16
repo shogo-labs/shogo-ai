@@ -84,6 +84,24 @@ export function specToEntry(spec: ComponentEntrySpec): ComponentEntry {
  */
 function createDefaultFallbackEntries(): ComponentEntry[] {
   return [
+    // xRenderer explicit binding - highest priority (matches x-renderer: "image-display")
+    {
+      id: "default-image-display-explicit",
+      matches: (meta: PropertyMetadata) => meta.xRenderer === "image-display",
+      component: getComponent("ImageDisplay"),
+      priority: 200,
+    },
+    // xRenderer implicit - URI format + image-related name pattern
+    {
+      id: "default-image-display-implicit",
+      matches: (meta: PropertyMetadata) => {
+        if (meta.format !== "uri") return false
+        const name = meta.name?.toLowerCase() ?? ""
+        return /image|photo|avatar|thumbnail|cover|logo|icon|picture|banner/.test(name)
+      },
+      component: getComponent("ImageDisplay"),
+      priority: 40,
+    },
     // xComputed - highest priority for computed fields
     {
       id: "default-computed",
