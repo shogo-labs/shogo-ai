@@ -107,11 +107,6 @@
         },
         "updatedAt": {
           "type": "number"
-        },
-        "folderId": {
-          "type": "string",
-          "format": "uuid",
-          "description": "ID of folder this project belongs to, null for root-level projects"
         }
       },
       "required": [
@@ -297,54 +292,6 @@
         "createdAt"
       ],
       "x-original-name": "Invitation"
-    },
-    "Folder": {
-      "type": "object",
-      "x-persistence": {
-        "strategy": "entity-per-file",
-        "displayKey": "name",
-        "nested": true
-      },
-      "properties": {
-        "id": {
-          "type": "string",
-          "format": "uuid",
-          "x-mst-type": "identifier"
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "workspace": {
-          "type": "string",
-          "x-arktype": "Workspace",
-          "x-mst-type": "reference",
-          "x-reference-type": "single",
-          "x-reference-target": "Workspace"
-        },
-        "parentId": {
-          "type": "string",
-          "format": "uuid",
-          "description": "ID of parent folder for nesting, null for root-level folders"
-        },
-        "createdBy": {
-          "type": "string",
-          "description": "Loose string ref to AuthUser.id"
-        },
-        "createdAt": {
-          "type": "number"
-        },
-        "updatedAt": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "workspace",
-        "createdAt"
-      ],
-      "x-original-name": "Folder"
     }
   },
   "x-persistence": {
