@@ -129,10 +129,10 @@ export function PendingInvitationsView({
     try {
       // Load invitations from backend
       await studioCore.invitationCollection.query().toArray()
-      await studioCore.organizationCollection.query().toArray()
+      await studioCore.workspaceCollection.query().toArray()
 
-      // Get invitations for this organization
-      const orgInvitations = studioCore.invitationCollection.findForResource("organization", orgId)
+      // Get invitations for this workspace
+      const orgInvitations = studioCore.invitationCollection.findForResource("workspace", orgId)
       const pending = orgInvitations.filter((i: any) => i.status === "pending")
 
       setInvitations(pending.map((i: any) => ({

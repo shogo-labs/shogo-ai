@@ -81,7 +81,7 @@ import { cn } from "@/lib/utils"
 import { useWorkspaceData } from "@/components/app/workspace"
 import { useDomains } from "@/contexts/DomainProvider"
 import { useSession } from "@/auth/client"
-import { InviteMemberModal } from "@/components/app/workspace/members/InviteMemberModal"
+import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
 import { PlanSelector } from "@/components/app/billing/PlanSelector"
 
 // Tab types
@@ -997,10 +997,17 @@ function PeopleTab() {
         </TabsContent>
 
         <TabsContent value="invitations" className="mt-3">
-          <div className="text-center py-8 text-sm text-muted-foreground">
-            <UserPlus className="h-8 w-8 mx-auto mb-2 opacity-50" />
-            <p>No pending invitations</p>
-          </div>
+          {currentWorkspace?.id ? (
+            <PendingInvitationsView
+              orgId={currentWorkspace.id}
+              onInvitationsChange={loadMembers}
+            />
+          ) : (
+            <div className="text-center py-8 text-sm text-muted-foreground">
+              <UserPlus className="h-8 w-8 mx-auto mb-2 opacity-50" />
+              <p>No workspace selected</p>
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="collaborators" className="mt-3">
@@ -1634,6 +1641,19 @@ function AccountTab() {
             </div>
             <Button variant="outline" size="sm">Reauthenticate</Button>
           </div>
+        </div>
+      </div>
+
+      {/* My Invitations */}
+      <div className="space-y-4">
+        <div className="p-4 bg-card rounded-lg border border-border">
+          <div className="mb-4">
+            <div className="font-medium">My Invitations</div>
+            <div className="text-sm text-muted-foreground">
+              Pending invitations to workspaces and projects.
+            </div>
+          </div>
+          <MyInvitationsView />
         </div>
       </div>
 

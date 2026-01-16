@@ -29,8 +29,7 @@ interface MyInvitation {
   expiresAt: number
   createdAt: number
   isExpired: boolean
-  organization?: { id: string; name: string }
-  team?: { id: string; name: string }
+  workspace?: { id: string; name: string }
   project?: { id: string; name: string }
 }
 
@@ -107,9 +106,9 @@ export function MyInvitationsView({ onInvitationResponse }: MyInvitationsViewPro
     setError(null)
 
     try {
-      // Load invitations and orgs from backend
+      // Load invitations and workspaces from backend
       await studioCore.invitationCollection.query().toArray()
-      await studioCore.organizationCollection.query().toArray()
+      await studioCore.workspaceCollection.query().toArray()
 
       // Get invitations for current user's email
       const userInvitations = studioCore.invitationCollection.findByEmail(userEmail)
@@ -123,8 +122,7 @@ export function MyInvitationsView({ onInvitationResponse }: MyInvitationsViewPro
         expiresAt: i.expiresAt,
         createdAt: i.createdAt,
         isExpired: i.isExpired || Date.now() > i.expiresAt,
-        organization: i.organization ? { id: i.organization.id, name: i.organization.name } : undefined,
-        team: i.team ? { id: i.team.id, name: i.team.name } : undefined,
+        workspace: i.workspace ? { id: i.workspace.id, name: i.workspace.name } : undefined,
         project: i.project ? { id: i.project.id, name: i.project.name } : undefined,
       })))
     } catch (err) {
@@ -190,8 +188,7 @@ export function MyInvitationsView({ onInvitationResponse }: MyInvitationsViewPro
    * Get resource name for display
    */
   const getResourceName = (invitation: MyInvitation): string => {
-    if (invitation.organization) return invitation.organization.name
-    if (invitation.team) return invitation.team.name
+    if (invitation.workspace) return invitation.workspace.name
     if (invitation.project) return invitation.project.name
     return "Unknown"
   }
@@ -200,8 +197,7 @@ export function MyInvitationsView({ onInvitationResponse }: MyInvitationsViewPro
    * Get resource type for display
    */
   const getResourceType = (invitation: MyInvitation): string => {
-    if (invitation.organization) return "organization"
-    if (invitation.team) return "team"
+    if (invitation.workspace) return "workspace"
     if (invitation.project) return "project"
     return "resource"
   }

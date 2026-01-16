@@ -138,7 +138,7 @@ export function InviteMemberModal({
         id: crypto.randomUUID(),
         email,
         role,
-        workspaceId: workspaceId,
+        workspace: workspaceId,  // Reference field, not workspaceId
         status: "pending",
         invitedBy: currentUserId,
         expiresAt,

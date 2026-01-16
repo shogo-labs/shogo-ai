@@ -36,6 +36,10 @@ import {
   MoreHorizontal,
   Inbox,
   Gift,
+  Check,
+  X,
+  Building2,
+  Loader2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -67,8 +71,15 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import { WorkspaceSwitcher } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
+import { useSession } from "@/auth/client"
 import { useCommandPaletteContext } from "./AppShell"
 import { useDomains } from "@/contexts/DomainProvider"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -378,8 +389,244 @@ function FolderItem({ folder, projects, collapsed, onNavigate, onRename, onDelet
 }
 
 /**
+ * Invitation data from MCP domain for inbox display
+ */
+interface PendingInvitation {
+  id: string
+  email: string
+  role: "owner" | "admin" | "member" | "viewer"
+  expiresAt: number
+  isExpired: boolean
+  workspace?: { id: string; name: string }
+  project?: { id: string; name: string }
+}
+
+/**
+ * InboxPopover - Shows pending invitations in a popover
+ */
+interface InboxPopoverProps {
+  collapsed?: boolean
+  onInvitationAccepted?: () => void
+}
+
+const InboxPopover = observer(function InboxPopover({ collapsed, onInvitationAccepted }: InboxPopoverProps) {
+  const { studioCore } = useDomains()
+  const { data: session } = useSession()
+  const userEmail = session?.user?.email
+  const userId = session?.user?.id
+
+  const [invitations, setInvitations] = useState<PendingInvitation[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [processingId, setProcessingId] = useState<string | null>(null)
+  const [isOpen, setIsOpen] = useState(false)
+
+  // Load invitations when popover opens
+  const loadInvitations = useCallback(async () => {
+    if (!studioCore?.invitationCollection || !userEmail) {
+      setIsLoading(false)
+      return
+    }
+
+    setIsLoading(true)
+    try {
+      // Load invitations from backend
+      await studioCore.invitationCollection.query().toArray()
+      await studioCore.workspaceCollection.query().toArray()
+
+      // Get invitations for current user's email
+      const userInvitations = studioCore.invitationCollection.findByEmail(userEmail)
+      const pending = userInvitations.filter((i: any) => i.status === "pending")
+
+      setInvitations(pending.map((i: any) => ({
+        id: i.id,
+        email: i.email,
+        role: i.role,
+        expiresAt: i.expiresAt,
+        isExpired: i.isExpired || Date.now() > i.expiresAt,
+        workspace: i.workspace ? { id: i.workspace.id, name: i.workspace.name } : undefined,
+        project: i.project ? { id: i.project.id, name: i.project.name } : undefined,
+      })))
+    } catch (err) {
+      console.error("[InboxPopover] Failed to load invitations:", err)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [userEmail, studioCore])
+
+  // Load invitations on mount and when popover opens
+  useEffect(() => {
+    loadInvitations()
+  }, [loadInvitations])
+
+  // Reload when popover opens (to get fresh data)
+  useEffect(() => {
+    if (isOpen) {
+      loadInvitations()
+    }
+  }, [isOpen, loadInvitations])
+
+  // Handle accepting an invitation
+  const handleAccept = async (invitation: PendingInvitation) => {
+    if (!studioCore || !userId) return
+
+    setProcessingId(invitation.id)
+    try {
+      await studioCore.acceptInvitation(invitation.id, userId)
+      // Remove from local state
+      setInvitations((prev) => prev.filter((i) => i.id !== invitation.id))
+      // Notify parent to refresh workspaces
+      onInvitationAccepted?.()
+    } catch (err) {
+      console.error("[InboxPopover] Failed to accept invitation:", err)
+    } finally {
+      setProcessingId(null)
+    }
+  }
+
+  // Handle declining an invitation
+  const handleDecline = async (invitation: PendingInvitation) => {
+    if (!studioCore || !userId) return
+
+    setProcessingId(invitation.id)
+    try {
+      await studioCore.declineInvitation(invitation.id, userId)
+      // Remove from local state
+      setInvitations((prev) => prev.filter((i) => i.id !== invitation.id))
+    } catch (err) {
+      console.error("[InboxPopover] Failed to decline invitation:", err)
+    } finally {
+      setProcessingId(null)
+    }
+  }
+
+  // Get resource name for display
+  const getResourceName = (invitation: PendingInvitation): string => {
+    if (invitation.workspace) return invitation.workspace.name
+    if (invitation.project) return invitation.project.name
+    return "Unknown"
+  }
+
+  // Format time remaining
+  const formatTimeRemaining = (expiresAt: number): string => {
+    const diff = expiresAt - Date.now()
+    if (diff <= 0) return "Expired"
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24))
+    if (days > 0) return `${days}d left`
+    const hours = Math.floor(diff / (1000 * 60 * 60))
+    if (hours > 0) return `${hours}h left`
+    return "Expires soon"
+  }
+
+  const pendingCount = invitations.length
+
+  return (
+    <Popover open={isOpen} onOpenChange={setIsOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn("h-8 w-8 relative", !collapsed && "ml-auto")}
+          title="Inbox"
+        >
+          <Inbox className="h-4 w-4" />
+          {pendingCount > 0 && (
+            <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-primary text-[10px] font-medium text-primary-foreground flex items-center justify-center">
+              {pendingCount > 9 ? "9+" : pendingCount}
+            </span>
+          )}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" side="top" className="w-80 p-0">
+        <div className="p-3 border-b border-border">
+          <h3 className="font-semibold text-sm">Inbox</h3>
+          <p className="text-xs text-muted-foreground">Invitations and notifications</p>
+        </div>
+        <div className="max-h-80 overflow-y-auto">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : invitations.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              <Inbox className="h-8 w-8 mx-auto mb-2 opacity-50" />
+              <p className="text-sm">No pending invitations</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-border">
+              {invitations.map((invitation) => {
+                const isExpired = invitation.isExpired || Date.now() > invitation.expiresAt
+                const isProcessing = processingId === invitation.id
+
+                return (
+                  <div
+                    key={invitation.id}
+                    className={cn("p-3", isExpired && "opacity-60")}
+                  >
+                    <div className="flex items-start gap-2">
+                      <Building2 className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-sm truncate">
+                            {getResourceName(invitation)}
+                          </span>
+                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                            {invitation.role}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {isExpired ? "Expired" : formatTimeRemaining(invitation.expiresAt)}
+                        </p>
+                      </div>
+                    </div>
+                    {!isExpired && (
+                      <div className="flex gap-2 mt-2 ml-6">
+                        <Button
+                          size="sm"
+                          className="h-7 text-xs flex-1"
+                          onClick={() => handleAccept(invitation)}
+                          disabled={isProcessing}
+                        >
+                          {isProcessing ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <>
+                              <Check className="h-3 w-3 mr-1" />
+                              Accept
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs flex-1"
+                          onClick={() => handleDecline(invitation)}
+                          disabled={isProcessing}
+                        >
+                          {isProcessing ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <>
+                              <X className="h-3 w-3 mr-1" />
+                              Decline
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+})
+
+/**
  * AppSidebar component
- * 
+ *
  * Persistent navigation sidebar that provides global navigation across the app.
  * Collapsible to icons-only mode. State persisted to localStorage.
  */
@@ -387,7 +634,7 @@ export const AppSidebar = observer(function AppSidebar() {
   const location = useLocation()
   const navigate = useNavigate()
   const { setWorkspaceSlug, setFolderId } = useWorkspaceNavigation()
-  const { workspaces, currentWorkspace, projects, folders, isLoading, refetchFolders } = useWorkspaceData()
+  const { workspaces, currentWorkspace, projects, folders, isLoading, refetchFolders, refetchWorkspaces } = useWorkspaceData()
   const { openCommandPalette } = useCommandPaletteContext()
   const { studioCore, billing, auth } = useDomains()
 
@@ -766,16 +1013,12 @@ export const AppSidebar = observer(function AppSidebar() {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          {/* Inbox button */}
+          {/* Inbox with invitations */}
           {!collapsed && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 ml-auto"
-              title="Inbox"
-            >
-              <Inbox className="h-4 w-4" />
-            </Button>
+            <InboxPopover
+              collapsed={collapsed}
+              onInvitationAccepted={refetchWorkspaces}
+            />
           )}
         </div>
       </div>

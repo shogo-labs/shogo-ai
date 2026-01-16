@@ -12,13 +12,14 @@
  * - Renders children (AppShell) for authenticated users
  * - Calls auth.initialize() on mount via useEffect
  * - MobX observer for reactive auth state updates
+ * - Checks for pending invitations on login (task-wsmm-011)
  *
  * Design Decision: dd-2-1-route-structure
  * AuthGate wraps /app/* and renders LoginPage for unauthenticated users inline -
  * there is NO /app/login route. The LoginPage is rendered in-place.
  */
 
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import { observer } from "mobx-react-lite"
 import { useDomains } from "@/contexts/DomainProvider"
 import { SplashScreen } from "../shared/SplashScreen"
@@ -40,12 +41,32 @@ interface AuthGateProps {
  * auth state changes from the betterAuthDomain store.
  */
 export const AuthGate = observer(function AuthGate({ children }: AuthGateProps) {
-  const { auth } = useDomains()
+  const { auth, studioCore } = useDomains()
+  const hasCheckedInvitations = useRef(false)
 
   // Initialize auth on mount - checks for existing session
   useEffect(() => {
     auth.initialize()
   }, [auth])
+
+  // Check for pending invitations after user authenticates
+  // This runs once per session to create notifications for any pending invitations
+  useEffect(() => {
+    if (auth.isAuthenticated && auth.currentUser && !hasCheckedInvitations.current) {
+      hasCheckedInvitations.current = true
+
+      // Check pending invitations and create notifications
+      // This is fire-and-forget - errors are logged but don't block auth
+      if (studioCore?.checkPendingInvitationsOnLogin) {
+        studioCore.checkPendingInvitationsOnLogin(
+          auth.currentUser.id,
+          auth.currentUser.email
+        ).catch((error: any) => {
+          console.error("[AuthGate] Failed to check pending invitations:", error)
+        })
+      }
+    }
+  }, [auth.isAuthenticated, auth.currentUser, studioCore])
 
   // Show splash screen during initial auth check
   // This only shows when loading AND there's no current user
