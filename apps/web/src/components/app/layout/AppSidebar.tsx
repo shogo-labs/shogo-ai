@@ -50,6 +50,11 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
 } from "@/components/ui/dropdown-menu"
 import {
   Dialog,
@@ -83,7 +88,7 @@ import { useSession } from "@/auth/client"
 import { useCommandPaletteContext } from "./AppShell"
 import { useDomains } from "@/contexts/DomainProvider"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { LogOut, User } from "lucide-react"
+import { LogOut, User, Sun, Moon, Monitor } from "lucide-react"
 
 /**
  * Get user initials from name
@@ -96,6 +101,25 @@ function getInitials(name: string | null | undefined): string {
     .join("")
     .toUpperCase()
     .slice(0, 2)
+}
+
+// Theme state helpers
+function getTheme(): "light" | "dark" | "system" {
+  if (typeof window === "undefined") return "system"
+  const stored = localStorage.getItem("theme")
+  if (stored === "dark" || stored === "light") return stored
+  return "system"
+}
+
+function setTheme(theme: "light" | "dark" | "system") {
+  if (theme === "system") {
+    localStorage.removeItem("theme")
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
+    document.documentElement.classList.toggle("dark", prefersDark)
+  } else {
+    localStorage.setItem("theme", theme)
+    document.documentElement.classList.toggle("dark", theme === "dark")
+  }
 }
 
 interface NavItemProps {
@@ -644,6 +668,18 @@ export const AppSidebar = observer(function AppSidebar() {
     return saved === "true"
   })
 
+  // Theme state
+  const [currentTheme, setCurrentTheme] = useState<"light" | "dark" | "system">(getTheme)
+
+  // Get current theme icon
+  const ThemeIcon = currentTheme === "dark" ? Moon : currentTheme === "light" ? Sun : Monitor
+
+  const handleThemeChange = useCallback((value: string) => {
+    const theme = value as "light" | "dark" | "system"
+    setTheme(theme)
+    setCurrentTheme(theme)
+  }, [])
+
   // Folder dialog state
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [folderToRename, setFolderToRename] = useState<{ id: string; name: string } | null>(null)
@@ -1005,6 +1041,30 @@ export const AppSidebar = observer(function AppSidebar() {
                   <span>Profile</span>
                 </Link>
               </DropdownMenuItem>
+
+              {/* Appearance submenu */}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <ThemeIcon className="mr-2 h-4 w-4" />
+                  <span>Appearance</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  <DropdownMenuRadioGroup value={currentTheme} onValueChange={handleThemeChange}>
+                    <DropdownMenuRadioItem value="light" className="gap-2">
+                      <Sun className="h-4 w-4" />
+                      Light
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="dark" className="gap-2">
+                      <Moon className="h-4 w-4" />
+                      Dark
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="system" className="gap-2">
+                      <Monitor className="h-4 w-4" />
+                      System
+                    </DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
 
               <DropdownMenuItem onClick={() => auth.signOut()} className="cursor-pointer">
                 <LogOut className="mr-2 h-4 w-4" />
