@@ -125,6 +125,7 @@ export function ProjectTopBar({
           onRename={onRename}
           onToggleStar={onToggleStar}
           onDuplicate={onDuplicate}
+          onOpenSettings={() => navigate("/settings?tab=project")}
         />
 
         {/* Chat Sessions Toggle Button */}

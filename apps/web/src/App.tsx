@@ -10,6 +10,7 @@ import { AppMemberManagementPage } from './pages/AppMemberManagementPage'
 import { AllProjectsPage } from './pages/AllProjectsPage'
 import { StarredProjectsPage } from './pages/StarredProjectsPage'
 import { SharedWithMePage } from './pages/SharedWithMePage'
+import { SettingsPage } from './pages/SettingsPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
@@ -72,6 +73,20 @@ function App() {
                   <Route path="/projects/:projectId" element={
                     <AuthGate>
                       <ProjectLayout />
+                    </AuthGate>
+                  } />
+
+                  {/* Settings page - standalone without AppShell sidebar */}
+                  <Route path="/settings" element={
+                    <AuthGate>
+                      <SettingsPage />
+                    </AuthGate>
+                  } />
+
+                  {/* Project settings - with project context */}
+                  <Route path="/projects/:projectId/settings" element={
+                    <AuthGate>
+                      <SettingsPage />
                     </AuthGate>
                   } />
 
