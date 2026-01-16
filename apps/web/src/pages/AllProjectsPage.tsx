@@ -807,6 +807,73 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
               <div>Created by</div>
             </div>
 
+            {/* Folder rows */}
+            <div className="space-y-0">
+              {currentFolders.map((folder) => (
+                <div
+                  key={folder.id}
+                  onClick={() => handleFolderClick(folder)}
+                  className="group grid grid-cols-[1fr_120px_140px] gap-4 px-3 py-2.5 rounded-lg hover:bg-accent/50 transition-colors items-center cursor-pointer"
+                >
+                  {/* Name column with folder icon */}
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex-shrink-0 w-12 h-8 rounded-md bg-muted flex items-center justify-center">
+                      <FolderOpen className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-sm truncate">{folder.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {(projects as Project[]).filter(p => p.folderId === folder.id).length} projects
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Created at column */}
+                  <div className="text-sm text-muted-foreground">
+                    {folder.createdAt ? getTimeAgo(folder.createdAt) : "—"}
+                  </div>
+
+                  {/* Actions column */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">—</span>
+                    
+                    {/* Actions */}
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                            }}
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={(e) => openRenameFolderDialog(folder, e as any)}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Rename
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={(e) => openDeleteFolderDialog(folder, e as any)}
+                            className="text-destructive"
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
             {/* Project rows */}
             <div className="space-y-0">
               {filteredProjects.map((project) => (
