@@ -1243,11 +1243,42 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [currentSessionId])
 
+  // feat-chat-tool-interleaving: Track if we've received messages with parts (tool calls)
+  // Once we have parts from streaming, we shouldn't overwrite with persisted data
+  const hasReceivedPartsRef = useRef(false)
+
+  // Update the ref when messages change - check if any have parts
+  useEffect(() => {
+    const hasParts = messages.some((msg: any) =>
+      Array.isArray(msg.parts) && msg.parts.length > 0
+    )
+    if (hasParts) {
+      hasReceivedPartsRef.current = true
+    }
+  }, [messages])
+
+  // Reset the ref when session changes
+  useEffect(() => {
+    hasReceivedPartsRef.current = false
+  }, [currentSessionId])
+
   // Effect 2: Sync MobX → AI SDK state when data arrives
   // persistedMessagesFromMobX is derived from MobX (reactive due to observer)
   // Using length as a stable primitive dep to detect when data changes
+  //
+  // feat-chat-tool-interleaving: Guard against overwriting messages that have parts
+  // During/after streaming, useChat messages have a `parts` array with tool-invocations.
+  // Persisted messages only have `content` (no parts). If we blindly overwrite,
+  // tool calls disappear because parts are lost.
   useEffect(() => {
     if (persistedMessagesFromMobX.length > 0) {
+      // Don't overwrite if we've received messages with parts - they contain tool invocations
+      // that aren't persisted and would be lost
+      if (hasReceivedPartsRef.current) {
+        console.log('[ChatPanel] Skipping message sync - session has messages with parts array')
+        return
+      }
+
       const aiMessages = persistedMessagesFromMobX.map((msg: any) => ({
         id: msg.id,
         role: msg.role as "user" | "assistant",

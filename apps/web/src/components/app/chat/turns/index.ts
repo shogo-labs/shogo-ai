@@ -1,6 +1,7 @@
 /**
  * Turn Components Barrel Export
  * Task: task-chat-004
+ * Task: feat-chat-tool-interleaving
  *
  * Exports all turn grouping components, hooks, and types.
  */
@@ -10,4 +11,6 @@ export { TurnList, type TurnListProps } from "./TurnList"
 export { TurnGroup, type TurnGroupProps } from "./TurnGroup"
 export { TurnHeader, type TurnHeaderProps } from "./TurnHeader"
 export { MessageContent, type MessageContentProps } from "./MessageContent"
-export { type ConversationTurn, type TurnBoundary } from "./types"
+export { AssistantContent, type AssistantContentProps } from "./AssistantContent"
+export { InlineToolWidget, type InlineToolWidgetProps } from "./InlineToolWidget"
+export { type ConversationTurn, type TurnBoundary, type MessagePart } from "./types"

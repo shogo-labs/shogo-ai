@@ -3,7 +3,7 @@
   "name": "component-builder",
   "format": "enhanced-json-schema",
   "createdAt": 1767839088233,
-  "version": 2,
+  "version": 4,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "component-builder",
   "$defs": {
@@ -58,6 +58,10 @@
         "supportedConfig": {
           "type": "array",
           "description": "Config keys this component supports (e.g., ['variant', 'size', 'truncate'])"
+        },
+        "aiGuidance": {
+          "type": "string",
+          "description": "Semantic guidance for AI agents: configuration patterns, usage context, data binding notes, and examples. Markdown format. Discovered and folded into agent reasoning when working with this component."
         },
         "createdAt": {
           "type": "number"
@@ -291,6 +295,93 @@
         "createdAt"
       ],
       "x-original-name": "Composition"
+    },
+    "ComponentSpec": {
+      "type": "object",
+      "description": "Captures the intent, requirements, and design decisions for a component before implementation. Used by view-builder-spec skill.",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name"
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "description": "Component spec name"
+        },
+        "intent": {
+          "type": "string",
+          "description": "Original user request that initiated this component spec"
+        },
+        "componentType": {
+          "type": "string",
+          "description": "Type of component to create",
+          "enum": [
+            "section",
+            "renderer",
+            "composition"
+          ]
+        },
+        "schemas": {
+          "type": "array",
+          "description": "Schemas involved in this component's data needs"
+        },
+        "status": {
+          "type": "string",
+          "description": "Spec lifecycle status",
+          "enum": [
+            "draft",
+            "approved",
+            "implemented"
+          ]
+        },
+        "requirements": {
+          "type": "array",
+          "description": "Component requirements from planning dialogue (ComponentRequirement[])"
+        },
+        "layoutDecisions": {
+          "type": "array",
+          "description": "Layout decisions with rationale (LayoutDecision[])"
+        },
+        "dataBindings": {
+          "type": "array",
+          "description": "Data binding specifications (DataBinding[])"
+        },
+        "interactionPatterns": {
+          "type": "array",
+          "description": "User interaction patterns (InteractionPattern[])"
+        },
+        "reuseOpportunities": {
+          "type": "array",
+          "description": "Identified reuse opportunities (ReuseOpportunity[])"
+        },
+        "implementedAs": {
+          "type": "string",
+          "description": "Reference to ComponentDefinition when implemented",
+          "x-arktype": "ComponentDefinition",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "ComponentDefinition"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "intent",
+        "componentType",
+        "status",
+        "createdAt"
+      ],
+      "x-original-name": "ComponentSpec"
     }
   },
   "x-persistence": {
