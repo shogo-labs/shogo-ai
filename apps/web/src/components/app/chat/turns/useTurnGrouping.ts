@@ -1,14 +1,16 @@
 /**
  * useTurnGrouping Hook
  * Task: task-chat-004
+ * Task: feat-chat-tool-interleaving
  *
  * Groups flat AI SDK message array into ConversationTurn objects.
  * A turn boundary is detected when a user message appears.
+ * Now also extracts ordered parts for interleaved rendering.
  */
 
 import { useMemo } from "react"
 import type { Message } from "@ai-sdk/react"
-import type { ConversationTurn } from "./types"
+import type { ConversationTurn, MessagePart } from "./types"
 import { type ToolCallData, getToolCategory } from "../tools/types"
 
 /**
@@ -42,6 +44,95 @@ function extractToolCallsFromMessage(message: Message): ToolCallData[] {
         timestamp: Date.now(),
       }
     })
+}
+
+/**
+ * Map AI SDK tool state to our ToolExecutionState
+ * Handles both standard tool-invocation states and dynamic-tool states
+ */
+function mapToolState(state?: string): ToolCallData["state"] {
+  if (state === "result" || state === "output-available") return "success"
+  if (state === "error") return "error"
+  return "streaming"
+}
+
+/**
+ * Extract ordered parts from an AI SDK message.
+ * Preserves the natural interleaving of text, tools, and images.
+ */
+function extractOrderedParts(message: Message): MessagePart[] {
+  const parts = (message as any).parts as any[] | undefined
+
+  // Fallback: single text part from content
+  if (!parts || !Array.isArray(parts)) {
+    if (typeof message.content === "string" && message.content) {
+      return [{ type: "text", text: message.content, id: "text-0" }]
+    }
+    return []
+  }
+
+  const result: MessagePart[] = []
+
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index]
+
+    if (part.type === "text") {
+      // Skip empty text parts
+      if (part.text && part.text.trim()) {
+        result.push({ type: "text", text: part.text, id: `text-${index}` })
+      }
+    } else if (part.type === "tool-invocation") {
+      // Standard AI SDK tool-invocation format
+      const inv = part.toolInvocation
+      if (inv) {
+        result.push({
+          type: "tool",
+          id: inv.toolCallId || `tool-${index}`,
+          tool: {
+            id: inv.toolCallId || `tool-${index}`,
+            toolName: inv.toolName || "unknown",
+            category: getToolCategory(inv.toolName || ""),
+            state: mapToolState(inv.state),
+            args: inv.args,
+            result: inv.result,
+            error: inv.error,
+            timestamp: Date.now(),
+          },
+        })
+      }
+    } else if (part.type === "dynamic-tool") {
+      // Claude Code provider dynamic-tool format
+      // Data is directly on the part, not nested in toolInvocation
+      const toolCallId = part.toolCallId || `tool-${index}`
+      result.push({
+        type: "tool",
+        id: toolCallId,
+        tool: {
+          id: toolCallId,
+          toolName: part.toolName || "unknown",
+          category: getToolCategory(part.toolName || ""),
+          state: mapToolState(part.state),
+          args: part.input, // dynamic-tool uses 'input' not 'args'
+          result: part.output, // dynamic-tool uses 'output' not 'result'
+          error: part.error,
+          timestamp: Date.now(),
+        },
+      })
+    } else if (
+      part.type === "file" &&
+      part.mediaType?.startsWith("image/") &&
+      part.url
+    ) {
+      result.push({
+        type: "image",
+        url: part.url,
+        mediaType: part.mediaType,
+        id: `img-${index}`,
+      })
+    }
+  }
+
+  return result
 }
 
 /**
@@ -88,6 +179,7 @@ export function useTurnGrouping(
           userMessage: message,
           assistantMessage: null,
           toolCalls: [],
+          assistantParts: [],
           timestamp: Date.now(),
           isStreaming: false,
         }
@@ -100,6 +192,7 @@ export function useTurnGrouping(
             userMessage: null,
             assistantMessage: null,
             toolCalls: [],
+            assistantParts: [],
             timestamp: Date.now(),
             isStreaming: false,
           }
@@ -107,6 +200,7 @@ export function useTurnGrouping(
 
         currentTurn.assistantMessage = message
         currentTurn.toolCalls = extractToolCallsFromMessage(message)
+        currentTurn.assistantParts = extractOrderedParts(message)
 
         // Mark streaming if this is the last message and we're streaming
         if (i === messages.length - 1 && isStreaming) {

@@ -14,6 +14,7 @@ import { fileURLToPath } from 'url'
 import { auth } from './auth'
 import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
 import { getPriceId } from './config/stripe-prices'
+import { processInterleavedStream, finalizeCurrentText } from './lib/interleaved-stream'
 import { billingDomain } from '@shogo/state-api/billing/domain'
 import { BunPostgresExecutor } from '@shogo/state-api/query/execution/bun-postgres'
 import { createBackendRegistry } from '@shogo/state-api/query/registry'
@@ -573,18 +574,18 @@ function fallbackGenerateProjectName(prompt: string): string {
     "please", "can", "you", "i", "want", "need", "would", "like",
     "simple", "basic", "web", "app", "application", "website", "page"
   ])
-  
+
   const words = prompt.toLowerCase()
     .replace(/[^\w\s]/g, "")
     .split(/\s+/)
     .filter(word => word.length > 2 && !fillerWords.has(word))
-  
+
   const nameWords = words.slice(0, 3)
-  
+
   if (nameWords.length === 0) {
     return "New Project"
   }
-  
+
   return nameWords
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ")
@@ -593,20 +594,20 @@ function fallbackGenerateProjectName(prompt: string): string {
 app.post('/api/generate-project-name', async (c) => {
   try {
     const { prompt } = await c.req.json()
-    
+
     if (!prompt || typeof prompt !== 'string') {
       return c.json({ error: 'Prompt is required' }, 400)
     }
-    
+
     // Check if ANTHROPIC_API_KEY is available
     if (!process.env.ANTHROPIC_API_KEY) {
       console.log('[/api/generate-project-name] ANTHROPIC_API_KEY not set, using fallback')
       return c.json({ name: fallbackGenerateProjectName(prompt) })
     }
-    
+
     // Use Claude Haiku - fastest and most cost-effective model for simple tasks
     const anthropic = createAnthropic()
-    
+
     const result = await generateText({
       model: anthropic('claude-3-5-haiku-latest'),
       system: `You are a project naming assistant. Given a user's description of what they want to build, generate a short, memorable project name.
@@ -627,10 +628,10 @@ Examples:
 - "build a dashboard for monitoring servers" → "Server Monitor"`,
       prompt: prompt.trim(),
     })
-    
+
     // Extract and clean the name
     const name = result.text.trim().replace(/['"]/g, '') || 'New Project'
-    
+
     return c.json({ name })
   } catch (error: any) {
     console.error('[/api/generate-project-name] Error:', error)
@@ -685,14 +686,14 @@ app.post('/api/chat', async (c) => {
       const store = await getBillingStore()
 
       // Query the SQL backend directly for the credit ledger
-      // Use .toArray() to execute the query and get results
-      const ledgers = await store.creditLedgerCollection.query({ workspace: workspaceId }).toArray()
+      // Use .where() for filtering, then .toArray() to execute the query
+      const ledgers = await store.creditLedgerCollection.query().where({ workspace: workspaceId }).toArray()
       let ledger = ledgers[0]
 
       // If no ledger exists, allocate free tier credits
       if (!ledger) {
         await store.allocateFreeCredits(workspaceId)
-        const newLedgers = await store.creditLedgerCollection.query({ workspace: workspaceId }).toArray()
+        const newLedgers = await store.creditLedgerCollection.query().where({ workspace: workspaceId }).toArray()
         ledger = newLedgers[0]
       }
 
@@ -858,53 +859,120 @@ app.post('/api/chat', async (c) => {
           virtualToolBuffer.length = 0 // Clear buffer
         }
 
+        // Feature flag for interleaved stream processing
+        // Set to true to use new processInterleavedStream that preserves text/tool boundaries
+        // Set to false to restore original toUIMessageStream behavior
+        const USE_INTERLEAVED_STREAM = true
+
         try {
-          // Merge the LLM stream with messageMetadata for session ID
-          const llmStream = result.toUIMessageStream({
-            messageMetadata: ({ part }) => {
-              // Debug logging for session ID extraction (task-cc-api-endpoint)
-              const hasProviderMetadata = !!(part as any).providerMetadata
-              const claudeCodeMeta = ((part as any).providerMetadata as Record<string, Record<string, unknown>> | undefined)?.['claude-code']
-              const sessionId = claudeCodeMeta?.sessionId as string | undefined
-              console.log('[messageMetadata]', {
-                hasProviderMetadata,
-                hasClaudeCodeMeta: !!claudeCodeMeta,
-                sessionId: sessionId ?? 'undefined',
-                partType: (part as any).type,
-              })
-              return sessionId ? { ccSessionId: sessionId } : undefined
-            },
-          })
+          if (USE_INTERLEAVED_STREAM) {
+            // =====================================================================
+            // NEW: Interleaved stream processing (chat-tool-interleaving-stream-processor)
+            // task-server-integration: Use processInterleavedStream to preserve text/tool boundaries
+            // =====================================================================
+            console.log(`${LOG_PREFIX} 📖 Starting interleaved stream processing`)
 
-          // Read and forward all chunks from LLM stream
-          // CRITICAL: Race each read against the stream completion signal
-          // This fixes the hang when subagents complete but the reader is still waiting
-          const reader = llmStream.getReader()
-          console.log(`${LOG_PREFIX} 📖 Starting reader loop with completion race`)
+            // Create the complete signal ONCE outside the loop to avoid repeated logging
+            let streamCompleteWon = false
+            const completeSignal = streamCompletePromise.then(() => {
+              if (!streamCompleteWon) {
+                streamCompleteWon = true
+                console.log(`${LOG_PREFIX} 🏁 Stream complete signal won the race - closing stream`)
+              }
+              return { type: 'completion-signal' as const }
+            })
 
-          // Create the complete signal ONCE outside the loop to avoid repeated logging
-          let streamCompleteWon = false
-          const completeSignal = streamCompletePromise.then(() => {
-            if (!streamCompleteWon) {
-              streamCompleteWon = true
-              console.log(`${LOG_PREFIX} 🏁 Stream complete signal won the race - closing stream`)
+            // Options for processInterleavedStream including metadata extraction
+            const interleavedOptions = {
+              getMessageMetadata: (providerMetadata: Record<string, Record<string, unknown>> | undefined) => {
+                // Extract ccSessionId from providerMetadata (same logic as original)
+                const claudeCodeMeta = providerMetadata?.['claude-code']
+                const sessionId = claudeCodeMeta?.sessionId as string | undefined
+                if (sessionId) {
+                  console.log('[messageMetadata]', {
+                    hasProviderMetadata: !!providerMetadata,
+                    hasClaudeCodeMeta: !!claudeCodeMeta,
+                    sessionId,
+                    source: 'interleaved-stream',
+                  })
+                }
+                return sessionId ? { ccSessionId: sessionId } : undefined
+              }
             }
-            return { done: true as const, value: undefined }
-          })
 
-          while (true) {
-            // Race the read against the completion signal from Stop/SessionEnd hooks
-            const readResult = await Promise.race([
-              reader.read(),
+            // Use for-await-of loop over processInterleavedStream
+            // Wrap in async IIFE to allow Promise.race against completion signal
+            const processStream = async () => {
+              for await (const chunk of processInterleavedStream(result.fullStream, interleavedOptions)) {
+                writer.write(chunk)
+              }
+              return { type: 'stream-exhausted' as const }
+            }
+
+            // Race the stream processing against completion signal
+            const raceResult = await Promise.race([
+              processStream(),
               completeSignal
             ])
 
-            if (readResult.done) {
-              console.log(`${LOG_PREFIX} ✅ Reader loop complete (done=${readResult.done})`)
-              break
+            if (raceResult.type === 'completion-signal') {
+              console.log(`${LOG_PREFIX} ✅ Loop breaking due to completion signal`)
+              // Completion signal won - stream is being closed by Stop/SessionEnd hook
+            } else {
+              console.log(`${LOG_PREFIX} ✅ Stream processing complete (stream exhausted)`)
             }
-            if (readResult.value) {
-              writer.write(readResult.value)
+          } else {
+            // =====================================================================
+            // ROLLBACK: Original toUIMessageStream implementation
+            // Set USE_INTERLEAVED_STREAM = false to restore this behavior
+            // =====================================================================
+            // Merge the LLM stream with messageMetadata for session ID
+            const llmStream = result.toUIMessageStream({
+              messageMetadata: ({ part }) => {
+                // Debug logging for session ID extraction (task-cc-api-endpoint)
+                const hasProviderMetadata = !!(part as any).providerMetadata
+                const claudeCodeMeta = ((part as any).providerMetadata as Record<string, Record<string, unknown>> | undefined)?.['claude-code']
+                const sessionId = claudeCodeMeta?.sessionId as string | undefined
+                console.log('[messageMetadata]', {
+                  hasProviderMetadata,
+                  hasClaudeCodeMeta: !!claudeCodeMeta,
+                  sessionId: sessionId ?? 'undefined',
+                  partType: (part as any).type,
+                })
+                return sessionId ? { ccSessionId: sessionId } : undefined
+              },
+            })
+
+            // Read and forward all chunks from LLM stream
+            // CRITICAL: Race each read against the stream completion signal
+            // This fixes the hang when subagents complete but the reader is still waiting
+            const reader = llmStream.getReader()
+            console.log(`${LOG_PREFIX} 📖 Starting reader loop with completion race`)
+
+            // Create the complete signal ONCE outside the loop to avoid repeated logging
+            let streamCompleteWon = false
+            const completeSignal = streamCompletePromise.then(() => {
+              if (!streamCompleteWon) {
+                streamCompleteWon = true
+                console.log(`${LOG_PREFIX} 🏁 Stream complete signal won the race - closing stream`)
+              }
+              return { done: true as const, value: undefined }
+            })
+
+            while (true) {
+              // Race the read against the completion signal from Stop/SessionEnd hooks
+              const readResult = await Promise.race([
+                reader.read(),
+                completeSignal
+              ])
+
+              if (readResult.done) {
+                console.log(`${LOG_PREFIX} ✅ Reader loop complete (done=${readResult.done})`)
+                break
+              }
+              if (readResult.value) {
+                writer.write(readResult.value)
+              }
             }
           }
         } finally {
@@ -928,7 +996,7 @@ app.post('/api/chat', async (c) => {
                 const outputTokens = usage?.completionTokens ?? usage?.outputTokens ?? 0
                 const totalTokens = usage?.totalTokens ?? (inputTokens + outputTokens)
                 const creditCost = calculateCreditCost(totalTokens)
-                
+
                 const store = await getBillingStore()
                 await store.consumeCredits(
                   workspaceId,
@@ -936,8 +1004,8 @@ app.post('/api/chat', async (c) => {
                   userId,
                   'chat_message',
                   undefined, // projectId
-                  { 
-                    phase, 
+                  {
+                    phase,
                     ccSessionId,
                     inputTokens,
                     outputTokens,
@@ -979,7 +1047,7 @@ app.post('/api/chat', async (c) => {
 // Billing routes (simplified - accepts workspaceId in body)
 // =============================================================================
 // Only initialize Stripe if the API key is set
-const stripe = process.env.STRIPE_SECRET_KEY 
+const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY)
   : null
 
