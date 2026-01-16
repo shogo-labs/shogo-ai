@@ -24,6 +24,8 @@ export interface ProjectTopBarProps {
   projectSubtitle?: string
   isStarred?: boolean
   workspaceName?: string
+  credits?: number
+  maxCredits?: number
   currentUserName?: string
   userInitial?: string
   isPublished?: boolean
@@ -51,6 +53,8 @@ export function ProjectTopBar({
   projectSubtitle = "Previewing last saved version",
   isStarred = false,
   workspaceName = "My Workspace",
+  credits,
+  maxCredits,
   currentUserName = "You",
   userInitial,
   isPublished = false,
@@ -116,6 +120,8 @@ export function ProjectTopBar({
           projectSubtitle={projectSubtitle}
           isStarred={isStarred}
           workspaceName={workspaceName}
+          credits={credits}
+          maxCredits={maxCredits}
           onRename={onRename}
           onToggleStar={onToggleStar}
           onDuplicate={onDuplicate}

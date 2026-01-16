@@ -1624,13 +1624,15 @@ export const ChatPanel = observer(function ChatPanel({
         )}
 
         {/* Input */}
-        <ChatInput
-          onSubmit={handleInputSubmit}
-          disabled={!currentSessionId}
-          placeholder={!featureId ? "Select a feature to start chatting..." : "Ask Shogo..."}
-          isStreaming={isStreaming}
-          onStop={stop}
-        />
+        <div className="border-t border-border/40">
+          <ChatInput
+            onSubmit={handleInputSubmit}
+            disabled={!currentSessionId}
+            placeholder={!featureId ? "Select a feature to start chatting..." : "Ask Shogo..."}
+            isStreaming={isStreaming}
+            onStop={stop}
+          />
+        </div>
       </div>
     </div>
   )
