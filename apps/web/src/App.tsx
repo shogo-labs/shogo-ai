@@ -3,10 +3,13 @@ import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { AuthGate, AppShell } from '@/components/app'
 import { WorkspaceLayout } from '@/components/app/workspace'
 import { AdvancedChatLayout } from './components/app/advanced-chat'
+import { ProjectLayout } from './components/app/project'
 import { AppProfilePage } from './pages/AppProfilePage'
 import { AppBillingPage } from './pages/AppBillingPage'
 import { AppMemberManagementPage } from './pages/AppMemberManagementPage'
 import { AllProjectsPage } from './pages/AllProjectsPage'
+import { StarredProjectsPage } from './pages/StarredProjectsPage'
+import { SharedWithMePage } from './pages/SharedWithMePage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
@@ -65,6 +68,13 @@ function App() {
             <WavesmithMetaStoreProvider>
               <AuthProvider authService={authService}>
                 <Routes>
+                  {/* Project view route - full screen without sidebar */}
+                  <Route path="/projects/:projectId" element={
+                    <AuthGate>
+                      <ProjectLayout />
+                    </AuthGate>
+                  } />
+
                   {/* Protected root route - Shogo Studio App */}
                   <Route path="/*" element={
                     <AuthGate>
@@ -84,9 +94,9 @@ function App() {
                     {/* All projects page */}
                     <Route path="projects" element={<AllProjectsPage />} />
                     {/* Starred projects */}
-                    <Route path="starred" element={<AllProjectsPage />} />
+                    <Route path="starred" element={<StarredProjectsPage />} />
                     {/* Shared projects */}
-                    <Route path="shared" element={<AllProjectsPage />} />
+                    <Route path="shared" element={<SharedWithMePage />} />
                     {/* Discover */}
                     <Route path="discover" element={<AllProjectsPage />} />
                     {/* Templates */}

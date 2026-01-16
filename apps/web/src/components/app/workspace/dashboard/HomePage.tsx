@@ -60,22 +60,92 @@ export const HomePage = observer(function HomePage({
   const firstName = userName.split(" ")[0] || "there"
 
   return (
-    <div className="relative h-full flex flex-col">
-      {/* Gradient mesh background */}
+    <div className="relative h-full flex flex-col overflow-hidden">
+      {/* Animated gradient mesh background - inspired by Lovable.dev */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        {/* Primary gradient orb - large, blue to pink */}
         <div
-          className="absolute top-1/4 left-1/4 w-[600px] h-[600px] rounded-full opacity-30 blur-3xl"
+          className="absolute w-[800px] h-[800px] rounded-full blur-[120px] animate-gradient-shift"
           style={{
-            background: "linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #ec4899 100%)",
+            background: "radial-gradient(circle, rgba(59, 130, 246, 0.6) 0%, rgba(139, 92, 246, 0.5) 40%, rgba(236, 72, 153, 0.4) 100%)",
+            top: "10%",
+            left: "20%",
+            animation: "gradient-float 15s ease-in-out infinite",
           }}
         />
+        
+        {/* Secondary gradient orb - orange to pink */}
         <div
-          className="absolute bottom-1/4 right-1/4 w-[500px] h-[500px] rounded-full opacity-25 blur-3xl"
+          className="absolute w-[600px] h-[600px] rounded-full blur-[100px]"
           style={{
-            background: "linear-gradient(135deg, #f97316 0%, #ec4899 50%, #8b5cf6 100%)",
+            background: "radial-gradient(circle, rgba(249, 115, 22, 0.5) 0%, rgba(236, 72, 153, 0.5) 50%, rgba(139, 92, 246, 0.3) 100%)",
+            bottom: "5%",
+            right: "10%",
+            animation: "gradient-float-reverse 18s ease-in-out infinite",
+          }}
+        />
+        
+        {/* Tertiary gradient orb - cyan accent */}
+        <div
+          className="absolute w-[500px] h-[500px] rounded-full blur-[100px]"
+          style={{
+            background: "radial-gradient(circle, rgba(34, 211, 238, 0.3) 0%, rgba(59, 130, 246, 0.3) 100%)",
+            top: "50%",
+            right: "30%",
+            animation: "gradient-pulse 12s ease-in-out infinite",
+          }}
+        />
+        
+        {/* Hot pink accent orb */}
+        <div
+          className="absolute w-[400px] h-[400px] rounded-full blur-[80px]"
+          style={{
+            background: "radial-gradient(circle, rgba(236, 72, 153, 0.5) 0%, rgba(168, 85, 247, 0.3) 100%)",
+            top: "30%",
+            left: "50%",
+            transform: "translateX(-50%)",
+            animation: "gradient-float 20s ease-in-out infinite reverse",
           }}
         />
       </div>
+      
+      {/* CSS Keyframe animations */}
+      <style>{`
+        @keyframes gradient-float {
+          0%, 100% {
+            transform: translate(0, 0) scale(1);
+          }
+          33% {
+            transform: translate(30px, -30px) scale(1.05);
+          }
+          66% {
+            transform: translate(-20px, 20px) scale(0.95);
+          }
+        }
+        
+        @keyframes gradient-float-reverse {
+          0%, 100% {
+            transform: translate(0, 0) scale(1);
+          }
+          33% {
+            transform: translate(-25px, 25px) scale(1.03);
+          }
+          66% {
+            transform: translate(15px, -15px) scale(0.97);
+          }
+        }
+        
+        @keyframes gradient-pulse {
+          0%, 100% {
+            opacity: 0.3;
+            transform: scale(1);
+          }
+          50% {
+            opacity: 0.5;
+            transform: scale(1.1);
+          }
+        }
+      `}</style>
 
       {/* Main content */}
       <div className="relative flex-1 flex flex-col items-center justify-center p-8">

@@ -5,7 +5,7 @@
  * Tests verify:
  * 1. Toggle renders in header with correct icon based on current route
  * 2. Clicking navigates to correct route (/ or /advanced-chat)
- * 3. URL params (org, project) are preserved on navigation
+ * 3. URL params (project, feature) are preserved on navigation
  * 4. Preference is persisted to localStorage key 'advanced-chat-preferred'
  * 5. Uses shadcn Button with variant='ghost' size='icon'
  *
@@ -142,15 +142,6 @@ describe("AdvancedModeToggle Navigate to Advanced", () => {
     expect(container.querySelector('[data-testid="layout-grid-icon"]')).toBeNull()
   })
 
-  test("preserves org param when navigating to advanced", () => {
-    const { container } = renderWithRouter("/?org=shogo")
-    const button = container.querySelector("button")!
-
-    fireEvent.click(button)
-
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/advanced-chat?org=shogo")
-  })
-
   test("preserves project param when navigating to advanced", () => {
     const { container } = renderWithRouter("/?project=abc123")
     const button = container.querySelector("button")!
@@ -160,13 +151,22 @@ describe("AdvancedModeToggle Navigate to Advanced", () => {
     expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/advanced-chat?project=abc123")
   })
 
-  test("preserves org and project params when navigating to advanced", () => {
-    const { container } = renderWithRouter("/?org=shogo&project=abc123")
+  test("preserves feature param when navigating to advanced", () => {
+    const { container } = renderWithRouter("/?feature=feat456")
     const button = container.querySelector("button")!
 
     fireEvent.click(button)
 
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/advanced-chat?org=shogo&project=abc123")
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/advanced-chat?feature=feat456")
+  })
+
+  test("preserves project and feature params when navigating to advanced", () => {
+    const { container } = renderWithRouter("/?project=abc123&feature=feat456")
+    const button = container.querySelector("button")!
+
+    fireEvent.click(button)
+
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/advanced-chat?project=abc123&feature=feat456")
   })
 })
 
@@ -202,13 +202,13 @@ describe("AdvancedModeToggle Navigate to Standard", () => {
     expect(container.querySelector('[data-testid="sparkles-icon"]')).toBeNull()
   })
 
-  test("preserves org param when navigating to standard", () => {
-    const { container } = renderWithRouter("/advanced-chat?org=shogo")
+  test("preserves feature param when navigating to standard", () => {
+    const { container } = renderWithRouter("/advanced-chat?feature=feat456")
     const button = container.querySelector("button")!
 
     fireEvent.click(button)
 
-    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/?org=shogo")
+    expect(container.querySelector('[data-testid="location-display"]')?.textContent).toBe("/?feature=feat456")
   })
 
   test("preserves project param when navigating to standard", () => {

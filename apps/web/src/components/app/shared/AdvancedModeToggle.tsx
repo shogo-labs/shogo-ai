@@ -7,7 +7,7 @@
  *
  * Implementation details (per dd-testbed-mode-toggle-behavior):
  * - Uses LayoutGrid icon for standard mode, Sparkles icon for advanced mode
- * - Preserves org, project URL params during navigation
+ * - Preserves project, feature URL params during navigation
  * - Persists preference to localStorage key 'advanced-chat-preferred'
  * - Uses useNavigate() from react-router-dom for navigation
  * - Uses useLocation() to determine current route

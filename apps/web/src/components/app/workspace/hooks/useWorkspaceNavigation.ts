@@ -2,31 +2,30 @@
  * useWorkspaceNavigation Hook
  * Task: task-2-2-002
  *
- * Manages URL state for workspace navigation using nuqs.
- * URL params: ?org={slug}&project={id}&feature={id}
+ * Manages navigation state for workspace, project, feature, and folder.
+ * - Workspace slug stored in localStorage (persists across sessions)
+ * - Project, feature, folder IDs stored in URL params (shareable)
  *
  * Features:
+ * - Workspace persisted in localStorage, not URL
  * - Type-safe URL state via nuqs parseAsString
- * - Cascade clearing: changing org clears project+feature, changing project clears feature
+ * - Cascade clearing: changing workspace clears project+feature, changing project clears feature
  * - Clean utility functions: clearFeature, clearProject
- *
- * Per design decision design-2-2-url-state:
- * - URL is source of truth for navigation state
- * - Uses parseAsString for all params
- * - Org uses slug (human-readable), project/feature use IDs
  */
 
 import { useQueryState, parseAsString } from "nuqs"
-import { useCallback } from "react"
+import { useCallback, useState, useEffect } from "react"
+
+const WORKSPACE_STORAGE_KEY = "shogo-current-workspace"
 
 /**
  * Return type for useWorkspaceNavigation hook
  */
 export interface WorkspaceNavigationState {
-  /** Current organization slug from URL */
-  org: string | null
-  /** Set organization slug (cascades to clear project, feature, and folder) */
-  setOrg: (org: string | null) => Promise<URLSearchParams>
+  /** Current workspace slug from localStorage */
+  workspaceSlug: string | null
+  /** Set workspace slug (cascades to clear project, feature, and folder) */
+  setWorkspaceSlug: (slug: string | null) => void
   /** Current project ID from URL */
   projectId: string | null
   /** Set project ID (cascades to clear feature) */
@@ -39,28 +38,30 @@ export interface WorkspaceNavigationState {
   folderId: string | null
   /** Set folder ID for navigating into folders */
   setFolderId: (folderId: string | null) => Promise<URLSearchParams>
-  /** Clear feature ID (keeps org and project) */
+  /** Clear feature ID (keeps workspace and project) */
   clearFeature: () => Promise<URLSearchParams>
-  /** Clear project ID and feature ID (keeps org) */
+  /** Clear project ID and feature ID (keeps workspace) */
   clearProject: () => Promise<URLSearchParams>
   /** Clear folder ID (navigate to root of All Projects) */
   clearFolder: () => Promise<URLSearchParams>
 }
 
 /**
- * Hook for managing workspace navigation URL state.
+ * Hook for managing workspace navigation state.
  *
- * Uses nuqs useQueryState for type-safe URL parameter management.
- * Implements cascade clearing per design-2-2-url-state:
- * - Changing org clears projectId and featureId
+ * Workspace slug is stored in localStorage for persistence without URL clutter.
+ * Uses nuqs useQueryState for URL parameters (project, feature, folder).
+ *
+ * Implements cascade clearing:
+ * - Changing workspace clears projectId, featureId, and folderId
  * - Changing project clears featureId
  *
  * @example
  * ```tsx
- * const { org, setOrg, projectId, setProjectId, featureId } = useWorkspaceNavigation()
+ * const { workspaceSlug, setWorkspaceSlug, projectId, setProjectId, featureId } = useWorkspaceNavigation()
  *
- * // Navigate to a different org (clears project and feature)
- * await setOrg('new-org')
+ * // Navigate to a different workspace (clears project and feature)
+ * setWorkspaceSlug('new-workspace')
  *
  * // Select a project (clears feature)
  * await setProjectId('project-123')
@@ -70,8 +71,33 @@ export interface WorkspaceNavigationState {
  * ```
  */
 export function useWorkspaceNavigation(): WorkspaceNavigationState {
-  // URL state for organization slug
-  const [org, setOrgRaw] = useQueryState("org", parseAsString)
+  // Workspace slug stored in localStorage
+  const [workspaceSlug, setWorkspaceSlugState] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null
+    return localStorage.getItem(WORKSPACE_STORAGE_KEY)
+  })
+
+  // Listen for localStorage changes from other hook instances or tabs
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === WORKSPACE_STORAGE_KEY) {
+        setWorkspaceSlugState(e.newValue)
+      }
+    }
+
+    // Custom event for same-window localStorage updates
+    const handleCustomStorageChange = (e: CustomEvent<string | null>) => {
+      setWorkspaceSlugState(e.detail)
+    }
+
+    window.addEventListener("storage", handleStorageChange)
+    window.addEventListener("workspace-changed", handleCustomStorageChange as EventListener)
+
+    return () => {
+      window.removeEventListener("storage", handleStorageChange)
+      window.removeEventListener("workspace-changed", handleCustomStorageChange as EventListener)
+    }
+  }, [])
 
   // URL state for project ID
   const [projectId, setProjectIdRaw] = useQueryState("project", parseAsString)
@@ -83,17 +109,28 @@ export function useWorkspaceNavigation(): WorkspaceNavigationState {
   const [folderId, setFolderIdRaw] = useQueryState("folder", parseAsString)
 
   /**
-   * Set organization - cascades to clear project, feature, and folder
+   * Set workspace - cascades to clear project, feature, and folder
    */
-  const setOrg = useCallback(
-    async (newOrg: string | null): Promise<URLSearchParams> => {
-      // Clear project, feature, and folder when org changes
-      await setProjectIdRaw(null)
-      await setFeatureIdRaw(null)
-      await setFolderIdRaw(null)
-      return setOrgRaw(newOrg)
+  const setWorkspaceSlug = useCallback(
+    (newSlug: string | null) => {
+      // Update localStorage
+      if (newSlug) {
+        localStorage.setItem(WORKSPACE_STORAGE_KEY, newSlug)
+      } else {
+        localStorage.removeItem(WORKSPACE_STORAGE_KEY)
+      }
+      setWorkspaceSlugState(newSlug)
+
+      // Dispatch custom event to notify other hook instances in the same window
+      // (storage event only fires for other tabs/windows, not the same window)
+      window.dispatchEvent(new CustomEvent("workspace-changed", { detail: newSlug }))
+
+      // Clear URL params when workspace changes
+      setProjectIdRaw(null)
+      setFeatureIdRaw(null)
+      setFolderIdRaw(null)
     },
-    [setOrgRaw, setProjectIdRaw, setFeatureIdRaw, setFolderIdRaw]
+    [setProjectIdRaw, setFeatureIdRaw, setFolderIdRaw]
   )
 
   /**
@@ -151,8 +188,8 @@ export function useWorkspaceNavigation(): WorkspaceNavigationState {
   }, [setFolderIdRaw])
 
   return {
-    org,
-    setOrg,
+    workspaceSlug,
+    setWorkspaceSlug,
     projectId,
     setProjectId,
     featureId,

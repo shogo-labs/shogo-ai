@@ -76,7 +76,7 @@ export function TurnGroup({
   return (
     <div
       className={cn(
-        "pl-3 border-l-2 space-y-3",
+        "pl-1 space-y-3",
         turn.assistantMessage ? colors.border : "border-primary/30",
         className
       )}
@@ -84,7 +84,7 @@ export function TurnGroup({
       {/* User message */}
       {turn.userMessage && (
         <div className="space-y-1">
-          <TurnHeader role="user" />
+          {/* <TurnHeader role="user" /> */}
           <MessageContent message={turn.userMessage} />
         </div>
       )}

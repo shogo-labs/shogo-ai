@@ -15,6 +15,48 @@ import { auth } from './auth'
 import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
 import { getPriceId } from './config/stripe-prices'
 import { processInterleavedStream, finalizeCurrentText } from './lib/interleaved-stream'
+import { billingDomain } from '@shogo/state-api/billing/domain'
+import { BunPostgresExecutor } from '@shogo/state-api/query/execution/bun-postgres'
+import { createBackendRegistry } from '@shogo/state-api/query/registry'
+import { SqlBackend } from '@shogo/state-api/query/backends/sql'
+import { NullPersistence } from '@shogo/state-api/persistence/null'
+
+// Billing domain store singleton for webhook handling
+let billingStore: ReturnType<typeof billingDomain.createStore> | null = null
+
+async function getBillingStore(): Promise<ReturnType<typeof billingDomain.createStore>> {
+  if (billingStore) {
+    return billingStore
+  }
+
+  const DATABASE_URL = process.env.DATABASE_URL
+  if (!DATABASE_URL) {
+    throw new Error("DATABASE_URL environment variable is required")
+  }
+
+  const isSupabase = DATABASE_URL.includes("supabase")
+  const executor = new BunPostgresExecutor(DATABASE_URL, {
+    tls: isSupabase,
+    max: 5,
+  })
+
+  const registry = createBackendRegistry()
+  const sqlBackend = new SqlBackend({ dialect: "pg", executor })
+  registry.register("postgres", sqlBackend)
+  registry.setDefault("postgres")
+
+  billingStore = billingDomain.createStore({
+    services: {
+      persistence: new NullPersistence(),
+      backendRegistry: registry,
+    },
+    context: {
+      schemaName: "billing",
+    },
+  })
+
+  return billingStore
+}
 
 /**
  * Parse a data URL to extract mediaType and base64 data.
@@ -532,18 +574,18 @@ function fallbackGenerateProjectName(prompt: string): string {
     "please", "can", "you", "i", "want", "need", "would", "like",
     "simple", "basic", "web", "app", "application", "website", "page"
   ])
-  
+
   const words = prompt.toLowerCase()
     .replace(/[^\w\s]/g, "")
     .split(/\s+/)
     .filter(word => word.length > 2 && !fillerWords.has(word))
-  
+
   const nameWords = words.slice(0, 3)
-  
+
   if (nameWords.length === 0) {
     return "New Project"
   }
-  
+
   return nameWords
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ")
@@ -552,20 +594,20 @@ function fallbackGenerateProjectName(prompt: string): string {
 app.post('/api/generate-project-name', async (c) => {
   try {
     const { prompt } = await c.req.json()
-    
+
     if (!prompt || typeof prompt !== 'string') {
       return c.json({ error: 'Prompt is required' }, 400)
     }
-    
+
     // Check if ANTHROPIC_API_KEY is available
     if (!process.env.ANTHROPIC_API_KEY) {
       console.log('[/api/generate-project-name] ANTHROPIC_API_KEY not set, using fallback')
       return c.json({ name: fallbackGenerateProjectName(prompt) })
     }
-    
+
     // Use Claude Haiku - fastest and most cost-effective model for simple tasks
     const anthropic = createAnthropic()
-    
+
     const result = await generateText({
       model: anthropic('claude-3-5-haiku-latest'),
       system: `You are a project naming assistant. Given a user's description of what they want to build, generate a short, memorable project name.
@@ -586,10 +628,10 @@ Examples:
 - "build a dashboard for monitoring servers" → "Server Monitor"`,
       prompt: prompt.trim(),
     })
-    
+
     // Extract and clean the name
     const name = result.text.trim().replace(/['"]/g, '') || 'New Project'
-    
+
     return c.json({ name })
   } catch (error: any) {
     console.error('[/api/generate-project-name] Error:', error)
@@ -598,6 +640,25 @@ Examples:
     return c.json({ name: fallbackGenerateProjectName(prompt || '') })
   }
 })
+
+/**
+ * Calculate credit cost based on total tokens consumed.
+ * 
+ * Pricing: 0.1 credits per 5,000 tokens
+ * - Round up to nearest 0.1 credits
+ * - Minimum charge: 0.5 credits
+ * 
+ * @param totalTokens - Combined input + output tokens
+ * @returns Credits to charge (minimum 0.5)
+ */
+function calculateCreditCost(totalTokens: number): number {
+  // Rate: 0.1 credits per 5000 tokens
+  const rawCredits = (totalTokens / 5000) * 0.1
+  // Round up to nearest 0.1
+  const rounded = Math.ceil(rawCredits * 10) / 10
+  // Enforce minimum of 0.5 credits
+  return Math.max(rounded, 0.5)
+}
 
 /**
  * AI Chat endpoint using Vercel AI SDK with Claude Code provider
@@ -609,10 +670,56 @@ Examples:
  * - Accepts optional `ccSessionId` in request body
  * - When provided, passes it as `resume` parameter to Claude Code
  * - This allows continuing previous Claude Code conversations
+ * 
+ * Credit Charging (after completion):
+ * - Credits are charged AFTER the response completes
+ * - Cost is based on total tokens (input + output)
+ * - Rate: 0.1 credits per 5,000 tokens, minimum 0.5 credits
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, phase, ccSessionId } = await c.req.json()
+    const { messages, phase, ccSessionId, workspaceId, userId } = await c.req.json()
+
+    // credit-limit-enforcement: Pre-check credits BEFORE calling AI
+    // This prevents users from sending messages when they have no credits remaining
+    if (workspaceId) {
+      const store = await getBillingStore()
+
+      // Query the SQL backend directly for the credit ledger
+      // Use .toArray() to execute the query and get results
+      const ledgers = await store.creditLedgerCollection.query({ workspace: workspaceId }).toArray()
+      let ledger = ledgers[0]
+
+      // If no ledger exists, allocate free tier credits
+      if (!ledger) {
+        await store.allocateFreeCredits(workspaceId)
+        const newLedgers = await store.creditLedgerCollection.query({ workspace: workspaceId }).toArray()
+        ledger = newLedgers[0]
+      }
+
+      if (ledger) {
+        // Calculate effective balance with lazy daily reset
+        const now = Date.now()
+        const lastResetDay = new Date(ledger.lastDailyReset).setUTCHours(0, 0, 0, 0)
+        const todayStart = new Date(now).setUTCHours(0, 0, 0, 0)
+        const needsReset = lastResetDay !== todayStart
+
+        const dailyCredits = needsReset ? 5 : ledger.dailyCredits
+        const total = dailyCredits + ledger.monthlyCredits + ledger.rolloverCredits
+
+        // Minimum credit cost is 0.5, so check if total >= 0.5
+        if (total < 0.5) {
+          return c.json(
+            {
+              error: 'Insufficient credits',
+              message: 'You have run out of daily credits. Credits reset at midnight UTC.',
+              creditsRemaining: total,
+            },
+            402 // Payment Required
+          )
+        }
+      }
+    }
 
     // Build dynamic system prompt based on current pipeline phase
     const systemPrompt = buildSystemPrompt(phase)
@@ -877,6 +984,40 @@ app.post('/api/chat', async (c) => {
           streamWriter = null
           console.log(`${LOG_PREFIX} 📊 Remaining listener count:`, progressEvents.listenerCount('progress'))
           console.log(`${VT_LOG_PREFIX} 📊 Remaining listener count:`, virtualToolEvents.listenerCount('virtual-tool'))
+
+          // credit-tracking: Charge credits AFTER stream completes based on token usage
+          // Fire-and-forget pattern - don't block the stream response
+          if (workspaceId && userId) {
+            (async () => {
+              try {
+                const usage = await result.usage as any
+                // AI SDK usage may have totalTokens, promptTokens/completionTokens, or inputTokens/outputTokens
+                const inputTokens = usage?.promptTokens ?? usage?.inputTokens ?? 0
+                const outputTokens = usage?.completionTokens ?? usage?.outputTokens ?? 0
+                const totalTokens = usage?.totalTokens ?? (inputTokens + outputTokens)
+                const creditCost = calculateCreditCost(totalTokens)
+
+                const store = await getBillingStore()
+                await store.consumeCredits(
+                  workspaceId,
+                  creditCost,
+                  userId,
+                  'chat_message',
+                  undefined, // projectId
+                  {
+                    phase,
+                    ccSessionId,
+                    inputTokens,
+                    outputTokens,
+                    totalTokens,
+                  }
+                )
+                console.log(`[/api/chat] 💰 Charged ${creditCost} credits (${totalTokens} tokens) for workspace ${workspaceId}`)
+              } catch (creditError: any) {
+                console.error(`[/api/chat] ⚠️ Failed to charge credits:`, creditError.message)
+              }
+            })()
+          }
         }
       },
       onError: (error) => {
@@ -906,7 +1047,7 @@ app.post('/api/chat', async (c) => {
 // Billing routes (simplified - accepts workspaceId in body)
 // =============================================================================
 // Only initialize Stripe if the API key is set
-const stripe = process.env.STRIPE_SECRET_KEY 
+const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY)
   : null
 
@@ -917,7 +1058,7 @@ app.post('/api/billing/checkout', async (c) => {
     }
 
     const body = await c.req.json()
-    const { workspaceId, planId, billingInterval } = body
+    const { workspaceId, planId, billingInterval, userEmail } = body
 
     if (!workspaceId || !planId || !billingInterval) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
@@ -930,18 +1071,27 @@ app.post('/api/billing/checkout', async (c) => {
       return c.json({ error: { code: 'invalid_plan', message: `No price found for ${planId} ${billingInterval}` } }, 400)
     }
 
+    // Build metadata
+    const metadata: Record<string, string> = {
+      workspaceId,
+      planId,
+      billingInterval,
+    }
+
+    // Include workspace ID in URLs for proper navigation after checkout
+    const successUrl = `http://localhost:${VITE_PORT}/app?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = `http://localhost:${VITE_PORT}/app?workspace=${workspaceId}&checkout=canceled`
+
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `http://localhost:${VITE_PORT}/billing?success=true&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `http://localhost:${VITE_PORT}/billing?canceled=true`,
-      metadata: {
-        workspaceId,
-        planId,
-        billingInterval,
-      },
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata,
+      // Pre-fill customer email to skip the email field in checkout
+      ...(userEmail && { customer_email: userEmail }),
     })
 
     return c.json({ sessionId: session.id, url: session.url }, 200)
@@ -1012,6 +1162,42 @@ app.post('/webhooks/stripe', async (c) => {
           customerId: session.customer,
           metadata: session.metadata,
         })
+
+        // Create subscription in billing domain
+        const { workspaceId, planId, billingInterval } = session.metadata || {}
+        if (workspaceId && planId && billingInterval && session.subscription && session.customer) {
+          try {
+            // Fetch the full subscription details from Stripe
+            const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string)
+
+            // Convert Stripe timestamps (seconds) to milliseconds, with fallbacks
+            const now = Date.now()
+            const currentPeriodStart = stripeSubscription.current_period_start
+              ? stripeSubscription.current_period_start * 1000
+              : now
+            const currentPeriodEnd = stripeSubscription.current_period_end
+              ? stripeSubscription.current_period_end * 1000
+              : now + (30 * 24 * 60 * 60 * 1000) // Default to 30 days from now
+
+            const store = await getBillingStore()
+            await store.subscriptionCollection.insertOne({
+              id: crypto.randomUUID(),
+              workspace: workspaceId,
+              stripeSubscriptionId: stripeSubscription.id,
+              stripeCustomerId: session.customer as string,
+              planId: planId as 'pro' | 'business' | 'enterprise',
+              status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
+              billingInterval: billingInterval as 'monthly' | 'annual',
+              currentPeriodStart,
+              currentPeriodEnd,
+              cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
+              createdAt: now,
+            })
+            console.log('[Webhook] Subscription created for workspace:', workspaceId)
+          } catch (err: any) {
+            console.error('[Webhook] Failed to create subscription:', err.message)
+          }
+        }
         break
       }
       default:

@@ -113,6 +113,60 @@ if (spec.registrationStrategy === "embedded" && !spec.parentContainer) {
 - Component-builder schema loaded
 - Requirements, layout decisions, data bindings from spec
 
+## Pre-Implementation: Plan Subagent
+
+**Before generating any code**, spawn a Plan subagent to validate the implementation approach against platform patterns and quality criteria.
+
+### Plan Agent Prompt
+
+```
+Review this ComponentSpec and create an implementation plan that addresses:
+
+1. **Architecture Alignment**
+   - Which registration strategy applies? (sectionImplementationMap, embedded, rendererBindings, compositionOnly)
+   - Does the component need to be generic (any schema/model) or domain-specific?
+   - What data loading pattern fits? (sync MST views vs async query builder)
+
+2. **Platform Patterns Checklist**
+   - [ ] Uses meta-store for property metadata (not hardcoded assumptions)
+   - [ ] Uses PropertyRenderer for type-aware field display
+   - [ ] Handles all states: config validation, loading, error, empty, success
+   - [ ] Config-driven where appropriate (schema/model via config, not hardcoded)
+   - [ ] Follows reactive store access patterns
+
+3. **Data Loading Decision**
+   - Will data come from local MST store (sync) or database queries (async)?
+   - Does the component need to support both paths via config?
+   - Reference: data-loading-patterns.md
+
+4. **Generic vs Specific**
+   - Should this be a generic section (like DataGridSection) that works with any collection?
+   - Or domain-specific (like RequirementsListSection) tied to a specific model?
+   - Reference: generic-section-template.md
+
+5. **aiGuidance Needs**
+   - Does this component have non-trivial config that agents need guidance for?
+   - If yes, plan the aiGuidance structure
+   - Reference: aiGuidance-authoring.md
+
+Return a structured implementation plan with:
+- File locations
+- Key implementation decisions
+- Patterns to apply from references
+- Any concerns or questions before proceeding
+```
+
+### Plan Review Gate
+
+Review the Plan agent's output before proceeding. If the plan reveals:
+- Unclear architecture decisions → Clarify with user
+- Missing patterns → Incorporate before coding
+- Scope creep → Simplify to essentials
+
+Only proceed to Phase 1 after plan is validated.
+
+---
+
 ## Output
 
 - New React component file (section, renderer, or composition config)
@@ -507,5 +561,14 @@ const data = {schema}.{collection}.{queryMethod}()
 
 ## References
 
+### Templates
 - [section-template.md](references/section-template.md) - Full section component template
+- [generic-section-template.md](references/generic-section-template.md) - Config-driven schema/model pattern
+
+### Patterns
+- [data-loading-patterns.md](references/data-loading-patterns.md) - Sync vs async data access
+- [meta-store-integration.md](references/meta-store-integration.md) - Schema introspection for dynamic rendering
+- [aiGuidance-authoring.md](references/aiGuidance-authoring.md) - Writing effective component guidance
+
+### Workflow
 - [tdd-lite.md](references/tdd-lite.md) - Lightweight TDD workflow for UI
