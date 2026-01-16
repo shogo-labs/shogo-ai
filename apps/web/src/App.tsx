@@ -8,6 +8,8 @@ import { AppProfilePage } from './pages/AppProfilePage'
 import { AppBillingPage } from './pages/AppBillingPage'
 import { AppMemberManagementPage } from './pages/AppMemberManagementPage'
 import { AllProjectsPage } from './pages/AllProjectsPage'
+import { StarredProjectsPage } from './pages/StarredProjectsPage'
+import { SharedWithMePage } from './pages/SharedWithMePage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider } from './contexts/DomainProvider'
@@ -92,9 +94,9 @@ function App() {
                     {/* All projects page */}
                     <Route path="projects" element={<AllProjectsPage />} />
                     {/* Starred projects */}
-                    <Route path="starred" element={<AllProjectsPage />} />
+                    <Route path="starred" element={<StarredProjectsPage />} />
                     {/* Shared projects */}
-                    <Route path="shared" element={<AllProjectsPage />} />
+                    <Route path="shared" element={<SharedWithMePage />} />
                     {/* Discover */}
                     <Route path="discover" element={<AllProjectsPage />} />
                     {/* Templates */}

@@ -94,6 +94,14 @@ export const StudioCoreDomain = scope({
     createdAt: "number",
     "updatedAt?": "number",
   },
+
+  StarredProject: {
+    id: "string.uuid",
+    userId: "string", // The user who starred this project
+    projectId: "string", // The project being starred (loose ref)
+    workspaceId: "string", // Workspace for filtering
+    createdAt: "number",
+  },
 })
 
 // ============================================================
@@ -284,6 +292,36 @@ export const studioCoreDomain = domain({
          */
         findByEmail(email: string): any[] {
           return self.all().filter((i: any) => i.email === email)
+        },
+      })),
+
+      StarredProjectCollection: collections.StarredProjectCollection.views((self: any) => ({
+        /**
+         * Find all starred projects for a given user
+         */
+        findByUser(userId: string): any[] {
+          return self.all().filter((s: any) => s.userId === userId)
+        },
+
+        /**
+         * Find all starred projects for a given user in a specific workspace
+         */
+        findByUserAndWorkspace(userId: string, workspaceId: string): any[] {
+          return self.all().filter((s: any) => s.userId === userId && s.workspaceId === workspaceId)
+        },
+
+        /**
+         * Check if a project is starred by a user
+         */
+        isStarred(userId: string, projectId: string): boolean {
+          return self.all().some((s: any) => s.userId === userId && s.projectId === projectId)
+        },
+
+        /**
+         * Get the starred project entry for a user/project combination
+         */
+        findByUserAndProject(userId: string, projectId: string): any | undefined {
+          return self.all().find((s: any) => s.userId === userId && s.projectId === projectId)
         },
       })),
     }),
@@ -874,6 +912,71 @@ export const studioCoreDomain = domain({
             status: "cancelled",
             updatedAt: Date.now(),
           })
+        },
+
+        // --------------------------------------------------------
+        // Starred Project Actions
+        // --------------------------------------------------------
+
+        /**
+         * Star a project for a user.
+         *
+         * @param userId - The ID of the user starring the project
+         * @param projectId - The ID of the project to star
+         * @param workspaceId - The workspace ID for reference
+         */
+        async starProject(userId: string, projectId: string, workspaceId: string): Promise<void> {
+          // Check if already starred
+          const existing = self.starredProjectCollection.findByUserAndProject(userId, projectId)
+          if (existing) {
+            return // Already starred, no-op
+          }
+
+          await self.starredProjectCollection.insertOne({
+            id: crypto.randomUUID(),
+            userId,
+            projectId,
+            workspaceId,
+            createdAt: Date.now(),
+          })
+        },
+
+        /**
+         * Unstar a project for a user.
+         *
+         * @param userId - The ID of the user unstarring the project
+         * @param projectId - The ID of the project to unstar
+         */
+        async unstarProject(userId: string, projectId: string): Promise<void> {
+          const existing = self.starredProjectCollection.findByUserAndProject(userId, projectId)
+          if (existing) {
+            await self.starredProjectCollection.deleteOne(existing.id)
+          }
+        },
+
+        /**
+         * Toggle star status for a project.
+         *
+         * @param userId - The ID of the user
+         * @param projectId - The ID of the project
+         * @param workspaceId - The workspace ID for reference (needed when starring)
+         * @returns true if project is now starred, false if unstarred
+         */
+        async toggleStarProject(userId: string, projectId: string, workspaceId: string): Promise<boolean> {
+          const existing = self.starredProjectCollection.findByUserAndProject(userId, projectId)
+          if (existing) {
+            await self.starredProjectCollection.deleteOne(existing.id)
+            return false
+          } else {
+            await self.starredProjectCollection.insertOne({
+              id: crypto.randomUUID(),
+              userId,
+              projectId,
+              workspaceId,
+              createdAt: Date.now(),
+            })
+            return true
+          }
         },
       })),
   },

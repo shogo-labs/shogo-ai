@@ -74,6 +74,14 @@ export interface WorkspaceDataState {
   currentFeature: any | undefined
   /** Features grouped by phase */
   featuresByPhase: Record<string, any[]>
+  /** Set of starred project IDs for the current user */
+  starredProjectIds: Set<string>
+  /** Starred projects with full project data (across all workspaces) */
+  starredProjects: any[]
+  /** Workspaces where user is a member but not the owner */
+  sharedWorkspaces: any[]
+  /** Projects from shared workspaces */
+  sharedProjects: any[]
   /** Loading state */
   isLoading: boolean
   /** Function to refetch workspaces (call after creating workspace or signup) */
@@ -82,6 +90,12 @@ export interface WorkspaceDataState {
   refetchProjects: () => void
   /** Function to refetch folders (call after creating/deleting folder) */
   refetchFolders: () => void
+  /** Function to refetch starred projects */
+  refetchStarredProjects: () => void
+  /** Toggle star status for a project */
+  toggleStarProject: (projectId: string, workspaceId: string) => Promise<boolean>
+  /** Check if a project is starred */
+  isProjectStarred: (projectId: string) => boolean
 }
 
 /**
@@ -126,9 +140,11 @@ export function useWorkspaceData(): WorkspaceDataState {
   const [isLoadingWorkspaces, setIsLoadingWorkspaces] = useState(true)
   const [isLoadingProjects, setIsLoadingProjects] = useState(false)
   const [isLoadingFolders, setIsLoadingFolders] = useState(false)
+  const [isLoadingStarred, setIsLoadingStarred] = useState(false)
   const [workspacesRefetchCounter, setWorkspacesRefetchCounter] = useState(0)
   const [projectsRefetchCounter, setProjectsRefetchCounter] = useState(0)
   const [foldersRefetchCounter, setFoldersRefetchCounter] = useState(0)
+  const [starredRefetchCounter, setStarredRefetchCounter] = useState(0)
 
   // User ID from session (stable reference for dependency tracking)
   const userId = session?.user?.id
@@ -259,6 +275,33 @@ export function useWorkspaceData(): WorkspaceDataState {
     setFoldersRefetchCounter((c) => c + 1)
   }, [])
 
+  // Reload starred projects from MCP when user changes or refetch is triggered
+  useEffect(() => {
+    const loadStarred = async () => {
+      if (!userId || !studioCore?.starredProjectCollection) {
+        setIsLoadingStarred(false)
+        return
+      }
+
+      try {
+        setIsLoadingStarred(true)
+        // Reload starred projects from backend
+        await studioCore.starredProjectCollection.query().toArray()
+      } catch (error) {
+        console.error("[useWorkspaceData] Error loading starred projects:", error)
+      } finally {
+        setIsLoadingStarred(false)
+      }
+    }
+
+    loadStarred()
+  }, [userId, studioCore, starredRefetchCounter])
+
+  // Function to trigger a refetch of starred projects
+  const refetchStarredProjects = useCallback(() => {
+    setStarredRefetchCounter((c) => c + 1)
+  }, [])
+
   // Get folders for current workspace from MCP
   let folders: any[] = []
   if (currentWorkspace?.id && studioCore?.folderCollection) {
@@ -294,6 +337,85 @@ export function useWorkspaceData(): WorkspaceDataState {
 
   // Find current project by ID
   const currentProject = projectId ? projects.find((p: any) => p.id === projectId) : undefined
+
+  // Get starred project IDs for the current user
+  let starredProjectIds = new Set<string>()
+  let starredProjectEntries: any[] = []
+  if (userId && studioCore?.starredProjectCollection) {
+    try {
+      starredProjectEntries = studioCore.starredProjectCollection.findByUser(userId)
+      starredProjectIds = new Set(starredProjectEntries.map((s: any) => s.projectId))
+    } catch {
+      starredProjectIds = new Set()
+      starredProjectEntries = []
+    }
+  }
+
+  // Get all projects across all workspaces to build starred projects list
+  let allProjects: any[] = []
+  if (studioCore?.projectCollection) {
+    try {
+      allProjects = studioCore.projectCollection.all()
+    } catch {
+      allProjects = []
+    }
+  }
+
+  // Build starred projects list with full project data
+  const starredProjects = starredProjectEntries
+    .map((entry: any) => {
+      const project = allProjects.find((p: any) => p.id === entry.projectId)
+      if (!project) return null
+      // Include workspace info for context
+      return {
+        ...project,
+        _starredAt: entry.createdAt,
+        _workspaceId: entry.workspaceId,
+      }
+    })
+    .filter(Boolean)
+    .sort((a: any, b: any) => b._starredAt - a._starredAt) // Most recently starred first
+
+  // Get shared workspaces (where user is member but NOT owner)
+  let sharedWorkspaces: any[] = []
+  if (userId && studioCore?.memberCollection && workspaces.length > 0) {
+    try {
+      const userMembers = studioCore.memberCollection.findByUserId(userId)
+      sharedWorkspaces = workspaces.filter((ws: any) => {
+        const membership = userMembers.find((m: any) => m.workspace?.id === ws.id)
+        return membership && membership.role !== "owner"
+      })
+    } catch {
+      sharedWorkspaces = []
+    }
+  }
+
+  // Get projects from shared workspaces
+  const sharedWorkspaceIds = new Set(sharedWorkspaces.map((ws: any) => ws.id))
+  const sharedProjects = allProjects.filter((p: any) =>
+    sharedWorkspaceIds.has(p.workspace?.id)
+  )
+
+  // Helper function to check if a project is starred
+  const isProjectStarred = useCallback((projectId: string): boolean => {
+    return starredProjectIds.has(projectId)
+  }, [starredProjectIds])
+
+  // Helper function to toggle star status
+  const toggleStarProject = useCallback(async (projectId: string, workspaceId: string): Promise<boolean> => {
+    if (!userId || !studioCore) {
+      return false
+    }
+    try {
+      const result = await studioCore.toggleStarProject(userId, projectId, workspaceId)
+      // Trigger refetch to update the UI
+      refetchStarredProjects()
+      return result
+    } catch (error) {
+      console.error("[useWorkspaceData] Error toggling star:", error)
+      return starredProjectIds.has(projectId)
+    }
+  }, [userId, studioCore, starredProjectIds, refetchStarredProjects])
 
   // Get features for current project
   // Per finding-2-2-005: featureSessionCollection.findByProject(projectId)
@@ -331,8 +453,8 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
   }
 
-  // Determine loading state - combines session loading, workspace loading, project loading, and folder loading
-  const isLoading = isSessionLoading || isLoadingWorkspaces || isLoadingProjects || isLoadingFolders
+  // Determine loading state - combines session loading, workspace loading, project loading, folder loading, and starred loading
+  const isLoading = isSessionLoading || isLoadingWorkspaces || isLoadingProjects || isLoadingFolders || isLoadingStarred
 
   return {
     workspaces,
@@ -346,9 +468,16 @@ export function useWorkspaceData(): WorkspaceDataState {
     features,
     currentFeature,
     featuresByPhase,
+    starredProjectIds,
+    starredProjects,
+    sharedWorkspaces,
+    sharedProjects,
     isLoading,
     refetchWorkspaces,
     refetchProjects,
     refetchFolders,
+    refetchStarredProjects,
+    toggleStarProject,
+    isProjectStarred,
   }
 }

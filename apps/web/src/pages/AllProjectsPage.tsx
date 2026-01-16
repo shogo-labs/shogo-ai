@@ -127,7 +127,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   const navigate = useNavigate()
   const { data: session } = useSession()
   const { studioCore } = useDomains()
-  const { currentWorkspace, projects, folders, currentFolder, folderBreadcrumbs, refetchProjects, refetchFolders } = useWorkspaceData()
+  const { currentWorkspace, projects, folders, currentFolder, folderBreadcrumbs, refetchProjects, refetchFolders, starredProjectIds, toggleStarProject: toggleStar } = useWorkspaceData()
   const { folderId, setFolderId, clearFolder } = useWorkspaceNavigation()
 
   // State
@@ -149,9 +149,6 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   const [projectToRename, setProjectToRename] = useState<Project | null>(null)
   const [newName, setNewName] = useState("")
   const [isRenaming, setIsRenaming] = useState(false)
-
-  // Starred projects (local state for now)
-  const [starredIds, setStarredIds] = useState<Set<string>>(new Set())
 
   // Folder dialog state
   const [createFolderDialogOpen, setCreateFolderDialogOpen] = useState(false)
@@ -266,18 +263,11 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
     navigate(`/projects/${projectId}`)
   }, [navigate])
 
-  const handleToggleStar = useCallback((projectId: string, e: React.MouseEvent) => {
+  const handleToggleStar = useCallback(async (projectId: string, e: React.MouseEvent) => {
     e.stopPropagation()
-    setStarredIds(prev => {
-      const next = new Set(prev)
-      if (next.has(projectId)) {
-        next.delete(projectId)
-      } else {
-        next.add(projectId)
-      }
-      return next
-    })
-  }, [])
+    if (!currentWorkspace?.id) return
+    await toggleStar(projectId, currentWorkspace.id)
+  }, [currentWorkspace?.id, toggleStar])
 
   const handleRename = useCallback(async () => {
     if (!projectToRename || !newName.trim() || !studioCore) return
@@ -735,13 +725,13 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                     onClick={(e) => handleToggleStar(project.id, e)}
                     className={cn(
                       "absolute top-2 right-2 p-1.5 rounded-md transition-all",
-                      starredIds.has(project.id)
+                      starredProjectIds.has(project.id)
                         ? "bg-yellow-500/90 text-white opacity-100"
                         : "bg-black/30 text-white/90 opacity-0 group-hover:opacity-100 hover:bg-black/50"
                     )}
-                    title={starredIds.has(project.id) ? "Remove from favorites" : "Add to favorites"}
+                    title={starredProjectIds.has(project.id) ? "Remove from favorites" : "Add to favorites"}
                   >
-                    <Star className={cn("h-3.5 w-3.5", starredIds.has(project.id) && "fill-current")} />
+                    <Star className={cn("h-3.5 w-3.5", starredProjectIds.has(project.id) && "fill-current")} />
                   </button>
                 </div>
 
@@ -876,7 +866,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                       >
                         <Star className={cn(
                           "h-4 w-4",
-                          starredIds.has(project.id) && "fill-yellow-500 text-yellow-500"
+                          starredProjectIds.has(project.id) && "fill-yellow-500 text-yellow-500"
                         )} />
                       </Button>
                       <DropdownMenu>
