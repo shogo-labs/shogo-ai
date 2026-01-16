@@ -1,13 +1,16 @@
 /**
- * ProjectLayout - Main project view layout
+ * ProjectLayout - Main project view layout (Lovable.dev-inspired)
  *
- * Full-screen project editing experience similar to Lovable.dev:
- * - No sidebar navigation
- * - Minimal top bar with project name and actions
- * - Split view: Dynamic workspace (left) + Chat panel (right)
+ * Full-screen project editing experience with:
+ * - Minimal top bar with project name dropdown, preview controls, and actions
+ * - Split view: Chat/History panel (LEFT) + Dynamic workspace/preview (RIGHT)
+ * - Toggle between chat and history views
+ * - Hide/show left panel entirely
  *
- * Uses the same ComposablePhaseView pattern as AdvancedChatLayout
- * but scoped to a specific project.
+ * Key features:
+ * - Chat is on the LEFT side like Lovable.dev
+ * - History panel replaces chat when toggled
+ * - Preview has subtle border/shadow styling
  */
 
 import { observer } from "mobx-react-lite"
@@ -18,18 +21,21 @@ import { ComposablePhaseView } from "@/components/rendering/composition/Composab
 import { ComponentRegistryProvider } from "@/components/rendering"
 import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
 import { ChatPanel } from "../chat/ChatPanel"
-import {
-  ChatSessionPicker,
-  type ChatSession,
-} from "../chat/ChatSessionPicker"
 import { useChatSessionNavigation } from "../advanced-chat/hooks/useChatSessionNavigation"
 import { ProjectTopBar } from "./ProjectTopBar"
+import { ChatSessionsPanel, type ChatSessionItem } from "./ChatSessionsPanel"
 import { cn } from "@/lib/utils"
+import { useSession } from "@/auth/client"
+import type { ViewportSize } from "./PreviewControls"
 
 const WORKSPACE_COMPOSITION_NAME = "workspace"
 
+// Default chat panel width in px
+const DEFAULT_CHAT_WIDTH = 480
+
 export const ProjectLayout = observer(function ProjectLayout() {
   const { projectId } = useParams<{ projectId: string }>()
+  const { data: session } = useSession()
 
   const { platformFeatures, componentBuilder, studioChat, studioCore } = useDomains<{
     platformFeatures: any
@@ -57,18 +63,28 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Track current chat session in URL
   const { chatSessionId, setChatSessionId } = useChatSessionNavigation()
 
-  // Chat panel state
+  // Chat panel state - now on LEFT side
   const [isChatCollapsed, setIsChatCollapsed] = useState(false)
-  const [chatWidth, setChatWidth] = useState(400)
+  const [chatWidth, setChatWidth] = useState(DEFAULT_CHAT_WIDTH)
+
+  // Chat sessions panel state (toggled via history icon)
+  const [showChatSessions, setShowChatSessions] = useState(false)
+
+  // Preview controls state
+  const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
+  const [currentRoute, setCurrentRoute] = useState("/")
 
   // Project and feature session state
   const [project, setProject] = useState<any>(null)
   const [featureSession, setFeatureSession] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(true)
 
+  // Check if domains are ready
+  const domainsReady = !!(studioCore?.projectCollection && platformFeatures?.featureSessionCollection)
+
   // Load project and create/load feature session
   useEffect(() => {
-    if (!projectId || !studioCore?.projectCollection || !platformFeatures?.featureSessionCollection) {
+    if (!projectId || !domainsReady) {
       return
     }
 
@@ -99,6 +115,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
             })
           }
           setFeatureSession(session)
+        } else {
+          console.warn("[ProjectLayout] Project not found:", projectId)
         }
       } catch (err) {
         console.error("[ProjectLayout] Failed to load project:", err)
@@ -108,16 +126,18 @@ export const ProjectLayout = observer(function ProjectLayout() {
     }
 
     loadProjectData()
-  }, [projectId, studioCore, platformFeatures])
+  }, [projectId, domainsReady, studioCore, platformFeatures])
 
   // Get workspace composition for observability
   const workspaceComposition = componentBuilder?.compositionCollection?.findByName?.(
     WORKSPACE_COMPOSITION_NAME
   )
 
-  // Get chat sessions for this project's feature
+  // Get feature ID for chat
   const featureId = featureSession?.id
-  const projectChatSessions: ChatSession[] = featureId
+
+  // Get chat sessions for this project's feature
+  const projectChatSessions: ChatSessionItem[] = featureId
     ? (studioChat?.chatSessionCollection?.findByFeature?.(featureId) ?? []).map((s: any) => ({
         id: s.id,
         name: s.name || s.inferredName,
@@ -161,17 +181,65 @@ export const ProjectLayout = observer(function ProjectLayout() {
     [studioChat]
   )
 
+  // Project rename handler
+  const handleRenameProject = useCallback(
+    async (newName: string) => {
+      if (!studioCore?.projectCollection || !projectId) return
+      await studioCore.projectCollection.updateOne(projectId, {
+        name: newName,
+      })
+      // Update local state
+      setProject((prev: any) => prev ? { ...prev, name: newName } : prev)
+    },
+    [studioCore, projectId]
+  )
+
+  // Chat sessions toggle handler (triggered by history icon)
+  const handleChatSessionsToggle = useCallback(() => {
+    setShowChatSessions((prev) => !prev)
+  }, [])
+
+  // Chat collapse toggle handler
+  const handleChatCollapseToggle = useCallback(() => {
+    setIsChatCollapsed((prev) => !prev)
+  }, [])
+
+  // Preview controls handlers
+  const handleViewportChange = useCallback((viewport: ViewportSize) => {
+    setCurrentViewport(viewport)
+    // TODO: Update preview iframe width based on viewport
+  }, [])
+
+  const handleRouteChange = useCallback((route: string) => {
+    setCurrentRoute(route)
+    // TODO: Navigate preview iframe to route
+  }, [])
+
+  const handleRefresh = useCallback(() => {
+    // TODO: Refresh preview iframe
+    console.log("Refresh preview")
+  }, [])
+
+
+  // Current user info from session
+  const currentUserName = session?.user?.name?.split(" ")[0] || "You"
+  const userInitial = session?.user?.name?.charAt(0).toUpperCase() || "U"
+
   // Loading state
   if (isLoading || !project || !featureSession) {
     return (
       <ComponentRegistryProvider registry={registry}>
-        <div className="h-screen flex flex-col">
+        <div className="h-screen flex flex-col bg-background">
           <ProjectTopBar
             projectName="Loading..."
             projectId={projectId || ""}
+            showChatSessions={showChatSessions}
+            isChatCollapsed={isChatCollapsed}
+            onChatSessionsToggle={handleChatSessionsToggle}
+            onChatCollapseToggle={handleChatCollapseToggle}
           />
           <div className="flex-1 flex items-center justify-center">
-            <div className="text-muted-foreground">Loading project...</div>
+            <div className="text-muted-foreground animate-pulse">Loading project...</div>
           </div>
         </div>
       </ComponentRegistryProvider>
@@ -180,59 +248,82 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
   return (
     <ComponentRegistryProvider registry={registry}>
-      <div className="h-screen flex flex-col">
-        {/* Project top bar */}
+      <div className="h-screen flex flex-col bg-background">
+        {/* Project top bar - Lovable.dev style */}
         <ProjectTopBar
           projectName={project.name}
           projectId={projectId || ""}
+          currentUserName={currentUserName}
+          userInitial={userInitial}
+          showChatSessions={showChatSessions}
+          isChatCollapsed={isChatCollapsed}
+          onChatSessionsToggle={handleChatSessionsToggle}
+          onChatCollapseToggle={handleChatCollapseToggle}
+          onRename={handleRenameProject}
+          onViewportChange={handleViewportChange}
+          onRouteChange={handleRouteChange}
+          onRefresh={handleRefresh}
         />
 
-        {/* Main content: Dynamic workspace + Chat panel */}
+        {/* Main content: Chat/History panel (LEFT) + Preview/Workspace (RIGHT) */}
         <div className="flex-1 flex min-h-0">
-          {/* Dynamic Workspace */}
-          <div className="flex-1 min-w-0 overflow-hidden">
-            <ComposablePhaseView
-              phaseName={WORKSPACE_COMPOSITION_NAME}
-              feature={featureSession}
-              className="h-full"
-            />
-          </div>
-
-          {/* Chat Panel Container */}
+          {/* Left Panel Container - Chat or History */}
           <div
             className={cn(
-              "border-l flex-shrink-0 flex flex-col transition-all duration-200",
-              isChatCollapsed && "w-16"
+              "shrink-0 flex flex-col transition-all duration-200 bg-card",
+              isChatCollapsed && "w-0 overflow-hidden"
             )}
-            style={!isChatCollapsed ? { width: `${chatWidth}px` } : undefined}
+            style={!isChatCollapsed ? { minWidth: `${chatWidth}px` } : undefined}
           >
-            {/* Session Picker Header */}
             {!isChatCollapsed && (
-              <div className="px-3 py-2 border-b flex items-center justify-between bg-muted/30">
-                <span className="text-sm font-medium text-muted-foreground">
-                  Chat Sessions
-                </span>
-                <ChatSessionPicker
-                  sessions={projectChatSessions}
-                  currentSessionId={chatSessionId ?? undefined}
-                  onSelect={handleSelectSession}
-                  onCreate={handleCreateSession}
-                  onRename={handleRenameSession}
-                />
-              </div>
+              <>
+                {showChatSessions ? (
+                  // Chat Sessions Panel (triggered by history icon)
+                  <ChatSessionsPanel
+                    sessions={projectChatSessions}
+                    currentSessionId={chatSessionId ?? undefined}
+                    onSelect={(sessionId) => {
+                      handleSelectSession(sessionId)
+                      setShowChatSessions(false) // Close panel after selection
+                    }}
+                    onCreate={() => {
+                      handleCreateSession()
+                      setShowChatSessions(false) // Close panel after creation
+                    }}
+                    onRename={handleRenameSession}
+                    className="flex-1"
+                  />
+                ) : (
+                  // Chat Panel (no header)
+                  <ChatPanel
+                    featureId={featureId}
+                    featureName={project.name}
+                    phase={null}
+                    chatSessionId={chatSessionId}
+                    onChatSessionChange={handleChatSessionChange}
+                    isCollapsed={isChatCollapsed}
+                    onCollapsedChange={setIsChatCollapsed}
+                    onWidthChange={setChatWidth}
+                    className="flex-1 min-h-0"
+                  />
+                )}
+              </>
             )}
+          </div>
 
-            {/* Chat Panel */}
-            <div className="flex-1 min-h-0">
-              <ChatPanel
-                featureId={featureId}
-                featureName={project.name}
-                phase={null}
-                chatSessionId={chatSessionId}
-                onChatSessionChange={handleChatSessionChange}
-                isCollapsed={isChatCollapsed}
-                onCollapsedChange={setIsChatCollapsed}
-                onWidthChange={setChatWidth}
+          {/* Separator - subtle vertical line */}
+          {!isChatCollapsed && (
+            <div className="w-px bg-border/60" />
+          )}
+
+          {/* Preview/Workspace Container - with border styling */}
+          <div className="flex-1 min-w-0 overflow-hidden p-3 bg-muted/30">
+            {/* Preview Frame with border */}
+            <div className="h-full w-full rounded-lg border border-border/40 bg-background shadow-sm overflow-hidden">
+              <ComposablePhaseView
+                phaseName={WORKSPACE_COMPOSITION_NAME}
+                feature={featureSession}
+                className="h-full"
               />
             </div>
           </div>

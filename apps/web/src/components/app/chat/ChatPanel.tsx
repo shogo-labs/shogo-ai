@@ -147,7 +147,7 @@ export interface ChatPanelProps {
 // Constants
 // ============================================================
 
-const DEFAULT_WIDTH = 400
+const DEFAULT_WIDTH = 480
 const MIN_WIDTH = 280
 const MAX_WIDTH = 800
 const STORAGE_KEY_COLLAPSED = "chat-panel-collapsed"
@@ -1507,12 +1507,12 @@ export const ChatPanel = observer(function ChatPanel({
         />
 
         {/* Header */}
-        <ChatHeader
+        {/* <ChatHeader
           sessionName={currentSession?.name || featureName || "Chat"}
           isLoading={isStreaming}
           isCollapsed={isCollapsed}
           onToggleCollapse={handleToggleCollapse}
-        />
+        /> */}
 
         {/* Messages with Turn Grouping (task-chat-008) */}
         <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4">
@@ -1587,7 +1587,7 @@ export const ChatPanel = observer(function ChatPanel({
         <ChatInput
           onSubmit={handleInputSubmit}
           disabled={!currentSessionId}
-          placeholder={!featureId ? "Select a feature to start chatting..." : "Type a message..."}
+          placeholder={!featureId ? "Select a feature to start chatting..." : "Ask Shogo..."}
           isStreaming={isStreaming}
           onStop={stop}
         />
