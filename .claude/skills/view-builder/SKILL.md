@@ -20,6 +20,9 @@ Trigger on patterns like:
 - "Build me a X" / "Create a X view"
 - "I want to see X" / "Visualize X"
 - Requests to change how data is displayed
+- "Save this workspace" / "Remember this layout"
+- "Load X" / "Show the X app" (where X is a saved composition)
+- "What workspaces do I have?" / "List saved views"
 
 ---
 
@@ -312,18 +315,84 @@ After rendering:
 2. **Offer refinements**: "Want me to change X?" / "Should I add Y?"
 3. **Handle feedback**:
    - If user refines → Update and re-render (loop back to Phase 2)
-   - If user satisfied → Optionally save as named composition
-4. **Save if requested**:
-   ```javascript
-   execute({
-     operations: [{
-       domain: "component-builder",
-       action: "create",
-       model: "Composition",
-       data: { name: "user-specified-name", ... }
-     }]
-   })
-   ```
+   - If user satisfied → Offer to save as named composition (Phase 5)
+
+---
+
+## Phase 5: Workspace Persistence
+
+Save and load workspace configurations as named Compositions for reuse across sessions.
+
+### When to Offer Save
+
+Trigger save workflow when:
+- User explicitly asks to save ("save this", "remember this layout")
+- User expresses satisfaction after refinements ("perfect", "this is what I wanted")
+- Complex multi-panel layouts are finalized
+- User asks for an "app" or "template"
+
+### Save Workflow
+
+```javascript
+// 1. Create a named Composition via Wavesmith
+store_create({
+  schema: "component-builder",
+  model: "Composition",
+  data: {
+    id: "composition-my-dashboard",
+    name: "my-dashboard",
+    layout: "layout-workspace-split-h",
+    slotContent: [
+      { slot: "left", section: "DataGridSection", config: { schema: "studio-chat", model: "ChatSession" } },
+      { slot: "right", section: "DesignContainerSection", config: { schemaName: "platform-features" } }
+    ]
+  }
+})
+```
+
+**Important**: Use `section` key (not `component`) in slotContent when saving workspace configurations.
+
+### When to Load
+
+Trigger load workflow when:
+- User names a previously saved workspace ("load my-dashboard", "show the component showcase")
+- User references a previous configuration ("that view we made earlier")
+- User asks to restore a saved "app" or "template"
+
+### Load Workflow
+
+```javascript
+// 1. Query for the composition
+store_query({
+  schema: "component-builder",
+  model: "Composition",
+  filter: { name: "my-dashboard" },
+  terminal: "first"
+})
+
+// 2. Apply to workspace via set_workspace
+// Extract layout and slotContent from query result
+set_workspace({
+  layout: "split-h",  // Map from layout ID
+  panels: [
+    { slot: "left", section: "DataGridSection", config: { ... } },
+    { slot: "right", section: "DesignContainerSection", config: { ... } }
+  ]
+})
+```
+
+### List Saved Compositions
+
+```javascript
+// Show user what's available
+store_query({
+  schema: "component-builder",
+  model: "Composition",
+  terminal: "toArray"
+})
+```
+
+See [[workspace-persistence]] for detailed patterns and examples.
 
 ---
 
@@ -376,6 +445,7 @@ Performs CRUD operations on domain entities.
 - [[decision-criteria]] - Explicit criteria for each branch
 - [[composition-patterns]] - Common composition templates
 - [[guidance-discovery-protocol]] - How to discover and apply aiGuidance from ComponentDefinitions
+- [[workspace-persistence]] - Save/load workspace patterns
 
 ### Related Skills
 

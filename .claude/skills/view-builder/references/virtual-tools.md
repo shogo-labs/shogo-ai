@@ -231,6 +231,58 @@ execute({
 // UI automatically re-renders via MobX reactivity
 ```
 
+### Pattern 4: Save Workspace as Named Composition
+```javascript
+// Save current workspace layout for later reuse
+store_create({
+  schema: "component-builder",
+  model: "Composition",
+  data: {
+    id: "composition-my-dashboard",
+    name: "my-dashboard",
+    layout: "layout-workspace-split-h",
+    slotContent: [
+      { slot: "left", section: "DataGridSection", config: { schema: "studio-chat", model: "ChatSession" } },
+      { slot: "right", section: "DesignContainerSection", config: { schemaName: "platform-features" } }
+    ]
+  }
+})
+```
+**Important**: Use `section` key in slotContent (not `component`).
+
+### Pattern 5: Load Saved Composition
+```javascript
+// 1. Query for the saved composition
+const result = store_query({
+  schema: "component-builder",
+  model: "Composition",
+  filter: { name: "my-dashboard" },
+  terminal: "first"
+})
+
+// 2. Apply to workspace
+// Map layout ID to layout type and extract panels from slotContent
+set_workspace({
+  layout: "split-h",  // Map: layout-workspace-split-h → split-h
+  panels: result.slotContent.map(item => ({
+    slot: item.slot,
+    section: item.section,
+    config: item.config
+  }))
+})
+```
+
+### Pattern 6: List Available Compositions
+```javascript
+// Show user what saved workspaces exist
+store_query({
+  schema: "component-builder",
+  model: "Composition",
+  terminal: "toArray"
+})
+// Returns array of compositions with id, name, layout, slotContent
+```
+
 ---
 
 ## Error Handling

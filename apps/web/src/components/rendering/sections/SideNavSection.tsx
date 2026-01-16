@@ -7,21 +7,35 @@
  * sections, and icon-only collapsed mode. Standalone section for composing into app layouts.
  *
  * Config options:
- * - items: Array<NavItem | NavGroup> - Navigation items and groups
+ * - items: Array<NavItem | NavGroup> - Static navigation items and groups
+ * - dataSource: { schema, model, idField, labelField, groupBy, filter, orderBy } - Dynamic nav items from Wavesmith store
  * - collapsed: boolean - Icon-only rail mode (default: false)
  * - activeItem: string - ID of currently active nav item
  * - header: { title?: string, logo?: { src: string, alt: string } } - Optional header
  * - showCollapseToggle: boolean - Show collapse/expand button (default: true)
- * - onNavigate: (itemId: string, href?: string) => void - Navigation callback
+ * - onNavigate: (itemId: string, href?: string, data?: object) => void - Navigation callback
  * - onCollapsedChange: (collapsed: boolean) => void - Collapse state callback
  * - width: { expanded?: number, collapsed?: number } - Width overrides
  * - theme: { background?: string, text?: string, accent?: string } - Theme overrides
+ *
+ * Dynamic Data (dataSource):
+ * When dataSource is provided, items are loaded from the specified Wavesmith schema/model.
+ * The dataSource config supports:
+ * - schema: Schema name (e.g., "component-builder")
+ * - model: Model name (e.g., "ComponentDefinition")
+ * - idField: Field to use as item ID (default: "id")
+ * - labelField: Field to use as item label (default: "name")
+ * - iconField: Field to use as item icon (optional)
+ * - groupBy: Field to group items by (creates collapsible sections)
+ * - filter: MongoDB-style filter for querying
+ * - orderBy: Sort configuration array
  */
 
-import { useState, useCallback, type ReactNode } from "react"
+import { useState, useCallback, useMemo, type ReactNode } from "react"
 import { observer } from "mobx-react-lite"
 import { cn } from "@/lib/utils"
 import type { SectionRendererProps } from "../sectionImplementations"
+import { useSideNavData } from "./hooks"
 import {
   ChevronLeft,
   ChevronRight,
@@ -86,9 +100,34 @@ interface WidthConfig {
   collapsed?: number
 }
 
+/**
+ * DataSource configuration for loading nav items from Wavesmith stores.
+ * When provided, items are dynamically loaded instead of using static `items` array.
+ */
+interface DataSourceConfig {
+  /** Schema name (e.g., "component-builder") */
+  schema: string
+  /** Model name (e.g., "ComponentDefinition") */
+  model: string
+  /** Field to use as nav item ID (default: "id") */
+  idField?: string
+  /** Field to use as nav item label (default: "name") */
+  labelField?: string
+  /** Field to use as nav item icon (optional) */
+  iconField?: string
+  /** Field to group items by (creates NavGroups) */
+  groupBy?: string
+  /** MongoDB-style filter */
+  filter?: Record<string, any>
+  /** Sort configuration */
+  orderBy?: { field: string; direction: "asc" | "desc" }[]
+}
+
 interface SideNavConfig {
-  /** Navigation items and groups */
+  /** Static navigation items and groups */
   items?: NavEntry[]
+  /** Dynamic data source for loading items from Wavesmith store */
+  dataSource?: DataSourceConfig
   /** Icon-only rail mode */
   collapsed?: boolean
   /** ID of currently active nav item */
@@ -97,8 +136,8 @@ interface SideNavConfig {
   header?: HeaderConfig
   /** Show collapse/expand button */
   showCollapseToggle?: boolean
-  /** Navigation callback */
-  onNavigate?: (itemId: string, href?: string) => void
+  /** Navigation callback - receives entity data when using dataSource */
+  onNavigate?: (itemId: string, href?: string, data?: Record<string, unknown>) => void
   /** Collapse state callback */
   onCollapsedChange?: (collapsed: boolean) => void
   /** Width overrides */
@@ -325,7 +364,8 @@ export const SideNavSection = observer(function SideNavSection({
   const collapsed = sideNavConfig?.collapsed ?? localCollapsed
 
   // Extract config
-  const items = sideNavConfig?.items ?? []
+  const staticItems = sideNavConfig?.items ?? []
+  const dataSource = sideNavConfig?.dataSource
   const activeItem = sideNavConfig?.activeItem
   const header = sideNavConfig?.header
   const showCollapseToggle = sideNavConfig?.showCollapseToggle ?? true
@@ -334,12 +374,37 @@ export const SideNavSection = observer(function SideNavSection({
   const width = sideNavConfig?.width
   const theme = sideNavConfig?.theme
 
+  // Load dynamic items if dataSource is configured
+  const { items: dynamicItems, flatItems, loading, error } = useSideNavData(dataSource)
+
+  // Use dynamic items if dataSource is configured, otherwise use static items
+  const items = useMemo(() => {
+    if (dataSource) {
+      return dynamicItems
+    }
+    return staticItems
+  }, [dataSource, dynamicItems, staticItems])
+
   // Handle collapse toggle
   const handleCollapseToggle = useCallback(() => {
     const newCollapsed = !collapsed
     setLocalCollapsed(newCollapsed)
     onCollapsedChange?.(newCollapsed)
   }, [collapsed, onCollapsedChange])
+
+  // Handle item click - pass entity data when using dataSource
+  const handleItemClick = useCallback(
+    (itemId: string, href?: string) => {
+      // Find item data if using dataSource
+      let itemData: Record<string, unknown> | undefined
+      if (dataSource && flatItems) {
+        const item = flatItems.find((i) => i.id === itemId)
+        itemData = item?.data
+      }
+      onNavigate?.(itemId, href, itemData)
+    },
+    [dataSource, flatItems, onNavigate]
+  )
 
   // Calculate widths
   const expandedWidth = width?.expanded ?? 256 // 16rem = 256px
@@ -371,35 +436,50 @@ export const SideNavSection = observer(function SideNavSection({
 
       {/* Navigation items */}
       <nav className="flex-1 overflow-y-auto py-2 px-2">
-        <div className="space-y-1">
-          {items.map((entry) => {
-            if (isGroup(entry)) {
+        {/* Loading state */}
+        {loading && (
+          <div className="flex items-center justify-center py-4">
+            <div className="animate-pulse text-muted-foreground text-sm">Loading...</div>
+          </div>
+        )}
+
+        {/* Error state */}
+        {error && !loading && (
+          <div className="px-3 py-2 text-sm text-destructive">{error}</div>
+        )}
+
+        {/* Items */}
+        {!loading && !error && (
+          <div className="space-y-1">
+            {items.map((entry) => {
+              if (isGroup(entry)) {
+                return (
+                  <NavGroupSection
+                    key={entry.id}
+                    group={entry}
+                    collapsed={collapsed}
+                    activeItem={activeItem}
+                    onNavigate={handleItemClick}
+                    theme={theme}
+                  />
+                )
+              }
+
+              // Regular item
+              const item = entry as NavItem
               return (
-                <NavGroupSection
-                  key={entry.id}
-                  group={entry}
+                <NavItemButton
+                  key={item.id}
+                  item={item}
                   collapsed={collapsed}
-                  activeItem={activeItem}
-                  onNavigate={onNavigate}
+                  isActive={activeItem === item.id}
+                  onClick={() => handleItemClick(item.id, item.href)}
                   theme={theme}
                 />
               )
-            }
-
-            // Regular item
-            const item = entry as NavItem
-            return (
-              <NavItemButton
-                key={item.id}
-                item={item}
-                collapsed={collapsed}
-                isActive={activeItem === item.id}
-                onClick={() => onNavigate?.(item.id, item.href)}
-                theme={theme}
-              />
-            )
-          })}
-        </div>
+            })}
+          </div>
+        )}
       </nav>
 
       {/* Collapse toggle */}

@@ -9,7 +9,7 @@
  * - REGISTRIES: 2 entries (default, studio)
  * - RENDERER_BINDINGS: 32 entries (12 default + 20 studio)
  * - LAYOUT_TEMPLATES: 8 entries (layout-phase-two-column, layout-single-column, layout-two-column-compact, layout-workspace-flexible, layout-workspace-split-h, layout-workspace-split-v, layout-discovery-enhanced, layout-app-shell)
- * - COMPOSITIONS: 9 entries (discovery-basic, discovery, analysis, classification, design, spec, testing, implementation, workspace)
+ * - COMPOSITIONS: 10 entries (discovery-basic, discovery, analysis, classification, design, spec, testing, implementation, workspace, component-showcase)
  *
  * All entities have proper id fields for idempotency checks.
  * TypeScript types match component-builder schema entity types.
@@ -1770,5 +1770,238 @@ export const COMPOSITIONS: CompositionSeed[] = [
     ],
     dataContext: { context: "workspace" },
     providerWrapper: "WorkspaceProvider",
+  },
+  // Component Showcase - interactive browser for all components
+  // Pattern: AppShell with dataSource-driven sidebar and SectionBrowserSection for details
+  // Usage: "load component-showcase" or "show me the component showcase"
+  //
+  // This demonstrates the new composable architecture:
+  // - sideNav.dataSource loads ComponentDefinitions dynamically from Wavesmith store
+  // - Items are grouped by category automatically via groupBy
+  // - contentComposition uses SectionBrowserSection which reads activeItem from AppShellContext
+  // - Example configs provide live previews for components that support them
+  {
+    id: "composition-component-showcase",
+    name: "component-showcase",
+    layout: "layout-workspace-flexible",
+    slotContent: [
+      {
+        slot: "main",
+        section: "AppShellSection",
+        config: {
+          appBar: {
+            title: "Component Showcase",
+            navLinks: [
+              { id: "all", label: "All Components", active: true },
+              { id: "sections", label: "Sections" },
+              { id: "display", label: "Display" },
+            ],
+            actions: [{ id: "search", icon: "search" }],
+            sticky: true,
+          },
+          sideNav: {
+            header: { title: "Components" },
+            // Dynamic data source - loads ComponentDefinitions from component-builder schema
+            // This replaces the static 200+ line items array with a single query
+            dataSource: {
+              schema: "component-builder",
+              model: "ComponentDefinition",
+              idField: "name",  // Use component name as ID (matches implementationRef)
+              labelField: "name",
+              groupBy: "category",  // Groups: section, display, visualization, layout, input
+              orderBy: [{ field: "name", direction: "asc" }],
+            },
+          },
+          // Composition mode with SectionBrowserSection reading from context
+          navigationMode: "composition",
+          contentComposition: {
+            layout: "single",
+            panels: [
+              {
+                slot: "main",
+                section: "SectionBrowserSection",
+                config: {
+                  useActiveItem: true,  // Reads activeItem from AppShellContext
+                  // Comprehensive example configs for live previews (keyed by component name)
+                  // Categories: Easy (static), Medium (query data), Hard (need feature session - show empty states)
+                  exampleConfigs: {
+                    // ===============================
+                    // EASY - Static config, no data needed
+                    // ===============================
+                    WorkspaceBlankStateSection: {},
+
+                    AppBarSection: {
+                      title: "Example App",
+                      logo: { alt: "Logo" },
+                      navLinks: [
+                        { id: "home", label: "Home", icon: "home", active: true },
+                        { id: "projects", label: "Projects", icon: "folder" },
+                        { id: "analytics", label: "Analytics", icon: "file" },
+                        { id: "settings", label: "Settings", icon: "settings" },
+                      ],
+                      actions: [
+                        { id: "search", icon: "search" },
+                        { id: "notifications", icon: "bell" },
+                        { id: "profile", icon: "user" },
+                      ],
+                      sticky: true,
+                    },
+
+                    SideNavSection: {
+                      header: { title: "Admin Panel" },
+                      items: [
+                        { id: "dashboard", label: "Dashboard", icon: "home" },
+                        { id: "analytics", label: "Analytics", icon: "layout" },
+                        {
+                          type: "group",
+                          id: "content",
+                          label: "Content",
+                          icon: "folder",
+                          defaultExpanded: true,
+                          items: [
+                            { id: "pages", label: "Pages", icon: "file" },
+                            { id: "posts", label: "Posts", badge: "12" },
+                            { id: "media", label: "Media" },
+                          ],
+                        },
+                        {
+                          type: "group",
+                          id: "system",
+                          label: "System",
+                          icon: "settings",
+                          items: [
+                            { id: "users", label: "Users", icon: "user" },
+                            { id: "database", label: "Database", icon: "database" },
+                            { id: "code", label: "Code", icon: "code" },
+                          ],
+                        },
+                      ],
+                      activeItem: "dashboard",
+                      showCollapseToggle: true,
+                    },
+
+                    AppShellSection: {
+                      appBar: {
+                        title: "Demo Dashboard",
+                        navLinks: [
+                          { id: "overview", label: "Overview", active: true },
+                          { id: "reports", label: "Reports" },
+                        ],
+                        actions: [{ id: "profile", icon: "user" }],
+                      },
+                      sideNav: {
+                        header: { title: "Navigation" },
+                        items: [
+                          { id: "home", label: "Home", icon: "home" },
+                          { id: "data", label: "Data", icon: "database" },
+                          { id: "settings", label: "Settings", icon: "settings" },
+                        ],
+                      },
+                      navigationMode: "static",
+                      showAppBar: true,
+                      showSideNav: true,
+                    },
+
+                    PlanPreviewSection: {
+                      spec: {
+                        name: "Example Component",
+                        intent: "Display user profile information with avatar and details",
+                        componentType: "card",
+                        status: "draft",
+                      },
+                    },
+
+                    // ===============================
+                    // MEDIUM - Needs schema data (query stores)
+                    // ===============================
+                    DataGridSection: {
+                      schema: "component-builder",
+                      model: "ComponentDefinition",
+                      title: "Component Definitions",
+                      columns: ["name", "category", "description", "implementationRef"],
+                      query: { orderBy: [{ field: "name", direction: "asc" }], take: 15 },
+                      stickyFirstColumn: true,
+                    },
+
+                    ChartSection: {
+                      schema: "component-builder",
+                      model: "ComponentDefinition",
+                      chartType: "bar",
+                      xField: "category",
+                      yField: "$count",
+                      title: "Components by Category",
+                    },
+
+                    DesignContainerSection: {
+                      defaultTab: "schema",
+                      showStatistics: true,
+                      showLegend: true,
+                    },
+
+                    SectionBrowserSection: {
+                      sectionName: "WorkspaceBlankStateSection",
+                    },
+
+                    // ===============================
+                    // HARD - Need feature session (show empty states)
+                    // ===============================
+
+                    // Discovery Phase
+                    IntentTerminalSection: {},
+                    InitialAssessmentSection: {},
+                    RequirementsListSection: { layout: "list" },
+                    SessionSummarySection: {},
+                    PhaseActionsSection: {},
+                    PhaseHeroSection: {},
+                    SessionOverviewCard: {},
+                    IntentRichPanel: {},
+                    RequirementsGridSection: {},
+                    InsightsPanel: {},
+                    ContextFooter: {},
+
+                    // Analysis Phase
+                    EvidenceBoardHeaderSection: {},
+                    LocationHeatBarSection: {},
+                    FindingMatrixSection: {},
+                    FindingListSection: {},
+
+                    // Classification Phase
+                    ArchetypeTransformationSection: {},
+                    CorrectionNoteSection: {},
+                    ConfidenceMetersSection: {},
+                    EvidenceColumnsSection: {},
+                    ApplicablePatternsSection: {},
+                    ClassificationRationaleSection: {},
+
+                    // Spec Phase
+                    SpecContainerSection: {},
+
+                    // Testing Phase
+                    TestPyramidSection: {},
+                    TestTypeDistributionSection: {},
+                    TaskCoverageBarSection: {},
+                    ScenarioSpotlightSection: {},
+
+                    // Implementation Phase
+                    TDDStageIndicatorSection: {},
+                    ProgressDashboardSection: {},
+                    TaskExecutionTimelineSection: {},
+                    LiveOutputTerminalSection: {},
+
+                    // Dynamic
+                    DynamicCompositionSection: {},
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    ],
+    dataContext: {
+      description: "Interactive showcase of all components with dynamic sidebar and live previews",
+      context: "showcase",
+      pattern: "dataSource-driven AppShell with composition mode",
+    },
   },
 ]

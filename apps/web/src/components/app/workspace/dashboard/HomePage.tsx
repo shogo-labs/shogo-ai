@@ -18,6 +18,9 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 
+/** Transition phases for HomePage to Workspace animation */
+export type TransitionPhase = 'idle' | 'commit' | 'dissolve' | 'transform' | 'emerge' | 'settle' | 'complete'
+
 interface HomePageProps {
   /** User's display name for personalized greeting */
   userName?: string
@@ -25,6 +28,8 @@ interface HomePageProps {
   onPromptSubmit?: (prompt: string) => void
   /** Loading state - true when creating project/feature from prompt */
   isLoading?: boolean
+  /** Current transition phase for animation (default: 'idle') */
+  transitionPhase?: TransitionPhase
 }
 
 /**
@@ -37,6 +42,7 @@ export const HomePage = observer(function HomePage({
   userName = "there",
   onPromptSubmit,
   isLoading = false,
+  transitionPhase = 'idle',
 }: HomePageProps) {
   const [prompt, setPrompt] = useState("")
   const navigate = useNavigate()
@@ -60,12 +66,17 @@ export const HomePage = observer(function HomePage({
   const firstName = userName.split(" ")[0] || "there"
 
   return (
-    <div className="relative h-full flex flex-col overflow-hidden">
+    <div
+      className="relative h-full flex flex-col overflow-hidden"
+      data-home-element="root"
+      data-transition-phase={transitionPhase}
+    >
       {/* Animated gradient mesh background - inspired by Lovable.dev */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         {/* Primary gradient orb - large, blue to pink */}
         <div
-          className="absolute w-[800px] h-[800px] rounded-full blur-[120px] animate-gradient-shift"
+          className="home-gradient-orb absolute w-[800px] h-[800px] rounded-full blur-[120px] animate-gradient-shift"
+          data-home-element="orb-primary"
           style={{
             background: "radial-gradient(circle, rgba(59, 130, 246, 0.6) 0%, rgba(139, 92, 246, 0.5) 40%, rgba(236, 72, 153, 0.4) 100%)",
             top: "10%",
@@ -73,10 +84,11 @@ export const HomePage = observer(function HomePage({
             animation: "gradient-float 15s ease-in-out infinite",
           }}
         />
-        
+
         {/* Secondary gradient orb - orange to pink */}
         <div
-          className="absolute w-[600px] h-[600px] rounded-full blur-[100px]"
+          className="home-gradient-orb absolute w-[600px] h-[600px] rounded-full blur-[100px]"
+          data-home-element="orb-secondary"
           style={{
             background: "radial-gradient(circle, rgba(249, 115, 22, 0.5) 0%, rgba(236, 72, 153, 0.5) 50%, rgba(139, 92, 246, 0.3) 100%)",
             bottom: "5%",
@@ -84,10 +96,11 @@ export const HomePage = observer(function HomePage({
             animation: "gradient-float-reverse 18s ease-in-out infinite",
           }}
         />
-        
+
         {/* Tertiary gradient orb - cyan accent */}
         <div
-          className="absolute w-[500px] h-[500px] rounded-full blur-[100px]"
+          className="home-gradient-orb absolute w-[500px] h-[500px] rounded-full blur-[100px]"
+          data-home-element="orb-tertiary"
           style={{
             background: "radial-gradient(circle, rgba(34, 211, 238, 0.3) 0%, rgba(59, 130, 246, 0.3) 100%)",
             top: "50%",
@@ -95,10 +108,11 @@ export const HomePage = observer(function HomePage({
             animation: "gradient-pulse 12s ease-in-out infinite",
           }}
         />
-        
+
         {/* Hot pink accent orb */}
         <div
-          className="absolute w-[400px] h-[400px] rounded-full blur-[80px]"
+          className="home-gradient-orb absolute w-[400px] h-[400px] rounded-full blur-[80px]"
+          data-home-element="orb-pink"
           style={{
             background: "radial-gradient(circle, rgba(236, 72, 153, 0.5) 0%, rgba(168, 85, 247, 0.3) 100%)",
             top: "30%",
@@ -150,12 +164,15 @@ export const HomePage = observer(function HomePage({
       {/* Main content */}
       <div className="relative flex-1 flex flex-col items-center justify-center p-8">
         {/* Greeting */}
-        <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold text-center mb-8 bg-clip-text text-transparent bg-gradient-to-r from-foreground via-foreground to-foreground/80">
+        <h1
+          className="home-greeting text-3xl sm:text-4xl md:text-5xl font-bold text-center mb-8 bg-clip-text text-transparent bg-gradient-to-r from-foreground via-foreground to-foreground/80"
+          data-home-element="greeting"
+        >
           What's on your mind, {firstName}?
         </h1>
 
         {/* AI Prompt Input Card */}
-        <div className="w-full max-w-2xl">
+        <div className="home-input-card w-full max-w-2xl" data-home-element="input-card">
           <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl shadow-lg overflow-hidden">
             {/* Input area */}
             <div className="p-4">
@@ -218,7 +235,10 @@ export const HomePage = observer(function HomePage({
         </div>
 
         {/* Quick suggestions */}
-        <div className="mt-6 flex flex-wrap justify-center gap-2">
+        <div
+          className="home-suggestions mt-6 flex flex-wrap justify-center gap-2"
+          data-home-element="suggestions"
+        >
           {[
             "Build a landing page",
             "Create a dashboard",
@@ -240,7 +260,10 @@ export const HomePage = observer(function HomePage({
       </div>
 
       {/* Templates section */}
-      <div className="relative bg-card/50 backdrop-blur-sm border-t border-border p-6">
+      <div
+        className="home-templates relative bg-card/50 backdrop-blur-sm border-t border-border p-6"
+        data-home-element="templates"
+      >
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-medium">Templates</h2>
           <Button
