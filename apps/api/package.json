@@ -15,6 +15,7 @@
     "ai-sdk-provider-claude-code": "^3.3.0",
     "better-auth": "^1.2.8",
     "hono": "^4.7.10",
+    "nanoid": "^5.0.9",
     "pg": "^8.13.1"
   },
   "devDependencies": {
