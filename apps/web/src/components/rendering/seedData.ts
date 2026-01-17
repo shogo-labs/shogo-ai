@@ -9,7 +9,7 @@
  * - COMPONENT_DEFINITIONS: 38 ComponentDefinition entries (11 primitive, 14 domain, 4 visualization, 9 section)
  * - REGISTRY_DEFINITIONS: 2 Registry entries ('default' and 'studio')
  * - DEFAULT_BINDINGS: 13 RendererBinding entries for default registry
- * - STUDIO_BINDINGS: 18 RendererBinding entries for studio registry
+ * - STUDIO_BINDINGS: 21 RendererBinding entries for studio registry
  * - seedComponentBuilderData(store): Function to bootstrap all entities
  *
  * Match Expression Translation:
@@ -93,7 +93,7 @@ interface SeedSummary {
  */
 export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
   // -------------------------------------------------------------------------
-  // Primitive Display Renderers (11)
+  // Primitive Display Renderers (12)
   // -------------------------------------------------------------------------
   {
     id: "comp-string-display",
@@ -182,6 +182,14 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     description: "Renders nested object structures",
     implementationRef: "ObjectDisplay",
     tags: ["primitive", "object", "nested", "readonly"],
+  },
+  {
+    id: "comp-image-display",
+    name: "Image Display",
+    category: "display",
+    description: "Renders image URLs as visual images with configurable sizing, aspect ratio, and fallback handling",
+    implementationRef: "ImageDisplay",
+    tags: ["media", "image", "visual", "readonly"],
   },
 
   // -------------------------------------------------------------------------
@@ -578,7 +586,7 @@ export const DEFAULT_BINDINGS: RendererBindingSeed[] = [
 ]
 
 // ============================================================================
-// Studio Registry Bindings (18 total)
+// Studio Registry Bindings (21 total)
 // ============================================================================
 
 /**
@@ -735,6 +743,42 @@ export const STUDIO_BINDINGS: RendererBindingSeed[] = [
     component: componentId("PhaseStatusRenderer"),
     matchExpression: { xRenderer: "phase-status-renderer" },
     priority: 200,
+  },
+
+  // Image display bindings (3)
+  {
+    id: "image-display-explicit",
+    name: "Image Display (Explicit)",
+    registry: "studio",
+    component: componentId("ImageDisplay"),
+    matchExpression: { xRenderer: "image-display" },
+    priority: 200,
+  },
+  {
+    id: "image-display-uri-name",
+    name: "Image Display (URI + Name Pattern)",
+    registry: "studio",
+    component: componentId("ImageDisplay"),
+    matchExpression: {
+      $and: [
+        { format: "uri" },
+        { name: { $regex: "(image|photo|avatar|thumbnail|cover|logo|icon|picture|banner)", $options: "i" } },
+      ],
+    },
+    priority: 40,
+  },
+  {
+    id: "image-display-data-uri",
+    name: "Image Display (Data URI)",
+    registry: "studio",
+    component: componentId("ImageDisplay"),
+    matchExpression: {
+      $and: [
+        { type: "string" },
+        { contentMediaType: { $regex: "^image/" } },
+      ],
+    },
+    priority: 35,
   },
 ]
 
@@ -1056,6 +1100,7 @@ export const COMPOSITIONS: CompositionSeed[] = [
                   { id: "ObjectDisplay", label: "Object Display" },
                   { id: "StringArrayDisplay", label: "String Array Display" },
                   { id: "LongTextDisplay", label: "Long Text Display" },
+                  { id: "ImageDisplay", label: "Image Display" },
                 ],
               },
               {

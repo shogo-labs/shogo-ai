@@ -81,6 +81,9 @@ export function registerSchemaLoad(server: FastMCP) {
           ok: true,
           schemaId: schema.id,
           models,
+          // Include full enhanced schema for browser-side meta-store ingestion
+          // This preserves x-renderer, format, and all other extensions
+          enhanced: enhancedWithMetadata,
           loadedCollections: [],  // No auto-loading - use store.query to load data
           reloaded: wasReloaded  // true if schema existed before and was replaced
         })

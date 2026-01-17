@@ -654,7 +654,12 @@ const InboxPopover = observer(function InboxPopover({ collapsed, onInvitationAcc
  * Persistent navigation sidebar that provides global navigation across the app.
  * Collapsible to icons-only mode. State persisted to localStorage.
  */
-export const AppSidebar = observer(function AppSidebar() {
+interface AppSidebarProps {
+  /** Force sidebar into collapsed state (for homepage transition animation) */
+  forceCollapsed?: boolean
+}
+
+export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSidebarProps) {
   const location = useLocation()
   const navigate = useNavigate()
   const { setWorkspaceSlug, setFolderId } = useWorkspaceNavigation()
@@ -663,10 +668,14 @@ export const AppSidebar = observer(function AppSidebar() {
   const { studioCore, billing, auth } = useDomains()
 
   // Sidebar collapse state - persisted to localStorage
-  const [collapsed, setCollapsed] = useState(() => {
+  const [internalCollapsed, setInternalCollapsed] = useState(() => {
     const saved = localStorage.getItem("app-sidebar-collapsed")
     return saved === "true"
   })
+
+  // Use forceCollapsed if provided, otherwise use internal state
+  const collapsed = forceCollapsed ?? internalCollapsed
+  const setCollapsed = setInternalCollapsed
 
   // Theme state
   const [currentTheme, setCurrentTheme] = useState<"light" | "dark" | "system">(getTheme)
@@ -784,7 +793,9 @@ export const AppSidebar = observer(function AppSidebar() {
   return (
     <aside
       className={cn(
-        "h-full border-r border-border bg-card flex flex-col transition-all duration-200",
+        "h-full border-r border-border bg-card flex flex-col transition-all",
+        // Use faster transition for animation-driven collapse (150ms matches commit phase)
+        forceCollapsed !== undefined ? "duration-150" : "duration-200",
         collapsed ? "w-16" : "w-64"
       )}
       data-testid="app-sidebar"

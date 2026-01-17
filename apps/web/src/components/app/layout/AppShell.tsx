@@ -55,6 +55,26 @@ export function useCommandPaletteContext() {
   return context
 }
 
+// Context to control sidebar collapse from child components (e.g., homepage transition)
+interface SidebarCollapseContextValue {
+  /** Force sidebar to collapse (for animation coordination) */
+  collapseSidebar: () => void
+  /** Release forced collapse state (sidebar returns to user preference) */
+  releaseSidebar: () => void
+  /** Whether sidebar is currently force-collapsed */
+  isForceCollapsed: boolean
+}
+
+const SidebarCollapseContext = createContext<SidebarCollapseContextValue | null>(null)
+
+export function useSidebarCollapseContext() {
+  const context = useContext(SidebarCollapseContext)
+  if (!context) {
+    throw new Error("useSidebarCollapseContext must be used within AppShell")
+  }
+  return context
+}
+
 /**
  * AppShell component
  *
@@ -88,6 +108,18 @@ export const AppShell = observer(function AppShell() {
 
   // Command palette state (global search)
   const { open: isCommandPaletteOpen, setOpen: setCommandPaletteOpen } = useCommandPalette()
+
+  // Sidebar collapse state for homepage transition animation
+  // When forceCollapsed is true, sidebar collapses regardless of user preference
+  const [sidebarForceCollapsed, setSidebarForceCollapsed] = useState(false)
+
+  const collapseSidebar = useCallback(() => {
+    setSidebarForceCollapsed(true)
+  }, [])
+
+  const releaseSidebar = useCallback(() => {
+    setSidebarForceCollapsed(false)
+  }, [])
 
   // Handle checkout redirect params (workspace, checkout=success|canceled)
   useEffect(() => {
@@ -137,6 +169,13 @@ export const AppShell = observer(function AppShell() {
   // Context value for sharing with sidebar
   const commandPaletteContextValue = {
     openCommandPalette: () => setCommandPaletteOpen(true),
+  }
+
+  // Context value for sidebar collapse control (used by homepage transition)
+  const sidebarCollapseContextValue = {
+    collapseSidebar,
+    releaseSidebar,
+    isForceCollapsed: sidebarForceCollapsed,
   }
 
   // Toggle binding editor panel
@@ -192,31 +231,33 @@ export const AppShell = observer(function AppShell() {
     <ComponentRegistryProvider registry={registry}>
       <SettingsModalProvider>
         <CommandPaletteContext.Provider value={commandPaletteContextValue}>
-          <div className="h-screen flex">
-            {/* Persistent navigation sidebar */}
-            <AppSidebar />
-            
-            {/* Main content area */}
-            <div className="flex-1 flex flex-col min-w-0">
-              {/* Header - hidden on home view for cleaner Lovable-style layout */}
-              {!isHomeView && <AppHeader />}
-              <main className="flex-1 overflow-auto bg-background">
-                <Outlet />
-              </main>
+          <SidebarCollapseContext.Provider value={sidebarCollapseContextValue}>
+            <div className="h-screen flex">
+              {/* Persistent navigation sidebar */}
+              <AppSidebar forceCollapsed={sidebarForceCollapsed || undefined} />
+
+              {/* Main content area */}
+              <div className="flex-1 flex flex-col min-w-0">
+                {/* Header - hidden on home view for cleaner Lovable-style layout */}
+                {!isHomeView && <AppHeader />}
+                <main className="flex-1 overflow-auto bg-background">
+                  <Outlet />
+                </main>
+              </div>
             </div>
-          </div>
 
-          {/* Global search command palette */}
-          <CommandPalette
-            open={isCommandPaletteOpen}
-            onOpenChange={setCommandPaletteOpen}
-          />
+            {/* Global search command palette */}
+            <CommandPalette
+              open={isCommandPaletteOpen}
+              onOpenChange={setCommandPaletteOpen}
+            />
 
-          {/* Debug Panel - BindingEditorPanel */}
-          <BindingEditorPanel
-            isOpen={isBindingEditorOpen}
-            onClose={() => setIsBindingEditorOpen(false)}
-          />
+            {/* Debug Panel - BindingEditorPanel */}
+            <BindingEditorPanel
+              isOpen={isBindingEditorOpen}
+              onClose={() => setIsBindingEditorOpen(false)}
+            />
+          </SidebarCollapseContext.Provider>
         </CommandPaletteContext.Provider>
       </SettingsModalProvider>
     </ComponentRegistryProvider>

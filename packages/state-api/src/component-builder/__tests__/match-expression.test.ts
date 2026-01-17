@@ -414,3 +414,61 @@ describe("Integration: Real-world match expression patterns", () => {
     expect(matcher({ name: "config", type: "object" })).toBe(true)
   })
 })
+
+// ============================================================================
+// Error Handling: Invalid expressions should not crash
+// ============================================================================
+
+describe("Error handling: Invalid expressions", () => {
+  test("PCRE inline flags in $regex return never-matching function (graceful degradation)", () => {
+    // This tests that Python/PCRE-style inline flags (like (?i)) are handled gracefully.
+    // The @ucast/mongo parser creates RegExp directly, so invalid patterns
+    // cause parse errors. Our error handling catches this and returns a
+    // never-matching function instead of crashing.
+    //
+    // Note: The PCRE flag conversion happens in serialization.ts for deserialized
+    // conditions, but parseQuery uses @ucast/mongo which creates RegExp directly.
+    const matcher = createMatcherFromExpression({
+      name: { $regex: "(?i)(image|photo)" } // PCRE inline flag - invalid in JS
+    })
+
+    // Should return a function (not throw)
+    expect(typeof matcher).toBe("function")
+
+    // Should not match anything (graceful degradation - parse failed)
+    const meta: PropertyMetadata = { name: "image_url", type: "string" }
+    expect(matcher(meta)).toBe(false)
+  })
+
+  test("invalid regex that cannot be fixed returns never-matching function", () => {
+    // A regex with syntax that can't be converted (unbalanced parens after flag removal)
+    const matcher = createMatcherFromExpression({
+      name: { $regex: "(?i)(unbalanced" }
+    })
+
+    // Should return a function (not throw)
+    expect(typeof matcher).toBe("function")
+
+    // Should not match anything (graceful degradation)
+    const meta: PropertyMetadata = { name: "anything", type: "string" }
+    expect(matcher(meta)).toBe(false)
+  })
+
+  test("same invalid expression returns cached never-matching function", () => {
+    const expr = { name: { $regex: "(invalid[" } }
+
+    // First call
+    const matcher1 = createMatcherFromExpression(expr)
+    // Second call with same object
+    const matcher2 = createMatcherFromExpression(expr)
+
+    // Both should return functions
+    expect(typeof matcher1).toBe("function")
+    expect(typeof matcher2).toBe("function")
+
+    // Both should not match
+    const meta: PropertyMetadata = { name: "test", type: "string" }
+    expect(matcher1(meta)).toBe(false)
+    expect(matcher2(meta)).toBe(false)
+  })
+})

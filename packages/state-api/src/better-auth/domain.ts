@@ -107,9 +107,10 @@ export const betterAuthDomain = domain({
             // Add user
             const user = self.userCollection.add({
               id: session.user.id,
-              name: session.user.email.split("@")[0], // derive name from email
+              name: session.user.name ?? session.user.email.split("@")[0], // use name if available, fallback to email prefix
               email: session.user.email,
               emailVerified: session.user.emailVerified,
+              image: session.user.image, // Include profile image URL
               createdAt: session.user.createdAt,
               updatedAt: session.user.createdAt,
             })

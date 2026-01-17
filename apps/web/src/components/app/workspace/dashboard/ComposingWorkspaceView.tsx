@@ -72,16 +72,16 @@ export const ComposingWorkspaceView = observer(function ComposingWorkspaceView({
     updatedAt: s.lastActiveAt ?? Date.now(),
   }))
 
-  // Handler for session selection
+  // Handler for session selection (from ChatSessionPicker)
   const handleSelectSession = useCallback(
-    async (sessionId: string) => {
+    (sessionId: string) => {
       setChatSessionId(sessionId)
       onChatSessionChange?.(sessionId)
     },
     [onChatSessionChange]
   )
 
-  // Handler for creating a new session
+  // Handler for creating a new session (from ChatSessionPicker)
   const handleCreateSession = useCallback(async () => {
     if (!studioChat || !featureId) return
     const newSession = await studioChat.createChatSession({
@@ -95,7 +95,7 @@ export const ComposingWorkspaceView = observer(function ComposingWorkspaceView({
 
   // Sync from ChatPanel when it auto-creates a session
   const handleChatSessionChange = useCallback(
-    async (sessionId: string) => {
+    (sessionId: string) => {
       setChatSessionId(sessionId)
       onChatSessionChange?.(sessionId)
     },
