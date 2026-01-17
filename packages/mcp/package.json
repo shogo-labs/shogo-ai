@@ -6,7 +6,7 @@
   "main": "./dist/server.js",
   "scripts": {
     "build": "bun build src/server.ts --outdir dist --target node --external @valibot/to-json-schema --external sury --external effect",
-    "dev": "bunx fastmcp dev src/server.ts",
+    "dev": "bun --env-file=../../.env.local --watch src/server-http.ts",
     "start": "bun src/server.ts",
     "start:http": "bun src/server-http.ts",
     "test": "bun test",

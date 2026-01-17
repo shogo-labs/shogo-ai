@@ -210,9 +210,10 @@ export interface IBillingService {
    * Get URL for Stripe Customer Portal
    *
    * @param workspaceId - The workspace (maps to Stripe customer)
+   * @param returnUrl - Optional return URL after portal session ends
    * @returns Portal session with redirect URL
    */
-  getPortalUrl(workspaceId: string): Promise<PortalSessionResult>
+  getPortalUrl(workspaceId: string, returnUrl?: string): Promise<PortalSessionResult>
 
   /**
    * Process incoming webhook event from Stripe

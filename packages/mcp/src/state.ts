@@ -12,11 +12,16 @@ export const MONOREPO_ROOT = resolve(__dirname, '../../../')
  * Get the effective workspace path, using MONOREPO_ROOT/.schemas as default.
  * This ensures all tools consistently resolve to the same schema storage location.
  *
- * @param workspace - Optional workspace path override
+ * @param workspace - Optional workspace path override. The string 'workspace' is treated as a special value meaning "use default"
  * @returns Absolute path to the .schemas directory
  */
 export function getEffectiveWorkspace(workspace?: string): string {
-  return workspace || resolve(MONOREPO_ROOT, '.schemas')
+  // Treat 'workspace' as a special identifier meaning "use default"
+  // This allows MCPPersistence to pass 'workspace' as a default value
+  if (!workspace || workspace === 'workspace') {
+    return resolve(MONOREPO_ROOT, '.schemas')
+  }
+  return workspace
 }
 
 export type RefKind = "single" | "array"

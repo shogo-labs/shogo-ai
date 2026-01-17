@@ -126,7 +126,7 @@ export const AppMemberManagementPage = observer(function AppMemberManagementPage
       <InviteMemberModal
         open={isInviteModalOpen}
         onOpenChange={setIsInviteModalOpen}
-        orgId={currentOrg.id}
+        workspaceId={currentOrg.id}
       />
     </div>
   )

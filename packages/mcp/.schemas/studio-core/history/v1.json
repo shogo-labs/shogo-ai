@@ -312,8 +312,27 @@
             "pending",
             "accepted",
             "declined",
-            "expired"
+            "expired",
+            "cancelled"
           ]
+        },
+        "emailStatus": {
+          "type": "string",
+          "enum": [
+            "not_sent",
+            "sent",
+            "failed"
+          ],
+          "default": "not_sent",
+          "description": "Email delivery status for the invitation"
+        },
+        "emailSentAt": {
+          "type": "number",
+          "description": "Timestamp when invitation email was sent"
+        },
+        "emailError": {
+          "type": "string",
+          "description": "Error message if email delivery failed"
         },
         "invitedBy": {
           "type": "string",
@@ -386,6 +405,69 @@
         "createdAt"
       ],
       "x-original-name": "Folder"
+    },
+    "Notification": {
+      "type": "object",
+      "description": "User notifications for workspace events (invitations, member changes, etc.)",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "id",
+        "nested": false
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "The user this notification is for (ref to AuthUser.id)"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "invitation_pending",
+            "invitation_accepted",
+            "member_joined",
+            "member_left",
+            "workspace_updated"
+          ],
+          "description": "Type of notification for routing/display logic"
+        },
+        "title": {
+          "type": "string",
+          "description": "Short title for the notification"
+        },
+        "message": {
+          "type": "string",
+          "description": "Detailed notification message"
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Type-specific data (invitationId, workspaceId, etc.)"
+        },
+        "actionUrl": {
+          "type": "string",
+          "description": "URL to navigate when notification is clicked"
+        },
+        "readAt": {
+          "type": "number",
+          "description": "Timestamp when notification was marked as read"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "type",
+        "title",
+        "message",
+        "createdAt"
+      ],
+      "x-original-name": "Notification"
     }
   },
   "x-persistence": {

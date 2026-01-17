@@ -227,7 +227,7 @@ export function PlanSelector({
               >
                 {PRO_TIERS.map((tier, i) => (
                   <option key={tier.credits} value={i}>
-                    {tier.credits.toLocaleString()} credits - ${billingInterval === "monthly" ? tier.monthly : tier.annual}/{billingInterval === "monthly" ? "mo" : "yr"}
+                    {tier.credits.toLocaleString()} credits
                   </option>
                 ))}
               </select>
@@ -294,7 +294,7 @@ export function PlanSelector({
               >
                 {BUSINESS_TIERS.map((tier, i) => (
                   <option key={tier.credits} value={i}>
-                    {tier.credits.toLocaleString()} credits - ${billingInterval === "monthly" ? tier.monthly : tier.annual}/{billingInterval === "monthly" ? "mo" : "yr"}
+                    {tier.credits.toLocaleString()} credits
                   </option>
                 ))}
               </select>

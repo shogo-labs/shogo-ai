@@ -1,0 +1,104 @@
+{
+  "id": "0a60a992-2c0e-42ed-90f7-d19a73edd011",
+  "name": "ws-member-mgmt-001",
+  "format": "enhanced-json-schema",
+  "createdAt": 1768562253086,
+  "version": 1,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ws-member-mgmt-001",
+  "$defs": {
+    "Notification": {
+      "type": "object",
+      "description": "Generic notification entity for user alerts across the platform. First use case: pending invitation notifications on login.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Recipient user ID (loose string ref to AuthUser.id)"
+        },
+        "type": {
+          "type": "string",
+          "description": "Notification type for filtering and display logic",
+          "enum": [
+            "invitation_pending",
+            "invitation_accepted",
+            "member_joined",
+            "member_left",
+            "workspace_updated"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "description": "Short notification title"
+        },
+        "message": {
+          "type": "string",
+          "description": "Full notification message"
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Type-specific data (e.g., invitationId, workspaceId, memberId)"
+        },
+        "actionUrl": {
+          "type": "string",
+          "description": "Optional URL for notification action (e.g., /workspace/invitations)"
+        },
+        "readAt": {
+          "type": "number",
+          "description": "Timestamp when notification was read, null if unread"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "type",
+        "title",
+        "message",
+        "createdAt"
+      ],
+      "x-original-name": "Notification"
+    },
+    "InvitationEmailExtension": {
+      "type": "object",
+      "description": "DESIGN REFERENCE: Fields to add to existing Invitation entity in studio-core schema for email delivery tracking",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "emailStatus": {
+          "type": "string",
+          "description": "Email delivery status - add to Invitation entity",
+          "enum": [
+            "not_sent",
+            "sent",
+            "failed"
+          ]
+        },
+        "emailSentAt": {
+          "type": "number",
+          "description": "Timestamp when invitation email was sent - add to Invitation entity"
+        },
+        "emailError": {
+          "type": "string",
+          "description": "Error message if email failed - add to Invitation entity"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "x-original-name": "InvitationEmailExtension"
+    }
+  },
+  "x-persistence": {
+    "backend": "postgres"
+  }
+}

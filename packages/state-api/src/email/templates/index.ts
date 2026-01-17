@@ -1,0 +1,171 @@
+/**
+ * Email Template Functions
+ *
+ * Templates are embedded directly to avoid Node.js filesystem dependencies,
+ * making this module work in both browser and server environments.
+ */
+
+import { EmailError } from "../types"
+
+/**
+ * Available template names
+ */
+export type TemplateName = "invitation"
+
+/**
+ * Template variables for invitation emails
+ */
+export interface InvitationTemplateVars {
+  workspaceName: string
+  inviterName: string
+  role: string
+  acceptUrl: string
+}
+
+/**
+ * Embedded email templates
+ * Templates are stored inline to avoid filesystem dependencies
+ */
+const TEMPLATES: Record<TemplateName, string> = {
+  invitation: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>You've been invited to join {{workspaceName}}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif; background-color: #f4f4f5;">
+  <table role="presentation" style="width: 100%; border-collapse: collapse;">
+    <tr>
+      <td align="center" style="padding: 40px 0;">
+        <table role="presentation" style="width: 100%; max-width: 600px; border-collapse: collapse; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);">
+          <!-- Header -->
+          <tr>
+            <td style="padding: 32px 40px; background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); border-radius: 8px 8px 0 0;">
+              <h1 style="margin: 0; font-size: 24px; font-weight: 600; color: #ffffff; text-align: center;">
+                Shogo AI
+              </h1>
+            </td>
+          </tr>
+
+          <!-- Content -->
+          <tr>
+            <td style="padding: 40px;">
+              <h2 style="margin: 0 0 16px 0; font-size: 20px; font-weight: 600; color: #18181b;">
+                You've been invited to join {{workspaceName}}
+              </h2>
+
+              <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6; color: #3f3f46;">
+                <strong>{{inviterName}}</strong> has invited you to join the <strong>{{workspaceName}}</strong> workspace as a <strong>{{role}}</strong>.
+              </p>
+
+              <p style="margin: 0 0 32px 0; font-size: 16px; line-height: 1.6; color: #3f3f46;">
+                Click the button below to accept this invitation and get started:
+              </p>
+
+              <!-- CTA Button -->
+              <table role="presentation" style="width: 100%; border-collapse: collapse;">
+                <tr>
+                  <td align="center">
+                    <a href="{{acceptUrl}}" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 6px; box-shadow: 0 2px 4px rgba(99, 102, 241, 0.3);">
+                      Accept Invitation
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="margin: 32px 0 0 0; font-size: 14px; line-height: 1.6; color: #71717a;">
+                If the button doesn't work, copy and paste this link into your browser:
+              </p>
+              <p style="margin: 8px 0 0 0; font-size: 14px; line-height: 1.6; color: #6366f1; word-break: break-all;">
+                {{acceptUrl}}
+              </p>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 24px 40px; background-color: #fafafa; border-top: 1px solid #e4e4e7; border-radius: 0 0 8px 8px;">
+              <p style="margin: 0; font-size: 13px; line-height: 1.5; color: #71717a; text-align: center;">
+                This invitation will expire in 7 days. If you didn't expect this invitation, you can safely ignore this email.
+              </p>
+              <p style="margin: 16px 0 0 0; font-size: 13px; color: #a1a1aa; text-align: center;">
+                &copy; {{currentYear}} Shogo AI. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`,
+}
+
+/**
+ * Load a template by name
+ *
+ * @param name - Template name
+ * @returns Raw template string with placeholders
+ * @throws EmailError with code 'template_not_found' if template doesn't exist
+ */
+export function loadTemplate(name: TemplateName): string {
+  const template = TEMPLATES[name]
+
+  if (!template) {
+    throw new EmailError(
+      "template_not_found",
+      `Email template not found: ${name}`
+    )
+  }
+
+  return template
+}
+
+/**
+ * Render an email template with variable substitution
+ *
+ * Uses simple string replacement: {{variableName}} -> value
+ *
+ * @param name - Template name
+ * @param vars - Variables to substitute in the template
+ * @returns Rendered HTML string
+ * @throws EmailError with code 'template_not_found' if template doesn't exist
+ * @throws EmailError with code 'template_render_error' if rendering fails
+ */
+export function renderEmailTemplate(
+  name: TemplateName,
+  vars: Record<string, string | number>
+): string {
+  const template = loadTemplate(name)
+
+  try {
+    // Add currentYear as a default variable
+    const allVars = {
+      currentYear: new Date().getFullYear(),
+      ...vars,
+    }
+
+    // Simple placeholder replacement: {{key}} -> value
+    return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
+      const value = allVars[key as keyof typeof allVars]
+      return value !== undefined ? String(value) : match
+    })
+  } catch (error: any) {
+    throw new EmailError(
+      "template_render_error",
+      `Failed to render template: ${name}`,
+      error
+    )
+  }
+}
+
+/**
+ * Render invitation email template
+ *
+ * @param vars - Invitation template variables
+ * @returns Rendered HTML string
+ */
+export function renderInvitationEmail(vars: InvitationTemplateVars): string {
+  return renderEmailTemplate("invitation", vars as unknown as Record<string, string | number>)
+}

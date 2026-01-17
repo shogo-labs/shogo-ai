@@ -124,6 +124,9 @@ export function billingRoutes(config: BillingRoutesConfig) {
   /**
    * POST /portal - Get Stripe Customer Portal URL
    *
+   * Request body (optional):
+   * - returnUrl: string - URL to return to after portal session
+   *
    * Response:
    * - url: string (redirect URL)
    */
@@ -134,7 +137,10 @@ export function billingRoutes(config: BillingRoutesConfig) {
         return c.json({ error: { code: "unauthorized", message: "Missing workspace context" } }, 401)
       }
 
-      const result = await billingService.getPortalUrl(auth.workspaceId)
+      const body = await c.req.json<{ returnUrl?: string }>().catch(() => ({}))
+      const returnUrl = body.returnUrl
+
+      const result = await billingService.getPortalUrl(auth.workspaceId, returnUrl)
       return c.json(result, 200)
     } catch (error) {
       return handleBillingError(c, error)
