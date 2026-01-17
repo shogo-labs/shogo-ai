@@ -8,10 +8,14 @@
     "dev:nohmr": "VITE_SHOGO_SKILLS=$(bun ../../scripts/list-skills.ts) VITE_HMR=false vite",
     "build": "VITE_SHOGO_SKILLS=$(bun ../../scripts/list-skills.ts) vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "npx playwright test",
+    "test:e2e:ui": "npx playwright test --ui",
+    "test:e2e:headed": "npx playwright test --headed"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.23",
+    "ai": "^6.0.23",
     "@codesandbox/sandpack-react": "^2.20.0",
     "@jsonforms/core": "^3.7.0",
     "@jsonforms/react": "^3.7.0",

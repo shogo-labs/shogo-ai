@@ -128,7 +128,7 @@ resource "aws_db_instance" "main" {
   identifier = var.identifier
 
   engine         = "postgres"
-  engine_version = "15.15"  # Latest available PostgreSQL on RDS in us-east-1
+  engine_version = "15.15" # Latest available PostgreSQL on RDS in us-east-1
   instance_class = var.instance_class
 
   allocated_storage     = var.allocated_storage
@@ -143,8 +143,8 @@ resource "aws_db_instance" "main" {
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
 
-  multi_az               = false  # Set to true for production HA
-  publicly_accessible    = false
+  multi_az            = false # Set to true for production HA
+  publicly_accessible = false
 
   backup_retention_period = var.backup_retention_period
   backup_window           = var.backup_window

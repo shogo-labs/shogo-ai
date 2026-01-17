@@ -32,7 +32,7 @@ variable "ecr_repository_arns" {
 
 # Check if GitHub OIDC provider already exists
 data "aws_iam_openid_connect_provider" "github_existing" {
-  count = 0  # Disabled - we'll create our own if needed
+  count = 0 # Disabled - we'll create our own if needed
   url   = "https://token.actions.githubusercontent.com"
 }
 
