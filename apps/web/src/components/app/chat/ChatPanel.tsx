@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
 import { ChatInput } from "./ChatInput"
+import { CompactChatInput } from "./CompactChatInput"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
 import { ChatContextProvider, type ChatContextValue } from "./ChatContext"
@@ -109,6 +110,8 @@ import type { WorkspacePanelData } from "../advanced-chat/WorkspacePanel"
 export type { WorkspacePanelData }
 
 export interface ChatPanelProps {
+  /** Display mode: 'compact' for homepage, 'full' for project sidebar */
+  mode?: 'compact' | 'full'
   /** Feature session ID to link chat with */
   featureId: string | null
   /** Feature session name for display */
@@ -145,6 +148,16 @@ export interface ChatPanelProps {
   onCollapsedChange?: (collapsed: boolean) => void
   /** Callback when width changes (for parent layout control) */
   onWidthChange?: (width: number) => void
+  /** Initial message to send on mount (for homepage transition warm-start) */
+  initialMessage?: string
+  /** Callback when submit happens in compact mode (before session exists) */
+  onCompactSubmit?: (prompt: string) => void
+  /** Ref to expose the input container for transition animation measurement */
+  inputContainerRef?: React.RefObject<HTMLDivElement>
+  /** Controlled value for compact mode input */
+  compactValue?: string
+  /** Callback when compact mode input value changes */
+  onCompactValueChange?: (value: string) => void
 }
 
 // ============================================================
@@ -395,6 +408,7 @@ async function refreshCollections(
 // ============================================================
 
 export const ChatPanel = observer(function ChatPanel({
+  mode = 'full',
   featureId,
   featureName,
   phase,
@@ -413,6 +427,11 @@ export const ChatPanel = observer(function ChatPanel({
   isCollapsed: controlledIsCollapsed,
   onCollapsedChange,
   onWidthChange,
+  initialMessage,
+  onCompactSubmit,
+  inputContainerRef,
+  compactValue,
+  onCompactValueChange,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
@@ -535,6 +554,9 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Loading guard ref to prevent duplicate message queries
   const isLoadingMessagesRef = useRef(false)
+
+  // Guard to prevent double-injection of initial message (homepage transition warm-start)
+  const hasInjectedInitialMessageRef = useRef(false)
 
   // Initialize ccSessionId from existing session (task-cc-chatpanel-integration)
   // This ensures session continuity when reloading the page or switching sessions
@@ -1466,6 +1488,22 @@ export const ChatPanel = observer(function ChatPanel({
     [handleSendMessage]
   )
 
+  // Homepage transition warm-start: Inject initial message on mount
+  // When navigating from homepage with a prompt, this sends the message through
+  // the normal flow as if the user typed and submitted it directly
+  useEffect(() => {
+    if (
+      initialMessage &&
+      currentSessionId &&
+      !hasInjectedInitialMessageRef.current &&
+      status === 'ready'  // Only inject when chat is ready, not streaming
+    ) {
+      hasInjectedInitialMessageRef.current = true
+      console.log('[ChatPanel] Injecting initial message from homepage transition:', initialMessage.slice(0, 50))
+      handleSendMessage(initialMessage)
+    }
+  }, [initialMessage, currentSessionId, status, handleSendMessage])
+
   // Collapse toggle - persist to localStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {
     const newCollapsed = !isCollapsed
@@ -1541,6 +1579,26 @@ export const ChatPanel = observer(function ChatPanel({
     isLoading: isStreaming,
     isPolling, // task-3-1-008: Pass polling state to context for LoadingOverlay
     error: error?.message ?? null,
+  }
+
+  // Handle compact mode submit - delegates to parent since no session exists yet
+  const handleCompactSubmit = useCallback((prompt: string) => {
+    onCompactSubmit?.(prompt)
+  }, [onCompactSubmit])
+
+  // Render compact mode (homepage)
+  if (mode === 'compact') {
+    return (
+      <CompactChatInput
+        ref={inputContainerRef}
+        onSubmit={handleCompactSubmit}
+        isLoading={isStreaming}
+        disabled={false}
+        value={compactValue}
+        onChange={onCompactValueChange}
+        className={className}
+      />
+    )
   }
 
   // Render collapsed state
@@ -1661,7 +1719,7 @@ export const ChatPanel = observer(function ChatPanel({
         )}
 
         {/* Input */}
-        <div className="border-t border-border/40">
+        <div ref={inputContainerRef} className="border-t border-border/40">
           <ChatInput
             onSubmit={handleInputSubmit}
             disabled={!currentSessionId}

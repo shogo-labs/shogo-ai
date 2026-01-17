@@ -1,22 +1,22 @@
 /**
  * HomePage - Main dashboard/home page component
- * 
+ *
  * Displays when no project is selected. Features:
  * - Personalized greeting with user's name
  * - Beautiful gradient mesh background
- * - AI prompt input for creating new projects/features
+ * - AI prompt input via ChatPanel in compact mode
  * - Templates carousel (placeholder for now)
- * 
+ *
  * Inspired by Lovable.dev's engaging home page design.
  */
 
-import { useState } from "react"
+import { useState, useRef, type RefObject } from "react"
 import { observer } from "mobx-react-lite"
 import { useNavigate } from "react-router-dom"
-import { Paperclip, Palette, MessageSquare, Send, Sparkles, Loader2 } from "lucide-react"
+import { Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import { ChatPanel } from "@/components/app/chat/ChatPanel"
 
 /** Transition phases for HomePage to Workspace animation */
 export type TransitionPhase = 'idle' | 'commit' | 'dissolve' | 'transform' | 'emerge' | 'settle' | 'complete'
@@ -30,6 +30,10 @@ interface HomePageProps {
   isLoading?: boolean
   /** Current transition phase for animation (default: 'idle') */
   transitionPhase?: TransitionPhase
+  /** Ref for the input card element (used for FLIP animation position capture) */
+  inputRef?: RefObject<HTMLDivElement>
+  /** FLIP animation styles (position:fixed + CSS vars) - applied during transition */
+  flipStyle?: React.CSSProperties | null
 }
 
 /**
@@ -43,24 +47,15 @@ export const HomePage = observer(function HomePage({
   onPromptSubmit,
   isLoading = false,
   transitionPhase = 'idle',
+  inputRef,
+  flipStyle,
 }: HomePageProps) {
-  const [prompt, setPrompt] = useState("")
   const navigate = useNavigate()
-
-  const handleSubmit = () => {
-    if (prompt.trim() && onPromptSubmit && !isLoading) {
-      onPromptSubmit(prompt)
-      // Don't clear prompt immediately - let the navigation happen first
-      // The component will unmount when navigating to the project
-    }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault()
-      handleSubmit()
-    }
-  }
+  // Prompt state managed here so suggestions can pre-fill
+  const [prompt, setPrompt] = useState("")
+  // Internal ref for ChatPanel if external ref not provided
+  const internalInputRef = useRef<HTMLDivElement>(null)
+  const chatPanelRef = inputRef ?? internalInputRef
 
   // Get first name only for greeting
   const firstName = userName.split(" ")[0] || "there"
@@ -171,67 +166,22 @@ export const HomePage = observer(function HomePage({
           What's on your mind, {firstName}?
         </h1>
 
-        {/* AI Prompt Input Card */}
-        <div className="home-input-card w-full max-w-2xl" data-home-element="input-card">
-          <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl shadow-lg overflow-hidden">
-            {/* Input area */}
-            <div className="p-4">
-              <Textarea
-                placeholder="Ask Shogo to create a web app that..."
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={handleKeyDown}
-                disabled={isLoading}
-                className="min-h-[80px] resize-none border-0 bg-transparent p-0 text-base focus-visible:ring-0 placeholder:text-muted-foreground/60"
-                rows={3}
-              />
-            </div>
-
-            {/* Action bar */}
-            <div className="px-4 pb-4 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 gap-1.5 text-muted-foreground hover:text-foreground"
-                >
-                  <Paperclip className="h-4 w-4" />
-                  <span className="hidden sm:inline text-xs">Attach</span>
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 gap-1.5 text-muted-foreground hover:text-foreground"
-                >
-                  <Palette className="h-4 w-4" />
-                  <span className="hidden sm:inline text-xs">Theme</span>
-                </Button>
-              </div>
-              
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 gap-1.5"
-                >
-                  <MessageSquare className="h-4 w-4" />
-                  <span className="text-xs">Chat</span>
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-8 px-3"
-                  onClick={handleSubmit}
-                  disabled={!prompt.trim() || isLoading}
-                >
-                  {isLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Send className="h-4 w-4" />
-                  )}
-                </Button>
-              </div>
-            </div>
-          </div>
+        {/* AI Prompt Input Card - ChatPanel in compact mode */}
+        <div
+          ref={chatPanelRef}
+          className="home-input-card w-full max-w-2xl"
+          data-home-element="input-card"
+          data-flip-animating={flipStyle ? '' : undefined}
+          style={flipStyle ?? undefined}
+        >
+          <ChatPanel
+            mode="compact"
+            featureId={null}
+            phase={null}
+            onCompactSubmit={onPromptSubmit}
+            compactValue={prompt}
+            onCompactValueChange={setPrompt}
+          />
         </div>
 
         {/* Quick suggestions */}

@@ -15,12 +15,13 @@
 
 import { observer } from "mobx-react-lite"
 import { useEffect, useCallback, useState, useRef } from "react"
-import { useParams } from "react-router-dom"
+import { useParams, useLocation } from "react-router-dom"
 import { useDomains } from "@/contexts/DomainProvider"
 import { ComposablePhaseView } from "@/components/rendering/composition/ComposablePhaseView"
 import { ComponentRegistryProvider } from "@/components/rendering"
 import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
 import { ChatPanel } from "../chat/ChatPanel"
+import { ChatPanelTransitionOverlay } from "../chat/ChatPanelTransitionOverlay"
 import { useChatSessionNavigation } from "../advanced-chat/hooks/useChatSessionNavigation"
 import { ProjectTopBar } from "./ProjectTopBar"
 import { ChatSessionsPanel, type ChatSessionItem } from "./ChatSessionsPanel"
@@ -33,9 +34,33 @@ const WORKSPACE_COMPOSITION_NAME = "workspace"
 // Default chat panel width in px
 const DEFAULT_CHAT_WIDTH = 480
 
+// Serialized rect for transition animation
+interface SerializedRect {
+  top: number
+  left: number
+  width: number
+  height: number
+  right: number
+  bottom: number
+}
+
+// Location state passed from homepage transition
+interface TransitionLocationState {
+  project?: any
+  chatSessionId?: string
+  initialMessage?: string
+  // Transition animation data
+  transitionStartRect?: SerializedRect
+  transitionPromptText?: string
+}
+
 export const ProjectLayout = observer(function ProjectLayout() {
   const { projectId } = useParams<{ projectId: string }>()
+  const location = useLocation()
   const { data: session } = useSession()
+
+  // Extract state passed from homepage transition (for instant render + warm-start)
+  const transitionState = location.state as TransitionLocationState | null
 
   const { platformFeatures, componentBuilder, studioChat, studioCore, billing } = useDomains<{
     platformFeatures: any
@@ -75,15 +100,73 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
   const [currentRoute, setCurrentRoute] = useState("/")
 
-  // Project and feature session state
-  const [project, setProject] = useState<any>(null)
-  const [featureSession, setFeatureSession] = useState<any>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  // Project state
+  // Use transition state if available (from homepage flow) to avoid loading flash
+  const [project, setProject] = useState<any>(transitionState?.project ?? null)
+  const [isLoading, setIsLoading] = useState(!transitionState?.project)
+
+  // Transition overlay state - for animating from homepage to chat panel
+  const chatInputContainerRef = useRef<HTMLDivElement>(null)
+  const [transitionOverlayActive, setTransitionOverlayActive] = useState(false)
+  const [transitionEndRect, setTransitionEndRect] = useState<DOMRect | null>(null)
+  const transitionMeasuredRef = useRef(false)
+
+  // Convert serialized start rect to DOMRect
+  const transitionStartRect = transitionState?.transitionStartRect
+    ? new DOMRect(
+        transitionState.transitionStartRect.left,
+        transitionState.transitionStartRect.top,
+        transitionState.transitionStartRect.width,
+        transitionState.transitionStartRect.height
+      )
+    : null
+
+  // Clear location state after consuming initialMessage to prevent re-injection on refresh
+  useEffect(() => {
+    if (transitionState?.initialMessage) {
+      // Replace current history entry without the state
+      window.history.replaceState({}, document.title)
+    }
+  }, []) // Only run on mount
+
+  // Measure ChatPanel input and activate transition overlay
+  // This runs once when we have a start rect and the ChatPanel has mounted
+  useEffect(() => {
+    if (
+      !transitionStartRect ||
+      !chatInputContainerRef.current ||
+      transitionMeasuredRef.current ||
+      isChatCollapsed
+    ) {
+      return
+    }
+
+    // Wait for layout to settle
+    const measureAndActivate = () => {
+      const endRect = chatInputContainerRef.current?.getBoundingClientRect()
+      if (endRect) {
+        transitionMeasuredRef.current = true
+        setTransitionEndRect(endRect)
+        setTransitionOverlayActive(true)
+      }
+    }
+
+    // Use requestAnimationFrame to ensure layout is complete
+    requestAnimationFrame(() => {
+      requestAnimationFrame(measureAndActivate)
+    })
+  }, [transitionStartRect, isChatCollapsed])
+
+  // Handle transition overlay completion
+  const handleTransitionComplete = useCallback(() => {
+    setTransitionOverlayActive(false)
+    setTransitionEndRect(null)
+  }, [])
 
   // Check if domains are ready
-  const domainsReady = !!(studioCore?.projectCollection && platformFeatures?.featureSessionCollection)
+  const domainsReady = !!studioCore?.projectCollection
 
-  // Load project and create/load feature session
+  // Load project data
   useEffect(() => {
     if (!projectId || !domainsReady) {
       return
@@ -99,23 +182,6 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
         if (proj) {
           setProject(proj)
-
-          // Create or get the feature session for this project
-          const sessionId = `project-${projectId}`
-          let session = await platformFeatures.featureSessionCollection.query()
-            .where({ id: sessionId })
-            .first()
-
-          if (!session) {
-            session = await platformFeatures.featureSessionCollection.insertOne({
-              id: sessionId,
-              name: proj.name,
-              intent: `Project workspace for ${proj.name}`,
-              status: "discovery",
-              createdAt: Date.now(),
-            })
-          }
-          setFeatureSession(session)
         } else {
           console.warn("[ProjectLayout] Project not found:", projectId)
         }
@@ -127,19 +193,16 @@ export const ProjectLayout = observer(function ProjectLayout() {
     }
 
     loadProjectData()
-  }, [projectId, domainsReady, studioCore, platformFeatures])
+  }, [projectId, domainsReady, studioCore])
 
   // Get workspace composition for observability
   const workspaceComposition = componentBuilder?.compositionCollection?.findByName?.(
     WORKSPACE_COMPOSITION_NAME
   )
 
-  // Get feature ID for chat
-  const featureId = featureSession?.id
-
-  // Get chat sessions for this project's feature
-  const projectChatSessions: ChatSessionItem[] = featureId
-    ? (studioChat?.chatSessionCollection?.findByFeature?.(featureId) ?? []).map((s: any) => ({
+  // Get chat sessions for this project (synchronous - uses in-memory data)
+  const projectChatSessions: ChatSessionItem[] = projectId
+    ? (studioChat?.chatSessionCollection?.findByContext?.(projectId) ?? []).map((s: any) => ({
         id: s.id,
         name: s.name || s.inferredName,
         messageCount: s.messageCount ?? 0,
@@ -150,7 +213,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Auto-select last chat session or create one if none exists
   // This runs when the project loads and there's no session in the URL
   useEffect(() => {
-    if (!featureId || !studioChat?.chatSessionCollection || chatSessionId) {
+    if (!projectId || !studioChat?.chatSessionCollection || chatSessionId) {
       // Already have a session selected, or not ready yet
       return
     }
@@ -158,7 +221,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
     const initializeChatSession = async () => {
       // Query database directly for existing sessions (in-memory may not be loaded yet)
       const existingSessions = await studioChat.chatSessionCollection
-        .query({ contextId: featureId })
+        .query({ contextId: projectId })
         .toArray()
 
       if (existingSessions.length > 0) {
@@ -172,15 +235,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
         // No existing sessions - create a new one
         const newSession = await studioChat.createChatSession({
           inferredName: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
-          contextType: "feature",
-          contextId: featureId,
+          contextType: "project",
+          contextId: projectId,
         })
         await setChatSessionId(newSession.id)
       }
     }
 
     initializeChatSession()
-  }, [featureId, studioChat, chatSessionId, setChatSessionId])
+  }, [projectId, studioChat, chatSessionId, setChatSessionId])
 
   // Session handlers
   const handleSelectSession = useCallback(
@@ -191,14 +254,14 @@ export const ProjectLayout = observer(function ProjectLayout() {
   )
 
   const handleCreateSession = useCallback(async () => {
-    if (!studioChat || !featureId) return
+    if (!studioChat || !projectId) return
     const newSession = await studioChat.createChatSession({
       inferredName: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
-      contextType: "feature",
-      contextId: featureId,
+      contextType: "project",
+      contextId: projectId,
     })
     await setChatSessionId(newSession.id)
-  }, [studioChat, featureId, setChatSessionId])
+  }, [studioChat, projectId, setChatSessionId])
 
   const handleChatSessionChange = useCallback(
     async (sessionId: string) => {
@@ -275,7 +338,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const maxCredits = effectiveBalance ? (effectiveBalance.dailyCredits + effectiveBalance.monthlyCredits + effectiveBalance.rolloverCredits) : 5
 
   // Loading state
-  if (isLoading || !project || !featureSession) {
+  if (isLoading || !project) {
     return (
       <ComponentRegistryProvider registry={registry}>
         <div className="h-screen flex flex-col bg-background">
@@ -349,7 +412,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   // credit-tracking: Pass workspaceId and userId for credit deduction
                   // Handle both resolved MST reference (object with .id) and unresolved (string)
                   <ChatPanel
-                    featureId={featureId}
+                    featureId={projectId}
                     featureName={project.name}
                     phase={null}
                     chatSessionId={chatSessionId}
@@ -360,6 +423,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
                     workspaceId={typeof project.workspace === 'string' ? project.workspace : project.workspace?.id}
                     userId={session?.user?.id}
                     className="flex-1 min-h-0"
+                    initialMessage={transitionState?.initialMessage}
+                    inputContainerRef={chatInputContainerRef}
                   />
                 )}
               </>
@@ -377,12 +442,24 @@ export const ProjectLayout = observer(function ProjectLayout() {
             <div className="h-full w-full rounded-lg border border-border/40 bg-background shadow-sm overflow-hidden">
               <ComposablePhaseView
                 phaseName={WORKSPACE_COMPOSITION_NAME}
-                feature={featureSession}
+                feature={project}
                 className="h-full"
               />
             </div>
           </div>
         </div>
+
+        {/* Transition overlay - animates input from homepage to chat panel position */}
+        {transitionStartRect && transitionEndRect && (
+          <ChatPanelTransitionOverlay
+            startRect={transitionStartRect}
+            endRect={transitionEndRect}
+            promptText={transitionState?.transitionPromptText ?? ""}
+            onComplete={handleTransitionComplete}
+            isActive={transitionOverlayActive}
+            duration={400}
+          />
+        )}
       </div>
     </ComponentRegistryProvider>
   )

@@ -171,6 +171,15 @@ export const studioChatDomain = domain({
         },
 
         /**
+         * Find sessions by contextId (works for any context type: project, feature, etc.)
+         */
+        findByContext(contextId: string): any[] {
+          return self
+            .all()
+            .filter((s: any) => s.contextId === contextId)
+        },
+
+        /**
          * Find session for specific feature and phase
          * Note: null and undefined are treated as equivalent for phase matching
          */
