@@ -4,6 +4,9 @@
  * Creates stores for multiple domains using environment from EnvironmentProvider.
  * Stores are keyed by the object keys you provide, enabling aliasing.
  *
+ * OPTIMIZATION: Supports lazy loading via `eagerCollections` config.
+ * Only specified collections are loaded on mount; others load on-demand.
+ *
  * Usage:
  * ```tsx
  * import { DomainProvider, useDomains } from './contexts/DomainProvider'
@@ -15,8 +18,14 @@
  *   auth: authDomain,
  * } as const
  *
+ * // Optional: specify which collections to load eagerly
+ * const eagerCollections = {
+ *   teams: ['organizationCollection'],
+ *   auth: ['userCollection'],
+ * }
+ *
  * <EnvironmentProvider env={env}>
- *   <DomainProvider domains={domains}>
+ *   <DomainProvider domains={domains} eagerCollections={eagerCollections}>
  *     <Routes>...</Routes>
  *   </DomainProvider>
  * </EnvironmentProvider>
@@ -40,6 +49,15 @@ import { useEnv } from "./EnvironmentContext"
 /** Map of string keys to DomainResult objects */
 export type DomainsMap = Record<string, DomainResult>
 
+/**
+ * Configuration for which collections to load eagerly on mount.
+ * Key is the domain key (from domains prop), value is array of collection names.
+ * Collections not listed here will NOT be loaded on mount (lazy loading).
+ * If a domain key is not present, ALL its collections will be loaded (backwards compat).
+ * If a domain key maps to empty array [], NO collections will be loaded for that domain.
+ */
+export type EagerCollectionsConfig = Record<string, string[]>
+
 /** Context value holds stores keyed the same as input domains */
 interface DomainProviderContextValue {
   stores: Record<string, any>
@@ -61,6 +79,16 @@ export interface DomainProviderProps<T extends DomainsMap> {
   /** Map of key → DomainResult. Keys become the property names in useDomains() */
   domains: T
   children: ReactNode
+  /**
+   * OPTIMIZATION: Specify which collections to load eagerly on mount.
+   * Format: { domainKey: ['collectionName1', 'collectionName2'] }
+   *
+   * - If not provided: ALL collections from ALL domains load (original behavior)
+   * - If domain key present with array: only those collections load
+   * - If domain key present with empty array: NO collections load for that domain
+   * - If domain key absent: ALL collections load for that domain (backwards compat)
+   */
+  eagerCollections?: EagerCollectionsConfig
 }
 
 /**
@@ -82,6 +110,7 @@ export interface DomainProviderProps<T extends DomainsMap> {
 export function DomainProvider<T extends DomainsMap>({
   domains,
   children,
+  eagerCollections,
 }: DomainProviderProps<T>) {
   const env = useEnv() // Get environment from EnvironmentProvider (throws if missing)
   const storesRef = useRef<Record<string, any> | null>(null)
@@ -121,38 +150,90 @@ export function DomainProvider<T extends DomainsMap>({
 
       // First, ensure schemas are loaded into the MCP server's meta-store
       // This is required before store.create/update operations will work
+      // OPTIMIZATION: Load all schemas in a single batched HTTP request
       const persistence = env.services?.persistence as any
-      if (persistence?.loadSchema) {
-        for (const [key, domain] of Object.entries(domains)) {
-          try {
-            await persistence.loadSchema(domain.name, env.context?.location)
-          } catch (err) {
-            console.error(`[DomainProvider] Failed to load schema for "${key}":`, err)
-          }
+      if (persistence?.loadSchemasBatch) {
+        // Use batch loading - single HTTP request for all schemas
+        const schemaRequests = Object.entries(domains).map(([_, domain]) => ({
+          name: domain.name,
+          location: env.context?.location,
+        }))
+        try {
+          await persistence.loadSchemasBatch(schemaRequests)
+        } catch (err) {
+          console.error(`[DomainProvider] Batch schema load failed, falling back to individual loads:`, err)
+          // Fallback to individual loads in parallel
+          const schemaLoadPromises = Object.entries(domains).map(
+            async ([key, domain]) => {
+              try {
+                await persistence.loadSchema(domain.name, env.context?.location)
+              } catch (err) {
+                console.error(`[DomainProvider] Failed to load schema for "${key}":`, err)
+              }
+            }
+          )
+          await Promise.all(schemaLoadPromises)
         }
+      } else if (persistence?.loadSchema) {
+        // Fallback: load schemas in parallel (no batch support)
+        const schemaLoadPromises = Object.entries(domains).map(
+          async ([key, domain]) => {
+            try {
+              await persistence.loadSchema(domain.name, env.context?.location)
+            } catch (err) {
+              console.error(`[DomainProvider] Failed to load schema for "${key}":`, err)
+            }
+          }
+        )
+        await Promise.all(schemaLoadPromises)
       }
 
       // Then load persisted data for each store using query() API
       // This uses the backend registry (PostgreSQL) and auto-syncs to MST
-      for (const [key, store] of Object.entries(stores)) {
-        try {
-          // Find all collections (properties ending with "Collection")
-          const collectionNames = Object.keys(store).filter((prop) =>
-            prop.endsWith("Collection")
-          )
+      // OPTIMIZATION: Only load collections specified in eagerCollections config
+      // If no config provided, load ALL collections (backwards compatibility)
+      const collectionLoadPromises: Promise<void>[] = []
 
-          for (const collectionName of collectionNames) {
-            const collection = store[collectionName]
-            // Use query().toArray() which routes through backendRegistry
-            // Remote executors auto-sync results to MST via syncFromRemote callback
-            if (collection?.query && typeof collection.query === "function") {
-              await collection.query().toArray()
-            }
+      for (const [key, store] of Object.entries(stores)) {
+        // Find all collections (properties ending with "Collection")
+        const allCollectionNames = Object.keys(store).filter((prop) =>
+          prop.endsWith("Collection")
+        )
+
+        // Determine which collections to load for this domain
+        let collectionsToLoad: string[]
+        if (eagerCollections === undefined) {
+          // No config provided - load ALL collections (backwards compatibility)
+          collectionsToLoad = allCollectionNames
+        } else if (eagerCollections[key] !== undefined) {
+          // Config specifies which collections to load for this domain
+          // Filter to only collections that exist in the store
+          collectionsToLoad = eagerCollections[key].filter(name =>
+            allCollectionNames.includes(name)
+          )
+        } else {
+          // Domain not in config - load ALL its collections (backwards compatibility)
+          collectionsToLoad = allCollectionNames
+        }
+
+        for (const collectionName of collectionsToLoad) {
+          const collection = store[collectionName]
+          // Use query().toArray() which routes through backendRegistry
+          // Remote executors auto-sync results to MST via syncFromRemote callback
+          if (collection?.query && typeof collection.query === "function") {
+            collectionLoadPromises.push(
+              collection.query().toArray().catch((err: unknown) => {
+                console.error(
+                  `[DomainProvider] Failed to load "${collectionName}" for "${key}":`,
+                  err
+                )
+              })
+            )
           }
-        } catch (err) {
-          console.error(`[DomainProvider] Failed to load data for "${key}":`, err)
         }
       }
+
+      await Promise.all(collectionLoadPromises)
     }
 
     loadAllDomainData()

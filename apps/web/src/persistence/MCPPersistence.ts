@@ -5,7 +5,7 @@
  * via the MCP protocol, achieving isomorphic persistence with the
  * server-side FileSystemPersistence.
  */
-import type { MCPService } from '../services/mcpService'
+import type { MCPService, BatchToolCall } from '../services/mcpService'
 import type {
   IPersistenceService,
   PersistenceContext,
@@ -290,5 +290,146 @@ export class MCPPersistence implements IPersistenceService {
       console.error('[MCPPersistence] saveEntity error:', error.message)
       throw error
     }
+  }
+
+  // === Batch Operations (Optimization) ===
+
+  /**
+   * Load multiple schemas in a single batched HTTP request.
+   * OPTIMIZATION: Reduces N HTTP requests to 1 for schema loading.
+   */
+  async loadSchemasBatch(
+    schemas: Array<{ name: string; location?: string }>
+  ): Promise<Map<string, { metadata: { name: string; id?: string }; enhanced: any } | null>> {
+    await this.ensureInitialized()
+
+    const calls: BatchToolCall[] = schemas.map(({ name, location }) => ({
+      name: 'schema.load',
+      arguments: { name, workspace: location || 'workspace' }
+    }))
+
+    const results = await this.mcp.callToolsBatch(calls)
+    const resultMap = new Map<string, { metadata: { name: string; id?: string }; enhanced: any } | null>()
+
+    schemas.forEach((schema, index) => {
+      const result = results[index]
+      if (!result.ok) {
+        console.warn(`[MCPPersistence] batch schema.load failed for "${schema.name}":`, result.error)
+        resultMap.set(schema.name, null)
+        return
+      }
+
+      const loadResult = result.result as {
+        ok: boolean
+        schemaId?: string
+        models?: Array<{
+          name: string
+          collectionName: string
+          fields: Array<{ name: string; type: string; required?: boolean }>
+          refs?: Array<{ name: string; target: string; type: 'single' | 'array' }>
+        }>
+        error?: { message: string }
+      }
+
+      if (!loadResult?.ok) {
+        console.warn(`[MCPPersistence] batch schema.load failed for "${schema.name}":`, loadResult?.error?.message)
+        resultMap.set(schema.name, null)
+        return
+      }
+
+      // Convert model descriptors to enhanced JSON schema format
+      const $defs: Record<string, any> = {}
+      for (const model of loadResult.models || []) {
+        const properties: Record<string, any> = {}
+        const required: string[] = []
+
+        for (const field of model.fields || []) {
+          properties[field.name] = { type: field.type }
+          if (field.required) {
+            required.push(field.name)
+          }
+        }
+
+        for (const ref of model.refs || []) {
+          properties[ref.name] = {
+            $ref: `#/$defs/${ref.target}`,
+            'x-reference-type': ref.type
+          }
+        }
+
+        $defs[model.name] = {
+          type: 'object',
+          properties,
+          ...(required.length > 0 ? { required } : {})
+        }
+      }
+
+      resultMap.set(schema.name, {
+        metadata: { name: schema.name, id: loadResult.schemaId },
+        enhanced: {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          $defs
+        }
+      })
+    })
+
+    return resultMap
+  }
+
+  /**
+   * Load multiple collections in a single batched HTTP request.
+   * OPTIMIZATION: Reduces N HTTP requests to 1 for collection loading.
+   */
+  async loadCollectionsBatch(
+    collections: Array<PersistenceContext>
+  ): Promise<Map<string, { items: Record<string, any> } | null>> {
+    await this.ensureInitialized()
+
+    const calls: BatchToolCall[] = collections.map((ctx) => ({
+      name: 'store.query',
+      arguments: {
+        schema: ctx.schemaName,
+        model: ctx.modelName,
+        workspace: ctx.location,
+        filter: ctx.filter
+      }
+    }))
+
+    const results = await this.mcp.callToolsBatch(calls)
+    const resultMap = new Map<string, { items: Record<string, any> } | null>()
+
+    collections.forEach((ctx, index) => {
+      const key = `${ctx.schemaName}:${ctx.modelName}`
+      const result = results[index]
+
+      if (!result.ok) {
+        console.warn(`[MCPPersistence] batch store.query failed for "${key}":`, result.error)
+        resultMap.set(key, null)
+        return
+      }
+
+      const queryResult = result.result as {
+        ok: boolean
+        items?: any[]
+        error?: { message: string }
+      }
+
+      if (!queryResult?.ok || !queryResult.items) {
+        resultMap.set(key, null)
+        return
+      }
+
+      // Transform array to items map (MST collection format)
+      const items: Record<string, any> = {}
+      for (const item of queryResult.items) {
+        if (item.id) {
+          items[item.id] = item
+        }
+      }
+
+      resultMap.set(key, { items })
+    })
+
+    return resultMap
   }
 }

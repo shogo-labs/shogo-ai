@@ -20,6 +20,12 @@ export interface MCPResponse<T = any> {
   }
 }
 
+/** Batch tool call request */
+export interface BatchToolCall {
+  name: string
+  arguments: Record<string, any>
+}
+
 export class MCPService {
   private baseUrl = `${import.meta.env.VITE_MCP_URL || 'http://localhost:3100'}/mcp`
   private requestId = 0
@@ -226,6 +232,103 @@ export class MCPService {
 
     const parsed = JSON.parse(data.result.content[0].text)
     return parsed
+  }
+
+  /**
+   * Call multiple MCP tools in a single HTTP request using JSON-RPC batch.
+   * Returns results in the same order as the input calls.
+   *
+   * @param calls - Array of tool calls to execute
+   * @returns Array of results (or errors) in same order as input
+   */
+  async callToolsBatch<T = any>(calls: BatchToolCall[]): Promise<Array<{ ok: true; result: T } | { ok: false; error: string }>> {
+    if (calls.length === 0) return []
+
+    // Build batch request - array of JSON-RPC requests
+    const requests = calls.map((call, index) => ({
+      jsonrpc: '2.0' as const,
+      id: ++this.requestId,
+      method: 'tools/call' as const,
+      params: {
+        name: call.name,
+        arguments: call.arguments,
+      },
+    }))
+
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream'
+    }
+
+    if (this.mcpSessionId) {
+      headers['mcp-session-id'] = this.mcpSessionId
+    }
+
+    const response = await fetch(this.baseUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requests),
+    })
+
+    if (!response.ok) {
+      throw new Error(`MCP batch request failed: ${response.statusText}`)
+    }
+
+    const text = await response.text()
+
+    // Parse batch response - could be SSE formatted or plain JSON array
+    let responses: MCPResponse<T>[]
+
+    // Try to parse as SSE first (each response on its own line)
+    if (text.includes('data: ')) {
+      responses = []
+      const lines = text.split('\n')
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const parsed = JSON.parse(line.slice(6))
+            if (parsed.result || parsed.error) {
+              responses.push(parsed)
+            }
+          } catch { /* skip */ }
+        }
+      }
+    } else {
+      // Try plain JSON array
+      try {
+        responses = JSON.parse(text)
+        if (!Array.isArray(responses)) {
+          responses = [responses]
+        }
+      } catch {
+        throw new Error('Invalid batch response format')
+      }
+    }
+
+    // Map responses back by id to maintain order
+    const responseById = new Map<number, MCPResponse<T>>()
+    for (const resp of responses) {
+      responseById.set(resp.id, resp)
+    }
+
+    return requests.map((req) => {
+      const resp = responseById.get(req.id)
+      if (!resp) {
+        return { ok: false as const, error: `No response for request ${req.id}` }
+      }
+      if (resp.error) {
+        return { ok: false as const, error: resp.error.message }
+      }
+      if (!resp.result?.content?.[0]?.text) {
+        return { ok: false as const, error: 'Invalid response format' }
+      }
+      try {
+        const parsed = JSON.parse(resp.result.content[0].text)
+        return { ok: true as const, result: parsed as T }
+      } catch {
+        return { ok: false as const, error: 'Failed to parse response' }
+      }
+    })
   }
 
   async generateSchema(intent: string, options?: {
