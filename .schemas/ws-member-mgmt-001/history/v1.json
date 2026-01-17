@@ -1,4 +1,9 @@
 {
+  "id": "0a60a992-2c0e-42ed-90f7-d19a73edd011",
+  "name": "ws-member-mgmt-001",
+  "format": "enhanced-json-schema",
+  "createdAt": 1768562253086,
+  "version": 1,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ws-member-mgmt-001",
   "$defs": {
