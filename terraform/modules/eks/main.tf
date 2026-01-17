@@ -204,9 +204,12 @@ resource "aws_security_group" "node" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # NOTE: Do NOT add kubernetes.io/cluster tag here!
+  # The EKS-managed cluster security group already has this tag.
+  # Adding it here causes "Multiple tagged security groups found" errors
+  # when the AWS load balancer controller tries to create/update LBs.
   tags = merge(var.tags, {
-    Name                                        = "${var.cluster_name}-node-sg"
-    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+    Name = "${var.cluster_name}-node-sg"
   })
 }
 
