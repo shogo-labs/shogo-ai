@@ -2,42 +2,88 @@
  * useHomeToWorkspaceTransition Hook
  *
  * Orchestrates the animated transition from HomePage to ProjectLayout.
- * Manages a 3-phase animation state machine:
- * 1. commit (150ms)    - Input lifts, gains shadow, sidebar starts collapsing
- * 2. dissolve (300ms)  - Non-essential elements fade out, sidebar fully collapses
- * 3. transform (400ms) - Navigate to /projects/{id} (ProjectLayout takes over)
+ * Uses "early navigation with overlay" approach:
  *
- * After navigation, ProjectLayout handles the rest:
- * - Chat panel on left receives initialMessage and starts streaming
- * - Workspace panel slides in from right
+ * 1. User submits prompt
+ * 2. Capture homepage input position (startRect)
+ * 3. Navigate immediately to project layout
+ * 4. Measure real ChatPanel input position (endRect)
+ * 5. Show animated overlay from start → end
+ * 6. Fade out overlay, reveal real ChatPanel
+ *
+ * This approach is deterministic because we measure the actual target
+ * element position rather than hardcoding it.
  *
  * Respects prefers-reduced-motion via useReducedMotion hook.
  */
 
-import { useState, useCallback, useRef } from "react"
+import { useState, useCallback, useRef, type RefObject } from "react"
 import { useReducedMotion } from "./useReducedMotion"
 import type { TransitionPhase } from "@/components/app/workspace/dashboard/HomePage"
 
 // Re-export TransitionPhase for convenience
 export type { TransitionPhase }
 
-// Phase durations in milliseconds
-const PHASE_DURATIONS = {
-  commit: 150,
-  dissolve: 300,
-  transform: 400,
-  emerge: 350,  // No longer used (navigation happens at transform)
-  settle: 200,  // No longer used (navigation happens at transform)
+// Animation durations in milliseconds
+const DURATIONS = {
+  /** Brief pause before navigation for visual feedback */
+  preNavigation: 100,
+  /** Delay after navigation to let layout settle before measuring */
+  postNavigationSettle: 100,
+  /** Main animation from start to end position */
+  animation: 400,
+  /** Fade out duration for overlay */
+  fadeOut: 150,
 } as const
 
 // Helper to create a delay promise
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
+// Stored rect for serialization (DOMRect isn't serializable)
+export interface SerializableRect {
+  top: number
+  left: number
+  width: number
+  height: number
+  right: number
+  bottom: number
+}
+
+function toDOMRect(rect: SerializableRect): DOMRect {
+  return new DOMRect(rect.left, rect.top, rect.width, rect.height)
+}
+
+function toSerializableRect(rect: DOMRect): SerializableRect {
+  return {
+    top: rect.top,
+    left: rect.left,
+    width: rect.width,
+    height: rect.height,
+    right: rect.right,
+    bottom: rect.bottom,
+  }
+}
+
 interface UseHomeToWorkspaceTransitionOptions {
-  /** Called at commit phase to collapse the sidebar */
+  /** Called to collapse the sidebar during transition */
   onSidebarCollapse?: () => void
-  /** Called at transform phase to trigger navigation */
+  /** Called immediately to navigate (early navigation approach) */
   onNavigate?: () => void
+  /** Ref to the homepage input for capturing start position */
+  sourceRef?: RefObject<HTMLDivElement>
+  /** Ref to the target ChatPanel input for measuring end position (set after navigation) */
+  targetRef?: RefObject<HTMLDivElement>
+}
+
+export interface TransitionOverlayState {
+  /** Whether the overlay should be active */
+  isActive: boolean
+  /** Starting position (from homepage) */
+  startRect: DOMRect | null
+  /** Ending position (from ChatPanel after navigation) */
+  endRect: DOMRect | null
+  /** The prompt text being transitioned */
+  promptText: string
 }
 
 interface UseHomeToWorkspaceTransitionResult {
@@ -47,12 +93,20 @@ interface UseHomeToWorkspaceTransitionResult {
   pendingPrompt: string | null
   /** Start the transition animation with the given prompt */
   startTransition: (prompt: string) => Promise<void>
-  /** Whether animation is in progress (not idle and not complete) */
+  /** Whether animation is in progress */
   isTransitioning: boolean
-  /** Whether transition has finished (phase is 'complete') */
+  /** Whether transition has finished */
   isComplete: boolean
   /** Reset to idle state */
   reset: () => void
+  /** State for the transition overlay component */
+  overlayState: TransitionOverlayState
+  /** Call this after navigation when target is ready to be measured */
+  measureTarget: () => void
+  /** Call this when overlay animation completes */
+  onOverlayComplete: () => void
+  /** Legacy: FLIP style (for backwards compatibility during migration) */
+  flipStyle: React.CSSProperties | null
 }
 
 /**
@@ -60,28 +114,41 @@ interface UseHomeToWorkspaceTransitionResult {
  *
  * @example
  * ```tsx
- * const { collapseSidebar } = useSidebarCollapseContext()
- * const navigate = useNavigate()
+ * const sourceRef = useRef<HTMLDivElement>(null)
+ * const targetRef = useRef<HTMLDivElement>(null)
  *
- * const { transitionPhase, pendingPrompt, startTransition } = useHomeToWorkspaceTransition({
+ * const {
+ *   transitionPhase,
+ *   pendingPrompt,
+ *   startTransition,
+ *   overlayState,
+ *   measureTarget,
+ *   onOverlayComplete,
+ * } = useHomeToWorkspaceTransition({
  *   onSidebarCollapse: collapseSidebar,
- *   onNavigate: () => navigate(`/projects/${projectId}?chatSessionId=${sessionId}`, { state: {...} }),
+ *   onNavigate: () => navigate('/projects/...'),
+ *   sourceRef,
+ *   targetRef,
  * })
  *
- * const handlePromptSubmit = async (prompt: string) => {
- *   // Create project/session first...
- *   await startTransition(prompt)
- *   // Navigation happens during transform phase
- * }
+ * // After navigation, when target is mounted:
+ * useEffect(() => {
+ *   if (transitionPhase === 'transform') {
+ *     measureTarget()
+ *   }
+ * }, [transitionPhase, measureTarget])
  * ```
  */
 export function useHomeToWorkspaceTransition(
   options: UseHomeToWorkspaceTransitionOptions = {}
 ): UseHomeToWorkspaceTransitionResult {
-  const { onSidebarCollapse, onNavigate } = options
+  const { onSidebarCollapse, onNavigate, sourceRef, targetRef } = options
 
   const [transitionPhase, setTransitionPhase] = useState<TransitionPhase>("idle")
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null)
+  const [startRect, setStartRect] = useState<SerializableRect | null>(null)
+  const [endRect, setEndRect] = useState<SerializableRect | null>(null)
+  const [overlayActive, setOverlayActive] = useState(false)
   const prefersReducedMotion = useReducedMotion()
 
   // Track if animation is in progress to prevent concurrent transitions
@@ -106,32 +173,82 @@ export function useHomeToWorkspaceTransition(
         return
       }
 
-      // Phase 1: Commit - Input lifts, sidebar starts collapsing
+      // Phase 1: Commit - Capture position, start collapsing sidebar
       setTransitionPhase("commit")
       onSidebarCollapse?.()
-      await delay(PHASE_DURATIONS.commit)
 
-      // Phase 2: Dissolve - Elements fade out, sidebar fully collapses
+      // Capture starting position for animation
+      const sourceRect = sourceRef?.current?.getBoundingClientRect()
+      if (sourceRect) {
+        setStartRect(toSerializableRect(sourceRect))
+      }
+
+      await delay(DURATIONS.preNavigation)
+
+      // Phase 2: Dissolve - Elements fade, prepare for navigation
       setTransitionPhase("dissolve")
-      await delay(PHASE_DURATIONS.dissolve)
 
-      // Phase 3: Transform - Navigate to ProjectLayout
-      setTransitionPhase("transform")
+      // Navigate immediately (early navigation approach)
+      // The real ChatPanel will render in project layout
       onNavigate?.()
-      // No more waiting - navigation takes over
 
-      // Mark as complete (though we're navigating away)
-      setTransitionPhase("complete")
-      isAnimatingRef.current = false
+      // Phase 3: Transform - waiting for target measurement and overlay animation
+      // Note: The actual animation happens in the overlay component
+      // measureTarget() should be called by the parent after navigation settles
+      setTransitionPhase("transform")
     },
-    [prefersReducedMotion, onSidebarCollapse, onNavigate]
+    [prefersReducedMotion, onSidebarCollapse, onNavigate, sourceRef]
   )
+
+  // Called after navigation when target element is available
+  const measureTarget = useCallback(() => {
+    if (!targetRef?.current || !startRect) return
+
+    // Wait a tick for layout to settle
+    requestAnimationFrame(() => {
+      const targetRect = targetRef.current?.getBoundingClientRect()
+      if (targetRect) {
+        setEndRect(toSerializableRect(targetRect))
+        setOverlayActive(true)
+      }
+    })
+  }, [targetRef, startRect])
+
+  // Called when overlay animation completes
+  const onOverlayComplete = useCallback(() => {
+    setOverlayActive(false)
+    setTransitionPhase("complete")
+    isAnimatingRef.current = false
+  }, [])
 
   const reset = useCallback(() => {
     setTransitionPhase("idle")
     setPendingPrompt(null)
+    setStartRect(null)
+    setEndRect(null)
+    setOverlayActive(false)
     isAnimatingRef.current = false
   }, [])
+
+  // Build overlay state for the overlay component
+  const overlayState: TransitionOverlayState = {
+    isActive: overlayActive,
+    startRect: startRect ? toDOMRect(startRect) : null,
+    endRect: endRect ? toDOMRect(endRect) : null,
+    promptText: pendingPrompt ?? "",
+  }
+
+  // Legacy flipStyle for backwards compatibility during migration
+  // This can be removed once all usages are updated to use overlay
+  const flipStyle = startRect
+    ? {
+        position: 'fixed' as const,
+        top: startRect.top,
+        left: startRect.left,
+        width: startRect.width,
+        zIndex: 9999,
+      }
+    : null
 
   return {
     transitionPhase,
@@ -140,6 +257,10 @@ export function useHomeToWorkspaceTransition(
     isTransitioning: transitionPhase !== "idle" && transitionPhase !== "complete",
     isComplete: transitionPhase === "complete",
     reset,
+    overlayState,
+    measureTarget,
+    onOverlayComplete,
+    flipStyle,
   }
 }
 

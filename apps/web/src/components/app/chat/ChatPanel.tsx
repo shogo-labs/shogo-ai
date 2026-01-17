@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
 import { ChatInput } from "./ChatInput"
+import { CompactChatInput } from "./CompactChatInput"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
 import { ChatContextProvider, type ChatContextValue } from "./ChatContext"
@@ -109,6 +110,8 @@ import type { WorkspacePanelData } from "../advanced-chat/WorkspacePanel"
 export type { WorkspacePanelData }
 
 export interface ChatPanelProps {
+  /** Display mode: 'compact' for homepage, 'full' for project sidebar */
+  mode?: 'compact' | 'full'
   /** Feature session ID to link chat with */
   featureId: string | null
   /** Feature session name for display */
@@ -147,6 +150,14 @@ export interface ChatPanelProps {
   onWidthChange?: (width: number) => void
   /** Initial message to send on mount (for homepage transition warm-start) */
   initialMessage?: string
+  /** Callback when submit happens in compact mode (before session exists) */
+  onCompactSubmit?: (prompt: string) => void
+  /** Ref to expose the input container for transition animation measurement */
+  inputContainerRef?: React.RefObject<HTMLDivElement>
+  /** Controlled value for compact mode input */
+  compactValue?: string
+  /** Callback when compact mode input value changes */
+  onCompactValueChange?: (value: string) => void
 }
 
 // ============================================================
@@ -397,6 +408,7 @@ async function refreshCollections(
 // ============================================================
 
 export const ChatPanel = observer(function ChatPanel({
+  mode = 'full',
   featureId,
   featureName,
   phase,
@@ -416,6 +428,10 @@ export const ChatPanel = observer(function ChatPanel({
   onCollapsedChange,
   onWidthChange,
   initialMessage,
+  onCompactSubmit,
+  inputContainerRef,
+  compactValue,
+  onCompactValueChange,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
@@ -1565,6 +1581,26 @@ export const ChatPanel = observer(function ChatPanel({
     error: error?.message ?? null,
   }
 
+  // Handle compact mode submit - delegates to parent since no session exists yet
+  const handleCompactSubmit = useCallback((prompt: string) => {
+    onCompactSubmit?.(prompt)
+  }, [onCompactSubmit])
+
+  // Render compact mode (homepage)
+  if (mode === 'compact') {
+    return (
+      <CompactChatInput
+        ref={inputContainerRef}
+        onSubmit={handleCompactSubmit}
+        isLoading={isStreaming}
+        disabled={false}
+        value={compactValue}
+        onChange={onCompactValueChange}
+        className={className}
+      />
+    )
+  }
+
   // Render collapsed state
   if (isCollapsed) {
     return (
@@ -1683,7 +1719,7 @@ export const ChatPanel = observer(function ChatPanel({
         )}
 
         {/* Input */}
-        <div className="border-t border-border/40">
+        <div ref={inputContainerRef} className="border-t border-border/40">
           <ChatInput
             onSubmit={handleInputSubmit}
             disabled={!currentSessionId}

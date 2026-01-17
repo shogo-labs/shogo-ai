@@ -530,7 +530,58 @@ body {
 }
 
 /* ===== PHASE 3: TRANSFORM (400ms) ===== */
-/* Input card transforms - handled by React component swap to ComposingWorkspaceView */
+/* FLIP Animation: Input card floats from center to bottom-left */
+
+/* When data-flip-animating is present, the input card uses position:fixed
+   with CSS custom properties for the starting position. The animation
+   moves it to the target position (bottom-left, where ChatPanel input lives). */
+.home-input-card[data-flip-animating] {
+  /* Override normal flow constraints */
+  max-width: none !important;
+  margin: 0 !important;
+
+  /* Elevated appearance during flight */
+  box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.3);
+
+  /* FLIP animation to target position with flourish */
+  animation: flip-to-chat-panel 450ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+@keyframes flip-to-chat-panel {
+  0% {
+    /* Starting position (captured via getBoundingClientRect, set as CSS vars) */
+    top: var(--flip-start-top);
+    left: var(--flip-start-left);
+    width: var(--flip-start-width);
+    transform: scale(1);
+    opacity: 1;
+  }
+  70% {
+    /* Overshoot slightly for organic feel */
+    top: calc(100vh - 135px);
+    left: 0;
+    width: 479px;
+    transform: scale(0.98);
+    opacity: 1;
+  }
+  85% {
+    /* Settle back */
+    top: calc(100vh - 122px);
+    left: 0;
+    width: 479px;
+    transform: scale(1.01);
+    opacity: 0.95;
+  }
+  100% {
+    /* Final position - exact match to ChatPanel input container */
+    /* ChatPanel input: top = viewport - ~126px, left = 0, width = 479px */
+    top: calc(100vh - 126px);
+    left: 0;
+    width: 479px;
+    transform: scale(1);
+    opacity: 0.85; /* Slight fade to blend into navigation */
+  }
+}
 
 /* ===== WORKSPACE EMERGE (350ms) ===== */
 /* Workspace panel slide-in animation (from right, since workspace is on right in ProjectLayout) */
@@ -591,6 +642,7 @@ body {
     transition: none !important;
   }
 
+  .home-input-card[data-flip-animating],
   .animate-workspace-emerge,
   .animate-border-fade,
   .animate-header-settle {

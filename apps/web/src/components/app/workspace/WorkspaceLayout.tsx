@@ -264,12 +264,15 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // Store navigation data during handlePromptSubmit for use in transition callback
   const navigationDataRef = useRef<{
     project: any
-    featureSession: any
     chatSessionId: string
     prompt: string
   } | null>(null)
 
+  // Ref for the home page input card (used for capturing start position before navigation)
+  const inputCardRef = useRef<HTMLDivElement>(null)
+
   // Navigation callback for transition - navigates to ProjectLayout with state
+  // Captures the input position and passes it for overlay animation
   const handleTransitionNavigate = useCallback(() => {
     const data = navigationDataRef.current
     if (!data) {
@@ -277,30 +280,45 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       return
     }
 
+    // Capture the input position for transition animation
+    const startRect = inputCardRef.current?.getBoundingClientRect()
+    const serializedStartRect = startRect ? {
+      top: startRect.top,
+      left: startRect.left,
+      width: startRect.width,
+      height: startRect.height,
+      right: startRect.right,
+      bottom: startRect.bottom,
+    } : null
+
     navigate(`/projects/${data.project.id}?chatSessionId=${data.chatSessionId}`, {
       state: {
         project: data.project,
-        featureSession: data.featureSession,
         chatSessionId: data.chatSessionId,
         initialMessage: data.prompt,
+        // Pass transition data for overlay animation
+        transitionStartRect: serializedStartRect,
+        transitionPromptText: data.prompt,
       },
     })
   }, [navigate])
 
-  // Home to workspace transition animation state
+  // Home to workspace transition animation state (with FLIP animation support)
   const {
     transitionPhase,
     pendingPrompt,
     startTransition,
     isComplete: isTransitionComplete,
+    flipStyle,
   } = useHomeToWorkspaceTransition({
     onSidebarCollapse: collapseSidebar,
     onNavigate: handleTransitionNavigate,
+    inputRef: inputCardRef,
   })
 
   /**
    * Handle prompt submission from home page
-   * Creates project/feature/chat session, then triggers animated transition to ProjectLayout.
+   * Creates project and chat session, then triggers animated transition to ProjectLayout.
    */
   const handlePromptSubmit = useCallback(async (prompt: string) => {
     const userId = session?.user?.id
@@ -311,7 +329,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       return
     }
 
-    if (!studioCore || !platformFeatures || !studioChat) {
+    if (!studioCore || !studioChat) {
       console.error("[WorkspaceLayout] Cannot create from prompt: domains not available")
       return
     }
@@ -330,32 +348,24 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
         userId
       )
 
-      // 3. Create a feature in the project with the prompt as the intent
-      const newFeature = await platformFeatures.createFeatureSession({
-        name: projectName,
-        intent: prompt,
-        project: newProject.id,
-      })
-
-      // 4. Create an empty chat session for this feature
+      // 3. Create a chat session for this project
       const chatSession = await studioChat.createChatSession({
         inferredName: `Chat - ${projectName}`,
-        contextType: "feature",
-        contextId: newFeature.id,
+        contextType: "project",
+        contextId: newProject.id,
       })
 
-      // 5. Store navigation data for the transition callback
+      // 4. Store navigation data for the transition callback
       navigationDataRef.current = {
         project: newProject,
-        featureSession: newFeature,
         chatSessionId: chatSession.id,
         prompt,
       }
 
-      // 6. Trigger refetch so the project shows in the sidebar
+      // 5. Trigger refetch so the project shows in the sidebar
       refetchProjects()
 
-      // 7. Start the animated transition (collapses sidebar, then navigates)
+      // 6. Start the animated transition (collapses sidebar, then navigates)
       await startTransition(prompt)
 
     } catch (error) {
@@ -364,7 +374,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
     } finally {
       setIsCreatingFromPrompt(false)
     }
-  }, [session?.user?.id, currentWorkspace?.id, studioCore, platformFeatures, studioChat, refetchProjects, startTransition])
+  }, [session?.user?.id, currentWorkspace?.id, studioCore, studioChat, refetchProjects, startTransition])
 
   // Determine if we're on the home view (no project selected)
   const isHomeView = !currentProject && !projectId
@@ -479,13 +489,15 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
                 </div>
               </div>
             ) : transitionPhase !== "idle" ? (
-              // Transition is in progress (commit/dissolve) - show HomePage with animation
-              // At transform phase, navigation happens and this component unmounts
+              // Transition is in progress (commit/dissolve/transform) - show HomePage with FLIP animation
+              // At transform phase completion, navigation happens and this component unmounts
               <HomePage
                 userName={session?.user?.name?.split(" ")[0] || "there"}
                 onPromptSubmit={handlePromptSubmit}
                 isLoading={true}
                 transitionPhase={transitionPhase}
+                inputRef={inputCardRef}
+                flipStyle={flipStyle}
               />
             ) : (
               // No project selected, no transition - show engaging home page
@@ -494,6 +506,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
                 userName={session?.user?.name?.split(" ")[0] || "there"}
                 onPromptSubmit={handlePromptSubmit}
                 isLoading={isCreatingFromPrompt}
+                inputRef={inputCardRef}
               />
             )}
           </div>
