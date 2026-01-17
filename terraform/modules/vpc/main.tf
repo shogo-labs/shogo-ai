@@ -68,9 +68,9 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = merge(var.tags, {
-    Name                                           = "${var.name}-public-${var.availability_zones[count.index]}"
-    "kubernetes.io/role/elb"                       = "1"
-    "kubernetes.io/cluster/${var.name}"            = "shared"
+    Name                                = "${var.name}-public-${var.availability_zones[count.index]}"
+    "kubernetes.io/role/elb"            = "1"
+    "kubernetes.io/cluster/${var.name}" = "shared"
   })
 }
 
@@ -85,10 +85,10 @@ resource "aws_subnet" "private" {
   availability_zone = var.availability_zones[count.index]
 
   tags = merge(var.tags, {
-    Name                                           = "${var.name}-private-${var.availability_zones[count.index]}"
-    "kubernetes.io/role/internal-elb"              = "1"
-    "kubernetes.io/cluster/${var.name}"            = "shared"
-    "karpenter.sh/discovery"                       = var.name
+    Name                                = "${var.name}-private-${var.availability_zones[count.index]}"
+    "kubernetes.io/role/internal-elb"   = "1"
+    "kubernetes.io/cluster/${var.name}" = "shared"
+    "karpenter.sh/discovery"            = var.name
   })
 }
 
@@ -145,7 +145,7 @@ resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
 
   route {
-    cidr_block     = "0.0.0.0/0"
+    cidr_block = "0.0.0.0/0"
     # When using single NAT gateway, all private subnets route through it
     nat_gateway_id = var.single_nat_gateway ? aws_nat_gateway.main[0].id : aws_nat_gateway.main[count.index].id
   }
@@ -192,3 +192,7 @@ output "nat_gateway_ids" {
   value       = aws_nat_gateway.main[*].id
 }
 
+output "private_route_table_ids" {
+  description = "Private route table IDs"
+  value       = aws_route_table.private[*].id
+}

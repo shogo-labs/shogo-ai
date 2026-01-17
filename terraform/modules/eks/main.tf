@@ -204,10 +204,41 @@ resource "aws_security_group" "node" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # NOTE: Do NOT add kubernetes.io/cluster tag here!
+  # The EKS-managed cluster security group already has this tag.
+  # Adding it here causes "Multiple tagged security groups found" errors
+  # when the AWS load balancer controller tries to create/update LBs.
   tags = merge(var.tags, {
-    Name                                          = "${var.cluster_name}-node-sg"
-    "kubernetes.io/cluster/${var.cluster_name}"   = "owned"
+    Name = "${var.cluster_name}-node-sg"
   })
+}
+
+# -----------------------------------------------------------------------------
+# Launch Template for Node Group (to attach our security group)
+# -----------------------------------------------------------------------------
+resource "aws_launch_template" "node_group" {
+  name_prefix = "${var.cluster_name}-node-"
+
+  vpc_security_group_ids = [
+    aws_security_group.node.id,
+    aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
+  ]
+
+  # Metadata options for IMDSv2 (recommended)
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(var.tags, {
+      Name = "${var.cluster_name}-node"
+    })
+  }
+
+  tags = var.tags
 }
 
 # -----------------------------------------------------------------------------
@@ -221,6 +252,12 @@ resource "aws_eks_node_group" "main" {
 
   instance_types = var.node_instance_types
   capacity_type  = "ON_DEMAND"
+
+  # Use launch template to attach our security group
+  launch_template {
+    id      = aws_launch_template.node_group.id
+    version = aws_launch_template.node_group.latest_version
+  }
 
   scaling_config {
     desired_size = var.node_desired_size

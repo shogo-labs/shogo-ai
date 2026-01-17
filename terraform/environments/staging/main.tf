@@ -105,7 +105,7 @@ data "aws_acm_certificate" "ssl" {
   domain      = var.ssl_certificate_domain
   statuses    = ["ISSUED"]
   most_recent = true
-  types       = ["AMAZON_ISSUED"]  # Prefer Amazon-issued over imported certificates
+  types       = ["AMAZON_ISSUED"] # Prefer Amazon-issued over imported certificates
 }
 
 # -----------------------------------------------------------------------------
@@ -239,6 +239,94 @@ module "elasticache" {
 }
 
 # -----------------------------------------------------------------------------
+# VPC Endpoints (for private subnet access to AWS services)
+# Required for EKS nodes in private subnets to pull images from ECR
+# -----------------------------------------------------------------------------
+
+# Security group for VPC endpoints (interface type)
+resource "aws_security_group" "vpc_endpoints" {
+  name        = "${var.project_name}-${var.environment}-vpc-endpoints-sg"
+  description = "Security group for VPC endpoints"
+  vpc_id      = module.vpc.vpc_id
+
+  # Allow HTTPS from EKS nodes (required for ECR API/DKR endpoints)
+  ingress {
+    description     = "HTTPS from EKS nodes"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [module.eks.node_security_group_id]
+  }
+
+  # Also allow from EKS cluster and EKS-managed security groups
+  ingress {
+    description = "HTTPS from EKS cluster"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    security_groups = [
+      module.eks.cluster_security_group_id,
+      module.eks.eks_managed_security_group_id
+    ]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-vpc-endpoints-sg"
+    Environment = var.environment
+  }
+}
+
+# ECR API endpoint (for docker login, image manifest operations)
+resource "aws_vpc_endpoint" "ecr_api" {
+  vpc_id              = module.vpc.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.ecr.api"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.vpc.private_subnet_ids
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-ecr-api"
+    Environment = var.environment
+  }
+}
+
+# ECR DKR endpoint (for docker pull/push operations)
+resource "aws_vpc_endpoint" "ecr_dkr" {
+  vpc_id              = module.vpc.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.ecr.dkr"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.vpc.private_subnet_ids
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-ecr-dkr"
+    Environment = var.environment
+  }
+}
+
+# S3 endpoint (gateway type - required for ECR layer downloads)
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = module.vpc.vpc_id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = module.vpc.private_route_table_ids
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-s3"
+    Environment = var.environment
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Knative Serving
 # -----------------------------------------------------------------------------
 module "knative" {
@@ -342,6 +430,214 @@ resource "kubernetes_secret" "api_secrets" {
 
   data = {
     BETTER_AUTH_SECRET = var.better_auth_secret
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Knative Services (Application Deployment)
+# -----------------------------------------------------------------------------
+# Deploy application services via kubectl (avoids kubernetes_manifest CRD issues)
+
+locals {
+  ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
+  image_tag    = "${var.environment}-latest"
+}
+
+# Deploy all Knative services and domain mappings
+resource "null_resource" "knative_services" {
+  depends_on = [
+    module.knative,
+    kubernetes_namespace.shogo_system,
+    kubernetes_namespace.shogo_workspaces,
+    kubernetes_secret.postgres_credentials,
+    kubernetes_secret.postgres_credentials_workspaces,
+    kubernetes_secret.redis_credentials,
+    kubernetes_secret.api_secrets
+  ]
+
+  triggers = {
+    # Trigger redeployment when image tag changes
+    image_tag    = local.image_tag
+    ecr_registry = local.ecr_registry
+    # Add timestamp trigger for manual refresh (uncomment to force redeploy)
+    # timestamp = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Wait for Knative to be ready
+      kubectl wait --for=condition=Available deployment/controller -n knative-serving --timeout=120s || true
+      
+      # Deploy Studio (Web) Service
+      cat <<EOF | kubectl apply -f -
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: studio
+        namespace: shogo-staging-system
+        labels:
+          app.kubernetes.io/part-of: shogo
+          environment: staging
+      spec:
+        template:
+          metadata:
+            annotations:
+              autoscaling.knative.dev/min-scale: "1"
+              autoscaling.knative.dev/max-scale: "5"
+          spec:
+            containers:
+              - name: web
+                image: ${local.ecr_registry}/shogo/shogo-web:${local.image_tag}
+                ports:
+                  - containerPort: 80
+                env:
+                  - name: API_UPSTREAM
+                    value: "http://api.shogo-staging-system.svc.cluster.local"
+                  - name: API_HOST
+                    value: "api.shogo-staging-system.svc.cluster.local"
+                resources:
+                  requests:
+                    memory: "128Mi"
+                    cpu: "50m"
+                  limits:
+                    memory: "256Mi"
+                    cpu: "200m"
+      EOF
+
+      # Deploy API Service
+      cat <<EOF | kubectl apply -f -
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: api
+        namespace: shogo-staging-system
+        labels:
+          app.kubernetes.io/part-of: shogo
+          environment: staging
+      spec:
+        template:
+          metadata:
+            annotations:
+              autoscaling.knative.dev/min-scale: "1"
+              autoscaling.knative.dev/max-scale: "5"
+          spec:
+            containers:
+              - name: api
+                image: ${local.ecr_registry}/shogo/shogo-api:${local.image_tag}
+                ports:
+                  - containerPort: 8002
+                env:
+                  - name: API_PORT
+                    value: "8002"
+                  - name: NODE_ENV
+                    value: "staging"
+                  - name: NODE_TLS_REJECT_UNAUTHORIZED
+                    value: "0"
+                  - name: MCP_URL
+                    value: "http://mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
+                  - name: BETTER_AUTH_URL
+                    value: "https://studio-staging.shogo.ai"
+                  - name: ALLOWED_ORIGINS
+                    value: "https://studio-staging.shogo.ai,https://api-staging.shogo.ai"
+                  - name: REDIS_URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: redis-credentials
+                        key: REDIS_URL
+                        optional: true
+                  - name: DATABASE_URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgres-credentials
+                        key: DATABASE_URL
+                  - name: BETTER_AUTH_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: BETTER_AUTH_SECRET
+                resources:
+                  requests:
+                    memory: "256Mi"
+                    cpu: "100m"
+                  limits:
+                    memory: "512Mi"
+                    cpu: "500m"
+      EOF
+
+      # Deploy MCP Workspace Service
+      cat <<EOF | kubectl apply -f -
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: mcp-workspace-1
+        namespace: shogo-staging-workspaces
+        labels:
+          app.kubernetes.io/part-of: shogo
+          environment: staging
+      spec:
+        template:
+          metadata:
+            annotations:
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "10"
+          spec:
+            containers:
+              - name: mcp
+                image: ${local.ecr_registry}/shogo/shogo-mcp:${local.image_tag}
+                ports:
+                  - containerPort: 8080
+                env:
+                  - name: MCP_PORT
+                    value: "8080"
+                  - name: NODE_ENV
+                    value: "staging"
+                  - name: DATABASE_URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgres-credentials
+                        key: DATABASE_URL
+                resources:
+                  requests:
+                    memory: "256Mi"
+                    cpu: "100m"
+                  limits:
+                    memory: "512Mi"
+                    cpu: "500m"
+      EOF
+
+      # Deploy Domain Mappings
+      cat <<EOF | kubectl apply -f -
+      apiVersion: serving.knative.dev/v1beta1
+      kind: DomainMapping
+      metadata:
+        name: studio-staging.shogo.ai
+        namespace: shogo-staging-system
+      spec:
+        ref:
+          name: studio
+          kind: Service
+          apiVersion: serving.knative.dev/v1
+      ---
+      apiVersion: serving.knative.dev/v1beta1
+      kind: DomainMapping
+      metadata:
+        name: mcp-staging.shogo.ai
+        namespace: shogo-staging-workspaces
+      spec:
+        ref:
+          name: mcp-workspace-1
+          kind: Service
+          apiVersion: serving.knative.dev/v1
+      EOF
+
+      # Wait for services to be ready
+      echo "Waiting for services to be ready..."
+      kubectl wait --for=condition=ready ksvc/studio -n shogo-staging-system --timeout=300s || true
+      kubectl wait --for=condition=ready ksvc/api -n shogo-staging-system --timeout=300s || true
+      kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n shogo-staging-workspaces --timeout=300s || true
+      
+      echo "Knative services deployed successfully"
+    EOT
   }
 }
 

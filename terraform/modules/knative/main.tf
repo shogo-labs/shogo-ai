@@ -163,12 +163,12 @@ resource "null_resource" "knative_config" {
       
       # Configure ECR registry to skip tag resolution (avoids controller needing ECR auth)
       # This allows Knative to use image tags directly without resolving to digests
-      %{ if var.ecr_registry != "" }
+      %{if var.ecr_registry != ""}
       kubectl patch configmap/config-deployment \
         --namespace knative-serving \
         --type merge \
         --patch '{"data":{"registries-skipping-tag-resolving":"kind.local,ko.local,dev.local,${var.ecr_registry}"}}'
-      %{ endif }
+      %{endif}
     EOT
   }
 }

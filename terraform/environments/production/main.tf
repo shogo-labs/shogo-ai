@@ -105,7 +105,7 @@ data "aws_acm_certificate" "ssl" {
   domain      = var.ssl_certificate_domain
   statuses    = ["ISSUED"]
   most_recent = true
-  types       = ["AMAZON_ISSUED"]  # Prefer Amazon-issued over imported certificates
+  types       = ["AMAZON_ISSUED"] # Prefer Amazon-issued over imported certificates
 }
 
 # -----------------------------------------------------------------------------
@@ -227,6 +227,94 @@ module "elasticache" {
   num_cache_nodes = 1
 
   tags = {
+    Environment = var.environment
+  }
+}
+
+# -----------------------------------------------------------------------------
+# VPC Endpoints (for private subnet access to AWS services)
+# Required for EKS nodes in private subnets to pull images from ECR
+# -----------------------------------------------------------------------------
+
+# Security group for VPC endpoints (interface type)
+resource "aws_security_group" "vpc_endpoints" {
+  name        = "${var.project_name}-${var.environment}-vpc-endpoints-sg"
+  description = "Security group for VPC endpoints"
+  vpc_id      = module.vpc.vpc_id
+
+  # Allow HTTPS from EKS nodes (required for ECR API/DKR endpoints)
+  ingress {
+    description     = "HTTPS from EKS nodes"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [module.eks.node_security_group_id]
+  }
+
+  # Also allow from EKS cluster and EKS-managed security groups
+  ingress {
+    description = "HTTPS from EKS cluster"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    security_groups = [
+      module.eks.cluster_security_group_id,
+      module.eks.eks_managed_security_group_id
+    ]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-vpc-endpoints-sg"
+    Environment = var.environment
+  }
+}
+
+# ECR API endpoint (for docker login, image manifest operations)
+resource "aws_vpc_endpoint" "ecr_api" {
+  vpc_id              = module.vpc.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.ecr.api"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.vpc.private_subnet_ids
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-ecr-api"
+    Environment = var.environment
+  }
+}
+
+# ECR DKR endpoint (for docker pull/push operations)
+resource "aws_vpc_endpoint" "ecr_dkr" {
+  vpc_id              = module.vpc.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.ecr.dkr"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.vpc.private_subnet_ids
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-ecr-dkr"
+    Environment = var.environment
+  }
+}
+
+# S3 endpoint (gateway type - required for ECR layer downloads)
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = module.vpc.vpc_id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = module.vpc.private_route_table_ids
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-s3"
     Environment = var.environment
   }
 }
