@@ -239,63 +239,41 @@ jobs:
           kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy Knative services
+        env:
+          ECR_REGISTRY: ${{ needs.setup.outputs.ecr_registry }}
         run: |
-          # Apply environment-specific overlay
-          if [ -d "k8s/overlays/${{ env.ENVIRONMENT }}" ]; then
-            echo "📦 Applying kustomize overlay for ${{ env.ENVIRONMENT }}"
-            
-            # Update image tags in overlay
-            cd k8s/overlays/${{ env.ENVIRONMENT }}
-            kustomize edit set image \
-              shogo-mcp=${{ env.ECR_REGISTRY }}/shogo/shogo-mcp:${{ env.IMAGE_TAG }} \
-              shogo-api=${{ env.ECR_REGISTRY }}/shogo/shogo-api:${{ env.IMAGE_TAG }} \
-              shogo-web=${{ env.ECR_REGISTRY }}/shogo/shogo-web:${{ env.IMAGE_TAG }}
-            cd -
-            
-            kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}
-          else
-            echo "⚠️ No overlay found for ${{ env.ENVIRONMENT }}, using base with sed replacements"
-            
-            # Fallback: Update workspace services with new image tag and namespace
-            sed -i "s|:latest|:${{ env.IMAGE_TAG }}|g" k8s/eks/workspace-services.yaml
-            sed -i "s|namespace: shogo-workspaces|namespace: ${{ env.NS_WORKSPACES }}|g" k8s/eks/workspace-services.yaml
-            kubectl apply -f k8s/eks/workspace-services.yaml
-            
-            # Update API and Web services
-            sed -i "s|:latest|:${{ env.IMAGE_TAG }}|g" k8s/eks/ingress.yaml
-            sed -i "s|namespace: shogo-system|namespace: ${{ env.NS_SYSTEM }}|g" k8s/eks/ingress.yaml
-            sed -i "s|shogo.ai|${{ env.API_DOMAIN }}|g" k8s/eks/ingress.yaml
-            kubectl apply -f k8s/eks/ingress.yaml
-          fi
-
-      - name: Apply domain mappings
-        run: |
-          # Create domain mapping for studio (API is proxied via /api path)
-          cat <<EOF | kubectl apply -f -
-          apiVersion: serving.knative.dev/v1beta1
-          kind: DomainMapping
-          metadata:
-            name: ${{ env.DOMAIN }}
-            namespace: ${{ env.NS_SYSTEM }}
-          spec:
-            ref:
-              name: studio
-              kind: Service
-              apiVersion: serving.knative.dev/v1
-          EOF
+          # Update Knative services with new image tags
+          # Infrastructure is managed by Terraform, we just update the images
+          
+          echo "📦 Updating images for ${{ env.ENVIRONMENT }}"
+          
+          # Update Studio service
+          kubectl patch ksvc studio -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+            {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-web:${{ env.IMAGE_TAG }}\"}
+          ]" || echo "Studio service not found, may need terraform apply first"
+          
+          # Update API service  
+          kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+            {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-api:${{ env.IMAGE_TAG }}\"}
+          ]" || echo "API service not found, may need terraform apply first"
+          
+          # Update MCP service
+          kubectl patch ksvc mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --type='json' -p="[
+            {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-mcp:${{ env.IMAGE_TAG }}\"}
+          ]" || echo "MCP service not found, may need terraform apply first"
 
       - name: Wait for rollout
         run: |
           echo "⏳ Waiting for service rollouts in ${{ env.ENVIRONMENT }}..."
           
-          echo "Waiting for api rollout..."
-          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          
           echo "Waiting for studio rollout..."
           kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
           
-          echo "Waiting for workspace services..."
-          kubectl wait --for=condition=ready ksvc/mcp -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+          echo "Waiting for api rollout..."
+          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          
+          echo "Waiting for mcp rollout..."
+          kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
 
       - name: Verify deployment
         run: |

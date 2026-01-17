@@ -12,9 +12,9 @@ vpc_cidr = "10.1.0.0/16"
 
 # EKS Configuration (smaller than production)
 eks_cluster_version = "1.33"
-node_instance_types = ["t3.small"]
-node_desired_size   = 1
-node_min_size       = 1
+node_instance_types = ["t3.small"]  # 11 pod limit per node
+node_desired_size   = 2             # Need 2 nodes for system + app pods
+node_min_size       = 2             # Keep 2 minimum to avoid scheduling issues
 node_max_size       = 5
 
 # RDS Configuration (smaller than production)

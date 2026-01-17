@@ -83,7 +83,7 @@ resource "aws_security_group" "redis" {
 resource "aws_elasticache_cluster" "main" {
   cluster_id           = var.cluster_id
   engine               = "redis"
-  engine_version       = "7.1"  # Latest available Redis on ElastiCache
+  engine_version       = "7.1" # Latest available Redis on ElastiCache
   node_type            = var.node_type
   num_cache_nodes      = var.num_cache_nodes
   parameter_group_name = "default.redis7"

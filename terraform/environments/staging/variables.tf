@@ -48,13 +48,13 @@ variable "node_instance_types" {
 variable "node_desired_size" {
   description = "Desired number of nodes in the node group"
   type        = number
-  default     = 1 # Smaller than production
+  default     = 2 # t3.small has 11 pod limit, need 2 nodes for system + app pods
 }
 
 variable "node_min_size" {
   description = "Minimum number of nodes in the node group"
   type        = number
-  default     = 1
+  default     = 2 # Minimum 2 to avoid pod scheduling issues
 }
 
 variable "node_max_size" {
