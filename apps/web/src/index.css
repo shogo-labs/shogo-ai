@@ -450,15 +450,17 @@ body {
 
 /*
  * =====================================================
- * HomePage to Workspace Transition Animation System
+ * HomePage to Project Transition Animation System
  * =====================================================
  *
- * Choreographed 5-phase animation when user submits from HomePage:
- * 1. commit (150ms)    - Input lifts, gains shadow
- * 2. dissolve (300ms)  - Non-essential elements fade out
- * 3. transform (400ms) - Input slides to right panel position
- * 4. emerge (350ms)    - Workspace panel slides in from left
- * 5. settle (200ms)    - Final polish, chat header appears
+ * Choreographed animation when user submits from HomePage:
+ * 1. commit (150ms)    - Input lifts, gains shadow, sidebar starts collapsing
+ * 2. dissolve (300ms)  - Non-essential elements fade out, sidebar fully collapses
+ * 3. transform (400ms) - Navigate to /projects/{id} (ProjectLayout)
+ *
+ * After navigation, ProjectLayout renders with:
+ * - Chat panel on LEFT (receives initialMessage prop, starts streaming)
+ * - Workspace panel on RIGHT (slides in via animate-workspace-emerge)
  *
  * Uses data-transition-phase attribute on [data-home-element="root"]
  */
@@ -530,11 +532,11 @@ body {
 /* ===== PHASE 3: TRANSFORM (400ms) ===== */
 /* Input card transforms - handled by React component swap to ComposingWorkspaceView */
 
-/* ===== PHASE 4: EMERGE (350ms) ===== */
-/* Workspace panel slide-in animation */
+/* ===== WORKSPACE EMERGE (350ms) ===== */
+/* Workspace panel slide-in animation (from right, since workspace is on right in ProjectLayout) */
 @keyframes workspace-emerge {
   from {
-    transform: translateX(-30px);
+    transform: translateX(30px);
     opacity: 0;
   }
   to {

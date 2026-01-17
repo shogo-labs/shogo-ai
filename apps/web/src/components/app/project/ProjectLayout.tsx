@@ -15,7 +15,7 @@
 
 import { observer } from "mobx-react-lite"
 import { useEffect, useCallback, useState, useRef } from "react"
-import { useParams } from "react-router-dom"
+import { useParams, useLocation } from "react-router-dom"
 import { useDomains } from "@/contexts/DomainProvider"
 import { ComposablePhaseView } from "@/components/rendering/composition/ComposablePhaseView"
 import { ComponentRegistryProvider } from "@/components/rendering"
@@ -33,9 +33,21 @@ const WORKSPACE_COMPOSITION_NAME = "workspace"
 // Default chat panel width in px
 const DEFAULT_CHAT_WIDTH = 480
 
+// Location state passed from homepage transition
+interface TransitionLocationState {
+  project?: any
+  featureSession?: any
+  chatSessionId?: string
+  initialMessage?: string
+}
+
 export const ProjectLayout = observer(function ProjectLayout() {
   const { projectId } = useParams<{ projectId: string }>()
+  const location = useLocation()
   const { data: session } = useSession()
+
+  // Extract state passed from homepage transition (for instant render + warm-start)
+  const transitionState = location.state as TransitionLocationState | null
 
   const { platformFeatures, componentBuilder, studioChat, studioCore, billing } = useDomains<{
     platformFeatures: any
@@ -76,9 +88,18 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const [currentRoute, setCurrentRoute] = useState("/")
 
   // Project and feature session state
-  const [project, setProject] = useState<any>(null)
-  const [featureSession, setFeatureSession] = useState<any>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  // Use transition state if available (from homepage flow) to avoid loading flash
+  const [project, setProject] = useState<any>(transitionState?.project ?? null)
+  const [featureSession, setFeatureSession] = useState<any>(transitionState?.featureSession ?? null)
+  const [isLoading, setIsLoading] = useState(!transitionState?.project)
+
+  // Clear location state after consuming initialMessage to prevent re-injection on refresh
+  useEffect(() => {
+    if (transitionState?.initialMessage) {
+      // Replace current history entry without the state
+      window.history.replaceState({}, document.title)
+    }
+  }, []) // Only run on mount
 
   // Check if domains are ready
   const domainsReady = !!(studioCore?.projectCollection && platformFeatures?.featureSessionCollection)
@@ -360,6 +381,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                     workspaceId={typeof project.workspace === 'string' ? project.workspace : project.workspace?.id}
                     userId={session?.user?.id}
                     className="flex-1 min-h-0"
+                    initialMessage={transitionState?.initialMessage}
                   />
                 )}
               </>

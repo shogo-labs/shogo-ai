@@ -145,6 +145,8 @@ export interface ChatPanelProps {
   onCollapsedChange?: (collapsed: boolean) => void
   /** Callback when width changes (for parent layout control) */
   onWidthChange?: (width: number) => void
+  /** Initial message to send on mount (for homepage transition warm-start) */
+  initialMessage?: string
 }
 
 // ============================================================
@@ -413,6 +415,7 @@ export const ChatPanel = observer(function ChatPanel({
   isCollapsed: controlledIsCollapsed,
   onCollapsedChange,
   onWidthChange,
+  initialMessage,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
@@ -535,6 +538,9 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Loading guard ref to prevent duplicate message queries
   const isLoadingMessagesRef = useRef(false)
+
+  // Guard to prevent double-injection of initial message (homepage transition warm-start)
+  const hasInjectedInitialMessageRef = useRef(false)
 
   // Initialize ccSessionId from existing session (task-cc-chatpanel-integration)
   // This ensures session continuity when reloading the page or switching sessions
@@ -1465,6 +1471,22 @@ export const ChatPanel = observer(function ChatPanel({
     },
     [handleSendMessage]
   )
+
+  // Homepage transition warm-start: Inject initial message on mount
+  // When navigating from homepage with a prompt, this sends the message through
+  // the normal flow as if the user typed and submitted it directly
+  useEffect(() => {
+    if (
+      initialMessage &&
+      currentSessionId &&
+      !hasInjectedInitialMessageRef.current &&
+      status === 'ready'  // Only inject when chat is ready, not streaming
+    ) {
+      hasInjectedInitialMessageRef.current = true
+      console.log('[ChatPanel] Injecting initial message from homepage transition:', initialMessage.slice(0, 50))
+      handleSendMessage(initialMessage)
+    }
+  }, [initialMessage, currentSessionId, status, handleSendMessage])
 
   // Collapse toggle - persist to localStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {

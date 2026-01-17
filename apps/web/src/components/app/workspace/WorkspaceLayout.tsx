@@ -66,10 +66,10 @@ import { PhaseContentPanel } from "../stepper"
 import { ChatPanel } from "../chat/ChatPanel"
 import { FeatureSidebar } from "./sidebar"
 import { HomePage } from "./dashboard"
-import { ComposingWorkspaceView } from "./dashboard/ComposingWorkspaceView"
 import { DeleteFeatureDialog } from "./modals/DeleteFeatureDialog"
 import { NewFeatureModal } from "./modals/NewFeatureModal"
 import { useHomeToWorkspaceTransition } from "@/hooks/useHomeToWorkspaceTransition"
+import { useSidebarCollapseContext } from "../layout/AppShell"
 import { RefreshCw } from "lucide-react"
 import type { PollableDomain } from "@/hooks/useFeaturePolling"
 
@@ -163,9 +163,12 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // Get navigation state for conditional rendering
   const { featureId, projectId, setFeatureId, setProjectId, clearFeature } = useWorkspaceNavigation()
   
-  // Get domains for creating projects and features
-  const { studioCore, platformFeatures } = useDomains()
-  
+  // Get domains for creating projects, features, and chat sessions
+  const { studioCore, platformFeatures, studioChat } = useDomains()
+
+  // Get sidebar collapse control for homepage transition animation
+  const { collapseSidebar } = useSidebarCollapseContext()
+
   // Get user session
   const { data: session } = useSession()
 
@@ -258,21 +261,46 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // State for prompt submission (creating project from home page)
   const [isCreatingFromPrompt, setIsCreatingFromPrompt] = useState(false)
 
+  // Store navigation data during handlePromptSubmit for use in transition callback
+  const navigationDataRef = useRef<{
+    project: any
+    featureSession: any
+    chatSessionId: string
+    prompt: string
+  } | null>(null)
+
+  // Navigation callback for transition - navigates to ProjectLayout with state
+  const handleTransitionNavigate = useCallback(() => {
+    const data = navigationDataRef.current
+    if (!data) {
+      console.error("[WorkspaceLayout] No navigation data available for transition")
+      return
+    }
+
+    navigate(`/projects/${data.project.id}?chatSessionId=${data.chatSessionId}`, {
+      state: {
+        project: data.project,
+        featureSession: data.featureSession,
+        chatSessionId: data.chatSessionId,
+        initialMessage: data.prompt,
+      },
+    })
+  }, [navigate])
+
   // Home to workspace transition animation state
   const {
     transitionPhase,
     pendingPrompt,
     startTransition,
     isComplete: isTransitionComplete,
-  } = useHomeToWorkspaceTransition()
+  } = useHomeToWorkspaceTransition({
+    onSidebarCollapse: collapseSidebar,
+    onNavigate: handleTransitionNavigate,
+  })
 
-  // The feature session created during the transition animation
-  const [composingSession, setComposingSession] = useState<any>(null)
-  
   /**
    * Handle prompt submission from home page
-   * Starts the transition animation immediately, then creates project/feature in parallel.
-   * Instead of navigating away, morphs the HomePage into a split-panel workspace view.
+   * Creates project/feature/chat session, then triggers animated transition to ProjectLayout.
    */
   const handlePromptSubmit = useCallback(async (prompt: string) => {
     const userId = session?.user?.id
@@ -283,18 +311,14 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       return
     }
 
-    if (!studioCore || !platformFeatures) {
+    if (!studioCore || !platformFeatures || !studioChat) {
       console.error("[WorkspaceLayout] Cannot create from prompt: domains not available")
       return
     }
 
     setIsCreatingFromPrompt(true)
 
-    // Start the transition animation immediately (runs in parallel with session creation)
-    const transitionPromise = startTransition(prompt)
-
     try {
-      // Create session in parallel with the animation
       // 1. Generate a project name from the prompt using AI
       const projectName = await generateProjectNameFromPrompt(prompt)
 
@@ -313,22 +337,34 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
         project: newProject.id,
       })
 
-      // 4. Store the feature session for ComposingWorkspaceView
-      setComposingSession(newFeature)
+      // 4. Create an empty chat session for this feature
+      const chatSession = await studioChat.createChatSession({
+        inferredName: `Chat - ${projectName}`,
+        contextType: "feature",
+        contextId: newFeature.id,
+      })
 
-      // 5. Trigger refetch so the project shows in the sidebar
+      // 5. Store navigation data for the transition callback
+      navigationDataRef.current = {
+        project: newProject,
+        featureSession: newFeature,
+        chatSessionId: chatSession.id,
+        prompt,
+      }
+
+      // 6. Trigger refetch so the project shows in the sidebar
       refetchProjects()
 
-      // Wait for animation to complete before finalizing
-      await transitionPromise
+      // 7. Start the animated transition (collapses sidebar, then navigates)
+      await startTransition(prompt)
 
     } catch (error) {
       console.error("[WorkspaceLayout] Failed to create from prompt:", error)
-      // On error, we should reset the transition - but for now just log
+      navigationDataRef.current = null
     } finally {
       setIsCreatingFromPrompt(false)
     }
-  }, [session?.user?.id, currentWorkspace?.id, studioCore, platformFeatures, refetchProjects, startTransition])
+  }, [session?.user?.id, currentWorkspace?.id, studioCore, platformFeatures, studioChat, refetchProjects, startTransition])
 
   // Determine if we're on the home view (no project selected)
   const isHomeView = !currentProject && !projectId
@@ -442,15 +478,9 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
                   </div>
                 </div>
               </div>
-            ) : transitionPhase !== "idle" && ["emerge", "settle", "complete"].includes(transitionPhase) ? (
-              // Transition has reached emerge phase - show ComposingWorkspaceView
-              <ComposingWorkspaceView
-                featureSession={composingSession}
-                initialMessage={pendingPrompt}
-                transitionPhase={transitionPhase}
-              />
             ) : transitionPhase !== "idle" ? (
-              // Transition is in commit/dissolve/transform phase - show HomePage with animation
+              // Transition is in progress (commit/dissolve) - show HomePage with animation
+              // At transform phase, navigation happens and this component unmounts
               <HomePage
                 userName={session?.user?.name?.split(" ")[0] || "there"}
                 onPromptSubmit={handlePromptSubmit}
