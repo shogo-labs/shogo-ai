@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.23",
+    "ai": "^6.0.23",
     "@codesandbox/sandpack-react": "^2.20.0",
     "@jsonforms/core": "^3.7.0",
     "@jsonforms/react": "^3.7.0",
