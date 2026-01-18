@@ -27,7 +27,11 @@ export interface BatchToolCall {
 }
 
 export class MCPService {
-  private baseUrl = `${import.meta.env.VITE_MCP_URL || 'http://localhost:3100'}/mcp`
+  // Use relative /mcp path by default (proxied by nginx in k8s, Vite in dev)
+  // Only use VITE_MCP_URL if explicitly set to a non-empty value
+  private baseUrl = import.meta.env.VITE_MCP_URL
+    ? `${import.meta.env.VITE_MCP_URL}/mcp`
+    : '/mcp'
   private requestId = 0
   private mcpSessionId: string | null = null  // Track MCP session for stateful mode
   private sseReader: ReadableStreamDefaultReader<Uint8Array> | null = null

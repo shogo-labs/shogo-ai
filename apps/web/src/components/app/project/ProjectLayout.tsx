@@ -319,6 +319,108 @@ export const ProjectLayout = observer(function ProjectLayout() {
     console.log("Refresh preview")
   }, [])
 
+  // Publish handlers
+  const handlePublish = useCallback(
+    async (data: {
+      subdomain: string
+      accessLevel: "anyone" | "authenticated" | "private"
+      siteTitle?: string
+      siteDescription?: string
+    }) => {
+      if (!projectId) throw new Error("No project ID")
+
+      const response = await fetch(`/api/projects/${projectId}/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error?.message || "Failed to publish")
+      }
+
+      const result = await response.json()
+
+      // Update local project state with publish info
+      setProject((prev: any) =>
+        prev
+          ? {
+              ...prev,
+              publishedSubdomain: data.subdomain,
+              publishedAt: result.publishedAt,
+              accessLevel: data.accessLevel,
+              siteTitle: data.siteTitle,
+              siteDescription: data.siteDescription,
+            }
+          : prev
+      )
+
+      return result
+    },
+    [projectId]
+  )
+
+  const handleUnpublish = useCallback(async () => {
+    if (!projectId) throw new Error("No project ID")
+
+    const response = await fetch(`/api/projects/${projectId}/unpublish`, {
+      method: "POST",
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.error?.message || "Failed to unpublish")
+    }
+
+    // Clear publish info from local project state
+    setProject((prev: any) =>
+      prev
+        ? {
+            ...prev,
+            publishedSubdomain: undefined,
+            publishedAt: undefined,
+            accessLevel: undefined,
+            siteTitle: undefined,
+            siteDescription: undefined,
+          }
+        : prev
+    )
+  }, [projectId])
+
+  const handleUpdatePublishSettings = useCallback(
+    async (data: {
+      accessLevel?: "anyone" | "authenticated" | "private"
+      siteTitle?: string
+      siteDescription?: string
+    }) => {
+      if (!projectId) throw new Error("No project ID")
+
+      const response = await fetch(`/api/projects/${projectId}/publish`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error?.message || "Failed to update settings")
+      }
+
+      // Update local project state
+      setProject((prev: any) =>
+        prev
+          ? {
+              ...prev,
+              ...(data.accessLevel !== undefined && { accessLevel: data.accessLevel }),
+              ...(data.siteTitle !== undefined && { siteTitle: data.siteTitle }),
+              ...(data.siteDescription !== undefined && { siteDescription: data.siteDescription }),
+            }
+          : prev
+      )
+    },
+    [projectId]
+  )
 
   // Current user info from session
   const currentUserName = session?.user?.name?.split(" ")[0] || "You"
@@ -369,6 +471,13 @@ export const ProjectLayout = observer(function ProjectLayout() {
           maxCredits={maxCredits}
           currentUserName={currentUserName}
           userInitial={userInitial}
+          // Publish state props
+          isPublished={!!project.publishedSubdomain}
+          publishedAt={project.publishedAt ? new Date(project.publishedAt) : undefined}
+          publishedSubdomain={project.publishedSubdomain}
+          accessLevel={project.accessLevel}
+          siteTitle={project.siteTitle}
+          siteDescription={project.siteDescription}
           showChatSessions={showChatSessions}
           isChatCollapsed={isChatCollapsed}
           onChatSessionsToggle={handleChatSessionsToggle}
@@ -377,6 +486,10 @@ export const ProjectLayout = observer(function ProjectLayout() {
           onViewportChange={handleViewportChange}
           onRouteChange={handleRouteChange}
           onRefresh={handleRefresh}
+          // Publish callbacks
+          onPublish={handlePublish}
+          onUnpublish={handleUnpublish}
+          onUpdatePublishSettings={handleUpdatePublishSettings}
         />
 
         {/* Main content: Chat/History panel (LEFT) + Preview/Workspace (RIGHT) */}

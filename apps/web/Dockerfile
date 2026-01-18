@@ -11,9 +11,10 @@ FROM oven/bun:1.2-alpine AS builder
 WORKDIR /app
 
 # Build arguments for Vite environment variables
-ARG VITE_API_URL=http://localhost:8002
-ARG VITE_MCP_URL=http://localhost:3100
-ARG VITE_BETTER_AUTH_URL=http://localhost:8002
+# Empty defaults allow the code to use relative paths (for k8s deployment)
+ARG VITE_API_URL=
+ARG VITE_MCP_URL=
+ARG VITE_BETTER_AUTH_URL=
 ARG VITE_WORKSPACE=local-dev
 
 # Set as environment variables for build
@@ -52,9 +53,11 @@ RUN bun run build
 # =============================================================================
 FROM nginx:alpine
 
-# Default API upstream and host header (overridden by environment variables)
+# Default API and MCP upstream (overridden by environment variables)
 ENV API_UPSTREAM=http://api.shogo-system.svc.cluster.local
 ENV API_HOST=api.shogo-system.svc.cluster.local
+ENV MCP_UPSTREAM=http://mcp-workspace-1.shogo-workspaces.svc.cluster.local
+ENV MCP_HOST=mcp-workspace-1.shogo-workspaces.svc.cluster.local
 
 # Copy built static files
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
@@ -65,6 +68,6 @@ COPY apps/web/nginx.conf /etc/nginx/nginx.conf.template
 # Expose port 80
 EXPOSE 80
 
-# Custom entrypoint: run envsubst only on API_UPSTREAM and API_HOST, then start nginx
-CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_HOST}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
+# Custom entrypoint: run envsubst on API and MCP variables, then start nginx
+CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_HOST} ${MCP_UPSTREAM} ${MCP_HOST}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
 

@@ -51,6 +51,12 @@ export const StudioCoreDomain = scope({
     createdAt: "number",
     "updatedAt?": "number",
     "folderId?": "string", // Optional folder ID (loose string ref)
+    // Publish fields
+    "publishedSubdomain?": "string", // Subdomain for published URL
+    "publishedAt?": "number", // Timestamp when published
+    "accessLevel?": "'anyone' | 'authenticated' | 'private'", // Who can access
+    "siteTitle?": "string", // SEO title
+    "siteDescription?": "string", // SEO description
   },
 
   Folder: {

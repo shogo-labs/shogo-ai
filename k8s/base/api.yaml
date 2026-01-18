@@ -5,9 +5,38 @@
 #   - BetterAuth authentication
 #   - AI chat requests (proxied to Claude Code)
 #   - Workspace routing to MCP services
+#   - Publishing projects (creates Knative DomainMappings)
 #
 # This runs as a regular Deployment (not Knative) since it should always be up.
 # =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shogo-api
+  namespace: shogo-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shogo-api-domainmapping-manager
+rules:
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["domainmappings"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shogo-api-domainmapping-manager
+subjects:
+  - kind: ServiceAccount
+    name: shogo-api
+    namespace: shogo-system
+roleRef:
+  kind: ClusterRole
+  name: shogo-api-domainmapping-manager
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: v1
 kind: Secret
 metadata:
@@ -34,6 +63,7 @@ spec:
       labels:
         app: shogo-api
     spec:
+      serviceAccountName: shogo-api
       containers:
         - name: api
           image: k3d-shogo-registry:5000/shogo-api:latest
@@ -44,10 +74,13 @@ spec:
               value: "8002"
             - name: NODE_ENV
               value: "production"
+            # TODO: Fix proper TLS verification for Kubernetes API
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
             - name: VITE_PORT
               value: "80"
             - name: BETTER_AUTH_URL
-              value: "http://localhost"
+              value: "http://localhost:8080"
             - name: REDIS_URL
               value: "redis://redis:6379"
             - name: DATABASE_URL

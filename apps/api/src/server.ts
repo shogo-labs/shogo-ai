@@ -16,13 +16,18 @@ import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
 import { getPriceId } from './config/stripe-prices'
 import { processInterleavedStream, finalizeCurrentText } from './lib/interleaved-stream'
 import { billingDomain } from '@shogo/state-api/billing/domain'
+import { studioCoreDomain } from '@shogo/state-api/studio-core/domain'
 import { BunPostgresExecutor } from '@shogo/state-api/query/execution/bun-postgres'
 import { createBackendRegistry } from '@shogo/state-api/query/registry'
 import { SqlBackend } from '@shogo/state-api/query/backends/sql'
 import { NullPersistence } from '@shogo/state-api/persistence/null'
+import { publishRoutes } from './routes/publish'
 
 // Billing domain store singleton for webhook handling
 let billingStore: ReturnType<typeof billingDomain.createStore> | null = null
+
+// Studio core domain store singleton for project operations
+let studioCoreStore: ReturnType<typeof studioCoreDomain.createStore> | null = null
 
 async function getBillingStore(): Promise<ReturnType<typeof billingDomain.createStore>> {
   if (billingStore) {
@@ -56,6 +61,40 @@ async function getBillingStore(): Promise<ReturnType<typeof billingDomain.create
   })
 
   return billingStore
+}
+
+async function getStudioCoreStore(): Promise<ReturnType<typeof studioCoreDomain.createStore>> {
+  if (studioCoreStore) {
+    return studioCoreStore
+  }
+
+  const DATABASE_URL = process.env.DATABASE_URL
+  if (!DATABASE_URL) {
+    throw new Error("DATABASE_URL environment variable is required")
+  }
+
+  const isSupabase = DATABASE_URL.includes("supabase")
+  const executor = new BunPostgresExecutor(DATABASE_URL, {
+    tls: isSupabase,
+    max: 5,
+  })
+
+  const registry = createBackendRegistry()
+  const sqlBackend = new SqlBackend({ dialect: "pg", executor })
+  registry.register("postgres", sqlBackend)
+  registry.setDefault("postgres")
+
+  studioCoreStore = studioCoreDomain.createStore({
+    services: {
+      persistence: new NullPersistence(),
+      backendRegistry: registry,
+    },
+    context: {
+      schemaName: "studio-core",
+    },
+  })
+
+  return studioCoreStore
 }
 
 /**
@@ -555,6 +594,63 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
 // Health check
 app.get('/api/health', (c) => c.json({ ok: true }))
+
+// =============================================================================
+// Publish routes - Project publishing to subdomain.shogo.app
+// =============================================================================
+
+// Check subdomain availability
+app.get('/api/subdomains/:subdomain/check', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const router = publishRoutes({ studioCore })
+  // Forward with properly constructed URL
+  const url = new URL(c.req.url)
+  url.pathname = `/subdomains/${c.req.param('subdomain')}/check`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Publish a project
+app.post('/api/projects/:projectId/publish', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const router = publishRoutes({ studioCore })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/publish`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// Update publish settings
+app.patch('/api/projects/:projectId/publish', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const router = publishRoutes({ studioCore })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/publish`
+  const newReq = new Request(url.toString(), {
+    method: 'PATCH',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// Unpublish a project
+app.post('/api/projects/:projectId/unpublish', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const router = publishRoutes({ studioCore })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/unpublish`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
 
 /**
  * Generate a project name from a user prompt using a small language model.
