@@ -37,14 +37,10 @@ roleRef:
   name: shogo-api-domainmapping-manager
   apiGroup: rbac.authorization.k8s.io
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: api-secrets
-  namespace: shogo-system
-type: Opaque
-stringData:
-  BETTER_AUTH_SECRET: shogo-k8s-dev-secret-32-chars-minimum-required
+# API secrets are managed by:
+# - Terraform (for initial creation with BETTER_AUTH_SECRET)
+# - GitHub Actions workflow (for ANTHROPIC_API_KEY and updates)
+# This secret is NOT committed to the repo - see .gitignore
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -93,6 +89,11 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: BETTER_AUTH_SECRET
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ANTHROPIC_API_KEY
           readinessProbe:
             httpGet:
               path: /api/health

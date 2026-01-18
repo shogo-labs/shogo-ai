@@ -3,7 +3,7 @@
   "name": "billing",
   "format": "enhanced-json-schema",
   "createdAt": 1768459896947,
-  "version": 9,
+  "version": 8,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "billing",
   "$defs": {
@@ -169,7 +169,7 @@
         },
         "memberId": {
           "type": "string",
-          "description": "Reference to user who performed the action (cross-schema string ID, may be UUID or auth provider ID)"
+          "description": "Reference to Member (cross-schema string ID)"
         },
         "actionType": {
           "type": "string",

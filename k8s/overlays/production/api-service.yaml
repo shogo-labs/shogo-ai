@@ -51,6 +51,11 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: BETTER_AUTH_SECRET
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ANTHROPIC_API_KEY
           resources:
             requests:
               memory: "256Mi"

@@ -39,12 +39,22 @@ WORKDIR /app
 # Install curl for healthchecks
 RUN apk add --no-cache curl
 
+# Create non-root user for security (required for Claude Code CLI)
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -u 1001 -S appuser -G appgroup
+
 # Copy built artifacts and node_modules
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/state-api ./packages/state-api
 COPY --from=builder /app/apps/api ./apps/api
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./
+
+# Change ownership to non-root user
+RUN chown -R appuser:appgroup /app
+
+# Switch to non-root user
+USER appuser
 
 # Environment defaults
 ENV NODE_ENV=production

@@ -461,9 +461,14 @@ resource "kubernetes_secret" "api_secrets" {
     namespace = "shogo-staging-system"
   }
 
-  data = {
-    BETTER_AUTH_SECRET = var.better_auth_secret
-  }
+  data = merge(
+    {
+      BETTER_AUTH_SECRET = var.better_auth_secret
+    },
+    var.anthropic_api_key != "" ? {
+      ANTHROPIC_API_KEY = var.anthropic_api_key
+    } : {}
+  )
 }
 
 # -----------------------------------------------------------------------------

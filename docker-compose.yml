@@ -158,6 +158,8 @@ services:
       BETTER_AUTH_URL: http://localhost:8002
       REDIS_URL: redis://redis:6379
       ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
+      # Claude Code API key - reads from .env.local or host environment
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
