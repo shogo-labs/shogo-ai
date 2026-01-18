@@ -21,7 +21,13 @@ variable "knative_version" {
 }
 
 variable "domain" {
-  description = "Domain for Knative services"
+  description = "Primary domain for Knative services (e.g., shogo.ai)"
+  type        = string
+  default     = ""
+}
+
+variable "publish_domain" {
+  description = "Domain for published apps (e.g., shogo.one)"
   type        = string
   default     = ""
 }
@@ -33,7 +39,13 @@ variable "scale_to_zero_grace_period" {
 }
 
 variable "ssl_certificate_arn" {
-  description = "ACM certificate ARN for HTTPS termination on the load balancer"
+  description = "Primary ACM certificate ARN for HTTPS termination (e.g., *.shogo.ai)"
+  type        = string
+  default     = ""
+}
+
+variable "ssl_certificate_arn_publish" {
+  description = "Secondary ACM certificate ARN for published apps (e.g., *.shogo.one)"
   type        = string
   default     = ""
 }
@@ -86,43 +98,58 @@ resource "null_resource" "kourier" {
 }
 
 # -----------------------------------------------------------------------------
-# Configure Kourier LoadBalancer with SSL Certificate (optional)
+# Configure Kourier LoadBalancer with SSL Certificates via ALB
+# Uses AWS Load Balancer Controller for ALB with SNI multi-certificate support
 # -----------------------------------------------------------------------------
-resource "null_resource" "kourier_ssl" {
-  count      = var.ssl_certificate_arn != "" ? 1 : 0
+locals {
+  # Combine certificate ARNs if both are provided (comma-separated for ALB SNI)
+  ssl_certs = compact([var.ssl_certificate_arn, var.ssl_certificate_arn_publish])
+  ssl_cert_annotation = join(",", local.ssl_certs)
+  has_ssl = length(local.ssl_certs) > 0
+}
+
+# Configure Kourier to use AWS Load Balancer Controller with ALB
+# This enables SNI support with multiple SSL certificates
+resource "null_resource" "kourier_alb" {
+  count      = local.has_ssl ? 1 : 0
   depends_on = [null_resource.kourier]
 
   triggers = {
-    ssl_certificate_arn = var.ssl_certificate_arn
+    ssl_certificate_arn         = var.ssl_certificate_arn
+    ssl_certificate_arn_publish = var.ssl_certificate_arn_publish
   }
 
   provisioner "local-exec" {
     command = <<-EOT
       # Wait for Kourier service to be created
-      kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' service/kourier -n kourier-system --timeout=300s || sleep 30
-      
-      # Patch Kourier service with SSL annotations for AWS ELB
+      kubectl wait --for=condition=available deployment/3scale-kourier-gateway -n kourier-system --timeout=300s || sleep 30
+
+      # Patch Kourier service to use AWS Load Balancer Controller with NLB
+      # NLB is recommended for Knative as it preserves client IP and has better performance
+      # For SNI support, we use TLS termination at the load balancer
       kubectl annotate service/kourier -n kourier-system --overwrite \
-        service.beta.kubernetes.io/aws-load-balancer-ssl-cert="${var.ssl_certificate_arn}" \
-        service.beta.kubernetes.io/aws-load-balancer-backend-protocol=http \
-        service.beta.kubernetes.io/aws-load-balancer-ssl-ports="443"
-      
-      # Wait for ELB to be created and get its name
-      sleep 30
-      ELB_DNS=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-      ELB_NAME=$(echo $ELB_DNS | cut -d'-' -f1-5)
-      
-      # Get the HTTP NodePort (port 80)
-      HTTP_NODEPORT=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
-      
-      # Fix the HTTPS listener to forward to HTTP NodePort after SSL termination
-      # (Kubernetes sets it to forward to the 443 NodePort which expects TLS traffic)
-      aws elb delete-load-balancer-listeners --load-balancer-name $ELB_NAME --load-balancer-ports 443 --region us-east-1 || true
-      aws elb create-load-balancer-listeners --load-balancer-name $ELB_NAME \
-        --listeners "Protocol=HTTPS,LoadBalancerPort=443,InstanceProtocol=HTTP,InstancePort=$HTTP_NODEPORT,SSLCertificateId=${var.ssl_certificate_arn}" \
-        --region us-east-1
-      
-      echo "SSL certificate attached to Kourier LoadBalancer with correct backend port"
+        service.beta.kubernetes.io/aws-load-balancer-type="external" \
+        service.beta.kubernetes.io/aws-load-balancer-nlb-target-type="ip" \
+        service.beta.kubernetes.io/aws-load-balancer-scheme="internet-facing" \
+        service.beta.kubernetes.io/aws-load-balancer-ssl-cert="${local.ssl_cert_annotation}" \
+        service.beta.kubernetes.io/aws-load-balancer-ssl-ports="443" \
+        service.beta.kubernetes.io/aws-load-balancer-ssl-negotiation-policy="ELBSecurityPolicy-TLS13-1-2-2021-06" \
+        service.beta.kubernetes.io/aws-load-balancer-backend-protocol="tcp"
+
+      # Force service recreation to pick up new load balancer type
+      # Note: This will cause a brief outage as the old ELB is deleted and new NLB is created
+      kubectl patch service/kourier -n kourier-system -p '{"spec":{"type":"LoadBalancer"}}'
+
+      # Wait for the new NLB to be provisioned
+      echo "Waiting for NLB to be provisioned..."
+      sleep 60
+
+      # Get the new load balancer hostname
+      NLB_HOSTNAME=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+      echo "Kourier NLB hostname: $NLB_HOSTNAME"
+
+      echo "SSL certificates attached to Kourier LoadBalancer (NLB with TLS termination)"
+      echo "Certificates: ${local.ssl_cert_annotation}"
     EOT
   }
 }
@@ -174,23 +201,36 @@ resource "null_resource" "knative_config" {
 }
 
 # -----------------------------------------------------------------------------
-# Configure Domain (optional)
+# Configure Domains (optional)
+# Configures both platform domain (shogo.ai) and publish domain (shogo.one)
 # -----------------------------------------------------------------------------
 resource "null_resource" "knative_domain" {
-  count = var.domain != "" ? 1 : 0
+  count = var.domain != "" || var.publish_domain != "" ? 1 : 0
 
   depends_on = [null_resource.knative_config]
 
   triggers = {
-    domain = var.domain
+    domain         = var.domain
+    publish_domain = var.publish_domain
   }
 
   provisioner "local-exec" {
     command = <<-EOT
+      # Configure primary domain
+      %{if var.domain != ""}
       kubectl patch configmap/config-domain \
         --namespace knative-serving \
         --type merge \
         --patch '{"data":{"${var.domain}":""}}'
+      %{endif}
+
+      # Configure publish domain (for user-published apps)
+      %{if var.publish_domain != ""}
+      kubectl patch configmap/config-domain \
+        --namespace knative-serving \
+        --type merge \
+        --patch '{"data":{"${var.publish_domain}":""}}'
+      %{endif}
     EOT
   }
 }

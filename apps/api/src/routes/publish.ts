@@ -1,7 +1,8 @@
 /**
  * Publish API Routes
  *
- * Endpoints for publishing projects to subdomain.shogo.ai URLs.
+ * Endpoints for publishing projects to subdomain.shogo.one URLs.
+ * Platform lives at shogo.ai, published apps at shogo.one for isolation.
  * Creates Knative DomainMappings for routing.
  */
 
@@ -158,8 +159,9 @@ function validateSubdomain(subdomain: string): { valid: boolean; reason?: string
 const KNATIVE_GROUP = "serving.knative.dev"
 const KNATIVE_VERSION = "v1beta1"
 const DOMAIN_MAPPING_PLURAL = "domainmappings"
-const NAMESPACE = "shogo-workspaces"
-const BASE_DOMAIN = "shogo.ai"
+const NAMESPACE = process.env.PUBLISH_NAMESPACE || "shogo-workspaces"
+// Published apps use shogo.one (separate from platform at shogo.ai)
+const BASE_DOMAIN = process.env.PUBLISH_DOMAIN || "shogo.one"
 
 /**
  * Check if a DomainMapping exists in Knative

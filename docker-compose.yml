@@ -89,7 +89,7 @@ services:
       NODE_ENV: development
       DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
       SCHEMAS_PATH: /app/.schemas
-      WORKSPACE_ID: workspace-1
+      WORKSPACE_ID: workspace
       TENANT_ID: tenant-a
     volumes:
       - mcp_schemas_ws1:/data/schemas
@@ -185,10 +185,17 @@ services:
         VITE_API_URL: http://localhost:8002
         VITE_MCP_URL: http://localhost:3100
         VITE_BETTER_AUTH_URL: http://localhost:8002
-        VITE_WORKSPACE: workspace-1
+        VITE_WORKSPACE: workspace
     container_name: shogo-web
     ports:
       - "3000:80"
+    environment:
+      # Docker internal DNS resolver
+      DNS_RESOLVER: "127.0.0.11"
+      API_UPSTREAM: http://api:8002
+      API_HOST: api
+      MCP_UPSTREAM: http://mcp:3100
+      MCP_HOST: mcp
     depends_on:
       - api
       - mcp

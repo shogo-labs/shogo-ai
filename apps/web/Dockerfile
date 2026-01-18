@@ -58,6 +58,8 @@ ENV API_UPSTREAM=http://api.shogo-system.svc.cluster.local
 ENV API_HOST=api.shogo-system.svc.cluster.local
 ENV MCP_UPSTREAM=http://mcp-workspace-1.shogo-workspaces.svc.cluster.local
 ENV MCP_HOST=mcp-workspace-1.shogo-workspaces.svc.cluster.local
+# DNS resolver: Docker=127.0.0.11, K8s=kube-dns.kube-system.svc.cluster.local
+ENV DNS_RESOLVER=kube-dns.kube-system.svc.cluster.local
 
 # Copy built static files
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
@@ -68,6 +70,6 @@ COPY apps/web/nginx.conf /etc/nginx/nginx.conf.template
 # Expose port 80
 EXPOSE 80
 
-# Custom entrypoint: run envsubst on API and MCP variables, then start nginx
-CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_HOST} ${MCP_UPSTREAM} ${MCP_HOST}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
+# Custom entrypoint: run envsubst on API, MCP, and DNS variables, then start nginx
+CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_HOST} ${MCP_UPSTREAM} ${MCP_HOST} ${DNS_RESOLVER}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
 

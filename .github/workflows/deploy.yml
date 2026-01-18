@@ -258,7 +258,7 @@ jobs:
           ]" || echo "API service not found, may need terraform apply first"
           
           # Update MCP service
-          kubectl patch ksvc mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --type='json' -p="[
+          kubectl patch ksvc mcp-workspace -n ${{ env.NS_WORKSPACES }} --type='json' -p="[
             {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-mcp:${{ env.IMAGE_TAG }}\"}
           ]" || echo "MCP service not found, may need terraform apply first"
 
@@ -273,7 +273,7 @@ jobs:
           kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
           
           echo "Waiting for mcp rollout..."
-          kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/mcp-workspace -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
 
       - name: Verify deployment
         run: |

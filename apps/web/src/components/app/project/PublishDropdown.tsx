@@ -233,7 +233,7 @@ export function PublishDropdown({
 
   const handleViewPublished = () => {
     if (subdomain && onViewPublished) {
-      onViewPublished(`https://${subdomain}.shogo.ai`)
+      onViewPublished(`https://${subdomain}.shogo.one`)
     }
   }
 
@@ -287,7 +287,7 @@ export function PublishDropdown({
             <div className="flex items-center gap-2 p-2 bg-emerald-50 dark:bg-emerald-950/30 rounded-md border border-emerald-200 dark:border-emerald-800">
               <CheckCircle className="h-4 w-4 text-emerald-600 shrink-0" />
               <span className="text-sm text-emerald-700 dark:text-emerald-400 truncate">
-                {currentSubdomain}.shogo.ai
+                {currentSubdomain}.shogo.one
               </span>
             </div>
           )}
@@ -333,7 +333,7 @@ export function PublishDropdown({
             </div>
             <div className="flex items-center justify-between">
               <p className="text-[11px] text-muted-foreground">
-                {subdomain || "your-subdomain"}.shogo.ai
+                {subdomain || "your-subdomain"}.shogo.one
               </p>
               {subdomainStatus.available === false && subdomainStatus.reason && (
                 <p className="text-[11px] text-red-500">{subdomainStatus.reason}</p>

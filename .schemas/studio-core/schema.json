@@ -116,7 +116,7 @@
         "publishedSubdomain": {
           "type": "string",
           "pattern": "^[a-z0-9-]+$",
-          "description": "Subdomain for published URL (e.g., 'my-app' → my-app.shogo.ai)"
+          "description": "Subdomain for published URL (e.g., 'my-app' → my-app.shogo.one)"
         },
         "publishedAt": {
           "type": "number",

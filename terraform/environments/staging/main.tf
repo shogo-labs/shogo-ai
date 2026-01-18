@@ -100,12 +100,22 @@ data "aws_caller_identity" "current" {}
 # -----------------------------------------------------------------------------
 # ACM Certificate Lookup (for SSL termination on load balancer)
 # -----------------------------------------------------------------------------
+# Primary certificate for platform (*.shogo.ai)
 data "aws_acm_certificate" "ssl" {
   count       = var.ssl_certificate_domain != "" ? 1 : 0
   domain      = var.ssl_certificate_domain
   statuses    = ["ISSUED"]
   most_recent = true
   types       = ["AMAZON_ISSUED"] # Prefer Amazon-issued over imported certificates
+}
+
+# Secondary certificate for published apps (*.shogo.one)
+data "aws_acm_certificate" "ssl_publish" {
+  count       = var.ssl_certificate_domain_publish != "" ? 1 : 0
+  domain      = var.ssl_certificate_domain_publish
+  statuses    = ["ISSUED"]
+  most_recent = true
+  types       = ["AMAZON_ISSUED"]
 }
 
 # -----------------------------------------------------------------------------
@@ -327,21 +337,44 @@ resource "aws_vpc_endpoint" "s3" {
 }
 
 # -----------------------------------------------------------------------------
+# AWS Load Balancer Controller (for ALB with SNI multi-certificate support)
+# -----------------------------------------------------------------------------
+module "aws_lb_controller" {
+  source = "../../modules/aws-load-balancer-controller"
+
+  depends_on = [module.eks]
+
+  cluster_name      = module.eks.cluster_name
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  vpc_id            = module.vpc.vpc_id
+  region            = var.aws_region
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Knative Serving
 # -----------------------------------------------------------------------------
 module "knative" {
   source = "../../modules/knative"
 
-  depends_on = [module.eks]
+  depends_on = [module.eks, module.aws_lb_controller]
 
   knative_version = var.knative_version
   domain          = var.domain
+  publish_domain  = var.publish_domain
 
   # Scale-to-zero configuration
   scale_to_zero_grace_period = "60s"
 
-  # SSL certificate for HTTPS termination on load balancer
+  # SSL certificates for HTTPS termination on ALB
+  # Primary: *.shogo.ai for platform
   ssl_certificate_arn = var.ssl_certificate_domain != "" ? data.aws_acm_certificate.ssl[0].arn : ""
+  # Secondary: *.shogo.one for published apps (SNI routing)
+  ssl_certificate_arn_publish = var.ssl_certificate_domain_publish != "" ? data.aws_acm_certificate.ssl_publish[0].arn : ""
 
   # ECR registry - skip tag resolution (avoids auth issues with Knative controller)
   ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
