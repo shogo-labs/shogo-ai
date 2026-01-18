@@ -83,7 +83,9 @@ const eagerCollections: EagerCollectionsConfig = {
     'folderCollection',
     // Deferred: starredProjectCollection, invitationCollection
   ],
-  componentBuilder: ['rendererBindingCollection'],
+  // compositionCollection and layoutTemplateCollection are needed for ComposablePhaseView
+  // to render workspace layouts (e.g., when AI calls set_workspace)
+  componentBuilder: ['rendererBindingCollection', 'compositionCollection', 'layoutTemplateCollection'],
   billing: ['subscriptionCollection'],
   platformFeatures: ['featureSessionCollection'],
 
