@@ -1,7 +1,7 @@
 /**
  * Publish API Routes
  *
- * Endpoints for publishing projects to subdomain.shogo.app URLs.
+ * Endpoints for publishing projects to subdomain.shogo.ai URLs.
  * Creates Knative DomainMappings for routing.
  */
 
@@ -159,7 +159,7 @@ const KNATIVE_GROUP = "serving.knative.dev"
 const KNATIVE_VERSION = "v1beta1"
 const DOMAIN_MAPPING_PLURAL = "domainmappings"
 const NAMESPACE = "shogo-workspaces"
-const BASE_DOMAIN = "shogo.app"
+const BASE_DOMAIN = "shogo.ai"
 
 /**
  * Check if a DomainMapping exists in Knative
@@ -390,7 +390,7 @@ export function publishRoutes(config: PublishRoutesConfig) {
 
       return c.json(
         {
-          url: `https://${subdomain}.shogo.app`,
+          url: `https://${subdomain}.shogo.ai`,
           subdomain,
           publishedAt,
           accessLevel,
@@ -478,7 +478,7 @@ export function publishRoutes(config: PublishRoutesConfig) {
 
       return c.json(
         {
-          url: `https://${project.publishedSubdomain}.shogo.app`,
+          url: `https://${project.publishedSubdomain}.shogo.ai`,
           subdomain: project.publishedSubdomain,
           publishedAt: project.publishedAt,
           accessLevel: updates.accessLevel ?? project.accessLevel,

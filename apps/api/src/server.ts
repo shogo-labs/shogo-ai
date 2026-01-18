@@ -596,7 +596,7 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 app.get('/api/health', (c) => c.json({ ok: true }))
 
 // =============================================================================
-// Publish routes - Project publishing to subdomain.shogo.app
+// Publish routes - Project publishing to subdomain.shogo.ai
 // =============================================================================
 
 // Check subdomain availability
