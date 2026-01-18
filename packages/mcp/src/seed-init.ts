@@ -13,12 +13,24 @@
  * @module mcp/seed-init
  */
 
-import { loadSchema, domain, SHOGO_ORG_ID, PLATFORM_PROJECT_ID } from "@shogo/state-api"
+import { loadSchema, domain, SHOGO_ORG_ID, PLATFORM_PROJECT_ID, isS3Enabled } from "@shogo/state-api"
 import {
   isPostgresAvailable,
   isSqliteAvailable,
   getGlobalBackendRegistry,
 } from "./postgres-init"
+
+/**
+ * Get the effective workspace location for schema loading.
+ * - S3 mode: Uses WORKSPACE_ID environment variable
+ * - Filesystem mode: Uses the provided schemasDir path
+ */
+function getEffectiveWorkspace(schemasDir: string): string {
+  if (isS3Enabled()) {
+    return process.env.WORKSPACE_ID || "workspace"
+  }
+  return schemasDir
+}
 import {
   COMPONENT_DEFINITIONS,
   REGISTRIES,
@@ -249,13 +261,16 @@ export async function initializeSeedData(schemasDir: string): Promise<void> {
     return
   }
 
+  // Get effective workspace for schema loading (S3: workspace ID, filesystem: path)
+  const effectiveWorkspace = getEffectiveWorkspace(schemasDir)
+
   try {
     // =========================================================================
     // Studio Core Domain
     // =========================================================================
 
-    // 2. Load studio-core schema from disk
-    const { enhanced } = await loadSchema("studio-core", schemasDir)
+    // 2. Load studio-core schema (from S3 or filesystem based on SCHEMA_STORAGE)
+    const { enhanced } = await loadSchema("studio-core", effectiveWorkspace)
 
     // 3. Create domain factory from enhanced schema
     const d = domain({
@@ -270,7 +285,7 @@ export async function initializeSeedData(schemasDir: string): Promise<void> {
       },
       context: {
         schemaName: "studio-core",
-        location: schemasDir,
+        location: effectiveWorkspace,
       },
     })
 
@@ -289,8 +304,8 @@ export async function initializeSeedData(schemasDir: string): Promise<void> {
     // =========================================================================
 
     try {
-      // 7. Load component-builder schema from disk
-      const { enhanced: componentBuilderEnhanced } = await loadSchema("component-builder", schemasDir)
+      // 7. Load component-builder schema (from S3 or filesystem)
+      const { enhanced: componentBuilderEnhanced } = await loadSchema("component-builder", effectiveWorkspace)
 
       // 8. Create domain factory from enhanced schema
       const componentBuilderDomain = domain({
@@ -305,7 +320,7 @@ export async function initializeSeedData(schemasDir: string): Promise<void> {
         },
         context: {
           schemaName: "component-builder",
-          location: schemasDir,
+          location: effectiveWorkspace,
         },
       })
 

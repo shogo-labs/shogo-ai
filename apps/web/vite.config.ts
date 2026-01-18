@@ -42,6 +42,10 @@ export default defineConfig(({ mode }) => {
           target: `http://localhost:${API_PORT}`,
           changeOrigin: true,
         },
+        '/mcp': {
+          target: `http://localhost:3100`,
+          changeOrigin: true,
+        },
       },
       // Watch config for Docker volumes (polling needed on macOS)
       watch: {

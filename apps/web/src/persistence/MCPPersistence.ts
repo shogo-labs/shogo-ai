@@ -89,11 +89,19 @@ export class MCPPersistence implements IPersistenceService {
           fields: Array<{ name: string; type: string; required?: boolean }>
           refs?: Array<{ name: string; target: string; type: 'single' | 'array' }>
         }>
-        error?: { message: string }
+        error?: { code?: string; message: string }
       }>('schema.load', { name, workspace })
 
       if (!loadResult?.ok) {
-        console.warn('[MCPPersistence] schema.load failed:', loadResult?.error?.message)
+        const errorCode = loadResult?.error?.code || 'UNKNOWN_ERROR'
+        const errorMessage = loadResult?.error?.message || 'Unknown schema load error'
+        
+        // Log with appropriate severity - SCHEMA_NOT_FOUND is often expected during app creation
+        if (errorCode === 'SCHEMA_NOT_FOUND') {
+          console.debug(`[MCPPersistence] Schema '${name}' not found - may need to be created first`)
+        } else {
+          console.warn('[MCPPersistence] schema.load failed:', errorMessage)
+        }
         return null
       }
 

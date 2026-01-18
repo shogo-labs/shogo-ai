@@ -25,16 +25,20 @@ import { registerDdlMigrate } from "./ddl.migrate"
 // Agent tools
 import { registerAgentChat } from "./agent.chat"
 
+// Workspace tools
+import { registerWorkspaceSync } from "./workspace.sync"
+
 /**
  * Register all Wavesmith MCP tools on a FastMCP server instance.
  * This is the single source of truth for tool registration.
  *
- * Total: 15 tools across 5 namespaces
+ * Total: 16 tools across 6 namespaces
  * - Schema: 3 tools (set, load, list)
  * - Store: 5 tools (create, get, update, delete, query)
  * - View: 4 tools (execute, define, delete, project)
  * - DDL: 2 tools (execute, migrate)
  * - Agent: 1 tool (chat)
+ * - Workspace: 1 tool (sync)
  *
  * @param server - FastMCP server instance (stdio or HTTP transport)
  */
@@ -63,4 +67,7 @@ export function registerAllTools(server: FastMCP) {
 
   // Agent namespace (1 tool)
   registerAgentChat(server)
+
+  // Workspace namespace (1 tool)
+  registerWorkspaceSync(server)
 }

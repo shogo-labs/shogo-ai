@@ -5,10 +5,11 @@ import {
   cacheRuntimeStore,
   loadSchema,
   domain,
-  FileSystemPersistence
+  FileSystemPersistence,
+  isS3Enabled
 } from "@shogo/state-api"
 import { getEffectiveWorkspace } from "../state"
-import { getGlobalBackendRegistry } from "../postgres-init"
+import { getGlobalBackendRegistry, getWorkspaceBackendRegistry } from "../postgres-init"
 
 const Params = t({
   name: "string",
@@ -59,10 +60,26 @@ export function registerSchemaLoad(server: FastMCP) {
 
         // 4. Create runtime store with environment
         // domain().createStore() handles injecting SQL metadata maps
+        // 
+        // Backend selection logic:
+        // - If schema has x-persistence.backend: 'postgres', use global PostgreSQL
+        //   (for system schemas like studio-core, billing, etc.)
+        // - If S3 mode enabled and workspace provided, use workspace-specific SQLite
+        //   (for user-created app schemas stored in S3)
+        // - Otherwise, use global backend (postgres or sqlite depending on config)
+        const schemaBackend = enhanced['x-persistence']?.backend
+        const usePostgres = schemaBackend === 'postgres'
+        
+        const backendRegistry = usePostgres
+          ? getGlobalBackendRegistry()  // System schemas → PostgreSQL
+          : (isS3Enabled() && workspace
+              ? await getWorkspaceBackendRegistry(workspace)  // User schemas → S3 SQLite
+              : getGlobalBackendRegistry())
+
         const runtimeStore = d.createStore({
           services: {
             persistence: new FileSystemPersistence(),
-            backendRegistry: getGlobalBackendRegistry()
+            backendRegistry
           },
           context: {
             schemaName: schema.name,

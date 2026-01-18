@@ -166,13 +166,19 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Check if domains are ready
   const domainsReady = !!studioCore?.projectCollection
 
-  // Load project data
+  // Load project data with retry logic for schema loading race condition
   useEffect(() => {
     if (!projectId || !domainsReady) {
       return
     }
 
-    const loadProjectData = async () => {
+    let cancelled = false
+    const MAX_RETRIES = 5
+    const RETRY_DELAY_MS = 500
+
+    const loadProjectData = async (attempt = 1): Promise<void> => {
+      if (cancelled) return
+
       setIsLoading(true)
       try {
         // Load the project
@@ -180,19 +186,36 @@ export const ProjectLayout = observer(function ProjectLayout() {
           .where({ id: projectId })
           .first()
 
+        if (cancelled) return
+
         if (proj) {
           setProject(proj)
+          setIsLoading(false)
         } else {
           console.warn("[ProjectLayout] Project not found:", projectId)
+          setIsLoading(false)
         }
-      } catch (err) {
+      } catch (err: any) {
+        if (cancelled) return
+
+        // Retry if schema not loaded yet (race condition on page refresh)
+        const isSchemaNotLoaded = err?.message?.includes("Schema") || err?.message?.includes("SCHEMA_NOT_FOUND")
+        if (isSchemaNotLoaded && attempt < MAX_RETRIES) {
+          console.debug(`[ProjectLayout] Schema not ready, retrying (${attempt}/${MAX_RETRIES})...`)
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt))
+          return loadProjectData(attempt + 1)
+        }
+
         console.error("[ProjectLayout] Failed to load project:", err)
-      } finally {
         setIsLoading(false)
       }
     }
 
     loadProjectData()
+
+    return () => {
+      cancelled = true
+    }
   }, [projectId, domainsReady, studioCore])
 
   // Get workspace composition for observability

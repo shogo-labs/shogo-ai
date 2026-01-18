@@ -29,6 +29,63 @@ let billingStore: ReturnType<typeof billingDomain.createStore> | null = null
 // Studio core domain store singleton for project operations
 let studioCoreStore: ReturnType<typeof studioCoreDomain.createStore> | null = null
 
+// MCP session management for API → MCP calls
+let mcpSessionId: string | null = null
+const MCP_URL = process.env.MCP_URL || 'http://mcp:3100'
+
+/**
+ * Call an MCP tool with proper session handling
+ */
+async function callMcpTool(toolName: string, args: Record<string, unknown>): Promise<{ ok: boolean; error?: { code: string; message: string }; data?: any }> {
+  try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream',
+    }
+    if (mcpSessionId) {
+      headers['mcp-session-id'] = mcpSessionId
+    }
+
+    const response = await fetch(`${MCP_URL}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'tools/call',
+        params: { name: toolName, arguments: args },
+      }),
+    })
+
+    // Capture session ID from response
+    const responseSessionId = response.headers.get('mcp-session-id')
+    if (responseSessionId) {
+      mcpSessionId = responseSessionId
+    }
+
+    const text = await response.text()
+    
+    // Parse SSE response to get the result
+    for (const line of text.split('\n')) {
+      if (line.startsWith('data: ')) {
+        try {
+          const parsed = JSON.parse(line.slice(6))
+          if (parsed.result?.content?.[0]?.text) {
+            return JSON.parse(parsed.result.content[0].text)
+          }
+          if (parsed.error) {
+            return { ok: false, error: { code: 'MCP_ERROR', message: parsed.error.message || 'Unknown MCP error' } }
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    return { ok: false, error: { code: 'MCP_ERROR', message: 'No valid response from MCP' } }
+  } catch (err: any) {
+    return { ok: false, error: { code: 'MCP_CALL_FAILED', message: err.message || 'MCP call failed' } }
+  }
+}
+
 async function getBillingStore(): Promise<ReturnType<typeof billingDomain.createStore>> {
   if (billingStore) {
     return billingStore
@@ -264,7 +321,8 @@ const virtualToolsServer = createSdkMcpServer({
       }
     ),
     // execute: Generic domain operations (v2 architecture)
-    // Client handler executes state operations across domain stores
+    // For schema operations, calls MCP directly and returns real result
+    // For other operations, emits events for client-side execution
     // NOTE: Using z.any() for complex nested types to avoid SDK schema validation issues
     sdkTool(
       'execute',
@@ -276,20 +334,80 @@ const virtualToolsServer = createSdkMcpServer({
       async (args) => {
         console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing execute:`, args)
 
-        const event: VirtualToolEvent = {
-          type: 'virtual-tool-execute',
-          toolUseId: `vt-${Date.now()}`,
-          toolName: 'execute',
-          args: args as Record<string, unknown>,
-          timestamp: Date.now(),
+        const results: Array<{ op: any; success: boolean; error?: string }> = []
+        const clientOps: any[] = []
+
+        // Process each operation
+        for (const op of args.operations ?? []) {
+          // Check if this is a schema operation that should go to MCP
+          const isSchemaOperation = op.model === 'Schema' || op.domain === 'schema' || (op.domain === 'wavesmith' && op.model === 'Schema')
+          
+          if (isSchemaOperation && op.action === 'create' && op.data) {
+            // Call MCP schema.set directly and return real result
+            const schemaName = (op.data.name || op.data.id || op.id) as string
+            if (!schemaName) {
+              results.push({ op, success: false, error: 'Schema name is required' })
+              continue
+            }
+
+            console.log(`${VT_LOG_PREFIX} 📋 Calling MCP schema.set for: ${schemaName}`)
+            
+            // Extract schema payload - AI sends { name, schema: { $defs: {...} } }
+            const schemaPayload = op.data.schema || op.data
+            
+            const mcpResult = await callMcpTool('schema.set', {
+              name: schemaName,
+              payload: schemaPayload,
+              workspace: 'workspace',
+            })
+
+            if (mcpResult.ok) {
+              console.log(`${VT_LOG_PREFIX} ✅ MCP schema.set succeeded: ${schemaName}`)
+              results.push({ op, success: true })
+            } else {
+              const errorMsg = mcpResult.error?.message || 'Unknown MCP error'
+              const errorCode = mcpResult.error?.code || 'MCP_ERROR'
+              console.error(`${VT_LOG_PREFIX} ❌ MCP schema.set failed: ${schemaName}`, mcpResult.error)
+              results.push({ op, success: false, error: `[${errorCode}] ${errorMsg}` })
+            }
+          } else {
+            // Non-schema operations go to client for execution
+            clientOps.push(op)
+          }
         }
-        virtualToolEvents.emit('virtual-tool', event)
-        console.log(`${VT_LOG_PREFIX} ✅ Emitted execute virtual tool event`)
+
+        // Emit event for client-side operations (if any)
+        if (clientOps.length > 0) {
+          const event: VirtualToolEvent = {
+            type: 'virtual-tool-execute',
+            toolUseId: `vt-${Date.now()}`,
+            toolName: 'execute',
+            args: { operations: clientOps } as Record<string, unknown>,
+            timestamp: Date.now(),
+          }
+          virtualToolEvents.emit('virtual-tool', event)
+          console.log(`${VT_LOG_PREFIX} ✅ Emitted execute virtual tool event for ${clientOps.length} client ops`)
+        }
+
+        // Build response message
+        const schemaResults = results.filter(r => r.op.model === 'Schema' || r.op.domain === 'schema')
+        const failures = schemaResults.filter(r => !r.success)
+        
+        if (failures.length > 0) {
+          // Return error details so AI can see what went wrong
+          const errorMessages = failures.map(f => `- ${f.op.data?.name || 'unknown'}: ${f.error}`).join('\n')
+          return {
+            content: [{
+              type: 'text',
+              text: `Schema operation(s) failed:\n${errorMessages}\n\nPlease ensure the schema uses Enhanced JSON Schema format with a "$defs" object containing model definitions.`
+            }]
+          }
+        }
 
         return {
           content: [{
             type: 'text',
-            text: `Executed ${args.operations?.length ?? 0} operation(s)`
+            text: `Executed ${args.operations?.length ?? 0} operation(s)${clientOps.length > 0 ? ` (${clientOps.length} sent to client)` : ''}`
           }]
         }
       }
@@ -504,6 +622,27 @@ You have access to the Wavesmith MCP server with these tools:
 - store_create, store_list, store_get, store_update, store_query - CRUD operations on entities
 - store_models - List available models in a schema
 - data_load, data_loadAll - Load data from persistence
+
+**CRITICAL: Schema Format for schema_set**
+When calling schema_set, your payload MUST use Enhanced JSON Schema format with "$defs":
+
+{
+  "$defs": {
+    "ModelName": {
+      "type": "object",
+      "x-original-name": "ModelName",
+      "properties": {
+        "id": { "type": "string", "x-mst-type": "identifier" },
+        "name": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    }
+  }
+}
+
+- Use "$defs" (NOT "models", "x-models", "definitions", or "schemas")
+- Each model needs: type="object", x-original-name, properties with id, required array
+- id property must have "x-mst-type": "identifier"
 
 You also have access to virtual tools for UI control:
 - navigate_to_phase: Navigate the user to a different pipeline phase

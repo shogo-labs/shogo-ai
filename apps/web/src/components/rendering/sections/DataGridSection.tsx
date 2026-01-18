@@ -38,6 +38,8 @@ interface DataGridConfig {
   schema?: string
   /** Schema name - alternate key for compatibility */
   schemaName?: string
+  /** Workspace/projectId for project-specific schema loading */
+  schemaWorkspace?: string
   /** Model name (e.g., "Requirement") */
   model?: string
 
@@ -168,6 +170,8 @@ export const DataGridSection = observer(function DataGridSection({
   // Extract config values
   const schemaName = gridConfig?.schema ?? gridConfig?.schemaName
   const modelName = gridConfig?.model
+  // schemaWorkspace is the projectId - used for project-specific schema storage
+  const schemaWorkspace = gridConfig?.schemaWorkspace ?? feature?.id
   const configColumns = gridConfig?.columns ?? []
   const excludeColumns = gridConfig?.excludeColumns ?? []
   const title = gridConfig?.title ?? (modelName ? `${modelName} Data` : "Data Grid")
@@ -175,8 +179,9 @@ export const DataGridSection = observer(function DataGridSection({
   const onRowSelect = gridConfig?.onRowSelect
 
   // 1. Get metadata from meta-store (handles async schema loading)
+  // Pass schemaWorkspace (projectId) to load from the correct project-specific location
   const { properties: metaProperties, collectionName, loading: metaLoading, error: metaError } =
-    useDataGridMetadata(schemaName, modelName)
+    useDataGridMetadata(schemaName, modelName, schemaWorkspace)
 
   // 2. Get data (handles sync vs async internally)
   const { data: rawData, loading: dataLoading, error: dataError } = useDataGridData({

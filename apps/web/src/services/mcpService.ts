@@ -34,11 +34,19 @@ export class MCPService {
     : '/mcp'
   private requestId = 0
   private mcpSessionId: string | null = null  // Track MCP session for stateful mode
+  private projectId: string | null = null     // Current project ID for schema isolation
   private sseReader: ReadableStreamDefaultReader<Uint8Array> | null = null
   private notificationHandler: ((data: any) => void) | null = null
 
   // Session management helpers
   getMcpSessionId(): string | null { return this.mcpSessionId }
+  getProjectId(): string | null { return this.projectId }
+  
+  /** Set the current project ID - used for schema isolation in all MCP calls */
+  setProjectId(projectId: string | null): void {
+    this.projectId = projectId
+  }
+  
   clearSession(): void {
     this.stopSSEListener()
     this.mcpSessionId = null
@@ -191,13 +199,18 @@ export class MCPService {
     toolName: string,
     args: Record<string, any>
   ): Promise<T> {
+    // Inject projectId as workspace if not already provided
+    const argsWithWorkspace = this.projectId && !args.workspace
+      ? { ...args, workspace: this.projectId }
+      : args
+    
     const request: MCPToolCall = {
       jsonrpc: '2.0',
       id: ++this.requestId,
       method: 'tools/call',
       params: {
         name: toolName,
-        arguments: args,
+        arguments: argsWithWorkspace,
       },
     }
 
@@ -249,13 +262,16 @@ export class MCPService {
     if (calls.length === 0) return []
 
     // Build batch request - array of JSON-RPC requests
-    const requests = calls.map((call, index) => ({
+    // Inject projectId as workspace if not already provided
+    const requests = calls.map((call) => ({
       jsonrpc: '2.0' as const,
       id: ++this.requestId,
       method: 'tools/call' as const,
       params: {
         name: call.name,
-        arguments: call.arguments,
+        arguments: this.projectId && !call.arguments.workspace
+          ? { ...call.arguments, workspace: this.projectId }
+          : call.arguments,
       },
     }))
 

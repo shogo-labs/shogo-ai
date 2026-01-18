@@ -144,6 +144,41 @@ export function DomainProvider<T extends DomainsMap>({
 
   // Load schemas and persisted data on mount
   useEffect(() => {
+    const MAX_RETRIES = 3
+    const RETRY_DELAY_MS = 500
+
+    /**
+     * Load a single schema with retry logic.
+     * Returns true if loaded successfully, false otherwise.
+     */
+    const loadSchemaWithRetry = async (
+      persistence: any,
+      key: string,
+      schemaName: string,
+      location: string | undefined,
+      attempt = 1
+    ): Promise<boolean> => {
+      try {
+        await persistence.loadSchema(schemaName, location)
+        return true
+      } catch (err: any) {
+        // Don't retry on SCHEMA_NOT_FOUND - the schema genuinely doesn't exist
+        if (err?.code === 'SCHEMA_NOT_FOUND' || err?.message?.includes('not found')) {
+          console.debug(`[DomainProvider] Schema "${key}" not found - may need to be created`)
+          return false
+        }
+
+        if (attempt < MAX_RETRIES) {
+          console.debug(`[DomainProvider] Retrying schema load for "${key}" (${attempt}/${MAX_RETRIES})...`)
+          await new Promise(r => setTimeout(r, RETRY_DELAY_MS * attempt))
+          return loadSchemaWithRetry(persistence, key, schemaName, location, attempt + 1)
+        }
+
+        console.error(`[DomainProvider] Failed to load schema for "${key}" after ${MAX_RETRIES} attempts:`, err)
+        return false
+      }
+    }
+
     const loadAllDomainData = async () => {
       const stores = storesRef.current
       if (!stores) return
@@ -162,28 +197,26 @@ export function DomainProvider<T extends DomainsMap>({
           await persistence.loadSchemasBatch(schemaRequests)
         } catch (err) {
           console.error(`[DomainProvider] Batch schema load failed, falling back to individual loads:`, err)
-          // Fallback to individual loads in parallel
+          // Fallback to individual loads with retry logic
           const schemaLoadPromises = Object.entries(domains).map(
-            async ([key, domain]) => {
-              try {
-                await persistence.loadSchema(domain.name, env.context?.location)
-              } catch (err) {
-                console.error(`[DomainProvider] Failed to load schema for "${key}":`, err)
-              }
-            }
+            ([key, domain]) => loadSchemaWithRetry(
+              persistence,
+              key,
+              domain.name,
+              env.context?.location
+            )
           )
           await Promise.all(schemaLoadPromises)
         }
       } else if (persistence?.loadSchema) {
-        // Fallback: load schemas in parallel (no batch support)
+        // Fallback: load schemas in parallel with retry logic
         const schemaLoadPromises = Object.entries(domains).map(
-          async ([key, domain]) => {
-            try {
-              await persistence.loadSchema(domain.name, env.context?.location)
-            } catch (err) {
-              console.error(`[DomainProvider] Failed to load schema for "${key}":`, err)
-            }
-          }
+          ([key, domain]) => loadSchemaWithRetry(
+            persistence,
+            key,
+            domain.name,
+            env.context?.location
+          )
         )
         await Promise.all(schemaLoadPromises)
       }

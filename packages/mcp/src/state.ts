@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'url'
 import { dirname, resolve } from 'path'
+import { isS3Enabled } from "@shogo/state-api"
 
 // Compute monorepo root from this file's location
 // This file is at: packages/mcp/src/state.ts
@@ -9,17 +10,27 @@ const __dirname = dirname(__filename)
 export const MONOREPO_ROOT = resolve(__dirname, '../../../')
 
 /**
- * Get the effective workspace path, using MONOREPO_ROOT/.schemas as default.
- * This ensures all tools consistently resolve to the same schema storage location.
+ * Get the effective workspace location for schema operations.
  *
- * @param workspace - Optional workspace path override. The string 'workspace' is treated as a special value meaning "use default"
- * @returns Absolute path to the .schemas directory
+ * - S3 mode: Returns workspace ID (e.g., "workspace") for S3 key prefixing
+ * - Filesystem mode: Returns absolute path to .schemas directory
+ *
+ * @param workspace - Optional workspace override
+ * @returns Workspace ID (S3) or absolute path (filesystem)
  */
 export function getEffectiveWorkspace(workspace?: string): string {
-  // Treat 'workspace' as a special identifier meaning "use default"
-  // This allows MCPPersistence to pass 'workspace' as a default value
+  // S3 mode: return workspace ID (default from env or 'workspace')
+  if (isS3Enabled()) {
+    if (!workspace || workspace === 'workspace') {
+      return process.env.WORKSPACE_ID || 'workspace'
+    }
+    return workspace
+  }
+
+  // Filesystem mode: return absolute path
   if (!workspace || workspace === 'workspace') {
-    return resolve(MONOREPO_ROOT, '.schemas')
+    // Use SCHEMAS_PATH env var if set (Docker), otherwise default to monorepo .schemas
+    return process.env.SCHEMAS_PATH || resolve(MONOREPO_ROOT, '.schemas')
   }
   return workspace
 }

@@ -41,7 +41,10 @@ services:
       - shogo-network
 
   # ---------------------------------------------------------------------------
-  # MinIO (S3-compatible storage - for future cloud parity)
+  # MinIO (S3-compatible storage for schema persistence)
+  # ---------------------------------------------------------------------------
+  # Console: http://localhost:9001 (minioadmin/minioadmin)
+  # API: http://localhost:9000
   # ---------------------------------------------------------------------------
   minio:
     image: minio/minio:latest
@@ -64,6 +67,26 @@ services:
       - shogo-network
 
   # ---------------------------------------------------------------------------
+  # MinIO Bucket Initialization & Schema Seeding
+  # ---------------------------------------------------------------------------
+  # Creates the schemas bucket and seeds built-in schemas from .schemas/
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:latest
+    container_name: shogo-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      # Mount local schemas to seed into S3
+      - ./.schemas:/schemas:ro
+      # Mount init script
+      - ./scripts/minio-init.sh:/minio-init.sh:ro
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
   # Redis (BetterAuth session cache)
   # ---------------------------------------------------------------------------
   redis:
@@ -77,7 +100,16 @@ services:
       - shogo-network
 
   # ---------------------------------------------------------------------------
-  # Shogo MCP Server - Workspace 1 (Default)
+  # Shogo MCP Server - Workspace 1 (Default - Filesystem Storage)
+  # ---------------------------------------------------------------------------
+  # Uses local .schemas bind mount for development.
+  #
+  # To use S3 storage instead, set these env vars in .env.local:
+  #   SCHEMA_STORAGE=s3
+  #   S3_SCHEMA_BUCKET=shogo-schemas
+  #   S3_ENDPOINT=http://minio:9000
+  #
+  # Or run with S3 profile: docker-compose --profile s3 up
   # ---------------------------------------------------------------------------
   mcp:
     build:
@@ -86,15 +118,25 @@ services:
     container_name: shogo-mcp
     ports:
       - "3100:3100"
+    env_file:
+      - path: .env.local
+        required: false
     environment:
       MCP_PORT: "3100"
       NODE_ENV: development
       DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
+      # SCHEMAS_PATH only used for filesystem mode fallback
       SCHEMAS_PATH: /app/.schemas
       WORKSPACE_ID: workspace
       TENANT_ID: tenant-a
+      # S3 config (MinIO in Docker) - SCHEMA_STORAGE comes from .env.local
+      S3_ENDPOINT: http://minio:9000
+      S3_FORCE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     volumes:
-      - mcp_schemas_ws1:/data/schemas
+      # Mount local .schemas for filesystem mode
+      - ./.schemas:/app/.schemas
     depends_on:
       postgres:
         condition: service_healthy
@@ -117,6 +159,9 @@ services:
     container_name: shogo-mcp-workspace-2
     ports:
       - "3101:3100"
+    env_file:
+      - path: .env.local
+        required: false
     environment:
       MCP_PORT: "3100"
       NODE_ENV: development
@@ -124,8 +169,13 @@ services:
       SCHEMAS_PATH: /app/.schemas
       WORKSPACE_ID: workspace-2
       TENANT_ID: tenant-b
+      # S3 config (MinIO in Docker) - SCHEMA_STORAGE comes from .env.local
+      S3_ENDPOINT: http://minio:9000
+      S3_FORCE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     volumes:
-      - mcp_schemas_ws2:/data/schemas
+      - ./.schemas:/app/.schemas
     depends_on:
       postgres:
         condition: service_healthy
@@ -218,10 +268,8 @@ volumes:
     name: shogo-minio-data
   redis_data:
     name: shogo-redis-data
-  mcp_schemas_ws1:
-    name: shogo-mcp-schemas-ws1
-  mcp_schemas_ws2:
-    name: shogo-mcp-schemas-ws2
+  # Note: mcp_schemas_ws1 and mcp_schemas_ws2 volumes removed
+  # Now using bind mount to ./.schemas for development persistence
 
 # =============================================================================
 # Networks
