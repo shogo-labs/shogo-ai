@@ -13,6 +13,8 @@
 #
 # For local dev, we simulate workspaces. In production, each workspace
 # gets its own MCP pod via Knative with scale-to-zero.
+#
+# Environment: Reads from .env.local (secrets like ANTHROPIC_API_KEY)
 # =============================================================================
 
 services:
@@ -148,6 +150,9 @@ services:
     container_name: shogo-api
     ports:
       - "8002:8002"
+    env_file:
+      - path: .env.local
+        required: false
     environment:
       API_PORT: "8002"
       NODE_ENV: development
@@ -158,8 +163,7 @@ services:
       BETTER_AUTH_URL: http://localhost:8002
       REDIS_URL: redis://redis:6379
       ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
-      # Claude Code API key - reads from .env.local or host environment
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # ANTHROPIC_API_KEY loaded from .env.local via env_file
     depends_on:
       postgres:
         condition: service_healthy

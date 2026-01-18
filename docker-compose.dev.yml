@@ -22,6 +22,8 @@
 #   - Postgres: localhost:5432
 #   - Redis:    localhost:6379
 #   - MinIO:    http://localhost:9001 (console)
+#
+# Environment: Reads from .env.local (secrets like ANTHROPIC_API_KEY)
 # =============================================================================
 
 services:
@@ -129,6 +131,9 @@ services:
     command: sh -c "bun install && cd packages/state-api && bun run build && cd /app && bun --watch apps/api/src/server.ts"
     ports:
       - "8002:8002"
+    env_file:
+      - path: .env.local
+        required: false
     environment:
       API_PORT: "8002"
       NODE_ENV: development
@@ -139,8 +144,7 @@ services:
       BETTER_AUTH_URL: http://localhost:8002
       REDIS_URL: redis://redis:6379
       ALLOWED_ORIGINS: http://localhost:5173,http://localhost:3000
-      # Claude Code API key - reads from .env.local or host environment
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # ANTHROPIC_API_KEY loaded from .env.local via env_file
     volumes:
       # Mount source code for hot reload
       - .:/app
