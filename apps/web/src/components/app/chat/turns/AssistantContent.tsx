@@ -11,8 +11,10 @@ import { cn } from "@/lib/utils"
 import type { Message } from "@ai-sdk/react"
 import { Streamdown } from "streamdown"
 import { InlineToolWidget } from "./InlineToolWidget"
+import { AskUserQuestionWidget } from "./AskUserQuestionWidget"
 import type { MessagePart } from "./types"
 import { type ToolCallData, getToolCategory } from "../tools/types"
+import { useChatContextSafe } from "../ChatContext"
 
 export interface AssistantContentProps {
   /** The assistant message to render */
@@ -40,18 +42,8 @@ function mapToolState(state?: string): ToolCallData["state"] {
 function extractOrderedParts(message: Message): MessagePart[] {
   const parts = (message as any).parts as any[] | undefined
 
-  // DEBUG: Log what we're receiving
-  console.log("[AssistantContent] extractOrderedParts called", {
-    messageId: message.id,
-    hasPartsArray: Array.isArray(parts),
-    partsLength: parts?.length,
-    partTypes: parts?.map((p: any) => p.type),
-    rawParts: parts,
-  })
-
   // Fallback: single text part from content
   if (!parts || !Array.isArray(parts)) {
-    console.log("[AssistantContent] Falling back to message.content")
     if (typeof message.content === "string" && message.content) {
       return [{ type: "text", text: message.content, id: "text-0" }]
     }
@@ -71,7 +63,6 @@ function extractOrderedParts(message: Message): MessagePart[] {
     } else if (part.type === "tool-invocation") {
       // Standard AI SDK tool-invocation format
       const inv = part.toolInvocation
-      console.log("[AssistantContent] Found tool-invocation part", { inv, part })
       if (inv) {
         result.push({
           type: "tool",
@@ -91,7 +82,6 @@ function extractOrderedParts(message: Message): MessagePart[] {
     } else if (part.type === "dynamic-tool") {
       // Claude Code provider dynamic-tool format
       // Data is directly on the part, not nested in toolInvocation
-      console.log("[AssistantContent] Found dynamic-tool part", { part })
       const toolCallId = part.toolCallId || `tool-${index}`
       result.push({
         type: "tool",
@@ -120,12 +110,6 @@ function extractOrderedParts(message: Message): MessagePart[] {
       })
     }
   }
-
-  console.log("[AssistantContent] extractOrderedParts result", {
-    inputPartsCount: parts.length,
-    outputPartsCount: result.length,
-    outputTypes: result.map((p) => p.type),
-  })
 
   return result
 }
@@ -189,6 +173,9 @@ export function AssistantContent({
   isStreaming = false,
   className,
 }: AssistantContentProps) {
+  // Get sendMessage from context for AskUserQuestion responses
+  const chatContext = useChatContextSafe()
+
   // Track which tools are expanded
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
@@ -229,6 +216,28 @@ export function AssistantContent({
         }
 
         if (part.type === "tool") {
+          // Special handling for AskUserQuestion - render interactive widget
+          if (part.tool.toolName === "AskUserQuestion") {
+            // Auto-expand when pending (no result yet)
+            const isPending = part.tool.result === undefined
+            const isExpanded = isPending || expandedTools.has(part.id)
+
+            return (
+              <AskUserQuestionWidget
+                key={part.id}
+                tool={part.tool}
+                isExpanded={isExpanded}
+                onToggle={() => toggleTool(part.id)}
+                onSubmitResponse={(response) => {
+                  if (chatContext?.sendMessage) {
+                    chatContext.sendMessage(response)
+                  }
+                }}
+              />
+            )
+          }
+
+          // Default tool widget for everything else
           return (
             <InlineToolWidget
               key={part.id}

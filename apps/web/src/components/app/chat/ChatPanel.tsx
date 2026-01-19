@@ -1561,19 +1561,18 @@ export const ChatPanel = observer(function ChatPanel({
   // Note: Tool call extraction now handled by TurnList/useTurnGrouping (task-chat-008)
 
   return (
-    <div className={cn("flex h-full", className)}>
-      {/* Main content with ChatContextProvider */}
-      {children && (
-        <ChatContextProvider value={contextValue}>
+    <ChatContextProvider value={contextValue}>
+      <div className={cn("flex h-full", className)}>
+        {/* Main content area */}
+        {children && (
           <div className="flex-1 min-w-0 overflow-hidden">{children}</div>
-        </ChatContextProvider>
-      )}
+        )}
 
-      {/* Chat Panel - shrink-0 prevents flexbox from shrinking below specified width */}
-      <div
-        className="flex flex-col border-l border-border bg-background relative shrink-0"
-        style={{ width: `${width}px` }}
-      >
+        {/* Chat Panel - shrink-0 prevents flexbox from shrinking below specified width */}
+        <div
+          className="flex flex-col border-l border-border bg-background relative shrink-0"
+          style={{ width: `${width}px` }}
+        >
         {/* Resize Handle */}
         <div
           className={cn(
@@ -1671,6 +1670,7 @@ export const ChatPanel = observer(function ChatPanel({
           />
         </div>
       </div>
-    </div>
+      </div>
+    </ChatContextProvider>
   )
 })
