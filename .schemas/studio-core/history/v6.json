@@ -1,0 +1,503 @@
+{
+  "id": "30a25e4a-ac79-47da-aba0-2f4409e45279",
+  "name": "studio-core",
+  "format": "enhanced-json-schema",
+  "createdAt": 1768459871893,
+  "version": 2,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-core",
+  "$defs": {
+    "Workspace": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "slug",
+        "nested": false
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "description": {
+          "type": "string"
+        },
+        "ssoSettings": {
+          "type": "object",
+          "description": "Opaque JSON for future SSO provider configs"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "slug",
+        "createdAt"
+      ],
+      "x-original-name": "Workspace"
+    },
+    "Project": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string",
+          "x-arktype": "Workspace",
+          "x-mst-type": "reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Workspace"
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "starter",
+            "pro",
+            "enterprise",
+            "internal"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "active",
+            "archived"
+          ]
+        },
+        "schemas": {
+          "type": "array",
+          "description": "Array of schema names this project uses"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Loose string ref to AuthUser.id"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        },
+        "folderId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "ID of folder this project belongs to, null for root-level projects"
+        },
+        "publishedSubdomain": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "description": "Subdomain for published URL (e.g., 'my-app' → my-app.shogo.one)"
+        },
+        "publishedAt": {
+          "type": "number",
+          "description": "Timestamp when project was published"
+        },
+        "accessLevel": {
+          "type": "string",
+          "enum": [
+            "anyone",
+            "authenticated",
+            "private"
+          ],
+          "default": "anyone",
+          "description": "Who can access the published URL"
+        },
+        "siteTitle": {
+          "type": "string",
+          "description": "SEO title for published app"
+        },
+        "siteDescription": {
+          "type": "string",
+          "description": "SEO description for published app"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "workspace",
+        "tier",
+        "status",
+        "createdAt"
+      ],
+      "x-original-name": "Project"
+    },
+    "StarredProject": {
+      "type": "object",
+      "description": "Tracks which projects a user has starred for quick access",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "id",
+        "nested": false
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "The user who starred this project (ref to AuthUser.id)"
+        },
+        "projectId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The project being starred (ref to Project.id)"
+        },
+        "workspaceId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Workspace containing the project (for filtering)"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "projectId",
+        "workspaceId",
+        "createdAt"
+      ],
+      "x-original-name": "StarredProject"
+    },
+    "Member": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "id",
+        "nested": false
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Loose string ref to AuthUser.id"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "owner",
+            "admin",
+            "member",
+            "viewer"
+          ]
+        },
+        "workspace": {
+          "type": "string",
+          "x-arktype": "Workspace",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Workspace"
+        },
+        "project": {
+          "type": "string",
+          "x-arktype": "Project",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Project"
+        },
+        "isBillingAdmin": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "role",
+        "createdAt"
+      ],
+      "x-original-name": "Member"
+    },
+    "BillingAccount": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "id",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "workspace": {
+          "type": "string",
+          "x-arktype": "Workspace",
+          "x-mst-type": "reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Workspace"
+        },
+        "stripeCustomerId": {
+          "type": "string"
+        },
+        "taxId": {
+          "type": "string"
+        },
+        "creditsBalance": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "workspace",
+        "createdAt"
+      ],
+      "x-original-name": "BillingAccount"
+    },
+    "Invitation": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "email",
+        "nested": false
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "owner",
+            "admin",
+            "member",
+            "viewer"
+          ]
+        },
+        "workspace": {
+          "type": "string",
+          "x-arktype": "Workspace",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Workspace"
+        },
+        "project": {
+          "type": "string",
+          "x-arktype": "Project",
+          "x-mst-type": "maybe-reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Project"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "accepted",
+            "declined",
+            "expired",
+            "cancelled"
+          ]
+        },
+        "emailStatus": {
+          "type": "string",
+          "enum": [
+            "not_sent",
+            "sent",
+            "failed"
+          ],
+          "default": "not_sent",
+          "description": "Email delivery status for the invitation"
+        },
+        "emailSentAt": {
+          "type": "number",
+          "description": "Timestamp when invitation email was sent"
+        },
+        "emailError": {
+          "type": "string",
+          "description": "Error message if email delivery failed"
+        },
+        "invitedBy": {
+          "type": "string",
+          "description": "Loose string ref to userId who sent invitation"
+        },
+        "expiresAt": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "role",
+        "status",
+        "expiresAt",
+        "createdAt"
+      ],
+      "x-original-name": "Invitation"
+    },
+    "Folder": {
+      "type": "object",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "name",
+        "nested": true
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace": {
+          "type": "string",
+          "x-arktype": "Workspace",
+          "x-mst-type": "reference",
+          "x-reference-type": "single",
+          "x-reference-target": "Workspace"
+        },
+        "parentId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "ID of parent folder for nesting, null for root-level folders"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Loose string ref to AuthUser.id"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "workspace",
+        "createdAt"
+      ],
+      "x-original-name": "Folder"
+    },
+    "Notification": {
+      "type": "object",
+      "description": "User notifications for workspace events (invitations, member changes, etc.)",
+      "x-persistence": {
+        "strategy": "entity-per-file",
+        "displayKey": "id",
+        "nested": false
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "x-mst-type": "identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "The user this notification is for (ref to AuthUser.id)"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "invitation_pending",
+            "invitation_accepted",
+            "member_joined",
+            "member_left",
+            "workspace_updated"
+          ],
+          "description": "Type of notification for routing/display logic"
+        },
+        "title": {
+          "type": "string",
+          "description": "Short title for the notification"
+        },
+        "message": {
+          "type": "string",
+          "description": "Detailed notification message"
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Type-specific data (invitationId, workspaceId, etc.)"
+        },
+        "actionUrl": {
+          "type": "string",
+          "description": "URL to navigate when notification is clicked"
+        },
+        "readAt": {
+          "type": "number",
+          "description": "Timestamp when notification was marked as read"
+        },
+        "createdAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "type",
+        "title",
+        "message",
+        "createdAt"
+      ],
+      "x-original-name": "Notification"
+    }
+  },
+  "x-persistence": {
+    "backend": "postgres"
+  }
+}
