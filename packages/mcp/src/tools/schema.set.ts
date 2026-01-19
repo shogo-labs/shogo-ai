@@ -312,6 +312,17 @@ Special: x-mst-type: "identifier" for the id field`,
       const enhanced = validation.enhanced
       const effectiveWorkspace = getEffectiveWorkspace(workspace)
 
+      // Default user schemas to SQLite backend when workspace is provided
+      // This ensures user-created schemas work in Docker where PostgreSQL is for system schemas
+      // and user data is isolated in workspace-specific SQLite databases
+      if (workspace && !enhanced['x-persistence']?.backend) {
+        enhanced['x-persistence'] = {
+          ...enhanced['x-persistence'],
+          backend: 'sqlite'
+        }
+        console.log('[schema.set] Auto-configured SQLite backend for user schema')
+      }
+
       try {
         // 1. Ingest into meta-store
         const metaStore = getMetaStore()

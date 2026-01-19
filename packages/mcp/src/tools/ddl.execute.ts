@@ -100,16 +100,29 @@ export function registerDdlExecute(server: FastMCP) {
         }
 
         // 4. Execute DDL via syncSchema (handles migration recording)
-        // Backend selection: use workspace-specific SQLite when S3 mode enabled
-        // and schema doesn't explicitly require postgres
+        // Backend selection:
+        // - System schemas (x-persistence.backend: "postgres") → PostgreSQL
+        // - User schemas (x-persistence.backend: "sqlite" or undefined) → Workspace SQLite (if S3 mode)
+        // - Fallback → Global registry (which may be SQLite if no PostgreSQL)
         const schemaBackend = enhancedJson['x-persistence']?.backend
         const usePostgres = schemaBackend === 'postgres'
+        const useSqlite = schemaBackend === 'sqlite'
 
-        const registry = usePostgres
-          ? getGlobalBackendRegistry()  // System schemas → PostgreSQL
-          : (isS3Enabled() && workspace
-              ? await getWorkspaceBackendRegistry(effectiveWorkspace)  // User schemas → S3 SQLite
-              : getGlobalBackendRegistry())
+        let registry: Awaited<ReturnType<typeof getWorkspaceBackendRegistry>>
+
+        if (usePostgres) {
+          // System schemas → PostgreSQL
+          registry = getGlobalBackendRegistry()
+        } else if (isS3Enabled() && effectiveWorkspace) {
+          // User schemas with workspace → S3-backed SQLite
+          registry = await getWorkspaceBackendRegistry(effectiveWorkspace)
+        } else if (useSqlite) {
+          // SQLite explicitly requested but no workspace → use global (may be SQLite fallback)
+          registry = getGlobalBackendRegistry()
+        } else {
+          // Default fallback
+          registry = getGlobalBackendRegistry()
+        }
 
         const syncResult = await registry.syncSchema(schemaName, enhancedJson)
 
