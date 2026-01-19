@@ -16,6 +16,7 @@ import type { IPersistenceService } from '../persistence/types'
 import type { IAuthService } from '../auth/types'
 import type { IBillingService } from '../billing/types'
 import type { IEmailService } from '../email/types'
+import type { IRuntimeManager } from '../runtime/types'
 import type { IBackendRegistry } from '../query/registry'
 import type { IQueryValidator } from '../query/validation/types'
 import type { ColumnPropertyMap, PropertyTypeMap } from '../query/execution/utils'
@@ -188,6 +189,41 @@ export interface IEnvironment {
      * ```
      */
     queryValidator?: IQueryValidator
+
+    /**
+     * Runtime manager for project Vite dev server lifecycle.
+     *
+     * Responsible for:
+     * - Spawning Vite dev server processes per project
+     * - Port allocation and tracking
+     * - Health monitoring
+     * - Graceful shutdown
+     *
+     * Implementation can be:
+     * - RuntimeManager (production - spawns real Vite processes)
+     * - MockRuntimeManager (testing - simulates lifecycle)
+     *
+     * Optional - only needed for API routes that manage project runtimes.
+     * Available when running in contexts that need to spawn/manage Vite servers.
+     *
+     * @see IRuntimeManager for interface details
+     * @see RuntimeManager for production implementation
+     * @see MockRuntimeManager for testing
+     *
+     * @example
+     * ```typescript
+     * const env: IEnvironment = {
+     *   services: {
+     *     persistence: new FileSystemPersistence(),
+     *     runtime: new RuntimeManager({ basePort: 5200 })
+     *   },
+     *   context: { schemaName: 'studio-core' }
+     * }
+     * // In API route handler:
+     * const runtime = await env.services.runtime?.start(projectId)
+     * ```
+     */
+    runtime?: IRuntimeManager
   }
 
   /**

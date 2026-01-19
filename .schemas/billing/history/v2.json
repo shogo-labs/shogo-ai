@@ -1,9 +1,9 @@
 {
-  "id": "02695b34-1b47-4252-8df1-207c0cee9ad4",
+  "id": "9a7701c5-3c9b-4465-b273-f82a93d7cd38",
   "name": "billing",
   "format": "enhanced-json-schema",
-  "createdAt": 1768386808298,
-  "version": 2,
+  "createdAt": 1768459896947,
+  "version": 9,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "billing",
   "$defs": {
@@ -16,10 +16,10 @@
           "format": "uuid",
           "x-mst-type": "identifier"
         },
-        "organization": {
+        "workspace": {
           "type": "string",
           "format": "uuid",
-          "description": "Reference to Organization/Workspace (cross-schema string ID)"
+          "description": "Reference to Workspace (cross-schema string ID)"
         },
         "stripeSubscriptionId": {
           "type": "string",
@@ -78,7 +78,7 @@
       },
       "required": [
         "id",
-        "organization",
+        "workspace",
         "stripeSubscriptionId",
         "stripeCustomerId",
         "planId",
@@ -92,17 +92,17 @@
     },
     "CreditLedger": {
       "type": "object",
-      "description": "Credit balance tracking per organization/workspace. Supports monthly/daily credits with rollover.",
+      "description": "Credit balance tracking per workspace. Supports monthly/daily credits with rollover.",
       "properties": {
         "id": {
           "type": "string",
           "format": "uuid",
           "x-mst-type": "identifier"
         },
-        "organization": {
+        "workspace": {
           "type": "string",
           "format": "uuid",
-          "description": "Reference to Organization/Workspace (cross-schema string ID)"
+          "description": "Reference to Workspace (cross-schema string ID)"
         },
         "monthlyCredits": {
           "type": "number",
@@ -137,7 +137,7 @@
       },
       "required": [
         "id",
-        "organization",
+        "workspace",
         "monthlyCredits",
         "dailyCredits",
         "rolloverCredits",
@@ -157,20 +157,19 @@
           "format": "uuid",
           "x-mst-type": "identifier"
         },
-        "organization": {
+        "workspace": {
           "type": "string",
           "format": "uuid",
-          "description": "Reference to Organization/Workspace (cross-schema string ID)"
+          "description": "Reference to Workspace (cross-schema string ID)"
         },
         "projectId": {
           "type": "string",
           "format": "uuid",
-          "description": "Optional reference to Project within the org (for usage attribution)"
+          "description": "Optional reference to Project within the workspace (for usage attribution)"
         },
         "memberId": {
           "type": "string",
-          "format": "uuid",
-          "description": "Reference to Member (cross-schema string ID)"
+          "description": "Reference to user who performed the action (cross-schema string ID, may be UUID or auth provider ID)"
         },
         "actionType": {
           "type": "string",
@@ -206,7 +205,7 @@
       },
       "required": [
         "id",
-        "organization",
+        "workspace",
         "memberId",
         "actionType",
         "creditCost",
@@ -222,19 +221,19 @@
     "backend": "postgres"
   },
   "views": {
-    "subscriptionByOrg": {
+    "subscriptionByWorkspace": {
       "type": "query",
       "collection": "Subscription",
       "filter": {
-        "organization": "{{organizationId}}"
+        "workspace": "{{workspaceId}}"
       },
       "select": []
     },
-    "creditLedgerByOrg": {
+    "creditLedgerByWorkspace": {
       "type": "query",
       "collection": "CreditLedger",
       "filter": {
-        "organization": "{{organizationId}}"
+        "workspace": "{{workspaceId}}"
       },
       "select": []
     },
@@ -258,7 +257,7 @@
       "type": "query",
       "collection": "UsageEvent",
       "filter": {
-        "organization": "{{organizationId}}"
+        "workspace": "{{workspaceId}}"
       },
       "select": []
     }

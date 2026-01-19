@@ -13,16 +13,85 @@ import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { auth } from './auth'
 import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
+import { PERSONA_PROMPTS, isAgentPersona, type AgentPersona } from './prompts/persona-prompts'
 import { getPriceId } from './config/stripe-prices'
 import { processInterleavedStream, finalizeCurrentText } from './lib/interleaved-stream'
 import { billingDomain } from '@shogo/state-api/billing/domain'
+import { studioCoreDomain } from '@shogo/state-api/studio-core/domain'
 import { BunPostgresExecutor } from '@shogo/state-api/query/execution/bun-postgres'
 import { createBackendRegistry } from '@shogo/state-api/query/registry'
 import { SqlBackend } from '@shogo/state-api/query/backends/sql'
 import { NullPersistence } from '@shogo/state-api/persistence/null'
+import { publishRoutes } from './routes/publish'
+import { runtimeRoutes } from './routes/runtime'
+import { filesRoutes } from './routes/files'
+import { createRuntimeManager, type IRuntimeManager } from '@shogo/state-api/runtime'
 
 // Billing domain store singleton for webhook handling
 let billingStore: ReturnType<typeof billingDomain.createStore> | null = null
+
+// Studio core domain store singleton for project operations
+let studioCoreStore: ReturnType<typeof studioCoreDomain.createStore> | null = null
+
+// Runtime manager singleton for project Vite runtimes
+let runtimeManager: IRuntimeManager | null = null
+
+// MCP session management for API → MCP calls
+let mcpSessionId: string | null = null
+const MCP_URL = process.env.MCP_URL || 'http://mcp:3100'
+
+/**
+ * Call an MCP tool with proper session handling
+ */
+async function callMcpTool(toolName: string, args: Record<string, unknown>): Promise<{ ok: boolean; error?: { code: string; message: string }; data?: any }> {
+  try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream',
+    }
+    if (mcpSessionId) {
+      headers['mcp-session-id'] = mcpSessionId
+    }
+
+    const response = await fetch(`${MCP_URL}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'tools/call',
+        params: { name: toolName, arguments: args },
+      }),
+    })
+
+    // Capture session ID from response
+    const responseSessionId = response.headers.get('mcp-session-id')
+    if (responseSessionId) {
+      mcpSessionId = responseSessionId
+    }
+
+    const text = await response.text()
+    
+    // Parse SSE response to get the result
+    for (const line of text.split('\n')) {
+      if (line.startsWith('data: ')) {
+        try {
+          const parsed = JSON.parse(line.slice(6))
+          if (parsed.result?.content?.[0]?.text) {
+            return JSON.parse(parsed.result.content[0].text)
+          }
+          if (parsed.error) {
+            return { ok: false, error: { code: 'MCP_ERROR', message: parsed.error.message || 'Unknown MCP error' } }
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    return { ok: false, error: { code: 'MCP_ERROR', message: 'No valid response from MCP' } }
+  } catch (err: any) {
+    return { ok: false, error: { code: 'MCP_CALL_FAILED', message: err.message || 'MCP call failed' } }
+  }
+}
 
 async function getBillingStore(): Promise<ReturnType<typeof billingDomain.createStore>> {
   if (billingStore) {
@@ -56,6 +125,69 @@ async function getBillingStore(): Promise<ReturnType<typeof billingDomain.create
   })
 
   return billingStore
+}
+
+async function getStudioCoreStore(): Promise<ReturnType<typeof studioCoreDomain.createStore>> {
+  if (studioCoreStore) {
+    return studioCoreStore
+  }
+
+  const DATABASE_URL = process.env.DATABASE_URL
+  if (!DATABASE_URL) {
+    throw new Error("DATABASE_URL environment variable is required")
+  }
+
+  const isSupabase = DATABASE_URL.includes("supabase")
+  const executor = new BunPostgresExecutor(DATABASE_URL, {
+    tls: isSupabase,
+    max: 5,
+  })
+
+  const registry = createBackendRegistry()
+  const sqlBackend = new SqlBackend({ dialect: "pg", executor })
+  registry.register("postgres", sqlBackend)
+  registry.setDefault("postgres")
+
+  studioCoreStore = studioCoreDomain.createStore({
+    services: {
+      persistence: new NullPersistence(),
+      backendRegistry: registry,
+    },
+    context: {
+      schemaName: "studio-core",
+    },
+  })
+
+  return studioCoreStore
+}
+
+/**
+ * Get or create the RuntimeManager singleton.
+ *
+ * Configurable via environment variables:
+ * - RUNTIME_BASE_PORT: Base port for Vite runtimes (default: 5200)
+ * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: 10)
+ * - RUNTIME_DOMAIN_SUFFIX: Domain suffix for URLs (default: localhost)
+ * - WORKSPACES_DIR: Directory containing project workspaces (default: PROJECT_ROOT/workspaces)
+ */
+function getRuntimeManager(): IRuntimeManager {
+  if (!runtimeManager) {
+    const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    runtimeManager = createRuntimeManager({
+      basePort: parseInt(process.env.RUNTIME_BASE_PORT || '5200', 10),
+      maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
+      domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
+      workspacesDir,
+      templateDir: '_template',
+    })
+    console.log('[Runtime] RuntimeManager initialized:', {
+      basePort: process.env.RUNTIME_BASE_PORT || '5200',
+      maxRuntimes: process.env.RUNTIME_MAX_COUNT || '10',
+      domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
+      workspacesDir,
+    })
+  }
+  return runtimeManager
 }
 
 /**
@@ -225,7 +357,8 @@ const virtualToolsServer = createSdkMcpServer({
       }
     ),
     // execute: Generic domain operations (v2 architecture)
-    // Client handler executes state operations across domain stores
+    // For schema operations, calls MCP directly and returns real result
+    // For other operations, emits events for client-side execution
     // NOTE: Using z.any() for complex nested types to avoid SDK schema validation issues
     sdkTool(
       'execute',
@@ -237,20 +370,80 @@ const virtualToolsServer = createSdkMcpServer({
       async (args) => {
         console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing execute:`, args)
 
-        const event: VirtualToolEvent = {
-          type: 'virtual-tool-execute',
-          toolUseId: `vt-${Date.now()}`,
-          toolName: 'execute',
-          args: args as Record<string, unknown>,
-          timestamp: Date.now(),
+        const results: Array<{ op: any; success: boolean; error?: string }> = []
+        const clientOps: any[] = []
+
+        // Process each operation
+        for (const op of args.operations ?? []) {
+          // Check if this is a schema operation that should go to MCP
+          const isSchemaOperation = op.model === 'Schema' || op.domain === 'schema' || (op.domain === 'wavesmith' && op.model === 'Schema')
+          
+          if (isSchemaOperation && op.action === 'create' && op.data) {
+            // Call MCP schema.set directly and return real result
+            const schemaName = (op.data.name || op.data.id || op.id) as string
+            if (!schemaName) {
+              results.push({ op, success: false, error: 'Schema name is required' })
+              continue
+            }
+
+            console.log(`${VT_LOG_PREFIX} 📋 Calling MCP schema.set for: ${schemaName}`)
+            
+            // Extract schema payload - AI sends { name, schema: { $defs: {...} } }
+            const schemaPayload = op.data.schema || op.data
+            
+            const mcpResult = await callMcpTool('schema.set', {
+              name: schemaName,
+              payload: schemaPayload,
+              workspace: 'workspace',
+            })
+
+            if (mcpResult.ok) {
+              console.log(`${VT_LOG_PREFIX} ✅ MCP schema.set succeeded: ${schemaName}`)
+              results.push({ op, success: true })
+            } else {
+              const errorMsg = mcpResult.error?.message || 'Unknown MCP error'
+              const errorCode = mcpResult.error?.code || 'MCP_ERROR'
+              console.error(`${VT_LOG_PREFIX} ❌ MCP schema.set failed: ${schemaName}`, mcpResult.error)
+              results.push({ op, success: false, error: `[${errorCode}] ${errorMsg}` })
+            }
+          } else {
+            // Non-schema operations go to client for execution
+            clientOps.push(op)
+          }
         }
-        virtualToolEvents.emit('virtual-tool', event)
-        console.log(`${VT_LOG_PREFIX} ✅ Emitted execute virtual tool event`)
+
+        // Emit event for client-side operations (if any)
+        if (clientOps.length > 0) {
+          const event: VirtualToolEvent = {
+            type: 'virtual-tool-execute',
+            toolUseId: `vt-${Date.now()}`,
+            toolName: 'execute',
+            args: { operations: clientOps } as Record<string, unknown>,
+            timestamp: Date.now(),
+          }
+          virtualToolEvents.emit('virtual-tool', event)
+          console.log(`${VT_LOG_PREFIX} ✅ Emitted execute virtual tool event for ${clientOps.length} client ops`)
+        }
+
+        // Build response message
+        const schemaResults = results.filter(r => r.op.model === 'Schema' || r.op.domain === 'schema')
+        const failures = schemaResults.filter(r => !r.success)
+        
+        if (failures.length > 0) {
+          // Return error details so AI can see what went wrong
+          const errorMessages = failures.map(f => `- ${f.op.data?.name || 'unknown'}: ${f.error}`).join('\n')
+          return {
+            content: [{
+              type: 'text',
+              text: `Schema operation(s) failed:\n${errorMessages}\n\nPlease ensure the schema uses Enhanced JSON Schema format with a "$defs" object containing model definitions.`
+            }]
+          }
+        }
 
         return {
           content: [{
             type: 'text',
-            text: `Executed ${args.operations?.length ?? 0} operation(s)`
+            text: `Executed ${args.operations?.length ?? 0} operation(s)${clientOps.length > 0 ? ` (${clientOps.length} sent to client)` : ''}`
           }]
         }
       }
@@ -258,25 +451,52 @@ const virtualToolsServer = createSdkMcpServer({
   ]
 })
 
-// Create Claude Code provider scoped to this project
-// This enables:
-// - .claude/skills/ from the project
-// - .mcp.json MCP servers (wavesmith)
-// - Project-specific settings
-const claudeCode = createClaudeCode({
+// Get workspaces directory for project-scoped operations
+const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+
+/**
+ * Create Claude Code provider with optional project-scoped working directory.
+ * When projectId is provided, cwd is set to the project's workspace directory.
+ * This enables the code agent to read/write files in the correct project.
+ */
+function createProjectScopedClaudeCode(projectId?: string) {
+  // Determine working directory - project workspace if projectId provided, else project root
+  let cwd = PROJECT_ROOT
+
+  if (projectId) {
+    const projectDir = resolve(WORKSPACES_DIR, projectId)
+    // Check if project directory exists - if not, fall back to project root
+    // This handles the case where a project record exists but workspace hasn't been created yet
+    try {
+      const fs = require('fs')
+      if (fs.existsSync(projectDir)) {
+        cwd = projectDir
+      } else {
+        console.warn(`[ClaudeCode] Project workspace not found: ${projectDir}, using project root`)
+      }
+    } catch (e) {
+      console.warn(`[ClaudeCode] Error checking project workspace: ${e}, using project root`)
+    }
+  }
+
+  console.log(`[ClaudeCode] Creating provider with cwd: ${cwd}${projectId ? ` (project: ${projectId})` : ' (platform)'}`);
+
+  return createClaudeCode({
   defaultSettings: {
     // Enable streaming input - REQUIRED for hooks to fire
     // See: https://ai-sdk.dev/providers/claude-code (hooks require streaming input)
     streamingInput: 'always',
-    // Set working directory to project root
-    cwd: PROJECT_ROOT,
+    // Set working directory - project workspace or project root
+    cwd,
     // Load project settings (picks up .claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
     // MCP servers - Wavesmith for data + Virtual tools for client-side effects
     mcpServers: {
       wavesmith: {
+        // Run MCP server as subprocess (packages/mcp included in Docker build)
+        // Use absolute path since cwd is set to project workspace, not app root
         command: 'bun',
-        args: ['run', 'packages/mcp/src/server.ts'],
+        args: ['run', '/app/packages/mcp/src/server.ts'],
       },
       // SDK MCP server for virtual tools (in-process, defined above)
       'virtual-tools': virtualToolsServer,
@@ -452,7 +672,11 @@ const claudeCode = createClaudeCode({
       }],
     },
   },
-})
+  })
+}
+
+// Default Claude Code instance for platform-level operations (skills, non-project chats)
+const claudeCode = createProjectScopedClaudeCode()
 
 /**
  * Base system prompt for the Wavesmith app builder assistant.
@@ -465,6 +689,27 @@ You have access to the Wavesmith MCP server with these tools:
 - store_create, store_list, store_get, store_update, store_query - CRUD operations on entities
 - store_models - List available models in a schema
 - data_load, data_loadAll - Load data from persistence
+
+**CRITICAL: Schema Format for schema_set**
+When calling schema_set, your payload MUST use Enhanced JSON Schema format with "$defs":
+
+{
+  "$defs": {
+    "ModelName": {
+      "type": "object",
+      "x-original-name": "ModelName",
+      "properties": {
+        "id": { "type": "string", "x-mst-type": "identifier" },
+        "name": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    }
+  }
+}
+
+- Use "$defs" (NOT "models", "x-models", "definitions", or "schemas")
+- Each model needs: type="object", x-original-name, properties with id, required array
+- id property must have "x-mst-type": "identifier"
 
 You also have access to virtual tools for UI control:
 - navigate_to_phase: Navigate the user to a different pipeline phase
@@ -495,7 +740,23 @@ You can help users:
 - Explain data modeling concepts and best practices
 - Navigate between pipeline phases when requested
 
-**Skill Assessment:** When the user's request involves displaying data, changing layouts, building views, or configuring workspace panels, consider invoking the /view-builder skill. This skill provides structured guidance for workspace composition including how to query component aiGuidance for configuration patterns.
+**Skill Invocation (CRITICAL):**
+When a user's message starts with a slash command like "/view-builder" or "/platform-feature-discovery", you MUST immediately invoke the Skill tool before doing anything else.
+
+Example:
+- User: "/view-builder Create a todo app"
+- You: Call the Skill tool with skill="view-builder"
+- The skill will load and provide specific instructions to follow
+
+Available skills:
+- /view-builder - For displaying data, layouts, views, workspace panels
+- /platform-feature-discovery - Start the feature pipeline (discovery phase)
+- /platform-feature-analysis - Run codebase analysis
+- /platform-feature-classification - Classify feature requirements
+- /platform-feature-design - Design schemas and models
+- /platform-feature-spec - Create implementation specs
+- /platform-feature-tests - Generate test specifications
+- /platform-feature-implementation - Execute TDD implementation
 
 When users ask to create schemas or data, use the appropriate MCP tools.
 When users ask to navigate to a phase, use the navigate_to_phase tool.
@@ -503,18 +764,30 @@ When users ask about phase views, compositions, or UI sections, query the compon
 Be concise and practical. Show tool results when relevant.`
 
 /**
- * Build a dynamic system prompt based on the current pipeline phase.
+ * Build a dynamic system prompt based on agent persona and pipeline phase.
  *
  * @param phase - The current pipeline phase, or null/undefined for generic prompt
- * @returns The complete system prompt with base prompt and optional phase-specific guidance
+ * @param agentPersona - The agent persona ('wavesmith' or 'code'), defaults to 'wavesmith'
+ * @returns The complete system prompt with persona guidance, base prompt, and optional phase-specific guidance
  */
-export function buildSystemPrompt(phase: Phase | null | undefined): string {
-  // Always start with the base Wavesmith tool prompt
-  let systemPrompt = BASE_SYSTEM_PROMPT
+export function buildSystemPrompt(
+  phase: Phase | null | undefined,
+  agentPersona?: AgentPersona | null
+): string {
+  // Validate and default persona
+  const persona: AgentPersona = agentPersona && isAgentPersona(agentPersona) ? agentPersona : 'wavesmith'
+
+  // Code agent gets a completely different prompt (no Wavesmith tools)
+  if (persona === 'code') {
+    return PERSONA_PROMPTS.code
+  }
+
+  // Wavesmith agent gets persona intro + base prompt + phase guidance
+  let systemPrompt = `${PERSONA_PROMPTS.wavesmith}\n\n${BASE_SYSTEM_PROMPT}`
 
   // Add phase-specific guidance if a valid phase is provided
   if (phase && isPhase(phase)) {
-    systemPrompt = `${BASE_SYSTEM_PROMPT}\n\n${PHASE_PROMPTS[phase]}`
+    systemPrompt = `${systemPrompt}\n\n${PHASE_PROMPTS[phase]}`
   }
 
   return systemPrompt
@@ -555,6 +828,186 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
 // Health check
 app.get('/api/health', (c) => c.json({ ok: true }))
+
+// =============================================================================
+// Publish routes - Project publishing to subdomain.shogo.one
+// =============================================================================
+
+// Check subdomain availability
+app.get('/api/subdomains/:subdomain/check', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const router = publishRoutes({ studioCore })
+  // Forward with properly constructed URL
+  const url = new URL(c.req.url)
+  url.pathname = `/subdomains/${c.req.param('subdomain')}/check`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Publish a project
+app.post('/api/projects/:projectId/publish', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const router = publishRoutes({ studioCore })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/publish`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// Update publish settings
+app.patch('/api/projects/:projectId/publish', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const router = publishRoutes({ studioCore })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/publish`
+  const newReq = new Request(url.toString(), {
+    method: 'PATCH',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// Unpublish a project
+app.post('/api/projects/:projectId/unpublish', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const router = publishRoutes({ studioCore })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/unpublish`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// Runtime routes - Project Vite runtime management
+// =============================================================================
+
+// Start project runtime
+app.post('/api/projects/:projectId/runtime/start', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/runtime/start`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
+// Stop project runtime
+app.post('/api/projects/:projectId/runtime/stop', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/runtime/stop`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
+// Get project runtime status
+app.get('/api/projects/:projectId/runtime/status', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/runtime/status`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Get project sandbox URL for iframe embedding
+app.get('/api/projects/:projectId/sandbox/url', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/sandbox/url`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// Files routes - Project file listing and reading
+// =============================================================================
+
+// List project files
+app.get('/api/projects/:projectId/files', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ studioCore, workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/files`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Get file content
+app.get('/api/projects/:projectId/files/*', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ studioCore, workspacesDir })
+  const projectId = c.req.param('projectId')
+  const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/files/${filePath}`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Write file content
+app.put('/api/projects/:projectId/files/*', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ studioCore, workspacesDir })
+  const projectId = c.req.param('projectId')
+  const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/files/${filePath}`
+  const newReq = new Request(url.toString(), {
+    method: 'PUT',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// S3 Files routes - Project file listing and access via S3 pre-signed URLs
+// =============================================================================
+
+// List project files from S3
+app.get('/api/projects/:projectId/s3/files', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ studioCore, workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/s3/files`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Get pre-signed URLs for S3 file read/write
+app.post('/api/projects/:projectId/s3/presign', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ studioCore, workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/s3/presign`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
 
 /**
  * Generate a project name from a user prompt using a small language model.
@@ -682,7 +1135,13 @@ function calculateCreditCost(totalTokens: number): number {
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, phase, ccSessionId, workspaceId, userId } = await c.req.json()
+    const { messages, phase, ccSessionId, workspaceId, userId, projectId } = await c.req.json()
+
+    // Create project-scoped Claude Code instance if projectId is provided
+    // This sets the cwd to the project's workspace directory for file operations
+    const scopedClaudeCode = projectId
+      ? createProjectScopedClaudeCode(projectId)
+      : claudeCode
 
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
     // This prevents users from sending messages when they have no credits remaining
@@ -725,8 +1184,9 @@ app.post('/api/chat', async (c) => {
       }
     }
 
-    // Build dynamic system prompt based on current pipeline phase
-    const systemPrompt = buildSystemPrompt(phase)
+    // Build dynamic system prompt based on agent persona (env var) and pipeline phase
+    const agentPersona = process.env.SHOGO_AGENT as AgentPersona | undefined
+    const systemPrompt = buildSystemPrompt(phase, agentPersona)
 
     // Pass resume parameter if ccSessionId provided (task-cc-api-endpoint)
     // This enables session continuity in Claude Code
@@ -820,7 +1280,7 @@ app.post('/api/chat', async (c) => {
     const result = streamText({
       // Type assertion for ai-sdk-provider-claude-code compatibility with ai@6
       // task-api-convert-images: streamingInput required for image support
-      model: claudeCode('opus', {
+      model: scopedClaudeCode('opus', {
         ...modelSettings,
         streamingInput: 'always',  // Required for image parts to be sent to Claude
       }) as Parameters<typeof streamText>[0]['model'],
@@ -1249,9 +1709,37 @@ app.post('/webhooks/stripe', async (c) => {
   }
 })
 
+// =============================================================================
+// Graceful shutdown handling
+// =============================================================================
+
+// Stop all runtimes on server shutdown
+async function gracefulShutdown(signal: string) {
+  console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
+
+  // Stop all project runtimes
+  if (runtimeManager) {
+    console.log('[Server] Stopping all project runtimes...')
+    try {
+      await runtimeManager.stopAll()
+      console.log('[Server] All runtimes stopped')
+    } catch (err: any) {
+      console.error('[Server] Error stopping runtimes:', err.message)
+    }
+  }
+
+  console.log('[Server] Shutdown complete')
+  process.exit(0)
+}
+
+// Register shutdown handlers
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+
 // Start server
 console.log(`🚀 API server running on http://localhost:${API_PORT}`)
 console.log(`   Chat endpoint: POST http://localhost:${API_PORT}/api/chat`)
+console.log(`   Runtime endpoints: POST/GET http://localhost:${API_PORT}/api/projects/:id/runtime/*`)
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 
 export default {

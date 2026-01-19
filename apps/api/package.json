@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.13",
+    "@kubernetes/client-node": "^1.4.0",
     "@shogo/state-api": "workspace:*",
     "ai": "^6.0.23",
     "ai-sdk-provider-claude-code": "^3.3.0",

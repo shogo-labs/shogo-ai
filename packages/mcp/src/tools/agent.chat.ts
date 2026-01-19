@@ -85,6 +85,33 @@ async function generateChatResponseStreaming(
   console.log('[agent.chat] Starting with message:', message.slice(0, 100))
 
   // Build options - skills loaded via settingSources
+  // Pass S3 configuration to spawned MCP server for schema persistence
+  const mcpEnv: Record<string, string> = {}
+  
+  // Forward S3/storage environment variables to the spawned MCP server
+  const envVarsToForward = [
+    'SCHEMA_STORAGE',
+    'S3_SCHEMA_BUCKET',
+    'S3_SCHEMA_PREFIX',
+    'S3_ENDPOINT',
+    'S3_FORCE_PATH_STYLE',
+    'AWS_REGION',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+    'DATABASE_URL',
+    'WORKSPACE_ID',
+    'TENANT_ID',
+    'SCHEMAS_PATH',
+  ]
+  
+  for (const key of envVarsToForward) {
+    if (process.env[key]) {
+      mcpEnv[key] = process.env[key]!
+    }
+  }
+  
+  console.log('[agent.chat] Forwarding env to spawned MCP:', Object.keys(mcpEnv))
+  
   const options: any = {
     cwd: wavesmithPath,
     systemPrompt: `You are a Wavesmith app builder assistant. You help users create schemas and manage data using the available MCP tools.
@@ -105,7 +132,7 @@ IMPORTANT CONSTRAINTS:
         command: 'bun',
         args: ['packages/mcp/src/server.ts'],
         cwd: MONOREPO_ROOT,
-        env: {}
+        env: mcpEnv
       }
     },
     allowedTools: [

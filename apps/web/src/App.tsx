@@ -13,7 +13,7 @@ import { SharedWithMePage } from './pages/SharedWithMePage'
 import { SettingsPage } from './pages/SettingsPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
-import { DomainProvider } from './contexts/DomainProvider'
+import { DomainProvider, type EagerCollectionsConfig } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { MCPBackend } from './query/MCPBackend'
 import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService } from '@shogo/state-api'
@@ -60,12 +60,50 @@ const domains = {
   billing: billingDomain,
 } as const
 
+/**
+ * OPTIMIZATION: Only load essential collections on startup.
+ * This reduces initial MCP calls from ~130 to ~20.
+ *
+ * Essential collections for initial render:
+ * - studioCore: workspace/member/project/folder (sidebar, workspace switcher)
+ * - componentBuilder: rendererBinding (component registry)
+ * - billing: subscription (upgrade CTA)
+ * - platformFeatures: featureSession (feature list if project selected)
+ *
+ * Deferred collections (empty array = don't load on mount):
+ * - teams, multiTenancy, chat, studioChat, auth (not used on landing page)
+ * - studioCore: starredProject, invitation (load on demand)
+ */
+const eagerCollections: EagerCollectionsConfig = {
+  // Essential for initial render
+  studioCore: [
+    'workspaceCollection',
+    'memberCollection',
+    'projectCollection',
+    'folderCollection',
+    // Deferred: starredProjectCollection, invitationCollection
+  ],
+  // compositionCollection and layoutTemplateCollection are needed for ComposablePhaseView
+  // to render workspace layouts (e.g., when AI calls set_workspace)
+  componentBuilder: ['rendererBindingCollection', 'compositionCollection', 'layoutTemplateCollection'],
+  billing: ['subscriptionCollection'],
+  platformFeatures: ['featureSessionCollection'],
+
+  // Deferred - don't load on mount (empty array)
+  teams: [],
+  multiTenancy: [],
+  chat: [],
+  // studioChat needs to load sessions for chat persistence to work
+  studioChat: ['chatSessionCollection', 'chatMessageCollection'],
+  auth: [],
+}
+
 function App() {
   return (
     <NuqsAdapter>
       <BrowserRouter>
         <EnvironmentProvider env={env}>
-          <DomainProvider domains={domains}>
+          <DomainProvider domains={domains} eagerCollections={eagerCollections}>
             <WavesmithMetaStoreProvider>
               <AuthProvider authService={authService}>
                 <Routes>

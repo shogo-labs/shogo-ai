@@ -112,6 +112,29 @@
           "type": "string",
           "format": "uuid",
           "description": "ID of folder this project belongs to, null for root-level projects"
+        },
+        "publishedSubdomain": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "description": "Subdomain for published URL (e.g., 'my-app' → my-app.shogo.one)"
+        },
+        "publishedAt": {
+          "type": "number",
+          "description": "Timestamp when project was published"
+        },
+        "accessLevel": {
+          "type": "string",
+          "enum": ["anyone", "authenticated", "private"],
+          "default": "anyone",
+          "description": "Who can access the published URL"
+        },
+        "siteTitle": {
+          "type": "string",
+          "description": "SEO title for published app"
+        },
+        "siteDescription": {
+          "type": "string",
+          "description": "SEO description for published app"
         }
       },
       "required": [

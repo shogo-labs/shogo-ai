@@ -262,12 +262,15 @@ function SchemaTabContent({
   // Manage selectedEntityId state via useState<string | null>(null)
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null)
 
-  // Extract schemaName from config (panel-specific) or feature (shared)
+  // Extract schemaName and schemaWorkspace from config (panel-specific) or feature (shared)
   // This allows split views to show different schemas per panel
+  // schemaWorkspace is the projectId - used for project-specific schema storage
   const schemaName = (config?.schemaName as string | undefined) ?? feature?.schemaName
+  const schemaWorkspace = (config?.schemaWorkspace as string | undefined) ?? feature?.projectId
 
   // Use useSchemaData hook for async schema loading
-  const { models, isLoading, error, refetch } = useSchemaData(schemaName)
+  // Pass schemaWorkspace (projectId) to load from the correct project-specific location
+  const { models, isLoading, error, refetch } = useSchemaData(schemaName, schemaWorkspace)
 
   // Compute selectedEntity from models using useMemo based on selectedEntityId
   const selectedEntity = useMemo(() => {

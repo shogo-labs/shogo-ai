@@ -29,20 +29,23 @@ interface UseDataGridMetadataResult {
  *
  * @param schemaName - Schema name (e.g., "platform-features")
  * @param modelName - Model name (e.g., "Requirement")
+ * @param workspace - Optional workspace/projectId for project-specific schema loading
  * @returns Property metadata and collection name
  *
  * @example
  * ```tsx
  * const { properties, collectionName, loading, error } = useDataGridMetadata(
  *   "platform-features",
- *   "Requirement"
+ *   "Requirement",
+ *   "project-123"  // Optional: project-specific workspace
  * )
  * // properties can be passed directly to PropertyRenderer
  * ```
  */
 export function useDataGridMetadata(
   schemaName: string | undefined,
-  modelName: string | undefined
+  modelName: string | undefined,
+  workspace?: string
 ): UseDataGridMetadataResult {
   const metaStore = useWavesmithMetaStore()
 
@@ -94,7 +97,8 @@ export function useDataGridMetadata(
     async function loadSchema() {
       setLoadingState({ loading: true, error: null, loadedSchemaName: null })
       try {
-        await metaStore.loadSchema(schemaName)
+        // Pass workspace for project-specific schema loading
+        await metaStore.loadSchema(schemaName, workspace)
         if (!cancelled) {
           setLoadingState({ loading: false, error: null, loadedSchemaName: schemaName })
         }
@@ -114,7 +118,7 @@ export function useDataGridMetadata(
     return () => {
       cancelled = true
     }
-  }, [schemaName, syncResult.found, metaStore, loadingState.loadedSchemaName])
+  }, [schemaName, workspace, syncResult.found, metaStore, loadingState.loadedSchemaName])
 
   // Return early if no schema/model specified
   if (!schemaName || !modelName) {

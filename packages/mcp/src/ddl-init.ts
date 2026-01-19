@@ -1,8 +1,10 @@
 /**
  * Domain Schema DDL Initialization
  *
- * Scans .schemas directory for schemas with x-persistence.backend: "postgres"
+ * Scans .schemas directory (or S3) for schemas with x-persistence.backend: "postgres"
  * and executes DDL to ensure tables exist at MCP server startup.
+ *
+ * Supports both filesystem and S3 backends via SCHEMA_STORAGE env var.
  *
  * Usage:
  * ```ts
@@ -21,6 +23,13 @@ import {
   getGlobalBackendRegistry,
 } from "./postgres-init"
 import type { SchemaSyncResult } from "@shogo/state-api"
+import {
+  isS3Enabled,
+  buildS3Key,
+  listDirsInS3,
+  readJsonFromS3,
+  getS3Prefix,
+} from "@shogo/state-api"
 
 // ============================================================================
 // Types
@@ -141,12 +150,18 @@ export async function initializeDomainSchemas(schemasDir: string): Promise<void>
 // ============================================================================
 
 /**
- * Scan schemas directory and load all valid schema.json files.
+ * Scan schemas directory (or S3) and load all valid schema.json files.
  *
- * @param schemasDir - Path to the .schemas directory
+ * @param schemasDir - Path to the .schemas directory (used for filesystem mode)
  * @returns Array of schema info objects
  */
 async function scanSchemasDirectory(schemasDir: string): Promise<SchemaInfo[]> {
+  // Use S3 if enabled
+  if (isS3Enabled()) {
+    return scanSchemasFromS3()
+  }
+
+  // Filesystem mode
   const entries = await readdir(schemasDir, { withFileTypes: true })
 
   const schemaPromises = entries
@@ -166,4 +181,37 @@ async function scanSchemasDirectory(schemasDir: string): Promise<SchemaInfo[]> {
 
   const results = await Promise.all(schemaPromises)
   return results.filter((s): s is SchemaInfo => s !== null)
+}
+
+/**
+ * Scan schemas from S3 bucket.
+ *
+ * Looks in {prefix}/{workspace}/ for schema directories.
+ */
+async function scanSchemasFromS3(): Promise<SchemaInfo[]> {
+  const workspace = process.env.WORKSPACE_ID || "workspace"
+  const prefix = `${getS3Prefix()}${workspace}/`
+
+  try {
+    const schemaDirs = await listDirsInS3(prefix)
+    console.log(`[ddl-init] Found ${schemaDirs.length} schema directories in S3 at ${prefix}`)
+
+    const schemaPromises = schemaDirs.map(async (name): Promise<SchemaInfo | null> => {
+      const schemaKey = buildS3Key(workspace, name, "schema.json")
+
+      try {
+        const schema = await readJsonFromS3(schemaKey)
+        return { name, schema, path: `s3://${schemaKey}` }
+      } catch (error) {
+        console.debug(`[ddl-init] Failed to load schema from S3: ${schemaKey}`, error)
+        return null
+      }
+    })
+
+    const results = await Promise.all(schemaPromises)
+    return results.filter((s): s is SchemaInfo => s !== null)
+  } catch (error) {
+    console.warn(`[ddl-init] Failed to scan S3 for schemas:`, error)
+    return []
+  }
 }

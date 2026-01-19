@@ -25,20 +25,34 @@ import { registerDdlMigrate } from "./ddl.migrate"
 // Agent tools
 import { registerAgentChat } from "./agent.chat"
 
+// Workspace tools
+import { registerWorkspaceSync } from "./workspace.sync"
+
 /**
- * Register all Wavesmith MCP tools on a FastMCP server instance.
- * This is the single source of truth for tool registration.
+ * Register Platform MCP tools on a FastMCP server instance.
  *
- * Total: 15 tools across 5 namespaces
+ * Platform MCP provides FULL access to all 16 Wavesmith tools for:
+ * - Claude orchestration (AI-driven development)
+ * - Schema management (DDL, migrations)
+ * - Cross-project operations
+ *
+ * Accessible schemas:
+ * - studio-core: Organizations, projects, project membership
+ * - platform-features: Feature sessions, requirements, analysis findings
+ * - component-builder: UI composition system
+ * - studio-chat: Chat sessions and messages
+ *
+ * Total: 16 tools across 6 namespaces
  * - Schema: 3 tools (set, load, list)
  * - Store: 5 tools (create, get, update, delete, query)
  * - View: 4 tools (execute, define, delete, project)
- * - DDL: 2 tools (execute, migrate)
- * - Agent: 1 tool (chat)
+ * - DDL: 2 tools (execute, migrate) - PLATFORM ONLY
+ * - Agent: 1 tool (chat) - PLATFORM ONLY
+ * - Workspace: 1 tool (sync) - PLATFORM ONLY
  *
  * @param server - FastMCP server instance (stdio or HTTP transport)
  */
-export function registerAllTools(server: FastMCP) {
+export function registerPlatformTools(server: FastMCP) {
   // Schema namespace (3 tools)
   registerSchemaSet(server)
   registerSchemaLoad(server)
@@ -57,10 +71,86 @@ export function registerAllTools(server: FastMCP) {
   registerViewDelete(server)
   registerViewProject(server)
 
-  // DDL namespace (2 tools)
+  // DDL namespace (2 tools) - Platform only
   registerDdlExecute(server)
   registerDdlMigrate(server)
 
-  // Agent namespace (1 tool)
+  // Agent namespace (1 tool) - Platform only
   registerAgentChat(server)
+
+  // Workspace namespace (1 tool) - Platform only
+  registerWorkspaceSync(server)
+}
+
+/**
+ * Register Project MCP tools on a FastMCP server instance.
+ *
+ * Project MCP provides RESTRICTED access for user workspace operations:
+ * - Schema management (read/write user schemas only)
+ * - Store CRUD operations
+ * - View execution
+ *
+ * Schema restrictions:
+ * - Can ONLY access user workspace schemas
+ * - NO access to: studio-core, platform-features, component-builder, studio-chat
+ *
+ * Available tools (10 of 16 total):
+ * - Schema: 3 tools (set, load, list) - restricted to user workspace
+ * - Store: 5 tools (create, get, update, delete, query)
+ * - View: 2 tools (execute, project)
+ *
+ * Excluded tools:
+ * - DDL: execute, migrate (platform-only - database schema changes are admin ops)
+ * - Agent: chat (platform-only - AI orchestration is platform-level)
+ * - Workspace: sync (platform-only - cross-workspace operations)
+ * - View: define, delete (platform-only - view definitions are platform-managed)
+ *
+ * @param server - FastMCP server instance (stdio or HTTP transport)
+ */
+export function registerProjectTools(server: FastMCP) {
+  // Schema namespace (3 tools) - operations scoped to project workspace
+  registerSchemaSet(server)
+  registerSchemaLoad(server)
+  registerSchemaList(server)
+
+  // Store namespace (5 tools) - full CRUD for user data
+  registerStoreCreate(server)
+  registerStoreGet(server)
+  registerStoreUpdate(server)
+  registerStoreDelete(server)
+  registerStoreQuery(server)
+
+  // View namespace (2 tools) - execute and project only
+  registerViewExecute(server)
+  registerViewProject(server)
+
+  // NOTE: The following are NOT registered for project context:
+  // - registerViewDefine (platform-only)
+  // - registerViewDelete (platform-only)
+  // - registerDdlExecute (platform-only)
+  // - registerDdlMigrate (platform-only)
+  // - registerAgentChat (platform-only)
+  // - registerWorkspaceSync (platform-only)
+}
+
+/**
+ * Register all Wavesmith MCP tools on a FastMCP server instance.
+ *
+ * @deprecated Use registerPlatformTools() for platform context or
+ * registerProjectTools() for project context. This function is kept
+ * for backward compatibility and behaves identically to registerPlatformTools().
+ *
+ * Total: 16 tools across 6 namespaces
+ * - Schema: 3 tools (set, load, list)
+ * - Store: 5 tools (create, get, update, delete, query)
+ * - View: 4 tools (execute, define, delete, project)
+ * - DDL: 2 tools (execute, migrate)
+ * - Agent: 1 tool (chat)
+ * - Workspace: 1 tool (sync)
+ *
+ * @param server - FastMCP server instance (stdio or HTTP transport)
+ */
+export function registerAllTools(server: FastMCP) {
+  // Backward compatible - delegates to platform tools
+  registerPlatformTools(server)
 }

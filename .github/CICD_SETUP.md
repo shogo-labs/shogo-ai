@@ -54,6 +54,8 @@ Go to **Settings > Environments > staging** and configure:
 | Secret Name | Value | Description |
 |-------------|-------|-------------|
 | `AWS_ROLE_ARN` | `arn:aws:iam::ACCOUNT_ID:role/shogo-github-actions` | From Terraform output |
+| `ANTHROPIC_API_KEY` | `sk-ant-api03-...` | Claude API key for Claude Code integration |
+| `BETTER_AUTH_SECRET` | `32+ character random string` | Secret key for BetterAuth session encryption |
 
 #### Variables (non-sensitive config - visible in logs)
 
@@ -74,6 +76,8 @@ Go to **Settings > Environments > production** and configure:
 | Secret Name | Value | Description |
 |-------------|-------|-------------|
 | `AWS_ROLE_ARN` | `arn:aws:iam::ACCOUNT_ID:role/shogo-github-actions` | From Terraform output |
+| `ANTHROPIC_API_KEY` | `sk-ant-api03-...` | Claude API key for Claude Code integration |
+| `BETTER_AUTH_SECRET` | `32+ character random string` | Secret key for BetterAuth session encryption |
 
 #### Variables
 

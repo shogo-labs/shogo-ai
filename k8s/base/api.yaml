@@ -5,17 +5,42 @@
 #   - BetterAuth authentication
 #   - AI chat requests (proxied to Claude Code)
 #   - Workspace routing to MCP services
+#   - Publishing projects (creates Knative DomainMappings)
 #
 # This runs as a regular Deployment (not Knative) since it should always be up.
 # =============================================================================
 apiVersion: v1
-kind: Secret
+kind: ServiceAccount
 metadata:
-  name: api-secrets
+  name: shogo-api
   namespace: shogo-system
-type: Opaque
-stringData:
-  BETTER_AUTH_SECRET: shogo-k8s-dev-secret-32-chars-minimum-required
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shogo-api-domainmapping-manager
+rules:
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["domainmappings"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shogo-api-domainmapping-manager
+subjects:
+  - kind: ServiceAccount
+    name: shogo-api
+    namespace: shogo-system
+roleRef:
+  kind: ClusterRole
+  name: shogo-api-domainmapping-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+# API secrets are managed by:
+# - Terraform (for initial creation with BETTER_AUTH_SECRET)
+# - GitHub Actions workflow (for ANTHROPIC_API_KEY and updates)
+# This secret is NOT committed to the repo - see .gitignore
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,6 +59,7 @@ spec:
       labels:
         app: shogo-api
     spec:
+      serviceAccountName: shogo-api
       containers:
         - name: api
           image: k3d-shogo-registry:5000/shogo-api:latest
@@ -44,10 +70,13 @@ spec:
               value: "8002"
             - name: NODE_ENV
               value: "production"
+            # TODO: Fix proper TLS verification for Kubernetes API
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
             - name: VITE_PORT
               value: "80"
             - name: BETTER_AUTH_URL
-              value: "http://localhost"
+              value: "http://localhost:8080"
             - name: REDIS_URL
               value: "redis://redis:6379"
             - name: DATABASE_URL
@@ -60,6 +89,11 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: BETTER_AUTH_SECRET
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ANTHROPIC_API_KEY
           readinessProbe:
             httpGet:
               path: /api/health

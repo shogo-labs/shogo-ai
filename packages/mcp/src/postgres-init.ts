@@ -22,7 +22,10 @@ import {
   type IBackendRegistry,
   SqlBackend,
   MemoryBackend,
+  isS3Enabled,
 } from "@shogo/state-api"
+// Server-only module - import directly
+import { S3SqliteManager } from "@shogo/state-api/persistence/s3-sqlite"
 // Server-only executors - import directly to avoid browser bundle issues
 import {
   BunPostgresExecutor,
@@ -303,6 +306,117 @@ export function isPostgresAvailable(): boolean {
  */
 export function isSqliteAvailable(): boolean {
   return sqliteInitialized && sqliteExecutor !== null
+}
+
+// ============================================================================
+// Workspace-Specific Backend (S3-backed SQLite)
+// ============================================================================
+
+/**
+ * Cache of workspace-specific backend registries.
+ * Each workspace has its own SQLite database backed by S3.
+ */
+const workspaceRegistries: Map<string, IBackendRegistry> = new Map()
+
+/**
+ * Get a backend registry for a specific workspace.
+ *
+ * When S3 mode is enabled (SCHEMA_STORAGE=s3), each workspace gets its own
+ * SQLite database that's synced to S3. This provides:
+ * - Data isolation between workspaces
+ * - Portable databases (stored in S3)
+ * - Serverless-friendly architecture
+ *
+ * When S3 mode is disabled, returns the global registry (shared database).
+ *
+ * @param workspaceId - Unique workspace/project identifier
+ * @returns Backend registry for the workspace
+ *
+ * @example
+ * ```ts
+ * const registry = await getWorkspaceBackendRegistry('project-123')
+ * const executor = registry.resolve('my-schema', 'User', collection)
+ * ```
+ */
+export async function getWorkspaceBackendRegistry(workspaceId: string): Promise<IBackendRegistry> {
+  // If S3 mode is not enabled, use shared global registry
+  if (!isS3Enabled()) {
+    ensureRegistry()
+    return globalRegistry!
+  }
+
+  // Return cached workspace registry if available
+  const cached = workspaceRegistries.get(workspaceId)
+  if (cached) {
+    return cached
+  }
+
+  // Create new workspace-specific SQLite database
+  console.log(`[postgres-init] Creating workspace-specific SQLite for '${workspaceId}'`)
+
+  const db = await S3SqliteManager.getDatabase(workspaceId)
+  const executor = new BunSqlExecutor(db as any)
+
+  const sqliteBackend = new SqlBackend({
+    dialect: "sqlite",
+    executor,
+  })
+
+  // Create workspace-specific registry
+  const registry = createBackendRegistry({
+    default: "sqlite",
+    backends: {
+      memory: new MemoryBackend(),
+      sqlite: sqliteBackend,
+      postgres: sqliteBackend, // Alias for schema compatibility
+    },
+  })
+
+  // Initialize registry (creates system-migrations table)
+  await registry.initialize()
+
+  // Cache the registry
+  workspaceRegistries.set(workspaceId, registry)
+
+  console.log(`[postgres-init] Workspace '${workspaceId}' SQLite backend ready`)
+  return registry
+}
+
+/**
+ * Sync a workspace's SQLite database to S3.
+ * Call this after data changes to persist to S3.
+ *
+ * @param workspaceId - Workspace to sync
+ * @param force - Sync even if database appears unchanged
+ * @returns true if sync was performed
+ */
+export async function syncWorkspaceData(workspaceId: string, force = false): Promise<boolean> {
+  if (!isS3Enabled()) {
+    return false
+  }
+
+  return S3SqliteManager.sync(workspaceId, force)
+}
+
+/**
+ * Mark a workspace's database as having unsaved changes.
+ * Call this after any write operation.
+ *
+ * @param workspaceId - Workspace with changes
+ */
+export function markWorkspaceDirty(workspaceId: string): void {
+  S3SqliteManager.markDirty(workspaceId)
+}
+
+/**
+ * Close a workspace's database and sync to S3.
+ * Call this when a workspace session ends.
+ *
+ * @param workspaceId - Workspace to close
+ */
+export async function closeWorkspace(workspaceId: string): Promise<void> {
+  await S3SqliteManager.close(workspaceId, true)
+  workspaceRegistries.delete(workspaceId)
 }
 
 /**

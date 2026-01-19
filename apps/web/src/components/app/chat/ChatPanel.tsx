@@ -122,6 +122,8 @@ export interface ChatPanelProps {
   workspaceId?: string
   /** Current user ID for billing/credit tracking */
   userId?: string
+  /** Project ID for Claude Code working directory context */
+  projectId?: string
   /** Children to render inside ChatContextProvider */
   children?: React.ReactNode
   /** Optional class name */
@@ -414,6 +416,7 @@ export const ChatPanel = observer(function ChatPanel({
   phase,
   workspaceId,
   userId,
+  projectId,
   children,
   className,
   onSchemaRefresh,
@@ -686,7 +689,7 @@ export const ChatPanel = observer(function ChatPanel({
               console.log('[ChatPanel:VirtualTool] ✅ Updated session schemaName:', schemaName)
             }
 
-            // 2. Update workspace Composition's slotContent to include DesignContainerSection
+            // 2. Update or create workspace Composition's slotContent to include DesignContainerSection
             // This replaces the blank state with the schema display section
             if (componentBuilder?.compositionCollection) {
               const workspaceComposition = componentBuilder.compositionCollection.findByName?.('workspace')
@@ -728,7 +731,24 @@ export const ChatPanel = observer(function ChatPanel({
                   console.log('[ChatPanel:VirtualTool] ✅ Updated DesignContainerSection config')
                 }
               } else {
-                console.warn('[ChatPanel:VirtualTool] ⚠️ workspace Composition not found')
+                // Create the workspace composition if it doesn't exist
+                const newSlotContent = [
+                  {
+                    slot: 'main',
+                    component: 'comp-design-container',
+                    config: { defaultTab, expandGraph: true }
+                  }
+                ]
+                const newComposition = {
+                  id: `composition-workspace-${Date.now()}`,
+                  name: 'workspace',
+                  layout: 'layout-workspace-flexible',
+                  slotContent: newSlotContent,
+                  dataContext: { context: 'workspace' },
+                  providerWrapper: 'WorkspaceProvider',
+                }
+                await componentBuilder.compositionCollection.insertOne(newComposition)
+                console.log('[ChatPanel:VirtualTool] ✅ Created workspace Composition via show_schema')
               }
             }
           } catch (err) {
@@ -763,7 +783,7 @@ export const ChatPanel = observer(function ChatPanel({
               config: panel.config ?? {},
             }))
 
-            // Update composition
+            // Update or create composition
             if (componentBuilder?.compositionCollection) {
               const workspaceComposition = componentBuilder.compositionCollection.findByName?.('workspace')
               if (workspaceComposition) {
@@ -774,7 +794,21 @@ export const ChatPanel = observer(function ChatPanel({
                 await componentBuilder.compositionCollection.updateOne(workspaceComposition.id, updates)
                 console.log('[ChatPanel:VirtualTool] ✅ Workspace updated via set_workspace')
               } else {
-                console.warn('[ChatPanel:VirtualTool] ⚠️ workspace Composition not found')
+                // Create the workspace composition if it doesn't exist
+                // This allows new projects to have workspace layouts set up by the AI
+                const layoutTemplate = args.layout && LAYOUT_TO_TEMPLATE[args.layout]
+                  ? LAYOUT_TO_TEMPLATE[args.layout]
+                  : 'layout-workspace-flexible'
+                const newComposition = {
+                  id: `composition-workspace-${Date.now()}`,
+                  name: 'workspace',
+                  layout: layoutTemplate,
+                  slotContent,
+                  dataContext: { context: 'workspace' },
+                  providerWrapper: 'WorkspaceProvider',
+                }
+                await componentBuilder.compositionCollection.insertOne(newComposition)
+                console.log('[ChatPanel:VirtualTool] ✅ Created workspace Composition via set_workspace')
               }
             }
           } catch (err) {
@@ -1469,6 +1503,7 @@ export const ChatPanel = observer(function ChatPanel({
               ccSessionId: ccSessionIdRef.current,
               workspaceId,
               userId,
+              projectId,
             },
           }
         )
@@ -1476,7 +1511,7 @@ export const ChatPanel = observer(function ChatPanel({
         console.error("[ChatPanel] Failed to send message:", err)
       }
     },
-    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId]
+    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId, projectId]
   )
 
   // Handle form submit from ChatInput
@@ -1558,9 +1593,15 @@ export const ChatPanel = observer(function ChatPanel({
   )
 
   // Error retry handler
+  // AI SDK v3: reload() regenerates the last assistant message
+  // Guard against reload being undefined or no messages to retry
   const handleRetry = useCallback(() => {
-    reload()
-  }, [reload])
+    if (typeof reload === 'function' && messages.length > 0) {
+      reload()
+    } else {
+      console.warn('[ChatPanel] Cannot retry: reload not available or no messages')
+    }
+  }, [reload, messages.length])
 
   // Convert messages for MessageList
   const messageListMessages = messages.map((msg) => ({

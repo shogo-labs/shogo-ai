@@ -28,8 +28,13 @@ export interface ProjectTopBarProps {
   maxCredits?: number
   currentUserName?: string
   userInitial?: string
+  // Publish state props
   isPublished?: boolean
   publishedAt?: Date
+  publishedSubdomain?: string
+  accessLevel?: AccessLevel
+  siteTitle?: string
+  siteDescription?: string
   showChatSessions?: boolean
   isChatCollapsed?: boolean
   onChatSessionsToggle?: () => void
@@ -39,7 +44,19 @@ export interface ProjectTopBarProps {
   onDuplicate?: () => void
   onShare?: () => void
   onSettings?: () => void
-  onPublish?: () => void
+  // Publish callbacks
+  onPublish?: (data: {
+    subdomain: string
+    accessLevel: AccessLevel
+    siteTitle?: string
+    siteDescription?: string
+  }) => Promise<{ url: string; publishedAt: number }>
+  onUnpublish?: () => Promise<void>
+  onUpdatePublishSettings?: (data: {
+    accessLevel?: AccessLevel
+    siteTitle?: string
+    siteDescription?: string
+  }) => Promise<void>
   onViewportChange?: (viewport: ViewportSize) => void
   onRouteChange?: (route: string) => void
   onRefresh?: () => void
@@ -59,6 +76,10 @@ export function ProjectTopBar({
   userInitial,
   isPublished = false,
   publishedAt,
+  publishedSubdomain,
+  accessLevel = "anyone",
+  siteTitle,
+  siteDescription,
   showChatSessions = false,
   isChatCollapsed = false,
   onChatSessionsToggle,
@@ -69,6 +90,8 @@ export function ProjectTopBar({
   onShare,
   onSettings,
   onPublish,
+  onUnpublish,
+  onUpdatePublishSettings,
   onViewportChange,
   onRouteChange,
   onRefresh,
@@ -77,7 +100,6 @@ export function ProjectTopBar({
   const navigate = useNavigate()
   const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
   const [currentRoute, setCurrentRoute] = useState("/")
-  const [accessLevel, setAccessLevel] = useState<AccessLevel>("anyone")
 
   const handleViewportChange = useCallback(
     (viewport: ViewportSize) => {
@@ -209,11 +231,17 @@ export function ProjectTopBar({
         {/* Publish Dropdown - primary style */}
         <PublishDropdown
           projectId={projectId}
+          currentSubdomain={publishedSubdomain}
+          defaultSubdomain={projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}
           isPublished={isPublished}
           publishedAt={publishedAt}
           accessLevel={accessLevel}
-          onAccessChange={setAccessLevel}
+          siteTitle={siteTitle}
+          siteDescription={siteDescription}
           onPublish={onPublish}
+          onUnpublish={onUnpublish}
+          onUpdateSettings={onUpdatePublishSettings}
+          onViewPublished={(url) => window.open(url, '_blank')}
         />
       </div>
     </nav>

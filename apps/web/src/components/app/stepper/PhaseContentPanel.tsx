@@ -71,6 +71,8 @@ export interface FeatureForPanel {
   schemaName?: string
   // Properties for CompleteView (2.3D) - completion timestamp
   updatedAt?: number
+  // Project context for workspace-scoped schema loading
+  projectId?: string
 }
 
 /**

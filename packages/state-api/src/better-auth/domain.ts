@@ -110,7 +110,7 @@ export const betterAuthDomain = domain({
               name: session.user.name ?? session.user.email.split("@")[0], // use name if available, fallback to email prefix
               email: session.user.email,
               emailVerified: session.user.emailVerified,
-              image: session.user.image, // Include profile image URL
+              image: session.user.image ?? undefined, // Include profile image URL (only if present)
               createdAt: session.user.createdAt,
               updatedAt: session.user.createdAt,
             })

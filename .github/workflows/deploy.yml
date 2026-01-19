@@ -238,6 +238,25 @@ jobs:
           kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Create or update API secrets
+        run: |
+          # Create or update the api-secrets secret with ANTHROPIC_API_KEY
+          # BETTER_AUTH_SECRET is optional - if not set in GitHub, it will use the value from kustomization
+          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
+            kubectl create secret generic api-secrets \
+              --namespace=${{ env.NS_SYSTEM }} \
+              --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
+              --from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          else
+            kubectl create secret generic api-secrets \
+              --namespace=${{ env.NS_SYSTEM }} \
+              --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+          
+          echo "✅ API secrets created/updated in ${{ env.NS_SYSTEM }} namespace"
+
       - name: Deploy Knative services
         env:
           ECR_REGISTRY: ${{ needs.setup.outputs.ecr_registry }}
@@ -258,7 +277,7 @@ jobs:
           ]" || echo "API service not found, may need terraform apply first"
           
           # Update MCP service
-          kubectl patch ksvc mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --type='json' -p="[
+          kubectl patch ksvc mcp-workspace -n ${{ env.NS_WORKSPACES }} --type='json' -p="[
             {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-mcp:${{ env.IMAGE_TAG }}\"}
           ]" || echo "MCP service not found, may need terraform apply first"
 
@@ -273,7 +292,7 @@ jobs:
           kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
           
           echo "Waiting for mcp rollout..."
-          kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/mcp-workspace -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
 
       - name: Verify deployment
         run: |
