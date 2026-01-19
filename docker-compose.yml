@@ -224,7 +224,7 @@ services:
       REDIS_URL: redis://redis:6379
       ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
       # Agent persona: 'wavesmith' (default) or 'code'
-      SHOGO_AGENT: code
+      SHOGO_AGENT: wavesmith
       # ANTHROPIC_API_KEY loaded from .env.local via env_file
       # Runtime workspaces for Vite dev servers
       WORKSPACES_DIR: /app/workspaces

@@ -8,7 +8,9 @@ import { saveSchema } from "@shogo/state-api"
 import { CollectionPersistable } from "@shogo/state-api"
 import { FileSystemPersistence } from "@shogo/state-api"
 import type { IEnvironment } from "@shogo/state-api"
+import { isS3Enabled, domain } from "@shogo/state-api"
 import { getEffectiveWorkspace } from "../state"
+import { getGlobalBackendRegistry, getWorkspaceBackendRegistry } from "../postgres-init"
 
 // Parameter schema
 const Params = t({
@@ -347,6 +349,57 @@ Special: x-mst-type: "identifier" for the id field`,
         // 5. Save schema to storage
         const savedPath = await saveSchema(schemaEntity, templates, effectiveWorkspace)
 
+        // 5.5. Auto-DDL: Create tables when workspace is provided
+        // This enables project MCP to create schemas without needing DDL tools
+        let ddlResult: { action?: string; version?: number } = {}
+        if (workspace && isS3Enabled()) {
+          try {
+            // Use workspace-specific SQLite backend for user schemas
+            const schemaBackend = enhanced['x-persistence']?.backend
+            const usePostgres = schemaBackend === 'postgres'
+
+            const registry = usePostgres
+              ? getGlobalBackendRegistry()  // System schemas → PostgreSQL
+              : await getWorkspaceBackendRegistry(effectiveWorkspace)  // User schemas → S3 SQLite
+
+            const syncResult = await registry.syncSchema(name, enhanced)
+            ddlResult = {
+              action: syncResult.action,
+              version: syncResult.action === 'created' ? syncResult.version
+                     : syncResult.action === 'migrated' ? syncResult.toVersion
+                     : syncResult.action === 'unchanged' ? syncResult.version
+                     : undefined
+            }
+            console.log('[schema.set] ✅ Auto-DDL completed:', syncResult.action)
+
+            // 5.6. Re-create runtime store with SQL backend
+            // The initial store was created with FileSystemPersistence.
+            // Now that DDL created tables, we need a properly configured store.
+            const d = domain({
+              name: schemaEntity.name,
+              from: enhancedWithMetadata
+            })
+
+            const sqlRuntimeStore = d.createStore({
+              services: {
+                persistence: new FileSystemPersistence(),
+                backendRegistry: registry
+              },
+              context: {
+                schemaName: schemaEntity.name,
+                location: effectiveWorkspace
+              }
+            })
+
+            // Replace the cached store with the SQL-backed one
+            cacheRuntimeStore(schemaEntity.id, sqlRuntimeStore, effectiveWorkspace)
+            console.log('[schema.set] ✅ Runtime store upgraded to SQL backend')
+          } catch (ddlError: any) {
+            console.error('[schema.set] ⚠️ Auto-DDL failed:', ddlError.message)
+            // Don't fail schema.set if DDL fails - schema is still saved
+          }
+        }
+
         // 6. Return success with schema info
         const models = schemaEntity.toModelDescriptors
         console.log('[schema.set] ✅ Schema created:', name, 'with', models.length, 'models')
@@ -355,7 +408,14 @@ Special: x-mst-type: "identifier" for the id field`,
           ok: true,
           schemaId: schemaEntity.id,
           path: savedPath,
-          models
+          models,
+          // Include DDL result if auto-DDL was executed
+          ...(ddlResult.action && {
+            ddl: {
+              action: ddlResult.action,
+              version: ddlResult.version,
+            }
+          })
         })
 
       } catch (error: any) {

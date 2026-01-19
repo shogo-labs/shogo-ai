@@ -6,8 +6,8 @@
  * - Monaco Editor with full syntax highlighting
  * - Language detection from file extension
  * - Dark theme matching the app
- * - S3 pre-signed URLs for direct file access
- * - Auto-save with debouncing
+ * - Filesystem API for file access (synced with Vite/Preview)
+ * - Auto-save with debouncing (triggers Vite HMR)
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
@@ -276,14 +276,14 @@ export function CodeEditorPanel({
     return tree
   }, [files, expandedDirs])
 
-  // Load file list from S3
+  // Load file list from filesystem API (synced with Vite/Preview)
   const loadFiles = useCallback(async () => {
     setIsLoadingFiles(true)
     setFilesError(null)
 
     try {
-      // Use S3 endpoint for file listing
-      const response = await fetch(`/api/projects/${projectId}/s3/files`)
+      // Use filesystem endpoint for file listing (matches Vite's view)
+      const response = await fetch(`/api/projects/${projectId}/files`)
       const data = await response.json()
 
       if (!response.ok) {
@@ -308,39 +308,22 @@ export function CodeEditorPanel({
     }
   }, [projectId])
 
-  // Load file content via S3 pre-signed URL
+  // Load file content via filesystem API (synced with Vite/Preview)
   const loadFileContent = useCallback(async (filePath: string) => {
     setIsLoadingContent(true)
     setContentError(null)
     setSaveError(null)
 
     try {
-      // Get pre-signed URL for reading
-      const presignResponse = await fetch(`/api/projects/${projectId}/s3/presign`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          files: [{ path: filePath, action: 'read' }]
-        })
-      })
-      const presignData = await presignResponse.json()
+      // Use filesystem endpoint for reading (matches Vite's view)
+      const response = await fetch(`/api/projects/${projectId}/files/${filePath}`)
+      const data = await response.json()
 
-      if (!presignResponse.ok) {
-        throw new Error(presignData.error?.message || 'Failed to get file URL')
+      if (!response.ok) {
+        throw new Error(data.error?.message || 'Failed to load file')
       }
 
-      const readUrl = presignData.urls?.[0]?.url
-      if (!readUrl) {
-        throw new Error('No pre-signed URL returned')
-      }
-
-      // Fetch content directly from S3
-      const contentResponse = await fetch(readUrl)
-      if (!contentResponse.ok) {
-        throw new Error(`Failed to load file: ${contentResponse.status}`)
-      }
-
-      const content = await contentResponse.text()
+      const content = data.content || ''
       setFileContent(content)
       setOriginalContent(content) // Track original for dirty detection
       setLastSaved(new Date())
@@ -383,7 +366,7 @@ export function CodeEditorPanel({
     })
   }
 
-  // Save file content via S3 pre-signed URL
+  // Save file content via filesystem API (synced with Vite/Preview)
   const saveFile = useCallback(async (content: string) => {
     if (!selectedFile) return
 
@@ -391,49 +374,16 @@ export function CodeEditorPanel({
     setSaveError(null)
 
     try {
-      // Get file extension for content type
-      const ext = files.find(f => f.path === selectedFile)?.extension || ''
-      const contentTypes: Record<string, string> = {
-        '.ts': 'text/typescript',
-        '.tsx': 'text/typescript',
-        '.js': 'text/javascript',
-        '.jsx': 'text/javascript',
-        '.json': 'application/json',
-        '.css': 'text/css',
-        '.html': 'text/html',
-        '.md': 'text/markdown',
-        '.svg': 'image/svg+xml',
-      }
-      const contentType = contentTypes[ext] || 'text/plain'
-
-      // Get pre-signed URL for writing
-      const presignResponse = await fetch(`/api/projects/${projectId}/s3/presign`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          files: [{ path: selectedFile, action: 'write', contentType }]
-        })
-      })
-      const presignData = await presignResponse.json()
-
-      if (!presignResponse.ok) {
-        throw new Error(presignData.error?.message || 'Failed to get upload URL')
-      }
-
-      const writeUrl = presignData.urls?.[0]?.url
-      if (!writeUrl) {
-        throw new Error('No pre-signed URL returned')
-      }
-
-      // PUT content directly to S3
-      const uploadResponse = await fetch(writeUrl, {
+      // Use filesystem endpoint for writing (triggers Vite HMR)
+      const response = await fetch(`/api/projects/${projectId}/files/${selectedFile}`, {
         method: 'PUT',
-        headers: { 'Content-Type': contentType },
-        body: content
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content })
       })
+      const data = await response.json()
 
-      if (!uploadResponse.ok) {
-        throw new Error(`Failed to save file: ${uploadResponse.status}`)
+      if (!response.ok) {
+        throw new Error(data.error?.message || 'Failed to save file')
       }
 
       setOriginalContent(content) // Update original to match saved content
@@ -444,7 +394,7 @@ export function CodeEditorPanel({
     } finally {
       setIsSaving(false)
     }
-  }, [selectedFile, files, projectId, onFileChange])
+  }, [selectedFile, projectId, onFileChange])
 
   // Handle editor content changes with debounced auto-save
   const handleEditorChange = useCallback((value: string | undefined) => {

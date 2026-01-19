@@ -461,9 +461,23 @@ const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'work
  */
 function createProjectScopedClaudeCode(projectId?: string) {
   // Determine working directory - project workspace if projectId provided, else project root
-  const cwd = projectId
-    ? resolve(WORKSPACES_DIR, projectId)
-    : PROJECT_ROOT
+  let cwd = PROJECT_ROOT
+
+  if (projectId) {
+    const projectDir = resolve(WORKSPACES_DIR, projectId)
+    // Check if project directory exists - if not, fall back to project root
+    // This handles the case where a project record exists but workspace hasn't been created yet
+    try {
+      const fs = require('fs')
+      if (fs.existsSync(projectDir)) {
+        cwd = projectDir
+      } else {
+        console.warn(`[ClaudeCode] Project workspace not found: ${projectDir}, using project root`)
+      }
+    } catch (e) {
+      console.warn(`[ClaudeCode] Error checking project workspace: ${e}, using project root`)
+    }
+  }
 
   console.log(`[ClaudeCode] Creating provider with cwd: ${cwd}${projectId ? ` (project: ${projectId})` : ' (platform)'}`);
 

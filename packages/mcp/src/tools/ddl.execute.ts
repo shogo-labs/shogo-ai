@@ -24,12 +24,15 @@ import {
   createPostgresDialect,
   createSqliteDialect,
   deriveNamespace,
+  isS3Enabled,
 } from "@shogo/state-api"
-import { getGlobalBackendRegistry } from "../postgres-init"
+import { getGlobalBackendRegistry, getWorkspaceBackendRegistry } from "../postgres-init"
+import { getEffectiveWorkspace } from "../state"
 
 const Params = t({
   schemaName: "string",
   "dryRun?": "boolean",
+  "workspace?": "string",
 })
 
 export function registerDdlExecute(server: FastMCP) {
@@ -41,10 +44,14 @@ export function registerDdlExecute(server: FastMCP) {
       "Automatically uses the backend configured in schema's x-persistence.backend.",
     parameters: Params,
     execute: async (args: any) => {
-      const { schemaName, dryRun = false } = args as {
+      const { schemaName, dryRun = false, workspace } = args as {
         schemaName: string
         dryRun?: boolean
+        workspace?: string
       }
+
+      // Determine effective workspace for backend resolution
+      const effectiveWorkspace = getEffectiveWorkspace(workspace)
 
       try {
         // 1. Validate schema exists in meta-store
@@ -93,7 +100,17 @@ export function registerDdlExecute(server: FastMCP) {
         }
 
         // 4. Execute DDL via syncSchema (handles migration recording)
-        const registry = getGlobalBackendRegistry()
+        // Backend selection: use workspace-specific SQLite when S3 mode enabled
+        // and schema doesn't explicitly require postgres
+        const schemaBackend = enhancedJson['x-persistence']?.backend
+        const usePostgres = schemaBackend === 'postgres'
+
+        const registry = usePostgres
+          ? getGlobalBackendRegistry()  // System schemas → PostgreSQL
+          : (isS3Enabled() && workspace
+              ? await getWorkspaceBackendRegistry(effectiveWorkspace)  // User schemas → S3 SQLite
+              : getGlobalBackendRegistry())
+
         const syncResult = await registry.syncSchema(schemaName, enhancedJson)
 
         // Format response based on sync result action
