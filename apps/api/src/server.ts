@@ -493,8 +493,10 @@ function createProjectScopedClaudeCode(projectId?: string) {
     // MCP servers - Wavesmith for data + Virtual tools for client-side effects
     mcpServers: {
       wavesmith: {
+        // Run MCP server as subprocess (packages/mcp included in Docker build)
+        // Use absolute path since cwd is set to project workspace, not app root
         command: 'bun',
-        args: ['run', 'packages/mcp/src/server.ts'],
+        args: ['run', '/app/packages/mcp/src/server.ts'],
       },
       // SDK MCP server for virtual tools (in-process, defined above)
       'virtual-tools': virtualToolsServer,

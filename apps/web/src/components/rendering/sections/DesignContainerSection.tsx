@@ -266,7 +266,7 @@ function SchemaTabContent({
   // This allows split views to show different schemas per panel
   // schemaWorkspace is the projectId - used for project-specific schema storage
   const schemaName = (config?.schemaName as string | undefined) ?? feature?.schemaName
-  const schemaWorkspace = (config?.schemaWorkspace as string | undefined) ?? feature?.id
+  const schemaWorkspace = (config?.schemaWorkspace as string | undefined) ?? feature?.projectId
 
   // Use useSchemaData hook for async schema loading
   // Pass schemaWorkspace (projectId) to load from the correct project-specific location

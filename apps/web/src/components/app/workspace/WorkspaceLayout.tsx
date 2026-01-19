@@ -453,7 +453,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
             onStreamingChange={handleStreamingChange}
             isPolling={isPolling}
           >
-            <PhaseContentPanel feature={currentFeature} />
+            <PhaseContentPanel feature={{ ...currentFeature, projectId }} />
           </ChatPanel>
         ) : featureId ? (
           // Feature ID in URL but no data yet - render Outlet as fallback with ChatPanel
