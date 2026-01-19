@@ -394,7 +394,35 @@ export function AskUserQuestionWidget({
     ? questions[activeTab]
     : undefined
 
-  // Empty state - also catches undefined currentQuestion
+  // Streaming state - show loading while args are being populated
+  // Only show loading if we're streaming AND don't have valid questions yet
+  // (Once questions are valid, show the widget regardless of tool state)
+  const isStillLoading = tool.state === "streaming" && (questions.length === 0 || !currentQuestion)
+
+  if (isStillLoading) {
+    return (
+      <div
+        className={cn(
+          "rounded-md border border-primary/20 bg-primary/5 p-3",
+          "animate-in fade-in duration-200",
+          className
+        )}
+      >
+        <div className="flex items-center gap-2">
+          <MessageCircleQuestion className="w-4 h-4 text-primary animate-pulse" />
+          <span
+            className="font-mono text-xs font-medium text-foreground"
+            style={{ fontFamily: "var(--font-display)" }}
+          >
+            AskUserQuestion
+          </span>
+          <span className="text-xs text-muted-foreground">Loading...</span>
+        </div>
+      </div>
+    )
+  }
+
+  // Empty state - only shown if NOT streaming but data is still invalid
   if (questions.length === 0 || !currentQuestion) {
     return (
       <div
