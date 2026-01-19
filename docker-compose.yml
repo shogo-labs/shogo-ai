@@ -69,7 +69,7 @@ services:
   # ---------------------------------------------------------------------------
   # MinIO Bucket Initialization & Schema Seeding
   # ---------------------------------------------------------------------------
-  # Creates the schemas bucket and seeds built-in schemas from .schemas/
+  # Creates buckets and seeds schemas + workspaces from local directories
   # ---------------------------------------------------------------------------
   minio-init:
     image: minio/mc:latest
@@ -80,6 +80,8 @@ services:
     volumes:
       # Mount local schemas to seed into S3
       - ./.schemas:/schemas:ro
+      # Mount local workspaces to seed into S3
+      - ./workspaces:/workspaces:ro
       # Mount init script
       - ./scripts/minio-init.sh:/minio-init.sh:ro
     entrypoint: ["/bin/sh", "/minio-init.sh"]
@@ -140,6 +142,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "sh", "-c", "curl -s -o /dev/null -w '%{http_code}' http://localhost:3100/mcp | grep -q '400\\|200'"]
       interval: 10s
@@ -179,6 +183,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "sh", "-c", "curl -s -o /dev/null -w '%{http_code}' http://localhost:3100/mcp | grep -q '400\\|200'"]
       interval: 10s
@@ -198,8 +204,12 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     container_name: shogo-api
+    # Run as current user to match host workspaces permissions
+    user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "8002:8002"
+      # Vite runtime ports for project previews
+      - "5200-5209:5200-5209"
     env_file:
       - path: .env.local
         required: false
@@ -213,7 +223,27 @@ services:
       BETTER_AUTH_URL: http://localhost:8002
       REDIS_URL: redis://redis:6379
       ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
+      # Agent persona: 'wavesmith' (default) or 'code'
+      SHOGO_AGENT: code
       # ANTHROPIC_API_KEY loaded from .env.local via env_file
+      # Runtime workspaces for Vite dev servers
+      WORKSPACES_DIR: /app/workspaces
+      # HOME directory for Claude Code SDK to store session data
+      HOME: /app
+      RUNTIME_BASE_PORT: "5200"
+      RUNTIME_DOMAIN_SUFFIX: localhost
+      # S3/MinIO config for workspace file access
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:9000
+      S3_FORCE_PATH_STYLE: "true"
+      S3_WORKSPACES_BUCKET: shogo-workspaces
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    volumes:
+      # Mount workspaces for project runtime Vite servers
+      - ./workspaces:/app/workspaces
+      # Mount schemas for Claude Code SDK's MCP server
+      - ./.schemas:/app/.schemas
     depends_on:
       postgres:
         condition: service_healthy

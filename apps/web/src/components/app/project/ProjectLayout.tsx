@@ -25,6 +25,8 @@ import { ChatPanelTransitionOverlay } from "../chat/ChatPanelTransitionOverlay"
 import { useChatSessionNavigation } from "../advanced-chat/hooks/useChatSessionNavigation"
 import { ProjectTopBar } from "./ProjectTopBar"
 import { ChatSessionsPanel, type ChatSessionItem } from "./ChatSessionsPanel"
+import { RuntimePreviewPanel } from "./RuntimePreviewPanel"
+import { CodeEditorPanel } from "./CodeEditorPanel"
 import { cn } from "@/lib/utils"
 import { useSession } from "@/auth/client"
 import type { ViewportSize } from "./PreviewControls"
@@ -99,6 +101,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Preview controls state
   const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
   const [currentRoute, setCurrentRoute] = useState("/")
+
+  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), or 'workspace' (ComposablePhaseView)
+  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'workspace'>('runtime')
 
   // Project state
   // Use transition state if available (from homepage flow) to avoid loading flash
@@ -241,31 +246,57 @@ export const ProjectLayout = observer(function ProjectLayout() {
       return
     }
 
-    const initializeChatSession = async () => {
-      // Query database directly for existing sessions (in-memory may not be loaded yet)
-      const existingSessions = await studioChat.chatSessionCollection
-        .query({ contextId: projectId })
-        .toArray()
+    let cancelled = false
+    const CHAT_MAX_RETRIES = 5
+    const CHAT_RETRY_DELAY_MS = 500
 
-      if (existingSessions.length > 0) {
-        // Sort by lastActiveAt descending and select the most recent
-        const sortedSessions = [...existingSessions].sort(
-          (a: any, b: any) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0)
-        )
-        const mostRecent = sortedSessions[0]
-        await setChatSessionId(mostRecent.id)
-      } else {
-        // No existing sessions - create a new one
-        const newSession = await studioChat.createChatSession({
-          inferredName: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
-          contextType: "project",
-          contextId: projectId,
-        })
-        await setChatSessionId(newSession.id)
+    const initializeChatSession = async (attempt = 1): Promise<void> => {
+      if (cancelled) return
+
+      try {
+        // Query database directly for existing sessions (in-memory may not be loaded yet)
+        const existingSessions = await studioChat.chatSessionCollection
+          .query({ contextId: projectId })
+          .toArray()
+
+        if (cancelled) return
+
+        if (existingSessions.length > 0) {
+          // Sort by lastActiveAt descending and select the most recent
+          const sortedSessions = [...existingSessions].sort(
+            (a: any, b: any) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0)
+          )
+          const mostRecent = sortedSessions[0]
+          await setChatSessionId(mostRecent.id)
+        } else {
+          // No existing sessions - create a new one
+          const newSession = await studioChat.createChatSession({
+            inferredName: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
+            contextType: "project",
+            contextId: projectId,
+          })
+          await setChatSessionId(newSession.id)
+        }
+      } catch (err: any) {
+        if (cancelled) return
+
+        // Retry if schema not loaded yet (race condition on page refresh)
+        const isSchemaNotLoaded = err?.message?.includes("Schema") || err?.message?.includes("SCHEMA_NOT_FOUND")
+        if (isSchemaNotLoaded && attempt < CHAT_MAX_RETRIES) {
+          console.debug(`[ProjectLayout] Chat schema not ready, retrying (${attempt}/${CHAT_MAX_RETRIES})...`)
+          await new Promise(resolve => setTimeout(resolve, CHAT_RETRY_DELAY_MS * attempt))
+          return initializeChatSession(attempt + 1)
+        }
+
+        console.error("[ProjectLayout] Failed to initialize chat session:", err)
       }
     }
 
     initializeChatSession()
+
+    return () => {
+      cancelled = true
+    }
   }, [projectId, studioChat, chatSessionId, setChatSessionId])
 
   // Session handlers
@@ -558,6 +589,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                     onWidthChange={setChatWidth}
                     workspaceId={typeof project.workspace === 'string' ? project.workspace : project.workspace?.id}
                     userId={session?.user?.id}
+                    projectId={projectId}
                     className="flex-1 min-h-0"
                     initialMessage={transitionState?.initialMessage}
                     inputContainerRef={chatInputContainerRef}
@@ -574,13 +606,71 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
           {/* Preview/Workspace Container - with border styling */}
           <div className="flex-1 min-w-0 overflow-hidden p-3 bg-muted/30">
+            {/* Preview Mode Toggle (subtle tabs) */}
+            <div className="flex items-center gap-1 mb-2">
+              <button
+                onClick={() => setPreviewMode('runtime')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'runtime'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Preview
+              </button>
+              <button
+                onClick={() => setPreviewMode('code')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'code'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Code
+              </button>
+              <button
+                onClick={() => setPreviewMode('workspace')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'workspace'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Workspace
+              </button>
+            </div>
+
             {/* Preview Frame with border */}
-            <div className="h-full w-full rounded-lg border border-border/40 bg-background shadow-sm overflow-hidden">
-              <ComposablePhaseView
-                phaseName={WORKSPACE_COMPOSITION_NAME}
-                feature={project}
-                className="h-full"
-              />
+            <div className="h-[calc(100%-32px)] w-full rounded-lg border border-border/40 bg-background shadow-sm overflow-hidden">
+              {previewMode === 'runtime' && (
+                <RuntimePreviewPanel
+                  projectId={projectId || ''}
+                  className="h-full"
+                  onError={(err) => {
+                    console.error('[ProjectLayout] Runtime error:', err)
+                    // Could show toast here
+                  }}
+                  onLoad={() => {
+                    console.log('[ProjectLayout] Runtime loaded successfully')
+                  }}
+                />
+              )}
+              {previewMode === 'code' && (
+                <CodeEditorPanel
+                  projectId={projectId || ''}
+                  className="h-full"
+                />
+              )}
+              {previewMode === 'workspace' && (
+                <ComposablePhaseView
+                  phaseName={WORKSPACE_COMPOSITION_NAME}
+                  feature={project}
+                  className="h-full"
+                />
+              )}
             </div>
           </div>
         </div>

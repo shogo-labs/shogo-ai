@@ -75,3 +75,5 @@ k8s/**/secrets.yaml
 apps/web/playwright-report/
 
 apps/web/test-results/
+
+workspaces/

@@ -50,18 +50,33 @@ COPY --from=builder /app/apps/api ./apps/api
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./
 
-# Change ownership to non-root user
+# Copy entrypoint script
+COPY apps/api/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Create workspaces directory placeholder
+RUN mkdir -p /app/workspaces
+
+# Create .claude directory for Claude Code SDK
+# Make /app and .claude world-writable so any user (including host UID override) can write
+RUN mkdir -p /app/.claude && \
+    chmod 777 /app /app/.claude
+
+# Change ownership to non-root user (but keep world-writable for host UID override)
 RUN chown -R appuser:appgroup /app
 
 # Switch to non-root user
+# Note: For development with mounted volumes, may need to run as root
+# or use matching UID via docker-compose user directive
 USER appuser
 
 # Environment defaults
 ENV NODE_ENV=production
 ENV API_PORT=8002
 
-# Expose API port
+# Expose API port and Vite runtime ports
 EXPOSE 8002
+EXPOSE 5200-5209
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
@@ -69,5 +84,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Run API server
 WORKDIR /app/apps/api
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["bun", "run", "src/server.ts"]
 

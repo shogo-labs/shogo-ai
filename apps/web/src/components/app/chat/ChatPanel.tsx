@@ -122,6 +122,8 @@ export interface ChatPanelProps {
   workspaceId?: string
   /** Current user ID for billing/credit tracking */
   userId?: string
+  /** Project ID for Claude Code working directory context */
+  projectId?: string
   /** Children to render inside ChatContextProvider */
   children?: React.ReactNode
   /** Optional class name */
@@ -414,6 +416,7 @@ export const ChatPanel = observer(function ChatPanel({
   phase,
   workspaceId,
   userId,
+  projectId,
   children,
   className,
   onSchemaRefresh,
@@ -1500,6 +1503,7 @@ export const ChatPanel = observer(function ChatPanel({
               ccSessionId: ccSessionIdRef.current,
               workspaceId,
               userId,
+              projectId,
             },
           }
         )
@@ -1507,7 +1511,7 @@ export const ChatPanel = observer(function ChatPanel({
         console.error("[ChatPanel] Failed to send message:", err)
       }
     },
-    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId]
+    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId, projectId]
   )
 
   // Handle form submit from ChatInput

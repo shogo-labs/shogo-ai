@@ -7,26 +7,95 @@
 #   docker-compose -f docker-compose.dev.yml down     # Stop all services
 #
 # Infra-only mode (run apps locally with native hot reload):
-#   docker-compose -f docker-compose.dev.yml up -d postgres redis minio
+#   docker-compose -f docker-compose.dev.yml up -d postgres redis minio traefik
 #   bun run dev  # Run all apps locally
 #
 # This config provides:
 #   - Hot reload for web (Vite), API (bun --watch), and MCP
 #   - Source code mounted as volumes
 #   - Infrastructure services (postgres, redis, minio) remain unchanged
+#   - Traefik reverse proxy for subdomain routing (project runtimes)
 #
 # Access points:
 #   - Web:      http://localhost:5173
 #   - API:      http://localhost:8002
 #   - MCP:      http://localhost:3100
+#   - Traefik:  http://localhost:8080 (dashboard)
+#   - Projects: http://{project-id}.localhost:80 (via Traefik)
 #   - Postgres: localhost:5432
 #   - Redis:    localhost:6379
 #   - MinIO:    http://localhost:9001 (console)
 #
 # Environment: Reads from .env.local (secrets like ANTHROPIC_API_KEY)
+#
+# Subdomain Routing:
+#   Traefik routes *.localhost to project Vite runtimes based on Host header.
+#   Example: project-abc.localhost -> localhost:5200 (project-abc's Vite)
+#
+#   For local development, add to /etc/hosts:
+#     127.0.0.1 *.localhost
+#   Or use dnsmasq to resolve all *.localhost to 127.0.0.1
 # =============================================================================
 
 services:
+  # ---------------------------------------------------------------------------
+  # Traefik Reverse Proxy (Subdomain Routing for Project Runtimes)
+  # ---------------------------------------------------------------------------
+  # Routes *.localhost to appropriate backend ports based on Host header.
+  # Used for isolating project Vite runtimes with subdomain-based routing.
+  #
+  # Dashboard: http://localhost:8080
+  # Project access: http://{project-id}.localhost:80
+  #
+  # Example routing:
+  #   project-abc.localhost -> host.docker.internal:5200
+  #   project-xyz.localhost -> host.docker.internal:5201
+  #
+  # Note: Project runtimes are spawned by RuntimeManager on host ports 5200-5299.
+  # Traefik routes to these via host.docker.internal.
+  # ---------------------------------------------------------------------------
+  traefik:
+    image: traefik:v3.0
+    container_name: shogo-traefik-dev
+    command:
+      # Enable API and dashboard
+      - "--api.insecure=true"
+      - "--api.dashboard=true"
+      # Docker provider for dynamic service discovery
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=shogo-dev-network"
+      # File provider for static route configuration
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
+      - "--providers.file.watch=true"
+      # Entrypoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Log level for debugging
+      - "--log.level=INFO"
+    ports:
+      # HTTP entrypoint for project subdomain routing
+      - "80:80"
+      # HTTPS entrypoint (optional, for future SSL)
+      - "443:443"
+      # Dashboard
+      - "8080:8080"
+    volumes:
+      # Docker socket for dynamic service discovery
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      # Dynamic configuration for project routing
+      - "./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro"
+    extra_hosts:
+      # Allow Traefik to route to host machine where Vite runtimes run
+      - "host.docker.internal:host-gateway"
+    networks:
+      - shogo-dev-network
+    labels:
+      # Enable Traefik dashboard at traefik.localhost
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+
   # ---------------------------------------------------------------------------
   # PostgreSQL Database (Control Plane + Workspace Data)
   # ---------------------------------------------------------------------------
@@ -128,6 +197,8 @@ services:
     image: oven/bun:1.2-alpine
     container_name: shogo-api-dev
     working_dir: /app
+    # Run as non-root user (required for Claude Code --dangerously-skip-permissions)
+    user: "1000:1000"
     command: sh -c "bun install && cd packages/state-api && bun run build && cd /app && bun --watch apps/api/src/server.ts"
     ports:
       - "8002:8002"
@@ -144,6 +215,8 @@ services:
       BETTER_AUTH_URL: http://localhost:8002
       REDIS_URL: redis://redis:6379
       ALLOWED_ORIGINS: http://localhost:5173,http://localhost:3000
+      # Agent persona: 'wavesmith' (default) or 'code'
+      SHOGO_AGENT: code
       # ANTHROPIC_API_KEY loaded from .env.local via env_file
     volumes:
       # Mount source code for hot reload

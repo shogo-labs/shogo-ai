@@ -23,12 +23,14 @@ import {
   HeadObjectCommand,
   DeleteObjectCommand,
 } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
-// Lazy-initialized S3 client
+// Lazy-initialized S3 clients
 let s3Client: S3Client | null = null
+let s3PublicClient: S3Client | null = null
 
 /**
- * Get or create the S3 client.
+ * Get or create the S3 client for internal operations.
  * Lazily initialized to avoid errors when S3 isn't configured.
  *
  * Supports MinIO/LocalStack via S3_ENDPOINT env var.
@@ -61,10 +63,44 @@ export function getS3Client(): S3Client {
 }
 
 /**
- * Reset the S3 client (useful for testing with different configs).
+ * Get or create the S3 client for public-facing presigned URLs.
+ * Uses S3_PUBLIC_ENDPOINT if set, otherwise falls back to S3_ENDPOINT.
+ *
+ * This is needed in Docker environments where the internal endpoint (e.g., http://minio:9000)
+ * differs from the browser-accessible endpoint (e.g., http://localhost:9000).
+ */
+export function getS3PublicClient(): S3Client {
+  if (!s3PublicClient) {
+    const region = process.env.AWS_REGION || 'us-east-1'
+    // Prefer public endpoint for browser-accessible URLs, fall back to internal endpoint
+    const endpoint = process.env.S3_PUBLIC_ENDPOINT || process.env.S3_ENDPOINT
+    const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === 'true'
+
+    const config: ConstructorParameters<typeof S3Client>[0] = {
+      region,
+      ...(endpoint && {
+        endpoint,
+        forcePathStyle: forcePathStyle || !!endpoint,
+      }),
+      ...(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY && {
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        },
+      }),
+    }
+
+    s3PublicClient = new S3Client(config)
+  }
+  return s3PublicClient
+}
+
+/**
+ * Reset the S3 clients (useful for testing with different configs).
  */
 export function resetS3Client(): void {
   s3Client = null
+  s3PublicClient = null
 }
 
 /**
@@ -239,4 +275,176 @@ export async function deleteFromS3(key: string): Promise<void> {
     Bucket: bucket,
     Key: key,
   }))
+}
+
+// ============================================================================
+// Pre-signed URL helpers
+// ============================================================================
+
+/**
+ * Configuration for pre-signed URL generation.
+ */
+export interface PresignOptions {
+  /** Bucket name (overrides default from env) */
+  bucket?: string
+  /** URL expiration in seconds (default: 3600 = 1 hour) */
+  expiresIn?: number
+  /** Content type for PUT requests */
+  contentType?: string
+}
+
+/**
+ * Generate a pre-signed URL for reading (GET) an object from S3.
+ * The URL can be used directly by browsers to fetch the file.
+ *
+ * Uses S3_PUBLIC_ENDPOINT for browser-accessible URLs (falls back to S3_ENDPOINT).
+ *
+ * @param key - S3 object key (full path including any prefix)
+ * @param options - Optional configuration
+ * @returns Pre-signed URL string
+ */
+export async function getPresignedReadUrl(
+  key: string,
+  options: PresignOptions = {}
+): Promise<string> {
+  // Use public client for browser-accessible URLs
+  const client = getS3PublicClient()
+  const bucket = options.bucket || getS3Bucket()
+  const expiresIn = options.expiresIn || 3600
+
+  const command = new GetObjectCommand({
+    Bucket: bucket,
+    Key: key,
+  })
+
+  return getSignedUrl(client, command, { expiresIn })
+}
+
+/**
+ * Generate a pre-signed URL for writing (PUT) an object to S3.
+ * The URL can be used directly by browsers to upload files.
+ *
+ * Uses S3_PUBLIC_ENDPOINT for browser-accessible URLs (falls back to S3_ENDPOINT).
+ *
+ * @param key - S3 object key (full path including any prefix)
+ * @param options - Optional configuration
+ * @returns Pre-signed URL string
+ */
+export async function getPresignedWriteUrl(
+  key: string,
+  options: PresignOptions = {}
+): Promise<string> {
+  // Use public client for browser-accessible URLs
+  const client = getS3PublicClient()
+  const bucket = options.bucket || getS3Bucket()
+  const expiresIn = options.expiresIn || 3600
+
+  const command = new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    ...(options.contentType && { ContentType: options.contentType }),
+  })
+
+  return getSignedUrl(client, command, { expiresIn })
+}
+
+/**
+ * Read text content directly from S3.
+ * Useful for reading non-JSON files like source code.
+ *
+ * @param key - S3 object key
+ * @param bucket - Optional bucket override
+ * @returns File contents as string
+ */
+export async function readTextFromS3(key: string, bucket?: string): Promise<string> {
+  const client = getS3Client()
+  const effectiveBucket = bucket || getS3Bucket()
+
+  const response = await client.send(new GetObjectCommand({
+    Bucket: effectiveBucket,
+    Key: key,
+  }))
+
+  const body = await response.Body?.transformToString()
+  if (body === undefined) {
+    throw new Error(`Empty response from S3 for key: ${key}`)
+  }
+
+  return body
+}
+
+/**
+ * Write text content directly to S3.
+ * Useful for writing non-JSON files like source code.
+ *
+ * @param key - S3 object key
+ * @param content - Text content to write
+ * @param contentType - MIME type (default: text/plain)
+ * @param bucket - Optional bucket override
+ */
+export async function writeTextToS3(
+  key: string,
+  content: string,
+  contentType = 'text/plain',
+  bucket?: string
+): Promise<void> {
+  const client = getS3Client()
+  const effectiveBucket = bucket || getS3Bucket()
+
+  await client.send(new PutObjectCommand({
+    Bucket: effectiveBucket,
+    Key: key,
+    Body: content,
+    ContentType: contentType,
+  }))
+}
+
+/**
+ * List all objects (files) recursively under a prefix.
+ * Unlike listFilesInS3, this includes nested files with their full relative paths.
+ *
+ * @param prefix - S3 key prefix to list under
+ * @param bucket - Optional bucket override
+ * @returns Array of object keys relative to the prefix
+ */
+export async function listAllObjectsInS3(prefix: string, bucket?: string): Promise<Array<{
+  key: string
+  relativePath: string
+  size: number
+  lastModified?: Date
+}>> {
+  const client = getS3Client()
+  const effectiveBucket = bucket || getS3Bucket()
+
+  const objects: Array<{
+    key: string
+    relativePath: string
+    size: number
+    lastModified?: Date
+  }> = []
+
+  let continuationToken: string | undefined
+
+  do {
+    const response = await client.send(new ListObjectsV2Command({
+      Bucket: effectiveBucket,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+    }))
+
+    for (const object of response.Contents || []) {
+      if (object.Key) {
+        objects.push({
+          key: object.Key,
+          relativePath: object.Key.slice(prefix.length),
+          size: object.Size || 0,
+          lastModified: object.LastModified,
+        })
+      }
+    }
+
+    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined
+  } while (continuationToken)
+
+  return objects
 }

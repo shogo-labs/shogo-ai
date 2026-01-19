@@ -93,7 +93,8 @@ const eagerCollections: EagerCollectionsConfig = {
   teams: [],
   multiTenancy: [],
   chat: [],
-  studioChat: [],
+  // studioChat needs to load sessions for chat persistence to work
+  studioChat: ['chatSessionCollection', 'chatMessageCollection'],
   auth: [],
 }
 

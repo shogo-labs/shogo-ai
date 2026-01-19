@@ -13,6 +13,7 @@ import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { auth } from './auth'
 import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
+import { PERSONA_PROMPTS, isAgentPersona, type AgentPersona } from './prompts/persona-prompts'
 import { getPriceId } from './config/stripe-prices'
 import { processInterleavedStream, finalizeCurrentText } from './lib/interleaved-stream'
 import { billingDomain } from '@shogo/state-api/billing/domain'
@@ -22,12 +23,18 @@ import { createBackendRegistry } from '@shogo/state-api/query/registry'
 import { SqlBackend } from '@shogo/state-api/query/backends/sql'
 import { NullPersistence } from '@shogo/state-api/persistence/null'
 import { publishRoutes } from './routes/publish'
+import { runtimeRoutes } from './routes/runtime'
+import { filesRoutes } from './routes/files'
+import { createRuntimeManager, type IRuntimeManager } from '@shogo/state-api/runtime'
 
 // Billing domain store singleton for webhook handling
 let billingStore: ReturnType<typeof billingDomain.createStore> | null = null
 
 // Studio core domain store singleton for project operations
 let studioCoreStore: ReturnType<typeof studioCoreDomain.createStore> | null = null
+
+// Runtime manager singleton for project Vite runtimes
+let runtimeManager: IRuntimeManager | null = null
 
 // MCP session management for API → MCP calls
 let mcpSessionId: string | null = null
@@ -152,6 +159,35 @@ async function getStudioCoreStore(): Promise<ReturnType<typeof studioCoreDomain.
   })
 
   return studioCoreStore
+}
+
+/**
+ * Get or create the RuntimeManager singleton.
+ *
+ * Configurable via environment variables:
+ * - RUNTIME_BASE_PORT: Base port for Vite runtimes (default: 5200)
+ * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: 10)
+ * - RUNTIME_DOMAIN_SUFFIX: Domain suffix for URLs (default: localhost)
+ * - WORKSPACES_DIR: Directory containing project workspaces (default: PROJECT_ROOT/workspaces)
+ */
+function getRuntimeManager(): IRuntimeManager {
+  if (!runtimeManager) {
+    const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    runtimeManager = createRuntimeManager({
+      basePort: parseInt(process.env.RUNTIME_BASE_PORT || '5200', 10),
+      maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
+      domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
+      workspacesDir,
+      templateDir: '_template',
+    })
+    console.log('[Runtime] RuntimeManager initialized:', {
+      basePort: process.env.RUNTIME_BASE_PORT || '5200',
+      maxRuntimes: process.env.RUNTIME_MAX_COUNT || '10',
+      domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
+      workspacesDir,
+    })
+  }
+  return runtimeManager
 }
 
 /**
@@ -415,18 +451,29 @@ const virtualToolsServer = createSdkMcpServer({
   ]
 })
 
-// Create Claude Code provider scoped to this project
-// This enables:
-// - .claude/skills/ from the project
-// - .mcp.json MCP servers (wavesmith)
-// - Project-specific settings
-const claudeCode = createClaudeCode({
+// Get workspaces directory for project-scoped operations
+const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+
+/**
+ * Create Claude Code provider with optional project-scoped working directory.
+ * When projectId is provided, cwd is set to the project's workspace directory.
+ * This enables the code agent to read/write files in the correct project.
+ */
+function createProjectScopedClaudeCode(projectId?: string) {
+  // Determine working directory - project workspace if projectId provided, else project root
+  const cwd = projectId
+    ? resolve(WORKSPACES_DIR, projectId)
+    : PROJECT_ROOT
+
+  console.log(`[ClaudeCode] Creating provider with cwd: ${cwd}${projectId ? ` (project: ${projectId})` : ' (platform)'}`);
+
+  return createClaudeCode({
   defaultSettings: {
     // Enable streaming input - REQUIRED for hooks to fire
     // See: https://ai-sdk.dev/providers/claude-code (hooks require streaming input)
     streamingInput: 'always',
-    // Set working directory to project root
-    cwd: PROJECT_ROOT,
+    // Set working directory - project workspace or project root
+    cwd,
     // Load project settings (picks up .claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
     // MCP servers - Wavesmith for data + Virtual tools for client-side effects
@@ -609,7 +656,11 @@ const claudeCode = createClaudeCode({
       }],
     },
   },
-})
+  })
+}
+
+// Default Claude Code instance for platform-level operations (skills, non-project chats)
+const claudeCode = createProjectScopedClaudeCode()
 
 /**
  * Base system prompt for the Wavesmith app builder assistant.
@@ -673,7 +724,23 @@ You can help users:
 - Explain data modeling concepts and best practices
 - Navigate between pipeline phases when requested
 
-**Skill Assessment:** When the user's request involves displaying data, changing layouts, building views, or configuring workspace panels, consider invoking the /view-builder skill. This skill provides structured guidance for workspace composition including how to query component aiGuidance for configuration patterns.
+**Skill Invocation (CRITICAL):**
+When a user's message starts with a slash command like "/view-builder" or "/platform-feature-discovery", you MUST immediately invoke the Skill tool before doing anything else.
+
+Example:
+- User: "/view-builder Create a todo app"
+- You: Call the Skill tool with skill="view-builder"
+- The skill will load and provide specific instructions to follow
+
+Available skills:
+- /view-builder - For displaying data, layouts, views, workspace panels
+- /platform-feature-discovery - Start the feature pipeline (discovery phase)
+- /platform-feature-analysis - Run codebase analysis
+- /platform-feature-classification - Classify feature requirements
+- /platform-feature-design - Design schemas and models
+- /platform-feature-spec - Create implementation specs
+- /platform-feature-tests - Generate test specifications
+- /platform-feature-implementation - Execute TDD implementation
 
 When users ask to create schemas or data, use the appropriate MCP tools.
 When users ask to navigate to a phase, use the navigate_to_phase tool.
@@ -681,18 +748,30 @@ When users ask about phase views, compositions, or UI sections, query the compon
 Be concise and practical. Show tool results when relevant.`
 
 /**
- * Build a dynamic system prompt based on the current pipeline phase.
+ * Build a dynamic system prompt based on agent persona and pipeline phase.
  *
  * @param phase - The current pipeline phase, or null/undefined for generic prompt
- * @returns The complete system prompt with base prompt and optional phase-specific guidance
+ * @param agentPersona - The agent persona ('wavesmith' or 'code'), defaults to 'wavesmith'
+ * @returns The complete system prompt with persona guidance, base prompt, and optional phase-specific guidance
  */
-export function buildSystemPrompt(phase: Phase | null | undefined): string {
-  // Always start with the base Wavesmith tool prompt
-  let systemPrompt = BASE_SYSTEM_PROMPT
+export function buildSystemPrompt(
+  phase: Phase | null | undefined,
+  agentPersona?: AgentPersona | null
+): string {
+  // Validate and default persona
+  const persona: AgentPersona = agentPersona && isAgentPersona(agentPersona) ? agentPersona : 'wavesmith'
+
+  // Code agent gets a completely different prompt (no Wavesmith tools)
+  if (persona === 'code') {
+    return PERSONA_PROMPTS.code
+  }
+
+  // Wavesmith agent gets persona intro + base prompt + phase guidance
+  let systemPrompt = `${PERSONA_PROMPTS.wavesmith}\n\n${BASE_SYSTEM_PROMPT}`
 
   // Add phase-specific guidance if a valid phase is provided
   if (phase && isPhase(phase)) {
-    systemPrompt = `${BASE_SYSTEM_PROMPT}\n\n${PHASE_PROMPTS[phase]}`
+    systemPrompt = `${systemPrompt}\n\n${PHASE_PROMPTS[phase]}`
   }
 
   return systemPrompt
@@ -783,6 +862,129 @@ app.post('/api/projects/:projectId/unpublish', async (c) => {
   const router = publishRoutes({ studioCore })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/unpublish`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// Runtime routes - Project Vite runtime management
+// =============================================================================
+
+// Start project runtime
+app.post('/api/projects/:projectId/runtime/start', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/runtime/start`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
+// Stop project runtime
+app.post('/api/projects/:projectId/runtime/stop', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/runtime/stop`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
+// Get project runtime status
+app.get('/api/projects/:projectId/runtime/status', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/runtime/status`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Get project sandbox URL for iframe embedding
+app.get('/api/projects/:projectId/sandbox/url', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/sandbox/url`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// Files routes - Project file listing and reading
+// =============================================================================
+
+// List project files
+app.get('/api/projects/:projectId/files', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ studioCore, workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/files`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Get file content
+app.get('/api/projects/:projectId/files/*', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ studioCore, workspacesDir })
+  const projectId = c.req.param('projectId')
+  const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/files/${filePath}`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Write file content
+app.put('/api/projects/:projectId/files/*', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ studioCore, workspacesDir })
+  const projectId = c.req.param('projectId')
+  const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/files/${filePath}`
+  const newReq = new Request(url.toString(), {
+    method: 'PUT',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// S3 Files routes - Project file listing and access via S3 pre-signed URLs
+// =============================================================================
+
+// List project files from S3
+app.get('/api/projects/:projectId/s3/files', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ studioCore, workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/s3/files`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Get pre-signed URLs for S3 file read/write
+app.post('/api/projects/:projectId/s3/presign', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ studioCore, workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/s3/presign`
   const newReq = new Request(url.toString(), {
     method: 'POST',
     headers: c.req.raw.headers,
@@ -917,7 +1119,13 @@ function calculateCreditCost(totalTokens: number): number {
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, phase, ccSessionId, workspaceId, userId } = await c.req.json()
+    const { messages, phase, ccSessionId, workspaceId, userId, projectId } = await c.req.json()
+
+    // Create project-scoped Claude Code instance if projectId is provided
+    // This sets the cwd to the project's workspace directory for file operations
+    const scopedClaudeCode = projectId
+      ? createProjectScopedClaudeCode(projectId)
+      : claudeCode
 
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
     // This prevents users from sending messages when they have no credits remaining
@@ -960,8 +1168,9 @@ app.post('/api/chat', async (c) => {
       }
     }
 
-    // Build dynamic system prompt based on current pipeline phase
-    const systemPrompt = buildSystemPrompt(phase)
+    // Build dynamic system prompt based on agent persona (env var) and pipeline phase
+    const agentPersona = process.env.SHOGO_AGENT as AgentPersona | undefined
+    const systemPrompt = buildSystemPrompt(phase, agentPersona)
 
     // Pass resume parameter if ccSessionId provided (task-cc-api-endpoint)
     // This enables session continuity in Claude Code
@@ -1055,7 +1264,7 @@ app.post('/api/chat', async (c) => {
     const result = streamText({
       // Type assertion for ai-sdk-provider-claude-code compatibility with ai@6
       // task-api-convert-images: streamingInput required for image support
-      model: claudeCode('opus', {
+      model: scopedClaudeCode('opus', {
         ...modelSettings,
         streamingInput: 'always',  // Required for image parts to be sent to Claude
       }) as Parameters<typeof streamText>[0]['model'],
@@ -1484,9 +1693,37 @@ app.post('/webhooks/stripe', async (c) => {
   }
 })
 
+// =============================================================================
+// Graceful shutdown handling
+// =============================================================================
+
+// Stop all runtimes on server shutdown
+async function gracefulShutdown(signal: string) {
+  console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
+
+  // Stop all project runtimes
+  if (runtimeManager) {
+    console.log('[Server] Stopping all project runtimes...')
+    try {
+      await runtimeManager.stopAll()
+      console.log('[Server] All runtimes stopped')
+    } catch (err: any) {
+      console.error('[Server] Error stopping runtimes:', err.message)
+    }
+  }
+
+  console.log('[Server] Shutdown complete')
+  process.exit(0)
+}
+
+// Register shutdown handlers
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+
 // Start server
 console.log(`🚀 API server running on http://localhost:${API_PORT}`)
 console.log(`   Chat endpoint: POST http://localhost:${API_PORT}/api/chat`)
+console.log(`   Runtime endpoints: POST/GET http://localhost:${API_PORT}/api/projects/:id/runtime/*`)
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 
 export default {
