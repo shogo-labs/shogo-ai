@@ -370,6 +370,10 @@ module "knative" {
   # Scale-to-zero configuration
   scale_to_zero_grace_period = "60s"
 
+  # Enable PVC support for pod-per-project architecture
+  # Required for project pods to mount persistent volumes for code storage
+  enable_pvc_support = true
+
   # SSL certificates for HTTPS termination on ALB
   # Primary: *.shogo.ai for platform
   ssl_certificate_arn = var.ssl_certificate_domain != "" ? data.aws_acm_certificate.ssl[0].arn : ""
@@ -593,6 +597,17 @@ resource "null_resource" "knative_services" {
                       secretKeyRef:
                         name: api-secrets
                         key: BETTER_AUTH_SECRET
+                  # Pod-per-project configuration
+                  - name: PROJECT_RUNTIME_IMAGE
+                    value: "${local.ecr_registry}/shogo/project-runtime:${local.image_tag}"
+                  - name: PROJECT_NAMESPACE
+                    value: "shogo-staging-workspaces"
+                  - name: ANTHROPIC_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: ANTHROPIC_API_KEY
+                        optional: true
                 resources:
                   requests:
                     memory: "256Mi"

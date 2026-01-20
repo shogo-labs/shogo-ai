@@ -196,6 +196,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build and push Project Runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/project-runtime/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/project-runtime:${{ needs.setup.outputs.environment }}-latest
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/project-runtime:${{ needs.setup.outputs.environment }}-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   # ===========================================================================
   # Stage 3: Deploy to EKS
   # ===========================================================================

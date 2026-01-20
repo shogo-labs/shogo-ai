@@ -145,7 +145,8 @@ module "ecr" {
   repositories = [
     "shogo-mcp",
     "shogo-api",
-    "shogo-web"
+    "shogo-web",
+    "project-runtime"
   ]
 }
 
@@ -362,6 +363,10 @@ module "knative" {
 
   # Scale-to-zero configuration
   scale_to_zero_grace_period = "60s"
+
+  # Enable PVC support for pod-per-project architecture
+  # Required for project pods to mount persistent volumes for code storage
+  enable_pvc_support = true
 
   # SSL certificates for HTTPS termination on ALB
   # Primary: *.shogo.ai for platform
