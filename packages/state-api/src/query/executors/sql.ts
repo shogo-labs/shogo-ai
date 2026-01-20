@@ -10,7 +10,8 @@
  */
 
 import { Condition, FieldCondition, CompoundCondition } from "../ast/types"
-import type { QueryOptions, OrderByClause } from "../backends/types"
+import type { SubqueryCondition, ParsedCondition } from "../ast/types"
+import type { QueryOptions, OrderByClause, ModelResolver, CompileContext } from "../backends/types"
 import type { IQueryExecutor } from "./types"
 import type { SqlBackend } from "../backends/sql"
 import type { ISqlExecutor } from "../execution/types"
@@ -26,10 +27,24 @@ import {
 } from "../execution/utils"
 import { toSnakeCase, type ArrayReferenceMetadata } from "../../ddl/utils"
 
+/**
+ * Metadata for a model in the schema.
+ * Used by ModelResolver to resolve table/column names for subqueries.
+ */
+export interface SchemaModelMetadata {
+  /** SQL table name (without quotes) */
+  tableName: string
+  /** Column → property mapping */
+  columnPropertyMap: ColumnPropertyMap
+  /** Identifier field name (usually 'id') */
+  identifierField: string
+}
+
 export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
   readonly executorType = 'remote' as const
   private propertyColumnMap: Map<string, string> // camelCase → snake_case (derived)
   private namespace?: string // Extracted from qualified table name
+  private modelResolver?: ModelResolver // Lazy-created resolver for subqueries
 
   constructor(
     private tableName: string,
@@ -38,12 +53,87 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     private columnPropertyMap: ColumnPropertyMap, // snake_case → camelCase (provided)
     private dialect: SqlDialect,
     private propertyTypes: PropertyTypeMap,
-    private arrayReferences?: Record<string, ArrayReferenceMetadata>
+    private arrayReferences?: Record<string, ArrayReferenceMetadata>,
+    private schemaModels?: Map<string, SchemaModelMetadata> // For subquery support
   ) {
     // Derive inverse map for input normalization
     this.propertyColumnMap = this.invertMap(columnPropertyMap)
     // Extract namespace from qualified table name for junction table queries
     this.namespace = this.extractNamespace(tableName)
+  }
+
+  /**
+   * Create a ModelResolver for subquery compilation.
+   * Lazily created and cached.
+   */
+  private getModelResolver(): ModelResolver | undefined {
+    if (this.modelResolver) {
+      return this.modelResolver
+    }
+
+    if (!this.schemaModels || this.schemaModels.size === 0) {
+      return undefined
+    }
+
+    this.modelResolver = this.createModelResolver()
+    return this.modelResolver
+  }
+
+  /**
+   * Create a ModelResolver from schema model metadata.
+   */
+  private createModelResolver(): ModelResolver {
+    const schemaModels = this.schemaModels!
+    const namespace = this.namespace
+    const dialect = this.dialect
+
+    return {
+      getTableName: (modelName: string): string => {
+        const meta = schemaModels.get(modelName)
+        const baseName = meta?.tableName ?? `${modelName.toLowerCase()}s`
+
+        // Apply namespace and quoting
+        if (namespace) {
+          if (dialect === 'pg') {
+            return `"${namespace}"."${baseName}"`
+          } else {
+            return `"${namespace}__${baseName}"`
+          }
+        }
+
+        return dialect === 'sqlite' ? `\`${baseName}\`` : `"${baseName}"`
+      },
+
+      getColumnName: (modelName: string, propertyName: string): string => {
+        const meta = schemaModels.get(modelName)
+        if (meta) {
+          // Find the column name from the inverse of columnPropertyMap
+          for (const [column, property] of Object.entries(meta.columnPropertyMap)) {
+            if (property === propertyName) {
+              return column
+            }
+          }
+        }
+        // Fallback to snake_case conversion
+        return toSnakeCase(propertyName)
+      },
+
+      getIdentifierField: (modelName: string): string => {
+        const meta = schemaModels.get(modelName)
+        return meta?.identifierField ?? 'id'
+      }
+    }
+  }
+
+  /**
+   * Get compile context for SQL compilation.
+   * Includes ModelResolver if schema models are available.
+   */
+  private getCompileContext(): CompileContext {
+    return {
+      modelResolver: this.getModelResolver(),
+      dialect: this.dialect
+    }
   }
 
   /**
@@ -78,16 +168,17 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     }
   }
 
-  async select(ast: Condition, options?: QueryOptions): Promise<T[]> {
+  async select(ast: ParsedCondition, options?: QueryOptions): Promise<T[]> {
     // Normalize input: convert camelCase field names to snake_case
     const normalizedAst = this.normalizeAstFieldNames(ast)
     const normalizedOptions = this.normalizeInputOptions(options)
 
-    // Compile to SQL
+    // Compile to SQL with context for subquery support
     const [whereSql, params] = this.sqlBackend.compileSelect(
       normalizedAst,
       this.tableName,
-      normalizedOptions
+      normalizedOptions,
+      this.getCompileContext()
     )
 
     // Build complete SELECT statement
@@ -108,18 +199,22 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     return this.hydrateArrayReferences(entities)
   }
 
-  async first(ast: Condition, options?: QueryOptions): Promise<T | undefined> {
+  async first(ast: ParsedCondition, options?: QueryOptions): Promise<T | undefined> {
     // Optimization: Force take:1
     const results = await this.select(ast, { ...options, take: 1 })
     return results[0]
   }
 
-  async count(ast: Condition): Promise<number> {
+  async count(ast: ParsedCondition): Promise<number> {
     // Normalize input AST field names
     const normalizedAst = this.normalizeAstFieldNames(ast)
 
-    // Compile COUNT(*) query
-    const [sql, params] = this.sqlBackend.compileCount(normalizedAst, this.tableName)
+    // Compile COUNT(*) query with context for subquery support
+    const [sql, params] = this.sqlBackend.compileCount(
+      normalizedAst,
+      this.tableName,
+      this.getCompileContext()
+    )
 
     // Execute and extract count value
     const rows = await this.executor.execute([sql, params])
@@ -130,12 +225,16 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     return typeof countValue === 'string' ? parseInt(countValue, 10) : (countValue as number)
   }
 
-  async exists(ast: Condition): Promise<boolean> {
+  async exists(ast: ParsedCondition): Promise<boolean> {
     // Normalize input AST field names
     const normalizedAst = this.normalizeAstFieldNames(ast)
 
-    // Compile EXISTS query (LIMIT 1 optimization)
-    const [sql, params] = this.sqlBackend.compileExists(normalizedAst, this.tableName)
+    // Compile EXISTS query with context for subquery support
+    const [sql, params] = this.sqlBackend.compileExists(
+      normalizedAst,
+      this.tableName,
+      this.getCompileContext()
+    )
 
     // Execute and check if any rows returned
     const rows = await this.executor.execute([sql, params])
@@ -220,9 +319,21 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
 
   /**
    * Normalize AST field names and values for SQL dialect.
-   * Recursively transforms all FieldCondition nodes in the AST.
+   * Recursively transforms all FieldCondition and SubqueryCondition nodes in the AST.
    */
-  private normalizeAstFieldNames(ast: Condition): Condition {
+  private normalizeAstFieldNames(ast: Condition | SubqueryCondition): Condition | SubqueryCondition {
+    // Check if this is a SubqueryCondition
+    if (this.isSubqueryCondition(ast)) {
+      // Normalize the outer field name only
+      // Inner filter fields are normalized by the backend using ModelResolver
+      return {
+        type: 'subquery',
+        field: this.normalizeInputField(ast.field),
+        operator: ast.operator,
+        subquery: ast.subquery  // Don't normalize inner filter here
+      } as SubqueryCondition
+    }
+
     // Check if this is a FieldCondition (has 'field' property)
     if ('field' in ast && typeof ast.field === 'string') {
       const originalField = ast.field
@@ -234,15 +345,23 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
     }
 
     // Check if this is a compound condition (has 'value' array of conditions)
+    // Note: Cast is safe because our backends handle both Condition and SubqueryCondition
     if ('value' in ast && Array.isArray(ast.value)) {
-      return new CompoundCondition(
-        (ast as any).operator,
-        ast.value.map((child: Condition) => this.normalizeAstFieldNames(child))
-      )
+      const normalizedChildren = ast.value.map((child: Condition) =>
+        this.normalizeAstFieldNames(child)
+      ) as Condition[]
+      return new CompoundCondition((ast as any).operator, normalizedChildren)
     }
 
     // Return as-is if not a field or compound condition
     return ast
+  }
+
+  /**
+   * Check if an AST node is a SubqueryCondition.
+   */
+  private isSubqueryCondition(ast: any): ast is SubqueryCondition {
+    return ast && typeof ast === 'object' && ast.type === 'subquery'
   }
 
   /**
@@ -556,7 +675,7 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
   /**
    * Update multiple entities matching a filter.
    */
-  async updateMany(ast: Condition, changes: Partial<T>): Promise<number> {
+  async updateMany(ast: ParsedCondition, changes: Partial<T>): Promise<number> {
     // Convert changes to columns
     const propertyColumnMapObj = this.getPropertyColumnMapObject()
     const columns = entityToColumns(changes, propertyColumnMapObj)
@@ -609,7 +728,7 @@ export class SqlQueryExecutor<T> implements IQueryExecutor<T> {
   /**
    * Delete multiple entities matching a filter.
    */
-  async deleteMany(ast: Condition): Promise<number> {
+  async deleteMany(ast: ParsedCondition): Promise<number> {
     // Normalize the filter AST
     const normalizedAst = this.normalizeAstFieldNames(ast)
 

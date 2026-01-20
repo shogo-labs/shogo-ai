@@ -63,8 +63,15 @@ export type {
   QueryFilter,
   OperatorExpression,
   LogicalExpression,
-  SerializedCondition
+  SerializedCondition,
+  // Subquery types
+  SubqueryExpression,
+  InOperatorValue,
+  SerializedSubquery,
+  SubqueryCondition
 } from './types'
+
+export { isSubqueryExpression } from './types'
 
 // ============================================================================
 // Parser Exports

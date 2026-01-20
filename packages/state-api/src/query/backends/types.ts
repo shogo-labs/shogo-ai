@@ -19,7 +19,7 @@
  * - Types-only module with no runtime dependencies
  */
 
-import type { Condition } from '../ast/types'
+import type { Condition, ParsedCondition } from '../ast/types'
 import type { ISqlExecutor } from '../execution/types'
 import { IQueryExecutor } from '../executors'
 
@@ -49,6 +49,92 @@ export interface DDLExecutionResult {
   executed: number
   /** Error message if execution failed */
   error?: string
+}
+
+// ============================================================================
+// Model Resolution for Subqueries
+// ============================================================================
+
+/**
+ * Resolves model metadata for subquery compilation.
+ *
+ * @remarks
+ * When compiling subqueries, the backend needs to resolve table/column names
+ * for the target model. This interface abstracts that resolution so it can be
+ * provided by the executor (which has access to schema context).
+ *
+ * @example
+ * ```typescript
+ * const resolver: ModelResolver = {
+ *   getTableName: (model) => `"${model.toLowerCase()}s"`,
+ *   getColumnName: (model, prop) => camelToSnake(prop),
+ *   getIdentifierField: () => 'id'
+ * }
+ * ```
+ */
+export interface ModelResolver {
+  /**
+   * Get the SQL table name for a model.
+   * Should include namespace/schema prefix and proper quoting.
+   *
+   * @param modelName - Model name (e.g., 'User', 'Organization')
+   * @returns Quoted table name (e.g., '"users"', '"myschema"."organizations"')
+   */
+  getTableName(modelName: string): string
+
+  /**
+   * Get the SQL column name for a model's property.
+   *
+   * @param modelName - Model name
+   * @param propertyName - Property name in camelCase
+   * @returns Column name in snake_case
+   */
+  getColumnName(modelName: string, propertyName: string): string
+
+  /**
+   * Get the identifier field name for a model.
+   * Used to select the ID column in subqueries.
+   *
+   * @param modelName - Model name
+   * @returns Identifier field name (typically 'id')
+   */
+  getIdentifierField(modelName: string): string
+}
+
+/**
+ * Context for SQL compilation, including subquery support.
+ *
+ * @remarks
+ * Passed to backend compilation methods to provide:
+ * - ModelResolver for subquery table/column resolution
+ * - Parameter offset for correct placeholder numbering across nested subqueries
+ * - Dialect for SQL syntax variations
+ * - Joins array for tracking required JOINs
+ */
+export interface CompileContext {
+  /**
+   * Resolver for model metadata.
+   * Required when the AST contains SubqueryConditions.
+   */
+  modelResolver?: ModelResolver
+
+  /**
+   * Starting offset for SQL parameter placeholders.
+   * Used to continue numbering across nested subqueries.
+   * E.g., if outer query uses $1-$3, inner query starts at paramOffset=3.
+   */
+  paramOffset?: number
+
+  /**
+   * SQL dialect for syntax variations.
+   */
+  dialect?: 'pg' | 'sqlite'
+
+  /**
+   * Array to track required JOINs.
+   * Populated by the interpreter when dot-notation fields are encountered.
+   */
+  joins?: string[]
 }
 
 // ============================================================================
@@ -257,7 +343,7 @@ export interface IBackend {
    * with unsupported operators or features.
    */
   execute<T>(
-    ast: Condition,
+    ast: ParsedCondition,
     collection: T[],
     options?: QueryOptions
   ): Promise<QueryResult<T>>
