@@ -442,14 +442,12 @@ export const ChartSection = observer(function ChartSection({
     const collection = domainStore[collectionName]
     if (!collection) return []
 
-    // Fetch data
+    // Fetch data (sync - collections always have .all())
     let rawData: any[] = []
     if (feature && collection.findBySession) {
       rawData = collection.findBySession(feature.id) ?? []
     } else if (collection.all) {
       rawData = collection.all() ?? []
-    } else if (collection.query) {
-      rawData = collection.query().toArray() ?? []
     }
 
     return extractDataPoints(rawData, xField, yField)
