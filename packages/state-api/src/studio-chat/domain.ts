@@ -34,6 +34,7 @@ export const StudioChatDomain = scope({
     role: "'user' | 'assistant'",
     content: "string",
     "imageData?": "string", // Optional data URL for image attachments (data:image/{type};base64,{data})
+    "parts?": "string", // JSON-serialized parts array for tool call rendering on reload
     createdAt: "number",
   },
 
@@ -283,6 +284,7 @@ export const studioChatDomain = domain({
           role: "user" | "assistant"
           content: string
           imageData?: string // Optional data URL for image attachments
+          parts?: string // Optional JSON-serialized parts array for tool call rendering
         }): Promise<any> {
           const session = self.chatSessionCollection.get(data.sessionId)
           if (!session) {
@@ -303,6 +305,7 @@ export const studioChatDomain = domain({
             role: data.role,
             content: data.content,
             imageData: data.imageData,
+            parts: data.parts,
             createdAt: now,
           })
         },

@@ -270,6 +270,66 @@ function mapToolCallState(state: string | undefined): ToolCallState {
 }
 
 // ============================================================
+// Parts Serialization Helpers (for tool call rendering on reload)
+// ============================================================
+
+/**
+ * Check if a message has tool calls worth persisting.
+ */
+function hasToolCalls(message: Message): boolean {
+  const parts = (message as any).parts as any[] | undefined
+  if (!parts || !Array.isArray(parts)) return false
+  return parts.some(
+    (p) => p.type === "tool-invocation" || p.type === "dynamic-tool"
+  )
+}
+
+/**
+ * Serialize message parts for persistence.
+ * Filters to only relevant part types and truncates large results.
+ */
+function serializeParts(parts: any[] | undefined): string | undefined {
+  if (!parts || !Array.isArray(parts)) return undefined
+
+  // Filter to persistable parts (skip data-* and other transient types)
+  const persistableParts = parts.filter(
+    (p) =>
+      p.type === "text" ||
+      p.type === "tool-invocation" ||
+      p.type === "dynamic-tool" ||
+      (p.type === "file" && p.mediaType?.startsWith("image/"))
+  )
+
+  if (persistableParts.length === 0) return undefined
+
+  // Truncate large tool results to prevent storage bloat (>50KB)
+  const MAX_RESULT_SIZE = 50000
+  const truncatedParts = persistableParts.map((p) => {
+    if (p.type === "tool-invocation" && p.toolInvocation?.result) {
+      const resultStr = JSON.stringify(p.toolInvocation.result)
+      if (resultStr.length > MAX_RESULT_SIZE) {
+        return {
+          ...p,
+          toolInvocation: {
+            ...p.toolInvocation,
+            result: { _truncated: true, size: resultStr.length },
+          },
+        }
+      }
+    }
+    if (p.type === "dynamic-tool" && p.output) {
+      const outputStr = JSON.stringify(p.output)
+      if (outputStr.length > MAX_RESULT_SIZE) {
+        return { ...p, output: { _truncated: true, size: outputStr.length } }
+      }
+    }
+    return p
+  })
+
+  return JSON.stringify(truncatedParts)
+}
+
+// ============================================================
 // CC Session ID is now extracted from X-CC-Session-Id response header
 // (chat-session-sync-fix: removed marker extraction in favor of header approach)
 // ============================================================
@@ -1005,10 +1065,15 @@ export const ChatPanel = observer(function ChatPanel({
       if (currentSessionId) {
         // Fire-and-forget: persist assistant message
         // chat-session-sync-fix: Use extractTextContent for v3 API compatibility
+        // feat-toolcall-rendering-on-reload: Serialize parts for tool call rendering on reload
+        const partsJson = hasToolCalls(message)
+          ? serializeParts((message as any).parts)
+          : undefined
         studioChat.addMessage({
           sessionId: currentSessionId,
           role: "assistant",
           content: extractTextContent(message),
+          parts: partsJson,
         }).catch((err) => {
           console.warn("[ChatPanel] Failed to persist assistant message:", err)
         })
@@ -1365,18 +1430,38 @@ export const ChatPanel = observer(function ChatPanel({
       if (isStreamingRef.current) {
         return
       }
-      // Don't overwrite if we've received messages with parts - they contain tool invocations
-      // that aren't persisted and would be lost
-      if (hasReceivedPartsRef.current) {
-        console.log('[ChatPanel] Skipping message sync - session has messages with parts array')
+      // Don't overwrite if we've received streaming parts - they contain live tool invocations
+      // that would be lost. But DO allow if persisted messages have parts (reload scenario).
+      // feat-toolcall-rendering-on-reload: Check if persisted messages have parts
+      const persistedHaveParts = persistedMessagesFromMobX.some((msg: any) => msg.parts)
+      if (hasReceivedPartsRef.current && !persistedHaveParts) {
+        console.log('[ChatPanel] Skipping message sync - streaming parts would be overwritten')
         return
       }
+      // Reset the ref if we're loading persisted parts (reload scenario)
+      if (persistedHaveParts) {
+        hasReceivedPartsRef.current = false
+      }
 
-      const aiMessages = persistedMessagesFromMobX.map((msg: any) => ({
-        id: msg.id,
-        role: msg.role as "user" | "assistant",
-        content: msg.content,
-      }))
+      // feat-toolcall-rendering-on-reload: Reconstruct parts array from persisted JSON
+      const aiMessages = persistedMessagesFromMobX.map((msg: any) => {
+        const baseMessage: any = {
+          id: msg.id,
+          role: msg.role as "user" | "assistant",
+          content: msg.content,
+        }
+
+        // Reconstruct parts array if persisted (enables tool rendering on reload)
+        if (msg.parts) {
+          try {
+            baseMessage.parts = JSON.parse(msg.parts)
+          } catch (err) {
+            console.warn("[ChatPanel] Failed to parse message parts:", err)
+          }
+        }
+
+        return baseMessage
+      })
       setMessages(aiMessages)
       // Scroll to bottom after messages load - use setTimeout to ensure DOM has rendered
       setTimeout(() => {
