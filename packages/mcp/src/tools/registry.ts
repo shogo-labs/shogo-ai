@@ -28,6 +28,10 @@ import { registerAgentChat } from "./agent.chat"
 // Workspace tools
 import { registerWorkspaceSync } from "./workspace.sync"
 
+// SDK tools
+import { registerSdkCreateRoutes } from "./sdk.create-routes"
+import { registerSdkCreateApp } from "./sdk.create-app"
+
 /**
  * Register Platform MCP tools on a FastMCP server instance.
  *
@@ -42,13 +46,14 @@ import { registerWorkspaceSync } from "./workspace.sync"
  * - component-builder: UI composition system
  * - studio-chat: Chat sessions and messages
  *
- * Total: 16 tools across 6 namespaces
+ * Total: 18 tools across 7 namespaces
  * - Schema: 3 tools (set, load, list)
  * - Store: 5 tools (create, get, update, delete, query)
  * - View: 4 tools (execute, define, delete, project)
  * - DDL: 2 tools (execute, migrate) - PLATFORM ONLY
  * - Agent: 1 tool (chat) - PLATFORM ONLY
  * - Workspace: 1 tool (sync) - PLATFORM ONLY
+ * - SDK: 2 tools (createApp, createRoutes) - PLATFORM ONLY
  *
  * @param server - FastMCP server instance (stdio or HTTP transport)
  */
@@ -80,6 +85,10 @@ export function registerPlatformTools(server: FastMCP) {
 
   // Workspace namespace (1 tool) - Platform only
   registerWorkspaceSync(server)
+
+  // SDK namespace (2 tools) - Platform only
+  registerSdkCreateRoutes(server)
+  registerSdkCreateApp(server)
 }
 
 /**

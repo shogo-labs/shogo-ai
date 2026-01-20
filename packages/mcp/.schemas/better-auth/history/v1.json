@@ -29,7 +29,15 @@
         "image": {
           "type": "string",
           "format": "uri",
-          "description": "URL to user's profile image"
+          "description": "URL to user's profile image",
+          "x-renderer": "image-display",
+          "x-renderer-config": {
+            "size": "md",
+            "customProps": {
+              "aspectRatio": "1:1",
+              "objectFit": "cover"
+            }
+          }
         },
         "createdAt": {
           "type": "string",

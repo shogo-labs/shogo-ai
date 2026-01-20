@@ -1,0 +1,47 @@
+# =============================================================================
+# Shogo MCP Server - Development Dockerfile
+# =============================================================================
+# For hot reloading during development. Source code is mounted as a volume.
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# =============================================================================
+
+FROM oven/bun:1.2-alpine
+
+WORKDIR /app
+
+# Install curl for healthchecks
+RUN apk add --no-cache curl
+
+# Copy workspace root files
+COPY package.json bun.lock ./
+COPY tsconfig.base.json ./
+
+# Copy package.json files for dependency resolution
+COPY packages/state-api/package.json ./packages/state-api/
+COPY packages/mcp/package.json ./packages/mcp/
+
+# Install all dependencies
+RUN bun install
+
+# Copy source code (will be overridden by volume mounts in dev mode)
+COPY packages/state-api ./packages/state-api
+COPY packages/mcp ./packages/mcp
+
+# Copy domain schemas
+COPY .schemas ./.schemas
+
+# Environment defaults
+ENV NODE_ENV=development
+ENV SCHEMAS_PATH=/app/.schemas
+ENV MCP_PORT=3100
+
+# Expose MCP port
+EXPOSE 3100
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -sf http://localhost:${MCP_PORT}/mcp -o /dev/null || exit 1
+
+# Run MCP HTTP server with watch mode (overridden in docker-compose.dev.yml)
+WORKDIR /app/packages/mcp
+CMD ["bun", "--watch", "src/server-http.ts"]

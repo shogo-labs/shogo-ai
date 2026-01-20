@@ -24,6 +24,11 @@ export default defineConfig(({ mode }) => {
   const hmrHost = env.VITE_HMR_HOST || undefined
   const hmrPort = env.VITE_HMR_PORT ? parseInt(env.VITE_HMR_PORT, 10) : undefined
 
+  // Proxy targets: use Docker service names when running in Docker, localhost otherwise
+  // VITE_API_PROXY_TARGET and VITE_MCP_PROXY_TARGET allow overriding for Docker networking
+  const apiProxyTarget = env.VITE_API_PROXY_TARGET || `http://localhost:${API_PORT}`
+  const mcpProxyTarget = env.VITE_MCP_PROXY_TARGET || `http://localhost:3100`
+
   return {
     plugins: [react(), tailwindcss()],
     root: __dirname, // Serve from the client directory
@@ -39,11 +44,11 @@ export default defineConfig(({ mode }) => {
       } : undefined,
       proxy: {
         '/api': {
-          target: `http://localhost:${API_PORT}`,
+          target: apiProxyTarget,
           changeOrigin: true,
         },
         '/mcp': {
-          target: `http://localhost:3100`,
+          target: mcpProxyTarget,
           changeOrigin: true,
         },
       },

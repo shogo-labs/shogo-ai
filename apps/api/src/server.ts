@@ -9,8 +9,9 @@ import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
 import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
 import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-provider-claude-code'
 import { createAnthropic } from '@ai-sdk/anthropic'
-import { resolve } from 'path'
+import { resolve, join, extname, relative, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
+import { readdir, stat } from 'fs/promises'
 import { auth } from './auth'
 import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
 import { PERSONA_PROMPTS, isAgentPersona, type AgentPersona } from './prompts/persona-prompts'
@@ -455,39 +456,211 @@ const virtualToolsServer = createSdkMcpServer({
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
 
 /**
+ * File extensions to include in the project file list.
+ */
+const PROJECT_FILE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.json', '.css', '.html', '.md', '.svg'
+])
+
+/**
+ * Directories to exclude from project file listing.
+ */
+const EXCLUDED_DIRS = new Set([
+  'node_modules', '.git', 'dist', 'build', '.vite', '.cache', '.claude'
+])
+
+/**
+ * Recursively list files in a project directory.
+ * Returns a flat list of relative file paths.
+ */
+async function listProjectFilesRecursive(
+  dir: string,
+  basePath: string,
+  files: string[] = []
+): Promise<string[]> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true })
+
+    for (const entry of entries) {
+      const entryPath = join(dir, entry.name)
+      const relativePath = relative(basePath, entryPath)
+
+      if (entry.isDirectory()) {
+        // Skip excluded directories
+        if (EXCLUDED_DIRS.has(entry.name)) {
+          continue
+        }
+        // Recurse into subdirectories
+        await listProjectFilesRecursive(entryPath, basePath, files)
+      } else {
+        const ext = extname(entry.name).toLowerCase()
+        // Only include files with allowed extensions
+        if (PROJECT_FILE_EXTENSIONS.has(ext)) {
+          files.push(relativePath)
+        }
+      }
+    }
+
+    return files
+  } catch (err) {
+    console.error('[getProjectFiles] Error listing directory:', dir, err)
+    return files
+  }
+}
+
+/**
+ * Get a formatted list of project files for inclusion in the system prompt.
+ * Returns null if the project directory doesn't exist.
+ */
+async function getProjectFileList(projectId: string): Promise<string | null> {
+  const projectDir = resolve(WORKSPACES_DIR, projectId)
+
+  try {
+    await stat(projectDir)
+  } catch {
+    return null // Project directory doesn't exist
+  }
+
+  const files = await listProjectFilesRecursive(projectDir, projectDir)
+
+  if (files.length === 0) {
+    return null
+  }
+
+  // Sort files for consistent output
+  files.sort()
+
+  // Format as a simple list
+  return files.map(f => `  ${f}`).join('\n')
+}
+
+/**
+ * Type for canUseTool permission result.
+ * See: https://docs.anthropic.com/en/docs/claude-code/sdk
+ */
+type PermissionResult =
+  | { behavior: 'allow' }
+  | { behavior: 'deny'; message?: string }
+
+/**
+ * Type for canUseTool callback function.
+ * Invoked before every tool execution to check permissions.
+ */
+type CanUseTool = (
+  toolName: string,
+  input: Record<string, unknown>,
+  options: { signal: AbortSignal }
+) => Promise<PermissionResult>
+
+/**
+ * Create a canUseTool callback that restricts file operations to projectDir.
+ * This prevents the agent from accessing files outside the project workspace,
+ * ensuring proper filesystem isolation for user projects.
+ *
+ * @param projectDir - The absolute path to the project workspace directory
+ * @returns A canUseTool callback function for use with createClaudeCode
+ */
+function createProjectPathRestrictor(projectDir: string): CanUseTool {
+  // Tools that operate on filesystem paths
+  const FILE_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS']
+  // Normalize project directory (ensure no trailing slash for consistent comparison)
+  const normalizedProjectDir = projectDir.endsWith('/') ? projectDir.slice(0, -1) : projectDir
+
+  return async (toolName, input, _options) => {
+    console.log(`[canUseTool] *** CALLBACK INVOKED for tool: ${toolName}, input: ${JSON.stringify(input).slice(0, 200)}`)
+    // Only check file operation tools
+    if (!FILE_TOOLS.includes(toolName)) {
+      console.log(`[canUseTool] Tool ${toolName} is not a file tool, allowing`)
+      return { behavior: 'allow' }
+    }
+
+    // Extract path from tool input (different tools use different field names)
+    const inputPath = (input.file_path || input.path || input.directory) as string | undefined
+
+    if (!inputPath) {
+      // No path = allow (tool will handle missing params)
+      return { behavior: 'allow' }
+    }
+
+    // Determine the absolute path to check
+    let absolutePath: string
+    if (isAbsolute(inputPath)) {
+      // Absolute path - use directly (don't resolve against projectDir)
+      absolutePath = inputPath
+    } else {
+      // Relative path - resolve against projectDir
+      absolutePath = resolve(normalizedProjectDir, inputPath)
+    }
+
+    // Normalize the absolute path (resolve .. and .)
+    absolutePath = resolve(absolutePath)
+
+    // Check if path is within project directory
+    // Path is valid if it equals projectDir or starts with projectDir/
+    const isWithinProject =
+      absolutePath === normalizedProjectDir ||
+      absolutePath.startsWith(`${normalizedProjectDir}/`)
+
+    if (!isWithinProject) {
+      console.warn(`[ClaudeCode] Blocked ${toolName} access outside project: ${inputPath} -> ${absolutePath}`)
+      return {
+        behavior: 'deny',
+        message: `Access denied: Cannot access files outside the project workspace. Path "${inputPath}" resolves to "${absolutePath}" which is outside "${normalizedProjectDir}". Use relative paths within the project directory.`
+      }
+    }
+
+    return { behavior: 'allow' }
+  }
+}
+
+/**
  * Create Claude Code provider with optional project-scoped working directory.
  * When projectId is provided, cwd is set to the project's workspace directory.
  * This enables the code agent to read/write files in the correct project.
+ *
+ * For project-scoped sessions, file operations are restricted to the project
+ * workspace via canUseTool callback. This prevents the agent from accessing
+ * files outside the project directory (e.g., the Shogo platform codebase).
  */
 function createProjectScopedClaudeCode(projectId?: string) {
   // Determine working directory - project workspace if projectId provided, else project root
   let cwd = PROJECT_ROOT
+  // Track project directory for path restriction (null means full access)
+  let projectDir: string | null = null
 
   if (projectId) {
-    const projectDir = resolve(WORKSPACES_DIR, projectId)
+    const resolvedProjectDir = resolve(WORKSPACES_DIR, projectId)
     // Check if project directory exists - if not, fall back to project root
     // This handles the case where a project record exists but workspace hasn't been created yet
     try {
       const fs = require('fs')
-      if (fs.existsSync(projectDir)) {
-        cwd = projectDir
+      if (fs.existsSync(resolvedProjectDir)) {
+        cwd = resolvedProjectDir
+        projectDir = resolvedProjectDir // Enable path restriction
       } else {
-        console.warn(`[ClaudeCode] Project workspace not found: ${projectDir}, using project root`)
+        console.warn(`[ClaudeCode] Project workspace not found: ${resolvedProjectDir}, using project root (no path restriction)`)
       }
     } catch (e) {
-      console.warn(`[ClaudeCode] Error checking project workspace: ${e}, using project root`)
+      console.warn(`[ClaudeCode] Error checking project workspace: ${e}, using project root (no path restriction)`)
     }
   }
 
-  console.log(`[ClaudeCode] Creating provider with cwd: ${cwd}${projectId ? ` (project: ${projectId})` : ' (platform)'}`);
+  const pathRestrictor = projectDir ? createProjectPathRestrictor(projectDir) : undefined
+  console.log(`[ClaudeCode] Creating provider with cwd: ${cwd}${projectId ? ` (project: ${projectId})` : ' (platform)'}${projectDir ? ' [path-restricted]' : ''}`);
+  console.log(`[ClaudeCode] canUseTool callback: ${pathRestrictor ? 'SET' : 'NOT SET'}`);
 
   return createClaudeCode({
   defaultSettings: {
     // Enable streaming input - REQUIRED for hooks to fire
     // See: https://ai-sdk.dev/providers/claude-code (hooks require streaming input)
     streamingInput: 'always',
+    // Enable verbose logging for debugging
+    verbose: true,
     // Set working directory - project workspace or project root
     cwd,
+    // Path restriction for project-scoped sessions (prevents access outside workspace)
+    // undefined means no restriction (full filesystem access for platform-level operations)
+    canUseTool: pathRestrictor,
     // Load project settings (picks up .claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
     // MCP servers - Wavesmith for data + Virtual tools for client-side effects
@@ -565,8 +738,13 @@ function createProjectScopedClaudeCode(projectId?: string) {
       'mcp__chrome-devtools__performance_stop_trace',
       'mcp__chrome-devtools__performance_analyze_insight',
     ],
-    // Bypass permission prompts for non-interactive API use
-    permissionMode: 'bypassPermissions',
+    // Permission mode:
+    // - When canUseTool callback is provided (project-scoped): use 'default' so CLI sends
+    //   permission requests to SDK, which invokes our callback for path restriction
+    // - When no canUseTool callback (platform-level): use 'bypassPermissions' for non-interactive use
+    permissionMode: pathRestrictor ? 'default' : 'bypassPermissions',
+    // Skip the dangerous bypass confirmation for non-project sessions
+    allowDangerouslySkipPermissions: !pathRestrictor,
     // Hooks for subagent progress streaming (task-subagent-progress-streaming)
     // and virtual tool interception (virtual-tools-domain Phase 0 PoC)
     hooks: {
@@ -782,8 +960,9 @@ export function buildSystemPrompt(
     return PERSONA_PROMPTS.code
   }
 
-  // Wavesmith agent gets persona intro + base prompt + phase guidance
-  let systemPrompt = `${PERSONA_PROMPTS.wavesmith}\n\n${BASE_SYSTEM_PROMPT}`
+  // Wavesmith and Shogo agents get persona intro + base prompt + phase guidance
+  // Shogo has all the same tools as Wavesmith, plus code generation capabilities
+  let systemPrompt = `${PERSONA_PROMPTS[persona]}\n\n${BASE_SYSTEM_PROMPT}`
 
   // Add phase-specific guidance if a valid phase is provided
   if (phase && isPhase(phase)) {
@@ -1186,7 +1365,21 @@ app.post('/api/chat', async (c) => {
 
     // Build dynamic system prompt based on agent persona (env var) and pipeline phase
     const agentPersona = process.env.SHOGO_AGENT as AgentPersona | undefined
-    const systemPrompt = buildSystemPrompt(phase, agentPersona)
+    let systemPrompt = buildSystemPrompt(phase, agentPersona)
+
+    // Include project file list in the prompt so agent knows what files exist
+    if (projectId) {
+      const projectFileList = await getProjectFileList(projectId)
+      if (projectFileList) {
+        systemPrompt = `${systemPrompt}
+
+**Project Files:**
+You are working in a project workspace. Here are the files in the project:
+${projectFileList}
+
+Use the Read, Write, and Edit tools to view and modify these files. All file paths are relative to the project root.`
+      }
+    }
 
     // Pass resume parameter if ccSessionId provided (task-cc-api-endpoint)
     // This enables session continuity in Claude Code

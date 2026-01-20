@@ -57,6 +57,10 @@
     "./mcp-isolation/types": {
       "import": "./src/mcp-isolation/types.ts",
       "types": "./src/mcp-isolation/types.ts"
+    },
+    "./generators": {
+      "import": "./src/generators/index.ts",
+      "types": "./src/generators/index.ts"
     }
   },
   "scripts": {
