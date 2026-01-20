@@ -537,6 +537,12 @@ resource "null_resource" "knative_services" {
                     value: "http://api.shogo-staging-system.svc.cluster.local"
                   - name: API_HOST
                     value: "api.shogo-staging-system.svc.cluster.local"
+                  - name: MCP_UPSTREAM
+                    value: "http://mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
+                  - name: MCP_HOST
+                    value: "mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
+                  - name: DNS_RESOLVER
+                    value: "kube-dns.kube-system.svc.cluster.local"
                 resources:
                   requests:
                     memory: "128Mi"
