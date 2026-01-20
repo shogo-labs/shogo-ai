@@ -16,6 +16,7 @@ import { buildEnhanceCollections } from "../composition/enhance-collections"
 import { registerEnhancements } from "./enhancement-registry"
 import { getRuntimeStore, cacheRuntimeStore } from "../meta/runtime-store-cache"
 import { computeColumnPropertyMaps, computePropertyTypeMaps, computeArrayReferenceMaps } from "../ddl/utils"
+import { extractAllAuthorizationConfigs } from "../authorization/extract-config"
 import type { DomainConfig, DomainResult } from "./types"
 import { isScope, isEnhancedJsonSchema } from "./types"
 
@@ -39,9 +40,10 @@ export function domain(config: DomainConfig): DomainResult {
 
   // Determine which collection mixins should be enabled
   // Defaults match buildEnhanceCollections for backward compatibility
-  const enablePersistence = config.persistence !== false  // default: true
-  const enableQueryable = config.queryable !== false      // default: true
-  const enableMutatable = config.mutatable !== false      // default: true
+  const enablePersistence = config.persistence !== false    // default: true
+  const enableQueryable = config.queryable !== false        // default: true
+  const enableAuthorizable = config.authorizable !== false  // default: true
+  const enableMutatable = config.mutatable !== false        // default: true
 
   // Convert input to Enhanced JSON Schema (interchange format)
   let enhancedSchema: EnhancedJsonSchema
@@ -74,6 +76,7 @@ export function domain(config: DomainConfig): DomainResult {
       config.enhancements?.collections,
       enablePersistence,
       enableQueryable,
+      enableAuthorizable,
       enableMutatable
     ),
     enhanceRootStore: config.enhancements?.rootStore,
@@ -85,10 +88,17 @@ export function domain(config: DomainConfig): DomainResult {
   const propertyTypeMaps = computePropertyTypeMaps(enhancedSchema)
   const arrayReferenceMaps = computeArrayReferenceMaps(enhancedSchema)
 
+  // Pre-compute authorization config maps from x-authorization annotations
+  // This enables CollectionAuthorizable to apply scope filters without re-parsing schema
+  const authorizationConfigMaps = Object.fromEntries(
+    extractAllAuthorizationConfigs(enhancedSchema.$defs || {})
+  )
+
   // Create the store factory (delegates to conversion result)
   const createStore = (env?: any): IAnyStateTreeNode => {
     // Inject pre-computed maps into env.context
     // This allows queryable.ts and mutatable.ts to pass them to registry.resolve()
+    // Also injects authorizationConfigMaps for CollectionAuthorizable
     const enhancedEnv = env ? {
       ...env,
       context: {
@@ -96,6 +106,7 @@ export function domain(config: DomainConfig): DomainResult {
         columnPropertyMaps,
         propertyTypeMaps,
         arrayReferenceMaps,
+        authorizationConfigMaps,
       },
     } : undefined
 

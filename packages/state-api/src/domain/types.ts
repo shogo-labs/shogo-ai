@@ -83,6 +83,14 @@ export interface DomainConfig {
   queryable?: boolean
 
   /**
+   * Auto-compose CollectionAuthorizable on all collections.
+   * Wraps query() with authorization filters based on x-authorization schema annotations.
+   * Requires queryable to be enabled (no effect if queryable is false).
+   * @default true
+   */
+  authorizable?: boolean
+
+  /**
    * Auto-compose CollectionMutatable on all collections.
    * Enables insertOne, updateOne, deleteOne with backend writes.
    * @default true

@@ -13,6 +13,7 @@
 import { types, type IAnyModelType } from "mobx-state-tree"
 import { CollectionPersistable } from "./persistable"
 import { CollectionQueryable } from "./queryable"
+import { CollectionAuthorizable } from "./authorizable"
 import { CollectionMutatable } from "./mutatable"
 import type { DomainEnhancements } from "../domain/types"
 
@@ -22,12 +23,23 @@ import type { DomainEnhancements } from "../domain/types"
  * @param userEnhance - Optional user enhancement function from domain config
  * @param enablePersistence - Whether to compose CollectionPersistable (default: true)
  * @param enableQueryable - Whether to compose CollectionQueryable (default: true)
+ * @param enableAuthorizable - Whether to compose CollectionAuthorizable (default: true)
  * @param enableMutatable - Whether to compose CollectionMutatable (default: true)
  * @returns Enhancement function, or undefined if nothing to enhance
  *
+ * @remarks
+ * Composition order is important:
+ * 1. CollectionPersistable - Basic persistence capabilities
+ * 2. CollectionQueryable - Provides query() method
+ * 3. CollectionAuthorizable - Wraps query() with auth filter (requires Queryable)
+ * 4. CollectionMutatable - Mutation operations
+ * 5. User Enhancements - Custom domain logic
+ *
+ * CollectionAuthorizable MUST come after CollectionQueryable because it wraps query().
+ *
  * @example
  * // In domain()
- * const enhance = buildEnhanceCollections(config.enhancements?.collections, true, true, true)
+ * const enhance = buildEnhanceCollections(config.enhancements?.collections, true, true, true, true)
  *
  * // In loadSchema()
  * const enhance = buildEnhanceCollections(registeredEnhancements?.collections)
@@ -36,10 +48,11 @@ export function buildEnhanceCollections(
   userEnhance?: DomainEnhancements["collections"],
   enablePersistence: boolean = true,
   enableQueryable: boolean = true,
+  enableAuthorizable: boolean = true,
   enableMutatable: boolean = true
 ): ((cols: Record<string, IAnyModelType>) => Record<string, IAnyModelType>) | undefined {
   // Early return if nothing to do
-  if (!enablePersistence && !enableQueryable && !enableMutatable && !userEnhance) {
+  if (!enablePersistence && !enableQueryable && !enableAuthorizable && !enableMutatable && !userEnhance) {
     return undefined
   }
 
@@ -64,7 +77,17 @@ export function buildEnhanceCollections(
       result = withQueryable
     }
 
-    // Step 3: Auto-compose CollectionMutatable if enabled
+    // Step 3: Auto-compose CollectionAuthorizable if enabled
+    // Must come AFTER CollectionQueryable (wraps query() method)
+    if (enableAuthorizable && enableQueryable) {
+      const withAuthorizable: Record<string, IAnyModelType> = {}
+      for (const [name, model] of Object.entries(result)) {
+        withAuthorizable[name] = types.compose(model, CollectionAuthorizable).named(name)
+      }
+      result = withAuthorizable
+    }
+
+    // Step 4: Auto-compose CollectionMutatable if enabled
     if (enableMutatable) {
       const withMutatable: Record<string, IAnyModelType> = {}
       for (const [name, model] of Object.entries(result)) {
@@ -73,7 +96,7 @@ export function buildEnhanceCollections(
       result = withMutatable
     }
 
-    // Step 4: Apply user enhancements on top
+    // Step 5: Apply user enhancements on top
     if (userEnhance) {
       result = userEnhance(result)
     }
