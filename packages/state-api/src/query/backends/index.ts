@@ -13,6 +13,9 @@ export type {
   QueryOptions,
   QueryResult,
   OrderByClause,
+  // Subquery support
+  ModelResolver,
+  CompileContext,
 } from './types'
 
 export { MemoryBackend } from './memory'
