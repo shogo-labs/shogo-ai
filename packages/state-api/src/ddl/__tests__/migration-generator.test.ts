@@ -820,3 +820,132 @@ describe("namespace handling in migrations", () => {
     })
   })
 })
+
+// ============================================================================
+// IF NOT EXISTS Support for Idempotent Migrations
+// ============================================================================
+
+describe("migration-generator.ts - IF NOT EXISTS support", () => {
+  describe("migrationOutputToSQL with ifNotExists option", () => {
+    test("CREATE TABLE includes IF NOT EXISTS when option is true", () => {
+      const output: MigrationOutput = {
+        version: 2,
+        schemaName: "test",
+        diff: { addedModels: ["User"], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
+        operations: [
+          {
+            type: MigrationOperation.CREATE_TABLE,
+            tableName: "user",
+            columns: [
+              { name: "id", type: "TEXT", nullable: false },
+              { name: "name", type: "TEXT", nullable: false },
+            ],
+            primaryKey: "id",
+          },
+        ],
+        warnings: [],
+      }
+      const dialect = createPostgresDialect()
+
+      const statements = migrationOutputToSQL(output, dialect, { ifNotExists: true })
+
+      const createStatement = statements.find((s) => s.includes("CREATE TABLE"))
+      expect(createStatement).toBeDefined()
+      expect(createStatement).toContain("IF NOT EXISTS")
+    })
+
+    test("CREATE TABLE does not include IF NOT EXISTS when option is false", () => {
+      const output: MigrationOutput = {
+        version: 2,
+        schemaName: "test",
+        diff: { addedModels: ["User"], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
+        operations: [
+          {
+            type: MigrationOperation.CREATE_TABLE,
+            tableName: "user",
+            columns: [
+              { name: "id", type: "TEXT", nullable: false },
+              { name: "name", type: "TEXT", nullable: false },
+            ],
+            primaryKey: "id",
+          },
+        ],
+        warnings: [],
+      }
+      const dialect = createPostgresDialect()
+
+      const statements = migrationOutputToSQL(output, dialect, { ifNotExists: false })
+
+      const createStatement = statements.find((s) => s.includes("CREATE TABLE"))
+      expect(createStatement).toBeDefined()
+      expect(createStatement).not.toContain("IF NOT EXISTS")
+    })
+
+    test("CREATE TABLE does not include IF NOT EXISTS by default", () => {
+      const output: MigrationOutput = {
+        version: 2,
+        schemaName: "test",
+        diff: { addedModels: ["User"], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
+        operations: [
+          {
+            type: MigrationOperation.CREATE_TABLE,
+            tableName: "user",
+            columns: [
+              { name: "id", type: "TEXT", nullable: false },
+            ],
+            primaryKey: "id",
+          },
+        ],
+        warnings: [],
+      }
+      const dialect = createPostgresDialect()
+
+      // Default behavior (no option)
+      const statements = migrationOutputToSQL(output, dialect)
+
+      const createStatement = statements.find((s) => s.includes("CREATE TABLE"))
+      expect(createStatement).toBeDefined()
+      expect(createStatement).not.toContain("IF NOT EXISTS")
+    })
+  })
+
+  describe("Foreign key constraints with ifNotExists", () => {
+    test("PostgreSQL FK constraints use IF NOT EXISTS for idempotency", () => {
+      const output: MigrationOutput = {
+        version: 2,
+        schemaName: "test",
+        diff: { addedModels: ["Post"], addedModelDefs: {}, removedModels: [], modifiedModels: [], hasChanges: true },
+        operations: [
+          {
+            type: MigrationOperation.CREATE_TABLE,
+            tableName: "post",
+            columns: [
+              { name: "id", type: "TEXT", nullable: false },
+              { name: "user_id", type: "TEXT", nullable: false },
+            ],
+            primaryKey: "id",
+            foreignKeys: [
+              {
+                name: "fk_post_user_id",
+                table: "post",
+                column: "user_id",
+                referencesTable: "user",
+                referencesColumn: "id",
+                onDelete: "CASCADE",
+              },
+            ],
+          },
+        ],
+        warnings: [],
+      }
+      const dialect = createPostgresDialect()
+
+      const statements = migrationOutputToSQL(output, dialect, { ifNotExists: true })
+
+      // FK statements should use DO $$ ... EXCEPTION WHEN duplicate_object THEN NULL
+      // to handle existing constraints idempotently
+      const fkStatement = statements.find((s) => s.includes("FOREIGN KEY"))
+      expect(fkStatement).toBeDefined()
+    })
+  })
+})

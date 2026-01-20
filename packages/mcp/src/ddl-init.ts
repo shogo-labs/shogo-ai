@@ -29,6 +29,7 @@ import {
   listDirsInS3,
   readJsonFromS3,
   getS3Prefix,
+  runBootstrapMigration,
 } from "@shogo/state-api"
 
 // ============================================================================
@@ -79,11 +80,40 @@ export async function initializeDomainSchemas(schemasDir: string): Promise<void>
     return
   }
 
+  // 2. Run bootstrap migration for system-migrations schema (v1 → v2 upgrade)
+  // This is idempotent and safe to run every startup
   try {
-    // 2. Scan schemas directory
+    const registry = getGlobalBackendRegistry()
+    // Get executor from the postgres or sqlite backend
+    const backend = registry.get("postgres") || registry.get("sqlite")
+    if (backend?.executor) {
+      const bootstrapResult = await runBootstrapMigration(backend.executor)
+      switch (bootstrapResult.action) {
+        case "migrated":
+          console.log(`[ddl-init] Bootstrap migration: ${bootstrapResult.message}`)
+          break
+        case "already_migrated":
+          // Silent - already on v2 schema
+          break
+        case "no_table":
+          // Silent - fresh install, table will be created by syncSchema
+          break
+        case "error":
+          console.error(`[ddl-init] Bootstrap migration error: ${bootstrapResult.error}`)
+          break
+      }
+    }
+  } catch (error) {
+    console.warn(
+      `[ddl-init] Bootstrap migration check failed: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+
+  try {
+    // 3. Scan schemas directory
     const schemas = await scanSchemasDirectory(schemasDir)
 
-    // 3. Filter for postgres backend
+    // 4. Filter for postgres backend
     const postgresSchemas = schemas.filter(
       (s) => s.schema["x-persistence"]?.backend === "postgres"
     )
@@ -93,7 +123,7 @@ export async function initializeDomainSchemas(schemasDir: string): Promise<void>
       return
     }
 
-    // 4. Separate bootstrap schemas from regular schemas
+    // 5. Separate bootstrap schemas from regular schemas
     // Bootstrap schemas (like system-migrations) must be processed first
     // because other schemas depend on them for migration tracking
     const bootstrapSchemas = postgresSchemas.filter(
@@ -110,26 +140,50 @@ export async function initializeDomainSchemas(schemasDir: string): Promise<void>
       `[ddl-init] Found ${postgresSchemas.length} schema(s) with postgres backend`
     )
 
-    // 5. Execute DDL for each schema (bootstrap first, then regular)
+    // 6. Execute DDL for each schema (bootstrap first, then regular)
     const registry = getGlobalBackendRegistry()
 
     for (const { name, schema } of orderedSchemas) {
       try {
         const result: SchemaSyncResult = await registry.syncSchema(name, schema)
 
-        // Log based on action
+        // Log based on action and success/verified status
         switch (result.action) {
           case "bootstrap":
             console.log(`[ddl-init]   [bootstrap] ${name}`)
             break
           case "created":
-            console.log(`[ddl-init]   [created] ${name} (v${result.version})`)
+            if (!result.success) {
+              console.error(`[ddl-init]   [created:FAILED] ${name} (v${result.version}): DDL execution failed`)
+              if (result.errorMessage) {
+                console.error(`[ddl-init]     Error: ${result.errorMessage}`)
+              }
+            } else if (!result.verified) {
+              console.warn(`[ddl-init]   [created:UNVERIFIED] ${name} (v${result.version}): Tables not verified`)
+              if (result.verificationDetails?.tablesMissing?.length) {
+                console.warn(`[ddl-init]     Missing tables: ${result.verificationDetails.tablesMissing.join(", ")}`)
+              }
+            } else {
+              console.log(`[ddl-init]   [created] ${name} (v${result.version})`)
+            }
             break
           case "unchanged":
             console.log(`[ddl-init]   [unchanged] ${name}`)
             break
           case "migrated":
-            console.log(`[ddl-init]   [migrated] ${name} (v${result.toVersion})`)
+            if (!result.success) {
+              console.error(`[ddl-init]   [migrated:FAILED] ${name} (v${result.fromVersion}→v${result.toVersion}): DDL execution failed`)
+              if (result.errorMessage) {
+                console.error(`[ddl-init]     Error: ${result.errorMessage}`)
+              }
+            } else if (!result.verified) {
+              console.warn(`[ddl-init]   [migrated:UNVERIFIED] ${name} (v${result.fromVersion}→v${result.toVersion}): Tables not verified`)
+              if (result.verificationDetails?.tablesMissing?.length) {
+                console.warn(`[ddl-init]     Missing tables: ${result.verificationDetails.tablesMissing.join(", ")}`)
+              }
+            } else {
+              console.log(`[ddl-init]   [migrated] ${name} (v${result.toVersion})`)
+            }
             break
         }
       } catch (error) {
