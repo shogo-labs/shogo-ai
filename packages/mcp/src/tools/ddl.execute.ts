@@ -24,12 +24,15 @@ import {
   createPostgresDialect,
   createSqliteDialect,
   deriveNamespace,
+  isS3Enabled,
 } from "@shogo/state-api"
-import { getGlobalBackendRegistry } from "../postgres-init"
+import { getGlobalBackendRegistry, getWorkspaceBackendRegistry } from "../postgres-init"
+import { getEffectiveWorkspace } from "../state"
 
 const Params = t({
   schemaName: "string",
   "dryRun?": "boolean",
+  "workspace?": "string",
 })
 
 export function registerDdlExecute(server: FastMCP) {
@@ -41,10 +44,14 @@ export function registerDdlExecute(server: FastMCP) {
       "Automatically uses the backend configured in schema's x-persistence.backend.",
     parameters: Params,
     execute: async (args: any) => {
-      const { schemaName, dryRun = false } = args as {
+      const { schemaName, dryRun = false, workspace } = args as {
         schemaName: string
         dryRun?: boolean
+        workspace?: string
       }
+
+      // Determine effective workspace for backend resolution
+      const effectiveWorkspace = getEffectiveWorkspace(workspace)
 
       try {
         // 1. Validate schema exists in meta-store
@@ -93,7 +100,30 @@ export function registerDdlExecute(server: FastMCP) {
         }
 
         // 4. Execute DDL via syncSchema (handles migration recording)
-        const registry = getGlobalBackendRegistry()
+        // Backend selection:
+        // - System schemas (x-persistence.backend: "postgres") → PostgreSQL
+        // - User schemas (x-persistence.backend: "sqlite" or undefined) → Workspace SQLite (if S3 mode)
+        // - Fallback → Global registry (which may be SQLite if no PostgreSQL)
+        const schemaBackend = enhancedJson['x-persistence']?.backend
+        const usePostgres = schemaBackend === 'postgres'
+        const useSqlite = schemaBackend === 'sqlite'
+
+        let registry: Awaited<ReturnType<typeof getWorkspaceBackendRegistry>>
+
+        if (usePostgres) {
+          // System schemas → PostgreSQL
+          registry = getGlobalBackendRegistry()
+        } else if (isS3Enabled() && effectiveWorkspace) {
+          // User schemas with workspace → S3-backed SQLite
+          registry = await getWorkspaceBackendRegistry(effectiveWorkspace)
+        } else if (useSqlite) {
+          // SQLite explicitly requested but no workspace → use global (may be SQLite fallback)
+          registry = getGlobalBackendRegistry()
+        } else {
+          // Default fallback
+          registry = getGlobalBackendRegistry()
+        }
+
         const syncResult = await registry.syncSchema(schemaName, enhancedJson)
 
         // Format response based on sync result action

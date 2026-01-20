@@ -42,8 +42,18 @@ function mapToolState(state?: string): ToolCallData["state"] {
 function extractOrderedParts(message: Message): MessagePart[] {
   const parts = (message as any).parts as any[] | undefined
 
+  // DEBUG: Log what we're receiving
+  // console.log("[AssistantContent] extractOrderedParts called", {
+  //   messageId: message.id,
+  //   hasPartsArray: Array.isArray(parts),
+  //   partsLength: parts?.length,
+  //   partTypes: parts?.map((p: any) => p.type),
+  //   rawParts: parts,
+  // })
+
   // Fallback: single text part from content
   if (!parts || !Array.isArray(parts)) {
+    // console.log("[AssistantContent] Falling back to message.content")
     if (typeof message.content === "string" && message.content) {
       return [{ type: "text", text: message.content, id: "text-0" }]
     }
@@ -63,6 +73,7 @@ function extractOrderedParts(message: Message): MessagePart[] {
     } else if (part.type === "tool-invocation") {
       // Standard AI SDK tool-invocation format
       const inv = part.toolInvocation
+      // console.log("[AssistantContent] Found tool-invocation part", { inv, part })
       if (inv) {
         result.push({
           type: "tool",
@@ -82,6 +93,7 @@ function extractOrderedParts(message: Message): MessagePart[] {
     } else if (part.type === "dynamic-tool") {
       // Claude Code provider dynamic-tool format
       // Data is directly on the part, not nested in toolInvocation
+      // console.log("[AssistantContent] Found dynamic-tool part", { part })
       const toolCallId = part.toolCallId || `tool-${index}`
       result.push({
         type: "tool",
@@ -110,6 +122,12 @@ function extractOrderedParts(message: Message): MessagePart[] {
       })
     }
   }
+
+  // console.log("[AssistantContent] extractOrderedParts result", {
+  //   inputPartsCount: parts.length,
+  //   outputPartsCount: result.length,
+  //   outputTypes: result.map((p) => p.type),
+  // })
 
   return result
 }

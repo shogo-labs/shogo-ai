@@ -165,7 +165,8 @@ export const DesignView = observer(function DesignView({
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null)
 
   // Load schema data using the hook
-  const { models, isLoading, error, refetch } = useSchemaData(feature.schemaName)
+  // Pass projectId as workspace for project-specific schema storage
+  const { models, isLoading, error, refetch } = useSchemaData(feature.schemaName, feature.projectId)
 
   // Find selected entity from models
   const selectedEntity = useMemo(() => {

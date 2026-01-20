@@ -1,0 +1,38 @@
+# =============================================================================
+# Schema Storage Configuration for EKS
+# =============================================================================
+# Service account and configuration for S3-based schema storage.
+# The IAM role ARN is injected by Terraform after creating the S3 bucket.
+# =============================================================================
+
+---
+# Service Account with IRSA annotation for S3 access
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-sa
+  namespace: shogo-workspaces
+  labels:
+    app.kubernetes.io/part-of: shogo
+  annotations:
+    # This annotation is replaced by kustomize/Terraform with actual role ARN
+    # Example: arn:aws:iam::097357356677:role/shogo-mcp-s3-access-production
+    eks.amazonaws.com/role-arn: "${MCP_S3_ROLE_ARN}"
+---
+# ConfigMap with S3 configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: schema-storage-config
+  namespace: shogo-workspaces
+  labels:
+    app.kubernetes.io/part-of: shogo
+data:
+  # Storage backend: "s3" or "filesystem"
+  SCHEMA_STORAGE: "s3"
+  # S3 bucket name (created by Terraform)
+  S3_SCHEMA_BUCKET: "${S3_SCHEMA_BUCKET}"
+  # S3 key prefix for all schemas
+  S3_SCHEMA_PREFIX: "schemas/"
+  # AWS region
+  AWS_REGION: "us-east-1"

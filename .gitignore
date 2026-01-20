@@ -69,6 +69,11 @@ _tmp/
 .terraform.lock.hcl
 tfplan
 
+# Kubernetes secrets (managed by GitHub Actions/Terraform, not committed)
+k8s/**/secrets.yaml
+
 apps/web/playwright-report/
 
 apps/web/test-results/
+
+workspaces/

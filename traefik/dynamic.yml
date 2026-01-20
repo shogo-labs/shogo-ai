@@ -1,0 +1,76 @@
+# =============================================================================
+# Traefik Dynamic Configuration - Project Runtime Routing
+# =============================================================================
+# This file configures dynamic routing for project Vite runtimes.
+#
+# How it works:
+#   1. RuntimeManager spawns Vite dev servers on ports 5200-5299 (host machine)
+#   2. RuntimeManager updates this file (or uses Traefik REST API) with project routes
+#   3. Traefik watches this file and applies routing changes
+#
+# Routing pattern:
+#   {project-id}.localhost:80 -> host.docker.internal:{project-port}
+#
+# Example:
+#   project-abc.localhost -> host.docker.internal:5200
+#   project-xyz.localhost -> host.docker.internal:5201
+#
+# Note: In production, Knative DomainMappings handle this routing.
+# This configuration is for local development only.
+# =============================================================================
+
+http:
+  # ---------------------------------------------------------------------------
+  # Routers - Define routing rules
+  # ---------------------------------------------------------------------------
+  routers:
+    # Catch-all router for project subdomains
+    # Matches any *.localhost except reserved subdomains
+    project-catchall:
+      rule: "HostRegexp(`{project:[a-z0-9-]+}.localhost`)"
+      entryPoints:
+        - web
+      service: project-runtime
+      priority: 1
+      middlewares:
+        - project-headers
+
+  # ---------------------------------------------------------------------------
+  # Services - Define backend targets
+  # ---------------------------------------------------------------------------
+  services:
+    # Project runtime service
+    # Initially empty - RuntimeManager adds servers dynamically
+    # This is a placeholder that will be populated at runtime
+    project-runtime:
+      loadBalancer:
+        servers: []
+        # PassHostHeader ensures Vite receives the original Host header
+        passHostHeader: true
+
+  # ---------------------------------------------------------------------------
+  # Middlewares - Request/response transformations
+  # ---------------------------------------------------------------------------
+  middlewares:
+    # Headers for project runtime requests
+    project-headers:
+      headers:
+        # Security headers for iframe embedding
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        accessControlAllowHeaders:
+          - "*"
+        accessControlAllowOriginList:
+          - "http://localhost:5173"
+          - "http://localhost:3000"
+        accessControlMaxAge: 100
+        # Allow requests from Shogo Studio iframe
+        customResponseHeaders:
+          X-Frame-Options: "SAMEORIGIN"
+        # Support WebSocket upgrades for HMR
+        customRequestHeaders:
+          Connection: "keep-alive, Upgrade"

@@ -41,13 +41,15 @@ export interface UseFormMetadataResult {
  *
  * @param schemaName - Schema name (e.g., "platform-features")
  * @param modelName - Model name (e.g., "Requirement")
+ * @param workspace - Optional workspace/projectId for project-specific schema loading
  * @returns JSON Schema, property metadata, and model reference
  *
  * @example
  * ```tsx
  * const { jsonSchema, properties, model, collectionName, loading, error } = useFormMetadata(
  *   "platform-features",
- *   "Requirement"
+ *   "Requirement",
+ *   "project-123"  // Optional: project-specific workspace
  * )
  * // jsonSchema can be passed to JSON Forms
  * // properties can be used to derive UI Schema
@@ -55,7 +57,8 @@ export interface UseFormMetadataResult {
  */
 export function useFormMetadata(
   schemaName: string | undefined,
-  modelName: string | undefined
+  modelName: string | undefined,
+  workspace?: string
 ): UseFormMetadataResult {
   const metaStore = useWavesmithMetaStore()
 
@@ -167,7 +170,8 @@ export function useFormMetadata(
     async function loadSchema() {
       setLoadingState({ loading: true, error: null, loadedSchemaName: null })
       try {
-        await metaStore.loadSchema(schemaName!)
+        // Pass workspace for project-specific schema loading
+        await metaStore.loadSchema(schemaName!, workspace)
         if (!cancelled) {
           // Don't set metadata here - autorun will pick up changes from loadSchema
           setLoadingState({ loading: false, error: null, loadedSchemaName: schemaName ?? null })
@@ -188,7 +192,7 @@ export function useFormMetadata(
     return () => {
       cancelled = true
     }
-  }, [schemaName, metaStore, loadingState.loadedSchemaName])
+  }, [schemaName, workspace, metaStore, loadingState.loadedSchemaName])
 
   // Return early if no schema/model specified
   if (!schemaName || !modelName) {

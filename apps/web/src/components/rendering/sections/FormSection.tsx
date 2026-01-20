@@ -41,6 +41,8 @@ export interface FormSectionConfig {
   schema?: string
   /** Schema name - alternate key for compatibility */
   schemaName?: string
+  /** Workspace/projectId for project-specific schema loading */
+  schemaWorkspace?: string
   /** Model name (e.g., "Requirement") */
   model?: string
 
@@ -110,6 +112,8 @@ export const FormSection = observer(function FormSection({
 
   const schemaName = formConfig?.schema ?? formConfig?.schemaName
   const modelName = formConfig?.model
+  // schemaWorkspace is the projectId - used for project-specific schema storage
+  const schemaWorkspace = formConfig?.schemaWorkspace ?? feature?.id
   const entityId = formConfig?.entityId
   const configFields = formConfig?.fields ?? []
   const layout = formConfig?.layout ?? "vertical"
@@ -133,7 +137,7 @@ export const FormSection = observer(function FormSection({
     collectionName,
     loading: metaLoading,
     error: metaError,
-  } = useDataGridMetadata(schemaName, modelName)
+  } = useDataGridMetadata(schemaName, modelName, schemaWorkspace)
 
   // 2. Get meta-store for JSON Schema derivation
   const metaStore = useWavesmithMetaStore()

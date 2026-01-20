@@ -34,9 +34,29 @@
       "import": "./src/persistence/null.ts",
       "types": "./src/persistence/null.ts"
     },
+    "./persistence/s3-sqlite": {
+      "import": "./src/persistence/s3-sqlite.ts",
+      "types": "./src/persistence/s3-sqlite.ts"
+    },
     "./billing/domain": {
       "import": "./src/billing/domain.ts",
       "types": "./src/billing/domain.ts"
+    },
+    "./runtime": {
+      "import": "./src/runtime/index.ts",
+      "types": "./src/runtime/index.ts"
+    },
+    "./runtime/types": {
+      "import": "./src/runtime/types.ts",
+      "types": "./src/runtime/types.ts"
+    },
+    "./mcp-isolation": {
+      "import": "./src/mcp-isolation/index.ts",
+      "types": "./src/mcp-isolation/index.ts"
+    },
+    "./mcp-isolation/types": {
+      "import": "./src/mcp-isolation/types.ts",
+      "types": "./src/mcp-isolation/types.ts"
     }
   },
   "scripts": {
@@ -46,6 +66,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.971.0",
+    "@aws-sdk/s3-request-presigner": "^3.971.0",
     "@ucast/core": "^1.10.2",
     "@ucast/js": "^3.0.4",
     "@ucast/mongo": "^2.4.3",

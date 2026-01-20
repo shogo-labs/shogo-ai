@@ -28,7 +28,12 @@ redis_node_type = "cache.t3.micro"
 # Knative Configuration
 knative_version        = "1.20.0"
 domain                 = "shogo.ai"
-ssl_certificate_domain = "*.shogo.ai"  # ACM certificate for HTTPS termination (Amazon-issued)
+ssl_certificate_domain = "*.shogo.ai"  # ACM certificate for platform (Amazon-issued)
+
+# Published Apps Domain (shogo.one)
+# User-published apps are served at *.shogo.one
+publish_domain                 = "shogo.one"
+ssl_certificate_domain_publish = "*.shogo.one"  # ACM certificate for published apps
 
 # Application Secrets
 better_auth_secret = "shogo-staging-secret-key-must-be-at-least-32-characters-long"

@@ -1,0 +1,118 @@
+# =============================================================================
+# Knative Service Template - Project Vite Runtime
+# =============================================================================
+# This template defines how project Vite runtimes are deployed in production.
+#
+# Extends the existing workspace-template pattern (see workspace-template.yaml)
+# with PROJECT_ID for project-level isolation.
+#
+# Key differences from workspace-template.yaml:
+#   - Runs Vite preview build (not MCP server)
+#   - PROJECT_ID env var alongside WORKSPACE_ID
+#   - Port 5173 for Vite preview
+#   - Named vite-project-{id} vs mcp-workspace-{id}
+#
+# Usage:
+#   This is a TEMPLATE - not applied directly. The API server uses this as a
+#   reference to create actual Knative Services programmatically when a project
+#   runtime is started.
+#
+# DomainMapping:
+#   A separate DomainMapping CRD routes {project-id}.shogo.one to this service.
+#   See: apps/api/src/routes/publish.ts for DomainMapping creation pattern.
+# =============================================================================
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  # Template name - actual deployments use: vite-project-{project-id}
+  name: vite-project-{id}
+  namespace: shogo-workspaces
+  labels:
+    # Shogo platform labels for identification and filtering
+    shogo.io/component: project-runtime
+    shogo.io/project: "{id}"
+    shogo.io/workspace: "{workspace-id}"
+    shogo.io/tenant: "{tenant-id}"
+    # Kubernetes recommended labels
+    app.kubernetes.io/name: vite-project
+    app.kubernetes.io/instance: "{id}"
+    app.kubernetes.io/component: runtime
+    app.kubernetes.io/part-of: shogo-platform
+spec:
+  template:
+    metadata:
+      annotations:
+        # Knative autoscaling configuration
+        # Scale to zero after 60 seconds of inactivity (cost optimization)
+        autoscaling.knative.dev/min-scale: "0"
+        autoscaling.knative.dev/max-scale: "1"
+        autoscaling.knative.dev/scale-to-zero-pod-retention-period: "60s"
+        # Target concurrent requests per pod
+        autoscaling.knative.dev/target: "10"
+    spec:
+      containers:
+        - name: vite-runtime
+          # Use the shogo-mcp image which includes Vite and project dependencies
+          # In production, this could be a dedicated lighter-weight image
+          image: ghcr.io/shogo-ai/shogo-mcp:latest
+          ports:
+            - containerPort: 5173
+              name: http1
+          env:
+            # Project isolation env vars
+            - name: PROJECT_ID
+              value: "{id}"
+            - name: WORKSPACE_ID
+              value: "{workspace-id}"
+            - name: TENANT_ID
+              value: "{tenant-id}"
+            # Vite configuration
+            - name: NODE_ENV
+              value: "production"
+            - name: VITE_HOST
+              value: "0.0.0.0"
+            - name: VITE_PORT
+              value: "5173"
+          # Run Vite preview build (not dev server)
+          # Production serves the built assets, not hot reloading
+          command:
+            - "bun"
+            - "run"
+            - "vite"
+            - "preview"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "5173"
+          # Resource limits - conservative for scale-to-zero efficiency
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          # Health checks
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5173
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5173
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          # Volume mounts for project files (if using PVC)
+          # Commented out - projects may be bundled into image or fetched at startup
+          # volumeMounts:
+          #   - name: project-data
+          #     mountPath: /app/project
+      # Volumes - project data from PVC or ConfigMap
+      # volumes:
+      #   - name: project-data
+      #     persistentVolumeClaim:
+      #       claimName: pvc-project-{id}

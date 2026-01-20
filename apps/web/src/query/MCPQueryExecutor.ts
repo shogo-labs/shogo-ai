@@ -88,6 +88,10 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
       ...(options?.take !== undefined && { take: options.take }),
     })
 
+    if (!result.ok) {
+      throw new Error(`Query failed: ${result.error?.message || "Unknown error"}`)
+    }
+
     return result.items ?? []
   }
 
@@ -109,6 +113,10 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
       ...(options?.skip !== undefined && { skip: options.skip }),
     })
 
+    if (!result.ok) {
+      throw new Error(`Query failed: ${result.error?.message || "Unknown error"}`)
+    }
+
     return result.items?.[0]
   }
 
@@ -123,6 +131,10 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
       terminal: "count",
     })
 
+    if (!result.ok) {
+      throw new Error(`Query failed: ${result.error?.message || "Unknown error"}`)
+    }
+
     return result.count ?? 0
   }
 
@@ -136,6 +148,10 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
       ast: serializedAst,
       terminal: "any",
     })
+
+    if (!result.ok) {
+      throw new Error(`Query failed: ${result.error?.message || "Unknown error"}`)
+    }
 
     return (result.count ?? 0) > 0
   }

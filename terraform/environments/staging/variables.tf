@@ -103,13 +103,25 @@ variable "knative_version" {
 }
 
 variable "domain" {
-  description = "Domain for Knative services (e.g., shogo.ai)"
+  description = "Primary domain for Knative services (e.g., shogo.ai)"
+  type        = string
+  default     = ""
+}
+
+variable "publish_domain" {
+  description = "Domain for published apps (e.g., shogo.one)"
   type        = string
   default     = ""
 }
 
 variable "ssl_certificate_domain" {
-  description = "Domain name to look up ACM certificate (e.g., *.shogo.ai)"
+  description = "Domain name to look up ACM certificate for platform (e.g., *.shogo.ai)"
+  type        = string
+  default     = ""
+}
+
+variable "ssl_certificate_domain_publish" {
+  description = "Domain name to look up ACM certificate for published apps (e.g., *.shogo.one)"
   type        = string
   default     = ""
 }
@@ -121,6 +133,13 @@ variable "better_auth_secret" {
   description = "Secret key for BetterAuth (min 32 characters)"
   type        = string
   sensitive   = true
+}
+
+variable "anthropic_api_key" {
+  description = "Anthropic API key for Claude Code integration"
+  type        = string
+  sensitive   = true
+  default     = ""  # Optional - can be managed by GitHub Actions instead
 }
 
 # -----------------------------------------------------------------------------

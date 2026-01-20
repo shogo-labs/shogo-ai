@@ -2,9 +2,16 @@
  * Schema save/load operations
  *
  * Includes version tracking and history snapshots for schema migrations.
+ * Supports both filesystem and S3 backends via SCHEMA_STORAGE env var.
+ *
+ * Backend selection:
+ * - SCHEMA_STORAGE=s3: Use S3 (requires S3_SCHEMA_BUCKET, AWS_REGION)
+ * - SCHEMA_STORAGE=filesystem or unset: Use local filesystem (default)
  */
 
 import { ensureDir, readJson, writeJson, exists, listDirs } from './io'
+import { isS3Enabled } from './s3-io'
+import * as s3Schema from './s3-schema-io'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 
@@ -25,7 +32,7 @@ export interface SchemaSnapshot {
 }
 
 /**
- * Saves a schema to disk at .schemas/{schemaName}/schema.json or custom workspace
+ * Saves a schema to storage (filesystem or S3 based on SCHEMA_STORAGE env)
  *
  * Version tracking:
  * - First save: version starts at 1
@@ -34,11 +41,16 @@ export interface SchemaSnapshot {
  *
  * @param schema - Meta-store Schema entity with id, name, toEnhancedJson()
  * @param templates - Optional map of template name to template content
- * @param workspace - Optional absolute path to workspace directory (defaults to .schemas)
- * @returns The directory path where the schema was saved
+ * @param workspace - Optional workspace identifier (path for filesystem, workspace ID for S3)
+ * @returns The path/key where the schema was saved
  */
 export async function saveSchema(schema: any, templates?: Record<string, string>, workspace?: string): Promise<string> {
-  // Validate workspace if provided
+  // Delegate to S3 if enabled
+  if (isS3Enabled()) {
+    return s3Schema.saveSchemaToS3(schema, templates, workspace)
+  }
+
+  // Validate workspace if provided (filesystem mode)
   if (workspace) {
     if (!path.isAbsolute(workspace)) {
       throw new Error(`Workspace must be absolute path: ${workspace}`)
@@ -101,16 +113,22 @@ export async function saveSchema(schema: any, templates?: Record<string, string>
 }
 
 /**
- * Loads a schema from disk
+ * Loads a schema from storage (filesystem or S3 based on SCHEMA_STORAGE env)
  *
  * @param name - Schema name (folder name)
- * @param workspace - Optional absolute path to workspace directory (defaults to .schemas)
+ * @param workspace - Optional workspace identifier (path for filesystem, workspace ID for S3)
  * @returns Metadata (including version) and enhanced JSON schema
  */
 export async function loadSchema(name: string, workspace?: string): Promise<{
   metadata: { id: string; name: string; createdAt: number; format: string; version?: number; views?: Record<string, any> }
   enhanced: any
 }> {
+  // Delegate to S3 if enabled
+  if (isS3Enabled()) {
+    return s3Schema.loadSchemaFromS3(name, workspace)
+  }
+
+  // Filesystem mode
   const baseDir = workspace || '.schemas'
   const filePath = `${baseDir}/${name}/schema.json`
 
@@ -139,7 +157,7 @@ export async function loadSchema(name: string, workspace?: string): Promise<{
 /**
  * Lists all saved schemas
  *
- * @param workspace - Optional absolute path to .schemas directory (defaults to .schemas)
+ * @param workspace - Optional workspace identifier (path for filesystem, workspace ID for S3)
  * @returns Array of schema metadata
  */
 export async function listSchemas(workspace?: string): Promise<Array<{
@@ -148,6 +166,12 @@ export async function listSchemas(workspace?: string): Promise<Array<{
   createdAt: number
   path: string
 }>> {
+  // Delegate to S3 if enabled
+  if (isS3Enabled()) {
+    return s3Schema.listSchemasInS3(workspace)
+  }
+
+  // Filesystem mode
   const baseDir = workspace || '.schemas'
   if (!await exists(baseDir)) return []
 

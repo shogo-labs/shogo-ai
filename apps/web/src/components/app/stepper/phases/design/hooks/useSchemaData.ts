@@ -51,10 +51,12 @@ export interface UseSchemaDataResult {
  * Loads schema data via mcpService and manages loading/error states.
  *
  * @param schemaName - Name of schema to load, or null/undefined for no-op
+ * @param workspace - Optional workspace/projectId to load schema from (defaults to 'workspace')
  * @returns { models, isLoading, error, refetch }
  */
 export function useSchemaData(
-  schemaName: string | null | undefined
+  schemaName: string | null | undefined,
+  workspace?: string | null
 ): UseSchemaDataResult {
   const [models, setModels] = useState<SchemaModel[] | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -64,14 +66,15 @@ export function useSchemaData(
   const isMountedRef = useRef(true)
 
   // Load schema data
-  const loadSchema = useCallback(async (name: string) => {
+  const loadSchema = useCallback(async (name: string, ws?: string | null) => {
     if (!isMountedRef.current) return
 
     setIsLoading(true)
     setError(null)
 
     try {
-      const result = await mcpService.loadSchema(name)
+      // Pass workspace to loadSchema for project-specific schema loading
+      const result = await mcpService.loadSchema(name, ws || undefined)
 
       if (!isMountedRef.current) return
 
@@ -96,11 +99,11 @@ export function useSchemaData(
   // Refetch function for retry on error
   const refetch = useCallback(() => {
     if (schemaName) {
-      loadSchema(schemaName)
+      loadSchema(schemaName, workspace)
     }
-  }, [schemaName, loadSchema])
+  }, [schemaName, workspace, loadSchema])
 
-  // Effect to load schema when schemaName changes
+  // Effect to load schema when schemaName or workspace changes
   useEffect(() => {
     isMountedRef.current = true
 
@@ -112,13 +115,13 @@ export function useSchemaData(
       return
     }
 
-    loadSchema(schemaName)
+    loadSchema(schemaName, workspace)
 
     // Cleanup function to handle unmount during async load
     return () => {
       isMountedRef.current = false
     }
-  }, [schemaName, loadSchema])
+  }, [schemaName, workspace, loadSchema])
 
   return {
     models,

@@ -13,6 +13,8 @@
 #
 # For local dev, we simulate workspaces. In production, each workspace
 # gets its own MCP pod via Knative with scale-to-zero.
+#
+# Environment: Reads from .env.local (secrets like ANTHROPIC_API_KEY)
 # =============================================================================
 
 services:
@@ -39,7 +41,10 @@ services:
       - shogo-network
 
   # ---------------------------------------------------------------------------
-  # MinIO (S3-compatible storage - for future cloud parity)
+  # MinIO (S3-compatible storage for schema persistence)
+  # ---------------------------------------------------------------------------
+  # Console: http://localhost:9001 (minioadmin/minioadmin)
+  # API: http://localhost:9000
   # ---------------------------------------------------------------------------
   minio:
     image: minio/minio:latest
@@ -62,6 +67,28 @@ services:
       - shogo-network
 
   # ---------------------------------------------------------------------------
+  # MinIO Bucket Initialization & Schema Seeding
+  # ---------------------------------------------------------------------------
+  # Creates buckets and seeds schemas + workspaces from local directories
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:latest
+    container_name: shogo-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      # Mount local schemas to seed into S3
+      - ./.schemas:/schemas:ro
+      # Mount local workspaces to seed into S3
+      - ./workspaces:/workspaces:ro
+      # Mount init script
+      - ./scripts/minio-init.sh:/minio-init.sh:ro
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
   # Redis (BetterAuth session cache)
   # ---------------------------------------------------------------------------
   redis:
@@ -75,7 +102,16 @@ services:
       - shogo-network
 
   # ---------------------------------------------------------------------------
-  # Shogo MCP Server - Workspace 1 (Default)
+  # Shogo MCP Server - Workspace 1 (Default - Filesystem Storage)
+  # ---------------------------------------------------------------------------
+  # Uses local .schemas bind mount for development.
+  #
+  # To use S3 storage instead, set these env vars in .env.local:
+  #   SCHEMA_STORAGE=s3
+  #   S3_SCHEMA_BUCKET=shogo-schemas
+  #   S3_ENDPOINT=http://minio:9000
+  #
+  # Or run with S3 profile: docker-compose --profile s3 up
   # ---------------------------------------------------------------------------
   mcp:
     build:
@@ -84,18 +120,30 @@ services:
     container_name: shogo-mcp
     ports:
       - "3100:3100"
+    env_file:
+      - path: .env.local
+        required: false
     environment:
       MCP_PORT: "3100"
       NODE_ENV: development
       DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
+      # SCHEMAS_PATH only used for filesystem mode fallback
       SCHEMAS_PATH: /app/.schemas
-      WORKSPACE_ID: workspace-1
+      WORKSPACE_ID: workspace
       TENANT_ID: tenant-a
+      # S3 config (MinIO in Docker) - SCHEMA_STORAGE comes from .env.local
+      S3_ENDPOINT: http://minio:9000
+      S3_FORCE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     volumes:
-      - mcp_schemas_ws1:/data/schemas
+      # Mount local .schemas for filesystem mode
+      - ./.schemas:/app/.schemas
     depends_on:
       postgres:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "sh", "-c", "curl -s -o /dev/null -w '%{http_code}' http://localhost:3100/mcp | grep -q '400\\|200'"]
       interval: 10s
@@ -115,6 +163,9 @@ services:
     container_name: shogo-mcp-workspace-2
     ports:
       - "3101:3100"
+    env_file:
+      - path: .env.local
+        required: false
     environment:
       MCP_PORT: "3100"
       NODE_ENV: development
@@ -122,11 +173,18 @@ services:
       SCHEMAS_PATH: /app/.schemas
       WORKSPACE_ID: workspace-2
       TENANT_ID: tenant-b
+      # S3 config (MinIO in Docker) - SCHEMA_STORAGE comes from .env.local
+      S3_ENDPOINT: http://minio:9000
+      S3_FORCE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     volumes:
-      - mcp_schemas_ws2:/data/schemas
+      - ./.schemas:/app/.schemas
     depends_on:
       postgres:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "sh", "-c", "curl -s -o /dev/null -w '%{http_code}' http://localhost:3100/mcp | grep -q '400\\|200'"]
       interval: 10s
@@ -146,8 +204,15 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     container_name: shogo-api
+    # Run as current user to match host workspaces permissions
+    user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "8002:8002"
+      # Vite runtime ports for project previews
+      - "5200-5209:5200-5209"
+    env_file:
+      - path: .env.local
+        required: false
     environment:
       API_PORT: "8002"
       NODE_ENV: development
@@ -158,6 +223,27 @@ services:
       BETTER_AUTH_URL: http://localhost:8002
       REDIS_URL: redis://redis:6379
       ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
+      # Agent persona: 'wavesmith' (default) or 'code'
+      SHOGO_AGENT: wavesmith
+      # ANTHROPIC_API_KEY loaded from .env.local via env_file
+      # Runtime workspaces for Vite dev servers
+      WORKSPACES_DIR: /app/workspaces
+      # HOME directory for Claude Code SDK to store session data
+      HOME: /app
+      RUNTIME_BASE_PORT: "5200"
+      RUNTIME_DOMAIN_SUFFIX: localhost
+      # S3/MinIO config for workspace file access
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:9000
+      S3_FORCE_PATH_STYLE: "true"
+      S3_WORKSPACES_BUCKET: shogo-workspaces
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    volumes:
+      # Mount workspaces for project runtime Vite servers
+      - ./workspaces:/app/workspaces
+      # Mount schemas for Claude Code SDK's MCP server
+      - ./.schemas:/app/.schemas
     depends_on:
       postgres:
         condition: service_healthy
@@ -185,10 +271,17 @@ services:
         VITE_API_URL: http://localhost:8002
         VITE_MCP_URL: http://localhost:3100
         VITE_BETTER_AUTH_URL: http://localhost:8002
-        VITE_WORKSPACE: workspace-1
+        VITE_WORKSPACE: workspace
     container_name: shogo-web
     ports:
       - "3000:80"
+    environment:
+      # Docker internal DNS resolver
+      DNS_RESOLVER: "127.0.0.11"
+      API_UPSTREAM: http://api:8002
+      API_HOST: api
+      MCP_UPSTREAM: http://mcp:3100
+      MCP_HOST: mcp
     depends_on:
       - api
       - mcp
@@ -205,10 +298,8 @@ volumes:
     name: shogo-minio-data
   redis_data:
     name: shogo-redis-data
-  mcp_schemas_ws1:
-    name: shogo-mcp-schemas-ws1
-  mcp_schemas_ws2:
-    name: shogo-mcp-schemas-ws2
+  # Note: mcp_schemas_ws1 and mcp_schemas_ws2 volumes removed
+  # Now using bind mount to ./.schemas for development persistence
 
 # =============================================================================
 # Networks

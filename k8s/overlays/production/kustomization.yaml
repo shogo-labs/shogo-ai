@@ -10,6 +10,7 @@ kind: Kustomization
 
 resources:
   - namespace.yaml
+  # secrets.yaml is managed by GitHub Actions workflow (not committed to repo)
   - domain-mappings.yaml
   - api-service.yaml
   - web-service.yaml
