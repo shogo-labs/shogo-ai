@@ -78,7 +78,12 @@ spec:
             - name: BETTER_AUTH_URL
               value: "http://localhost:8080"
             - name: REDIS_URL
-              value: "redis://redis:6379"
+              value: "redis://redis.shogo-system.svc.cluster.local:6379"
+            # CORS configuration - comma-separated list of allowed origins
+            # For local dev with port-forward, use http://localhost:3000
+            # For production, set to actual domain
+            - name: ALLOWED_ORIGINS
+              value: "http://localhost:3000,http://localhost:80,http://localhost"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

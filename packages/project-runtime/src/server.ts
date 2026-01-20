@@ -1,0 +1,430 @@
+/**
+ * Project Runtime Server
+ *
+ * Runs inside each project's Knative pod, providing:
+ * - Claude Code agent with project-scoped file access
+ * - MCP (Wavesmith) subprocess for schema/data tools
+ * - Health check endpoint for Kubernetes probes
+ * - S3 file synchronization for persistent storage
+ *
+ * This is a simplified, isolated runtime - each project gets its own pod.
+ * The API server proxies chat requests here.
+ */
+
+import { Hono } from 'hono'
+import { cors } from 'hono/cors'
+import { streamText, type CoreMessage } from 'ai'
+import { createClaudeCode } from 'ai-sdk-provider-claude-code'
+import { z } from 'zod'
+import { resolve, isAbsolute, relative } from 'path'
+import { existsSync } from 'fs'
+import { initializeS3Sync, type S3Sync } from './s3-sync'
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+const PROJECT_ID = process.env.PROJECT_ID
+const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
+const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
+const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || '/app/packages/mcp/src/server.ts'
+const PORT = parseInt(process.env.PORT || '8080', 10)
+
+// Validate required environment
+if (!PROJECT_ID) {
+  console.error('[project-runtime] ERROR: PROJECT_ID environment variable is required')
+  process.exit(1)
+}
+
+console.log(`[project-runtime] Starting for project: ${PROJECT_ID}`)
+console.log(`[project-runtime] Project directory: ${PROJECT_DIR}`)
+console.log(`[project-runtime] Schemas path: ${SCHEMAS_PATH}`)
+console.log(`[project-runtime] MCP server path: ${MCP_SERVER_PATH}`)
+
+// =============================================================================
+// S3 Sync Initialization
+// =============================================================================
+
+let s3Sync: S3Sync | null = null
+
+// Initialize S3 sync in background (don't block server startup)
+;(async () => {
+  try {
+    s3Sync = await initializeS3Sync(PROJECT_DIR)
+    if (s3Sync) {
+      console.log(`[project-runtime] S3 sync initialized`)
+    }
+  } catch (error) {
+    console.error(`[project-runtime] S3 sync initialization failed:`, error)
+  }
+})()
+
+// =============================================================================
+// Path Restriction (Security)
+// =============================================================================
+
+/**
+ * Creates a canUseTool callback that restricts file operations to the project directory.
+ * This prevents the agent from accessing files outside the project.
+ */
+function createPathRestrictor(projectDir: string) {
+  return async (toolName: string, input: unknown) => {
+    // Only restrict file operation tools
+    const fileTools = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS', 'Bash']
+    if (!fileTools.includes(toolName)) {
+      return { behavior: 'allow' as const }
+    }
+
+    // Extract path from various input shapes
+    const inputObj = input as Record<string, unknown>
+    const inputPath = inputObj.file_path || inputObj.path || inputObj.filePath || inputObj.directory
+
+    if (typeof inputPath === 'string') {
+      const absolutePath = isAbsolute(inputPath) ? inputPath : resolve(projectDir, inputPath)
+      const relativePath = relative(projectDir, absolutePath)
+
+      // Block if path escapes project directory
+      if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+        console.warn(`[project-runtime] Blocked ${toolName} access outside project: ${inputPath}`)
+        return {
+          behavior: 'deny' as const,
+          message: `Access denied: Path "${inputPath}" is outside the project directory`,
+        }
+      }
+    }
+
+    return { behavior: 'allow' as const }
+  }
+}
+
+// =============================================================================
+// Claude Code Provider
+// =============================================================================
+
+const pathRestrictor = createPathRestrictor(PROJECT_DIR)
+
+const claudeCode = createClaudeCode({
+  defaultSettings: {
+    // Enable streaming (required for hooks)
+    streamingInput: 'always',
+    // Verbose logging for debugging
+    verbose: true,
+    // Working directory is the project
+    cwd: PROJECT_DIR,
+    // Path restriction for security
+    canUseTool: pathRestrictor,
+    // Load project settings (.claude/skills, .mcp.json, etc.)
+    settingSources: ['project', 'local'],
+    // MCP server configuration
+    mcpServers: {
+      wavesmith: {
+        command: 'bun',
+        args: ['run', MCP_SERVER_PATH],
+        env: {
+          SCHEMAS_PATH,
+          PROJECT_ID: PROJECT_ID!,
+          NODE_ENV: process.env.NODE_ENV || 'production',
+        },
+      },
+    },
+    // Allowed tools
+    allowedTools: [
+      // File operations
+      'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
+      // Skill and agent tools
+      'Skill', 'Task', 'Bash', 'TodoWrite',
+      // Wavesmith MCP tools - Schema
+      'mcp__wavesmith__schema_set',
+      'mcp__wavesmith__schema_get',
+      'mcp__wavesmith__schema_list',
+      'mcp__wavesmith__schema_load',
+      // Wavesmith MCP tools - Store
+      'mcp__wavesmith__store_create',
+      'mcp__wavesmith__store_list',
+      'mcp__wavesmith__store_get',
+      'mcp__wavesmith__store_update',
+      'mcp__wavesmith__store_query',
+      'mcp__wavesmith__store_models',
+      'mcp__wavesmith__store_delete',
+      // Wavesmith MCP tools - Views
+      'mcp__wavesmith__view_execute',
+      'mcp__wavesmith__view_define',
+      'mcp__wavesmith__view_project',
+      // Wavesmith MCP tools - Data & DDL
+      'mcp__wavesmith__data_load',
+      'mcp__wavesmith__data_loadAll',
+      'mcp__wavesmith__ddl_execute',
+      'mcp__wavesmith__ddl_migrate',
+    ],
+    // Use default permission mode (our canUseTool callback handles restrictions)
+    permissionMode: 'default',
+  },
+})
+
+// =============================================================================
+// Request Schemas
+// =============================================================================
+
+// AI SDK can send content as string or array of parts
+const MessageContentSchema = z.union([
+  z.string(),
+  z.array(z.union([
+    z.object({ type: z.literal('text'), text: z.string() }),
+    z.object({ type: z.literal('image'), image: z.string() }),
+    z.object({ type: z.literal('file'), file: z.any() }),
+    z.any(), // Allow other part types
+  ])),
+])
+
+const ChatRequestSchema = z.object({
+  messages: z.array(z.object({
+    role: z.enum(['user', 'assistant', 'system']),
+    content: MessageContentSchema.optional(),
+    // AI SDK v4 uses 'parts' as well
+    parts: z.array(z.any()).optional(),
+  })),
+  sessionId: z.string().optional(),
+  system: z.string().optional(),
+  // Additional AI SDK fields
+  body: z.any().optional(),
+})
+
+// =============================================================================
+// Hono Server
+// =============================================================================
+
+const app = new Hono()
+
+// CORS for cross-origin requests from API
+app.use('*', cors({
+  origin: '*',
+  allowMethods: ['GET', 'POST', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-Session-Id'],
+}))
+
+// Health check endpoint for Kubernetes probes
+app.get('/health', (c) => {
+  return c.json({
+    status: 'ok',
+    projectId: PROJECT_ID,
+    projectDir: PROJECT_DIR,
+    uptime: process.uptime(),
+  })
+})
+
+// Readiness check - verify project directory exists
+app.get('/ready', (c) => {
+  const projectDirExists = existsSync(PROJECT_DIR)
+  
+  if (!projectDirExists) {
+    return c.json({
+      status: 'not_ready',
+      reason: 'Project directory does not exist',
+      projectDir: PROJECT_DIR,
+    }, 503)
+  }
+  
+  return c.json({
+    status: 'ready',
+    projectId: PROJECT_ID,
+    projectDir: PROJECT_DIR,
+  })
+})
+
+// Main chat endpoint - receives from API, streams response
+app.post('/agent/chat', async (c) => {
+  console.log(`[project-runtime] Received chat request for project: ${PROJECT_ID}`)
+  
+  try {
+    const body = await c.req.json()
+    const parsed = ChatRequestSchema.safeParse(body)
+    
+    if (!parsed.success) {
+      console.error('[project-runtime] Invalid request body:', parsed.error)
+      return c.json({
+        error: {
+          code: 'invalid_request',
+          message: 'Invalid request body',
+          details: parsed.error.flatten(),
+        },
+      }, 400)
+    }
+    
+    const { messages, system } = parsed.data
+    
+    // Convert to CoreMessage format, handling both string and parts content
+    const coreMessages: CoreMessage[] = messages.map((msg) => {
+      let content: string
+      
+      if (typeof msg.content === 'string') {
+        content = msg.content
+      } else if (Array.isArray(msg.content)) {
+        // Extract text from content parts
+        content = msg.content
+          .filter((part): part is { type: 'text'; text: string } => 
+            part && typeof part === 'object' && part.type === 'text')
+          .map(part => part.text)
+          .join('')
+      } else if (Array.isArray(msg.parts)) {
+        // AI SDK v4 parts format
+        content = msg.parts
+          .filter((part): part is { type: 'text'; text: string } => 
+            part && typeof part === 'object' && part.type === 'text')
+          .map(part => part.text)
+          .join('')
+      } else {
+        content = ''
+      }
+      
+      return {
+        role: msg.role,
+        content,
+      }
+    })
+    
+    console.log(`[project-runtime] Processing ${messages.length} messages`)
+    
+    // Create streaming response using Claude Code
+    const result = streamText({
+      model: claudeCode('sonnet', {
+        streamingInput: 'always',
+      }) as Parameters<typeof streamText>[0]['model'],
+      system: system || `You are helping build a project. The project files are in ${PROJECT_DIR}. You have access to file operations and MCP tools for data management.`,
+      messages: coreMessages,
+    })
+    
+    // Return the AI SDK UI message stream response directly
+    // This ensures compatibility with @ai-sdk/react's useChat hook (DefaultChatTransport)
+    return result.toUIMessageStreamResponse()
+  } catch (error: any) {
+    console.error('[project-runtime] Chat error:', error)
+    return c.json({
+      error: {
+        code: 'chat_error',
+        message: error.message || 'An error occurred during chat',
+      },
+    }, 500)
+  }
+})
+
+// Info endpoint for debugging
+app.get('/info', (c) => {
+  return c.json({
+    projectId: PROJECT_ID,
+    projectDir: PROJECT_DIR,
+    schemasPath: SCHEMAS_PATH,
+    mcpServerPath: MCP_SERVER_PATH,
+    nodeEnv: process.env.NODE_ENV,
+    port: PORT,
+    uptime: process.uptime(),
+    s3Sync: s3Sync ? {
+      enabled: true,
+      stats: s3Sync.getStats(),
+    } : {
+      enabled: false,
+    },
+  })
+})
+
+// =============================================================================
+// S3 Sync Endpoints
+// =============================================================================
+
+// Get S3 sync status
+app.get('/sync/status', (c) => {
+  if (!s3Sync) {
+    return c.json({
+      enabled: false,
+      message: 'S3 sync not configured',
+    })
+  }
+
+  return c.json({
+    enabled: true,
+    stats: s3Sync.getStats(),
+  })
+})
+
+// Trigger manual sync (upload to S3)
+app.post('/sync/upload', async (c) => {
+  if (!s3Sync) {
+    return c.json({
+      success: false,
+      error: 'S3 sync not configured',
+    }, 400)
+  }
+
+  try {
+    const stats = await s3Sync.uploadAll(false)
+    return c.json({
+      success: true,
+      stats,
+    })
+  } catch (error: any) {
+    return c.json({
+      success: false,
+      error: error.message,
+    }, 500)
+  }
+})
+
+// Trigger manual sync (download from S3)
+app.post('/sync/download', async (c) => {
+  if (!s3Sync) {
+    return c.json({
+      success: false,
+      error: 'S3 sync not configured',
+    }, 400)
+  }
+
+  try {
+    const stats = await s3Sync.downloadAll()
+    return c.json({
+      success: true,
+      stats,
+    })
+  } catch (error: any) {
+    return c.json({
+      success: false,
+      error: error.message,
+    }, 500)
+  }
+})
+
+// =============================================================================
+// Graceful Shutdown
+// =============================================================================
+
+async function gracefulShutdown(signal: string) {
+  console.log(`[project-runtime] Received ${signal}, starting graceful shutdown...`)
+
+  // Upload any pending changes to S3 before shutdown
+  if (s3Sync) {
+    console.log(`[project-runtime] Uploading final changes to S3...`)
+    try {
+      await s3Sync.uploadAll(false)
+      s3Sync.shutdown()
+      console.log(`[project-runtime] S3 sync completed and stopped`)
+    } catch (error) {
+      console.error(`[project-runtime] S3 final sync failed:`, error)
+    }
+  }
+
+  console.log(`[project-runtime] Shutdown complete`)
+  process.exit(0)
+}
+
+// Register shutdown handlers
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+
+// =============================================================================
+// Start Server
+// =============================================================================
+
+console.log(`[project-runtime] Starting server on port ${PORT}`)
+
+export default {
+  port: PORT,
+  fetch: app.fetch,
+}

@@ -163,12 +163,19 @@ variable "ecr_registry" {
   default     = ""
 }
 
+variable "enable_pvc_support" {
+  description = "Enable PVC support for Knative services (requires feature flags)"
+  type        = bool
+  default     = true
+}
+
 resource "null_resource" "knative_config" {
   depends_on = [null_resource.kourier]
 
   triggers = {
     scale_to_zero_grace_period = var.scale_to_zero_grace_period
     ecr_registry               = var.ecr_registry
+    enable_pvc_support         = var.enable_pvc_support
   }
 
   provisioner "local-exec" {
@@ -195,6 +202,15 @@ resource "null_resource" "knative_config" {
         --namespace knative-serving \
         --type merge \
         --patch '{"data":{"registries-skipping-tag-resolving":"kind.local,ko.local,dev.local,${var.ecr_registry}"}}'
+      %{endif}
+
+      # Enable PVC support feature flags (for workspace code persistence)
+      # See: https://knative.dev/docs/serving/configuration/feature-flags/
+      %{if var.enable_pvc_support}
+      kubectl patch configmap/config-features \
+        --namespace knative-serving \
+        --type merge \
+        --patch '{"data":{"kubernetes.podspec-persistent-volume-claim":"enabled","kubernetes.podspec-persistent-volume-write":"enabled"}}'
       %{endif}
     EOT
   }

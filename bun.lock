@@ -113,6 +113,23 @@
         "typescript": "^5.7.2",
       },
     },
+    "packages/project-runtime": {
+      "name": "@shogo/project-runtime",
+      "version": "0.0.1",
+      "dependencies": {
+        "@aws-sdk/client-s3": "^3.700.0",
+        "@hono/node-server": "^1.13.1",
+        "@shogo/state-api": "workspace:*",
+        "ai": "^6.0.23",
+        "ai-sdk-provider-claude-code": "^3.3.0",
+        "hono": "^4.7.10",
+        "zod": "^3.24.4",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5.8.3",
+      },
+    },
     "packages/state-api": {
       "name": "@shogo/state-api",
       "version": "0.1.0",
@@ -626,6 +643,8 @@
     "@shogo/api": ["@shogo/api@workspace:apps/api"],
 
     "@shogo/mcp": ["@shogo/mcp@workspace:packages/mcp"],
+
+    "@shogo/project-runtime": ["@shogo/project-runtime@workspace:packages/project-runtime"],
 
     "@shogo/state-api": ["@shogo/state-api@workspace:packages/state-api"],
 
@@ -1962,6 +1981,8 @@
     "@shogo/mcp/ai": ["ai@5.0.121", "", { "dependencies": { "@ai-sdk/gateway": "2.0.27", "@ai-sdk/provider": "2.0.1", "@ai-sdk/provider-utils": "3.0.20", "@opentelemetry/api": "1.9.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-3iYPdARKGLryC/7OA9RgBUaym1gynvWS7UPy8NwoRNCKP52lshldtHB5xcEfVviw7liWH2zJlW9yEzsDglcIEQ=="],
 
     "@shogo/mcp/ai-sdk-provider-claude-code": ["ai-sdk-provider-claude-code@2.3.0", "", { "dependencies": { "@ai-sdk/provider": "2.0.0", "@ai-sdk/provider-utils": "3.0.9", "@anthropic-ai/claude-agent-sdk": "^0.1.59" }, "peerDependencies": { "zod": "^3.0.0 || ^4.0.0" } }, "sha512-iUP1v4DUPITgW3I4hSF3tCVBTv2q9F6CKR96Y1lOYqQUjjeZunv2MqImnCsIBvDdmCLu/Qj8+iVAmNaaN4iqTg=="],
+
+    "@shogo/project-runtime/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "@tailwindcss/oxide-wasm32-wasi/@emnapi/core": ["@emnapi/core@1.8.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.1.0", "tslib": "^2.4.0" }, "bundled": true }, "sha512-AvT9QFpxK0Zd8J0jopedNm+w/2fIzvtPKPjqyw9jwvBaReTTqPBk9Hixaz7KbjimP+QNz605/XnjFcDAL2pqBg=="],
 

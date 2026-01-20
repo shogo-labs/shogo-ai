@@ -26,6 +26,8 @@ import { NullPersistence } from '@shogo/state-api/persistence/null'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
+import { projectChatRoutes } from './routes/project-chat'
+import { projectAdminRoutes } from './routes/project-admin'
 import { createRuntimeManager, type IRuntimeManager } from '@shogo/state-api/runtime'
 
 // Billing domain store singleton for webhook handling
@@ -1185,6 +1187,109 @@ app.post('/api/projects/:projectId/s3/presign', async (c) => {
     headers: c.req.raw.headers,
     body: c.req.raw.body,
   })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// Project Chat Proxy Routes (pod-per-project architecture)
+// =============================================================================
+
+// POST /api/projects/:projectId/chat - Proxy chat to project pod
+app.post('/api/projects/:projectId/chat', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ studioCore, runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// GET /api/projects/:projectId/chat/status - Check project runtime status
+app.get('/api/projects/:projectId/chat/status', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ studioCore, runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/status`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// POST /api/projects/:projectId/chat/wake - Wake up a scaled-to-zero pod
+app.post('/api/projects/:projectId/chat/wake', async (c) => {
+  const studioCore = await getStudioCoreStore()
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ studioCore, runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/wake`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// Project Admin Routes (Kubernetes pod management)
+// =============================================================================
+
+// GET /api/admin/projects - List all project pods
+app.get('/api/admin/projects', async (c) => {
+  const router = projectAdminRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = '/admin/projects'
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// GET /api/admin/stats - Get aggregate stats
+app.get('/api/admin/stats', async (c) => {
+  const router = projectAdminRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = '/admin/stats'
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// GET /api/admin/projects/:projectId - Get project pod status
+app.get('/api/admin/projects/:projectId', async (c) => {
+  const router = projectAdminRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/admin/projects/${c.req.param('projectId')}`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// POST /api/admin/projects/:projectId/scale - Scale project pod
+app.post('/api/admin/projects/:projectId/scale', async (c) => {
+  const router = projectAdminRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/admin/projects/${c.req.param('projectId')}/scale`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// POST /api/admin/projects/:projectId/warmup - Warm up a project pod
+app.post('/api/admin/projects/:projectId/warmup', async (c) => {
+  const router = projectAdminRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/admin/projects/${c.req.param('projectId')}/warmup`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
+// DELETE /api/admin/projects/:projectId - Delete project pod
+app.delete('/api/admin/projects/:projectId', async (c) => {
+  const router = projectAdminRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/admin/projects/${c.req.param('projectId')}`
+  const newReq = new Request(url.toString(), { method: 'DELETE' })
   return router.fetch(newReq)
 })
 

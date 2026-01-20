@@ -655,9 +655,13 @@ export const ChatPanel = observer(function ChatPanel({
 
   // chat-session-sync-fix: v3 API requires DefaultChatTransport for proper metadata handling
   // The transport must be memoized to prevent re-creation on every render
+  // pod-per-project: Use project-specific endpoint when projectId is available
+  // This routes chat requests to the dedicated project pod via Knative
   const chatTransport = useMemo(
-    () => new DefaultChatTransport({ api: "/api/chat" }),
-    []
+    () => new DefaultChatTransport({ 
+      api: projectId ? `/api/projects/${projectId}/chat` : "/api/chat" 
+    }),
+    [projectId]
   )
 
   // AI SDK useChat hook (v3 API - chat-session-sync-fix)

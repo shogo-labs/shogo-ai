@@ -15,7 +15,8 @@ WORKDIR /app
 ARG VITE_API_URL=
 ARG VITE_MCP_URL=
 ARG VITE_BETTER_AUTH_URL=
-ARG VITE_WORKSPACE=local-dev
+# VITE_WORKSPACE must match the S3 schema prefix (default: "workspace")
+ARG VITE_WORKSPACE=workspace
 
 # Set as environment variables for build
 ENV VITE_API_URL=$VITE_API_URL
@@ -53,11 +54,12 @@ RUN bun run build
 # =============================================================================
 FROM nginx:alpine
 
-# Default API and MCP upstream (overridden by environment variables)
-ENV API_UPSTREAM=http://api.shogo-system.svc.cluster.local
-ENV API_HOST=api.shogo-system.svc.cluster.local
-ENV MCP_UPSTREAM=http://mcp-workspace-1.shogo-workspaces.svc.cluster.local
-ENV MCP_HOST=mcp-workspace-1.shogo-workspaces.svc.cluster.local
+# Default API and MCP upstream (overridden by environment variables at runtime)
+ENV API_UPSTREAM=http://shogo-api.shogo-system.svc.cluster.local:8002
+ENV API_HOST=shogo-api.shogo-system.svc.cluster.local
+# MCP proxies to platform-mcp singleton (not per-workspace)
+ENV MCP_UPSTREAM=http://platform-mcp.shogo-system.svc.cluster.local:3100
+ENV MCP_HOST=platform-mcp.shogo-system.svc.cluster.local
 # DNS resolver: Docker=127.0.0.11, K8s=kube-dns.kube-system.svc.cluster.local
 ENV DNS_RESOLVER=kube-dns.kube-system.svc.cluster.local
 
