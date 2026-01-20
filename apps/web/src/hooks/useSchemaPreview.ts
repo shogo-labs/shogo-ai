@@ -74,9 +74,9 @@ export function useSchemaPreview(schemaName: string | null): SchemaPreviewState 
           const collectionName = `${model.name.charAt(0).toLowerCase()}${model.name.slice(1)}Collection`
           const collection = store[collectionName]
 
-          if (collection?.loadAll) {
+          if (collection?.query) {
             console.log('[useSchemaPreview] Loading collection:', collectionName)
-            await collection.loadAll()
+            await collection.query().toArray()
           }
         }
 

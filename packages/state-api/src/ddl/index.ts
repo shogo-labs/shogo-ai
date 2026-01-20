@@ -177,6 +177,7 @@ export type {
   MigrationOutput,
   MigrationOperationDef,
   MigrationRecord,
+  VerificationDetails,
 } from "./migration-types"
 export { MigrationOperation } from "./migration-types"
 
@@ -187,7 +188,7 @@ export { compareSchemas } from "./diff"
 export { generateMigration, migrationOutputToSQL, type MigrationConfig } from "./migration-generator"
 export type { DDLGenerationOptions } from "./sql-generator"
 export { createPostgresDialect, createSqliteDialect } from "./dialect"
-export { topologicalSort } from "./utils"
+export { topologicalSort, toSnakeCase } from "./utils"
 export {
   columnDefToSQL,
   tableDefToCreateTableSQL,
@@ -195,7 +196,7 @@ export {
   ddlOutputToSQL,
   generateSQL,
 } from "./sql-generator"
-export { deriveNamespace, qualifyTableName, type QualifyDialect } from "./namespace"
+export { deriveNamespace, qualifyTableName, normalizeTableNameForComparison, type QualifyDialect } from "./namespace"
 
 // Re-export migration tracker functions
 export {
@@ -204,6 +205,9 @@ export {
   isMigrationApplied,
   recordMigration,
   computeSchemaChecksum,
+  getChain,
+  getLastApplied,
+  findBySchema,
 } from "./migration-tracker"
 
 // Re-export orchestrator
@@ -216,3 +220,22 @@ export {
   type SchemaSyncResultUnchanged,
   type SchemaSyncResultMigrated,
 } from "./orchestrator"
+
+// Re-export introspection functions
+export {
+  getActualTables,
+  getActualTablesFullNames,
+  getTableColumns,
+  tableExists,
+  detectDialect,
+  type ColumnInfo,
+  type IntrospectionDialect,
+} from "./introspection"
+
+// Re-export bootstrap migration
+export {
+  isMigrationNeeded,
+  runBootstrapMigration,
+  type MigrationNeededResult,
+  type BootstrapMigrationResult,
+} from "./bootstrap-migration"

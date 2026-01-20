@@ -239,33 +239,71 @@ export interface MigrationOutput {
 // ============================================================================
 
 /**
- * Record of an applied migration.
+ * Verification details for a migration.
+ *
+ * Contains information about what tables were expected and what was found
+ * after executing the migration, enabling audit and recovery.
+ *
+ * @interface VerificationDetails
+ * @property {string[]} tablesExpected - Tables that should exist after migration
+ * @property {string[]} tablesFound - Tables that actually exist
+ * @property {string[]} tablesMissing - Tables expected but not found
+ * @property {string[]} tablesExtra - Tables found but not expected
+ */
+export interface VerificationDetails {
+  /** Tables that should exist after migration */
+  tablesExpected: string[]
+  /** Tables that actually exist */
+  tablesFound: string[]
+  /** Tables expected but not found */
+  tablesMissing: string[]
+  /** Tables found but not expected */
+  tablesExtra: string[]
+}
+
+/**
+ * Record of an applied migration step in the chain.
  *
  * Stored in the system-migrations schema to track which migrations
- * have been applied and prevent re-execution.
+ * have been applied and their verification status.
+ *
+ * The chain model uses fromVersion/toVersion pairs where:
+ * - fromVersion=null means fresh deploy (no prior version)
+ * - fromVersion=N, toVersion=N+1 means incremental migration
  *
  * @interface MigrationRecord
  * @property {string} id - Unique identifier for the migration record
  * @property {string} schemaName - Schema this migration was applied to
- * @property {number} version - Schema version after this migration
+ * @property {number | null} fromVersion - Schema version before migration (null for fresh deploy)
+ * @property {number} toVersion - Schema version after this migration
  * @property {string} checksum - Hash of schema content for drift detection
  * @property {number} appliedAt - Timestamp when migration was applied
  * @property {string[]} statements - SQL statements that were executed
- * @property {boolean} success - Whether migration completed successfully
- * @property {string} [errorMessage] - Error message if migration failed
+ * @property {boolean} success - Whether DDL execution completed without errors
+ * @property {boolean} verified - Whether post-execution verification confirmed tables exist
+ * @property {string} [errorMessage] - Error message if migration or verification failed
+ * @property {VerificationDetails} [verificationDetails] - Details of what was verified
  *
  * @example
  * ```ts
  * const record: MigrationRecord = {
  *   id: "mig-user-v3-1735570000",
  *   schemaName: "user-schema",
- *   version: 3,
+ *   fromVersion: 2,
+ *   toVersion: 3,
  *   checksum: "sha256-abc123...",
  *   appliedAt: 1735570000000,
  *   statements: [
  *     "ALTER TABLE user ADD COLUMN email TEXT NOT NULL"
  *   ],
- *   success: true
+ *   success: true,
+ *   verified: true,
+ *   verificationDetails: {
+ *     tablesExpected: ["user_schema__user"],
+ *     tablesFound: ["user_schema__user"],
+ *     tablesMissing: [],
+ *     tablesExtra: []
+ *   }
  * }
  * ```
  */
@@ -274,16 +312,22 @@ export interface MigrationRecord {
   id: string
   /** Schema this migration was applied to */
   schemaName: string
+  /** Schema version before migration (null for fresh deploy) */
+  fromVersion: number | null
   /** Schema version after this migration */
-  version: number
+  toVersion: number
   /** Hash of schema content for drift detection */
   checksum: string
   /** Timestamp when migration was applied (Unix ms) */
   appliedAt: number
   /** SQL statements that were executed */
   statements: string[]
-  /** Whether migration completed successfully */
+  /** Whether DDL execution completed without errors */
   success: boolean
-  /** Error message if migration failed */
+  /** Whether post-execution verification confirmed tables exist */
+  verified: boolean
+  /** Error message if migration or verification failed */
   errorMessage?: string
+  /** Details of what was verified */
+  verificationDetails?: VerificationDetails
 }

@@ -20,7 +20,7 @@
  * - Operations: Supports select, count, exists via SqlBackend compilation methods
  */
 
-import type { Condition } from '../ast/types'
+import type { ParsedCondition } from '../ast/types'
 import type { IBackend, BackendCapabilities, QueryOptions, QueryResult } from './types'
 import type { ISqlExecutor } from '../execution/types'
 import { SqlBackend } from './sql'
@@ -134,7 +134,7 @@ export class PostgresBackend implements IBackend {
    * ```
    */
   async execute<T>(
-    ast: Condition,
+    ast: ParsedCondition,
     collection: string | T[],
     options?: ExtendedQueryOptions
   ): Promise<QueryResult<T>> {

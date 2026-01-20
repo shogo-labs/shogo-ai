@@ -142,7 +142,15 @@ export function createMatcherFromExpression(
   if (!ast) {
     try {
       // Parse the expression into a ucast AST
-      ast = parseQuery(matchExpression)
+      const parsed = parseQuery(matchExpression)
+
+      // Subquery conditions are not supported for property matching
+      // (they're for database queries, not in-memory object matching)
+      if ('type' in parsed && parsed.type === 'subquery') {
+        throw new Error('Subquery expressions ($query) are not supported in property match expressions')
+      }
+
+      ast = parsed as Condition
       // Cache for future calls with the same expression object
       astCache.set(matchExpression, ast)
     } catch (error) {

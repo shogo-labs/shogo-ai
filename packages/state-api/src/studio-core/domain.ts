@@ -783,7 +783,7 @@ export const studioCoreDomain = domain({
           }
 
           // Load acting user's memberships to check permissions
-          await self.memberCollection.loadAll()
+          await self.memberCollection.query().where({ userId: actingUserId }).toArray()
 
           // Get acting user's role level on this resource
           const actingUserRole = self.resolvePermissions(actingUserId, resourceType, resourceId)
@@ -840,8 +840,12 @@ export const studioCoreDomain = domain({
             throw new Error("Member has no resource reference")
           }
 
-          // Load acting user's memberships to check permissions
-          await self.memberCollection.loadAll()
+          // Load acting user's memberships and resource members for permission checks
+          await self.memberCollection.query().where({ userId: actingUserId }).toArray()
+          // Also load resource members for last-owner check
+          const resourceMembers = resourceType === "workspace"
+            ? await self.memberCollection.query().where({ workspaceId: resourceId }).toArray()
+            : await self.memberCollection.query().where({ projectId: resourceId }).toArray()
 
           // Get acting user's role level on this resource
           const actingUserRole = self.resolvePermissions(actingUserId, resourceType, resourceId)
@@ -859,8 +863,7 @@ export const studioCoreDomain = domain({
 
           // If target is an owner, check last-owner protection
           if (targetMember.role === "owner" && resourceType === "workspace") {
-            const allMembers = self.memberCollection.findForResource(resourceType, resourceId)
-            const owners = allMembers.filter((m: any) => m.role === "owner")
+            const owners = resourceMembers.filter((m: any) => m.role === "owner")
             if (owners.length <= 1) {
               throw new Error("Cannot remove the last owner of a workspace")
             }
@@ -892,11 +895,8 @@ export const studioCoreDomain = domain({
             throw new Error("Invitation is not pending")
           }
 
-          // Check if expired (using the computed view isExpired)
-          // Load into MST to get computed view
-          await self.invitationCollection.loadAll()
-          const mstInvitation = self.invitationCollection.get(invitationId)
-          if (mstInvitation && mstInvitation.isExpired) {
+          // Check if expired
+          if (Date.now() > invitation.expiresAt) {
             throw new Error("Invitation is expired")
           }
 
@@ -972,7 +972,7 @@ export const studioCoreDomain = domain({
           }
 
           // Load acting user's memberships to check permissions
-          await self.memberCollection.loadAll()
+          await self.memberCollection.query().where({ userId: actingUserId }).toArray()
 
           // Get acting user's role level on this resource
           const actingUserRole = self.resolvePermissions(actingUserId, resourceType, resourceId)
@@ -1194,13 +1194,12 @@ export const studioCoreDomain = domain({
             throw new Error("Member is not a workspace member")
           }
 
-          // Load all members to check for last owner
-          await self.memberCollection.loadAll()
+          // Load workspace members for validation and notifications
+          const workspaceMembers = await self.memberCollection.query().where({ workspaceId }).toArray()
 
           // If member is an owner, check they're not the last one
           if (member.role === "owner") {
-            const allMembers = self.memberCollection.findForResource("workspace", workspaceId)
-            const owners = allMembers.filter((m: any) => m.role === "owner")
+            const owners = workspaceMembers.filter((m: any) => m.role === "owner")
             if (owners.length <= 1) {
               throw new Error("Cannot leave: you are the last owner of this workspace. Transfer ownership first.")
             }
@@ -1213,10 +1212,9 @@ export const studioCoreDomain = domain({
           // Delete the member
           await self.memberCollection.deleteOne(memberId)
 
-          // Create notifications for workspace admins/owners
-          const allMembers = self.memberCollection.findForResource("workspace", workspaceId)
-          const adminsAndOwners = allMembers.filter(
-            (m: any) => m.role === "owner" || m.role === "admin"
+          // Create notifications for workspace admins/owners (excluding the leaving member)
+          const adminsAndOwners = workspaceMembers.filter(
+            (m: any) => (m.role === "owner" || m.role === "admin") && m.id !== memberId
           )
 
           for (const admin of adminsAndOwners) {
@@ -1277,17 +1275,17 @@ export const studioCoreDomain = domain({
          * @returns Number of notifications created
          */
         async checkPendingInvitationsOnLogin(userId: string, email: string): Promise<number> {
-          // Load all invitations
-          await self.invitationCollection.loadAll()
-
-          // Find pending invitations for this email
-          const pendingInvitations = self.invitationCollection.findPendingForEmail(email)
+          // Query pending invitations for this email directly
+          const pendingInvitations = await self.invitationCollection
+            .query()
+            .where({ email: email.toLowerCase(), status: "pending" })
+            .toArray()
 
           let notificationsCreated = 0
 
           for (const invitation of pendingInvitations) {
             // Skip expired invitations
-            if (invitation.isExpired) continue
+            if (Date.now() > invitation.expiresAt) continue
 
             // Get workspace/project name
             let resourceName = "a workspace"

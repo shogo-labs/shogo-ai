@@ -266,7 +266,9 @@ describe('query/ast/index barrel exports', () => {
       const serialized = serializeCondition(ast)
       expect(serialized.type).toBe('compound')
       expect(serialized.operator).toBe('and')
-      expect(Array.isArray(serialized.value)).toBe(true)
+      if (serialized.type === 'compound') {
+        expect(Array.isArray(serialized.value)).toBe(true)
+      }
 
       const reconstructed = deserializeCondition(serialized)
       expect(reconstructed).toBeInstanceOf(CompoundCondition)

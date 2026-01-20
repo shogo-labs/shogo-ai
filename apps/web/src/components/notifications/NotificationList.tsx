@@ -65,7 +65,7 @@ export const NotificationList = observer(function NotificationList({
 
     try {
       // Load all notifications
-      await studioCore.notificationCollection.loadAll()
+      await studioCore.notificationCollection.query().toArray()
 
       // Get notifications for current user
       const userNotifications = studioCore.notificationCollection.forUser(userId) || []

@@ -33,7 +33,7 @@
 import { types, getEnv, getRoot, flow } from 'mobx-state-tree'
 import type { IEnvironment } from '../environment/types'
 import type { ArrayReferenceMetadata } from '../ddl/utils'
-import type { QueryFilter, Condition } from '../query/ast/types'
+import type { QueryFilter, ParsedCondition } from '../query/ast/types'
 import type { OrderByClause } from '../query/backends/types'
 import type { IQueryExecutor } from '../query/executors/types'
 import { parseQuery } from '../query/ast/parser'
@@ -116,7 +116,7 @@ export interface IQueryable<T> {
    * const results = await collection.query().whereCondition(condition).toArray()
    * ```
    */
-  whereCondition(condition: Condition): IQueryable<T>
+  whereCondition(condition: ParsedCondition): IQueryable<T>
 
   /**
    * Set sort order for the query.
@@ -254,7 +254,7 @@ interface QueryBuilderState {
   /** Combined filter conditions (multiple where calls are merged) */
   filters: QueryFilter[]
   /** Pre-built AST condition (takes precedence over filters) */
-  condition?: Condition
+  condition?: ParsedCondition
   /** Ordering clauses (multiple orderBy calls are accumulated) */
   ordering: OrderByClause[]
   /** Number of records to skip */
@@ -285,7 +285,7 @@ class QueryBuilder<T> implements IQueryable<T> {
     }, this.onResults)
   }
 
-  whereCondition(condition: Condition): IQueryable<T> {
+  whereCondition(condition: ParsedCondition): IQueryable<T> {
     return new QueryBuilder<T>(this.executor, {
       ...this.state,
       condition

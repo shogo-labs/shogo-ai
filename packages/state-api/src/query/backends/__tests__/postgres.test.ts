@@ -221,7 +221,7 @@ describe('PostgresBackend', () => {
       ]
       mockExecutor.setMockResults(snakeCaseRows)
 
-      const ast: Condition = parseQuery({})
+      const ast = parseQuery({})
 
       // When: execute(ast, 'users') is called
       const result = await backend.execute(ast, 'users')
