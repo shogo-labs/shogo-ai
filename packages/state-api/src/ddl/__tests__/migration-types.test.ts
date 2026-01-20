@@ -200,11 +200,13 @@ describe("migration-types.ts", () => {
       const record: MigrationRecord = {
         id: "mig-001",
         schemaName: "user-schema",
-        version: 1,
+        fromVersion: null,
+        toVersion: 1,
         checksum: "abc123",
         appliedAt: Date.now(),
         statements: [],
         success: true,
+        verified: true,
       }
       expect(typeof record.id).toBe("string")
     })
@@ -213,37 +215,71 @@ describe("migration-types.ts", () => {
       const record: MigrationRecord = {
         id: "mig-001",
         schemaName: "user-schema",
-        version: 1,
+        fromVersion: null,
+        toVersion: 1,
         checksum: "abc123",
         appliedAt: Date.now(),
         statements: [],
         success: true,
+        verified: true,
       }
       expect(typeof record.schemaName).toBe("string")
     })
 
-    test("has version property (number)", () => {
-      const record: MigrationRecord = {
+    test("has fromVersion property (number | null)", () => {
+      const freshDeploy: MigrationRecord = {
         id: "mig-001",
         schemaName: "user-schema",
-        version: 3,
+        fromVersion: null,
+        toVersion: 1,
         checksum: "abc123",
         appliedAt: Date.now(),
         statements: [],
         success: true,
+        verified: true,
       }
-      expect(typeof record.version).toBe("number")
+      expect(freshDeploy.fromVersion).toBeNull()
+
+      const migration: MigrationRecord = {
+        id: "mig-002",
+        schemaName: "user-schema",
+        fromVersion: 2,
+        toVersion: 3,
+        checksum: "abc123",
+        appliedAt: Date.now(),
+        statements: [],
+        success: true,
+        verified: true,
+      }
+      expect(typeof migration.fromVersion).toBe("number")
+    })
+
+    test("has toVersion property (number)", () => {
+      const record: MigrationRecord = {
+        id: "mig-001",
+        schemaName: "user-schema",
+        fromVersion: null,
+        toVersion: 3,
+        checksum: "abc123",
+        appliedAt: Date.now(),
+        statements: [],
+        success: true,
+        verified: true,
+      }
+      expect(typeof record.toVersion).toBe("number")
     })
 
     test("has checksum property (string)", () => {
       const record: MigrationRecord = {
         id: "mig-001",
         schemaName: "user-schema",
-        version: 1,
+        fromVersion: null,
+        toVersion: 1,
         checksum: "sha256-abcdef123456",
         appliedAt: Date.now(),
         statements: [],
         success: true,
+        verified: true,
       }
       expect(typeof record.checksum).toBe("string")
     })
@@ -253,11 +289,13 @@ describe("migration-types.ts", () => {
       const record: MigrationRecord = {
         id: "mig-001",
         schemaName: "user-schema",
-        version: 1,
+        fromVersion: null,
+        toVersion: 1,
         checksum: "abc123",
         appliedAt: now,
         statements: [],
         success: true,
+        verified: true,
       }
       expect(typeof record.appliedAt).toBe("number")
       expect(record.appliedAt).toBe(now)
@@ -267,11 +305,13 @@ describe("migration-types.ts", () => {
       const record: MigrationRecord = {
         id: "mig-001",
         schemaName: "user-schema",
-        version: 1,
+        fromVersion: null,
+        toVersion: 1,
         checksum: "abc123",
         appliedAt: Date.now(),
         statements: ["ALTER TABLE user ADD COLUMN email TEXT", "CREATE INDEX idx_email ON user(email)"],
         success: true,
+        verified: true,
       }
       expect(record.statements).toBeInstanceOf(Array)
       expect(record.statements).toHaveLength(2)
@@ -281,38 +321,82 @@ describe("migration-types.ts", () => {
       const record: MigrationRecord = {
         id: "mig-001",
         schemaName: "user-schema",
-        version: 1,
+        fromVersion: null,
+        toVersion: 1,
         checksum: "abc123",
         appliedAt: Date.now(),
         statements: [],
         success: true,
+        verified: true,
       }
       expect(typeof record.success).toBe("boolean")
+    })
+
+    test("has verified property (boolean)", () => {
+      const record: MigrationRecord = {
+        id: "mig-001",
+        schemaName: "user-schema",
+        fromVersion: null,
+        toVersion: 1,
+        checksum: "abc123",
+        appliedAt: Date.now(),
+        statements: [],
+        success: true,
+        verified: true,
+      }
+      expect(typeof record.verified).toBe("boolean")
     })
 
     test("has optional errorMessage property (string)", () => {
       const successRecord: MigrationRecord = {
         id: "mig-001",
         schemaName: "user-schema",
-        version: 1,
+        fromVersion: null,
+        toVersion: 1,
         checksum: "abc123",
         appliedAt: Date.now(),
         statements: [],
         success: true,
+        verified: true,
       }
       expect(successRecord.errorMessage).toBeUndefined()
 
       const failedRecord: MigrationRecord = {
         id: "mig-002",
         schemaName: "user-schema",
-        version: 2,
+        fromVersion: 1,
+        toVersion: 2,
         checksum: "def456",
         appliedAt: Date.now(),
         statements: [],
         success: false,
+        verified: false,
         errorMessage: "Column already exists",
       }
       expect(typeof failedRecord.errorMessage).toBe("string")
+    })
+
+    test("has optional verificationDetails property", () => {
+      const record: MigrationRecord = {
+        id: "mig-001",
+        schemaName: "user-schema",
+        fromVersion: null,
+        toVersion: 1,
+        checksum: "abc123",
+        appliedAt: Date.now(),
+        statements: [],
+        success: true,
+        verified: true,
+        verificationDetails: {
+          tablesExpected: ["user_schema__user"],
+          tablesFound: ["user_schema__user"],
+          tablesMissing: [],
+          tablesExtra: [],
+        },
+      }
+      expect(record.verificationDetails).toBeDefined()
+      expect(record.verificationDetails?.tablesExpected).toHaveLength(1)
+      expect(record.verificationDetails?.tablesMissing).toHaveLength(0)
     })
   })
 })
