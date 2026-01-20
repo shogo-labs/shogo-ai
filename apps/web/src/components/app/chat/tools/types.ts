@@ -8,6 +8,29 @@
 /** Tool category for styling */
 export type ToolCategory = "mcp" | "file" | "skill" | "bash" | "other"
 
+// ============================================================
+// AskUserQuestion Tool Types
+// ============================================================
+
+/** Single option in an AskUserQuestion question */
+export interface AskUserQuestionOption {
+  label: string
+  description: string
+}
+
+/** Single question in an AskUserQuestion tool call */
+export interface AskUserQuestionItem {
+  question: string
+  header: string
+  options: AskUserQuestionOption[]
+  multiSelect: boolean
+}
+
+/** Args structure for the AskUserQuestion tool */
+export interface AskUserQuestionArgs {
+  questions: AskUserQuestionItem[]
+}
+
 /** Tool execution state */
 export type ToolExecutionState = "streaming" | "success" | "error"
 
@@ -97,6 +120,14 @@ export function getGradientOpacity(index: number): number {
  */
 export function getToolKeyArg(toolName: string, args?: Record<string, unknown>): string | null {
   if (!args) return null
+
+  // AskUserQuestion - show first question header
+  if (toolName === "AskUserQuestion") {
+    const questions = args.questions as AskUserQuestionItem[] | undefined
+    if (questions?.[0]?.header) {
+      return questions[0].header
+    }
+  }
 
   // File operations - show file path
   if (toolName === "Read" || toolName === "Write" || toolName === "Edit") {
