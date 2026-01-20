@@ -11,8 +11,10 @@ import { cn } from "@/lib/utils"
 import type { Message } from "@ai-sdk/react"
 import { Streamdown } from "streamdown"
 import { InlineToolWidget } from "./InlineToolWidget"
+import { AskUserQuestionWidget } from "./AskUserQuestionWidget"
 import type { MessagePart } from "./types"
 import { type ToolCallData, getToolCategory } from "../tools/types"
+import { useChatContextSafe } from "../ChatContext"
 
 export interface AssistantContentProps {
   /** The assistant message to render */
@@ -189,6 +191,9 @@ export function AssistantContent({
   isStreaming = false,
   className,
 }: AssistantContentProps) {
+  // Get sendMessage from context for AskUserQuestion responses
+  const chatContext = useChatContextSafe()
+
   // Track which tools are expanded
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
@@ -229,6 +234,28 @@ export function AssistantContent({
         }
 
         if (part.type === "tool") {
+          // Special handling for AskUserQuestion - render interactive widget
+          if (part.tool.toolName === "AskUserQuestion") {
+            // Auto-expand when pending (no result yet)
+            const isPending = part.tool.result === undefined
+            const isExpanded = isPending || expandedTools.has(part.id)
+
+            return (
+              <AskUserQuestionWidget
+                key={part.id}
+                tool={part.tool}
+                isExpanded={isExpanded}
+                onToggle={() => toggleTool(part.id)}
+                onSubmitResponse={(response) => {
+                  if (chatContext?.sendMessage) {
+                    chatContext.sendMessage(response)
+                  }
+                }}
+              />
+            )
+          }
+
+          // Default tool widget for everything else
           return (
             <InlineToolWidget
               key={part.id}

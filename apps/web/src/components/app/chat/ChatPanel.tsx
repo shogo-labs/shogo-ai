@@ -1437,6 +1437,44 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [messages, isStreaming, currentSessionId])
 
+  // Detect if there's a pending AskUserQuestion in the messages
+  // Used to show a hint in the chat input
+  // A question is "pending" if it exists AND no user message has been sent after it
+  const hasPendingQuestion = useMemo(() => {
+    let lastAskUserQuestionIndex = -1
+
+    // Find the last assistant message containing an AskUserQuestion
+    for (let i = 0; i < messages.length; i++) {
+      const message = messages[i]
+      if (message.role !== 'assistant') continue
+
+      const parts = (message as any).parts as any[] | undefined
+      if (!parts) continue
+
+      for (const part of parts) {
+        const toolName = part.toolInvocation?.toolName || part.toolName
+        if (toolName === 'AskUserQuestion') {
+          lastAskUserQuestionIndex = i
+          break
+        }
+      }
+    }
+
+    // No AskUserQuestion found
+    if (lastAskUserQuestionIndex === -1) return false
+
+    // Check if there's a user message AFTER the AskUserQuestion
+    // If so, the user has already responded (question is no longer pending)
+    for (let i = lastAskUserQuestionIndex + 1; i < messages.length; i++) {
+      if (messages[i].role === 'user') {
+        return false // User has responded
+      }
+    }
+
+    // AskUserQuestion exists with no user response after it
+    return true
+  }, [messages])
+
   /**
    * Extract mediaType from a data URL.
    * Example: "data:image/png;base64,..." -> "image/png"
@@ -1660,19 +1698,18 @@ export const ChatPanel = observer(function ChatPanel({
   // Note: Tool call extraction now handled by TurnList/useTurnGrouping (task-chat-008)
 
   return (
-    <div className={cn("flex h-full", className)}>
-      {/* Main content with ChatContextProvider */}
-      {children && (
-        <ChatContextProvider value={contextValue}>
+    <ChatContextProvider value={contextValue}>
+      <div className={cn("flex h-full", className)}>
+        {/* Main content area */}
+        {children && (
           <div className="flex-1 min-w-0 overflow-hidden">{children}</div>
-        </ChatContextProvider>
-      )}
+        )}
 
-      {/* Chat Panel - shrink-0 prevents flexbox from shrinking below specified width */}
-      <div
-        className="flex flex-col border-l border-border bg-background relative shrink-0"
-        style={{ width: `${width}px` }}
-      >
+        {/* Chat Panel - shrink-0 prevents flexbox from shrinking below specified width */}
+        <div
+          className="flex flex-col border-l border-border bg-background relative shrink-0"
+          style={{ width: `${width}px` }}
+        >
         {/* Resize Handle */}
         <div
           className={cn(
@@ -1764,12 +1801,19 @@ export const ChatPanel = observer(function ChatPanel({
           <ChatInput
             onSubmit={handleInputSubmit}
             disabled={!currentSessionId}
-            placeholder={!featureId ? "Select a feature to start chatting..." : "Ask Shogo..."}
+            placeholder={
+              !featureId
+                ? "Select a feature to start chatting..."
+                : hasPendingQuestion
+                  ? "Respond to the question above, or type a message..."
+                  : "Ask Shogo..."
+            }
             isStreaming={isStreaming}
             onStop={stop}
           />
         </div>
       </div>
-    </div>
+      </div>
+    </ChatContextProvider>
   )
 })
