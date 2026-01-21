@@ -38,7 +38,7 @@
  * ```
  */
 
-import { createContext, useContext, useRef, useEffect, useMemo, type ReactNode } from "react"
+import { createContext, useContext, useRef, useEffect, useMemo, useState, type ReactNode } from "react"
 import type { DomainResult } from "@shogo/state-api"
 import { useEnv } from "./EnvironmentContext"
 
@@ -63,6 +63,10 @@ interface DomainProviderContextValue {
   stores: Record<string, any>
   /** Maps schema name (e.g., "platform-features") to user-provided key (e.g., "platformFeatures") */
   schemaNameToKey: Record<string, string>
+  /** True while schemas are being loaded from MCP */
+  schemasLoading: boolean
+  /** True once all schemas have been loaded (or failed) */
+  schemasLoaded: boolean
 }
 
 // ============================================================================
@@ -115,6 +119,10 @@ export function DomainProvider<T extends DomainsMap>({
   const env = useEnv() // Get environment from EnvironmentProvider (throws if missing)
   const storesRef = useRef<Record<string, any> | null>(null)
   const schemaNameToKeyRef = useRef<Record<string, string> | null>(null)
+
+  // Schema loading state - used by SchemaLoadingGate to block rendering until ready
+  const [schemasLoading, setSchemasLoading] = useState(true)
+  const [schemasLoaded, setSchemasLoaded] = useState(false)
 
   // Initialize all domain stores once (stable across re-renders)
   if (!storesRef.current) {
@@ -270,17 +278,30 @@ export function DomainProvider<T extends DomainsMap>({
     }
 
     loadAllDomainData()
+      .then(() => {
+        setSchemasLoaded(true)
+        setSchemasLoading(false)
+      })
+      .catch((err) => {
+        console.error('[DomainProvider] Schema loading failed:', err)
+        setSchemasLoading(false)
+        // Set loaded to true even on error so components can try to render
+        // They'll see errors but the app won't be stuck in loading state
+        setSchemasLoaded(true)
+      })
   }, []) // Run once on mount
 
-  // PERF FIX: Memoize context value to prevent unnecessary consumer re-renders.
+  // Memoize context value, updating when loading state changes.
   // storesRef.current is set once during initialization and never changes,
-  // so we can safely memoize with empty deps.
+  // but schemasLoading/schemasLoaded update when async loading completes.
   const contextValue = useMemo<DomainProviderContextValue>(
     () => ({
       stores: storesRef.current!,
       schemaNameToKey: schemaNameToKeyRef.current!,
+      schemasLoading,
+      schemasLoaded,
     }),
-    []
+    [schemasLoading, schemasLoaded]
   )
 
   return (
@@ -349,4 +370,34 @@ export function useDomainStore(schemaName: string): any {
   }
 
   return ctx.stores[key]
+}
+
+/**
+ * Hook to check if domain schemas have finished loading.
+ *
+ * Use this to gate component rendering until schemas are ready,
+ * preventing "Schema not found" errors from race conditions.
+ *
+ * @returns Object with schemasLoading and schemasLoaded booleans
+ *
+ * @example
+ * ```tsx
+ * function MyComponent() {
+ *   const { schemasLoaded } = useSchemaLoadingState()
+ *   if (!schemasLoaded) return <LoadingSpinner />
+ *   // Safe to access collections now
+ *   const { studioCore } = useDomains()
+ *   return <div>{studioCore.workspaceCollection.all().length} workspaces</div>
+ * }
+ * ```
+ */
+export function useSchemaLoadingState(): { schemasLoading: boolean; schemasLoaded: boolean } {
+  const ctx = useContext(DomainProviderContext)
+  if (!ctx) {
+    throw new Error("useSchemaLoadingState must be used within DomainProvider")
+  }
+  return {
+    schemasLoading: ctx.schemasLoading,
+    schemasLoaded: ctx.schemasLoaded,
+  }
 }

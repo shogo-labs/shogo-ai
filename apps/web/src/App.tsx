@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
-import { AuthGate, AppShell } from '@/components/app'
+import { AuthGate, AppShell, SchemaLoadingGate } from '@/components/app'
 import { WorkspaceLayout } from '@/components/app/workspace'
 import { AdvancedChatLayout } from './components/app/advanced-chat'
 import { ProjectLayout } from './components/app/project'
@@ -104,9 +104,10 @@ function App() {
       <BrowserRouter>
         <EnvironmentProvider env={env}>
           <DomainProvider domains={domains} eagerCollections={eagerCollections}>
-            <WavesmithMetaStoreProvider>
-              <AuthProvider authService={authService}>
-                <Routes>
+            <SchemaLoadingGate>
+              <WavesmithMetaStoreProvider>
+                <AuthProvider authService={authService}>
+                  <Routes>
                   {/* Project view route - full screen without sidebar */}
                   <Route path="/projects/:projectId" element={
                     <AuthGate>
@@ -155,9 +156,10 @@ function App() {
                     {/* Templates */}
                     <Route path="templates" element={<AllProjectsPage />} />
                   </Route>
-                </Routes>
-              </AuthProvider>
-            </WavesmithMetaStoreProvider>
+                  </Routes>
+                </AuthProvider>
+              </WavesmithMetaStoreProvider>
+            </SchemaLoadingGate>
           </DomainProvider>
         </EnvironmentProvider>
         <Toaster />

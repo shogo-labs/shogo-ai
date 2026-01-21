@@ -7,10 +7,17 @@ kind: Kustomization
 namespace: shogo-system
 
 resources:
+  # Infrastructure
   - postgres.yaml
   - redis.yaml
+  - minio.yaml
+  # Configuration (ConfigMaps and Secrets)
+  - shogo-config.yaml
+  # Platform services
+  - platform-mcp.yaml
   - api.yaml
   - web.yaml
+  # Networking
   - ingress.yaml
 
 commonLabels:

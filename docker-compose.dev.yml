@@ -1,0 +1,98 @@
+# =============================================================================
+# Shogo AI - Development Override (Hot Reloading)
+# =============================================================================
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Or create a convenient alias:
+#   alias shogo-dev='docker-compose -f docker-compose.yml -f docker-compose.dev.yml'
+#   shogo-dev up -d
+#   shogo-dev logs -f api mcp web
+#
+# This override:
+#   - Mounts source code for live editing
+#   - Uses watch mode for api and mcp (auto-restart on file changes)
+#   - Uses Vite dev server for web (HMR)
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # MCP Server - Development with hot reloading
+  # ---------------------------------------------------------------------------
+  # Strategy: Mount entire project, use anonymous volume to preserve node_modules
+  # ---------------------------------------------------------------------------
+  mcp:
+    build:
+      context: .
+      dockerfile: packages/mcp/Dockerfile.dev
+    volumes:
+      - .:/app
+      # Preserve all node_modules from container build (bun workspaces structure)
+      - /app/node_modules
+      - /app/packages/state-api/node_modules
+      - /app/packages/mcp/node_modules
+    environment:
+      NODE_ENV: development
+    command: ["bun", "--watch", "src/server-http.ts"]
+
+  # ---------------------------------------------------------------------------
+  # MCP Server Workspace 2 - Development with hot reloading
+  # ---------------------------------------------------------------------------
+  mcp-workspace-2:
+    build:
+      context: .
+      dockerfile: packages/mcp/Dockerfile.dev
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/packages/state-api/node_modules
+      - /app/packages/mcp/node_modules
+    environment:
+      NODE_ENV: development
+    command: ["bun", "--watch", "src/server-http.ts"]
+
+  # ---------------------------------------------------------------------------
+  # API Server - Development with hot reloading
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile.dev
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/packages/state-api/node_modules
+      - /app/packages/mcp/node_modules
+      - /app/apps/api/node_modules
+    environment:
+      NODE_ENV: development
+      # Include port 3001 for dev Vite server
+      ALLOWED_ORIGINS: http://localhost:3000,http://localhost:3001,http://localhost:5173
+    command: ["bun", "--watch", "src/server.ts"]
+
+  # ---------------------------------------------------------------------------
+  # Web Frontend - Development with Vite HMR
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile.dev
+    ports:
+      - "3001:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/packages/state-api/node_modules
+      - /app/packages/mcp/node_modules
+      - /app/apps/web/node_modules
+    environment:
+      NODE_ENV: development
+      # Client-side URLs (used by browser)
+      VITE_API_URL: http://localhost:8002
+      VITE_MCP_URL: http://localhost:3100
+      VITE_BETTER_AUTH_URL: http://localhost:8002
+      VITE_WORKSPACE: workspace
+      # Server-side proxy targets (Vite dev server uses Docker networking)
+      VITE_API_PROXY_TARGET: http://api:8002
+      VITE_MCP_PROXY_TARGET: http://mcp:3100
+    command: ["bun", "run", "dev", "--host", "0.0.0.0", "--port", "3000"]

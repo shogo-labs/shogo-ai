@@ -1,0 +1,49 @@
+# =============================================================================
+# Shogo Web Frontend - Development Dockerfile
+# =============================================================================
+# For hot reloading during development with Vite HMR.
+# Source code is mounted as a volume.
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# =============================================================================
+
+FROM oven/bun:1.2-alpine
+
+WORKDIR /app
+
+# Install curl for healthchecks (optional for web)
+RUN apk add --no-cache curl
+
+# Copy workspace root files
+COPY package.json bun.lock ./
+COPY tsconfig.base.json ./
+
+# Copy package.json files for dependency resolution
+COPY packages/state-api/package.json ./packages/state-api/
+COPY packages/mcp/package.json ./packages/mcp/
+COPY apps/web/package.json ./apps/web/
+
+# Install all dependencies
+RUN bun install
+
+# Copy source code (will be overridden by volume mounts in dev mode)
+COPY packages/state-api ./packages/state-api
+COPY packages/mcp ./packages/mcp
+COPY apps/web ./apps/web
+
+# Environment defaults
+ENV NODE_ENV=development
+ENV VITE_API_URL=http://localhost:8002
+ENV VITE_MCP_URL=http://localhost:3100
+ENV VITE_BETTER_AUTH_URL=http://localhost:8002
+ENV VITE_WORKSPACE=workspace
+
+# Expose Vite dev server port
+EXPOSE 3000
+
+# Health check for Vite dev server
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
+  CMD curl -sf http://localhost:3000 -o /dev/null || exit 1
+
+# Run Vite dev server
+WORKDIR /app/apps/web
+CMD ["bun", "run", "dev", "--host", "0.0.0.0", "--port", "3000"]

@@ -108,7 +108,7 @@ docker build -t ${ECR_REGISTRY}/${PROJECT_NAME}/shogo-web:latest \
   --build-arg VITE_API_URL=https://api.${DOMAIN:-localhost} \
   --build-arg VITE_MCP_URL=https://mcp.${DOMAIN:-localhost} \
   --build-arg VITE_BETTER_AUTH_URL=https://api.${DOMAIN:-localhost} \
-  --build-arg VITE_WORKSPACE=default .
+  --build-arg VITE_WORKSPACE=workspace .
 docker push ${ECR_REGISTRY}/${PROJECT_NAME}/shogo-web:latest
 echo -e "${GREEN}✓${NC} Pushed shogo-web"
 
@@ -119,27 +119,41 @@ echo ""
 # -----------------------------------------------------------------------------
 echo -e "${YELLOW}Deploying Kubernetes resources...${NC}"
 
-# Create/update namespaces (should already exist from Terraform)
-kubectl apply -f "${PROJECT_ROOT}/k8s/base/postgres.yaml" --dry-run=client -o yaml | \
-  sed "s|postgres:16-alpine|postgres:16-alpine|g" | kubectl apply -f - || true
+# Deploy shared configuration (ConfigMap and Secrets should be created by Terraform/Secrets Manager)
+kubectl apply -f "${PROJECT_ROOT}/k8s/base/shogo-config.yaml" || echo "Config may be managed by Terraform"
 
-# Update image references in base manifests
+# Deploy infrastructure (if not using RDS - for dev/staging)
+kubectl apply -f "${PROJECT_ROOT}/k8s/base/postgres.yaml" 2>/dev/null || true
+kubectl apply -f "${PROJECT_ROOT}/k8s/base/redis.yaml" 2>/dev/null || true
+
+# Deploy platform-mcp (singleton for schema management)
+cat "${PROJECT_ROOT}/k8s/base/platform-mcp.yaml" | \
+  sed "s|ghcr.io/shogo-ai/shogo-mcp:latest|${ECR_REGISTRY}/${PROJECT_NAME}/shogo-mcp:latest|g" | \
+  kubectl apply -f -
+
+echo -e "${GREEN}✓${NC} Deployed platform-mcp"
+
+# Deploy API with updated image reference
 cat "${PROJECT_ROOT}/k8s/base/api.yaml" | \
   sed "s|k3d-shogo-registry:5000/shogo-api:latest|${ECR_REGISTRY}/${PROJECT_NAME}/shogo-api:latest|g" | \
   kubectl apply -f -
 
+echo -e "${GREEN}✓${NC} Deployed shogo-api"
+
+# Deploy Web with updated image reference  
 cat "${PROJECT_ROOT}/k8s/base/web.yaml" | \
   sed "s|k3d-shogo-registry:5000/shogo-web:latest|${ECR_REGISTRY}/${PROJECT_NAME}/shogo-web:latest|g" | \
   kubectl apply -f -
 
-echo -e "${GREEN}✓${NC} Deployed base resources"
+echo -e "${GREEN}✓${NC} Deployed shogo-web"
 
-# Deploy Knative workspaces
-cat "${PROJECT_ROOT}/k8s/knative/workspace-template.yaml" | \
-  sed "s|k3d-shogo-registry:5000/shogo-mcp:latest|${ECR_REGISTRY}/${PROJECT_NAME}/shogo-mcp:latest|g" | \
-  kubectl apply -f -
-
-echo -e "${GREEN}✓${NC} Deployed Knative workspace services"
+# Deploy Knative workspace services (optional - for per-project scaling)
+if [ -f "${PROJECT_ROOT}/k8s/knative/workspace-template.yaml" ]; then
+  cat "${PROJECT_ROOT}/k8s/knative/workspace-template.yaml" | \
+    sed "s|k3d-shogo-registry:5000/shogo-mcp:latest|${ECR_REGISTRY}/${PROJECT_NAME}/shogo-mcp:latest|g" | \
+    kubectl apply -f -
+  echo -e "${GREEN}✓${NC} Deployed Knative workspace services"
+fi
 
 echo ""
 
@@ -148,6 +162,7 @@ echo ""
 # -----------------------------------------------------------------------------
 echo -e "${YELLOW}Waiting for deployments to be ready...${NC}"
 
+kubectl rollout status deployment/platform-mcp -n shogo-system --timeout=300s || true
 kubectl rollout status deployment/shogo-api -n shogo-system --timeout=300s || true
 kubectl rollout status deployment/shogo-web -n shogo-system --timeout=300s || true
 

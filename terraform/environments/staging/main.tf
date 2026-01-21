@@ -370,6 +370,10 @@ module "knative" {
   # Scale-to-zero configuration
   scale_to_zero_grace_period = "60s"
 
+  # Enable PVC support for pod-per-project architecture
+  # Required for project pods to mount persistent volumes for code storage
+  enable_pvc_support = true
+
   # SSL certificates for HTTPS termination on ALB
   # Primary: *.shogo.ai for platform
   ssl_certificate_arn = var.ssl_certificate_domain != "" ? data.aws_acm_certificate.ssl[0].arn : ""
@@ -471,6 +475,45 @@ resource "kubernetes_secret" "api_secrets" {
   )
 }
 
+# Anthropic credentials for project pods (shogo-staging-workspaces namespace)
+resource "kubernetes_secret" "anthropic_credentials_workspaces" {
+  count      = var.anthropic_api_key != "" ? 1 : 0
+  depends_on = [kubernetes_namespace.shogo_workspaces]
+
+  metadata {
+    name      = "anthropic-credentials"
+    namespace = "shogo-staging-workspaces"
+  }
+
+  data = {
+    api-key = var.anthropic_api_key
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Storage Class for EBS CSI Driver (for project PVCs)
+# -----------------------------------------------------------------------------
+resource "kubernetes_storage_class" "ebs_sc" {
+  depends_on = [module.eks]
+
+  metadata {
+    name = "ebs-sc"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "false"
+    }
+  }
+
+  storage_provisioner    = "ebs.csi.aws.com"
+  reclaim_policy         = "Delete"
+  allow_volume_expansion = true
+  volume_binding_mode    = "WaitForFirstConsumer"
+
+  parameters = {
+    type      = "gp3"
+    encrypted = "true"
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Knative Services (Application Deployment)
 # -----------------------------------------------------------------------------
@@ -533,6 +576,12 @@ resource "null_resource" "knative_services" {
                     value: "http://api.shogo-staging-system.svc.cluster.local"
                   - name: API_HOST
                     value: "api.shogo-staging-system.svc.cluster.local"
+                  - name: MCP_UPSTREAM
+                    value: "http://mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
+                  - name: MCP_HOST
+                    value: "mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
+                  - name: DNS_RESOLVER
+                    value: "kube-dns.kube-system.svc.cluster.local"
                 resources:
                   requests:
                     memory: "128Mi"
@@ -593,6 +642,17 @@ resource "null_resource" "knative_services" {
                       secretKeyRef:
                         name: api-secrets
                         key: BETTER_AUTH_SECRET
+                  # Pod-per-project configuration
+                  - name: PROJECT_RUNTIME_IMAGE
+                    value: "${local.ecr_registry}/shogo/project-runtime:${local.image_tag}"
+                  - name: PROJECT_NAMESPACE
+                    value: "shogo-staging-workspaces"
+                  - name: ANTHROPIC_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: ANTHROPIC_API_KEY
+                        optional: true
                 resources:
                   requests:
                     memory: "256Mi"
