@@ -26,12 +26,6 @@
  * - ChatPanel wraps PhaseContentPanel with ChatContextProvider
  * - ChatPanel manages collapse/expand and width persistence
  *
- * Per design-3-1-realtime-polling (task-3-1-007):
- * - useFeaturePolling called when feature is selected
- * - Polling paused during active chat streaming to avoid conflicts
- * - isPolling indicator visible in sidebar (subtle badge)
- * - refresh function passed to ChatPanel for smart triggers
- *
  * Per design-delete-feature-integration (task-delete-005):
  * - useDeleteFeature hook called at WorkspaceLayout level
  * - DeleteFeatureDialog rendered with state from hook
@@ -59,9 +53,7 @@ import { useWorkspaceData, useWorkspaceNavigation, useDeleteFeature } from "./ho
 import { useDomains } from "@/contexts/DomainProvider"
 import { useSession } from "@/auth/client"
 import { usePhaseNavigation } from "../stepper/hooks/usePhaseNavigation"
-import { useFeaturePolling } from "@/hooks/useFeaturePolling"
 import { useToast } from "@/hooks/use-toast"
-import { ToastAction } from "@/components/ui/toast"
 import { PhaseContentPanel } from "../stepper"
 import { ChatPanel } from "../chat/ChatPanel"
 import { FeatureSidebar } from "./sidebar"
@@ -70,12 +62,6 @@ import { DeleteFeatureDialog } from "./modals/DeleteFeatureDialog"
 import { NewFeatureModal } from "./modals/NewFeatureModal"
 import { useHomeToWorkspaceTransition } from "@/hooks/useHomeToWorkspaceTransition"
 import { useSidebarCollapseContext } from "../layout/AppShell"
-import { RefreshCw } from "lucide-react"
-import type { PollableDomain } from "@/hooks/useFeaturePolling"
-
-// PERF FIX: Stable array reference for polling domains.
-// Inline arrays create new references on every render, causing useCallback deps to change.
-const POLLING_DOMAINS: PollableDomain[] = ["platformFeatures", "componentBuilder"]
 
 /**
  * WorkspaceLayout component
@@ -207,52 +193,8 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // isOpen state passed to modal, onClose callback to close it
   const [isModalOpen, setIsModalOpen] = useState(false)
 
-  // Chat streaming state - tracked here to coordinate with polling (task-3-1-007)
-  // When chat is actively streaming, polling should be paused to avoid race conditions
-  const [isChatStreaming, setIsChatStreaming] = useState(false)
-
-  // Feature polling hook (task-3-1-007)
-  // Polls platform-features domain data when a feature is selected
-  // Disabled during chat streaming to avoid conflicts with smart query triggers
-  const { isPolling, lastRefresh, refresh, error: pollingError } = useFeaturePolling({
-    featureId,
-    enabled: !!featureId && !isChatStreaming,
-    domainsToSync: POLLING_DOMAINS,
-  })
-
-  // Callback for ChatPanel to report streaming state changes
-  const handleStreamingChange = useCallback((streaming: boolean) => {
-    setIsChatStreaming(streaming)
-  }, [])
-
-  // Toast hook for error notifications (task-3-1-009)
+  // Toast hook for notifications
   const { toast } = useToast()
-
-  // Track previous error to avoid duplicate toasts
-  const prevErrorRef = useRef<Error | null>(null)
-
-  // Show error toast when polling fails (task-3-1-009)
-  // Uses useEffect to react to pollingError changes and show toast with retry action
-  useEffect(() => {
-    // Only show toast if there's a new error (not the same error instance)
-    if (pollingError && pollingError !== prevErrorRef.current) {
-      prevErrorRef.current = pollingError
-      toast({
-        variant: "destructive",
-        title: "Refresh failed",
-        description: pollingError.message || "Could not refresh feature data. Please try again.",
-        action: (
-          <ToastAction altText="Retry" onClick={() => refresh()}>
-            Retry
-          </ToastAction>
-        ),
-        duration: 6000, // Auto-dismiss after 6 seconds
-      })
-    } else if (!pollingError) {
-      // Clear the previous error ref when error is resolved
-      prevErrorRef.current = null
-    }
-  }, [pollingError, refresh, toast])
 
   // Handlers for modal - onClose callback pattern
   const handleOpenModal = () => setIsModalOpen(true)
@@ -387,29 +329,6 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
           className="w-64 border-r border-border bg-card flex flex-col"
           data-testid="workspace-sidebar"
         >
-          {/* Polling status indicator (task-3-1-007) */}
-          {featureId && (
-            <div className="flex items-center justify-end px-3 py-2 text-xs text-muted-foreground border-b border-border">
-              <div className="flex items-center gap-1.5">
-                {isPolling && (
-                  <RefreshCw
-                    className="h-3 w-3 animate-spin"
-                    data-testid="polling-indicator"
-                    aria-label="Syncing data"
-                  />
-                )}
-                {lastRefresh && (
-                  <span
-                    className="text-[10px] opacity-60"
-                    title={`Last refresh: ${new Date(lastRefresh).toLocaleTimeString()}`}
-                  >
-                    {new Date(lastRefresh).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* Scrollable container for both sidebar sections (task-dcb-012) */}
           <div
             className="flex-1 overflow-y-auto"
@@ -438,8 +357,6 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
         {featureId && currentFeature ? (
           // Feature selected with data - render PhaseContentPanel with ChatPanel (task-2-4-005)
           // ChatPanel takes full width and handles internal flex layout
-          // Polling integration (task-3-1-007): pass refresh for smart triggers, track streaming state
-          // Loading states (task-3-1-008): pass isPolling for subtle loading overlay
           // Phase prop threading (task-cpbi-004): pass phase from usePhaseNavigation
           // credit-tracking: pass workspaceId and userId for billing
           <ChatPanel
@@ -449,9 +366,6 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
             workspaceId={currentWorkspace?.id}
             userId={session?.user?.id}
             className="flex-1 min-w-0"
-            onRefresh={refresh}
-            onStreamingChange={handleStreamingChange}
-            isPolling={isPolling}
           >
             <PhaseContentPanel feature={{ ...currentFeature, projectId }} />
           </ChatPanel>
@@ -464,9 +378,6 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
             workspaceId={currentWorkspace?.id}
             userId={session?.user?.id}
             className="flex-1 min-w-0"
-            onRefresh={refresh}
-            onStreamingChange={handleStreamingChange}
-            isPolling={isPolling}
           >
             <div data-testid="feature-outlet">
               <Outlet />
