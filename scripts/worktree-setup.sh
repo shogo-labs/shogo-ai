@@ -49,11 +49,11 @@ SECRETS_PATTERN='^(ANTHROPIC_API_KEY|GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|STRIP
 # =============================================================================
 
 log_info() {
-    echo -e "${GREEN}[worktree-setup]${NC} $1"
+    echo -e "${GREEN}[worktree-setup]${NC} $1" >&2
 }
 
 log_warn() {
-    echo -e "${YELLOW}[worktree-setup]${NC} $1"
+    echo -e "${YELLOW}[worktree-setup]${NC} $1" >&2
 }
 
 log_error() {
@@ -125,12 +125,35 @@ sanitize_branch_name() {
     echo "$branch" | tr '/' '-' | tr '_' '-' | tr '[:upper:]' '[:lower:]' | sed 's/--*/-/g'
 }
 
-# Extract secrets from existing .env.local
+# Extract secrets from a .env.local file
 extract_secrets() {
     local env_file="$1"
 
     if [ -f "$env_file" ]; then
         grep -E "$SECRETS_PATTERN" "$env_file" 2>/dev/null || true
+    fi
+}
+
+# Find the repo root (handles both worktrees and main repo)
+find_repo_root() {
+    # GTR provides REPO_ROOT, use it if available
+    if [ -n "${REPO_ROOT:-}" ]; then
+        echo "$REPO_ROOT"
+        return
+    fi
+
+    # git-common-dir points to the main .git directory
+    # For worktrees: /path/to/repo/.git
+    # For main repo: .git (relative)
+    local git_common_dir
+    git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+
+    # If it's an absolute path, the repo root is its parent
+    if [[ "$git_common_dir" == /* ]]; then
+        dirname "$git_common_dir"
+    else
+        # Relative path means we're in the main repo
+        git rev-parse --show-toplevel 2>/dev/null
     fi
 }
 
@@ -145,9 +168,19 @@ generate_env_local() {
     sanitized_branch=$(sanitize_branch_name "$branch")
     local compose_project="shogo-${sanitized_branch}"
 
-    # Extract existing secrets before overwriting
-    local secrets
-    secrets=$(extract_secrets "$env_file")
+    # Find repo root to get secrets from the source of truth
+    local repo_root
+    repo_root=$(find_repo_root)
+    local repo_root_env="$repo_root/.env.local"
+
+    # Extract secrets: prefer repo root, fall back to current worktree's file
+    local secrets=""
+    if [ -f "$repo_root_env" ] && [ "$repo_root_env" != "$env_file" ]; then
+        log_info "Copying secrets from repo root: $repo_root_env"
+        secrets=$(extract_secrets "$repo_root_env")
+    elif [ -f "$env_file" ]; then
+        secrets=$(extract_secrets "$env_file")
+    fi
 
     # Calculate ports
     local postgres_port=$((BASE_POSTGRES_PORT + offset))
