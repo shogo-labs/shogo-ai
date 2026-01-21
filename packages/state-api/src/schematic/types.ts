@@ -29,6 +29,10 @@ export interface EnhancedJsonSchema {
   $schema?: string;
   $ref?: string;
   $defs?: Record<string, any>;
+  /** Legacy alias for $defs (JSON Schema draft-07 style) */
+  definitions?: Record<string, any>;
+  /** Schema title / name */
+  title?: string;
   type?: string;
   properties?: Record<string, any>;
   required?: string[];

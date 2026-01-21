@@ -1,0 +1,145 @@
+# =============================================================================
+# Shogo AI - Project Runtime E2E Testing
+# =============================================================================
+# Tests the pod-per-project architecture locally using Docker.
+#
+# Usage:
+#   docker-compose -f docker-compose.project-runtime.yml up -d
+#   ./scripts/test-project-runtime-e2e.sh
+#   docker-compose -f docker-compose.project-runtime.yml down -v
+#
+# Services:
+#   - project-runtime: The isolated project runtime (Claude Code + Vite)
+#   - minio: S3-compatible storage for project files
+#   - postgres: Database for state-api
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: project-runtime-postgres
+    environment:
+      POSTGRES_USER: shogo
+      POSTGRES_PASSWORD: shogo_dev
+      POSTGRES_DB: shogo
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shogo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - project-runtime-network
+
+  # ---------------------------------------------------------------------------
+  # MinIO (S3-compatible storage)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: project-runtime-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - project-runtime-network
+
+  # ---------------------------------------------------------------------------
+  # MinIO Bucket Initialization
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:latest
+    container_name: project-runtime-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: |
+      /bin/sh -c "
+        echo 'Configuring MinIO client...'
+        mc alias set myminio http://minio:9000 minioadmin minioadmin
+        
+        echo 'Creating buckets...'
+        mc mb myminio/shogo-workspaces --ignore-existing
+        mc mb myminio/shogo-schemas --ignore-existing
+        
+        echo 'Setting bucket policies...'
+        mc anonymous set download myminio/shogo-workspaces
+        mc anonymous set download myminio/shogo-schemas
+        
+        echo 'Uploading test project files...'
+        # Create a test project directory structure
+        echo '{\"name\":\"test-project\",\"private\":true}' > /tmp/package.json
+        mc cp /tmp/package.json myminio/shogo-workspaces/test-project-123/package.json
+        
+        echo 'MinIO initialization complete!'
+        mc ls myminio/shogo-workspaces/
+      "
+    networks:
+      - project-runtime-network
+
+  # ---------------------------------------------------------------------------
+  # Project Runtime (Pod-per-Project)
+  # ---------------------------------------------------------------------------
+  project-runtime:
+    build:
+      context: .
+      dockerfile: packages/project-runtime/Dockerfile
+    container_name: project-runtime-test
+    ports:
+      - "8081:8080"   # Agent server
+      - "5174:5173"   # Vite preview
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      # Project configuration
+      PROJECT_ID: test-project-123
+      PROJECT_DIR: /app/project
+      SCHEMAS_PATH: /app/.schemas
+      MCP_SERVER_PATH: /app/packages/mcp/src/server.ts
+      PORT: "8080"
+      NODE_ENV: development
+      # Database
+      DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
+      # S3/MinIO configuration
+      S3_WORKSPACES_BUCKET: shogo-workspaces
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: us-east-1
+      S3_FORCE_PATH_STYLE: "true"
+      S3_SYNC_INTERVAL: "30000"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      # ANTHROPIC_API_KEY loaded from .env.local
+    volumes:
+      # Mount schemas for MCP
+      - ./.schemas:/app/.schemas:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - project-runtime-network
+
+networks:
+  project-runtime-network:
+    name: project-runtime-network
+    driver: bridge

@@ -3,7 +3,7 @@
   "name": "component-builder",
   "format": "enhanced-json-schema",
   "createdAt": 1767839088233,
-  "version": 4,
+  "version": 5,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "component-builder",
   "$defs": {
@@ -255,6 +255,10 @@
         "name": {
           "type": "string",
           "description": "Composition name (e.g., 'Feature Session Detail View', 'User Dashboard')"
+        },
+        "description": {
+          "type": "string",
+          "description": "Documentation for the composition's purpose and usage"
         },
         "layout": {
           "type": "string",

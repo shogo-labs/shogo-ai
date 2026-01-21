@@ -8,8 +8,9 @@
  */
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
-import { existsSync, cpSync, mkdirSync } from 'fs'
-import { join } from 'path'
+import { existsSync, cpSync, mkdirSync, writeFileSync } from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import type {
   IRuntimeManager,
   IProjectRuntime,
@@ -17,6 +18,16 @@ import type {
   IHealthStatus,
   RuntimeStatus,
 } from './types'
+
+/** Get the directory where this module is located */
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+
+/** 
+ * Path to the bundled Vite + React + TypeScript template.
+ * This template is a real Vite project created with `bun create vite`.
+ */
+const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', 'runtime-template')
 
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {
@@ -87,32 +98,161 @@ export class RuntimeManager implements IRuntimeManager {
   }
 
   /**
+   * Create a minimal Vite + React project structure.
+   * Used when no template directory exists.
+   */
+  private createMinimalProject(projectDir: string): void {
+    console.log(`[RuntimeManager] Creating minimal Vite project at ${projectDir}`)
+    
+    mkdirSync(projectDir, { recursive: true })
+    mkdirSync(join(projectDir, 'src'), { recursive: true })
+
+    // package.json
+    writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+      name: "project",
+      private: true,
+      type: "module",
+      scripts: {
+        dev: "vite",
+        build: "vite build",
+        preview: "vite preview"
+      },
+      dependencies: {
+        react: "^18.3.1",
+        "react-dom": "^18.3.1"
+      },
+      devDependencies: {
+        "@types/react": "^18.3.3",
+        "@types/react-dom": "^18.3.0",
+        "@vitejs/plugin-react": "^4.3.1",
+        vite: "^5.4.2",
+        typescript: "^5.5.0"
+      }
+    }, null, 2))
+
+    // vite.config.ts
+    writeFileSync(join(projectDir, 'vite.config.ts'), `import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+  },
+})
+`)
+
+    // tsconfig.json
+    writeFileSync(join(projectDir, 'tsconfig.json'), JSON.stringify({
+      compilerOptions: {
+        target: "ES2020",
+        useDefineForClassFields: true,
+        lib: ["ES2020", "DOM", "DOM.Iterable"],
+        module: "ESNext",
+        skipLibCheck: true,
+        moduleResolution: "bundler",
+        allowImportingTsExtensions: true,
+        resolveJsonModule: true,
+        isolatedModules: true,
+        noEmit: true,
+        jsx: "react-jsx",
+        strict: true,
+        noUnusedLocals: true,
+        noUnusedParameters: true,
+        noFallthroughCasesInSwitch: true
+      },
+      include: ["src"]
+    }, null, 2))
+
+    // index.html
+    writeFileSync(join(projectDir, 'index.html'), `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Project</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+`)
+
+    // src/main.tsx
+    writeFileSync(join(projectDir, 'src/main.tsx'), `import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App'
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
+`)
+
+    // src/App.tsx
+    writeFileSync(join(projectDir, 'src/App.tsx'), `export default function App() {
+  return (
+    <div style={{ padding: '2rem', fontFamily: 'system-ui' }}>
+      <h1>Project Ready</h1>
+      <p>Start building your app!</p>
+    </div>
+  )
+}
+`)
+
+    console.log(`[RuntimeManager] Minimal Vite project created`)
+  }
+
+  /**
    * Ensure project directory exists with Vite setup.
-   * Copies from template if needed and installs dependencies.
+   * 
+   * Template resolution order:
+   * 1. Bundled template (runtime-template/ in this package) - preferred
+   * 2. Workspace template (workspacesDir/_template) - for custom templates
+   * 3. Inline minimal project - fallback
    */
   private async ensureProjectDirectory(projectId: string): Promise<string> {
     const workspacesDir = this.config.workspacesDir || process.cwd()
     const projectDir = join(workspacesDir, projectId)
-    const templateDir = join(workspacesDir, this.config.templateDir || '_template')
+    const workspaceTemplateDir = join(workspacesDir, this.config.templateDir || '_template')
+
+    // Ensure workspaces directory exists
+    if (!existsSync(workspacesDir)) {
+      mkdirSync(workspacesDir, { recursive: true })
+    }
 
     // Check if project directory exists
     if (!existsSync(projectDir)) {
       console.log(`[RuntimeManager] Creating project directory for ${projectId}`)
 
-      // Check if template exists
-      if (!existsSync(templateDir)) {
-        throw new Error(`Template directory not found: ${templateDir}`)
-      }
-
       // Create project directory
       mkdirSync(projectDir, { recursive: true })
 
-      // Copy template to project directory (exclude node_modules to install fresh)
-      cpSync(templateDir, projectDir, {
-        recursive: true,
-        filter: (src) => !src.includes('node_modules'),
-      })
-      console.log(`[RuntimeManager] Copied template to ${projectDir}`)
+      // Template resolution order: bundled > workspace > inline
+      if (existsSync(BUNDLED_TEMPLATE_DIR) && existsSync(join(BUNDLED_TEMPLATE_DIR, 'package.json'))) {
+        // Use bundled Vite template from this package
+        console.log(`[RuntimeManager] Copying bundled template from ${BUNDLED_TEMPLATE_DIR}`)
+        cpSync(BUNDLED_TEMPLATE_DIR, projectDir, {
+          recursive: true,
+          filter: (src) => !src.includes('node_modules') && !src.includes('.git'),
+        })
+        console.log(`[RuntimeManager] Copied bundled template to ${projectDir}`)
+      } else if (existsSync(workspaceTemplateDir)) {
+        // Use workspace-specific template
+        console.log(`[RuntimeManager] Copying workspace template from ${workspaceTemplateDir}`)
+        cpSync(workspaceTemplateDir, projectDir, {
+          recursive: true,
+          filter: (src) => !src.includes('node_modules') && !src.includes('.git'),
+        })
+        console.log(`[RuntimeManager] Copied workspace template to ${projectDir}`)
+      } else {
+        // No template found - create minimal project inline (fallback)
+        console.log(`[RuntimeManager] No template found, creating minimal project inline`)
+        this.createMinimalProject(projectDir)
+      }
     }
 
     // Check if node_modules exists, if not install dependencies

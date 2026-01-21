@@ -196,6 +196,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build and push Project Runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/project-runtime/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/project-runtime:${{ needs.setup.outputs.environment }}-latest
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/project-runtime:${{ needs.setup.outputs.environment }}-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   # ===========================================================================
   # Stage 3: Deploy to EKS
   # ===========================================================================
@@ -256,6 +269,15 @@ jobs:
           fi
           
           echo "✅ API secrets created/updated in ${{ env.NS_SYSTEM }} namespace"
+          
+          # Create anthropic-credentials secret for project pods in workspaces namespace
+          # This is used by project-runtime containers for Claude Code agent
+          kubectl create secret generic anthropic-credentials \
+            --namespace=${{ env.NS_WORKSPACES }} \
+            --from-literal=api-key="${{ secrets.ANTHROPIC_API_KEY }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          
+          echo "✅ Anthropic credentials created/updated in ${{ env.NS_WORKSPACES }} namespace"
 
       - name: Deploy Knative services
         env:

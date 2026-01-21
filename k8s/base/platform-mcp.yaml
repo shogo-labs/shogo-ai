@@ -61,7 +61,10 @@ spec:
     spec:
       containers:
         - name: mcp
+          # For local k3d: localhost:5050/shogo-mcp:latest
+          # For production: ghcr.io/shogo-ai/shogo-mcp:latest
           image: ghcr.io/shogo-ai/shogo-mcp:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3100
               name: http
@@ -85,11 +88,17 @@ spec:
                 configMapKeyRef:
                   name: shogo-config
                   key: s3-endpoint
-            - name: S3_BUCKET
+            - name: S3_SCHEMA_BUCKET
               valueFrom:
                 configMapKeyRef:
                   name: shogo-config
                   key: s3-bucket
+            # Enable S3-based schema storage
+            - name: SCHEMA_STORAGE
+              value: "s3"
+            # Force path-style for MinIO compatibility
+            - name: S3_FORCE_PATH_STYLE
+              value: "true"
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
@@ -100,9 +109,9 @@ spec:
                 secretKeyRef:
                   name: shogo-secrets
                   key: s3-secret-key
-            # Schema storage path (S3 prefix)
+            # Schema storage path (local path for bundled schemas)
             - name: SCHEMAS_PATH
-              value: "platform"
+              value: "/app/.schemas"
             # Runtime environment
             - name: NODE_ENV
               value: "production"

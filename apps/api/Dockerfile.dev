@@ -1,0 +1,62 @@
+# =============================================================================
+# Shogo API Server - Development Dockerfile
+# =============================================================================
+# For hot reloading during development. Source code is mounted as a volume.
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# =============================================================================
+
+FROM oven/bun:1.2-alpine
+
+WORKDIR /app
+
+# Install curl for healthchecks, Node.js for Claude Code CLI, and bash for shell
+RUN apk add --no-cache curl nodejs npm bash
+
+# Install Claude Code CLI globally (required for ai-sdk-provider-claude-code)
+RUN npm install -g @anthropic-ai/claude-code
+
+# Set SHELL environment variable (required by Claude Code CLI)
+ENV SHELL=/bin/bash
+
+# Copy workspace root files
+COPY package.json bun.lock ./
+COPY tsconfig.base.json ./
+
+# Copy package.json files for dependency resolution
+COPY packages/state-api/package.json ./packages/state-api/
+COPY packages/mcp/package.json ./packages/mcp/
+COPY apps/api/package.json ./apps/api/
+
+# Install all dependencies
+RUN bun install
+
+# Copy source code (will be overridden by volume mounts in dev mode)
+COPY packages/state-api ./packages/state-api
+COPY packages/mcp ./packages/mcp
+COPY apps/api ./apps/api
+
+# Copy entrypoint script to a location that won't be overwritten by volume mount
+COPY apps/api/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Create workspaces directory and .claude directory
+RUN mkdir -p /app/workspaces /app/.claude && \
+    chmod 777 /app /app/.claude /app/workspaces
+
+# Environment defaults
+ENV NODE_ENV=development
+ENV API_PORT=8002
+ENV HOME=/app
+
+# Expose API port and Vite runtime ports
+EXPOSE 8002
+EXPOSE 5200-5209
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -sf http://localhost:${API_PORT}/api/health || exit 1
+
+# Run API server with watch mode (overridden in docker-compose.dev.yml)
+WORKDIR /app/apps/api
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bun", "--watch", "src/server.ts"]
