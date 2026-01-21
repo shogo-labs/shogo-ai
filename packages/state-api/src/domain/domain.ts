@@ -54,8 +54,9 @@ export function domain(config: DomainConfig): DomainResult {
     enhancedSchema = arkTypeToEnhancedJsonSchema(config.from)
     arkTypeScope = config.from
 
-    // TODO: Merge metadata from .schemas/{name}/schema.json if exists
-    // This will be implemented in metadata-merge.ts
+    // NOTE: x-authorization, x-persistence, x-renderer metadata from schema.json
+    // is loaded via meta-store's ingestEnhancedJsonSchema when schemas are loaded.
+    // CollectionAuthorizable reads model.xAuthorization from metaStore at query time.
   } else {
     // Schema-first: Use directly
     enhancedSchema = config.from

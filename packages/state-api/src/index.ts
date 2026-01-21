@@ -29,6 +29,9 @@ export * from './persistence'
 // Auth layer
 export * from './auth'
 
+// Authorization layer (query-level access control)
+export * from './authorization'
+
 // Billing layer
 export * from './billing'
 

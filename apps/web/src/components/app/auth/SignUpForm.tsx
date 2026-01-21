@@ -12,6 +12,7 @@
 import { useState, type FormEvent } from "react"
 import { observer } from "mobx-react-lite"
 import { useDomains } from "@/contexts/DomainProvider"
+import { useSession } from "@/auth/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -27,6 +28,7 @@ import { Label } from "@/components/ui/label"
  */
 export const SignUpForm = observer(function SignUpForm() {
   const { auth } = useDomains()
+  const session = useSession()
 
   // Local form state
   const [name, setName] = useState("")
@@ -43,8 +45,15 @@ export const SignUpForm = observer(function SignUpForm() {
       auth.setAuthStatus("idle")
     }
 
-    // Submit to auth.signUp
-    await auth.signUp({ name, email, password })
+    try {
+      // Submit to auth.signUp
+      await auth.signUp({ name, email, password })
+      // Refetch session to update better-auth nanostore
+      // This triggers App.tsx to re-render with new authKey, remounting DomainProvider
+      await session.refetch()
+    } catch (error) {
+      // Error is handled by auth domain (sets authError)
+    }
   }
 
   return (

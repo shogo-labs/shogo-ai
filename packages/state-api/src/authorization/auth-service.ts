@@ -28,6 +28,7 @@ export const MEMBERSHIP_MODEL = 'Member'
  * Determine if running in trusted mode.
  *
  * OPAQUE IMPLEMENTATION - reads only environment variables:
+ * - Browser: ALWAYS returns false (browsers never trusted)
  * - NODE_ENV=production: ALWAYS returns false (enforced)
  * - NODE_ENV=development/test: Reads SHOGO_TRUSTED_MODE
  *   - SHOGO_TRUSTED_MODE=true/1: Returns true (trusted, bypass auth)
@@ -40,6 +41,11 @@ export const MEMBERSHIP_MODEL = 'Member'
  * @returns true if in trusted mode (skip auth), false if enforced
  */
 export function determineTrustedMode(): boolean {
+  // Browser: ALWAYS enforces - no trusted mode in client
+  if (typeof process === 'undefined' || !process.env) {
+    return false
+  }
+
   const nodeEnv = process.env.NODE_ENV
 
   // Production ALWAYS enforces - no exceptions

@@ -8,7 +8,7 @@
  *
  * Design:
  * - Must be composed AFTER CollectionQueryable (depends on query() method)
- * - Reads authorization config from env.context.authorizationConfigMaps
+ * - Reads authorization config from metaStore (model.xAuthorization)
  * - Reads auth context from env.context.authContext
  * - Reads auth service from env.services.authorization
  * - Applies scope filter BEFORE returning query builder (query-level injection)
@@ -31,8 +31,8 @@
  * const env = {
  *   services: { authorization: new AuthorizationService() },
  *   context: {
- *     authContext: { userId: 'u1', authorizedScopes: { workspace: ['ws-1'] } },
- *     authorizationConfigMaps: { Project: { scope: 'workspace', scopeField: 'workspaceId' } }
+ *     schemaName: 'studio-core',
+ *     authContext: { userId: 'u1', authorizedScopes: { workspace: ['ws-1'] } }
  *   }
  * }
  * const collection = MyCollection.create({}, env)
@@ -43,6 +43,8 @@
 import { types, getEnv } from 'mobx-state-tree'
 import type { IEnvironment } from '../environment/types'
 import type { IQueryable } from './queryable'
+import type { AuthorizationConfig } from '../authorization/types'
+import { getMetaStore } from '../meta/bootstrap'
 
 /**
  * CollectionAuthorizable mixin model.
@@ -81,28 +83,56 @@ export const CollectionAuthorizable = types
         // Get environment
         const env = getEnv<IEnvironment>(self)
 
+        // Get model name from collection (set by enhanced-json-schema-to-mst.ts)
+        const modelName = (self as any).modelName
+
         // Graceful degradation: No auth service configured
         const authService = env.services?.authorization
         if (!authService) {
+          // console.log(`[Authorization] ${modelName}: No auth service - returning unfiltered query`)
           return baseQuery
         }
 
         // Graceful degradation: No auth context in environment
         const authContext = env.context?.authContext
         if (!authContext) {
+          // console.log(`[Authorization] ${modelName}: No auth context - returning unfiltered query`)
           return baseQuery
         }
 
-        // Get model name from collection (set by enhanced-json-schema-to-mst.ts)
-        const modelName = (self as any).modelName
         if (!modelName) {
           return baseQuery
         }
 
-        // Get authorization config from pre-computed maps
+        // Get schema name from environment context
+        const schemaName = env.context?.schemaName
+        if (!schemaName) {
+          // console.log(`[Authorization] ${modelName}: No schema name in context - returning unfiltered query`)
+          return baseQuery
+        }
+
+        // Look up authorization config from metaStore (same pattern as xPersistence in registry.ts)
+        // This follows the schema-first metadata flow: schema.json → ingestEnhancedJsonSchema → model.xAuthorization
+        let authConfig: AuthorizationConfig | undefined
+        try {
+          const metaStore = getMetaStore()
+          const schema = metaStore.schemaCollection.all().find((s: any) => s.name === schemaName)
+          if (schema) {
+            const model = metaStore.modelCollection.all().find(
+              (m: any) => m.schema === schema && m.name === modelName
+            )
+            if (model?.xAuthorization) {
+              authConfig = model.xAuthorization as AuthorizationConfig
+            }
+          }
+        } catch (error) {
+          // MetaStore not available (e.g., in isolated tests) - fall back to env.context
+          authConfig = env.context?.authorizationConfigMaps?.[modelName]
+        }
+
         // Models without x-authorization are unprotected
-        const authConfig = env.context?.authorizationConfigMaps?.[modelName]
         if (!authConfig) {
+          // console.log(`[Authorization] ${modelName}: No x-authorization config - model is unprotected`)
           return baseQuery  // Model is unprotected
         }
 
@@ -111,11 +141,13 @@ export const CollectionAuthorizable = types
         const scopeFilter = authService.buildScopeFilter(authContext, authConfig)
 
         if (!scopeFilter) {
+          // console.log(`[Authorization] ${modelName}: Trusted mode - returning unfiltered query`)
           return baseQuery  // Trusted mode - no filter
         }
 
         // Apply authorization filter FIRST, then return builder for user chaining
         // This ensures auth filter is applied BEFORE any user filters
+        // console.log(`[Authorization] ${modelName}: Applying scope filter`, { authContext, authConfig, scopeFilter })
         return baseQuery.where(scopeFilter)
       }
     }
