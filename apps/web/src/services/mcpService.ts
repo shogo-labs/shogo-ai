@@ -37,6 +37,7 @@ export class MCPService {
   private projectId: string | null = null     // Current project ID for schema isolation
   private sseReader: ReadableStreamDefaultReader<Uint8Array> | null = null
   private notificationHandler: ((data: any) => void) | null = null
+  private initPromise: Promise<void> | null = null  // Track initialization state
 
   // Session management helpers
   getMcpSessionId(): string | null { return this.mcpSessionId }
@@ -50,6 +51,7 @@ export class MCPService {
   clearSession(): void {
     this.stopSSEListener()
     this.mcpSessionId = null
+    this.initPromise = null  // Allow re-initialization
   }
 
   // Notification handler for streaming events
@@ -124,11 +126,22 @@ export class MCPService {
   }
 
   /**
-   * Initialize MCP session (required in stateful mode before tool calls)
+   * Ensure session is initialized before making tool calls.
+   * Uses a shared promise to prevent multiple concurrent initialization attempts.
    */
-  async initializeSession(): Promise<void> {
+  private async ensureInitialized(): Promise<void> {
     if (this.mcpSessionId) return  // Already initialized
 
+    if (!this.initPromise) {
+      this.initPromise = this.doInitialize()
+    }
+    await this.initPromise
+  }
+
+  /**
+   * Actually perform the MCP session initialization.
+   */
+  private async doInitialize(): Promise<void> {
     const request = {
       jsonrpc: '2.0',
       id: ++this.requestId,
@@ -150,6 +163,8 @@ export class MCPService {
     })
 
     if (!response.ok) {
+      // Clear the promise so future calls can retry
+      this.initPromise = null
       throw new Error(`MCP initialize failed: ${response.statusText}`)
     }
 
@@ -161,6 +176,14 @@ export class MCPService {
 
     // Consume response body
     await response.text()
+  }
+
+  /**
+   * Initialize MCP session (required in stateful mode before tool calls)
+   * @deprecated Use ensureInitialized() internally - this is kept for backward compatibility
+   */
+  async initializeSession(): Promise<void> {
+    await this.ensureInitialized()
   }
 
   /**
@@ -199,6 +222,9 @@ export class MCPService {
     toolName: string,
     args: Record<string, any>
   ): Promise<T> {
+    // Ensure session is initialized before making any tool calls
+    await this.ensureInitialized()
+
     // Inject projectId as workspace if not already provided
     const argsWithWorkspace = this.projectId && !args.workspace
       ? { ...args, workspace: this.projectId }
@@ -219,7 +245,7 @@ export class MCPService {
       'Accept': 'application/json, text/event-stream'
     }
 
-    // Include session ID if available (stateful MCP server)
+    // Include session ID (guaranteed to exist after ensureInitialized)
     if (this.mcpSessionId) {
       headers['mcp-session-id'] = this.mcpSessionId
     }
@@ -261,6 +287,9 @@ export class MCPService {
   async callToolsBatch<T = any>(calls: BatchToolCall[]): Promise<Array<{ ok: true; result: T } | { ok: false; error: string }>> {
     if (calls.length === 0) return []
 
+    // Ensure session is initialized before making any tool calls
+    await this.ensureInitialized()
+
     // Build batch request - array of JSON-RPC requests
     // Inject projectId as workspace if not already provided
     const requests = calls.map((call) => ({
@@ -280,6 +309,7 @@ export class MCPService {
       'Accept': 'application/json, text/event-stream'
     }
 
+    // Include session ID (guaranteed to exist after ensureInitialized)
     if (this.mcpSessionId) {
       headers['mcp-session-id'] = this.mcpSessionId
     }
