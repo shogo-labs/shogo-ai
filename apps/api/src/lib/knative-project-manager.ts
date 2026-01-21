@@ -336,12 +336,13 @@ export class KnativeProjectManager {
 
   /**
    * Perform an active health check on a project's pod.
-   * Returns true if the pod is responding to health requests.
+   * Returns true if the pod is responding and ready to handle requests.
+   * Uses /ready endpoint which verifies the project directory exists.
    */
   async healthCheck(projectId: string): Promise<boolean> {
     try {
       const url = this.getProjectPodUrl(projectId)
-      const response = await fetch(`${url}/health`, {
+      const response = await fetch(`${url}/ready`, {
         method: "GET",
         signal: AbortSignal.timeout(5000), // 5 second timeout
       })
@@ -513,16 +514,17 @@ export class KnativeProjectManager {
                 },
                 volumeMounts: [{ name: "project-data", mountPath: "/app/project" }],
                 // Readiness probe - checks if the pod is ready to receive traffic
+                // Uses /ready endpoint which verifies project directory exists
                 readinessProbe: {
                   httpGet: {
-                    path: "/health",
+                    path: "/ready",
                     port: 8080,
                   },
                   initialDelaySeconds: 5,
-                  periodSeconds: 10,
+                  periodSeconds: 5,
                   timeoutSeconds: 5,
                   successThreshold: 1,
-                  failureThreshold: 3,
+                  failureThreshold: 6,
                 },
                 // Liveness probe - checks if the pod is still alive
                 livenessProbe: {

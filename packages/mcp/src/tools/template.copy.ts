@@ -13,8 +13,8 @@ import {
   readdirSync,
   readFileSync,
   writeFileSync,
-  statSync,
   copyFileSync,
+  rmSync,
 } from "fs"
 import { execSync } from "child_process"
 import { MONOREPO_ROOT } from "../state"
@@ -32,6 +32,8 @@ const Params = t({
   "skipInstall?": "boolean",
   /** Dry run - return what would be created without writing */
   "dryRun?": "boolean",
+  /** Force overwrite existing files in non-empty directory */
+  "force?": "boolean",
 })
 
 type TemplateCopyParams = typeof Params.infer
@@ -132,12 +134,12 @@ export async function executeTemplateCopy(
     // Check if output already exists
     if (existsSync(projectDir) && !args.dryRun) {
       const contents = readdirSync(projectDir)
-      if (contents.length > 0) {
+      if (contents.length > 0 && !args.force) {
         return {
           ok: false,
           error: {
             code: "DIR_EXISTS",
-            message: `Directory "${projectDir}" already exists and is not empty`,
+            message: `Directory "${projectDir}" already exists and is not empty. Use force: true to overwrite.`,
           },
         }
       }
@@ -164,6 +166,17 @@ export async function executeTemplateCopy(
       }
     }
 
+    // When force is used, remove conflicting directories to ensure clean copy
+    if (args.force && existsSync(projectDir)) {
+      const dirsToClean = ["src", "prisma", ".tanstack"]
+      for (const dir of dirsToClean) {
+        const dirPath = join(projectDir, dir)
+        if (existsSync(dirPath)) {
+          rmSync(dirPath, { recursive: true, force: true })
+        }
+      }
+    }
+
     // Exclusions - don't copy these
     const exclude = [
       "node_modules",
@@ -185,7 +198,7 @@ export async function executeTemplateCopy(
     // Delete existing dev.db if copied (start fresh)
     const devDbPath = join(projectDir, "prisma", "dev.db")
     if (existsSync(devDbPath)) {
-      require("fs").unlinkSync(devDbPath)
+      rmSync(devDbPath, { force: true })
     }
 
     // Install dependencies unless skipped
@@ -254,12 +267,16 @@ Available templates:
 - kanban: Project boards with drag-and-drop cards (intermediate)
 - ai-chat: AI chatbot with conversation history, Vercel AI SDK (advanced)
 
+Options:
+- force: true - Overwrite files in existing non-empty directory
+- skipInstall: true - Don't run bun install or prisma setup
+- dryRun: true - Preview what would be copied without writing
+
 Examples:
 - template.copy({ template: "todo-app", name: "my-tasks" })
-- template.copy({ template: "expense-tracker", name: "budget-app" })
 - template.copy({ template: "ai-chat", name: "my-chatbot" })
-- template.copy({ template: "crm", name: "sales-pipeline", output: "./projects/sales" })
-- template.copy({ template: "todo-app", name: "test", dryRun: true }) - Preview only`,
+- template.copy({ template: "todo-app", name: "existing-project", output: "/path/to/project", force: true })
+- template.copy({ template: "todo-app", name: "test", dryRun: true })`,
     parameters: Params as any,
     execute: async (args: any) => {
       const result = await executeTemplateCopy(args)

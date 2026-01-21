@@ -171,6 +171,19 @@ async function getStudioCoreStore(): Promise<ReturnType<typeof studioCoreDomain.
 }
 
 /**
+ * Safely get the studioCore store, returning undefined if database is not available.
+ * Used by runtime routes that can work without database validation.
+ */
+async function getStudioCoreStoreOptional(): Promise<ReturnType<typeof studioCoreDomain.createStore> | undefined> {
+  try {
+    return await getStudioCoreStore()
+  } catch (err) {
+    console.warn('[API] Database not available, using workspace-based project validation')
+    return undefined
+  }
+}
+
+/**
  * Get or create the RuntimeManager singleton.
  *
  * Configurable via environment variables:
@@ -1079,9 +1092,9 @@ app.post('/api/projects/:projectId/unpublish', async (c) => {
 
 // Start project runtime
 app.post('/api/projects/:projectId/runtime/start', async (c) => {
-  const studioCore = await getStudioCoreStore()
+  const studioCore = await getStudioCoreStoreOptional()
   const manager = getRuntimeManager()
-  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/runtime/start`
   const newReq = new Request(url.toString(), { method: 'POST' })
@@ -1090,20 +1103,31 @@ app.post('/api/projects/:projectId/runtime/start', async (c) => {
 
 // Stop project runtime
 app.post('/api/projects/:projectId/runtime/stop', async (c) => {
-  const studioCore = await getStudioCoreStore()
+  const studioCore = await getStudioCoreStoreOptional()
   const manager = getRuntimeManager()
-  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/runtime/stop`
   const newReq = new Request(url.toString(), { method: 'POST' })
   return router.fetch(newReq)
 })
 
+// Restart project runtime (useful after template copy)
+app.post('/api/projects/:projectId/runtime/restart', async (c) => {
+  const studioCore = await getStudioCoreStoreOptional()
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/runtime/restart`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
 // Get project runtime status
 app.get('/api/projects/:projectId/runtime/status', async (c) => {
-  const studioCore = await getStudioCoreStore()
+  const studioCore = await getStudioCoreStoreOptional()
   const manager = getRuntimeManager()
-  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+  const router = runtimeRoutes({ studioCore, runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/runtime/status`
   const newReq = new Request(url.toString(), { method: 'GET' })
@@ -1142,9 +1166,9 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     }
   } else {
     // Local development: Use RuntimeManager
-    const studioCore = await getStudioCoreStore()
+    const studioCore = await getStudioCoreStoreOptional()
     const manager = getRuntimeManager()
-    const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+    const router = runtimeRoutes({ studioCore, runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
     const url = new URL(c.req.url)
     url.pathname = `/projects/${projectId}/sandbox/url`
     const newReq = new Request(url.toString(), { method: 'GET' })

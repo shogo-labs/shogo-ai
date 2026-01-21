@@ -17,7 +17,7 @@ import { streamText, tool, type CoreMessage } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname } from 'path'
-import { existsSync, readdirSync, readFileSync, cpSync, mkdirSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, cpSync, mkdirSync, rmSync } from 'fs'
 import { initializeS3Sync, type S3Sync } from './s3-sync'
 import { fileURLToPath } from 'url'
 
@@ -123,7 +123,7 @@ function loadTemplates(): TemplateInfo[] {
 /**
  * Copy a template to the project directory
  */
-function copyTemplate(templateName: string, projectName: string): { ok: boolean; message?: string; error?: string } {
+function copyTemplate(templateName: string, projectName: string): { ok: boolean; message?: string; error?: string; needsRestart?: boolean } {
   const templatesDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples')
   const templatePath = resolve(templatesDir, templateName)
 
@@ -132,15 +132,22 @@ function copyTemplate(templateName: string, projectName: string): { ok: boolean;
   }
 
   try {
+    // Clean up existing src directory to avoid conflicts
+    const srcDir = resolve(PROJECT_DIR, 'src')
+    if (existsSync(srcDir)) {
+      rmSync(srcDir, { recursive: true, force: true })
+    }
+
     // Copy template files to project directory
     cpSync(templatePath, PROJECT_DIR, {
       recursive: true,
-      filter: (src) => !src.includes('node_modules') && !src.includes('.git'),
+      filter: (src) => !src.includes('node_modules') && !src.includes('.git') && !src.includes('template.json'),
     })
 
     return {
       ok: true,
-      message: `Successfully copied template '${templateName}' to project. Run 'bun install' to install dependencies.`,
+      message: `Successfully copied template '${templateName}' to project. The Vite server needs to be restarted for changes to take effect. Run 'bun install' if dependencies changed.`,
+      needsRestart: true,
     }
   } catch (error: any) {
     return { ok: false, error: error.message || 'Failed to copy template' }
@@ -183,7 +190,10 @@ Available templates:
   }),
 
   'template.copy': tool({
-    description: 'Copy a starter template to set up the project. This will copy all template files to the current project directory.',
+    description: `Copy a starter template to set up the project. This will copy all template files to the current project directory.
+
+IMPORTANT: After copying a template, the Vite server needs to be restarted for changes to take effect.
+Call POST /api/projects/{projectId}/runtime/restart to restart the dev server after template copy.`,
     parameters: z.object({
       templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app")'),
       projectName: z.string().optional().describe('Optional project name (for package.json)'),
@@ -191,6 +201,20 @@ Available templates:
     execute: async ({ templateName, projectName }) => {
       console.log(`[project-runtime] template.copy called: ${templateName}`)
       const result = copyTemplate(templateName, projectName || templateName)
+      
+      // If successful, include instructions about restarting
+      if (result.ok) {
+        return JSON.stringify({
+          ...result,
+          instructions: [
+            'Template files have been copied to the project directory.',
+            'The Vite dev server needs to be restarted for changes to take effect.',
+            `Call POST /api/projects/${PROJECT_ID}/runtime/restart to restart the server.`,
+            'Run "bun install" if the template has different dependencies.',
+          ],
+        }, null, 2)
+      }
+      
       return JSON.stringify(result, null, 2)
     },
   }),
@@ -433,7 +457,7 @@ app.post('/agent/chat', async (c) => {
     
     console.log(`[project-runtime] Processing ${messages.length} messages`)
     
-    // Create streaming response using Claude Code
+    // Create streaming response using Claude Code with native template tools
     const result = streamText({
       model: claudeCode('sonnet', {
         streamingInput: 'always',
@@ -442,15 +466,18 @@ app.post('/agent/chat', async (c) => {
 
 ## Starter Templates
 
-When a user wants to build an app, use the template tools via MCP:
+When a user wants to build an app, use the template tools:
 
 - **template.list** - List and search available starter templates
 - **template.copy** - Copy a template to set up the project
 
 Available templates include: todo-app, expense-tracker, crm, inventory, kanban, ai-chat.
 
-You also have access to file operations (Read, Write, Edit, Glob, Grep, Bash) and MCP tools for data management.`,
+IMPORTANT: After using template.copy, you MUST restart the Vite server by telling the user to refresh the preview or by using the Bash tool to call: curl -X POST http://localhost:8002/api/projects/${PROJECT_ID}/runtime/restart
+
+You also have access to file operations (Read, Write, Edit, Glob, Grep, Bash) for file management.`,
       messages: coreMessages,
+      tools: templateTools,
       maxSteps: 10,
     })
     

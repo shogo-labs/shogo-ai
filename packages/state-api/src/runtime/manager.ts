@@ -54,7 +54,7 @@ const DEFAULT_CONFIG: IRuntimeConfig = {
 interface InternalRuntime extends IProjectRuntime {
   process: ChildProcess | null
   agentProcess: ChildProcess | null
-  agentPort: number | null
+  agentPort: number | undefined
 }
 
 /**
@@ -405,6 +405,15 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       // Wait for Vite to start (with timeout)
       await this.waitForReady(projectId, port, 30000)
 
+      // Wait for agent server to be ready (critical for chat functionality)
+      // This prevents the race condition where chat requests fail because
+      // the agent server hasn't finished starting
+      if (runtime.agentProcess) {
+        console.log(`[RuntimeManager] Waiting for agent server on port ${agentPort}...`)
+        await this.waitForAgentReady(projectId, agentPort, 30000)
+        console.log(`[RuntimeManager] Agent server ready for ${projectId}`)
+      }
+
       runtime.status = 'running'
 
       // Start health check timer
@@ -450,6 +459,37 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     }
 
     throw new Error(`Timeout waiting for runtime ${projectId} to start on port ${port}`)
+  }
+
+  /**
+   * Wait for the agent server (project-runtime) to be ready.
+   * Checks the /health endpoint to ensure the server can accept requests.
+   * Uses constant 500ms delay with max 50 retries (up to 25 seconds total).
+   */
+  private async waitForAgentReady(projectId: string, port: number, _timeoutMs: number): Promise<void> {
+    const MAX_RETRIES = 50
+    const RETRY_DELAY_MS = 500
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const response = await fetch(`http://localhost:${port}/health`, {
+          method: 'GET',
+          signal: AbortSignal.timeout(2000),
+        })
+        if (response.ok) {
+          // Agent server is ready
+          return
+        }
+      } catch {
+        // Server not ready yet
+      }
+      
+      if (attempt < MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
+      }
+    }
+
+    throw new Error(`Timeout waiting for agent server ${projectId} to start on port ${port} after ${MAX_RETRIES} attempts`)
   }
 
   async stop(projectId: string): Promise<void> {
@@ -505,6 +545,26 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     runtime.status = 'stopped'
     this.releasePort(runtime.port)
     this.runtimes.delete(projectId)
+  }
+
+  /**
+   * Restart the runtime for the specified project.
+   * Stops the current runtime (if running) and starts a new one.
+   * Useful after major file changes like template copy.
+   */
+  async restart(projectId: string): Promise<IProjectRuntime> {
+    console.log(`[RuntimeManager] Restarting runtime for ${projectId}`)
+    
+    // Stop if currently running
+    const existing = this.runtimes.get(projectId)
+    if (existing && existing.status !== 'stopped') {
+      console.log(`[RuntimeManager] Stopping existing runtime for ${projectId}`)
+      await this.stop(projectId)
+    }
+    
+    // Start fresh
+    console.log(`[RuntimeManager] Starting fresh runtime for ${projectId}`)
+    return this.start(projectId)
   }
 
   status(projectId: string): IProjectRuntime | null {
