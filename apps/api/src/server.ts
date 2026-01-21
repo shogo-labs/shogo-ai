@@ -43,6 +43,12 @@ let runtimeManager: IRuntimeManager | null = null
 let mcpSessionId: string | null = null
 const MCP_URL = process.env.MCP_URL || 'http://mcp:3100'
 
+// Environment detection - check if running in Kubernetes
+const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
+
+// Namespace for project runtime pods (configurable for staging/production)
+const PROJECT_NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
+
 /**
  * Call an MCP tool with proper session handling
  */
@@ -1106,13 +1112,140 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
 
 // Get project sandbox URL for iframe embedding
 app.get('/api/projects/:projectId/sandbox/url', async (c) => {
-  const studioCore = await getStudioCoreStore()
-  const manager = getRuntimeManager()
-  const router = runtimeRoutes({ studioCore, runtimeManager: manager })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/sandbox/url`
-  const newReq = new Request(url.toString(), { method: 'GET' })
-  return router.fetch(newReq)
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Return a proxy URL that goes through the API
+    // The preview proxy endpoint will forward requests to the project runtime pod
+    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+    
+    try {
+      // This will create the pod if it doesn't exist and wait for it to be ready
+      await getProjectPodUrl(projectId)
+      
+      // Return the proxy URL - all requests to this URL will be proxied to the project pod
+      const host = c.req.header('host') || 'localhost'
+      const protocol = c.req.header('x-forwarded-proto') || 'https'
+      const proxyUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
+      
+      return c.json({
+        url: proxyUrl,
+        directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
+        status: 'running',
+      }, 200)
+    } catch (error: any) {
+      console.error('[Runtime] Failed to get project pod URL:', error)
+      return c.json({
+        error: { code: 'pod_unavailable', message: error.message || 'Failed to start project runtime' }
+      }, 503)
+    }
+  } else {
+    // Local development: Use RuntimeManager
+    const studioCore = await getStudioCoreStore()
+    const manager = getRuntimeManager()
+    const router = runtimeRoutes({ studioCore, runtimeManager: manager })
+    const url = new URL(c.req.url)
+    url.pathname = `/projects/${projectId}/sandbox/url`
+    const newReq = new Request(url.toString(), { method: 'GET' })
+    return router.fetch(newReq)
+  }
+})
+
+// =============================================================================
+// Preview Proxy - Proxies preview requests to project runtime pods (Kubernetes only)
+// =============================================================================
+
+// Preview proxy for project runtime (all methods, all paths)
+app.all('/api/projects/:projectId/preview/*', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (!isKubernetes()) {
+    // In local dev, redirect to the local runtime URL
+    const manager = getRuntimeManager()
+    const runtime = manager.status(projectId)
+    if (runtime?.url) {
+      const path = c.req.path.replace(`/api/projects/${projectId}/preview`, '') || '/'
+      return c.redirect(`${runtime.url}${path}`)
+    }
+    return c.json({ error: { code: 'not_running', message: 'Project runtime not running' } }, 404)
+  }
+  
+  try {
+    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+    const podUrl = await getProjectPodUrl(projectId)
+    
+    // Extract the path after /preview/
+    const path = c.req.path.replace(`/api/projects/${projectId}/preview`, '') || '/'
+    const targetUrl = `${podUrl}${path}`
+    
+    console.log(`[PreviewProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
+    
+    // Forward the request to the project pod
+    const headers = new Headers()
+    
+    // Copy relevant headers
+    const contentType = c.req.header('content-type')
+    if (contentType) headers.set('content-type', contentType)
+    const accept = c.req.header('accept')
+    if (accept) headers.set('accept', accept)
+    const acceptEncoding = c.req.header('accept-encoding')
+    if (acceptEncoding) headers.set('accept-encoding', acceptEncoding)
+    
+    // Handle WebSocket upgrade for HMR
+    const upgrade = c.req.header('upgrade')
+    if (upgrade) {
+      headers.set('upgrade', upgrade)
+      headers.set('connection', 'upgrade')
+      const wsKey = c.req.header('sec-websocket-key')
+      if (wsKey) headers.set('sec-websocket-key', wsKey)
+      const wsVersion = c.req.header('sec-websocket-version')
+      if (wsVersion) headers.set('sec-websocket-version', wsVersion)
+    }
+    
+    const requestInit: RequestInit = {
+      method: c.req.method,
+      headers,
+    }
+    
+    // Include body for non-GET requests
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+      requestInit.body = await c.req.arrayBuffer()
+    }
+    
+    const response = await fetch(targetUrl, requestInit)
+    
+    // Copy response headers
+    const responseHeaders = new Headers()
+    response.headers.forEach((value, key) => {
+      // Skip certain headers
+      if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+        responseHeaders.set(key, value)
+      }
+    })
+    
+    // Add CORS headers for preview
+    responseHeaders.set('access-control-allow-origin', '*')
+    responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
+    responseHeaders.set('access-control-allow-headers', '*')
+    
+    return new Response(response.body, {
+      status: response.status,
+      headers: responseHeaders,
+    })
+  } catch (error: any) {
+    console.error('[PreviewProxy] Error:', error)
+    return c.json({
+      error: { code: 'proxy_error', message: error.message || 'Failed to proxy request' }
+    }, 502)
+  }
+})
+
+// Handle the base preview path without trailing content
+app.all('/api/projects/:projectId/preview', async (c) => {
+  // Redirect to the path with trailing slash
+  const projectId = c.req.param('projectId')
+  return c.redirect(`/api/projects/${projectId}/preview/`)
 })
 
 // =============================================================================
