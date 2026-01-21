@@ -213,9 +213,8 @@
         "nested": false
       },
       "x-authorization": {
-        "selfScoping": {
-          "field": "userId"
-        }
+        "scope": "workspace",
+        "scopeField": "workspace"
       },
       "properties": {
         "id": {
