@@ -1915,7 +1915,7 @@ app.post('/api/billing/portal', async (c) => {
 })
 
 // Stripe webhook endpoint
-app.post('/webhooks/stripe', async (c) => {
+app.post('/api/webhooks/stripe', async (c) => {
   try {
     if (!stripe) {
       return c.json({ error: 'Stripe is not configured' }, 503)
