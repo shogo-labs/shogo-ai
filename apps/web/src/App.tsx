@@ -16,7 +16,7 @@ import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentCo
 import { DomainProvider, type EagerCollectionsConfig } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { MCPBackend } from './query/MCPBackend'
-import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService } from '@shogo/state-api'
+import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
 import { mcpService } from './services/mcpService'
 import { Toaster } from '@/components/ui/toaster'
@@ -48,13 +48,13 @@ const env = createEnvironment({
 
 // Domain configuration - keys become property names in useDomains()
 // Access via: const { teams, auth, chat, componentBuilder, ... } = useDomains()
+// Note: platformFeatures removed from consumer app - available for internal/admin use only
 const domains = {
   teams: teamsDomain,
   multiTenancy: teamsMultiTenancyDomain,
   chat: chatDomain,
   studioCore: studioCoreDomain,
   studioChat: studioChatDomain,
-  platformFeatures: platformFeaturesDomain,
   auth: betterAuthDomain,
   componentBuilder: componentBuilderDomain,
   billing: billingDomain,
@@ -68,11 +68,12 @@ const domains = {
  * - studioCore: workspace/member/project/folder (sidebar, workspace switcher)
  * - componentBuilder: rendererBinding (component registry)
  * - billing: subscription (upgrade CTA)
- * - platformFeatures: featureSession (feature list if project selected)
  *
  * Deferred collections (empty array = don't load on mount):
- * - teams, multiTenancy, chat, studioChat, auth (not used on landing page)
+ * - teams, multiTenancy, chat, auth (not used on landing page)
  * - studioCore: starredProject, invitation (load on demand)
+ *
+ * Note: platformFeatures removed from consumer app - feature sessions not loaded
  */
 const eagerCollections: EagerCollectionsConfig = {
   // Essential for initial render
@@ -87,7 +88,6 @@ const eagerCollections: EagerCollectionsConfig = {
   // to render workspace layouts (e.g., when AI calls set_workspace)
   componentBuilder: ['rendererBindingCollection', 'compositionCollection', 'layoutTemplateCollection'],
   billing: ['subscriptionCollection'],
-  platformFeatures: ['featureSessionCollection'],
 
   // Deferred - don't load on mount (empty array)
   teams: [],

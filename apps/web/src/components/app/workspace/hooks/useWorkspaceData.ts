@@ -134,7 +134,11 @@ export function useWorkspaceData(): WorkspaceDataState {
   const { data: session, isPending: isSessionLoading } = useSession()
 
   // Get domains for workspaces, projects, and features
-  const { studioCore, platformFeatures } = useDomains()
+  // Note: platformFeatures is optional - not loaded in consumer app
+  const { studioCore, platformFeatures } = useDomains<{
+    studioCore: any
+    platformFeatures?: any
+  }>()
 
   // State for tracking loading and refetch
   const [isLoadingWorkspaces, setIsLoadingWorkspaces] = useState(true)

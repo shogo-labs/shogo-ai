@@ -497,9 +497,10 @@ export const ChatPanel = observer(function ChatPanel({
   onCompactValueChange,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
+  // Note: platformFeatures is optional - not loaded in consumer app
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
     studioChat: any
-    platformFeatures: any
+    platformFeatures?: any
     componentBuilder: any
   }>()
 
@@ -536,8 +537,9 @@ export const ChatPanel = observer(function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Only on mount - width from localStorage needs to sync to parent
 
-  // Find or create chat session for feature and phase (task-cpbi-005)
-  // Session is uniquely identified by (featureId, phase) tuple
+  // Find or create chat session for feature/project context (task-cpbi-005)
+  // Session is uniquely identified by (featureId, phase) tuple for features
+  // or (projectId) for project-level chat
   // If chatSessionId prop is provided, use it directly (for session picker integration)
   useEffect(() => {
     // If explicit chatSessionId is provided, use it directly
@@ -546,6 +548,39 @@ export const ChatPanel = observer(function ChatPanel({
       return
     }
 
+    // Support project-level chat when no feature selected (consumer app mode)
+    if (!featureId && projectId) {
+      const loadOrCreateProjectSession = async () => {
+        // Look for existing project-level session
+        const allSessions = studioChat.chatSessionCollection?.all?.() ?? []
+        const existingSession = allSessions.find(
+          (s: any) => s.contextType === 'project' && s.contextId === projectId
+        )
+
+        if (existingSession) {
+          setCurrentSessionId(existingSession.id)
+          onChatSessionChange?.(existingSession.id)
+          return
+        }
+
+        // Create project-level session
+        try {
+          const newSession = await studioChat.createChatSession({
+            inferredName: 'Project Chat',
+            contextType: 'project',
+            contextId: projectId,
+          })
+          setCurrentSessionId(newSession.id)
+          onChatSessionChange?.(newSession.id)
+        } catch (err) {
+          console.error('[ChatPanel] Failed to create project-level session:', err)
+        }
+      }
+      loadOrCreateProjectSession()
+      return
+    }
+
+    // Feature-based session logic (for internal/admin use when platformFeatures loaded)
     if (!featureId) {
       setCurrentSessionId(null)
       return
@@ -1889,10 +1924,10 @@ export const ChatPanel = observer(function ChatPanel({
         <div ref={inputContainerRef} className="border-t border-border/40">
           <ChatInput
             onSubmit={handleInputSubmit}
-            disabled={!currentSessionId}
+            disabled={!currentSessionId && !projectId}
             placeholder={
-              !featureId
-                ? "Select a feature to start chatting..."
+              !currentSessionId && !projectId
+                ? "Select a project to start chatting..."
                 : hasPendingQuestion
                   ? "Respond to the question above, or type a message..."
                   : "Ask Shogo..."

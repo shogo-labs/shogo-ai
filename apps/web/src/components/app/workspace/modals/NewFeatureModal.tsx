@@ -57,7 +57,8 @@ export interface NewFeatureModalProps {
  */
 export function NewFeatureModal({ open, onOpenChange, projectId, onSuccess }: NewFeatureModalProps) {
   // Get platformFeatures domain for creating features
-  const { platformFeatures } = useDomains()
+  // Note: platformFeatures is optional - not loaded in consumer app
+  const { platformFeatures } = useDomains<{ platformFeatures?: any }>()
 
   // Form state
   const [name, setName] = useState("")
@@ -79,6 +80,12 @@ export function NewFeatureModal({ open, onOpenChange, projectId, onSuccess }: Ne
 
     if (!projectId) {
       setError("No project selected. Please select a project first.")
+      return
+    }
+
+    // Guard: platformFeatures domain must be available
+    if (!platformFeatures?.createFeatureSession) {
+      setError("Feature creation is not available")
       return
     }
 

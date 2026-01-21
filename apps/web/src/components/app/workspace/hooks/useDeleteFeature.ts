@@ -73,7 +73,8 @@ export function useDeleteFeature({
   clearFeature,
 }: UseDeleteFeatureProps): UseDeleteFeatureReturn {
   // Get domain store for deleteFeatureSession action
-  const { platformFeatures } = useDomains()
+  // Note: platformFeatures is optional - not loaded in consumer app
+  const { platformFeatures } = useDomains<{ platformFeatures?: any }>()
 
   // Dialog state - which feature is pending deletion
   const [deleteFeatureId, setDeleteFeatureId] = useState<string | null>(null)
@@ -110,6 +111,12 @@ export function useDeleteFeature({
    */
   const confirmDelete = useCallback(async () => {
     if (!deleteFeatureId) return
+
+    // Guard: platformFeatures domain must be available
+    if (!platformFeatures?.deleteFeatureSession) {
+      setDeleteError(new Error("Feature deletion is not available"))
+      return
+    }
 
     setIsDeleting(true)
     setDeleteError(null)

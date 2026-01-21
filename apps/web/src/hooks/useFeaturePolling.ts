@@ -78,23 +78,29 @@ export function useFeaturePolling({
   enabled = true,
   domainsToSync = ["platformFeatures"],
 }: UseFeaturePollingOptions): UseFeaturePollingResult {
+  // Access all domains from DomainProvider
+  // Note: platformFeatures is optional - not loaded in consumer app
+  const domains = useDomains<{ platformFeatures?: any; componentBuilder?: any }>()
+
   const [isPolling, setIsPolling] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<number | null>(null)
   const [error, setError] = useState<Error | null>(null)
 
-  // Access all domains from DomainProvider
-  // Using `any` type to match codebase pattern and avoid DomainsMap constraint issues
-  const domains = useDomains<{ platformFeatures: any; componentBuilder: any }>()
-
   // Use ref to track if component is mounted (for cleanup safety)
   const isMountedRef = useRef(true)
+
+  // Check if platformFeatures domain is required but not available (consumer app mode)
+  const isPlatformFeaturesRequired = domainsToSync.includes("platformFeatures")
+  const isPlatformFeaturesAvailable = !!domains.platformFeatures
+  const shouldDisablePolling = isPlatformFeaturesRequired && !isPlatformFeaturesAvailable
 
   /**
    * Internal refresh function with control over visual indicator
    * @param showIndicator - Whether to show the visual polling indicator
    */
   const doRefresh = useCallback(async (showIndicator: boolean) => {
-    if (!featureId) {
+    // Skip if polling is disabled (platformFeatures domain not available)
+    if (shouldDisablePolling || !featureId) {
       return
     }
 
@@ -151,7 +157,7 @@ export function useFeaturePolling({
         setIsPolling(false)
       }
     }
-  }, [featureId, domains, domainsToSync])
+  }, [featureId, domains, domainsToSync, shouldDisablePolling])
 
   /**
    * Public refresh function - silent by default (no visual indicator)
@@ -168,8 +174,8 @@ export function useFeaturePolling({
   useEffect(() => {
     isMountedRef.current = true
 
-    // Don't poll if disabled or no featureId
-    if (!enabled || !featureId) {
+    // Don't poll if disabled, no featureId, or domain not available
+    if (!enabled || !featureId || shouldDisablePolling) {
       return
     }
 
@@ -184,7 +190,7 @@ export function useFeaturePolling({
       isMountedRef.current = false
       clearInterval(intervalId)
     }
-  }, [featureId, interval, enabled, refresh, intervalRefresh])
+  }, [featureId, interval, enabled, refresh, intervalRefresh, shouldDisablePolling])
 
   return {
     isPolling,

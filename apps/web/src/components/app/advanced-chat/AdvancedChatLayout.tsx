@@ -41,10 +41,19 @@ const WORKSPACE_COMPOSITION_NAME = "workspace";
 
 export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
   const { platformFeatures, componentBuilder, studioChat } = useDomains<{
-    platformFeatures: any;
+    platformFeatures?: any;
     componentBuilder: any;
     studioChat: any;
   }>();
+
+  // Guard: Advanced Chat requires platformFeatures domain (internal use only)
+  if (!platformFeatures) {
+    return (
+      <div className="flex h-full items-center justify-center text-muted-foreground">
+        Advanced Chat is not available in this mode.
+      </div>
+    );
+  }
 
   // Track current chat session in URL (persists across refresh/hot reload)
   const { chatSessionId, setChatSessionId } = useChatSessionNavigation();
