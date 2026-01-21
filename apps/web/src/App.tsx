@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { AuthGate, AppShell, SchemaLoadingGate } from '@/components/app'
@@ -104,7 +105,25 @@ function App() {
   // Track current user ID to force DomainProvider remount on user change
   // This ensures stores are recreated with fresh data when switching users
   const session = useSession()
-  const authKey = session.data?.user?.id ?? 'anonymous'
+
+  // Use a ref to stabilize the key during transient loading states.
+  // This prevents DomainProvider from remounting when Better Auth refetches
+  // the session (e.g., on tab focus), which would cause an unwanted logout.
+  //
+  // IMPORTANT: We ONLY update the ref when we see a valid user ID.
+  // We NEVER clear the ref based on session becoming null - that could be
+  // a transient state during refetch. The ref only resets on page refresh.
+  // If the user actually logs out, AuthGate handles showing the login page
+  // without needing to remount DomainProvider.
+  const lastKnownUserIdRef = useRef<string | null>(null)
+
+  const currentUserId = session.data?.user?.id
+  if (currentUserId) {
+    lastKnownUserIdRef.current = currentUserId
+  }
+
+  // Use the stable ref value, or 'anonymous' only if we've never seen a user
+  const authKey = lastKnownUserIdRef.current ?? 'anonymous'
 
   return (
     <NuqsAdapter>
