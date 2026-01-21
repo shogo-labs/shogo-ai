@@ -135,6 +135,9 @@ export class BetterAuthService implements IBetterAuthService {
   private readonly baseUrl: string
   private readonly _authClient?: BetterAuthClient
   private readonly callbacks: Set<(session: AuthSession | null) => void> = new Set()
+  private _lastKnownSession: AuthSession | null = null
+  private _hasInitialized = false
+  private _logoutDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(config: BetterAuthServiceConfig) {
     this.baseUrl = config.baseUrl
@@ -251,14 +254,45 @@ export class BetterAuthService implements IBetterAuthService {
       const unsubscribe = this._authClient.useSession.subscribe((state) => {
         // Skip callback during loading/pending state
         if (state.isPending) {
+          // Clear any pending logout since we're now loading
+          if (this._logoutDebounceTimer) {
+            clearTimeout(this._logoutDebounceTimer)
+            this._logoutDebounceTimer = null
+          }
           return
         }
 
         // Map BA session state to AuthSession or null
         if (!state.data || !state.data.session || !state.data.user) {
-          callback(null)
+          // Only treat as logout if:
+          // 1. We've already initialized (not first load)
+          // 2. We had a session before (prevents false logout on transient states)
+          //
+          // This prevents the bug where switching tabs triggers a refetch,
+          // which briefly shows null state before the session data loads,
+          // causing an unwanted logout.
+          if (this._hasInitialized && this._lastKnownSession !== null) {
+            // Debounce the logout to handle transient states during refetch
+            // This gives Better Auth time to complete the refetch cycle
+            if (this._logoutDebounceTimer) {
+              clearTimeout(this._logoutDebounceTimer)
+            }
+            this._logoutDebounceTimer = setTimeout(() => {
+              this._logoutDebounceTimer = null
+              // Double-check we still have no session before logging out
+              this._lastKnownSession = null
+              callback(null)
+            }, 100) // 100ms delay to let refetch settle
+          }
         } else {
+          // Valid session received - clear any pending logout
+          if (this._logoutDebounceTimer) {
+            clearTimeout(this._logoutDebounceTimer)
+            this._logoutDebounceTimer = null
+          }
           const authSession = mapSession(state.data.session, state.data.user)
+          this._lastKnownSession = authSession
+          this._hasInitialized = true
           callback(authSession)
         }
       })
