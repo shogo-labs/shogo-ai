@@ -78,3 +78,6 @@ apps/web/playwright-report/
 apps/web/test-results/
 
 workspaces/
+
+.bun/
+.npm/

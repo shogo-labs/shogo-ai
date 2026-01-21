@@ -643,9 +643,13 @@ export const ProjectLayout = observer(function ProjectLayout() {
               </button>
             </div>
 
-            {/* Preview Frame with border */}
-            <div className="h-[calc(100%-32px)] w-full rounded-lg border border-border/40 bg-background shadow-sm overflow-hidden">
-              {previewMode === 'runtime' && (
+            {/* Preview Frame with border - all panels stay mounted for state persistence */}
+            <div className="h-[calc(100%-32px)] w-full rounded-lg border border-border/40 bg-background shadow-sm overflow-hidden relative">
+              {/* Runtime Preview - stays mounted to preserve iframe state */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'runtime' && "invisible pointer-events-none"
+              )}>
                 <RuntimePreviewPanel
                   projectId={projectId || ''}
                   className="h-full"
@@ -657,20 +661,28 @@ export const ProjectLayout = observer(function ProjectLayout() {
                     console.log('[ProjectLayout] Runtime loaded successfully')
                   }}
                 />
-              )}
-              {previewMode === 'code' && (
+              </div>
+              {/* Code Editor - stays mounted to preserve editor state */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'code' && "invisible pointer-events-none"
+              )}>
                 <CodeEditorPanel
                   projectId={projectId || ''}
                   className="h-full"
                 />
-              )}
-              {previewMode === 'workspace' && (
+              </div>
+              {/* Workspace View - stays mounted for consistency */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'workspace' && "invisible pointer-events-none"
+              )}>
                 <ComposablePhaseView
                   phaseName={WORKSPACE_COMPOSITION_NAME}
                   feature={project}
                   className="h-full"
                 />
-              )}
+              </div>
             </div>
           </div>
         </div>

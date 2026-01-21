@@ -1,0 +1,62 @@
+# =============================================================================
+# Shogo Platform Configuration
+# =============================================================================
+# Shared ConfigMaps and Secrets for all Shogo services.
+#
+# For production, these values are injected by Terraform.
+# For local/staging, these use MinIO running in the same cluster.
+# =============================================================================
+
+---
+# ConfigMap for non-sensitive configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shogo-config
+  namespace: shogo-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+data:
+  # S3/MinIO endpoint (internal cluster DNS)
+  s3-endpoint: "http://minio.shogo-system.svc.cluster.local:9000"
+  # S3 bucket for schemas
+  s3-bucket: "shogo-schemas"
+  # S3 bucket for workspace files
+  s3-workspace-bucket: "shogo-workspaces"
+  # Force path-style for MinIO compatibility
+  s3-force-path-style: "true"
+
+---
+# Secret for sensitive configuration
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shogo-secrets
+  namespace: shogo-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+type: Opaque
+stringData:
+  # Database URL (internal cluster DNS)
+  database-url: "postgres://shogo:shogo_k8s_dev@postgres.shogo-system.svc.cluster.local:5432/shogo"
+  # MinIO credentials (matches minio-credentials secret)
+  s3-access-key: "minioadmin"
+  s3-secret-key: "minioadmin"
+
+---
+# Secret for API-specific credentials
+# Note: ANTHROPIC_API_KEY should be set via kubectl or CI/CD, not committed
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-secrets
+  namespace: shogo-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+type: Opaque
+stringData:
+  # BetterAuth secret (generate with: openssl rand -base64 32)
+  BETTER_AUTH_SECRET: "local-dev-secret-change-in-production"
+  # Anthropic API key - MUST be set separately for security
+  # kubectl -n shogo-system patch secret api-secrets -p '{"stringData":{"ANTHROPIC_API_KEY":"sk-ant-..."}}'
+  ANTHROPIC_API_KEY: "placeholder-set-via-kubectl"

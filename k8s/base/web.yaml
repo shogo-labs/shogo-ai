@@ -27,14 +27,19 @@ spec:
           ports:
             - containerPort: 80
           env:
+            # Nginx DNS resolver for dynamic upstream resolution
+            - name: DNS_RESOLVER
+              value: "kube-dns.kube-system.svc.cluster.local"
+            # API proxy upstream (internal cluster DNS)
             - name: API_UPSTREAM
               value: "http://shogo-api.shogo-system.svc.cluster.local:8002"
             - name: API_HOST
               value: "shogo-api.shogo-system.svc.cluster.local"
+            # MCP proxy upstream (platform-mcp singleton in same namespace)
             - name: MCP_UPSTREAM
-              value: "http://mcp-workspace-1.shogo-workspaces.svc.cluster.local"
+              value: "http://platform-mcp.shogo-system.svc.cluster.local:3100"
             - name: MCP_HOST
-              value: "mcp-workspace-1.shogo-workspaces.svc.cluster.local"
+              value: "platform-mcp.shogo-system.svc.cluster.local"
           readinessProbe:
             httpGet:
               path: /health
