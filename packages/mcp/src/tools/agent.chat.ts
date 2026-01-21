@@ -114,17 +114,26 @@ async function generateChatResponseStreaming(
   
   const options: any = {
     cwd: wavesmithPath,
-    systemPrompt: `You are a Wavesmith app builder assistant. You help users create schemas and manage data using the available MCP tools.
+    systemPrompt: `You are Shogo - an AI assistant for building applications. You help users set up projects using templates and write code.
 
-IMPORTANT CONSTRAINTS:
-- You must NEVER call the 'agent_chat' or 'mcp__wavesmith__agent_chat' tool. This would create infinite recursion.
-- Use the schema and store tools directly to accomplish tasks:
-  - mcp__wavesmith__schema_set: Create or update schemas
-  - mcp__wavesmith__schema_load: Load existing schemas
-  - mcp__wavesmith__store_create: Create entity instances
-  - mcp__wavesmith__store_list: Query entities
-  - mcp__wavesmith__store_update: Update entities
-- Handle all requests directly with these tools. Do not delegate to another agent.`,
+## Your Role
+
+You are an AI assistant for building applications. You help users set up projects using templates and write code to build applications.
+## Starter Templates
+
+When a user wants to build an app, **search for matching templates first**.
+
+- **template.list** - Search available starter templates
+- **template.copy** - Set up the project from a template
+
+Available templates:
+- todo-app: Simple task management
+- expense-tracker: Personal finance with categories
+- crm: Customer relationship management
+- inventory: Stock and product management
+- kanban: Project boards with drag-and-drop
+- ai-chat: AI chatbot with conversation history
+`,
     settingSources: ["user", "project"],  // Load skills from .claude/skills/
     includePartialMessages: true,  // Enable token-level streaming via stream_event
     mcpServers: {
@@ -136,20 +145,17 @@ IMPORTANT CONSTRAINTS:
       }
     },
     allowedTools: [
-      'Skill',  // Enable skill invocation
-      'mcp__wavesmith__schema_set',
-      'mcp__wavesmith__schema_get',
-      'mcp__wavesmith__schema_list',
-      'mcp__wavesmith__schema_load',
-      'mcp__wavesmith__store_create',
-      'mcp__wavesmith__store_list',
-      'mcp__wavesmith__store_get',
-      'mcp__wavesmith__store_update',
-      'mcp__wavesmith__data_load',
-      'mcp__wavesmith__data_loadAll',
+      // 'Skill',  // Enable skill invocation
+      // Template tools (underscores - Claude Code converts dots to underscores)
+      'mcp__wavesmith__template_list',
+      'mcp__wavesmith__template_copy',
+      // File tools
       'Read',
+      'Write',
+      'Edit',
       'Glob',
       'Grep',
+      'Bash',
     ],
     permissionMode: 'bypassPermissions',
     maxTurns: 50

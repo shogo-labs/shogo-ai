@@ -1,0 +1,25 @@
+# Database
+prisma/dev.db
+prisma/dev.db-journal
+
+# Dependencies
+node_modules
+
+# Build
+.output
+dist
+
+# Env
+.env
+.env.local
+
+# IDE
+.idea
+.vscode
+
+# Playwright
+test-results
+playwright-report
+
+# TanStack
+src/routeTree.gen.ts

@@ -13,12 +13,19 @@
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText, type CoreMessage } from 'ai'
+import { streamText, tool, type CoreMessage } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { z } from 'zod'
-import { resolve, isAbsolute, relative } from 'path'
-import { existsSync } from 'fs'
+import { resolve, isAbsolute, relative, dirname } from 'path'
+import { existsSync, readdirSync, readFileSync, cpSync, mkdirSync } from 'fs'
 import { initializeS3Sync, type S3Sync } from './s3-sync'
+import { fileURLToPath } from 'url'
+
+// Get monorepo root for template access
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+// project-runtime/src/server.ts -> monorepo root is 3 levels up
+const MONOREPO_ROOT = resolve(__dirname, '../../..')
 
 // =============================================================================
 // Configuration
@@ -58,6 +65,136 @@ let s3Sync: S3Sync | null = null
     console.error(`[project-runtime] S3 sync initialization failed:`, error)
   }
 })()
+
+// =============================================================================
+// Template Tools (Native - no MCP required)
+// =============================================================================
+
+interface TemplateMetadata {
+  name: string
+  description: string
+  complexity: string
+  features: string[]
+  models: string[]
+  tags: string[]
+  useCases: string[]
+  techStack: Record<string, string>
+}
+
+interface TemplateInfo extends TemplateMetadata {
+  path: string
+}
+
+/**
+ * Load all available templates from the SDK examples directory
+ */
+function loadTemplates(): TemplateInfo[] {
+  const templatesDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples')
+  const templates: TemplateInfo[] = []
+
+  if (!existsSync(templatesDir)) {
+    console.warn(`[project-runtime] Templates directory not found: ${templatesDir}`)
+    return templates
+  }
+
+  const entries = readdirSync(templatesDir, { withFileTypes: true })
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+
+    const templateJsonPath = resolve(templatesDir, entry.name, 'template.json')
+    if (!existsSync(templateJsonPath)) continue
+
+    try {
+      const content = readFileSync(templateJsonPath, 'utf-8')
+      const metadata: TemplateMetadata = JSON.parse(content)
+      templates.push({
+        ...metadata,
+        path: resolve(templatesDir, entry.name),
+      })
+    } catch {
+      // Skip invalid template.json files
+    }
+  }
+
+  return templates
+}
+
+/**
+ * Copy a template to the project directory
+ */
+function copyTemplate(templateName: string, projectName: string): { ok: boolean; message?: string; error?: string } {
+  const templatesDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples')
+  const templatePath = resolve(templatesDir, templateName)
+
+  if (!existsSync(templatePath)) {
+    return { ok: false, error: `Template '${templateName}' not found` }
+  }
+
+  try {
+    // Copy template files to project directory
+    cpSync(templatePath, PROJECT_DIR, {
+      recursive: true,
+      filter: (src) => !src.includes('node_modules') && !src.includes('.git'),
+    })
+
+    return {
+      ok: true,
+      message: `Successfully copied template '${templateName}' to project. Run 'bun install' to install dependencies.`,
+    }
+  } catch (error: any) {
+    return { ok: false, error: error.message || 'Failed to copy template' }
+  }
+}
+
+/**
+ * AI SDK native tools for template operations
+ */
+const templateTools = {
+  'template.list': tool({
+    description: `List and search available starter templates. Returns templates with metadata including name, description, complexity, features, models, and tags.
+
+Available templates:
+- todo-app: Simple task management
+- expense-tracker: Personal finance with categories
+- crm: Customer relationship management
+- inventory: Stock and product management
+- kanban: Project boards with drag-and-drop
+- ai-chat: AI chatbot with conversation history`,
+    parameters: z.object({
+      query: z.string().optional().describe('Optional search query to filter templates'),
+    }),
+    execute: async ({ query }) => {
+      console.log(`[project-runtime] template.list called with query: ${query}`)
+      let templates = loadTemplates()
+
+      if (query) {
+        const queryLower = query.toLowerCase()
+        templates = templates.filter(t =>
+          t.name.toLowerCase().includes(queryLower) ||
+          t.description.toLowerCase().includes(queryLower) ||
+          t.tags.some(tag => tag.toLowerCase().includes(queryLower)) ||
+          t.useCases.some(uc => uc.toLowerCase().includes(queryLower))
+        )
+      }
+
+      return JSON.stringify({ ok: true, templates }, null, 2)
+    },
+  }),
+
+  'template.copy': tool({
+    description: 'Copy a starter template to set up the project. This will copy all template files to the current project directory.',
+    parameters: z.object({
+      templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app")'),
+      projectName: z.string().optional().describe('Optional project name (for package.json)'),
+    }),
+    execute: async ({ templateName, projectName }) => {
+      console.log(`[project-runtime] template.copy called: ${templateName}`)
+      const result = copyTemplate(templateName, projectName || templateName)
+      return JSON.stringify(result, null, 2)
+    },
+  }),
+}
 
 // =============================================================================
 // Path Restriction (Security)
@@ -124,6 +261,15 @@ const claudeCode = createClaudeCode({
           SCHEMAS_PATH,
           PROJECT_ID: PROJECT_ID!,
           NODE_ENV: process.env.NODE_ENV || 'production',
+          // Forward S3 configuration for schema persistence
+          S3_ENDPOINT: process.env.S3_ENDPOINT || '',
+          S3_SCHEMA_BUCKET: process.env.S3_SCHEMA_BUCKET || '',
+          S3_FORCE_PATH_STYLE: process.env.S3_FORCE_PATH_STYLE || '',
+          AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID || '',
+          AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY || '',
+          AWS_REGION: process.env.AWS_REGION || 'us-east-1',
+          SCHEMA_STORAGE: process.env.SCHEMA_STORAGE || '',
+          DATABASE_URL: process.env.DATABASE_URL || '',
         },
       },
     },
@@ -133,28 +279,31 @@ const claudeCode = createClaudeCode({
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
       // Skill and agent tools
       'Skill', 'Task', 'Bash', 'TodoWrite',
-      // Wavesmith MCP tools - Schema
-      'mcp__wavesmith__schema_set',
-      'mcp__wavesmith__schema_get',
-      'mcp__wavesmith__schema_list',
-      'mcp__wavesmith__schema_load',
-      // Wavesmith MCP tools - Store
-      'mcp__wavesmith__store_create',
-      'mcp__wavesmith__store_list',
-      'mcp__wavesmith__store_get',
-      'mcp__wavesmith__store_update',
-      'mcp__wavesmith__store_query',
-      'mcp__wavesmith__store_models',
-      'mcp__wavesmith__store_delete',
-      // Wavesmith MCP tools - Views
-      'mcp__wavesmith__view_execute',
-      'mcp__wavesmith__view_define',
-      'mcp__wavesmith__view_project',
-      // Wavesmith MCP tools - Data & DDL
-      'mcp__wavesmith__data_load',
-      'mcp__wavesmith__data_loadAll',
-      'mcp__wavesmith__ddl_execute',
-      'mcp__wavesmith__ddl_migrate',
+      // Template tools (underscores - Claude Code converts dots to underscores)
+      'mcp__wavesmith__template_list',
+      'mcp__wavesmith__template_copy',
+      // Wavesmith MCP tools - Schema (underscores)
+      // 'mcp__wavesmith__schema_set',
+      // 'mcp__wavesmith__schema_get',
+      // 'mcp__wavesmith__schema_list',
+      // 'mcp__wavesmith__schema_load',
+      // // Wavesmith MCP tools - Store (underscores)
+      // 'mcp__wavesmith__store_create',
+      // 'mcp__wavesmith__store_list',
+      // 'mcp__wavesmith__store_get',
+      // 'mcp__wavesmith__store_update',
+      // 'mcp__wavesmith__store_query',
+      // 'mcp__wavesmith__store_models',
+      // 'mcp__wavesmith__store_delete',
+      // // Wavesmith MCP tools - Views (underscores)
+      // 'mcp__wavesmith__view_execute',
+      // 'mcp__wavesmith__view_define',
+      // 'mcp__wavesmith__view_project',
+      // // Wavesmith MCP tools - Data & DDL (underscores)
+      // 'mcp__wavesmith__data_load',
+      // 'mcp__wavesmith__data_loadAll',
+      // 'mcp__wavesmith__ddl_execute',
+      // 'mcp__wavesmith__ddl_migrate',
     ],
     // Use default permission mode (our canUseTool callback handles restrictions)
     permissionMode: 'default',
@@ -289,8 +438,20 @@ app.post('/agent/chat', async (c) => {
       model: claudeCode('sonnet', {
         streamingInput: 'always',
       }) as Parameters<typeof streamText>[0]['model'],
-      system: system || `You are helping build a project. The project files are in ${PROJECT_DIR}. You have access to file operations and MCP tools for data management.`,
+      system: system || `You are Shogo - an AI assistant for building applications. The project files are in ${PROJECT_DIR}.
+
+## Starter Templates
+
+When a user wants to build an app, use the template tools via MCP:
+
+- **template.list** - List and search available starter templates
+- **template.copy** - Copy a template to set up the project
+
+Available templates include: todo-app, expense-tracker, crm, inventory, kanban, ai-chat.
+
+You also have access to file operations (Read, Write, Edit, Glob, Grep, Bash) and MCP tools for data management.`,
       messages: coreMessages,
+      maxSteps: 10,
     })
     
     // Return the AI SDK UI message stream response directly
@@ -427,4 +588,6 @@ console.log(`[project-runtime] Starting server on port ${PORT}`)
 export default {
   port: PORT,
   fetch: app.fetch,
+  // Increase idle timeout for long-running Claude responses (2 minutes)
+  idleTimeout: 120,
 }

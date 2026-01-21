@@ -65,7 +65,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   }
 
   /**
-   * Get the URL for a project's runtime.
+   * Get the URL for a project's runtime agent server.
    * Handles both Kubernetes (Knative) and local development.
    */
   async function getProjectUrl(projectId: string): Promise<string> {
@@ -78,9 +78,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       if (!runtime || runtime.status === "stopped" || runtime.status === "error") {
         runtime = await runtimeManager.start(projectId)
       }
-      // Local runtime runs agent on port 8080, not Vite port
-      // For now, assume same port - can be configured later
-      return runtime.url.replace(/:\d+$/, ":8080")
+      // Use agentPort if available, otherwise calculate from Vite port
+      // Agent runs on port = Vite port + 1000 (e.g., 5200 -> 6200)
+      const agentPort = runtime.agentPort || (runtime.port + 1000)
+      return `http://localhost:${agentPort}`
     } else {
       throw new Error("No runtime manager available for local development")
     }

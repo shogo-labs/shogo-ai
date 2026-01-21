@@ -37,6 +37,8 @@ export interface IProjectRuntime {
   id: string
   /** Port the Vite dev server is running on */
   port: number
+  /** Port the agent server is running on (for local dev) */
+  agentPort?: number
   /** Current status of the runtime */
   status: RuntimeStatus
   /** Full URL to access the runtime (e.g., http://localhost:5200) */

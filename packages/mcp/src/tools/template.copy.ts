@@ -244,16 +244,20 @@ export async function executeTemplateCopy(
 export function registerTemplateCopy(server: FastMCP) {
   server.addTool({
     name: "template.copy",
-    description: `Copy a starter template to create a new project. The template provides a working app structure with Prisma schema, React components, and Shogo SDK integration.
+    description: `Copy a starter template to create a new project. The template provides a working app structure with Prisma schema, React components, TanStack Router, and Shogo SDK integration.
 
 Available templates:
 - todo-app: Simple task management (beginner)
 - expense-tracker: Personal finance with categories/transactions (intermediate)
-- crm: Customer management with contacts/deals/tags (advanced)
+- crm: Customer relationship management with contacts/deals (intermediate)
+- inventory: Stock and product management with suppliers (intermediate)
+- kanban: Project boards with drag-and-drop cards (intermediate)
+- ai-chat: AI chatbot with conversation history, Vercel AI SDK (advanced)
 
 Examples:
 - template.copy({ template: "todo-app", name: "my-tasks" })
 - template.copy({ template: "expense-tracker", name: "budget-app" })
+- template.copy({ template: "ai-chat", name: "my-chatbot" })
 - template.copy({ template: "crm", name: "sales-pipeline", output: "./projects/sales" })
 - template.copy({ template: "todo-app", name: "test", dryRun: true }) - Preview only`,
     parameters: Params as any,

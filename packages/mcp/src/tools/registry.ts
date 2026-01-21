@@ -64,37 +64,37 @@ import { registerTemplateCopy } from "./template.copy"
  * @param server - FastMCP server instance (stdio or HTTP transport)
  */
 export function registerPlatformTools(server: FastMCP) {
-  // Schema namespace (3 tools)
-  registerSchemaSet(server)
-  registerSchemaLoad(server)
-  registerSchemaList(server)
+  // // Schema namespace (3 tools)
+  // registerSchemaSet(server)
+  // registerSchemaLoad(server)
+  // registerSchemaList(server)
 
-  // Store namespace (5 tools)
-  registerStoreCreate(server)
-  registerStoreGet(server)
-  registerStoreUpdate(server)
-  registerStoreDelete(server)
-  registerStoreQuery(server)
+  // // Store namespace (5 tools)
+  // registerStoreCreate(server)
+  // registerStoreGet(server)
+  // registerStoreUpdate(server)
+  // registerStoreDelete(server)
+  // registerStoreQuery(server)
 
-  // View namespace (4 tools)
-  registerViewExecute(server)
-  registerViewDefine(server)
-  registerViewDelete(server)
-  registerViewProject(server)
+  // // View namespace (4 tools)
+  // registerViewExecute(server)
+  // registerViewDefine(server)
+  // registerViewDelete(server)
+  // registerViewProject(server)
 
-  // DDL namespace (2 tools) - Platform only
-  registerDdlExecute(server)
-  registerDdlMigrate(server)
+  // // DDL namespace (2 tools) - Platform only
+  // registerDdlExecute(server)
+  // registerDdlMigrate(server)
 
-  // Agent namespace (1 tool) - Platform only
-  registerAgentChat(server)
+  // // Agent namespace (1 tool) - Platform only
+  // registerAgentChat(server)
 
-  // Workspace namespace (1 tool) - Platform only
-  registerWorkspaceSync(server)
+  // // Workspace namespace (1 tool) - Platform only
+  // registerWorkspaceSync(server)
 
-  // SDK namespace (2 tools) - Platform only
-  registerSdkCreateRoutes(server)
-  registerSdkCreateApp(server)
+  // // SDK namespace (2 tools) - Platform only
+  // registerSdkCreateRoutes(server)
+  // registerSdkCreateApp(server)
 
   // Template namespace (2 tools) - Platform only
   registerTemplateList(server)

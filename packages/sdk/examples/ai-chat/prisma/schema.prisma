@@ -1,0 +1,51 @@
+// Prisma schema for AI Chat
+// Converted from Drizzle schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  chats Chat[]
+
+  @@map("users")
+}
+
+model Chat {
+  id         String   @id @default(cuid())
+  title      String   @default("New Chat")
+  visibility String   @default("private") // "public" | "private"
+  userId     String   @map("user_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([userId, updatedAt])
+  @@map("chats")
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  role      String   // "user" | "assistant" | "system"
+  content   String   // JSON string for parts/content
+  chatId    String   @map("chat_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt])
+  @@map("messages")
+}
