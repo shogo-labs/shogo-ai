@@ -16,6 +16,8 @@ spec:
         autoscaling.knative.dev/min-scale: "1"
         autoscaling.knative.dev/max-scale: "5"
     spec:
+      # Service account with permissions to create Knative services in workspaces namespace
+      serviceAccountName: api-service-account
       containers:
         - name: api
           image: shogo-api  # Replaced by kustomize
@@ -30,6 +32,12 @@ spec:
               value: "0"
             - name: MCP_URL
               value: "http://mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
+            # Project runtime configuration - namespace for project pods
+            # Note: PROJECT_RUNTIME_IMAGE uses floating 'staging-latest' tag updated by CI/CD
+            - name: PROJECT_NAMESPACE
+              value: "shogo-staging-workspaces"
+            - name: PROJECT_RUNTIME_IMAGE
+              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/project-runtime:staging-latest"
             - name: BETTER_AUTH_URL
               value: "https://api-staging.shogo.ai"
             - name: ALLOWED_ORIGINS
