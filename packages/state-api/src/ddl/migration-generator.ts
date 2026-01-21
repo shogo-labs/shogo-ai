@@ -296,11 +296,13 @@ export function generateMigration(
  *
  * @param op - Migration operation with table name, columns, primaryKey, and foreignKeys
  * @param dialect - SQL dialect for formatting
+ * @param ifNotExists - If true, adds IF NOT EXISTS clause for idempotent migrations
  * @returns CREATE TABLE SQL statement
  */
 function generateCreateTableSQL(
   op: MigrationOperationDef,
-  dialect: SqlDialect
+  dialect: SqlDialect,
+  ifNotExists?: boolean
 ): string {
   const escapedTable = escapeTableName(op.tableName, dialect)
   const columns = op.columns || []
@@ -334,7 +336,20 @@ function generateCreateTableSQL(
     }
   }
 
-  return `CREATE TABLE ${escapedTable} (\n${lines.join(",\n")}\n)`
+  const ifNotExistsClause = ifNotExists ? "IF NOT EXISTS " : ""
+  return `CREATE TABLE ${ifNotExistsClause}${escapedTable} (\n${lines.join(",\n")}\n)`
+}
+
+/**
+ * Options for converting migration to SQL
+ */
+export interface MigrationOutputOptions {
+  /**
+   * If true, use IF NOT EXISTS for CREATE TABLE statements.
+   * This makes migrations idempotent and safe to re-run.
+   * @default false
+   */
+  ifNotExists?: boolean
 }
 
 /**
@@ -342,11 +357,13 @@ function generateCreateTableSQL(
  *
  * @param output - Migration output from generateMigration()
  * @param dialect - SQL dialect for statement formatting
+ * @param options - Optional configuration (ifNotExists, etc.)
  * @returns Array of SQL statements to execute
  */
 export function migrationOutputToSQL(
   output: MigrationOutput,
-  dialect: SqlDialect
+  dialect: SqlDialect,
+  options?: MigrationOutputOptions
 ): string[] {
   const statements: string[] = []
   const postgresqlForeignKeys: ForeignKeyDef[] = [] // Collect FKs for PostgreSQL ALTER TABLE
@@ -358,7 +375,7 @@ export function migrationOutputToSQL(
     switch (op.type) {
       case MigrationOperation.CREATE_TABLE:
         if (op.columns && op.columns.length > 0) {
-          statements.push(generateCreateTableSQL(op, dialect))
+          statements.push(generateCreateTableSQL(op, dialect, options?.ifNotExists))
 
           // PostgreSQL: collect FKs for ALTER TABLE statements (emitted after all CREATE TABLEs)
           if ((dialect.name === "postgresql" || dialect.name === "postgres") && op.foreignKeys?.length) {

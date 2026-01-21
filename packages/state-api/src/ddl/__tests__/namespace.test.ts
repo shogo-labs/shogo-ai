@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from "bun:test"
-import { deriveNamespace, qualifyTableName } from "../namespace"
+import { deriveNamespace, qualifyTableName, normalizeTableNameForComparison } from "../namespace"
 
 describe("deriveNamespace", () => {
   /**
@@ -211,5 +211,115 @@ describe("qualifyTableName without namespace", () => {
    */
   test("SQLite: empty namespace returns simple table name", () => {
     expect(qualifyTableName("", "user", "sqlite")).toBe("user")
+  })
+})
+
+// ============================================================================
+// Table Name Normalization for Comparison
+// ============================================================================
+
+describe("normalizeTableNameForComparison", () => {
+  /**
+   * Test: Strip double quotes from PostgreSQL qualified name
+   * Given: Quoted name '"schema"."table"' from qualifyTableName
+   * When: normalizeTableNameForComparison is called
+   * Then: Returns 'schema.table' without quotes
+   */
+  test("strips double quotes from PostgreSQL qualified name", () => {
+    expect(normalizeTableNameForComparison('"studio_chat"."chat_session"')).toBe("studio_chat.chat_session")
+  })
+
+  /**
+   * Test: Handle already unquoted name from introspection
+   * Given: Unquoted name 'schema.table' from introspection
+   * When: normalizeTableNameForComparison is called
+   * Then: Returns same 'schema.table' unchanged
+   */
+  test("handles already unquoted names unchanged", () => {
+    expect(normalizeTableNameForComparison("studio_chat.chat_session")).toBe("studio_chat.chat_session")
+  })
+
+  /**
+   * Test: Normalize SQLite table names (no change needed)
+   * Given: SQLite-style 'namespace__table' name
+   * When: normalizeTableNameForComparison is called
+   * Then: Returns same name unchanged
+   */
+  test("handles SQLite namespace__table format unchanged", () => {
+    expect(normalizeTableNameForComparison("studio_chat__chat_session")).toBe("studio_chat__chat_session")
+  })
+
+  /**
+   * Test: Handle escaped double quotes (PostgreSQL edge case)
+   * Given: Name with escaped quotes '"my""app"."user"'
+   * When: normalizeTableNameForComparison is called
+   * Then: Returns normalized 'my"app.user' (with literal quote in name)
+   */
+  test("handles escaped double quotes in PostgreSQL names", () => {
+    expect(normalizeTableNameForComparison('"my""app"."user"')).toBe('my"app.user')
+  })
+
+  /**
+   * Test: Handle simple quoted table name without namespace
+   * Given: Simple quoted name '"user"'
+   * When: normalizeTableNameForComparison is called
+   * Then: Returns 'user' without quotes
+   */
+  test("handles simple quoted table name without namespace", () => {
+    expect(normalizeTableNameForComparison('"user"')).toBe("user")
+  })
+
+  /**
+   * Test: Convert to lowercase for case-insensitive comparison
+   * Given: Mixed case name 'Schema.Table'
+   * When: normalizeTableNameForComparison is called
+   * Then: Returns lowercase 'schema.table'
+   */
+  test("converts to lowercase for case-insensitive comparison", () => {
+    expect(normalizeTableNameForComparison("Studio_Chat.Chat_Session")).toBe("studio_chat.chat_session")
+  })
+})
+
+describe("Table name comparison scenarios", () => {
+  /**
+   * Test: Verify qualifyTableName output matches introspection output after normalization
+   * Given: Same logical table represented differently by qualifyTableName vs introspection
+   * When: Both are normalized
+   * Then: They should be equal
+   */
+  test("qualifyTableName and introspection output match after normalization", () => {
+    // qualifyTableName returns quoted format
+    const fromQualifyTableName = qualifyTableName("studio_chat", "chat_session", "postgresql")
+    // introspection returns unquoted format
+    const fromIntrospection = "studio_chat.chat_session"
+
+    // After normalization, both should match
+    expect(normalizeTableNameForComparison(fromQualifyTableName)).toBe(
+      normalizeTableNameForComparison(fromIntrospection)
+    )
+  })
+
+  /**
+   * Test: Verify arrays of table names can be compared after normalization
+   * Given: Expected tables from qualifyTableName and actual tables from introspection
+   * When: Both arrays are normalized and compared
+   * Then: All tables should match (no missing/extra)
+   */
+  test("expected and actual table arrays match after normalization", () => {
+    const expected = [
+      '"studio_chat"."chat_session"',
+      '"studio_chat"."chat_message"',
+      '"studio_chat"."tool_call_log"',
+    ]
+    const actual = [
+      "studio_chat.chat_message",
+      "studio_chat.tool_call_log",
+      "studio_chat.chat_session",
+    ]
+
+    const normalizedExpected = expected.map(normalizeTableNameForComparison).sort()
+    const normalizedActual = actual.map(normalizeTableNameForComparison).sort()
+
+    expect(normalizedExpected).toEqual(normalizedActual)
   })
 })

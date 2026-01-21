@@ -67,7 +67,7 @@ export async function mergeMetadataFromFile(
   try {
     const { enhanced } = await loadFn(name, workspace)
 
-    // Extract x-* extensions from loaded schema
+    // Extract root-level x-* extensions from loaded schema
     const extensions: Record<string, any> = {}
 
     for (const [key, value] of Object.entries(enhanced)) {
@@ -81,10 +81,39 @@ export async function mergeMetadataFromFile(
       extensions.views = enhanced.views
     }
 
+    // Merge model-level x-* extensions from $defs
+    // This is critical for x-authorization, x-persistence, x-renderer on individual models
+    const mergedDefs = { ...(schema.$defs || {}) }
+    const fileDefs = enhanced.$defs || {}
+
+    for (const [modelName, fileDef] of Object.entries(fileDefs)) {
+      if (!fileDef || typeof fileDef !== 'object') continue
+
+      // Get the base model from converted schema (or create empty)
+      const baseDef = mergedDefs[modelName] || {}
+
+      // Extract x-* extensions from file's model definition
+      const modelExtensions: Record<string, any> = {}
+      for (const [key, value] of Object.entries(fileDef as Record<string, any>)) {
+        if (key.startsWith("x-") && value !== undefined) {
+          modelExtensions[key] = value
+        }
+      }
+
+      // Merge: file metadata takes precedence over base
+      if (Object.keys(modelExtensions).length > 0) {
+        mergedDefs[modelName] = {
+          ...baseDef,
+          ...modelExtensions,
+        }
+      }
+    }
+
     // Merge: file metadata takes precedence
     return {
       ...schema,
       ...extensions,
+      $defs: mergedDefs,
     }
   } catch (error: any) {
     // ENOENT = file not found - normal case, return original

@@ -330,6 +330,7 @@ export class MCPPersistence implements IPersistenceService {
       const loadResult = result.result as {
         ok: boolean
         schemaId?: string
+        enhanced?: any  // Full enhanced JSON schema with all x-* extensions
         models?: Array<{
           name: string
           collectionName: string
@@ -345,39 +346,45 @@ export class MCPPersistence implements IPersistenceService {
         return
       }
 
-      // Convert model descriptors to enhanced JSON schema format
-      const $defs: Record<string, any> = {}
-      for (const model of loadResult.models || []) {
-        const properties: Record<string, any> = {}
-        const required: string[] = []
+      // Use the full enhanced schema directly (preserves x-authorization, x-renderer, etc.)
+      // Fall back to reconstructing from model descriptors for backward compatibility
+      let enhanced = loadResult.enhanced
+      if (!enhanced) {
+        console.warn(`[MCPPersistence] No enhanced schema in batch response for "${schema.name}", falling back to model descriptors`)
+        const $defs: Record<string, any> = {}
+        for (const model of loadResult.models || []) {
+          const properties: Record<string, any> = {}
+          const required: string[] = []
 
-        for (const field of model.fields || []) {
-          properties[field.name] = { type: field.type }
-          if (field.required) {
-            required.push(field.name)
+          for (const field of model.fields || []) {
+            properties[field.name] = { type: field.type }
+            if (field.required) {
+              required.push(field.name)
+            }
+          }
+
+          for (const ref of model.refs || []) {
+            properties[ref.name] = {
+              $ref: `#/$defs/${ref.target}`,
+              'x-reference-type': ref.type
+            }
+          }
+
+          $defs[model.name] = {
+            type: 'object',
+            properties,
+            ...(required.length > 0 ? { required } : {})
           }
         }
-
-        for (const ref of model.refs || []) {
-          properties[ref.name] = {
-            $ref: `#/$defs/${ref.target}`,
-            'x-reference-type': ref.type
-          }
-        }
-
-        $defs[model.name] = {
-          type: 'object',
-          properties,
-          ...(required.length > 0 ? { required } : {})
+        enhanced = {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          $defs
         }
       }
 
       resultMap.set(schema.name, {
         metadata: { name: schema.name, id: loadResult.schemaId },
-        enhanced: {
-          $schema: 'https://json-schema.org/draft/2020-12/schema',
-          $defs
-        }
+        enhanced
       })
     })
 

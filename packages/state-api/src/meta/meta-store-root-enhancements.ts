@@ -47,12 +47,12 @@ export function createRootStoreEnhancements(RootModel: any) {
         if (existingSchema) {
           // Check if content is IDENTICAL (true idempotent call - React StrictMode safe)
           if (existingSchema.contentChecksum === incomingChecksum) {
-            console.log('[meta-store] Schema unchanged (idempotent):', metadata.name)
+            // console.log('[meta-store] Schema unchanged (idempotent):', metadata.name)
             return existingSchema
           }
 
           // Content differs - UPDATE the existing schema
-          console.log('[meta-store] Schema content changed, updating:', metadata.name)
+          // console.log('[meta-store] Schema content changed, updating:', metadata.name)
           self.updateSchemaContent(existingSchema.id, enhancedSchema, incomingChecksum, metadata.views)
           return existingSchema
         }
@@ -126,6 +126,11 @@ export function createRootStoreEnhancements(RootModel: any) {
           // Capture x-persistence extension for partitioned storage
           if (defSchema['x-persistence']) {
             modelData.xPersistence = defSchema['x-persistence']
+          }
+
+          // Capture x-authorization extension for scope-based access control
+          if (defSchema['x-authorization']) {
+            modelData.xAuthorization = defSchema['x-authorization']
           }
 
           self.modelCollection.add(modelData)
@@ -247,6 +252,11 @@ export function createRootStoreEnhancements(RootModel: any) {
           // Capture x-persistence extension for partitioned storage
           if (defSchema['x-persistence']) {
             modelData.xPersistence = defSchema['x-persistence']
+          }
+
+          // Capture x-authorization extension for scope-based access control
+          if (defSchema['x-authorization']) {
+            modelData.xAuthorization = defSchema['x-authorization']
           }
 
           self.modelCollection.add(modelData)

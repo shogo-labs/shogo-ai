@@ -48,6 +48,11 @@ export function createModelEnhancements(baseModels: any) {
         def["x-persistence"] = getSnapshot(self.xPersistence)
       }
 
+      // Output x-authorization if present (scope-based access control)
+      if (self.xAuthorization !== undefined) {
+        def["x-authorization"] = getSnapshot(self.xAuthorization)
+      }
+
       if (self.properties.length > 0) {
         def.properties = {}
 

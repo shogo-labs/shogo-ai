@@ -9,10 +9,30 @@
  */
 
 import { createJsInterpreter, allInterpreters } from "@ucast/js"
-import { FieldCondition } from "@ucast/core"
-import type { Condition } from "../ast/types"
+import { FieldCondition, Condition } from "@ucast/core"
+import type { ParsedCondition, SubqueryCondition } from "../ast/types"
 import type { QueryOptions, OrderByClause } from "../backends/types"
 import type { IQueryExecutor } from "./types"
+
+/**
+ * Type guard for SubqueryCondition.
+ */
+function isSubqueryCondition(ast: ParsedCondition): ast is SubqueryCondition {
+  return 'type' in ast && ast.type === 'subquery'
+}
+
+/**
+ * Assert that the condition is not a SubqueryCondition.
+ * MemoryQueryExecutor cannot handle subqueries - they require SQL execution.
+ */
+function assertNotSubquery(ast: ParsedCondition): asserts ast is Condition {
+  if (isSubqueryCondition(ast)) {
+    throw new Error(
+      'Subquery conditions are not supported by MemoryQueryExecutor. ' +
+      'Use a SQL backend (PostgreSQL or SQLite) for subquery support.'
+    )
+  }
+}
 
 // ============================================================================
 // Custom Interpreters (from MemoryBackend)
@@ -58,7 +78,9 @@ export class MemoryQueryExecutor<T> implements IQueryExecutor<T> {
     // Expected interface: { all(): T[], modelName: string }
   }
 
-  async select(ast: Condition, options?: QueryOptions): Promise<T[]> {
+  async select(ast: ParsedCondition, options?: QueryOptions): Promise<T[]> {
+    assertNotSubquery(ast)
+
     // Get all items from bound collection
     let results = this.collection.all() as T[]
 
@@ -83,13 +105,15 @@ export class MemoryQueryExecutor<T> implements IQueryExecutor<T> {
     return results
   }
 
-  async first(ast: Condition, options?: QueryOptions): Promise<T | undefined> {
+  async first(ast: ParsedCondition, options?: QueryOptions): Promise<T | undefined> {
     // Optimization: Use select() with take:1
     const results = await this.select(ast, { ...options, take: 1 })
     return results[0]
   }
 
-  async count(ast: Condition): Promise<number> {
+  async count(ast: ParsedCondition): Promise<number> {
+    assertNotSubquery(ast)
+
     // Filter and count - no need for sorting/pagination
     let results = this.collection.all() as T[]
 
@@ -100,7 +124,9 @@ export class MemoryQueryExecutor<T> implements IQueryExecutor<T> {
     return results.length
   }
 
-  async exists(ast: Condition): Promise<boolean> {
+  async exists(ast: ParsedCondition): Promise<boolean> {
+    assertNotSubquery(ast)
+
     // Early-exit optimization - stop on first match
     const items = this.collection.all() as T[]
 
@@ -221,7 +247,9 @@ export class MemoryQueryExecutor<T> implements IQueryExecutor<T> {
   /**
    * Update multiple entities matching a filter.
    */
-  async updateMany(ast: Condition, changes: Partial<T>): Promise<number> {
+  async updateMany(ast: ParsedCondition, changes: Partial<T>): Promise<number> {
+    assertNotSubquery(ast)
+
     // Find all matching entities
     const items = this.collection.all() as T[]
     const matching = items.filter((item) => interpret(ast, item))
@@ -237,7 +265,9 @@ export class MemoryQueryExecutor<T> implements IQueryExecutor<T> {
   /**
    * Delete multiple entities matching a filter.
    */
-  async deleteMany(ast: Condition): Promise<number> {
+  async deleteMany(ast: ParsedCondition): Promise<number> {
+    assertNotSubquery(ast)
+
     // Find all matching entities
     const items = this.collection.all() as T[]
     const matching = items.filter((item) => interpret(ast, item))

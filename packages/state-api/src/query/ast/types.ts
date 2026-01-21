@@ -21,6 +21,9 @@
 // Re-exports from @ucast/core
 // ============================================================================
 
+// Import for local use (as type)
+import type { Condition as UcastCondition } from '@ucast/core'
+
 /**
  * Base class for all AST condition nodes.
  * Can be either a FieldCondition or CompoundCondition.
@@ -188,3 +191,124 @@ export type SerializedCondition =
       operator: string
       value: SerializedCondition[]
     }
+  | {
+      type: 'subquery'
+      field: string
+      operator: 'in' | 'nin'
+      subquery: SerializedSubquery
+    }
+
+// ============================================================================
+// Subquery Types
+// ============================================================================
+
+/**
+ * Subquery definition for use inside $in operator.
+ * Represents a query against another model that returns a set of values.
+ *
+ * @example
+ * ```typescript
+ * // Filter posts by admin authors
+ * const filter: QueryFilter = {
+ *   authorId: {
+ *     $in: {
+ *       $query: {
+ *         model: 'User',
+ *         filter: { role: 'admin' }
+ *       }
+ *     }
+ *   }
+ * }
+ *
+ * // Compiles to: WHERE author_id IN (SELECT id FROM users WHERE role = 'admin')
+ * ```
+ */
+export interface SubqueryExpression {
+  $query: {
+    /** Optional schema name for cross-schema queries (e.g., 'studio-core') */
+    schema?: string
+    /** Target model name (e.g., 'User', 'Organization') */
+    model: string
+    /** Optional filter to apply on target model */
+    filter?: QueryFilter
+    /** Field to select from target model (defaults to 'id') */
+    field?: string
+  }
+}
+
+/**
+ * Type guard to check if a value is a SubqueryExpression.
+ */
+export function isSubqueryExpression(value: unknown): value is SubqueryExpression {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    '$query' in value &&
+    typeof (value as any).$query === 'object' &&
+    typeof (value as any).$query.model === 'string'
+  )
+}
+
+/**
+ * Extended $in operator value that accepts either a literal array or a subquery.
+ */
+export type InOperatorValue = unknown[] | SubqueryExpression
+
+/**
+ * Serialized subquery for JSON transport.
+ */
+export interface SerializedSubquery {
+  /** Optional schema name for cross-schema queries */
+  schema?: string
+  model: string
+  filter?: SerializedCondition
+  /** Field to select from target model (serialized form uses 'field' not 'selectField') */
+  field: string
+}
+
+/**
+ * Runtime AST node representing a subquery condition.
+ * Used internally after parsing a SubqueryExpression.
+ *
+ * @remarks
+ * This is NOT a @ucast/core Condition subclass - it's a custom node type
+ * that must be handled specially by backends.
+ */
+export interface SubqueryCondition {
+  /** Discriminator for condition type */
+  type: 'subquery'
+  /** The outer field being filtered (e.g., 'authorId') */
+  field: string
+  /** The operator (currently 'in' or 'nin') */
+  operator: 'in' | 'nin'
+  /** The subquery definition */
+  subquery: {
+    /** Optional schema name for cross-schema queries (e.g., 'studio-core') */
+    schema?: string
+    /** Target model to query */
+    model: string
+    /** Parsed AST filter for target model (undefined = no filter) */
+    filter?: ParsedCondition
+    /** Field to select from target model */
+    selectField: string
+  }
+}
+
+/**
+ * Union type representing any condition AST node.
+ *
+ * Use this type for function parameters and returns that can accept
+ * either a standard @ucast/core Condition or a SubqueryCondition.
+ *
+ * @example
+ * ```typescript
+ * function processCondition(ast: ParsedCondition): void {
+ *   if ('type' in ast && ast.type === 'subquery') {
+ *     // Handle SubqueryCondition
+ *   } else {
+ *     // Handle Condition
+ *   }
+ * }
+ * ```
+ */
+export type ParsedCondition = UcastCondition | SubqueryCondition

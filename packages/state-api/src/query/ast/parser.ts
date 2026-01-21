@@ -42,8 +42,9 @@
  */
 
 import { MongoQueryParser, allParsingInstructions } from '@ucast/mongo'
-import type { Condition } from '@ucast/core'
-import type { QueryFilter } from './types'
+import { Condition, FieldCondition, CompoundCondition } from '@ucast/core'
+import type { QueryFilter, SubqueryCondition, SubqueryExpression } from './types'
+import { isSubqueryExpression } from './types'
 import { getCustomParsingInstructions } from './operators'
 
 /**
@@ -115,8 +116,13 @@ export const defaultParser = createQueryParser()
  * This is a convenience function that uses the defaultParser instance.
  * Throws descriptive errors if the query is invalid.
  *
+ * Supports subquery expressions in $in/$nin operators:
+ * ```typescript
+ * { authorId: { $in: { $query: { model: 'User', filter: { role: 'admin' } } } } }
+ * ```
+ *
  * @param filter - MongoDB-style query filter object
- * @returns Condition AST (FieldCondition or CompoundCondition)
+ * @returns Condition AST (FieldCondition, CompoundCondition, or SubqueryCondition)
  * @throws {Error} If query is invalid or uses unknown operators
  *
  * @example
@@ -129,8 +135,13 @@ export const defaultParser = createQueryParser()
  * // Comparison
  * const ast2 = parseQuery({ age: { $gt: 18 } })
  *
- * // Logical operators
+ * // Subquery (filter posts by admin authors)
  * const ast3 = parseQuery({
+ *   authorId: { $in: { $query: { model: 'User', filter: { role: 'admin' } } } }
+ * })
+ *
+ * // Logical operators
+ * const ast4 = parseQuery({
  *   $or: [
  *     { role: 'admin' },
  *     { price: { $lt: 100 } }
@@ -138,9 +149,9 @@ export const defaultParser = createQueryParser()
  * })
  * ```
  */
-export function parseQuery(filter: QueryFilter): Condition {
+export function parseQuery(filter: QueryFilter): Condition | SubqueryCondition {
   try {
-    return defaultParser.parse(filter)
+    return parseFilterWithSubqueries(filter)
   } catch (error: any) {
     // Enhance error message with more context
     if (error.message) {
@@ -151,5 +162,133 @@ export function parseQuery(filter: QueryFilter): Condition {
       )
     }
     throw error
+  }
+}
+
+// ============================================================================
+// Subquery Parsing Support
+// ============================================================================
+
+/**
+ * Parse a filter, handling subquery expressions in $in/$nin operators.
+ */
+function parseFilterWithSubqueries(filter: QueryFilter): Condition | SubqueryCondition {
+  // Handle logical operators ($and, $or, $not)
+  // Note: CompoundCondition expects Condition[], but we allow SubqueryCondition children.
+  // The cast is safe because our backends handle both types at runtime.
+  if ('$and' in filter && Array.isArray((filter as any).$and)) {
+    const children = (filter as any).$and.map((child: QueryFilter) =>
+      parseFilterWithSubqueries(child)
+    )
+    return new CompoundCondition('and', children as Condition[])
+  }
+
+  if ('$or' in filter && Array.isArray((filter as any).$or)) {
+    const children = (filter as any).$or.map((child: QueryFilter) =>
+      parseFilterWithSubqueries(child)
+    )
+    return new CompoundCondition('or', children as Condition[])
+  }
+
+  if ('$not' in filter) {
+    const child = parseFilterWithSubqueries((filter as any).$not)
+    return new CompoundCondition('not', [child] as Condition[])
+  }
+
+  // Handle field conditions
+  const keys = Object.keys(filter)
+  if (keys.length === 0) {
+    // Empty filter - return a condition that matches everything
+    return defaultParser.parse({})
+  }
+
+  if (keys.length === 1) {
+    const field = keys[0]
+    const value = (filter as any)[field]
+
+    // Check for subquery in $in or $nin
+    const subqueryResult = tryParseSubqueryField(field, value)
+    if (subqueryResult) {
+      return subqueryResult
+    }
+
+    // Standard field condition - delegate to @ucast/mongo
+    return defaultParser.parse(filter)
+  }
+
+  // Multiple fields - wrap in implicit $and
+  const children = keys.map((field) => {
+    const value = (filter as any)[field]
+
+    // Check for subquery
+    const subqueryResult = tryParseSubqueryField(field, value)
+    if (subqueryResult) {
+      return subqueryResult
+    }
+
+    // Standard field condition
+    return defaultParser.parse({ [field]: value })
+  })
+
+  return new CompoundCondition('and', children as Condition[])
+}
+
+/**
+ * Try to parse a field condition as a subquery.
+ * Returns SubqueryCondition if the value contains $in/$nin with $query,
+ * otherwise returns undefined.
+ */
+function tryParseSubqueryField(
+  field: string,
+  value: unknown
+): SubqueryCondition | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined
+  }
+
+  // Check for $in with subquery
+  if ('$in' in value && isSubqueryExpression((value as any).$in)) {
+    return createSubqueryCondition(field, 'in', (value as any).$in)
+  }
+
+  // Check for $nin with subquery
+  if ('$nin' in value && isSubqueryExpression((value as any).$nin)) {
+    return createSubqueryCondition(field, 'nin', (value as any).$nin)
+  }
+
+  return undefined
+}
+
+/**
+ * Create a SubqueryCondition from a SubqueryExpression.
+ */
+function createSubqueryCondition(
+  field: string,
+  operator: 'in' | 'nin',
+  expr: SubqueryExpression
+): SubqueryCondition {
+  const { schema, model, filter, field: selectField } = expr.$query
+
+  // Validate model name
+  if (!model || typeof model !== 'string' || model.trim() === '') {
+    throw new Error(`Subquery $query must have a non-empty 'model' property`)
+  }
+
+  // Recursively parse the inner filter if present
+  let parsedFilter: Condition | SubqueryCondition | undefined
+  if (filter) {
+    parsedFilter = parseFilterWithSubqueries(filter)
+  }
+
+  return {
+    type: 'subquery',
+    field,
+    operator,
+    subquery: {
+      schema,
+      model,
+      filter: parsedFilter,
+      selectField: selectField ?? 'id'
+    }
   }
 }

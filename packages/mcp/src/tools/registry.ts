@@ -21,6 +21,8 @@ import { registerViewProject } from "./view.project"
 // DDL tools
 import { registerDdlExecute } from "./ddl.execute"
 import { registerDdlMigrate } from "./ddl.migrate"
+import { registerDdlVerify } from "./ddl.verify"
+import { registerDdlRecover } from "./ddl.recover"
 
 // Agent tools
 import { registerAgentChat } from "./agent.chat"
@@ -55,7 +57,7 @@ import { registerTemplateCopy } from "./template.copy"
  * - Schema: 3 tools (set, load, list)
  * - Store: 5 tools (create, get, update, delete, query)
  * - View: 4 tools (execute, define, delete, project)
- * - DDL: 2 tools (execute, migrate) - PLATFORM ONLY
+ * - DDL: 4 tools (execute, migrate, verify, recover) - PLATFORM ONLY
  * - Agent: 1 tool (chat) - PLATFORM ONLY
  * - Workspace: 1 tool (sync) - PLATFORM ONLY
  * - SDK: 2 tools (createApp, createRoutes) - PLATFORM ONLY
@@ -82,9 +84,11 @@ export function registerPlatformTools(server: FastMCP) {
   // registerViewDelete(server)
   // registerViewProject(server)
 
-  // // DDL namespace (2 tools) - Platform only
+  // // DDL namespace (4 tools) - Platform only
   // registerDdlExecute(server)
   // registerDdlMigrate(server)
+  // registerDdlVerify(server)
+  // registerDdlRecover(server)
 
   // // Agent namespace (1 tool) - Platform only
   // registerAgentChat(server)

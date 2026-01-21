@@ -11,11 +11,14 @@
  */
 
 import { getLatestMigration, recordMigration, computeSchemaChecksum } from "./migration-tracker"
+import { getActualTablesFullNames, detectDialect, type IntrospectionDialect } from "./introspection"
+import type { VerificationDetails } from "./migration-types"
 import { compareSchemas } from "./diff"
 import { generateMigration, migrationOutputToSQL } from "./migration-generator"
 import type { MigrationOutput, SchemaDiff } from "./migration-types"
 import { createSqliteDialect, createPostgresDialect } from "./dialect"
-import { deriveNamespace } from "./namespace"
+import { deriveNamespace, qualifyTableName, normalizeTableNameForComparison, type QualifyDialect } from "./namespace"
+import { toSnakeCase } from "./utils"
 import type { BackendRegistry } from "../query/registry"
 import { getMetaStore } from "../meta/bootstrap"
 import { cacheRuntimeStore } from "../meta/runtime-store-cache"
@@ -60,6 +63,14 @@ export interface SchemaSyncResultCreated {
   version: 1
   /** SQL statements that were executed */
   statements: string[]
+  /** Whether the DDL execution completed without errors */
+  success: boolean
+  /** Whether post-execution verification confirmed tables exist */
+  verified: boolean
+  /** Error message if execution failed */
+  errorMessage?: string
+  /** Details of what was verified (tables checked, results) */
+  verificationDetails?: VerificationDetails
 }
 
 /**
@@ -88,6 +99,14 @@ export interface SchemaSyncResultMigrated {
   diff?: SchemaDiff
   /** Migration output containing operations for warning generation */
   migrationOutput?: MigrationOutput
+  /** Whether the DDL execution completed without errors */
+  success: boolean
+  /** Whether post-execution verification confirmed tables exist */
+  verified: boolean
+  /** Error message if execution failed */
+  errorMessage?: string
+  /** Details of what was verified (tables checked, results) */
+  verificationDetails?: VerificationDetails
 }
 
 /**
@@ -165,14 +184,21 @@ export async function ensureSchemaSynced(
   if (!latest) {
     const result = await registry.executeDDL(schemaName, schema, { ifNotExists: true })
 
-    // Record v1 migration
+    // Verify tables were created
+    const namespace = deriveNamespace(schemaName)
+    const verificationResult = await verifyMigration(schemaName, schema, registry, namespace)
+
+    // Record v1 migration with chain model
     await recordMigration({
       schemaName,
-      version: 1,
+      fromVersion: null,
+      toVersion: 1,
       checksum: currentChecksum,
       appliedAt: Date.now(),
       statements: result.statements,
       success: true,
+      verified: verificationResult.verified,
+      verificationDetails: verificationResult.details,
     })
 
     // Save v1 schema snapshot for future migrations
@@ -182,6 +208,9 @@ export async function ensureSchemaSynced(
       action: "created",
       version: 1,
       statements: result.statements,
+      success: true,
+      verified: verificationResult.verified,
+      verificationDetails: verificationResult.details,
     }
   }
 
@@ -189,14 +218,14 @@ export async function ensureSchemaSynced(
   if (latest.checksum === currentChecksum) {
     return {
       action: "unchanged",
-      version: latest.version,
+      version: latest.toVersion,
     }
   }
 
   // 5. Migration needed - checksum differs from latest
   // We need to get the old schema to compute diff
   // For now, we'll use the fact that we have the new schema and need to generate migration SQL
-  const oldSchema = await reconstructSchemaFromMigration(schemaName, latest.version)
+  const oldSchema = await reconstructSchemaFromMigration(schemaName, latest.toVersion)
   const dialect = getDialect(schema, registry)
   const diff = compareSchemas(oldSchema, schema)
 
@@ -204,7 +233,7 @@ export async function ensureSchemaSynced(
   const namespace = deriveNamespace(schemaName)
   const migrationOutput = generateMigration(diff, dialect, {
     schemaName,
-    version: latest.version + 1,
+    version: latest.toVersion + 1,
     namespace,
   }, schema) // Pass full schema for FK target lookups
 
@@ -215,39 +244,60 @@ export async function ensureSchemaSynced(
   if (options?.dryRun) {
     return {
       action: "migrated",
-      fromVersion: latest.version,
-      toVersion: latest.version + 1,
+      fromVersion: latest.toVersion,
+      toVersion: latest.toVersion + 1,
       statements,
       dryRun: true,
       diff,
       migrationOutput,
+      success: true, // dryRun doesn't execute, so no failure
+      verified: true, // dryRun doesn't execute, so nothing to verify
     }
   }
 
   // Execute migration statements
-  await executeMigrationStatements(statements, registry, schema)
+  let executionSuccess = true
+  let executionError: string | undefined
 
-  // Record new migration
-  const newVersion = latest.version + 1
+  try {
+    await executeMigrationStatements(statements, registry, schema)
+  } catch (error: any) {
+    executionSuccess = false
+    executionError = error.message || String(error)
+  }
+
+  // Verify tables exist after migration
+  const verificationResult = await verifyMigration(schemaName, schema, registry, namespace)
+
+  // Record new migration with chain model
+  const newVersion = latest.toVersion + 1
   await recordMigration({
     schemaName,
-    version: newVersion,
+    fromVersion: latest.toVersion,
+    toVersion: newVersion,
     checksum: currentChecksum,
     appliedAt: Date.now(),
     statements,
-    success: true,
+    success: executionSuccess,
+    verified: verificationResult.verified,
+    verificationDetails: verificationResult.details,
+    errorMessage: executionError,
   })
 
-  // Save vN schema snapshot for future migrations
+  // Save vN schema snapshot for future migrations (even if verification failed)
   await saveSchemaSnapshot(schemaName, newVersion, schema)
 
   return {
     action: "migrated",
-    fromVersion: latest.version,
+    fromVersion: latest.toVersion,
     toVersion: newVersion,
     statements,
     diff,
     migrationOutput,
+    success: executionSuccess,
+    verified: verificationResult.verified,
+    errorMessage: executionError,
+    verificationDetails: verificationResult.details,
   }
 }
 
@@ -351,6 +401,90 @@ async function executeMigrationStatements(
     for (const stmt of filteredStatements) {
       await backend.executor.execute([stmt, []])
     }
+  }
+}
+
+/**
+ * Verifies that expected tables exist after a migration.
+ *
+ * @param schemaName - Name of the schema being migrated
+ * @param schema - Enhanced JSON Schema with model definitions
+ * @param registry - Backend registry to get executor
+ * @param namespace - Namespace prefix for table names
+ * @returns Verification result with status and details
+ */
+async function verifyMigration(
+  schemaName: string,
+  schema: any,
+  registry: BackendRegistry,
+  namespace: string
+): Promise<{ verified: boolean; details: VerificationDetails }> {
+  // Get the backend executor
+  const backendName = schema["x-persistence"]?.backend || "sql"
+  const backend = registry.get(backendName)
+
+  if (!backend || !backend.executor) {
+    // Cannot verify without executor
+    return {
+      verified: false,
+      details: {
+        tablesExpected: [],
+        tablesFound: [],
+        tablesMissing: [],
+        tablesExtra: [],
+      },
+    }
+  }
+
+  // Detect dialect for proper table name qualification
+  const introspectionDialect = await detectDialect(backend.executor)
+  const qualifyDialect: QualifyDialect = (introspectionDialect === "pg" || introspectionDialect === "postgres" || introspectionDialect === "postgresql")
+    ? "postgresql"
+    : "sqlite"
+
+  // Compute expected tables from schema models
+  const models = schema.$defs || schema.definitions || {}
+  const expectedTables = Object.keys(models).map(modelName => {
+    // Convert model name to table name using dialect-aware qualification
+    const tableName = toSnakeCase(modelName)
+    return qualifyTableName(namespace, tableName, qualifyDialect)
+  })
+
+  // Get actual tables from database
+  // Introspection now expects namespace WITHOUT __ suffix (it adds internally for SQLite)
+  let actualTables: string[] = []
+  try {
+    actualTables = await getActualTablesFullNames(namespace, backend.executor, introspectionDialect)
+  } catch {
+    // If introspection fails, cannot verify
+    return {
+      verified: false,
+      details: {
+        tablesExpected: expectedTables,
+        tablesFound: [],
+        tablesMissing: expectedTables,
+        tablesExtra: [],
+      },
+    }
+  }
+
+  // Compare expected vs actual using normalization to handle quoting differences
+  // qualifyTableName returns quoted: "schema"."table"
+  // introspection returns unquoted: schema.table
+  // normalizeTableNameForComparison strips quotes and lowercases for comparison
+  const expectedNormalized = expectedTables.map(normalizeTableNameForComparison)
+  const actualNormalized = actualTables.map(normalizeTableNameForComparison)
+  const tablesMissing = expectedTables.filter(t => !actualNormalized.includes(normalizeTableNameForComparison(t)))
+  const tablesExtra = actualTables.filter(t => !expectedNormalized.includes(normalizeTableNameForComparison(t)))
+
+  return {
+    verified: tablesMissing.length === 0,
+    details: {
+      tablesExpected: expectedTables,
+      tablesFound: actualTables,
+      tablesMissing,
+      tablesExtra,
+    },
   }
 }
 

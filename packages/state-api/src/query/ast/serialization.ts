@@ -41,7 +41,7 @@
  */
 
 import { FieldCondition, CompoundCondition, Condition } from '@ucast/core'
-import type { SerializedCondition } from './types'
+import type { SerializedCondition, SubqueryCondition, ParsedCondition } from './types'
 
 /**
  * PCRE/Python inline flags that JavaScript RegExp doesn't support.
@@ -150,7 +150,24 @@ function safeCreateRegExp(pattern: string, flags: string): RegExp | null {
  * // }
  * ```
  */
-export function serializeCondition(condition: Condition): SerializedCondition {
+export function serializeCondition(condition: ParsedCondition): SerializedCondition {
+  // Handle SubqueryCondition (our custom type, not @ucast/core)
+  if ('type' in condition && condition.type === 'subquery') {
+    const subquery = condition as SubqueryCondition
+    return {
+      type: 'subquery',
+      field: subquery.field,
+      operator: subquery.operator,
+      subquery: {
+        schema: subquery.subquery.schema,
+        model: subquery.subquery.model,
+        filter: subquery.subquery.filter ? serializeCondition(subquery.subquery.filter) : undefined,
+        field: subquery.subquery.selectField
+      }
+    }
+  }
+
+  // Handle @ucast/core FieldCondition
   if (condition instanceof FieldCondition) {
     // Handle RegExp value special case
     let serializedValue = condition.value
@@ -167,7 +184,10 @@ export function serializeCondition(condition: Condition): SerializedCondition {
       field: condition.field,
       value: serializedValue
     }
-  } else if (condition instanceof CompoundCondition) {
+  }
+
+  // Handle @ucast/core CompoundCondition
+  if (condition instanceof CompoundCondition) {
     return {
       type: 'compound',
       operator: condition.operator,
@@ -177,7 +197,7 @@ export function serializeCondition(condition: Condition): SerializedCondition {
 
   throw new Error(
     `Cannot serialize unknown condition type: ${condition}. ` +
-    `Expected FieldCondition or CompoundCondition.`
+    `Expected FieldCondition, CompoundCondition, or SubqueryCondition.`
   )
 }
 
@@ -206,7 +226,7 @@ export function serializeCondition(condition: Condition): SerializedCondition {
  * // condition is FieldCondition with RegExp value
  * ```
  */
-export function deserializeCondition(json: any): Condition {
+export function deserializeCondition(json: any): Condition | SubqueryCondition {
   if (!json || typeof json !== 'object') {
     throw new Error(
       `Cannot deserialize condition: expected object, got ${typeof json}`
@@ -245,10 +265,23 @@ export function deserializeCondition(json: any): Condition {
       json.operator,
       json.value.map(deserializeCondition)
     )
+  } else if (json.type === 'subquery') {
+    // Handle SubqueryCondition (our custom type, not @ucast/core)
+    return {
+      type: 'subquery',
+      field: json.field,
+      operator: json.operator,
+      subquery: {
+        schema: json.subquery.schema,
+        model: json.subquery.model,
+        filter: json.subquery.filter ? deserializeCondition(json.subquery.filter) : undefined,
+        selectField: json.subquery.field
+      }
+    } as SubqueryCondition
   }
 
   throw new Error(
     `Cannot deserialize unknown condition type: ${json.type}. ` +
-    `Expected 'field' or 'compound'.`
+    `Expected 'field', 'compound', or 'subquery'.`
   )
 }

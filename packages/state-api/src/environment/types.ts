@@ -21,6 +21,7 @@ import type { IBackendRegistry } from '../query/registry'
 import type { IQueryValidator } from '../query/validation/types'
 import type { ColumnPropertyMap, PropertyTypeMap } from '../query/execution/utils'
 import type { ArrayReferenceMaps } from '../ddl/utils'
+import type { IAuthorizationService, IAuthContext, AuthorizationConfig } from '../authorization/types'
 
 /**
  * Environment structure for runtime MST stores.
@@ -224,6 +225,39 @@ export interface IEnvironment {
      * ```
      */
     runtime?: IRuntimeManager
+
+    /**
+     * Authorization service for query-level access control.
+     *
+     * Provides:
+     * - Trust determination (opaque, from environment variables)
+     * - Scope filter building from auth context and schema config
+     *
+     * Implementation:
+     * - AuthorizationService (stateless, builds $in filters from authorizedScopes)
+     *
+     * Optional - only needed for stores requiring authorization.
+     * When present, CollectionAuthorizable mixin will apply scope filters
+     * to queries based on x-authorization schema annotations.
+     *
+     * @see IAuthorizationService for interface details
+     * @see AuthorizationService for implementation
+     *
+     * @example
+     * ```typescript
+     * const env: IEnvironment = {
+     *   services: {
+     *     persistence: new FileSystemPersistence(),
+     *     authorization: new AuthorizationService()
+     *   },
+     *   context: {
+     *     schemaName: 'my-schema',
+     *     authContext: { userId: 'u1', authorizedScopes: { workspace: ['ws-1'] } }
+     *   }
+     * }
+     * ```
+     */
+    authorization?: IAuthorizationService
   }
 
   /**
@@ -305,6 +339,54 @@ export interface IEnvironment {
      * Optional - only needed for schemas with array references.
      */
     arrayReferenceMaps?: ArrayReferenceMaps
+
+    /**
+     * Current request's authorization context.
+     *
+     * Contains user identity and authorized scope IDs for access control.
+     * Built fresh per request from user's memberships/permissions.
+     *
+     * Optional - only needed when authorization is enforced.
+     * When absent, authorization is skipped (graceful degradation).
+     *
+     * @see IAuthContext for interface details
+     *
+     * @example
+     * ```typescript
+     * context: {
+     *   schemaName: 'my-schema',
+     *   authContext: {
+     *     userId: 'user-123',
+     *     authorizedScopes: {
+     *       workspace: ['ws-1', 'ws-2'],
+     *       project: ['proj-1', 'proj-2']
+     *     }
+     *   }
+     * }
+     * ```
+     */
+    authContext?: IAuthContext
+
+    /**
+     * Pre-computed authorization config maps by model name.
+     *
+     * Injected by domain().createStore() from schema's x-authorization annotations.
+     * Maps model names to their AuthorizationConfig { scope, scopeField }.
+     *
+     * Optional - only needed when authorization is enforced.
+     * Models not in this map are unprotected (no auth filter applied).
+     *
+     * @example
+     * ```typescript
+     * // Computed from schema.$defs:
+     * {
+     *   Project: { scope: 'workspace', scopeField: 'workspaceId' },
+     *   Task: { scope: 'project', scopeField: 'projectId' }
+     *   // Tag not present - no x-authorization, unprotected
+     * }
+     * ```
+     */
+    authorizationConfigMaps?: Record<string, AuthorizationConfig>
   }
 }
 

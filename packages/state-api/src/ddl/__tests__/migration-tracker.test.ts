@@ -21,10 +21,13 @@ import {
   getLatestMigration,
   isMigrationApplied,
   recordMigration,
-  computeSchemaChecksum
+  computeSchemaChecksum,
+  getChain,
+  getLastApplied,
+  findBySchema,
 } from "../migration-tracker"
 
-// System migrations schema for testing
+// System migrations schema for testing (v2 with chain model)
 // Note: x-original-name is required for enhancedJsonSchemaToMST to recognize entity types
 const systemMigrationsSchema = {
   $schema: "http://json-schema.org/draft-07/schema#",
@@ -40,14 +43,17 @@ const systemMigrationsSchema = {
       properties: {
         id: { type: "string", "x-mst-type": "identifier" },
         schemaName: { type: "string" },
-        version: { type: "integer" },
+        fromVersion: { type: "integer" },
+        toVersion: { type: "integer" },
         checksum: { type: "string" },
         appliedAt: { type: "number" },
-        statements: { type: "array", items: { type: "string" } },
+        statements: { type: "array" },
         success: { type: "boolean" },
+        verified: { type: "boolean" },
         errorMessage: { type: "string" },
+        verificationDetails: { type: "object" },
       },
-      required: ["id", "schemaName", "version", "checksum", "appliedAt", "success"],
+      required: ["id", "schemaName", "toVersion", "checksum", "appliedAt", "success", "verified"],
     },
   },
 }
@@ -97,7 +103,7 @@ describe("Migration Tracker", () => {
   })
 
   describe("getAppliedMigrations", () => {
-    test("returns all migrations for schema ordered by version", async () => {
+    test("returns all migrations for schema ordered by toVersion", async () => {
       // Given: Test data seeded with 3 MigrationRecord entities
       const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
       const store = schemaEntity?.runtimeStore
@@ -107,39 +113,45 @@ describe("Migration Tracker", () => {
       await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
-        version: 2,
+        fromVersion: 1,
+        toVersion: 2,
         checksum: "abc222",
         appliedAt: 2000,
         statements: JSON.stringify([]),
         success: true,
+        verified: true,
       })
       await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
-        version: 1,
+        fromVersion: null,
+        toVersion: 1,
         checksum: "abc111",
         appliedAt: 1000,
         statements: JSON.stringify([]),
         success: true,
+        verified: true,
       })
       await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
-        version: 3,
+        fromVersion: 2,
+        toVersion: 3,
         checksum: "abc333",
         appliedAt: 3000,
         statements: JSON.stringify([]),
         success: true,
+        verified: true,
       })
 
       // When: getAppliedMigrations is called
       const migrations = await getAppliedMigrations("user-schema")
 
-      // Then: Returns array of 3 records ordered by version ascending
+      // Then: Returns array of 3 records ordered by toVersion ascending
       expect(migrations.length).toBe(3)
-      expect(migrations[0].version).toBe(1)
-      expect(migrations[1].version).toBe(2)
-      expect(migrations[2].version).toBe(3)
+      expect(migrations[0].toVersion).toBe(1)
+      expect(migrations[1].toVersion).toBe(2)
+      expect(migrations[2].toVersion).toBe(3)
     })
 
     test("returns empty array for new schema", async () => {
@@ -154,7 +166,7 @@ describe("Migration Tracker", () => {
   })
 
   describe("getLatestMigration", () => {
-    test("returns most recent migration", async () => {
+    test("returns most recent migration by toVersion", async () => {
       // Given: Test data seeded with migrations v1, v2, v3
       const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
       const store = schemaEntity?.runtimeStore
@@ -162,37 +174,43 @@ describe("Migration Tracker", () => {
       await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
-        version: 1,
+        fromVersion: null,
+        toVersion: 1,
         checksum: "abc111",
         appliedAt: 1000,
         statements: JSON.stringify([]),
         success: true,
+        verified: true,
       })
       await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
-        version: 3,
+        fromVersion: 2,
+        toVersion: 3,
         checksum: "abc333",
         appliedAt: 3000,
         statements: JSON.stringify([]),
         success: true,
+        verified: true,
       })
       await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
-        version: 2,
+        fromVersion: 1,
+        toVersion: 2,
         checksum: "abc222",
         appliedAt: 2000,
         statements: JSON.stringify([]),
         success: true,
+        verified: true,
       })
 
       // When: getLatestMigration is called
       const latest = await getLatestMigration("user-schema")
 
-      // Then: Returns MigrationRecord with version 3
+      // Then: Returns MigrationRecord with toVersion 3
       expect(latest).not.toBeNull()
-      expect(latest!.version).toBe(3)
+      expect(latest!.toVersion).toBe(3)
       expect(latest!.schemaName).toBe("user-schema")
     })
 
@@ -209,18 +227,20 @@ describe("Migration Tracker", () => {
 
   describe("isMigrationApplied", () => {
     test("returns true for applied version", async () => {
-      // Given: Test data seeded with MigrationRecord for v2
+      // Given: Test data seeded with MigrationRecord for toVersion=2
       const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
       const store = schemaEntity?.runtimeStore
 
       await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
-        version: 2,
+        fromVersion: 1,
+        toVersion: 2,
         checksum: "abc222",
         appliedAt: 2000,
         statements: JSON.stringify([]),
         success: true,
+        verified: true,
       })
 
       // When: isMigrationApplied is called
@@ -231,18 +251,20 @@ describe("Migration Tracker", () => {
     })
 
     test("returns false for unapplied version", async () => {
-      // Given: Test data seeded with MigrationRecord for v1 only
+      // Given: Test data seeded with MigrationRecord for toVersion=1 only
       const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
       const store = schemaEntity?.runtimeStore
 
       await store.migrationRecordCollection.insertOne({
         id: crypto.randomUUID(),
         schemaName: "user-schema",
-        version: 1,
+        fromVersion: null,
+        toVersion: 1,
         checksum: "abc111",
         appliedAt: 1000,
         statements: JSON.stringify([]),
         success: true,
+        verified: true,
       })
 
       // When: isMigrationApplied is called for v2
@@ -255,15 +277,17 @@ describe("Migration Tracker", () => {
 
   describe("recordMigration", () => {
     test("creates new MigrationRecord", async () => {
-      // Given: Valid MigrationRecord data
+      // Given: Valid MigrationRecord data with chain model
       const record = {
         id: crypto.randomUUID(),
         schemaName: "user-schema",
-        version: 1,
+        fromVersion: null as number | null,
+        toVersion: 1,
         checksum: "abc123",
         appliedAt: Date.now(),
         statements: ["CREATE TABLE users (id TEXT)"],
         success: true,
+        verified: true,
       }
 
       // When: recordMigration is called
@@ -273,7 +297,9 @@ describe("Migration Tracker", () => {
       const migrations = await getAppliedMigrations("user-schema")
       expect(migrations.length).toBe(1)
       expect(migrations[0].schemaName).toBe("user-schema")
-      expect(migrations[0].version).toBe(1)
+      expect(migrations[0].toVersion).toBe(1)
+      // SQLite returns null as undefined
+      expect(migrations[0].fromVersion == null).toBe(true)
       expect(migrations[0].checksum).toBe("abc123")
     })
   })
@@ -353,6 +379,155 @@ describe("Migration Tracker", () => {
       expect(migrations).toEqual([])
     })
   })
+
+  describe("getChain", () => {
+    test("returns complete migration chain ordered by toVersion", async () => {
+      const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
+      const store = schemaEntity?.runtimeStore
+
+      // Insert migrations out of order
+      await store.migrationRecordCollection.insertOne({
+        id: crypto.randomUUID(),
+        schemaName: "user-schema",
+        fromVersion: 1,
+        toVersion: 2,
+        checksum: "abc222",
+        appliedAt: 2000,
+        statements: JSON.stringify([]),
+        success: true,
+        verified: true,
+      })
+      await store.migrationRecordCollection.insertOne({
+        id: crypto.randomUUID(),
+        schemaName: "user-schema",
+        fromVersion: null,
+        toVersion: 1,
+        checksum: "abc111",
+        appliedAt: 1000,
+        statements: JSON.stringify([]),
+        success: true,
+        verified: true,
+      })
+
+      const chain = await getChain("user-schema")
+
+      expect(chain.length).toBe(2)
+      expect(chain[0].toVersion).toBe(1)
+      // SQLite returns null as undefined
+      expect(chain[0].fromVersion == null).toBe(true)
+      expect(chain[1].toVersion).toBe(2)
+      expect(chain[1].fromVersion).toBe(1)
+    })
+
+    test("returns empty array for non-existent schema", async () => {
+      const chain = await getChain("non-existent-schema")
+      expect(chain).toEqual([])
+    })
+  })
+
+  describe("getLastApplied", () => {
+    test("returns highest verified migration", async () => {
+      const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
+      const store = schemaEntity?.runtimeStore
+
+      // v1: success + verified
+      await store.migrationRecordCollection.insertOne({
+        id: crypto.randomUUID(),
+        schemaName: "user-schema",
+        fromVersion: null,
+        toVersion: 1,
+        checksum: "abc111",
+        appliedAt: 1000,
+        statements: JSON.stringify([]),
+        success: true,
+        verified: true,
+      })
+      // v2: success but NOT verified
+      await store.migrationRecordCollection.insertOne({
+        id: crypto.randomUUID(),
+        schemaName: "user-schema",
+        fromVersion: 1,
+        toVersion: 2,
+        checksum: "abc222",
+        appliedAt: 2000,
+        statements: JSON.stringify([]),
+        success: true,
+        verified: false,
+      })
+      // v3: NOT success
+      await store.migrationRecordCollection.insertOne({
+        id: crypto.randomUUID(),
+        schemaName: "user-schema",
+        fromVersion: 2,
+        toVersion: 3,
+        checksum: "abc333",
+        appliedAt: 3000,
+        statements: JSON.stringify([]),
+        success: false,
+        verified: false,
+      })
+
+      const lastApplied = await getLastApplied("user-schema")
+
+      // Should return v1 because it's the highest with success=true AND verified=true
+      expect(lastApplied).not.toBeNull()
+      expect(lastApplied!.toVersion).toBe(1)
+    })
+
+    test("returns null when no verified migrations exist", async () => {
+      const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
+      const store = schemaEntity?.runtimeStore
+
+      await store.migrationRecordCollection.insertOne({
+        id: crypto.randomUUID(),
+        schemaName: "user-schema",
+        fromVersion: null,
+        toVersion: 1,
+        checksum: "abc111",
+        appliedAt: 1000,
+        statements: JSON.stringify([]),
+        success: true,
+        verified: false,
+      })
+
+      const lastApplied = await getLastApplied("user-schema")
+      expect(lastApplied).toBeNull()
+    })
+  })
+
+  describe("findBySchema", () => {
+    test("returns all migrations for schema", async () => {
+      const schemaEntity = getMetaStore().schemaCollection.all().find((s: any) => s.name === "system-migrations")
+      const store = schemaEntity?.runtimeStore
+
+      await store.migrationRecordCollection.insertOne({
+        id: crypto.randomUUID(),
+        schemaName: "user-schema",
+        fromVersion: null,
+        toVersion: 1,
+        checksum: "abc111",
+        appliedAt: 1000,
+        statements: JSON.stringify([]),
+        success: true,
+        verified: true,
+      })
+      await store.migrationRecordCollection.insertOne({
+        id: crypto.randomUUID(),
+        schemaName: "other-schema",
+        fromVersion: null,
+        toVersion: 1,
+        checksum: "def111",
+        appliedAt: 1000,
+        statements: JSON.stringify([]),
+        success: true,
+        verified: true,
+      })
+
+      const migrations = await findBySchema("user-schema")
+      expect(migrations.length).toBe(1)
+      expect(migrations[0].schemaName).toBe("user-schema")
+    })
+  })
 })
 
 describe("Tracker exports", () => {
@@ -366,5 +541,8 @@ describe("Tracker exports", () => {
     expect(typeof ddl.isMigrationApplied).toBe("function")
     expect(typeof ddl.recordMigration).toBe("function")
     expect(typeof ddl.computeSchemaChecksum).toBe("function")
+    expect(typeof ddl.getChain).toBe("function")
+    expect(typeof ddl.getLastApplied).toBe("function")
+    expect(typeof ddl.findBySchema).toBe("function")
   })
 })

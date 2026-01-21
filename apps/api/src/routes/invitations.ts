@@ -91,7 +91,7 @@ export function invitationRoutes(config: InvitationRoutesConfig) {
       }
 
       // Check user has permission to invite (admin or owner)
-      await studioCore.memberCollection.loadAll()
+      await studioCore.memberCollection.query().where({ userId: auth.userId }).toArray()
       const userRole = studioCore.resolvePermissions(auth.userId, "workspace", workspaceId)
       if (!userRole || (userRole !== "owner" && userRole !== "admin")) {
         return c.json(
@@ -289,7 +289,7 @@ export function invitationRoutes(config: InvitationRoutesConfig) {
       }
 
       // Check user has permission (admin/owner of workspace)
-      await studioCore.memberCollection.loadAll()
+      await studioCore.memberCollection.query().where({ userId: auth.userId }).toArray()
       const userRole = studioCore.resolvePermissions(auth.userId, "workspace", invitation.workspaceId)
       if (!userRole || (userRole !== "owner" && userRole !== "admin")) {
         return c.json(

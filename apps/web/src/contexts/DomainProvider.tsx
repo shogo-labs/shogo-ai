@@ -38,9 +38,11 @@
  * ```
  */
 
-import { createContext, useContext, useRef, useEffect, useMemo, type ReactNode } from "react"
+import { createContext, useContext, useRef, useEffect, useMemo, useState, type ReactNode } from "react"
 import type { DomainResult } from "@shogo/state-api"
+import { getMetaStore } from "@shogo/state-api"
 import { useEnv } from "./EnvironmentContext"
+import { useSession } from "../auth/client"
 
 // ============================================================================
 // Types
@@ -63,6 +65,10 @@ interface DomainProviderContextValue {
   stores: Record<string, any>
   /** Maps schema name (e.g., "platform-features") to user-provided key (e.g., "platformFeatures") */
   schemaNameToKey: Record<string, string>
+  /** True while schemas are being loaded from MCP */
+  schemasLoading: boolean
+  /** True once all schemas have been loaded (or failed) */
+  schemasLoaded: boolean
 }
 
 // ============================================================================
@@ -113,21 +119,36 @@ export function DomainProvider<T extends DomainsMap>({
   eagerCollections,
 }: DomainProviderProps<T>) {
   const env = useEnv() // Get environment from EnvironmentProvider (throws if missing)
+  const session = useSession() // Get current auth session for authorization context
   const storesRef = useRef<Record<string, any> | null>(null)
   const schemaNameToKeyRef = useRef<Record<string, string> | null>(null)
 
+  // Schema loading state - used by SchemaLoadingGate to block rendering until ready
+  const [schemasLoading, setSchemasLoading] = useState(true)
+  const [schemasLoaded, setSchemasLoaded] = useState(false)
+
+  // Get current user ID for authorization context
+  // This will be injected into each store's environment for query-level filtering
+  const currentUserId = session.data?.user?.id
+
   // Initialize all domain stores once (stable across re-renders)
+  // Note: When user changes, App.tsx remounts DomainProvider via key={authKey},
+  // so stores are recreated with the new user's authContext
   if (!storesRef.current) {
     const stores: Record<string, any> = {}
     const schemaNameToKey: Record<string, string> = {}
 
     for (const [key, domain] of Object.entries(domains)) {
-      // Build store-specific environment with domain's schemaName
+      // Build store-specific environment with domain's schemaName and auth context
       const storeEnv = {
         ...env,
         context: {
           ...env.context,
           schemaName: domain.name, // Use domain.name for persistence context
+          // Inject auth context for authorization-based query filtering
+          ...(currentUserId && {
+            authContext: { userId: currentUserId }
+          }),
         },
       }
 
@@ -150,6 +171,8 @@ export function DomainProvider<T extends DomainsMap>({
     /**
      * Load a single schema with retry logic.
      * Returns true if loaded successfully, false otherwise.
+     * Also ingests the schema into the browser's metaStore singleton
+     * so CollectionAuthorizable can access x-authorization metadata.
      */
     const loadSchemaWithRetry = async (
       persistence: any,
@@ -159,7 +182,24 @@ export function DomainProvider<T extends DomainsMap>({
       attempt = 1
     ): Promise<boolean> => {
       try {
-        await persistence.loadSchema(schemaName, location)
+        const result = await persistence.loadSchema(schemaName, location)
+
+        // Ingest schema into browser's metaStore singleton
+        // This enables CollectionAuthorizable to find model.xAuthorization
+        if (result?.enhanced) {
+          try {
+            const browserMetaStore = getMetaStore()
+            browserMetaStore.ingestEnhancedJsonSchema(result.enhanced, {
+              name: result.metadata?.name || schemaName,
+              id: result.metadata?.id,
+              createdAt: Date.now(),
+            })
+            console.debug(`[DomainProvider] Ingested schema "${schemaName}" into browser metaStore`)
+          } catch (ingestErr) {
+            console.warn(`[DomainProvider] Failed to ingest schema "${schemaName}" into browser metaStore:`, ingestErr)
+          }
+        }
+
         return true
       } catch (err: any) {
         // Don't retry on SCHEMA_NOT_FOUND - the schema genuinely doesn't exist
@@ -194,7 +234,25 @@ export function DomainProvider<T extends DomainsMap>({
           location: env.context?.location,
         }))
         try {
-          await persistence.loadSchemasBatch(schemaRequests)
+          const batchResults = await persistence.loadSchemasBatch(schemaRequests)
+
+          // Ingest each schema into browser's metaStore singleton
+          // This enables CollectionAuthorizable to find model.xAuthorization
+          const browserMetaStore = getMetaStore()
+          for (const [schemaName, result] of batchResults.entries()) {
+            if (result?.enhanced) {
+              try {
+                browserMetaStore.ingestEnhancedJsonSchema(result.enhanced, {
+                  name: result.metadata?.name || schemaName,
+                  id: result.metadata?.id,
+                  createdAt: Date.now(),
+                })
+                console.debug(`[DomainProvider] Ingested schema "${schemaName}" into browser metaStore`)
+              } catch (ingestErr) {
+                console.warn(`[DomainProvider] Failed to ingest schema "${schemaName}" into browser metaStore:`, ingestErr)
+              }
+            }
+          }
         } catch (err) {
           console.error(`[DomainProvider] Batch schema load failed, falling back to individual loads:`, err)
           // Fallback to individual loads with retry logic
@@ -270,17 +328,30 @@ export function DomainProvider<T extends DomainsMap>({
     }
 
     loadAllDomainData()
+      .then(() => {
+        setSchemasLoaded(true)
+        setSchemasLoading(false)
+      })
+      .catch((err) => {
+        console.error('[DomainProvider] Schema loading failed:', err)
+        setSchemasLoading(false)
+        // Set loaded to true even on error so components can try to render
+        // They'll see errors but the app won't be stuck in loading state
+        setSchemasLoaded(true)
+      })
   }, []) // Run once on mount
 
-  // PERF FIX: Memoize context value to prevent unnecessary consumer re-renders.
+  // Memoize context value, updating when loading state changes.
   // storesRef.current is set once during initialization and never changes,
-  // so we can safely memoize with empty deps.
+  // but schemasLoading/schemasLoaded update when async loading completes.
   const contextValue = useMemo<DomainProviderContextValue>(
     () => ({
       stores: storesRef.current!,
       schemaNameToKey: schemaNameToKeyRef.current!,
+      schemasLoading,
+      schemasLoaded,
     }),
-    []
+    [schemasLoading, schemasLoaded]
   )
 
   return (
@@ -349,4 +420,34 @@ export function useDomainStore(schemaName: string): any {
   }
 
   return ctx.stores[key]
+}
+
+/**
+ * Hook to check if domain schemas have finished loading.
+ *
+ * Use this to gate component rendering until schemas are ready,
+ * preventing "Schema not found" errors from race conditions.
+ *
+ * @returns Object with schemasLoading and schemasLoaded booleans
+ *
+ * @example
+ * ```tsx
+ * function MyComponent() {
+ *   const { schemasLoaded } = useSchemaLoadingState()
+ *   if (!schemasLoaded) return <LoadingSpinner />
+ *   // Safe to access collections now
+ *   const { studioCore } = useDomains()
+ *   return <div>{studioCore.workspaceCollection.all().length} workspaces</div>
+ * }
+ * ```
+ */
+export function useSchemaLoadingState(): { schemasLoading: boolean; schemasLoaded: boolean } {
+  const ctx = useContext(DomainProviderContext)
+  if (!ctx) {
+    throw new Error("useSchemaLoadingState must be used within DomainProvider")
+  }
+  return {
+    schemasLoading: ctx.schemasLoading,
+    schemasLoaded: ctx.schemasLoaded,
+  }
 }
