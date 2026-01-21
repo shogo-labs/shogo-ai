@@ -1,0 +1,141 @@
+// Prisma schema for CRM
+// Demonstrates many-to-many relations, complex filtering, and activity logs
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// ============================================================================
+// User model
+// ============================================================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  contacts  Contact[]
+  companies Company[]
+  notes     Note[]
+  deals     Deal[]
+  tags      Tag[]
+
+  @@map("users")
+}
+
+// ============================================================================
+// CRM Models
+// ============================================================================
+
+model Contact {
+  id        String   @id @default(cuid())
+  firstName String   @map("first_name")
+  lastName  String   @map("last_name")
+  email     String?
+  phone     String?
+  title     String?  // Job title
+  status    String   @default("lead") // lead, prospect, customer, churned
+  source    String?  // How they found us: website, referral, cold_call, etc.
+  companyId String?  @map("company_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company?       @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  tags    ContactTag[]
+  notes   Note[]
+  deals   Deal[]
+
+  @@index([userId, status])
+  @@index([companyId])
+  @@map("contacts")
+}
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  website   String?
+  industry  String?
+  size      String?  // 1-10, 11-50, 51-200, 201-500, 500+
+  address   String?
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contacts Contact[]
+
+  @@index([userId])
+  @@map("companies")
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String
+  color     String   @default("#6B7280")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contacts ContactTag[]
+
+  @@unique([userId, name])
+  @@map("tags")
+}
+
+// Junction table for many-to-many Contact <-> Tag
+model ContactTag {
+  contactId String   @map("contact_id")
+  tagId     String   @map("tag_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([contactId, tagId])
+  @@map("contact_tags")
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  content   String
+  type      String   @default("note") // note, call, email, meeting
+  contactId String   @map("contact_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([contactId])
+  @@map("notes")
+}
+
+model Deal {
+  id        String   @id @default(cuid())
+  title     String
+  value     Float    @default(0)
+  stage     String   @default("lead") // lead, qualified, proposal, negotiation, won, lost
+  contactId String   @map("contact_id")
+  userId    String   @map("user_id")
+  closedAt  DateTime? @map("closed_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, stage])
+  @@index([contactId])
+  @@map("deals")
+}

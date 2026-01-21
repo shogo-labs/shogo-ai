@@ -1,0 +1,115 @@
+// Prisma schema for Kanban Board
+// Demonstrates ordering/position patterns, many-to-many with labels
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// ============================================================================
+// User model
+// ============================================================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  boards  Board[]
+  cards   Card[]
+  labels  Label[]
+
+  @@map("users")
+}
+
+// ============================================================================
+// Kanban Models
+// ============================================================================
+
+model Board {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  color       String   @default("#3B82F6") // Board theme color
+  userId      String   @map("user_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  columns Column[]
+  labels  Label[]
+
+  @@index([userId])
+  @@map("boards")
+}
+
+model Column {
+  id        String   @id @default(cuid())
+  name      String
+  position  Int      @default(0) // For ordering columns left-to-right
+  boardId   String   @map("board_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  board Board  @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  cards Card[]
+
+  @@index([boardId, position])
+  @@map("columns")
+}
+
+model Card {
+  id          String    @id @default(cuid())
+  title       String
+  description String?
+  position    Int       @default(0) // For ordering cards top-to-bottom within a column
+  dueDate     DateTime? @map("due_date")
+  columnId    String    @map("column_id")
+  userId      String    @map("user_id") // Card creator/assignee
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  column Column      @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  labels CardLabel[]
+
+  @@index([columnId, position])
+  @@index([userId])
+  @@map("cards")
+}
+
+model Label {
+  id        String   @id @default(cuid())
+  name      String
+  color     String   @default("#6B7280")
+  boardId   String   @map("board_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  board Board       @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cards CardLabel[]
+
+  @@unique([boardId, name])
+  @@map("labels")
+}
+
+// Junction table for many-to-many Card <-> Label
+model CardLabel {
+  cardId    String   @map("card_id")
+  labelId   String   @map("label_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  card  Card  @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  label Label @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@id([cardId, labelId])
+  @@map("card_labels")
+}

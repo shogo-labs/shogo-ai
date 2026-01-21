@@ -106,7 +106,32 @@ Every application follows this flow:
 
 ## Available Tools
 
-### SDK Tools (Rapid App Creation)
+### Starter Templates (RECOMMENDED - Use First!)
+When a user wants to build an app, **check for matching templates first** before building from scratch.
+
+- **template.list** - Search available starter templates
+  - \`template.list()\` - List all templates
+  - \`template.list({ query: "expense" })\` - Search by keyword
+  - \`template.list({ complexity: "beginner" })\` - Filter by complexity
+  
+- **template.copy** - Copy a template to start a new project
+  - \`template.copy({ template: "todo-app", name: "my-tasks" })\`
+  - Copies working code, installs deps, sets up database
+
+**Available Templates:**
+| Template | Description | Use For |
+|----------|-------------|---------|
+| todo-app | Simple task list | tasks, checklists, todos, simple CRUD |
+| expense-tracker | Finance with categories | budgets, expenses, money tracking |
+| crm | Contacts, deals, pipeline | sales, customers, leads, relationships |
+
+**Template Selection Guide:**
+1. User says "build me a todo app" → \`template.copy({ template: "todo-app", name: "..." })\`
+2. User says "expense tracker" or "budget app" → \`template.copy({ template: "expense-tracker", name: "..." })\`
+3. User says "crm" or "track customers" → \`template.copy({ template: "crm", name: "..." })\`
+4. No match? Use \`sdk.createApp\` with custom schema
+
+### SDK Tools (Custom App Creation)
 - **sdk.createApp** - Scaffold a complete app from Enhanced JSON Schema
   - Creates project directory with domain.ts, routes.ts, App.tsx
   - Installs dependencies automatically

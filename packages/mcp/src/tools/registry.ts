@@ -32,13 +32,18 @@ import { registerWorkspaceSync } from "./workspace.sync"
 import { registerSdkCreateRoutes } from "./sdk.create-routes"
 import { registerSdkCreateApp } from "./sdk.create-app"
 
+// Template tools
+import { registerTemplateList } from "./template.list"
+import { registerTemplateCopy } from "./template.copy"
+
 /**
  * Register Platform MCP tools on a FastMCP server instance.
  *
- * Platform MCP provides FULL access to all 16 Wavesmith tools for:
+ * Platform MCP provides FULL access to all Wavesmith tools for:
  * - Claude orchestration (AI-driven development)
  * - Schema management (DDL, migrations)
  * - Cross-project operations
+ * - Starter templates for rapid app creation
  *
  * Accessible schemas:
  * - studio-core: Organizations, projects, project membership
@@ -46,7 +51,7 @@ import { registerSdkCreateApp } from "./sdk.create-app"
  * - component-builder: UI composition system
  * - studio-chat: Chat sessions and messages
  *
- * Total: 18 tools across 7 namespaces
+ * Total: 20 tools across 8 namespaces
  * - Schema: 3 tools (set, load, list)
  * - Store: 5 tools (create, get, update, delete, query)
  * - View: 4 tools (execute, define, delete, project)
@@ -54,6 +59,7 @@ import { registerSdkCreateApp } from "./sdk.create-app"
  * - Agent: 1 tool (chat) - PLATFORM ONLY
  * - Workspace: 1 tool (sync) - PLATFORM ONLY
  * - SDK: 2 tools (createApp, createRoutes) - PLATFORM ONLY
+ * - Template: 2 tools (list, copy) - PLATFORM ONLY
  *
  * @param server - FastMCP server instance (stdio or HTTP transport)
  */
@@ -89,6 +95,10 @@ export function registerPlatformTools(server: FastMCP) {
   // SDK namespace (2 tools) - Platform only
   registerSdkCreateRoutes(server)
   registerSdkCreateApp(server)
+
+  // Template namespace (2 tools) - Platform only
+  registerTemplateList(server)
+  registerTemplateCopy(server)
 }
 
 /**
