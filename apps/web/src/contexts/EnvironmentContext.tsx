@@ -42,6 +42,8 @@ export interface EnvironmentConfig {
   backendRegistry?: IEnvironment["services"]["backendRegistry"]
   /** Optional: Auth service */
   auth?: IEnvironment["services"]["auth"]
+  /** Optional: Authorization service for query-level access control */
+  authorization?: IEnvironment["services"]["authorization"]
   /** Optional: Query validator */
   queryValidator?: IEnvironment["services"]["queryValidator"]
   /** Optional: Workspace/location for data isolation (maps to context.location) */
@@ -68,12 +70,13 @@ export interface EnvironmentConfig {
  * ```
  */
 export function createEnvironment(config: EnvironmentConfig): IEnvironment {
-  const { persistence, backendRegistry, auth, queryValidator, workspace } = config
+  const { persistence, backendRegistry, auth, authorization, queryValidator, workspace } = config
   return {
     services: {
       persistence,
       backendRegistry,
       auth,
+      authorization,
       queryValidator,
     },
     context: {

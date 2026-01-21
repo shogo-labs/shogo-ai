@@ -267,7 +267,7 @@ function createSubqueryCondition(
   operator: 'in' | 'nin',
   expr: SubqueryExpression
 ): SubqueryCondition {
-  const { model, filter, field: selectField } = expr.$query
+  const { schema, model, filter, field: selectField } = expr.$query
 
   // Validate model name
   if (!model || typeof model !== 'string' || model.trim() === '') {
@@ -285,6 +285,7 @@ function createSubqueryCondition(
     field,
     operator,
     subquery: {
+      schema,
       model,
       filter: parsedFilter,
       selectField: selectField ?? 'id'

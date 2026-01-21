@@ -204,7 +204,7 @@ describe('buildEnhanceCollections composes CollectionMutatable', () => {
       items: types.map(types.model({ id: types.identifier }))
     })
 
-    const enhance = buildEnhanceCollections(undefined, true, true, false)
+    const enhance = buildEnhanceCollections(undefined, true, true, true, false)
 
     // When: Enhancing collection models
     const enhanced = enhance!({ TestCollection: BaseCollection })

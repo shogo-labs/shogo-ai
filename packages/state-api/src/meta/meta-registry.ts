@@ -61,6 +61,19 @@ export const MetaRegistry = scope({
       "nested?": "boolean",  // Store children under parent folder
       "backend?": "string",  // Backend identifier for query execution
     },
+    // Authorization configuration (x-authorization extension)
+    // Defines scope-based access control for this model
+    "xAuthorization?": {
+      "scope?": "string",      // Scope type (e.g., 'workspace', 'project', 'user')
+      "scopeField?": "string", // Field that holds the scope ID (e.g., 'workspaceId')
+      "cascadeFrom?": {        // Cascade authorization from parent scope
+        scope: "string",       // Parent scope type
+        foreignKey: "string",  // Field on this model referencing parent
+      },
+      "selfScoping?": {        // Self-scoping: entity belongs to user directly
+        field: "string",       // Field containing the user ID
+      },
+    },
   },
 
   Property: {

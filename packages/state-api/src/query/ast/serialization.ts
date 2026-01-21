@@ -159,9 +159,10 @@ export function serializeCondition(condition: ParsedCondition): SerializedCondit
       field: subquery.field,
       operator: subquery.operator,
       subquery: {
+        schema: subquery.subquery.schema,
         model: subquery.subquery.model,
         filter: subquery.subquery.filter ? serializeCondition(subquery.subquery.filter) : undefined,
-        selectField: subquery.subquery.selectField
+        field: subquery.subquery.selectField
       }
     }
   }
@@ -225,7 +226,7 @@ export function serializeCondition(condition: ParsedCondition): SerializedCondit
  * // condition is FieldCondition with RegExp value
  * ```
  */
-export function deserializeCondition(json: any): Condition {
+export function deserializeCondition(json: any): Condition | SubqueryCondition {
   if (!json || typeof json !== 'object') {
     throw new Error(
       `Cannot deserialize condition: expected object, got ${typeof json}`
@@ -264,10 +265,23 @@ export function deserializeCondition(json: any): Condition {
       json.operator,
       json.value.map(deserializeCondition)
     )
+  } else if (json.type === 'subquery') {
+    // Handle SubqueryCondition (our custom type, not @ucast/core)
+    return {
+      type: 'subquery',
+      field: json.field,
+      operator: json.operator,
+      subquery: {
+        schema: json.subquery.schema,
+        model: json.subquery.model,
+        filter: json.subquery.filter ? deserializeCondition(json.subquery.filter) : undefined,
+        selectField: json.subquery.field
+      }
+    } as SubqueryCondition
   }
 
   throw new Error(
     `Cannot deserialize unknown condition type: ${json.type}. ` +
-    `Expected 'field' or 'compound'.`
+    `Expected 'field', 'compound', or 'subquery'.`
   )
 }

@@ -225,6 +225,8 @@ export type SerializedCondition =
  */
 export interface SubqueryExpression {
   $query: {
+    /** Optional schema name for cross-schema queries (e.g., 'studio-core') */
+    schema?: string
     /** Target model name (e.g., 'User', 'Organization') */
     model: string
     /** Optional filter to apply on target model */
@@ -256,9 +258,12 @@ export type InOperatorValue = unknown[] | SubqueryExpression
  * Serialized subquery for JSON transport.
  */
 export interface SerializedSubquery {
+  /** Optional schema name for cross-schema queries */
+  schema?: string
   model: string
   filter?: SerializedCondition
-  selectField: string
+  /** Field to select from target model (serialized form uses 'field' not 'selectField') */
+  field: string
 }
 
 /**
@@ -278,6 +283,8 @@ export interface SubqueryCondition {
   operator: 'in' | 'nin'
   /** The subquery definition */
   subquery: {
+    /** Optional schema name for cross-schema queries (e.g., 'studio-core') */
+    schema?: string
     /** Target model to query */
     model: string
     /** Parsed AST filter for target model (undefined = no filter) */

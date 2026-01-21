@@ -14,6 +14,10 @@
         "displayKey": "slug",
         "nested": false
       },
+      "x-authorization": {
+        "scope": "workspace",
+        "scopeField": "id"
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -56,6 +60,14 @@
         "strategy": "entity-per-file",
         "displayKey": "name",
         "nested": true
+      },
+      "x-authorization": {
+        "scope": "project",
+        "scopeField": "id",
+        "cascadeFrom": {
+          "scope": "workspace",
+          "foreignKey": "workspace"
+        }
       },
       "properties": {
         "id": {
@@ -155,6 +167,11 @@
         "displayKey": "id",
         "nested": false
       },
+      "x-authorization": {
+        "selfScoping": {
+          "field": "userId"
+        }
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -194,6 +211,11 @@
         "strategy": "entity-per-file",
         "displayKey": "id",
         "nested": false
+      },
+      "x-authorization": {
+        "selfScoping": {
+          "field": "userId"
+        }
       },
       "properties": {
         "id": {
@@ -253,6 +275,10 @@
         "displayKey": "id",
         "nested": true
       },
+      "x-authorization": {
+        "scope": "workspace",
+        "scopeField": "workspace"
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -295,6 +321,10 @@
         "strategy": "entity-per-file",
         "displayKey": "email",
         "nested": false
+      },
+      "x-authorization": {
+        "scope": "workspace",
+        "scopeField": "workspace"
       },
       "properties": {
         "id": {
@@ -388,6 +418,10 @@
         "displayKey": "name",
         "nested": true
       },
+      "x-authorization": {
+        "scope": "workspace",
+        "scopeField": "workspace"
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -436,6 +470,11 @@
         "strategy": "entity-per-file",
         "displayKey": "id",
         "nested": false
+      },
+      "x-authorization": {
+        "selfScoping": {
+          "field": "userId"
+        }
       },
       "properties": {
         "id": {

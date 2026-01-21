@@ -10,6 +10,7 @@
 import { useState, type FormEvent } from "react"
 import { observer } from "mobx-react-lite"
 import { useDomains } from "@/contexts/DomainProvider"
+import { useSession } from "@/auth/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -31,6 +32,7 @@ export interface SignInFormProps {
  */
 export const SignInForm = observer(function SignInForm({ onSuccess }: SignInFormProps) {
   const { auth } = useDomains()
+  const session = useSession()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
 
@@ -46,6 +48,9 @@ export const SignInForm = observer(function SignInForm({ onSuccess }: SignInForm
 
     try {
       await auth.signIn({ email, password })
+      // Refetch session to update better-auth nanostore
+      // This triggers App.tsx to re-render with new authKey, remounting DomainProvider
+      await session.refetch()
       onSuccess?.()
     } catch (error) {
       // Error is handled by auth domain (sets authError)

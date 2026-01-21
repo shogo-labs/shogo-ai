@@ -55,6 +55,7 @@ function toSerializableItems<T>(items: T[]): any[] {
  * Valid AST must be either:
  * - Field condition: { type: 'field', operator: string, field: string, value: any }
  * - Compound condition: { type: 'compound', operator: string, value: SerializedCondition[] }
+ * - Subquery condition: { type: 'subquery', field: string, operator: 'in'|'nin', subquery: {...} }
  */
 function isValidAst(ast: any): ast is SerializedCondition {
   if (!ast || typeof ast !== 'object') return false
@@ -72,6 +73,19 @@ function isValidAst(ast: any): ast is SerializedCondition {
       typeof ast.operator === 'string' &&
       Array.isArray(ast.value) &&
       ast.value.every(isValidAst)
+    )
+  }
+
+  if (ast.type === 'subquery') {
+    return (
+      typeof ast.field === 'string' &&
+      (ast.operator === 'in' || ast.operator === 'nin') &&
+      ast.subquery &&
+      typeof ast.subquery === 'object' &&
+      typeof ast.subquery.model === 'string' &&
+      typeof ast.subquery.field === 'string' &&
+      // Recursively validate nested filter if present
+      (!ast.subquery.filter || isValidAst(ast.subquery.filter))
     )
   }
 

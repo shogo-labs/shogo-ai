@@ -16,10 +16,11 @@ import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentCo
 import { DomainProvider, type EagerCollectionsConfig } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { MCPBackend } from './query/MCPBackend'
-import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService } from '@shogo/state-api'
+import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
 import { mcpService } from './services/mcpService'
 import { Toaster } from '@/components/ui/toaster'
+import { useSession } from './auth/client'
 
 // Initialize auth service with mock for development
 const authService = new MockAuthService()
@@ -43,6 +44,7 @@ const env = createEnvironment({
   persistence: new MCPPersistence(mcpService),
   backendRegistry,
   auth: betterAuthService,
+  authorization: new AuthorizationService(),
   workspace: import.meta.env.VITE_WORKSPACE,
 })
 
@@ -99,11 +101,16 @@ const eagerCollections: EagerCollectionsConfig = {
 }
 
 function App() {
+  // Track current user ID to force DomainProvider remount on user change
+  // This ensures stores are recreated with fresh data when switching users
+  const session = useSession()
+  const authKey = session.data?.user?.id ?? 'anonymous'
+
   return (
     <NuqsAdapter>
       <BrowserRouter>
         <EnvironmentProvider env={env}>
-          <DomainProvider domains={domains} eagerCollections={eagerCollections}>
+          <DomainProvider key={authKey} domains={domains} eagerCollections={eagerCollections}>
             <SchemaLoadingGate>
               <WavesmithMetaStoreProvider>
                 <AuthProvider authService={authService}>

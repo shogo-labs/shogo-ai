@@ -40,7 +40,9 @@
 
 import { createContext, useContext, useRef, useEffect, useMemo, useState, type ReactNode } from "react"
 import type { DomainResult } from "@shogo/state-api"
+import { getMetaStore } from "@shogo/state-api"
 import { useEnv } from "./EnvironmentContext"
+import { useSession } from "../auth/client"
 
 // ============================================================================
 // Types
@@ -117,6 +119,7 @@ export function DomainProvider<T extends DomainsMap>({
   eagerCollections,
 }: DomainProviderProps<T>) {
   const env = useEnv() // Get environment from EnvironmentProvider (throws if missing)
+  const session = useSession() // Get current auth session for authorization context
   const storesRef = useRef<Record<string, any> | null>(null)
   const schemaNameToKeyRef = useRef<Record<string, string> | null>(null)
 
@@ -124,18 +127,28 @@ export function DomainProvider<T extends DomainsMap>({
   const [schemasLoading, setSchemasLoading] = useState(true)
   const [schemasLoaded, setSchemasLoaded] = useState(false)
 
+  // Get current user ID for authorization context
+  // This will be injected into each store's environment for query-level filtering
+  const currentUserId = session.data?.user?.id
+
   // Initialize all domain stores once (stable across re-renders)
+  // Note: When user changes, App.tsx remounts DomainProvider via key={authKey},
+  // so stores are recreated with the new user's authContext
   if (!storesRef.current) {
     const stores: Record<string, any> = {}
     const schemaNameToKey: Record<string, string> = {}
 
     for (const [key, domain] of Object.entries(domains)) {
-      // Build store-specific environment with domain's schemaName
+      // Build store-specific environment with domain's schemaName and auth context
       const storeEnv = {
         ...env,
         context: {
           ...env.context,
           schemaName: domain.name, // Use domain.name for persistence context
+          // Inject auth context for authorization-based query filtering
+          ...(currentUserId && {
+            authContext: { userId: currentUserId }
+          }),
         },
       }
 
@@ -158,6 +171,8 @@ export function DomainProvider<T extends DomainsMap>({
     /**
      * Load a single schema with retry logic.
      * Returns true if loaded successfully, false otherwise.
+     * Also ingests the schema into the browser's metaStore singleton
+     * so CollectionAuthorizable can access x-authorization metadata.
      */
     const loadSchemaWithRetry = async (
       persistence: any,
@@ -167,7 +182,24 @@ export function DomainProvider<T extends DomainsMap>({
       attempt = 1
     ): Promise<boolean> => {
       try {
-        await persistence.loadSchema(schemaName, location)
+        const result = await persistence.loadSchema(schemaName, location)
+
+        // Ingest schema into browser's metaStore singleton
+        // This enables CollectionAuthorizable to find model.xAuthorization
+        if (result?.enhanced) {
+          try {
+            const browserMetaStore = getMetaStore()
+            browserMetaStore.ingestEnhancedJsonSchema(result.enhanced, {
+              name: result.metadata?.name || schemaName,
+              id: result.metadata?.id,
+              createdAt: Date.now(),
+            })
+            console.debug(`[DomainProvider] Ingested schema "${schemaName}" into browser metaStore`)
+          } catch (ingestErr) {
+            console.warn(`[DomainProvider] Failed to ingest schema "${schemaName}" into browser metaStore:`, ingestErr)
+          }
+        }
+
         return true
       } catch (err: any) {
         // Don't retry on SCHEMA_NOT_FOUND - the schema genuinely doesn't exist
@@ -202,7 +234,25 @@ export function DomainProvider<T extends DomainsMap>({
           location: env.context?.location,
         }))
         try {
-          await persistence.loadSchemasBatch(schemaRequests)
+          const batchResults = await persistence.loadSchemasBatch(schemaRequests)
+
+          // Ingest each schema into browser's metaStore singleton
+          // This enables CollectionAuthorizable to find model.xAuthorization
+          const browserMetaStore = getMetaStore()
+          for (const [schemaName, result] of batchResults.entries()) {
+            if (result?.enhanced) {
+              try {
+                browserMetaStore.ingestEnhancedJsonSchema(result.enhanced, {
+                  name: result.metadata?.name || schemaName,
+                  id: result.metadata?.id,
+                  createdAt: Date.now(),
+                })
+                console.debug(`[DomainProvider] Ingested schema "${schemaName}" into browser metaStore`)
+              } catch (ingestErr) {
+                console.warn(`[DomainProvider] Failed to ingest schema "${schemaName}" into browser metaStore:`, ingestErr)
+              }
+            }
+          }
         } catch (err) {
           console.error(`[DomainProvider] Batch schema load failed, falling back to individual loads:`, err)
           // Fallback to individual loads with retry logic

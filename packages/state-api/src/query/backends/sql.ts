@@ -104,6 +104,32 @@ function createDialectOptions(dialect: SqlDialect, joinTracker: string[]) {
 }
 
 // ============================================================================
+// Parameter Renumbering Helper
+// ============================================================================
+
+/**
+ * Renumber PostgreSQL parameter placeholders in a SQL fragment.
+ *
+ * When compiling compound conditions, each child is compiled independently and
+ * @ucast/sql resets parameter numbering to $1 for each. This function adjusts
+ * the placeholders so they form a continuous sequence when concatenated.
+ *
+ * @param sql - SQL string with $1, $2, etc. placeholders
+ * @param offset - Starting offset (0 = first param stays $1, 2 = $1 becomes $3)
+ * @returns SQL with renumbered placeholders
+ *
+ * @example
+ * renumberPgParams('"user_id" = $1 AND "status" = $2', 2)
+ * // => '"user_id" = $3 AND "status" = $4'
+ */
+function renumberPgParams(sql: string, offset: number): string {
+  if (offset === 0) return sql
+
+  // Match $N where N is a number, replace with $(N + offset)
+  return sql.replace(/\$(\d+)/g, (_, num) => `$${parseInt(num, 10) + offset}`)
+}
+
+// ============================================================================
 // SqlBackend Class
 // ============================================================================
 
@@ -462,6 +488,21 @@ export class SqlBackend implements IBackend {
   }
 
   /**
+   * Check if an AST node or any of its descendants contains a subquery.
+   * This is needed because compound conditions may have nested subqueries
+   * that the standard @ucast/sql interpreter cannot handle.
+   */
+  private containsSubquery(ast: any): boolean {
+    if (this.isSubqueryCondition(ast)) {
+      return true
+    }
+    if (this.isCompoundCondition(ast)) {
+      return (ast.value as any[]).some(child => this.containsSubquery(child))
+    }
+    return false
+  }
+
+  /**
    * Compile a SubqueryCondition to SQL.
    *
    * @param ast - SubqueryCondition node
@@ -485,8 +526,10 @@ export class SqlBackend implements IBackend {
     const { model, filter, selectField } = subquery
 
     // Get table and column names from resolver
+    // Use getColumnName to map property name (e.g., 'workspace') to column name (e.g., 'workspace_id')
     const tableName = modelResolver.getTableName(model)
-    const selectColumn = this.escapeIdentifier(selectField)
+    const selectColumnName = modelResolver.getColumnName(model, selectField)
+    const selectColumn = this.escapeIdentifier(selectColumnName)
 
     // Compile inner filter if present
     let innerWhereSql = ''
@@ -547,7 +590,21 @@ export class SqlBackend implements IBackend {
     if ('field' in filter && typeof (filter as any).field === 'string') {
       const fc = filter as any
       const normalizedField = resolver.getColumnName(modelName, fc.field)
-      // Import FieldCondition from @ucast/core at top of file
+
+      // Special case: 'ne' with null value should use 'exists' operator
+      // SQL: "field <> NULL" always returns NULL, not TRUE
+      // We need "field IS NOT NULL" which @ucast/sql generates for 'exists' operator
+      if (fc.operator === 'ne' && fc.value === null) {
+        return new (filter.constructor as any)('exists', normalizedField, true)
+      }
+
+      // Special case: 'eq' with null value should use 'exists' with false
+      // SQL: "field = NULL" always returns NULL, not TRUE
+      // We need "field IS NULL" which @ucast/sql generates for 'exists' with false
+      if (fc.operator === 'eq' && fc.value === null) {
+        return new (filter.constructor as any)('exists', normalizedField, false)
+      }
+
       return new (filter.constructor as any)(fc.operator, normalizedField, fc.value)
     }
 
@@ -578,8 +635,8 @@ export class SqlBackend implements IBackend {
     const operator = ast.operator as string
     const children = ast.value as any[]
 
-    // Check if any child is a subquery
-    const hasSubquery = children.some(child => this.isSubqueryCondition(child))
+    // Check if any child (or descendant) contains a subquery
+    const hasSubquery = children.some(child => this.containsSubquery(child))
 
     if (!hasSubquery) {
       // No subqueries - delegate to standard interpreter
@@ -592,19 +649,26 @@ export class SqlBackend implements IBackend {
       return [whereSql, params]
     }
 
-    // Has subqueries - compile each child individually
+    // Has subqueries - compile each child and renumber parameters
+    // Note: @ucast/sql always resets to $1 for each compilation, so we
+    // compile with offset 0 and renumber afterwards using renumberPgParams()
     const allParams: any[] = []
     const compiledParts: string[] = []
 
     for (const child of children) {
       const [childSql, childParams] = this.compileCondition(child, {
         ...context,
-        paramOffset: (context.paramOffset ?? 0) + allParams.length
+        paramOffset: 0  // Each child compiles with offset 0, we renumber after
       })
 
       // Skip empty SQL (but "()" is not empty)
       if (childSql && childSql.trim() !== '' && childSql.trim() !== '()') {
-        compiledParts.push(childSql)
+        // Renumber parameters based on how many we've accumulated
+        const renumberedSql = this.dialect === 'pg'
+          ? renumberPgParams(childSql, allParams.length)
+          : childSql  // SQLite uses ? - no renumbering needed
+
+        compiledParts.push(renumberedSql)
         allParams.push(...childParams)
       }
     }
