@@ -32,5 +32,7 @@ export {
 export {
   AuthorizationService,
   authorizationService,
-  determineTrustedMode
+  determineTrustedMode,
+  MEMBERSHIP_SCHEMA,
+  MEMBERSHIP_MODEL
 } from './auth-service'

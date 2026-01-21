@@ -1,11 +1,14 @@
 /**
- * Schema-Driven Authorization PoC Tests
+ * Schema-Driven Authorization Tests (v2 - Subquery-Based)
  *
- * 4 test scenario groups:
+ * Test scenario groups:
  * 1. Config extraction from x-authorization annotations
- * 2. Query scoping via buildScopeFilter (domain-agnostic)
- * 3. Empty access returns secure default (matches nothing)
- * 4. Trusted mode bypass via environment variables
+ * 2. Query scoping via buildScopeFilter (subquery-based)
+ * 3. Trusted mode bypass via environment variables
+ *
+ * Note: v2 uses subquery-based filters instead of pre-computed scope IDs.
+ * The "empty access" tests from v1 no longer apply since authorization
+ * is resolved at query time via membership subqueries.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
@@ -15,7 +18,9 @@ import {
 } from '../extract-config'
 import {
   AuthorizationService,
-  determineTrustedMode
+  determineTrustedMode,
+  MEMBERSHIP_SCHEMA,
+  MEMBERSHIP_MODEL
 } from '../auth-service'
 import type { IAuthContext } from '../types'
 
@@ -258,10 +263,10 @@ describe('extractAllAuthorizationConfigs', () => {
 })
 
 // ============================================================================
-// Group 2: Query Scoping Tests (domain-agnostic via authorizedScopes map)
+// Group 2: Query Scoping Tests (v2 - subquery-based)
 // ============================================================================
 
-describe('Query Scoping via buildScopeFilter', () => {
+describe('Query Scoping via buildScopeFilter (v2)', () => {
   let service: AuthorizationService
 
   beforeEach(() => {
@@ -276,91 +281,103 @@ describe('Query Scoping via buildScopeFilter', () => {
     restoreEnv()
   })
 
-  test('builds $in filter for workspace scope', () => {
-    const authContext: IAuthContext = {
-      userId: 'user-1',
-      authorizedScopes: {
-        workspace: ['ws-1', 'ws-2']
-      }
-    }
+  test('builds subquery filter for workspace scope', () => {
+    const authContext: IAuthContext = { userId: 'user-1' }
     const config = extractAuthorizationConfig(testSchema.$defs.Project)!
 
     const filter = service.buildScopeFilter(authContext, config)
 
     expect(filter).toEqual({
-      workspaceId: { $in: ['ws-1', 'ws-2'] }
+      workspaceId: {
+        $in: {
+          $query: {
+            schema: MEMBERSHIP_SCHEMA,
+            model: MEMBERSHIP_MODEL,
+            filter: { userId: 'user-1', workspace: { $ne: null } },
+            field: 'workspace'
+          }
+        }
+      }
     })
   })
 
-  test('builds $in filter for project scope', () => {
-    const authContext: IAuthContext = {
-      userId: 'user-1',
-      authorizedScopes: {
-        project: ['proj-1', 'proj-2', 'proj-3']
-      }
-    }
+  test('builds subquery filter for project scope', () => {
+    const authContext: IAuthContext = { userId: 'user-1' }
     const config = extractAuthorizationConfig(testSchema.$defs.Task)!
 
     const filter = service.buildScopeFilter(authContext, config)
 
     expect(filter).toEqual({
-      projectId: { $in: ['proj-1', 'proj-2', 'proj-3'] }
+      projectId: {
+        $in: {
+          $query: {
+            schema: MEMBERSHIP_SCHEMA,
+            model: MEMBERSHIP_MODEL,
+            filter: { userId: 'user-1', project: { $ne: null } },
+            field: 'project'
+          }
+        }
+      }
     })
   })
 
-  test('builds $in filter for custom tenant scope (domain-agnostic)', () => {
-    const authContext: IAuthContext = {
-      userId: 'user-1',
-      authorizedScopes: {
-        tenant: ['tenant-abc', 'tenant-xyz']
-      }
-    }
+  test('builds subquery filter for custom tenant scope (domain-agnostic)', () => {
+    const authContext: IAuthContext = { userId: 'user-1' }
     const config = extractAuthorizationConfig(testSchema.$defs.TenantResource)!
 
     const filter = service.buildScopeFilter(authContext, config)
 
     expect(filter).toEqual({
-      tenantId: { $in: ['tenant-abc', 'tenant-xyz'] }
+      tenantId: {
+        $in: {
+          $query: {
+            schema: MEMBERSHIP_SCHEMA,
+            model: MEMBERSHIP_MODEL,
+            filter: { userId: 'user-1', tenant: { $ne: null } },
+            field: 'tenant'
+          }
+        }
+      }
     })
   })
 
   test('uses scopeField from config for filter key', () => {
-    const authContext: IAuthContext = {
-      authorizedScopes: {
-        project: ['p1']
-      }
-    }
+    const authContext: IAuthContext = { userId: 'user-1' }
     // Custom config with different scopeField
     const customConfig = { scope: 'project', scopeField: 'customProjectRef' }
 
     const filter = service.buildScopeFilter(authContext, customConfig)
 
     expect(filter).toEqual({
-      customProjectRef: { $in: ['p1'] }
+      customProjectRef: {
+        $in: {
+          $query: {
+            schema: MEMBERSHIP_SCHEMA,
+            model: MEMBERSHIP_MODEL,
+            filter: { userId: 'user-1', project: { $ne: null } },
+            field: 'project'
+          }
+        }
+      }
     })
   })
 
-  test('single authorized ID produces single-element array', () => {
-    const authContext: IAuthContext = {
-      authorizedScopes: {
-        workspace: ['ws-only']
-      }
-    }
+  test('userId is embedded in subquery filter', () => {
+    const authContext: IAuthContext = { userId: 'specific-user-123' }
     const config = extractAuthorizationConfig(testSchema.$defs.Project)!
 
     const filter = service.buildScopeFilter(authContext, config)
 
-    expect(filter).toEqual({
-      workspaceId: { $in: ['ws-only'] }
-    })
+    // Verify userId is in the subquery filter
+    expect(filter!.workspaceId.$in.$query.filter.userId).toBe('specific-user-123')
   })
 })
 
 // ============================================================================
-// Group 3: Empty Access Returns Secure Default
+// Group 3: Subquery Filter Structure (v2)
 // ============================================================================
 
-describe('Empty Access Returns Secure Default', () => {
+describe('Subquery Filter Structure (v2)', () => {
   let service: AuthorizationService
 
   beforeEach(() => {
@@ -374,79 +391,51 @@ describe('Empty Access Returns Secure Default', () => {
     restoreEnv()
   })
 
-  test('empty array in authorizedScopes returns $in: [] (matches nothing)', () => {
-    const authContext: IAuthContext = {
-      userId: 'user-1',
-      authorizedScopes: {
-        workspace: [] // Empty array
-      }
-    }
+  test('subquery references studio-core schema', () => {
+    const authContext: IAuthContext = { userId: 'user-1' }
     const config = extractAuthorizationConfig(testSchema.$defs.Project)!
 
     const filter = service.buildScopeFilter(authContext, config)
 
-    // $in: [] matches nothing - secure default
-    expect(filter).toEqual({
-      workspaceId: { $in: [] }
-    })
+    expect(filter!.workspaceId.$in.$query.schema).toBe('studio-core')
   })
 
-  test('missing scope key in authorizedScopes returns $in: [] (secure default)', () => {
-    const authContext: IAuthContext = {
-      userId: 'user-1',
-      authorizedScopes: {
-        workspace: ['ws-1'] // Has workspace, but querying project
-      }
-    }
-    const config = extractAuthorizationConfig(testSchema.$defs.Task)! // scope: 'project'
+  test('subquery references Member model', () => {
+    const authContext: IAuthContext = { userId: 'user-1' }
+    const config = extractAuthorizationConfig(testSchema.$defs.Project)!
 
     const filter = service.buildScopeFilter(authContext, config)
 
-    // project key doesn't exist in authorizedScopes → empty array
-    expect(filter).toEqual({
-      projectId: { $in: [] }
-    })
+    expect(filter!.workspaceId.$in.$query.model).toBe('Member')
   })
 
-  test('undefined authorizedScopes returns $in: [] for any scope', () => {
-    const authContext: IAuthContext = {
-      userId: 'user-1'
-      // authorizedScopes undefined
-    }
+  test('subquery filter includes userId', () => {
+    const authContext: IAuthContext = { userId: 'test-user-xyz' }
     const config = extractAuthorizationConfig(testSchema.$defs.Task)!
 
     const filter = service.buildScopeFilter(authContext, config)
 
-    expect(filter).toEqual({
-      projectId: { $in: [] }
-    })
+    expect(filter!.projectId.$in.$query.filter.userId).toBe('test-user-xyz')
   })
 
-  test('completely empty context returns $in: [] for workspace scope', () => {
-    const emptyContext: IAuthContext = {}
-    const projectConfig = extractAuthorizationConfig(testSchema.$defs.Project)!
+  test('subquery filter includes scope existence check', () => {
+    const authContext: IAuthContext = { userId: 'user-1' }
+    const config = extractAuthorizationConfig(testSchema.$defs.Project)!
 
-    expect(service.buildScopeFilter(emptyContext, projectConfig)).toEqual({
-      workspaceId: { $in: [] }
-    })
+    const filter = service.buildScopeFilter(authContext, config)
+
+    // The filter checks that workspace is not null (member has workspace membership)
+    expect(filter!.workspaceId.$in.$query.filter.workspace).toEqual({ $ne: null })
   })
 
-  test('completely empty context returns $in: [] for project scope', () => {
-    const emptyContext: IAuthContext = {}
-    const taskConfig = extractAuthorizationConfig(testSchema.$defs.Task)!
+  test('subquery field matches scope name', () => {
+    const authContext: IAuthContext = { userId: 'user-1' }
+    const config = extractAuthorizationConfig(testSchema.$defs.Task)!
 
-    expect(service.buildScopeFilter(emptyContext, taskConfig)).toEqual({
-      projectId: { $in: [] }
-    })
-  })
+    const filter = service.buildScopeFilter(authContext, config)
 
-  test('completely empty context returns $in: [] for custom scope', () => {
-    const emptyContext: IAuthContext = {}
-    const tenantConfig = extractAuthorizationConfig(testSchema.$defs.TenantResource)!
-
-    expect(service.buildScopeFilter(emptyContext, tenantConfig)).toEqual({
-      tenantId: { $in: [] }
-    })
+    // For project scope, the subquery selects the 'project' field from Member
+    expect(filter!.projectId.$in.$query.field).toBe('project')
   })
 })
 
@@ -559,28 +548,11 @@ describe('Trusted Mode Bypass', () => {
       process.env.SHOGO_TRUSTED_MODE = 'true'
 
       const service = new AuthorizationService()
-      const authContext: IAuthContext = {
-        userId: 'user-1',
-        authorizedScopes: {
-          project: ['proj-1']
-        }
-      }
+      const authContext: IAuthContext = { userId: 'user-1' }
       const config = extractAuthorizationConfig(testSchema.$defs.Task)!
 
       // In trusted mode, no filter is applied
       const filter = service.buildScopeFilter(authContext, config)
-      expect(filter).toBeNull()
-    })
-
-    test('returns null even with empty context in trusted mode', () => {
-      process.env.NODE_ENV = 'development'
-      process.env.SHOGO_TRUSTED_MODE = 'true'
-
-      const service = new AuthorizationService()
-      const emptyContext: IAuthContext = {}
-      const config = extractAuthorizationConfig(testSchema.$defs.Task)!
-
-      const filter = service.buildScopeFilter(emptyContext, config)
       expect(filter).toBeNull()
     })
 
@@ -589,20 +561,15 @@ describe('Trusted Mode Bypass', () => {
       process.env.SHOGO_TRUSTED_MODE = 'true'
 
       const service = new AuthorizationService()
-      const authContext: IAuthContext = {
-        userId: 'user-1',
-        authorizedScopes: {
-          project: ['proj-1']
-        }
-      }
+      const authContext: IAuthContext = { userId: 'user-1' }
       const config = extractAuthorizationConfig(testSchema.$defs.Task)!
 
       // Should NOT return null - production always enforces
       const filter = service.buildScopeFilter(authContext, config)
       expect(filter).not.toBeNull()
-      expect(filter).toEqual({
-        projectId: { $in: ['proj-1'] }
-      })
+      // v2: Returns subquery filter, not static array
+      expect(filter!.projectId.$in.$query).toBeDefined()
+      expect(filter!.projectId.$in.$query.filter.userId).toBe('user-1')
     })
   })
 })

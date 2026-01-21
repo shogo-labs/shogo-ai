@@ -1,16 +1,28 @@
 /**
- * Authorization Service Implementation
+ * Authorization Service Implementation (v2 - Subquery-Based)
  *
- * Provides opaque trust determination and scope filter building.
+ * Provides opaque trust determination and subquery-based scope filter building.
  *
  * Key design decisions:
  * - Trust is determined ONLY from environment variables (opaque)
  * - No `trusted` flag in any interface or parameter
- * - Domain-agnostic: scope names are used as keys into authorizedScopes
- * - Empty/missing scope returns `{ $in: [] }` (secure default - matches nothing)
+ * - v2: Subquery-based filters eliminate pre-computed scope IDs
+ * - Cross-schema: Authorization queries studio-core.Member for all domains
  */
 
 import type { IAuthContext, IAuthorizationService, AuthorizationConfig } from './types'
+
+/**
+ * Schema containing the membership model.
+ * Hardcoded for internal domains - generalize later.
+ */
+export const MEMBERSHIP_SCHEMA = 'studio-core'
+
+/**
+ * Model name for membership records.
+ * Hardcoded for internal domains - generalize later.
+ */
+export const MEMBERSHIP_MODEL = 'Member'
 
 /**
  * Determine if running in trusted mode.
@@ -41,10 +53,10 @@ export function determineTrustedMode(): boolean {
 }
 
 /**
- * Authorization service implementation.
+ * Authorization service implementation (v2).
  *
- * Stateless service that builds query filters based on authorization
- * context and schema-driven configuration.
+ * Stateless service that builds subquery-based filters based on
+ * authorization context and schema-driven configuration.
  */
 export class AuthorizationService implements IAuthorizationService {
   /**
@@ -57,18 +69,18 @@ export class AuthorizationService implements IAuthorizationService {
   }
 
   /**
-   * Build a scope filter from auth context and config.
+   * Build a scope filter from auth context and config (v2 - subquery-based).
    *
    * In trusted mode, returns null (no filter applied).
-   * Otherwise, builds a `{ [scopeField]: { $in: authorizedIds } }` filter.
    *
-   * If the user has no authorized IDs for the scope, returns
-   * `{ [scopeField]: { $in: [] } }` which matches nothing - this is
-   * the secure default behavior.
+   * Otherwise, returns one of:
+   * - Self-scoping: `{ [field]: userId }` - direct equality filter
+   * - Direct scope: `{ [scopeField]: { $in: <subquery> } }` - membership subquery
+   * - Cascade scope: `{ $or: [<direct subquery>, <cascade subquery>] }`
    *
-   * @param authContext - Current auth context with authorized scopes
+   * @param authContext - Current auth context with userId
    * @param config - Authorization config from x-authorization annotation
-   * @returns MongoDB-style filter object, or null if trusted mode
+   * @returns MongoDB-style filter object with subquery, or null if trusted mode
    */
   buildScopeFilter(
     authContext: IAuthContext,
@@ -79,15 +91,54 @@ export class AuthorizationService implements IAuthorizationService {
       return null
     }
 
-    // Domain-agnostic lookup: use scope name as key into authorizedScopes map
-    // Missing scope key or undefined authorizedScopes returns empty array
-    const authorizedIds = authContext.authorizedScopes?.[config.scope] ?? []
+    const { userId } = authContext
 
-    // Build $in filter on scopeField
-    // Empty array means "match nothing" - secure default when user has no access
-    return {
-      [config.scopeField]: { $in: authorizedIds }
+    // Self-scoping models (Member, Notification, StarredProject)
+    // Use direct equality filter - no subquery needed
+    if (config.selfScoping) {
+      return { [config.selfScoping.field]: userId }
     }
+
+    // Scope-based models require scope and scopeField
+    if (!config.scope || !config.scopeField) {
+      // Invalid config - return impossible filter for safety
+      return { _invalid: { $in: [] } }
+    }
+
+    // Build direct membership subquery
+    const directFilter = {
+      [config.scopeField]: {
+        $in: {
+          $query: {
+            schema: MEMBERSHIP_SCHEMA,
+            model: MEMBERSHIP_MODEL,
+            filter: { userId, [config.scope]: { $ne: null } },
+            field: config.scope
+          }
+        }
+      }
+    }
+
+    // No cascade - return direct filter only
+    if (!config.cascadeFrom) {
+      return directFilter
+    }
+
+    // With cascade - $or of direct AND parent membership
+    const cascadeFilter = {
+      [config.cascadeFrom.foreignKey]: {
+        $in: {
+          $query: {
+            schema: MEMBERSHIP_SCHEMA,
+            model: MEMBERSHIP_MODEL,
+            filter: { userId, [config.cascadeFrom.scope]: { $ne: null } },
+            field: config.cascadeFrom.scope
+          }
+        }
+      }
+    }
+
+    return { $or: [directFilter, cascadeFilter] }
   }
 }
 
