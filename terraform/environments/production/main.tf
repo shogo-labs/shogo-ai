@@ -433,6 +433,20 @@ resource "kubernetes_secret" "postgres_credentials_workspaces" {
   }
 }
 
+# Redis credentials secret (shogo-system namespace)
+resource "kubernetes_secret" "redis_credentials" {
+  depends_on = [kubernetes_namespace.shogo_system]
+
+  metadata {
+    name      = "redis-credentials"
+    namespace = "shogo-system"
+  }
+
+  data = {
+    REDIS_URL = "redis://${module.elasticache.endpoint}:6379"
+  }
+}
+
 # API secrets
 resource "kubernetes_secret" "api_secrets" {
   depends_on = [kubernetes_namespace.shogo_system]
@@ -450,6 +464,271 @@ resource "kubernetes_secret" "api_secrets" {
       ANTHROPIC_API_KEY = var.anthropic_api_key
     } : {}
   )
+}
+
+# Anthropic credentials for project pods (shogo-workspaces namespace)
+resource "kubernetes_secret" "anthropic_credentials_workspaces" {
+  count      = var.anthropic_api_key != "" ? 1 : 0
+  depends_on = [kubernetes_namespace.shogo_workspaces]
+
+  metadata {
+    name      = "anthropic-credentials"
+    namespace = "shogo-workspaces"
+  }
+
+  data = {
+    api-key = var.anthropic_api_key
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Storage Class for EBS CSI Driver (for project PVCs)
+# -----------------------------------------------------------------------------
+resource "kubernetes_storage_class" "ebs_sc" {
+  depends_on = [module.eks]
+
+  metadata {
+    name = "ebs-sc"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "false"
+    }
+  }
+
+  storage_provisioner    = "ebs.csi.aws.com"
+  reclaim_policy         = "Delete"
+  allow_volume_expansion = true
+  volume_binding_mode    = "WaitForFirstConsumer"
+
+  parameters = {
+    type      = "gp3"
+    encrypted = "true"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Knative Services (Application Deployment)
+# -----------------------------------------------------------------------------
+# Deploy application services via kubectl (avoids kubernetes_manifest CRD issues)
+
+locals {
+  ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
+  image_tag    = "${var.environment}-latest"
+}
+
+# Deploy all Knative services and domain mappings
+resource "null_resource" "knative_services" {
+  depends_on = [
+    module.knative,
+    kubernetes_namespace.shogo_system,
+    kubernetes_namespace.shogo_workspaces,
+    kubernetes_secret.postgres_credentials,
+    kubernetes_secret.postgres_credentials_workspaces,
+    kubernetes_secret.redis_credentials,
+    kubernetes_secret.api_secrets
+  ]
+
+  triggers = {
+    # Trigger redeployment when image tag changes
+    image_tag    = local.image_tag
+    ecr_registry = local.ecr_registry
+    # Add timestamp trigger for manual refresh (uncomment to force redeploy)
+    # timestamp = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Wait for Knative to be ready
+      kubectl wait --for=condition=Available deployment/controller -n knative-serving --timeout=120s || true
+      
+      # Deploy Studio (Web) Service
+      cat <<EOF | kubectl apply -f -
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: studio
+        namespace: shogo-system
+        labels:
+          app.kubernetes.io/part-of: shogo
+          environment: production
+      spec:
+        template:
+          metadata:
+            annotations:
+              autoscaling.knative.dev/min-scale: "1"
+              autoscaling.knative.dev/max-scale: "10"
+          spec:
+            containers:
+              - name: web
+                image: ${local.ecr_registry}/shogo/shogo-web:${local.image_tag}
+                ports:
+                  - containerPort: 80
+                env:
+                  - name: API_UPSTREAM
+                    value: "http://api.shogo-system.svc.cluster.local"
+                  - name: API_HOST
+                    value: "api.shogo-system.svc.cluster.local"
+                  - name: MCP_UPSTREAM
+                    value: "http://mcp-workspace-1.shogo-workspaces.svc.cluster.local"
+                  - name: MCP_HOST
+                    value: "mcp-workspace-1.shogo-workspaces.svc.cluster.local"
+                  - name: DNS_RESOLVER
+                    value: "kube-dns.kube-system.svc.cluster.local"
+                resources:
+                  requests:
+                    memory: "128Mi"
+                    cpu: "50m"
+                  limits:
+                    memory: "256Mi"
+                    cpu: "200m"
+      EOF
+
+      # Deploy API Service
+      cat <<EOF | kubectl apply -f -
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: api
+        namespace: shogo-system
+        labels:
+          app.kubernetes.io/part-of: shogo
+          environment: production
+      spec:
+        template:
+          metadata:
+            annotations:
+              autoscaling.knative.dev/min-scale: "1"
+              autoscaling.knative.dev/max-scale: "10"
+          spec:
+            containers:
+              - name: api
+                image: ${local.ecr_registry}/shogo/shogo-api:${local.image_tag}
+                ports:
+                  - containerPort: 8002
+                env:
+                  - name: API_PORT
+                    value: "8002"
+                  - name: NODE_ENV
+                    value: "production"
+                  - name: MCP_URL
+                    value: "http://mcp-workspace-1.shogo-workspaces.svc.cluster.local"
+                  - name: BETTER_AUTH_URL
+                    value: "https://studio.shogo.ai"
+                  - name: ALLOWED_ORIGINS
+                    value: "https://studio.shogo.ai,https://api.shogo.ai"
+                  - name: REDIS_URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: redis-credentials
+                        key: REDIS_URL
+                        optional: true
+                  - name: DATABASE_URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgres-credentials
+                        key: DATABASE_URL
+                  - name: BETTER_AUTH_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: BETTER_AUTH_SECRET
+                  # Pod-per-project configuration
+                  - name: PROJECT_RUNTIME_IMAGE
+                    value: "${local.ecr_registry}/shogo/project-runtime:${local.image_tag}"
+                  - name: PROJECT_NAMESPACE
+                    value: "shogo-workspaces"
+                  - name: ANTHROPIC_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: ANTHROPIC_API_KEY
+                        optional: true
+                resources:
+                  requests:
+                    memory: "256Mi"
+                    cpu: "100m"
+                  limits:
+                    memory: "512Mi"
+                    cpu: "500m"
+      EOF
+
+      # Deploy MCP Workspace Service
+      cat <<EOF | kubectl apply -f -
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: mcp-workspace-1
+        namespace: shogo-workspaces
+        labels:
+          app.kubernetes.io/part-of: shogo
+          environment: production
+      spec:
+        template:
+          metadata:
+            annotations:
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "20"
+          spec:
+            containers:
+              - name: mcp
+                image: ${local.ecr_registry}/shogo/shogo-mcp:${local.image_tag}
+                ports:
+                  - containerPort: 8080
+                env:
+                  - name: MCP_PORT
+                    value: "8080"
+                  - name: NODE_ENV
+                    value: "production"
+                  - name: DATABASE_URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgres-credentials
+                        key: DATABASE_URL
+                resources:
+                  requests:
+                    memory: "256Mi"
+                    cpu: "100m"
+                  limits:
+                    memory: "512Mi"
+                    cpu: "500m"
+      EOF
+
+      # Deploy Domain Mappings
+      cat <<EOF | kubectl apply -f -
+      apiVersion: serving.knative.dev/v1beta1
+      kind: DomainMapping
+      metadata:
+        name: studio.shogo.ai
+        namespace: shogo-system
+      spec:
+        ref:
+          name: studio
+          kind: Service
+          apiVersion: serving.knative.dev/v1
+      ---
+      apiVersion: serving.knative.dev/v1beta1
+      kind: DomainMapping
+      metadata:
+        name: api.shogo.ai
+        namespace: shogo-system
+      spec:
+        ref:
+          name: api
+          kind: Service
+          apiVersion: serving.knative.dev/v1
+      ---
+      apiVersion: serving.knative.dev/v1beta1
+      kind: DomainMapping
+      metadata:
+        name: mcp.shogo.ai
+        namespace: shogo-workspaces
+      spec:
+        ref:
+          name: mcp-workspace-1
+          kind: Service
+          apiVersion: serving.knative.dev/v1
+      EOF
+    EOT
+  }
 }
 
 # -----------------------------------------------------------------------------

@@ -475,6 +475,45 @@ resource "kubernetes_secret" "api_secrets" {
   )
 }
 
+# Anthropic credentials for project pods (shogo-staging-workspaces namespace)
+resource "kubernetes_secret" "anthropic_credentials_workspaces" {
+  count      = var.anthropic_api_key != "" ? 1 : 0
+  depends_on = [kubernetes_namespace.shogo_workspaces]
+
+  metadata {
+    name      = "anthropic-credentials"
+    namespace = "shogo-staging-workspaces"
+  }
+
+  data = {
+    api-key = var.anthropic_api_key
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Storage Class for EBS CSI Driver (for project PVCs)
+# -----------------------------------------------------------------------------
+resource "kubernetes_storage_class" "ebs_sc" {
+  depends_on = [module.eks]
+
+  metadata {
+    name = "ebs-sc"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "false"
+    }
+  }
+
+  storage_provisioner    = "ebs.csi.aws.com"
+  reclaim_policy         = "Delete"
+  allow_volume_expansion = true
+  volume_binding_mode    = "WaitForFirstConsumer"
+
+  parameters = {
+    type      = "gp3"
+    encrypted = "true"
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Knative Services (Application Deployment)
 # -----------------------------------------------------------------------------

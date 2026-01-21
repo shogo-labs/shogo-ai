@@ -418,6 +418,7 @@ export class KnativeProjectManager {
       },
       spec: {
         accessModes: ["ReadWriteOnce"],
+        storageClassName: process.env.STORAGE_CLASS_NAME || "ebs-sc",
         resources: {
           requests: { storage: "1Gi" },
         },
@@ -496,6 +497,10 @@ export class KnativeProjectManager {
           },
           spec: {
             timeoutSeconds: 600,
+            // Security context - fsGroup ensures PVC is accessible by appuser (gid 1001)
+            securityContext: {
+              fsGroup: 1001,
+            },
             containers: [
               {
                 name: "project-runtime",
@@ -503,7 +508,7 @@ export class KnativeProjectManager {
                 ports: [{ containerPort: 8080, name: "http1" }],
                 env,
                 resources: {
-                  requests: { memory: "512Mi", cpu: "250m" },
+                  requests: { memory: "256Mi", cpu: "100m" },
                   limits: { memory: this.memoryLimit, cpu: this.cpuLimit },
                 },
                 volumeMounts: [{ name: "project-data", mountPath: "/app/project" }],

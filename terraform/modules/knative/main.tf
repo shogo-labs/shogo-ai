@@ -210,7 +210,7 @@ resource "null_resource" "knative_config" {
       kubectl patch configmap/config-features \
         --namespace knative-serving \
         --type merge \
-        --patch '{"data":{"kubernetes.podspec-persistent-volume-claim":"enabled","kubernetes.podspec-persistent-volume-write":"enabled"}}'
+        --patch '{"data":{"kubernetes.podspec-persistent-volume-claim":"enabled","kubernetes.podspec-persistent-volume-write":"enabled","kubernetes.podspec-securitycontext":"enabled"}}'
       %{endif}
     EOT
   }
