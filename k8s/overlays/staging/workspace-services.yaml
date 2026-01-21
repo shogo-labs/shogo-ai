@@ -1,7 +1,9 @@
 # =============================================================================
 # Workspace Services - Staging Environment
 # =============================================================================
-# Staging uses scale-to-zero for cost efficiency
+# IMPORTANT: min-scale: 1 keeps pod always running to preserve meta-store state.
+# Scaling to zero loses all loaded schemas, causing query failures until
+# schemas are re-loaded by browser requests.
 # =============================================================================
 apiVersion: serving.knative.dev/v1
 kind: Service
@@ -16,9 +18,10 @@ spec:
   template:
     metadata:
       annotations:
-        autoscaling.knative.dev/scale-to-zero-pod-retention-period: "60s"
-        autoscaling.knative.dev/max-scale: "1"
-        autoscaling.knative.dev/min-scale: "0"
+        # Keep at least 1 pod running to preserve meta-store state
+        # This prevents "Schema not found" errors after scale-to-zero
+        autoscaling.knative.dev/min-scale: "1"
+        autoscaling.knative.dev/max-scale: "3"
         autoscaling.knative.dev/target: "100"
     spec:
       timeoutSeconds: 300
@@ -26,11 +29,11 @@ spec:
         - name: mcp
           image: shogo-mcp  # Replaced by kustomize
           ports:
-            - containerPort: 3100
+            - containerPort: 8080
               protocol: TCP
           env:
             - name: MCP_PORT
-              value: "3100"
+              value: "8080"
             - name: NODE_ENV
               value: "staging"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
@@ -53,8 +56,25 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
+          # Startup probe: TCP check on main MCP port
+          # Gives container time to initialize (DDL, seed data)
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            # Allow up to 60 seconds for startup (12 * 5s)
+            failureThreshold: 12
+          # Readiness probe: TCP check ensures MCP server is listening
           readinessProbe:
             tcpSocket:
-              port: 3100
+              port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Note: After deploying new MCP with health endpoint, update to use:
+          # httpGet:
+          #   path: /health
+          #   port: 8081

@@ -652,6 +652,8 @@ resource "null_resource" "knative_services" {
       EOF
 
       # Deploy MCP Workspace Service
+      # IMPORTANT: min-scale: 1 keeps pod always running to preserve meta-store state.
+      # Scaling to zero loses all loaded schemas, causing query failures.
       cat <<EOF | kubectl apply -f -
       apiVersion: serving.knative.dev/v1
       kind: Service
@@ -665,9 +667,12 @@ resource "null_resource" "knative_services" {
         template:
           metadata:
             annotations:
-              autoscaling.knative.dev/min-scale: "0"
-              autoscaling.knative.dev/max-scale: "20"
+              # Keep at least 1 pod running to preserve meta-store state
+              autoscaling.knative.dev/min-scale: "1"
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "100"
           spec:
+            timeoutSeconds: 300
             containers:
               - name: mcp
                 image: ${local.ecr_registry}/shogo/shogo-mcp:${local.image_tag}
@@ -678,6 +683,12 @@ resource "null_resource" "knative_services" {
                     value: "8080"
                   - name: NODE_ENV
                     value: "production"
+                  - name: SCHEMAS_PATH
+                    value: "/app/.schemas"
+                  - name: WORKSPACE_ID
+                    value: "workspace-1"
+                  - name: TENANT_ID
+                    value: "production-tenant"
                   - name: DATABASE_URL
                     valueFrom:
                       secretKeyRef:
@@ -690,6 +701,22 @@ resource "null_resource" "knative_services" {
                   limits:
                     memory: "512Mi"
                     cpu: "500m"
+                # Startup probe: TCP check on main MCP port
+                startupProbe:
+                  tcpSocket:
+                    port: 8080
+                  initialDelaySeconds: 10
+                  periodSeconds: 5
+                  timeoutSeconds: 5
+                  failureThreshold: 12
+                # Readiness probe: TCP check ensures MCP server is listening
+                readinessProbe:
+                  tcpSocket:
+                    port: 8080
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
       EOF
 
       # Deploy Domain Mappings
