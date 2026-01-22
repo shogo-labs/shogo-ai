@@ -5,15 +5,42 @@
  * - File tree sidebar with collapsible directories
  * - Monaco Editor with full syntax highlighting
  * - Language detection from file extension
- * - Dark theme matching the app
+ * - Theme-aware: syncs with app's dark/light mode via MutationObserver
  * - Filesystem API for file access (synced with Vite/Preview)
  * - Auto-save with debouncing (triggers Vite HMR)
+ * - JSX/TSX support with proper TypeScript compiler options
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import Editor from "@monaco-editor/react"
 import { Loader2, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, RefreshCw, Cloud, CloudOff } from "lucide-react"
 import { cn } from "@/lib/utils"
+
+/**
+ * Hook to detect dark mode from document.documentElement.classList
+ * Uses MutationObserver to react to theme changes
+ */
+function useIsDarkMode(): boolean {
+  const [isDark, setIsDark] = useState(() => {
+    if (typeof document === 'undefined') return true
+    return document.documentElement.classList.contains('dark')
+  })
+
+  useEffect(() => {
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.attributeName === 'class') {
+          setIsDark(document.documentElement.classList.contains('dark'))
+        }
+      }
+    })
+
+    observer.observe(document.documentElement, { attributes: true })
+    return () => observer.disconnect()
+  }, [])
+
+  return isDark
+}
 
 /** Auto-save debounce delay in ms */
 const AUTO_SAVE_DELAY = 1500
@@ -145,12 +172,14 @@ function FileTreeItem({
   selectedPath,
   onSelect,
   onToggle,
+  isDarkMode,
 }: {
   node: TreeNode
   depth: number
   selectedPath: string | null
   onSelect: (path: string) => void
   onToggle: (path: string) => void
+  isDarkMode: boolean
 }) {
   const isSelected = selectedPath === node.path
   const isDirectory = node.type === 'directory'
@@ -192,8 +221,9 @@ function FileTreeItem({
       <button
         onClick={handleClick}
         className={cn(
-          "w-full flex items-center gap-1 px-2 py-0.5 text-[13px] text-left hover:bg-[#2a2d2e] transition-colors",
-          isSelected && "bg-[#094771] text-white"
+          "w-full flex items-center gap-1 px-2 py-0.5 text-[13px] text-left transition-colors",
+          isDarkMode ? "hover:bg-[#2a2d2e]" : "hover:bg-gray-100",
+          isSelected && (isDarkMode ? "bg-[#094771] text-white" : "bg-blue-100 text-blue-900")
         )}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
@@ -215,9 +245,9 @@ function FileTreeItem({
         {/* Icon */}
         {isDirectory ? (
           node.expanded ? (
-            <FolderOpen className="h-4 w-4 text-amber-400 shrink-0" />
+            <FolderOpen className={cn("h-4 w-4 shrink-0", isDarkMode ? "text-amber-400" : "text-amber-500")} />
           ) : (
-            <Folder className="h-4 w-4 text-amber-400 shrink-0" />
+            <Folder className={cn("h-4 w-4 shrink-0", isDarkMode ? "text-amber-400" : "text-amber-500")} />
           )
         ) : (
           <FileText className={cn("h-4 w-4 shrink-0", getFileColor())} />
@@ -236,6 +266,7 @@ function FileTreeItem({
           selectedPath={selectedPath}
           onSelect={onSelect}
           onToggle={onToggle}
+          isDarkMode={isDarkMode}
         />
       ))}
     </>
@@ -248,6 +279,10 @@ export function CodeEditorPanel({
   onFileChange,
   refreshTrigger,
 }: CodeEditorPanelProps) {
+  // Theme detection for Monaco
+  const isDarkMode = useIsDarkMode()
+  const monacoTheme = isDarkMode ? 'vs-dark' : 'vs'
+  
   const [files, setFiles] = useState<FileInfo[]>([])
   const [isLoadingFiles, setIsLoadingFiles] = useState(true)
   const [filesError, setFilesError] = useState<string | null>(null)
@@ -450,20 +485,37 @@ export function CodeEditorPanel({
   const language = getMonacoLanguage(currentExtension)
 
   return (
-    <div className={cn("flex h-full bg-[#1e1e1e]", className)}>
+    <div className={cn(
+      "flex h-full",
+      isDarkMode ? "bg-[#1e1e1e]" : "bg-white",
+      className
+    )}>
       {/* File Tree Sidebar */}
-      <div className="w-56 shrink-0 border-r border-[#3c3c3c] flex flex-col bg-[#252526]">
-        <div className="flex items-center justify-between px-3 py-2 border-b border-[#3c3c3c]">
-          <span className="text-[11px] font-semibold text-[#bbbbbb] uppercase tracking-wider">
+      <div className={cn(
+        "w-56 shrink-0 border-r flex flex-col",
+        isDarkMode ? "border-[#3c3c3c] bg-[#252526]" : "border-gray-200 bg-gray-50"
+      )}>
+        <div className={cn(
+          "flex items-center justify-between px-3 py-2 border-b",
+          isDarkMode ? "border-[#3c3c3c]" : "border-gray-200"
+        )}>
+          <span className={cn(
+            "text-[11px] font-semibold uppercase tracking-wider",
+            isDarkMode ? "text-[#bbbbbb]" : "text-gray-600"
+          )}>
             Explorer
           </span>
           <button
             onClick={loadFiles}
-            className="p-1 hover:bg-[#3c3c3c] rounded transition-colors"
+            className={cn(
+              "p-1 rounded transition-colors",
+              isDarkMode ? "hover:bg-[#3c3c3c]" : "hover:bg-gray-200"
+            )}
             title="Refresh files"
           >
             <RefreshCw className={cn(
-              "h-3.5 w-3.5 text-[#888888]",
+              "h-3.5 w-3.5",
+              isDarkMode ? "text-[#888888]" : "text-gray-500",
               isLoadingFiles && "animate-spin"
             )} />
           </button>
@@ -472,20 +524,20 @@ export function CodeEditorPanel({
         <div className="flex-1 overflow-auto py-1">
           {isLoadingFiles ? (
             <div className="flex items-center justify-center p-4">
-              <Loader2 className="h-5 w-5 animate-spin text-[#888888]" />
+              <Loader2 className={cn("h-5 w-5 animate-spin", isDarkMode ? "text-[#888888]" : "text-gray-400")} />
             </div>
           ) : filesError ? (
             <div className="p-4 text-center">
-              <p className="text-sm text-red-400">{filesError}</p>
+              <p className="text-sm text-red-500">{filesError}</p>
               <button
                 onClick={loadFiles}
-                className="mt-2 text-xs text-blue-400 hover:underline"
+                className="mt-2 text-xs text-blue-500 hover:underline"
               >
                 Retry
               </button>
             </div>
           ) : fileTree.length === 0 ? (
-            <div className="p-4 text-center text-sm text-[#888888]">
+            <div className={cn("p-4 text-center text-sm", isDarkMode ? "text-[#888888]" : "text-gray-500")}>
               No files found
             </div>
           ) : (
@@ -497,6 +549,7 @@ export function CodeEditorPanel({
                 selectedPath={selectedFile}
                 onSelect={handleFileSelect}
                 onToggle={handleToggleDir}
+                isDarkMode={isDarkMode}
               />
             ))
           )}
@@ -507,31 +560,40 @@ export function CodeEditorPanel({
       <div className="flex-1 flex flex-col min-w-0">
         {/* File tabs with save status */}
         {selectedFile && (
-          <div className="flex items-center justify-between h-9 bg-[#252526] border-b border-[#3c3c3c]">
-            <div className="flex items-center px-3 h-full bg-[#1e1e1e] border-r border-[#3c3c3c]">
-              <FileText className="h-4 w-4 text-[#888888] mr-2" />
-              <span className="text-[13px] text-[#cccccc]">
+          <div className={cn(
+            "flex items-center justify-between h-9 border-b",
+            isDarkMode ? "bg-[#252526] border-[#3c3c3c]" : "bg-gray-100 border-gray-200"
+          )}>
+            <div className={cn(
+              "flex items-center px-3 h-full border-r",
+              isDarkMode ? "bg-[#1e1e1e] border-[#3c3c3c]" : "bg-white border-gray-200"
+            )}>
+              <FileText className={cn("h-4 w-4 mr-2", isDarkMode ? "text-[#888888]" : "text-gray-500")} />
+              <span className={cn("text-[13px]", isDarkMode ? "text-[#cccccc]" : "text-gray-700")}>
                 {selectedFile.split('/').pop()}
               </span>
               {/* Dirty indicator */}
               {isDirty && (
-                <span className="ml-1 w-2 h-2 rounded-full bg-white/70" title="Unsaved changes" />
+                <span className={cn(
+                  "ml-1 w-2 h-2 rounded-full",
+                  isDarkMode ? "bg-white/70" : "bg-blue-500"
+                )} title="Unsaved changes" />
               )}
             </div>
             {/* Save status indicator */}
             <div className="flex items-center gap-2 px-3 text-[11px]">
               {saveError ? (
-                <span className="flex items-center gap-1 text-red-400">
+                <span className="flex items-center gap-1 text-red-500">
                   <CloudOff className="h-3.5 w-3.5" />
                   {saveError}
                 </span>
               ) : isSaving ? (
-                <span className="flex items-center gap-1 text-[#888888]">
+                <span className={cn("flex items-center gap-1", isDarkMode ? "text-[#888888]" : "text-gray-500")}>
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   Saving...
                 </span>
               ) : lastSaved ? (
-                <span className="flex items-center gap-1 text-[#888888]">
+                <span className={cn("flex items-center gap-1", isDarkMode ? "text-[#888888]" : "text-gray-500")}>
                   <Cloud className="h-3.5 w-3.5" />
                   Saved
                 </span>
@@ -544,22 +606,22 @@ export function CodeEditorPanel({
         <div className="flex-1">
           {isLoadingContent ? (
             <div className="flex items-center justify-center h-full">
-              <Loader2 className="h-6 w-6 animate-spin text-[#888888]" />
+              <Loader2 className={cn("h-6 w-6 animate-spin", isDarkMode ? "text-[#888888]" : "text-gray-400")} />
             </div>
           ) : contentError ? (
             <div className="flex items-center justify-center h-full">
-              <p className="text-sm text-red-400">{contentError}</p>
+              <p className="text-sm text-red-500">{contentError}</p>
             </div>
           ) : !selectedFile ? (
             <div className="flex items-center justify-center h-full">
-              <p className="text-sm text-[#888888]">Select a file to view</p>
+              <p className={cn("text-sm", isDarkMode ? "text-[#888888]" : "text-gray-500")}>Select a file to view</p>
             </div>
           ) : (
             <Editor
               height="100%"
               language={language}
               value={fileContent}
-              theme="vs-dark"
+              theme={monacoTheme}
               onChange={handleEditorChange}
               onMount={(editor, monaco) => {
                 // Configure TypeScript/JavaScript compiler options for JSX support
@@ -601,7 +663,7 @@ export function CodeEditorPanel({
               }}
               loading={
                 <div className="flex items-center justify-center h-full">
-                  <Loader2 className="h-6 w-6 animate-spin text-[#888888]" />
+                  <Loader2 className={cn("h-6 w-6 animate-spin", isDarkMode ? "text-[#888888]" : "text-gray-400")} />
                 </div>
               }
             />
