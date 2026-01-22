@@ -1033,6 +1033,74 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 app.get('/api/health', (c) => c.json({ ok: true }))
 
 // =============================================================================
+// Templates API - Serve SDK example templates
+// =============================================================================
+
+/**
+ * Template metadata structure from template.json files
+ */
+interface TemplateMetadata {
+  name: string
+  description: string
+  complexity: 'beginner' | 'intermediate' | 'advanced'
+  features: string[]
+  models: string[]
+  tags: string[]
+  useCases: string[]
+  techStack: {
+    database: string
+    orm: string
+    frontend: string
+    router: string
+    sdk: string
+    [key: string]: string
+  }
+}
+
+/**
+ * Load all available templates from SDK examples directory
+ */
+async function loadTemplates(): Promise<TemplateMetadata[]> {
+  const templatesDir = resolve(PROJECT_ROOT, 'packages/sdk/examples')
+  const templates: TemplateMetadata[] = []
+
+  try {
+    const entries = await readdir(templatesDir, { withFileTypes: true })
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+
+      const templateJsonPath = join(templatesDir, entry.name, 'template.json')
+      try {
+        const content = await Bun.file(templateJsonPath).text()
+        const metadata: TemplateMetadata = JSON.parse(content)
+        templates.push(metadata)
+      } catch {
+        // Skip if no template.json or invalid JSON
+      }
+    }
+  } catch (err) {
+    console.error('[Templates] Failed to load templates:', err)
+  }
+
+  return templates
+}
+
+/**
+ * GET /api/templates - List all available SDK templates
+ * Returns template metadata for display on the home page
+ */
+app.get('/api/templates', async (c) => {
+  try {
+    const templates = await loadTemplates()
+    return c.json({ templates }, 200)
+  } catch (error: any) {
+    console.error('[Templates] Error loading templates:', error)
+    return c.json({ error: { code: 'template_error', message: error.message } }, 500)
+  }
+})
+
+// =============================================================================
 // Publish routes - Project publishing to subdomain.shogo.one
 // =============================================================================
 

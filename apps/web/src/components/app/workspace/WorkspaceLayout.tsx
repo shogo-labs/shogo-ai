@@ -261,6 +261,9 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // State for prompt submission (creating project from home page)
   const [isCreatingFromPrompt, setIsCreatingFromPrompt] = useState(false)
 
+  // State for template selection (which template is currently being set up)
+  const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
+
   // Store navigation data during handlePromptSubmit for use in transition callback
   const navigationDataRef = useRef<{
     project: any
@@ -375,6 +378,66 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       setIsCreatingFromPrompt(false)
     }
   }, [session?.user?.id, currentWorkspace?.id, studioCore, studioChat, refetchProjects, startTransition])
+
+  /**
+   * Handle template selection from home page
+   * Creates project, chat session, and navigates with an initial message to apply the template.
+   */
+  const handleTemplateSelect = useCallback(async (templateName: string, displayName: string) => {
+    const userId = session?.user?.id
+    const workspaceId = currentWorkspace?.id
+
+    if (!userId || !workspaceId) {
+      console.error("[WorkspaceLayout] Cannot create from template: missing userId or workspaceId")
+      return
+    }
+
+    if (!studioCore || !studioChat) {
+      console.error("[WorkspaceLayout] Cannot create from template: domains not available")
+      return
+    }
+
+    setLoadingTemplate(templateName)
+
+    try {
+      // 1. Create the project with the template display name
+      const projectName = `My ${displayName}`
+      const newProject = await studioCore.createProject(
+        projectName,
+        workspaceId,
+        `Created from ${displayName} template`,
+        userId
+      )
+
+      // 2. Create a chat session for this project
+      const chatSession = await studioChat.createChatSession({
+        inferredName: `Chat - ${projectName}`,
+        contextType: "project",
+        contextId: newProject.id,
+      })
+
+      // 3. Trigger refetch so the project shows in the sidebar
+      refetchProjects()
+
+      // 4. Navigate to the project with an initial message that will trigger template.copy
+      // The AI will automatically call template.copy when it receives this message
+      const initialMessage = `I want to use the ${templateName} template. Please set up this project by copying the template files, then tell me what I can do next with this ${displayName} app.`
+
+      navigate(`/projects/${newProject.id}?chatSessionId=${chatSession.id}`, {
+        state: {
+          project: newProject,
+          chatSessionId: chatSession.id,
+          initialMessage,
+          fromTemplate: templateName,
+        },
+      })
+
+    } catch (error) {
+      console.error("[WorkspaceLayout] Failed to create from template:", error)
+    } finally {
+      setLoadingTemplate(null)
+    }
+  }, [session?.user?.id, currentWorkspace?.id, studioCore, studioChat, refetchProjects, navigate])
 
   // Determine if we're on the home view (no project selected)
   const isHomeView = !currentProject && !projectId
@@ -494,7 +557,9 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
               <HomePage
                 userName={session?.user?.name?.split(" ")[0] || "there"}
                 onPromptSubmit={handlePromptSubmit}
+                onTemplateSelect={handleTemplateSelect}
                 isLoading={true}
+                loadingTemplate={loadingTemplate}
                 transitionPhase={transitionPhase}
                 inputRef={inputCardRef}
                 flipStyle={flipStyle}
@@ -505,7 +570,9 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
               <HomePage
                 userName={session?.user?.name?.split(" ")[0] || "there"}
                 onPromptSubmit={handlePromptSubmit}
+                onTemplateSelect={handleTemplateSelect}
                 isLoading={isCreatingFromPrompt}
+                loadingTemplate={loadingTemplate}
                 inputRef={inputCardRef}
               />
             )}
