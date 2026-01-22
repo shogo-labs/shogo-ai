@@ -12,9 +12,40 @@
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
-import Editor from "@monaco-editor/react"
+import Editor, { loader } from "@monaco-editor/react"
+import * as monaco from "monaco-editor"
 import { Loader2, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, RefreshCw, Cloud, CloudOff } from "lucide-react"
 import { cn } from "@/lib/utils"
+
+// Import Monaco workers for syntax highlighting
+import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker"
+import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker"
+import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker"
+import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker"
+import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker"
+
+// Configure Monaco to use bundled instance instead of CDN
+// This ensures syntax highlighting works in production
+self.MonacoEnvironment = {
+  getWorker(_, label) {
+    if (label === "typescript" || label === "javascript") {
+      return new tsWorker()
+    }
+    if (label === "json") {
+      return new jsonWorker()
+    }
+    if (label === "css" || label === "scss" || label === "less") {
+      return new cssWorker()
+    }
+    if (label === "html" || label === "handlebars" || label === "razor") {
+      return new htmlWorker()
+    }
+    return new editorWorker()
+  },
+}
+
+// Tell @monaco-editor/react to use our bundled Monaco instance
+loader.config({ monaco })
 
 /**
  * Hook to detect dark mode from document.documentElement.classList

@@ -1004,6 +1004,382 @@ app.get('/files/*', (c) => {
 })
 
 // =============================================================================
+// Terminal API (for Terminal Panel)
+// =============================================================================
+
+/**
+ * Preset command definition
+ */
+interface PresetCommand {
+  id: string
+  label: string
+  description: string
+  category: string
+  dangerous: boolean
+}
+
+/**
+ * Available preset commands that users can execute
+ */
+const PRESET_COMMANDS: PresetCommand[] = [
+  // Package Management
+  { id: 'bun-install', label: 'Install Dependencies', description: 'Install all project dependencies with bun', category: 'package', dangerous: false },
+  // Database (Prisma)
+  { id: 'prisma-generate', label: 'Generate Prisma Client', description: 'Regenerate Prisma client after schema changes', category: 'database', dangerous: false },
+  { id: 'prisma-push', label: 'Push Schema', description: 'Push schema changes to the database', category: 'database', dangerous: false },
+  { id: 'prisma-reset', label: 'Reset Database', description: 'Wipe and recreate database from schema (destructive)', category: 'database', dangerous: true },
+  { id: 'prisma-migrate', label: 'Run Migrations', description: 'Create and apply database migrations', category: 'database', dangerous: false },
+  // Testing
+  { id: 'playwright-test', label: 'Run Tests', description: 'Run Playwright E2E tests', category: 'test', dangerous: false },
+  // Build
+  { id: 'typecheck', label: 'Type Check', description: 'Run TypeScript type checking', category: 'build', dangerous: false },
+  { id: 'build', label: 'Build for Production', description: 'Create production build', category: 'build', dangerous: false },
+]
+
+/**
+ * Map command ID to actual shell command
+ */
+const COMMAND_MAP: Record<string, { command: string; timeout: number }> = {
+  'bun-install': { command: 'bun install', timeout: 120000 },
+  'prisma-generate': { command: 'bunx prisma generate', timeout: 60000 },
+  'prisma-push': { command: 'bunx prisma db push', timeout: 60000 },
+  'prisma-reset': { command: 'bunx prisma db push --force-reset', timeout: 30000 },
+  'prisma-migrate': { command: 'bunx prisma migrate dev --name auto', timeout: 60000 },
+  'playwright-test': { command: 'bunx playwright test', timeout: 180000 },
+  'typecheck': { command: 'bunx tsc --noEmit', timeout: 60000 },
+  'build': { command: 'bun run build', timeout: 120000 },
+}
+
+/**
+ * List available terminal commands
+ */
+app.get('/terminal/commands', (c) => {
+  // Group commands by category
+  const commandsByCategory = PRESET_COMMANDS.reduce((acc, cmd) => {
+    if (!acc[cmd.category]) {
+      acc[cmd.category] = []
+    }
+    acc[cmd.category].push(cmd)
+    return acc
+  }, {} as Record<string, PresetCommand[]>)
+
+  return c.json({ commands: commandsByCategory })
+})
+
+/**
+ * Execute a preset command
+ */
+app.post('/terminal/exec', async (c) => {
+  try {
+    const body = await c.req.json() as { commandId: string; confirmDangerous?: boolean }
+    const { commandId, confirmDangerous } = body
+    
+    // Find the preset command
+    const preset = PRESET_COMMANDS.find(cmd => cmd.id === commandId)
+    if (!preset) {
+      return c.json({ error: { code: 'unknown_command', message: `Unknown command: ${commandId}` } }, 400)
+    }
+    
+    // Require confirmation for dangerous commands
+    if (preset.dangerous && !confirmDangerous) {
+      return c.json({ error: { code: 'confirmation_required', message: 'This command is destructive. Set confirmDangerous: true to proceed.' } }, 400)
+    }
+    
+    const cmdConfig = COMMAND_MAP[commandId]
+    if (!cmdConfig) {
+      return c.json({ error: { code: 'command_not_found', message: 'Command configuration not found' } }, 500)
+    }
+    
+    console.log(`[project-runtime] Executing terminal command: ${cmdConfig.command}`)
+    
+    // Create streaming response
+    const { readable, writable } = new TransformStream()
+    const writer = writable.getWriter()
+    const encoder = new TextEncoder()
+    
+    // Execute command asynchronously
+    ;(async () => {
+      try {
+        await writer.write(encoder.encode(`$ ${cmdConfig.command}\n\n`))
+        
+        const proc = Bun.spawn(['sh', '-c', cmdConfig.command], {
+          cwd: PROJECT_DIR,
+          env: { ...process.env, FORCE_COLOR: '1', CI: 'true' },
+        })
+        
+        // Stream stdout
+        const reader = proc.stdout.getReader()
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          await writer.write(value)
+        }
+        
+        // Stream stderr
+        if (proc.stderr) {
+          const stderrReader = proc.stderr.getReader()
+          while (true) {
+            const { done, value } = await stderrReader.read()
+            if (done) break
+            await writer.write(value)
+          }
+        }
+        
+        const exitCode = await proc.exited
+        await writer.write(encoder.encode(`\n\n[Process exited with code ${exitCode}]\n`))
+        await writer.close()
+      } catch (err: any) {
+        await writer.write(encoder.encode(`[ERROR] ${err.message}\n`))
+        await writer.close()
+      }
+    })()
+    
+    return new Response(readable, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Transfer-Encoding': 'chunked',
+        'Cache-Control': 'no-cache',
+      },
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Terminal exec error:', error)
+    return c.json({ error: { code: 'exec_error', message: error.message || 'Failed to execute command' } }, 500)
+  }
+})
+
+// =============================================================================
+// Database API (Prisma Studio) - Simplified for Kubernetes
+// =============================================================================
+
+// Note: In Kubernetes, we don't run Prisma Studio as a separate process.
+// Instead, we return a URL that the client can use to access the database.
+// For now, we'll indicate that database access is available through the runtime.
+
+let prismaStudioProcess: ReturnType<typeof Bun.spawn> | null = null
+const PRISMA_STUDIO_PORT = parseInt(process.env.PRISMA_STUDIO_PORT || '5555', 10)
+
+/**
+ * Start Prisma Studio internally (helper function)
+ */
+async function ensurePrismaStudioRunning(): Promise<{ ok: boolean; error?: string }> {
+  const schemaPath = join(PROJECT_DIR, 'prisma', 'schema.prisma')
+  
+  // Check if Prisma schema exists
+  if (!existsSync(schemaPath)) {
+    return { ok: false, error: 'no_prisma_schema' }
+  }
+  
+  // Check if Prisma Studio is already running
+  if (prismaStudioProcess) {
+    try {
+      const response = await fetch(`http://localhost:${PRISMA_STUDIO_PORT}`)
+      if (response.ok) {
+        return { ok: true }
+      }
+    } catch {
+      // Not reachable, need to restart
+      prismaStudioProcess.kill()
+      prismaStudioProcess = null
+    }
+  }
+  
+  // Start Prisma Studio
+  console.log(`[project-runtime] Starting Prisma Studio on port ${PRISMA_STUDIO_PORT}...`)
+  
+  try {
+    prismaStudioProcess = Bun.spawn(['bunx', 'prisma', 'studio', '--port', String(PRISMA_STUDIO_PORT), '--browser', 'none'], {
+      cwd: PROJECT_DIR,
+      env: { ...process.env },
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    
+    // Wait for studio to start (with retries)
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setTimeout(resolve, 500))
+      try {
+        const response = await fetch(`http://localhost:${PRISMA_STUDIO_PORT}`)
+        if (response.ok) {
+          return { ok: true }
+        }
+      } catch {
+        // Keep waiting
+      }
+    }
+    
+    return { ok: true } // Assume it's starting
+  } catch (error: any) {
+    console.error('[project-runtime] Failed to start Prisma Studio:', error)
+    return { ok: false, error: error.message || 'Failed to start Prisma Studio' }
+  }
+}
+
+/**
+ * Get Prisma Studio URL (starts if needed)
+ * Note: Returns 'proxy' as URL indicator - actual access is via /database/proxy/*
+ */
+app.get('/database/url', async (c) => {
+  const result = await ensurePrismaStudioRunning()
+  
+  if (!result.ok) {
+    if (result.error === 'no_prisma_schema') {
+      return c.json({
+        status: 'error',
+        url: null,
+        error: { code: 'no_prisma_schema', message: 'No Prisma schema found in project' }
+      }, 400)
+    }
+    return c.json({
+      status: 'error',
+      url: null,
+      error: { code: 'start_failed', message: result.error || 'Failed to start Prisma Studio' }
+    }, 500)
+  }
+  
+  // Return 'proxy' as indicator - the API layer will construct the correct proxy URL
+  return c.json({
+    status: 'running',
+    url: 'proxy', // Indicator that /database/proxy/* should be used
+  })
+})
+
+/**
+ * Proxy requests to Prisma Studio
+ * This allows the browser to access Prisma Studio through the API without CORS issues
+ */
+app.all('/database/proxy', async (c) => {
+  const result = await ensurePrismaStudioRunning()
+  if (!result.ok) {
+    return c.json({ error: 'Prisma Studio not available' }, 503)
+  }
+  
+  const targetUrl = `http://localhost:${PRISMA_STUDIO_PORT}/`
+  console.log(`[project-runtime] Proxying database request to ${targetUrl}`)
+  
+  try {
+    const response = await fetch(targetUrl, {
+      method: c.req.method,
+      headers: {
+        'Accept': c.req.header('Accept') || '*/*',
+        'Accept-Language': c.req.header('Accept-Language') || 'en-US,en;q=0.9',
+      },
+    })
+    
+    // Copy response headers
+    const headers = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection', 'content-encoding'].includes(key.toLowerCase())) {
+        headers.set(key, value)
+      }
+    })
+    
+    return new Response(response.body, {
+      status: response.status,
+      headers,
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Proxy error:', error)
+    return c.json({ error: 'Failed to proxy to Prisma Studio' }, 502)
+  }
+})
+
+app.all('/database/proxy/*', async (c) => {
+  const result = await ensurePrismaStudioRunning()
+  if (!result.ok) {
+    return c.json({ error: 'Prisma Studio not available' }, 503)
+  }
+  
+  // Get the path after /database/proxy/
+  const path = c.req.path.replace('/database/proxy', '') || '/'
+  const query = c.req.url.includes('?') ? '?' + c.req.url.split('?')[1] : ''
+  const targetUrl = `http://localhost:${PRISMA_STUDIO_PORT}${path}${query}`
+  
+  console.log(`[project-runtime] Proxying database request to ${targetUrl}`)
+  
+  try {
+    const reqHeaders: Record<string, string> = {
+      'Accept': c.req.header('Accept') || '*/*',
+      'Accept-Language': c.req.header('Accept-Language') || 'en-US,en;q=0.9',
+    }
+    
+    // Forward content-type for POST/PUT
+    const contentType = c.req.header('Content-Type')
+    if (contentType) {
+      reqHeaders['Content-Type'] = contentType
+    }
+    
+    const response = await fetch(targetUrl, {
+      method: c.req.method,
+      headers: reqHeaders,
+      body: ['POST', 'PUT', 'PATCH'].includes(c.req.method) ? await c.req.arrayBuffer() : undefined,
+    })
+    
+    // Copy response headers
+    const headers = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection', 'content-encoding'].includes(key.toLowerCase())) {
+        headers.set(key, value)
+      }
+    })
+    
+    return new Response(response.body, {
+      status: response.status,
+      headers,
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Proxy error:', error)
+    return c.json({ error: 'Failed to proxy to Prisma Studio' }, 502)
+  }
+})
+
+/**
+ * Get Prisma Studio status
+ */
+app.get('/database/status', async (c) => {
+  const schemaPath = join(PROJECT_DIR, 'prisma', 'schema.prisma')
+  
+  if (!existsSync(schemaPath)) {
+    return c.json({ status: 'stopped', hasPrisma: false })
+  }
+  
+  if (!prismaStudioProcess) {
+    return c.json({ status: 'stopped', hasPrisma: true })
+  }
+  
+  try {
+    const response = await fetch(`http://localhost:${PRISMA_STUDIO_PORT}`)
+    if (response.ok) {
+      return c.json({ status: 'running', hasPrisma: true, url: `http://localhost:${PRISMA_STUDIO_PORT}` })
+    }
+  } catch {
+    // Not reachable
+  }
+  
+  return c.json({ status: 'starting', hasPrisma: true })
+})
+
+/**
+ * Start Prisma Studio
+ */
+app.post('/database/start', async (c) => {
+  // Same as /database/url - fetch URL will start it if needed
+  const urlResponse = await fetch(`http://localhost:${PORT}/database/url`)
+  return urlResponse
+})
+
+/**
+ * Stop Prisma Studio
+ */
+app.post('/database/stop', (c) => {
+  if (prismaStudioProcess) {
+    prismaStudioProcess.kill()
+    prismaStudioProcess = null
+    console.log('[project-runtime] Prisma Studio stopped')
+  }
+  return c.json({ status: 'stopped' })
+})
+
+// =============================================================================
 // Graceful Shutdown
 // =============================================================================
 

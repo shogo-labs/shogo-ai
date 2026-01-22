@@ -1509,20 +1509,88 @@ app.post('/api/projects/:projectId/s3/presign', async (c) => {
 
 // List available terminal commands
 app.get('/api/projects/:projectId/terminal/commands', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/terminal/commands`
+      
+      console.log(`[TerminalProxy] Proxying commands list to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[TerminalProxy] Error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to get terminal commands' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Use local filesystem
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
   const router = terminalRoutes({ workspacesDir })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/terminal/commands`
+  url.pathname = `/projects/${projectId}/terminal/commands`
   const newReq = new Request(url.toString(), { method: 'GET' })
   return router.fetch(newReq)
 })
 
 // Execute a preset command
 app.post('/api/projects/:projectId/terminal/exec', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/terminal/exec`
+      
+      console.log(`[TerminalProxy] Proxying exec to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: c.req.raw.headers,
+        body: c.req.raw.body,
+      })
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[TerminalProxy] Error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to execute command' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Use local filesystem
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
   const router = terminalRoutes({ workspacesDir })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/terminal/exec`
+  url.pathname = `/projects/${projectId}/terminal/exec`
   const newReq = new Request(url.toString(), {
     method: 'POST',
     headers: c.req.raw.headers,
@@ -1565,42 +1633,264 @@ app.post('/api/projects/:projectId/tests/run', async (c) => {
 
 // Start Prisma Studio
 app.post('/api/projects/:projectId/database/start', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/database/start`
+      
+      console.log(`[DatabaseProxy] Proxying start to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl, { method: 'POST' })
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[DatabaseProxy] Error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to start database' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Use local filesystem
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
   const router = databaseRoutes({ workspacesDir })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/database/start`
+  url.pathname = `/projects/${projectId}/database/start`
   const newReq = new Request(url.toString(), { method: 'POST' })
   return router.fetch(newReq)
 })
 
 // Stop Prisma Studio
 app.post('/api/projects/:projectId/database/stop', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/database/stop`
+      
+      console.log(`[DatabaseProxy] Proxying stop to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl, { method: 'POST' })
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[DatabaseProxy] Error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to stop database' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Use local filesystem
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
   const router = databaseRoutes({ workspacesDir })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/database/stop`
+  url.pathname = `/projects/${projectId}/database/stop`
   const newReq = new Request(url.toString(), { method: 'POST' })
   return router.fetch(newReq)
 })
 
 // Get Prisma Studio status
 app.get('/api/projects/:projectId/database/status', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/database/status`
+      
+      console.log(`[DatabaseProxy] Proxying status to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[DatabaseProxy] Error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to get database status' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Use local filesystem
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
   const router = databaseRoutes({ workspacesDir })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/database/status`
+  url.pathname = `/projects/${projectId}/database/status`
   const newReq = new Request(url.toString(), { method: 'GET' })
   return router.fetch(newReq)
 })
 
 // Get Prisma Studio URL (starts if needed)
 app.get('/api/projects/:projectId/database/url', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/database/url`
+      
+      console.log(`[DatabaseProxy] Proxying URL request to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl)
+      const data = await response.json()
+      
+      // Transform 'proxy' URL to actual proxy path through API
+      if (data.url === 'proxy') {
+        data.url = `/api/projects/${projectId}/database/proxy/`
+      }
+      
+      return c.json(data, response.status as any)
+    } catch (error: any) {
+      console.error('[DatabaseProxy] Error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to get database URL' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Use local filesystem
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
   const router = databaseRoutes({ workspacesDir })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/database/url`
+  url.pathname = `/projects/${projectId}/database/url`
   const newReq = new Request(url.toString(), { method: 'GET' })
   return router.fetch(newReq)
+})
+
+// Proxy requests to Prisma Studio running on project pod
+app.all('/api/projects/:projectId/database/proxy', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (!isKubernetes()) {
+    // Local development not supported for proxy yet
+    return c.json({ error: 'Database proxy not available in local development' }, 501)
+  }
+  
+  try {
+    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+    const podUrl = await getProjectPodUrl(projectId)
+    const targetUrl = `${podUrl}/database/proxy`
+    
+    console.log(`[DatabaseProxy] Proxying to ${targetUrl}`)
+    
+    const reqHeaders: Record<string, string> = {
+      'Accept': c.req.header('Accept') || '*/*',
+    }
+    const contentType = c.req.header('Content-Type')
+    if (contentType) {
+      reqHeaders['Content-Type'] = contentType
+    }
+    
+    const response = await fetch(targetUrl, {
+      method: c.req.method,
+      headers: reqHeaders,
+      body: ['POST', 'PUT', 'PATCH'].includes(c.req.method) ? await c.req.arrayBuffer() : undefined,
+    })
+    
+    const responseHeaders = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection', 'content-encoding'].includes(key.toLowerCase())) {
+        responseHeaders.set(key, value)
+      }
+    })
+    
+    return new Response(response.body, {
+      status: response.status,
+      headers: responseHeaders,
+    })
+  } catch (error: any) {
+    console.error('[DatabaseProxy] Error:', error)
+    return c.json({ error: 'Failed to proxy to Prisma Studio' }, 502)
+  }
+})
+
+app.all('/api/projects/:projectId/database/proxy/*', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (!isKubernetes()) {
+    return c.json({ error: 'Database proxy not available in local development' }, 501)
+  }
+  
+  try {
+    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+    const podUrl = await getProjectPodUrl(projectId)
+    
+    // Get the path after /database/proxy
+    const fullPath = c.req.path
+    const proxyPath = fullPath.replace(`/api/projects/${projectId}/database/proxy`, '') || '/'
+    const query = c.req.url.includes('?') ? '?' + c.req.url.split('?')[1] : ''
+    const targetUrl = `${podUrl}/database/proxy${proxyPath}${query}`
+    
+    console.log(`[DatabaseProxy] Proxying to ${targetUrl}`)
+    
+    const reqHeaders: Record<string, string> = {
+      'Accept': c.req.header('Accept') || '*/*',
+    }
+    const contentType = c.req.header('Content-Type')
+    if (contentType) {
+      reqHeaders['Content-Type'] = contentType
+    }
+    
+    const response = await fetch(targetUrl, {
+      method: c.req.method,
+      headers: reqHeaders,
+      body: ['POST', 'PUT', 'PATCH'].includes(c.req.method) ? await c.req.arrayBuffer() : undefined,
+    })
+    
+    const responseHeaders = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection', 'content-encoding'].includes(key.toLowerCase())) {
+        responseHeaders.set(key, value)
+      }
+    })
+    
+    return new Response(response.body, {
+      status: response.status,
+      headers: responseHeaders,
+    })
+  } catch (error: any) {
+    console.error('[DatabaseProxy] Error:', error)
+    return c.json({ error: 'Failed to proxy to Prisma Studio' }, 502)
+  }
 })
 
 // =============================================================================
