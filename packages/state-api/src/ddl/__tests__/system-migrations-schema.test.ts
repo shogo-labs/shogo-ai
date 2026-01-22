@@ -57,25 +57,53 @@ describe("system-migrations-schema.ts - Schema File Structure", () => {
       expect(migrationRecord).toBeDefined()
       const required = migrationRecord.required || []
       expect(required).toContain("schemaName")
-      expect(required).toContain("version")
+      expect(required).toContain("toVersion")
       expect(required).toContain("checksum")
       expect(required).toContain("appliedAt")
       expect(required).toContain("success")
+      expect(required).toContain("verified")
     })
   })
 
-  describe("MigrationRecord version is integer type", () => {
-    test("version has type: 'integer'", () => {
+  describe("MigrationRecord toVersion is integer type", () => {
+    test("toVersion has type: 'integer'", () => {
       const migrationRecord = schema.$defs?.MigrationRecord
-      expect(migrationRecord.properties?.version?.type).toBe("integer")
+      expect(migrationRecord.properties?.toVersion?.type).toBe("integer")
     })
   })
 
-  describe("MigrationRecord statements is array of strings", () => {
-    test("statements has type: 'array' with items type: 'string'", () => {
+  describe("MigrationRecord fromVersion is integer type", () => {
+    test("fromVersion has type: 'integer' and is optional (nullable)", () => {
+      const migrationRecord = schema.$defs?.MigrationRecord
+      expect(migrationRecord.properties?.fromVersion?.type).toBe("integer")
+      // fromVersion should NOT be in required (null for fresh deploy)
+      const required = migrationRecord.required || []
+      expect(required).not.toContain("fromVersion")
+    })
+  })
+
+  describe("MigrationRecord verified is boolean type", () => {
+    test("verified has type: 'boolean' and is required", () => {
+      const migrationRecord = schema.$defs?.MigrationRecord
+      expect(migrationRecord.properties?.verified?.type).toBe("boolean")
+      const required = migrationRecord.required || []
+      expect(required).toContain("verified")
+    })
+  })
+
+  describe("MigrationRecord verificationDetails is object type", () => {
+    test("verificationDetails has type: 'object' and is optional", () => {
+      const migrationRecord = schema.$defs?.MigrationRecord
+      expect(migrationRecord.properties?.verificationDetails?.type).toBe("object")
+      const required = migrationRecord.required || []
+      expect(required).not.toContain("verificationDetails")
+    })
+  })
+
+  describe("MigrationRecord statements is array type", () => {
+    test("statements has type: 'array'", () => {
       const migrationRecord = schema.$defs?.MigrationRecord
       expect(migrationRecord.properties?.statements?.type).toBe("array")
-      expect(migrationRecord.properties?.statements?.items?.type).toBe("string")
     })
   })
 
@@ -104,7 +132,10 @@ describe("system-migrations-schema.ts - Wavesmith Integration", () => {
         expect(schema.$defs?.MigrationRecord).toBeDefined()
         expect(schema.$defs?.MigrationRecord?.properties?.id).toBeDefined()
         expect(schema.$defs?.MigrationRecord?.properties?.schemaName).toBeDefined()
-        expect(schema.$defs?.MigrationRecord?.properties?.version).toBeDefined()
+        expect(schema.$defs?.MigrationRecord?.properties?.fromVersion).toBeDefined()
+        expect(schema.$defs?.MigrationRecord?.properties?.toVersion).toBeDefined()
+        expect(schema.$defs?.MigrationRecord?.properties?.verified).toBeDefined()
+        expect(schema.$defs?.MigrationRecord?.properties?.verificationDetails).toBeDefined()
       }
     })
   })

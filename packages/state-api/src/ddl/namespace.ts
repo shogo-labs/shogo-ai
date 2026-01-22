@@ -150,3 +150,74 @@ function escapePostgresIdentifier(identifier: string): string {
   const escaped = identifier.replace(/"/g, '""')
   return `"${escaped}"`
 }
+
+/**
+ * Normalizes a table name for comparison by stripping quotes and converting to lowercase.
+ *
+ * This function enables comparing table names from different sources:
+ * - qualifyTableName() returns quoted PostgreSQL names: "schema"."table"
+ * - introspection returns unquoted names: schema.table
+ *
+ * After normalization, both formats become comparable: schema.table
+ *
+ * @param tableName - Table name in any format (quoted or unquoted)
+ * @returns Normalized table name (unquoted, lowercase)
+ *
+ * @example
+ * ```ts
+ * normalizeTableNameForComparison('"studio_chat"."chat_session"')  // "studio_chat.chat_session"
+ * normalizeTableNameForComparison('studio_chat.chat_session')       // "studio_chat.chat_session"
+ * normalizeTableNameForComparison('Studio_Chat.Chat_Session')       // "studio_chat.chat_session"
+ * normalizeTableNameForComparison('"user"')                         // "user"
+ * normalizeTableNameForComparison('"my""app"."user"')               // 'my"app.user'
+ * ```
+ */
+export function normalizeTableNameForComparison(tableName: string): string {
+  // Step 1: Handle PostgreSQL quoted identifiers
+  // Pattern matches: "identifier" or "schema"."table"
+  // We need to:
+  // 1. Remove surrounding double quotes from each part
+  // 2. Unescape doubled double quotes ("") back to single (")
+
+  let result = tableName
+
+  // If the string contains quoted identifiers, process them
+  if (result.includes('"')) {
+    // Split by "." but only if the dot is between quoted identifiers
+    // This regex matches quoted identifiers and preserves the structure
+    const parts: string[] = []
+    let current = ""
+    let inQuote = false
+
+    for (let i = 0; i < result.length; i++) {
+      const char = result[i]
+
+      if (char === '"') {
+        if (inQuote && result[i + 1] === '"') {
+          // Escaped quote ("") - keep one quote
+          current += '"'
+          i++ // Skip the next quote
+        } else {
+          // Toggle quote state
+          inQuote = !inQuote
+        }
+      } else if (char === '.' && !inQuote) {
+        // Separator between schema and table
+        parts.push(current)
+        current = ""
+      } else {
+        current += char
+      }
+    }
+
+    // Don't forget the last part
+    if (current) {
+      parts.push(current)
+    }
+
+    result = parts.join(".")
+  }
+
+  // Step 2: Convert to lowercase for case-insensitive comparison
+  return result.toLowerCase()
+}

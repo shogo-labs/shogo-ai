@@ -160,6 +160,8 @@ export interface ChatPanelProps {
   compactValue?: string
   /** Callback when compact mode input value changes */
   onCompactValueChange?: (value: string) => void
+  /** Callback when agent modifies files (Write, Edit, StrReplace tools) - for code panel refresh */
+  onFilesChanged?: (paths: string[]) => void
 }
 
 // ============================================================
@@ -219,15 +221,27 @@ function extractToolCalls(message: Message): ExtractedToolCall[] {
   }
 
   return ((message as any).parts as any[])
-    .filter((part) => part.type === "tool-invocation")
+    .filter((part) => part.type === "tool-invocation" || part.type === "dynamic-tool")
     .map((part) => {
-      const invocation = part.toolInvocation
-      return {
-        toolName: invocation?.toolName || "unknown",
-        state: mapToolCallState(invocation?.state),
-        args: invocation?.args,
-        result: invocation?.result,
-        error: invocation?.error,
+      // Handle both standard tool-invocation and Claude Code's dynamic-tool format
+      if (part.type === "tool-invocation") {
+        const invocation = part.toolInvocation
+        return {
+          toolName: invocation?.toolName || "unknown",
+          state: mapToolCallState(invocation?.state),
+          args: invocation?.args,
+          result: invocation?.result,
+          error: invocation?.error,
+        }
+      } else {
+        // dynamic-tool: data is directly on the part, not nested in toolInvocation
+        return {
+          toolName: part.toolName || "unknown",
+          state: mapToolCallState(part.state),
+          args: part.input || part.args,
+          result: part.output || part.result,
+          error: part.error,
+        }
       }
     })
 }
@@ -261,8 +275,11 @@ function mapToolCallState(state: string | undefined): ToolCallState {
     case "call":
       return "input-available"
     case "result":
+    case "output-available": // dynamic-tool format
+    case "success": // alternative dynamic-tool state
       return "output-available"
     case "error":
+    case "output-error": // dynamic-tool format
       return "output-error"
     default:
       return "input-streaming"
@@ -435,6 +452,58 @@ function requiresSchemaRefresh(toolCall: ExtractedToolCall): boolean {
 }
 
 /**
+ * File operation tool names that modify files in the project.
+ * These tools require the code panel to refresh.
+ */
+const FILE_OPERATION_TOOLS = new Set([
+  'Write',
+  'Edit', 
+  'StrReplace',
+  'Delete',
+  // MCP template tools
+  'template_copy',
+  'template.copy',
+])
+
+/**
+ * Extracts file paths from tool calls that modify files.
+ * Returns array of file paths that were modified.
+ */
+function getModifiedFilePaths(toolCalls: ExtractedToolCall[]): string[] {
+  const paths: string[] = []
+  
+  for (const toolCall of toolCalls) {
+    // Only process successful tool calls
+    if (toolCall.state !== "output-available") {
+      continue
+    }
+    
+    // Handle MCP tool naming: "mcp__wavesmith__template_copy" -> "template_copy"
+    const normalizedToolName = toolCall.toolName.includes("__")
+      ? toolCall.toolName.split("__").pop() || toolCall.toolName
+      : toolCall.toolName
+    
+    // Check if this is a file operation tool
+    if (!FILE_OPERATION_TOOLS.has(normalizedToolName)) {
+      continue
+    }
+    
+    // Extract path from args
+    const args = toolCall.args as Record<string, unknown> | undefined
+    if (args?.path && typeof args.path === 'string') {
+      paths.push(args.path)
+    }
+    
+    // For template.copy, mark as "all files changed" with special marker
+    if (normalizedToolName === 'template_copy' || normalizedToolName === 'template.copy') {
+      paths.push('*') // Special marker meaning "refresh all files"
+    }
+  }
+  
+  return [...new Set(paths)] // Deduplicate
+}
+
+/**
  * Triggers collection refreshes for the given collection names on a domain.
  * Uses same query().toArray() pattern as useFeaturePolling for consistency.
  */
@@ -495,6 +564,7 @@ export const ChatPanel = observer(function ChatPanel({
   inputContainerRef,
   compactValue,
   onCompactValueChange,
+  onFilesChanged,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
@@ -620,6 +690,10 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Guard to prevent double-injection of initial message (homepage transition warm-start)
   const hasInjectedInitialMessageRef = useRef(false)
+
+  // Store last user input for retry functionality (task-chat-retry-fix)
+  // This allows retry to work even if AI SDK's reload() fails
+  const lastUserInputRef = useRef<{ content: string; imageData?: string } | null>(null)
 
   // Initialize ccSessionId from existing session (task-cc-chatpanel-integration)
   // This ensures session continuity when reloading the page or switching sessions
@@ -1036,6 +1110,7 @@ export const ChatPanel = observer(function ChatPanel({
     onFinish: async ({ message }) => {
       // chat-session-sync-fix: v3 API callback receives { message, messages, isAbort, ... } options object
       // Must destructure message from options - NOT receive message directly like v1/v2
+      
       const contentLength = message.content?.length ?? message.parts?.length ?? 0
 
       // chat-session-sync-fix: v3 API - Session ID from message.metadata
@@ -1083,17 +1158,25 @@ export const ChatPanel = observer(function ChatPanel({
         })
 
         // Record tool calls from the message (fire-and-forget)
+        // task-toolcall-warning-fix: Ensure args and result are serializable
         const toolCalls = extractToolCalls(message)
         for (const toolCall of toolCalls) {
+          // Ensure args and result are not null/undefined (can cause DB errors)
+          const safeArgs = toolCall.args ?? {}
+          const safeResult = toolCall.result !== undefined ? toolCall.result : null
+          
           studioChat.recordToolCall({
             sessionId: currentSessionId,
             toolName: toolCall.toolName,
             status: toolCall.state === "output-available" ? "complete" :
               toolCall.state === "output-error" ? "error" : "executing",
-            args: toolCall.args || {},
-            result: toolCall.result,
+            args: safeArgs,
+            result: safeResult,
           }).catch((err) => {
-            console.warn("[ChatPanel] Failed to record tool call:", err)
+            // Only log in debug - these are fire-and-forget operations
+            if (process.env.NODE_ENV === 'development') {
+              console.debug("[ChatPanel] Failed to record tool call:", err)
+            }
           })
         }
 
@@ -1155,6 +1238,16 @@ export const ChatPanel = observer(function ChatPanel({
             onRefresh().catch((err) => {
               console.warn("[ChatPanel] onRefresh callback failed:", err)
             })
+          }
+
+          // Notify code panel of file changes (for auto-refresh)
+          // Detects Write, Edit, StrReplace, template.copy and notifies parent
+          if (onFilesChanged) {
+            const modifiedPaths = getModifiedFilePaths(toolCalls)
+            if (modifiedPaths.length > 0) {
+              console.log("[ChatPanel] 📁 Files modified by agent:", modifiedPaths)
+              onFilesChanged(modifiedPaths)
+            }
           }
         }
       }
@@ -1589,6 +1682,9 @@ export const ChatPanel = observer(function ChatPanel({
 
       const trimmedContent = content.trim()
 
+      // task-chat-retry-fix: Store input for potential retry
+      lastUserInputRef.current = { content: trimmedContent, imageData }
+
       // Persist user message to local store (fire-and-forget)
       // task-chatpanel-sendmessage: Include imageData when present
       studioChat.addMessage({
@@ -1719,16 +1815,23 @@ export const ChatPanel = observer(function ChatPanel({
     [width, onWidthChange]
   )
 
-  // Error retry handler
+  // Error retry handler (task-chat-retry-fix)
   // AI SDK v3: reload() regenerates the last assistant message
-  // Guard against reload being undefined or no messages to retry
+  // If reload isn't available or no messages, fallback to resending last user input
   const handleRetry = useCallback(() => {
     if (typeof reload === 'function' && messages.length > 0) {
       reload()
+    } else if (lastUserInputRef.current) {
+      // Fallback: resend the last user message
+      console.log('[ChatPanel] Using fallback retry - resending last input')
+      handleSendMessage(
+        lastUserInputRef.current.content,
+        lastUserInputRef.current.imageData
+      )
     } else {
-      console.warn('[ChatPanel] Cannot retry: reload not available or no messages')
+      console.warn('[ChatPanel] Cannot retry: no messages or last input available')
     }
-  }, [reload, messages.length])
+  }, [reload, messages.length, handleSendMessage])
 
   // Convert messages for MessageList
   const messageListMessages = messages.map((msg) => ({

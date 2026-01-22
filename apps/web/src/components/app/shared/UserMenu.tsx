@@ -97,6 +97,11 @@ export const UserMenu = observer(function UserMenu() {
       await auth.signOut()
     } catch (error) {
       console.error("Sign out failed:", error)
+    } finally {
+      // Force full page reload to clear all MST stores and contexts
+      // This ensures no stale data from previous user remains
+      // Use finally to ensure reload happens even if signOut fails
+      window.location.reload()
     }
   }
 

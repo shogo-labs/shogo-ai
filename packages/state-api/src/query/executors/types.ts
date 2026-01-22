@@ -8,7 +8,7 @@
  * SqlQueryExecutor implement it.
  */
 
-import type { Condition } from "../ast/types"
+import type { ParsedCondition } from "../ast/types"
 import type { QueryOptions } from "../backends/types"
 
 /**
@@ -34,7 +34,7 @@ export interface IQueryExecutor<T> {
    * @param options - Optional query options (orderBy, skip, take)
    * @returns Promise resolving to array of matching items
    */
-  select(ast: Condition, options?: QueryOptions): Promise<T[]>
+  select(ast: ParsedCondition, options?: QueryOptions): Promise<T[]>
 
   /**
    * Execute a query and return the first matching item.
@@ -43,7 +43,7 @@ export interface IQueryExecutor<T> {
    * @param options - Optional query options (orderBy, skip)
    * @returns Promise resolving to first item or undefined
    */
-  first(ast: Condition, options?: QueryOptions): Promise<T | undefined>
+  first(ast: ParsedCondition, options?: QueryOptions): Promise<T | undefined>
 
   /**
    * Execute a count query and return the number of matching items.
@@ -55,7 +55,7 @@ export interface IQueryExecutor<T> {
    * For SQL backends, this should use COUNT(*) optimization.
    * For memory backends, this filters and returns length.
    */
-  count(ast: Condition): Promise<number>
+  count(ast: ParsedCondition): Promise<number>
 
   /**
    * Execute an existence check query.
@@ -67,7 +67,7 @@ export interface IQueryExecutor<T> {
    * For SQL backends, this should use EXISTS or LIMIT 1 optimization.
    * For memory backends, this can early-exit on first match.
    */
-  exists(ast: Condition): Promise<boolean>
+  exists(ast: ParsedCondition): Promise<boolean>
 
   // ==========================================================================
   // Mutation Operations
@@ -125,7 +125,7 @@ export interface IQueryExecutor<T> {
    * @param changes - Partial entity with fields to update
    * @returns Promise resolving to count of updated entities
    */
-  updateMany(ast: Condition, changes: Partial<T>): Promise<number>
+  updateMany(ast: ParsedCondition, changes: Partial<T>): Promise<number>
 
   /**
    * Delete multiple entities matching a filter.
@@ -133,5 +133,5 @@ export interface IQueryExecutor<T> {
    * @param ast - Query condition AST (from parseQuery)
    * @returns Promise resolving to count of deleted entities
    */
-  deleteMany(ast: Condition): Promise<number>
+  deleteMany(ast: ParsedCondition): Promise<number>
 }

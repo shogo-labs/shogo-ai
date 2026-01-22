@@ -1,0 +1,35 @@
+{
+  "name": "ai-chat",
+  "description": "AI chatbot with conversation history, streaming responses, and user authentication",
+  "complexity": "advanced",
+  "features": [
+    "prisma",
+    "user-auth",
+    "crud",
+    "one-to-many",
+    "ai-sdk",
+    "streaming",
+    "chat-history",
+    "tailwindcss"
+  ],
+  "models": ["User", "Chat", "Message"],
+  "tags": ["ai", "chatbot", "llm", "openai", "streaming", "conversation", "assistant"],
+  "useCases": [
+    "ai chatbot",
+    "conversational ai",
+    "chat assistant",
+    "ai assistant",
+    "llm chat",
+    "openai chat",
+    "gpt chat"
+  ],
+  "techStack": {
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "router": "tanstack-router",
+    "sdk": "@shogo-ai/sdk",
+    "ai": "ai-sdk",
+    "styling": "tailwindcss"
+  }
+}

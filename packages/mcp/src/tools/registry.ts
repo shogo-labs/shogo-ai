@@ -21,6 +21,8 @@ import { registerViewProject } from "./view.project"
 // DDL tools
 import { registerDdlExecute } from "./ddl.execute"
 import { registerDdlMigrate } from "./ddl.migrate"
+import { registerDdlVerify } from "./ddl.verify"
+import { registerDdlRecover } from "./ddl.recover"
 
 // Agent tools
 import { registerAgentChat } from "./agent.chat"
@@ -32,13 +34,18 @@ import { registerWorkspaceSync } from "./workspace.sync"
 import { registerSdkCreateRoutes } from "./sdk.create-routes"
 import { registerSdkCreateApp } from "./sdk.create-app"
 
+// Template tools
+import { registerTemplateList } from "./template.list"
+import { registerTemplateCopy } from "./template.copy"
+
 /**
  * Register Platform MCP tools on a FastMCP server instance.
  *
- * Platform MCP provides FULL access to all 16 Wavesmith tools for:
+ * Platform MCP provides FULL access to all Wavesmith tools for:
  * - Claude orchestration (AI-driven development)
  * - Schema management (DDL, migrations)
  * - Cross-project operations
+ * - Starter templates for rapid app creation
  *
  * Accessible schemas:
  * - studio-core: Organizations, projects, project membership
@@ -46,14 +53,15 @@ import { registerSdkCreateApp } from "./sdk.create-app"
  * - component-builder: UI composition system
  * - studio-chat: Chat sessions and messages
  *
- * Total: 18 tools across 7 namespaces
+ * Total: 20 tools across 8 namespaces
  * - Schema: 3 tools (set, load, list)
  * - Store: 5 tools (create, get, update, delete, query)
  * - View: 4 tools (execute, define, delete, project)
- * - DDL: 2 tools (execute, migrate) - PLATFORM ONLY
+ * - DDL: 4 tools (execute, migrate, verify, recover) - PLATFORM ONLY
  * - Agent: 1 tool (chat) - PLATFORM ONLY
  * - Workspace: 1 tool (sync) - PLATFORM ONLY
  * - SDK: 2 tools (createApp, createRoutes) - PLATFORM ONLY
+ * - Template: 2 tools (list, copy) - PLATFORM ONLY
  *
  * @param server - FastMCP server instance (stdio or HTTP transport)
  */
@@ -76,9 +84,11 @@ export function registerPlatformTools(server: FastMCP) {
   registerViewDelete(server)
   registerViewProject(server)
 
-  // DDL namespace (2 tools) - Platform only
+  // DDL namespace (4 tools) - Platform only
   registerDdlExecute(server)
   registerDdlMigrate(server)
+  registerDdlVerify(server)
+  registerDdlRecover(server)
 
   // Agent namespace (1 tool) - Platform only
   registerAgentChat(server)
@@ -89,6 +99,10 @@ export function registerPlatformTools(server: FastMCP) {
   // SDK namespace (2 tools) - Platform only
   registerSdkCreateRoutes(server)
   registerSdkCreateApp(server)
+
+  // Template namespace (2 tools) - Platform only
+  registerTemplateList(server)
+  registerTemplateCopy(server)
 }
 
 /**
@@ -162,4 +176,21 @@ export function registerProjectTools(server: FastMCP) {
 export function registerAllTools(server: FastMCP) {
   // Backward compatible - delegates to platform tools
   registerPlatformTools(server)
+}
+
+/**
+ * Register only template tools on a FastMCP server instance.
+ *
+ * This minimal tool set is used by the Shogo agent in project runtime,
+ * which only needs access to starter templates for rapid app scaffolding.
+ *
+ * Total: 2 tools
+ * - Template: 2 tools (list, copy)
+ *
+ * @param server - FastMCP server instance (stdio or HTTP transport)
+ */
+export function registerTemplateTools(server: FastMCP) {
+  // Template namespace (2 tools) - for project scaffolding
+  registerTemplateList(server)
+  registerTemplateCopy(server)
 }

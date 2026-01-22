@@ -16,7 +16,7 @@
  */
 
 // Layout components
-export { AuthGate, AppShell, AppHeader } from "./layout"
+export { AuthGate, AppShell, AppHeader, SchemaLoadingGate } from "./layout"
 
 // Auth components
 export { LoginPage, SignInForm, SignUpForm, GoogleOAuthButton } from "./auth"

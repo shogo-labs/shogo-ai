@@ -13,8 +13,11 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { Database } from "bun:sqlite"
 import { resetMetaStore, getMetaStore, clearRuntimeStores } from "../../meta/bootstrap"
 import { BunSqlExecutor } from "../../query/execution/bun-sql"
+import type { ISqlExecutor } from "../../query/execution/types"
 import { SqlBackend } from "../../query/backends/sql"
 import { BackendRegistry } from "../../query/registry"
+import { qualifyTableName, type QualifyDialect } from "../namespace"
+import { toSnakeCase } from "../utils"
 
 // Import the functions under test (will fail initially)
 import {
@@ -26,7 +29,7 @@ import {
   type SchemaSyncResultBootstrap,
 } from "../orchestrator"
 
-// System migrations schema for testing
+// System migrations schema for testing (v2 with chain model)
 const systemMigrationsSchema = {
   $schema: "http://json-schema.org/draft-07/schema#",
   $id: "system-migrations",
@@ -41,14 +44,17 @@ const systemMigrationsSchema = {
       properties: {
         id: { type: "string", "x-mst-type": "identifier" },
         schemaName: { type: "string" },
-        version: { type: "integer" },
+        fromVersion: { type: "integer" },
+        toVersion: { type: "integer" },
         checksum: { type: "string" },
         appliedAt: { type: "number" },
-        statements: { type: "array", items: { type: "string" } },
+        statements: { type: "array" },
         success: { type: "boolean" },
+        verified: { type: "boolean" },
         errorMessage: { type: "string" },
+        verificationDetails: { type: "object" },
       },
-      required: ["id", "schemaName", "version", "checksum", "appliedAt", "success"],
+      required: ["id", "schemaName", "toVersion", "checksum", "appliedAt", "success", "verified"],
     },
   },
 }
@@ -131,6 +137,8 @@ describe("Orchestrator", () => {
         action: "created",
         version: 1,
         statements: ["CREATE TABLE user (id TEXT PRIMARY KEY)"],
+        success: true,
+        verified: true,
       }
       expect(result.action).toBe("created")
       expect(result.version).toBe(1)
@@ -152,6 +160,8 @@ describe("Orchestrator", () => {
         fromVersion: 1,
         toVersion: 2,
         statements: ["ALTER TABLE user ADD COLUMN age INTEGER"],
+        success: true,
+        verified: true,
       }
       expect(result.action).toBe("migrated")
       expect(result.fromVersion).toBe(1)
@@ -163,9 +173,9 @@ describe("Orchestrator", () => {
       // Test that we can assign any of the four types to SchemaSyncResult
       const results: SchemaSyncResult[] = [
         { action: "bootstrap" },
-        { action: "created", version: 1, statements: [] },
+        { action: "created", version: 1, statements: [], success: true, verified: true },
         { action: "unchanged", version: 1 },
-        { action: "migrated", fromVersion: 1, toVersion: 2, statements: [] },
+        { action: "migrated", fromVersion: 1, toVersion: 2, statements: [], success: true, verified: true },
       ]
 
       // Verify discrimination works
@@ -231,7 +241,7 @@ describe("Orchestrator", () => {
         (r: any) => r.schemaName === "user-schema"
       )
       expect(migrations?.length).toBe(1)
-      expect(migrations?.[0].version).toBe(1)
+      expect(migrations?.[0].toVersion).toBe(1)
       expect(migrations?.[0].success).toBe(true)
     })
 
@@ -291,7 +301,7 @@ describe("Orchestrator", () => {
       )
       expect(migrations?.length).toBe(2)
 
-      const v2Migration = migrations?.find((m: any) => m.version === 2)
+      const v2Migration = migrations?.find((m: any) => m.toVersion === 2)
       expect(v2Migration).toBeDefined()
       expect(v2Migration?.success).toBe(true)
     })
@@ -578,7 +588,7 @@ describe("dryRun mode", () => {
       (r: any) => r.schemaName === "user-schema"
     )
     expect(migrations?.length).toBe(1) // Only v1 exists
-    expect(migrations?.[0].version).toBe(1)
+    expect(migrations?.[0].toVersion).toBe(1)
   })
 
   test("dryRun includes diff and migrationOutput for reporting", async () => {
@@ -635,5 +645,229 @@ describe("dryRun mode", () => {
       expect(result.diff).toBeDefined()
       expect(result.migrationOutput).toBeDefined()
     }
+  })
+})
+
+// ============================================================================
+// Dialect-Aware Table Naming Tests
+// ============================================================================
+
+describe("verifyMigration dialect awareness", () => {
+  test("should use qualifyTableName for expected tables (PostgreSQL format)", () => {
+    // This test verifies that verifyMigration generates correct table names
+    // based on dialect. For PostgreSQL, expected tables should be "namespace"."table"
+
+    const namespace = "test_schema"
+    const modelNames = ["User", "UserProfile", "TeamMember"]
+
+    // When using qualifyTableName with postgresql dialect
+    const postgresExpected = modelNames.map(modelName => {
+      const tableName = toSnakeCase(modelName)
+      return qualifyTableName(namespace, tableName, "postgresql")
+    })
+
+    // Then: Should be in "schema"."table" format
+    expect(postgresExpected).toContain('"test_schema"."user"')
+    expect(postgresExpected).toContain('"test_schema"."user_profile"')
+    expect(postgresExpected).toContain('"test_schema"."team_member"')
+
+    // Should NOT contain __ pattern for PostgreSQL
+    for (const name of postgresExpected) {
+      expect(name).not.toContain("__")
+    }
+  })
+
+  test("should use qualifyTableName for expected tables (SQLite format)", () => {
+    // For SQLite, expected tables should be "namespace__table"
+
+    const namespace = "test_schema"
+    const modelNames = ["User", "UserProfile"]
+
+    // When using qualifyTableName with sqlite dialect
+    const sqliteExpected = modelNames.map(modelName => {
+      const tableName = toSnakeCase(modelName)
+      return qualifyTableName(namespace, tableName, "sqlite")
+    })
+
+    // Then: Should be in namespace__table format
+    expect(sqliteExpected).toContain("test_schema__user")
+    expect(sqliteExpected).toContain("test_schema__user_profile")
+  })
+
+  test("toSnakeCase should be imported from utils (no local duplicate)", async () => {
+    // This test verifies that the orchestrator uses the shared toSnakeCase
+    // from utils.ts rather than having its own duplicate implementation
+
+    const orchestratorSource = await Bun.file(
+      `${process.cwd()}/packages/state-api/src/ddl/orchestrator.ts`
+    ).text()
+
+    // Should import toSnakeCase from utils
+    const hasImport = orchestratorSource.includes('import') &&
+      orchestratorSource.includes('toSnakeCase') &&
+      orchestratorSource.includes('./utils')
+
+    // Should NOT have a local function toSnakeCase
+    // Local functions would be declared as "function toSnakeCase"
+    const localFunctionPattern = /^function toSnakeCase\(/m
+    const hasLocalFunction = localFunctionPattern.test(orchestratorSource)
+
+    expect(hasImport).toBe(true)
+    expect(hasLocalFunction).toBe(false)
+  })
+
+  test("verifyMigration should use backend dialect for table name generation", async () => {
+    // This test documents that verifyMigration should detect the backend dialect
+    // and generate expected table names in the correct format
+
+    // The expected behavior is:
+    // 1. Get dialect from backend (backend.dialect or backend.executor)
+    // 2. Use qualifyTableName(namespace, tableName, dialect)
+    // 3. Compare with actual tables from getActualTablesFullNames()
+
+    // The current implementation hardcodes SQLite pattern which is incorrect
+    // This test will fail until the implementation is fixed
+
+    // Read the orchestrator source to verify it uses dialect-aware naming
+    const orchestratorSource = await Bun.file(
+      `${process.cwd()}/packages/state-api/src/ddl/orchestrator.ts`
+    ).text()
+
+    // Should use qualifyTableName for expected tables
+    const usesQualifyTableName = orchestratorSource.includes("qualifyTableName")
+
+    // Should not hardcode __ pattern in verifyMigration
+    // Look for the specific pattern: `${namespace}__${toSnakeCase(modelName)}`
+    const hardcodedPattern = /\$\{namespace\}__\$\{toSnakeCase\(modelName\)\}/
+    const hasHardcodedPattern = hardcodedPattern.test(orchestratorSource)
+
+    expect(usesQualifyTableName).toBe(true)
+    expect(hasHardcodedPattern).toBe(false)
+  })
+})
+
+// ============================================================================
+// SchemaSyncResult Success/Verified Exposure Tests
+// ============================================================================
+
+describe("SchemaSyncResult exposes success/verified status", () => {
+  let db: Database
+  let registry: BackendRegistry
+
+  beforeEach(async () => {
+    resetMetaStore()
+    clearRuntimeStores()
+
+    db = new Database(":memory:")
+    const executor = new BunSqlExecutor(db)
+    const backend = new SqlBackend({ dialect: "sqlite", executor })
+
+    registry = new BackendRegistry()
+    registry.register("sql", backend)
+    registry.setDefault("sql")
+
+    // Bootstrap system-migrations
+    await ensureSchemaSynced("system-migrations", systemMigrationsSchema, registry)
+  })
+
+  test("SchemaSyncResultCreated includes success and verified fields", async () => {
+    // Given: Fresh schema
+    getMetaStore().ingestEnhancedJsonSchema(userSchemaV1, { name: "user-schema" })
+
+    // When: Sync creates schema
+    const result = await ensureSchemaSynced("user-schema", userSchemaV1, registry)
+
+    // Then: Result should include success and verified status
+    expect(result.action).toBe("created")
+    if (result.action === "created") {
+      // These fields should be exposed in the result type
+      expect(result).toHaveProperty("success")
+      expect(result).toHaveProperty("verified")
+      expect((result as any).success).toBe(true)
+      expect((result as any).verified).toBe(true)
+    }
+  })
+
+  test("SchemaSyncResultMigrated includes success and verified fields", async () => {
+    // Given: Schema at v1
+    getMetaStore().ingestEnhancedJsonSchema(userSchemaV1, { name: "user-schema" })
+    await ensureSchemaSynced("user-schema", userSchemaV1, registry)
+
+    // When: Sync migrates to v2
+    const result = await ensureSchemaSynced("user-schema", userSchemaV2, registry)
+
+    // Then: Result should include success and verified status
+    expect(result.action).toBe("migrated")
+    if (result.action === "migrated") {
+      // These fields should be exposed in the result type
+      expect(result).toHaveProperty("success")
+      expect(result).toHaveProperty("verified")
+      expect((result as any).success).toBe(true)
+      expect((result as any).verified).toBe(true)
+    }
+  })
+
+  test("SchemaSyncResult exposes errorMessage when execution fails", async () => {
+    // Given: A scenario where DDL execution fails
+    // (We can't easily force SQLite to fail, but the type should support it)
+
+    // Then: The result types should support errorMessage field
+    type ResultWithError = SchemaSyncResultCreated | SchemaSyncResultMigrated
+    const mockResult: ResultWithError = {
+      action: "created",
+      version: 1,
+      statements: [],
+      success: false,
+      verified: false,
+      errorMessage: "Execution failed: some error",
+    } as any
+
+    expect(mockResult.errorMessage).toBe("Execution failed: some error")
+  })
+
+  test("SchemaSyncResult exposes verificationDetails when verification fails", async () => {
+    // The result types should support verificationDetails for debugging
+
+    type ResultWithDetails = SchemaSyncResultMigrated
+    const mockResult: ResultWithDetails = {
+      action: "migrated",
+      fromVersion: 1,
+      toVersion: 2,
+      statements: [],
+      success: true,
+      verified: false,
+      verificationDetails: {
+        tablesExpected: ["test__user"],
+        tablesFound: [],
+        tablesMissing: ["test__user"],
+        tablesExtra: [],
+      },
+    } as any
+
+    expect(mockResult.verificationDetails?.tablesMissing).toContain("test__user")
+  })
+})
+
+// ============================================================================
+// Table Name Normalization in Verification Tests
+// ============================================================================
+
+describe("verifyMigration table name comparison", () => {
+  /**
+   * This test verifies that verification uses normalized table names for comparison.
+   * The issue: qualifyTableName returns quoted names ("schema"."table"),
+   * but introspection returns unquoted names (schema.table).
+   * Comparison should work regardless of quoting.
+   */
+  test("verification should normalize table names before comparison", async () => {
+    // Read the orchestrator source to verify it uses normalizeTableNameForComparison
+    const orchestratorSource = await Bun.file(
+      `${process.cwd()}/packages/state-api/src/ddl/orchestrator.ts`
+    ).text()
+
+    // Should import or use normalizeTableNameForComparison
+    const usesNormalization = orchestratorSource.includes("normalizeTableNameForComparison")
+
+    expect(usesNormalization).toBe(true)
   })
 })

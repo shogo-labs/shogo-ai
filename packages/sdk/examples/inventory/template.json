@@ -1,0 +1,33 @@
+{
+  "name": "inventory",
+  "description": "Stock management system with products, categories, suppliers, and movement tracking",
+  "complexity": "intermediate",
+  "features": [
+    "prisma",
+    "user-auth",
+    "crud",
+    "one-to-many",
+    "aggregations",
+    "groupBy",
+    "stock-tracking",
+    "low-stock-alerts"
+  ],
+  "models": ["User", "Product", "Category", "StockMovement", "Supplier"],
+  "tags": ["inventory", "stock", "products", "warehouse", "supply-chain", "management"],
+  "useCases": [
+    "inventory tracker",
+    "stock management",
+    "warehouse management",
+    "product catalog",
+    "supply chain",
+    "inventory control",
+    "stock level tracking"
+  ],
+  "techStack": {
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "router": "tanstack-router",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

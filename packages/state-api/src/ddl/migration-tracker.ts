@@ -39,10 +39,10 @@ function getSystemMigrationsStore(): any | null {
 }
 
 /**
- * Get all applied migrations for a schema, ordered by version ascending.
+ * Get all applied migrations for a schema, ordered by toVersion ascending.
  *
  * @param schemaName - Name of the schema to get migrations for
- * @returns Array of MigrationRecord objects, ordered by version
+ * @returns Array of MigrationRecord objects, ordered by toVersion
  *
  * @remarks
  * Uses query() to fetch from SQL database (not just MST memory).
@@ -64,7 +64,7 @@ export async function getAppliedMigrations(schemaName: string): Promise<Migratio
     // Query SQL directly (not MST memory) for all migrations
     return await collection.query()
       .where({ schemaName })
-      .orderBy("version", "asc")
+      .orderBy("toVersion", "asc")
       .toArray()
   } catch {
     return []
@@ -72,7 +72,7 @@ export async function getAppliedMigrations(schemaName: string): Promise<Migratio
 }
 
 /**
- * Get the latest (highest version) migration for a schema.
+ * Get the latest (highest toVersion) migration for a schema.
  *
  * @param schemaName - Name of the schema to get latest migration for
  * @returns Latest MigrationRecord or null if none exist
@@ -95,7 +95,7 @@ export async function getLatestMigration(schemaName: string): Promise<MigrationR
     // This ensures idempotency across server restarts
     const result = await collection.query()
       .where({ schemaName })
-      .orderBy("version", "desc")
+      .orderBy("toVersion", "desc")
       .first()
 
     return result ?? null
@@ -108,7 +108,7 @@ export async function getLatestMigration(schemaName: string): Promise<MigrationR
  * Check if a specific migration version has been applied.
  *
  * @param schemaName - Name of the schema
- * @param version - Version number to check
+ * @param version - Target version number to check
  * @returns True if version has been applied, false otherwise
  *
  * @remarks
@@ -124,12 +124,104 @@ export async function isMigrationApplied(schemaName: string, version: number): P
   try {
     const collection = store.migrationRecordCollection
 
-    // Query SQL directly (not MST memory) to check if version exists
+    // Query SQL directly (not MST memory) to check if toVersion exists
     return await collection.query()
-      .where({ schemaName, version })
+      .where({ schemaName, toVersion: version })
       .any()
   } catch {
     return false
+  }
+}
+
+/**
+ * Get the complete migration chain for a schema, ordered by toVersion ascending.
+ *
+ * @param schemaName - Name of the schema to get chain for
+ * @returns Array of MigrationRecord objects forming the migration chain
+ *
+ * @remarks
+ * Returns all migrations regardless of success/verified status.
+ * Use getLastApplied() to find the last successfully verified migration.
+ */
+export async function getChain(schemaName: string): Promise<MigrationRecord[]> {
+  const store = getSystemMigrationsStore()
+
+  if (!store) {
+    return []
+  }
+
+  try {
+    const collection = store.migrationRecordCollection
+
+    return await collection.query()
+      .where({ schemaName })
+      .orderBy("toVersion", "asc")
+      .toArray()
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Get the last successfully applied and verified migration for a schema.
+ *
+ * @param schemaName - Name of the schema
+ * @returns MigrationRecord with highest toVersion where success=true AND verified=true, or null
+ *
+ * @remarks
+ * Only returns migrations that were both:
+ * 1. Successfully executed (DDL completed without errors)
+ * 2. Verified (post-execution check confirmed tables exist)
+ *
+ * This is the safe baseline for determining where to resume migrations.
+ */
+export async function getLastApplied(schemaName: string): Promise<MigrationRecord | null> {
+  const store = getSystemMigrationsStore()
+
+  if (!store) {
+    return null
+  }
+
+  try {
+    const collection = store.migrationRecordCollection
+
+    // Find highest toVersion where success=true AND verified=true
+    const result = await collection.query()
+      .where({ schemaName, success: true, verified: true })
+      .orderBy("toVersion", "desc")
+      .first()
+
+    return result ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Find all migration records for a schema.
+ *
+ * @param schemaName - Name of the schema
+ * @returns All MigrationRecord objects for the schema, unordered
+ *
+ * @remarks
+ * Use this when you need all records regardless of order.
+ * For ordered results, use getChain().
+ */
+export async function findBySchema(schemaName: string): Promise<MigrationRecord[]> {
+  const store = getSystemMigrationsStore()
+
+  if (!store) {
+    return []
+  }
+
+  try {
+    const collection = store.migrationRecordCollection
+
+    return await collection.query()
+      .where({ schemaName })
+      .toArray()
+  } catch {
+    return []
   }
 }
 
@@ -142,8 +234,8 @@ export async function isMigrationApplied(schemaName: string, version: number): P
  * @remarks
  * Use this to record successful or failed migration attempts.
  * The record should include all required fields:
- * - id, schemaName, version, checksum, appliedAt, success
- * - Optional: statements, errorMessage
+ * - id, schemaName, fromVersion, toVersion, checksum, appliedAt, success, verified
+ * - Optional: statements, errorMessage, verificationDetails
  */
 export async function recordMigration(record: Omit<MigrationRecord, "id"> & { id?: string }): Promise<void> {
   const store = getSystemMigrationsStore()
@@ -160,6 +252,8 @@ export async function recordMigration(record: Omit<MigrationRecord, "id"> & { id
     id: record.id ?? crypto.randomUUID(),
     // Serialize statements array to JSON for SQL TEXT storage
     statements: record.statements ? JSON.stringify(record.statements) : undefined,
+    // Serialize verificationDetails to JSON for SQL storage
+    verificationDetails: record.verificationDetails ? JSON.stringify(record.verificationDetails) : undefined,
   }
 
   // Use insertOne() to persist to SQL (via CollectionMutatable mixin)

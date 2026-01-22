@@ -1,42 +1,54 @@
 # =============================================================================
-# Shogo AI - Project Runtime E2E Testing
+# Shogo AI - Project Runtime E2E Testing (PostgreSQL Sidecar Architecture)
 # =============================================================================
 # Tests the pod-per-project architecture locally using Docker.
+# This simulates the Kubernetes architecture where each project has:
+#   - project-runtime: Claude Code agent + MCP + Vite
+#   - postgres: PostgreSQL sidecar (localhost connection)
 #
 # Usage:
 #   docker-compose -f docker-compose.project-runtime.yml up -d
 #   ./scripts/test-project-runtime-e2e.sh
 #   docker-compose -f docker-compose.project-runtime.yml down -v
 #
-# Services:
-#   - project-runtime: The isolated project runtime (Claude Code + Vite)
-#   - minio: S3-compatible storage for project files
-#   - postgres: Database for state-api
+# Architecture:
+#   In Kubernetes, both containers run in the same pod and communicate via
+#   localhost. In Docker Compose, we use Docker networks with container names.
+#   The project-runtime connects to "postgres-sidecar:5432" which simulates
+#   the "localhost:5432" connection in Kubernetes.
 # =============================================================================
 
 services:
   # ---------------------------------------------------------------------------
-  # PostgreSQL Database
+  # PostgreSQL Sidecar (Per-Project Database)
   # ---------------------------------------------------------------------------
-  postgres:
+  # In production (Kubernetes), this runs as a sidecar container in the same
+  # pod as project-runtime. The project connects via localhost:5432.
+  # In Docker Compose, we simulate this with a dedicated postgres service.
+  # ---------------------------------------------------------------------------
+  postgres-sidecar:
     image: postgres:16-alpine
-    container_name: project-runtime-postgres
+    container_name: project-runtime-postgres-sidecar
     environment:
       POSTGRES_USER: shogo
-      POSTGRES_PASSWORD: shogo_dev
-      POSTGRES_DB: shogo
+      POSTGRES_PASSWORD: shogo
+      POSTGRES_DB: project
+      PGDATA: /var/lib/postgresql/data/pgdata
     ports:
+      # Expose on 5433 for local testing (5432 is used by main postgres)
       - "5433:5432"
+    volumes:
+      - postgres-sidecar-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U shogo"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      test: ["CMD", "pg_isready", "-U", "shogo", "-d", "project"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
     networks:
       - project-runtime-network
 
   # ---------------------------------------------------------------------------
-  # MinIO (S3-compatible storage)
+  # MinIO (S3-compatible storage for project files)
   # ---------------------------------------------------------------------------
   minio:
     image: minio/minio:latest
@@ -48,6 +60,8 @@ services:
     ports:
       - "9002:9000"
       - "9003:9001"
+    volumes:
+      - minio-data:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
@@ -79,7 +93,6 @@ services:
         mc anonymous set download myminio/shogo-schemas
         
         echo 'Uploading test project files...'
-        # Create a test project directory structure
         echo '{\"name\":\"test-project\",\"private\":true}' > /tmp/package.json
         mc cp /tmp/package.json myminio/shogo-workspaces/test-project-123/package.json
         
@@ -90,7 +103,14 @@ services:
       - project-runtime-network
 
   # ---------------------------------------------------------------------------
-  # Project Runtime (Pod-per-Project)
+  # Project Runtime (with PostgreSQL Sidecar)
+  # ---------------------------------------------------------------------------
+  # This simulates a Kubernetes pod with two containers:
+  #   1. project-runtime (this container)
+  #   2. postgres-sidecar (the database)
+  # 
+  # In Kubernetes, DATABASE_URL points to localhost:5432.
+  # In Docker Compose, we use the postgres-sidecar service name.
   # ---------------------------------------------------------------------------
   project-runtime:
     build:
@@ -111,8 +131,10 @@ services:
       MCP_SERVER_PATH: /app/packages/mcp/src/server.ts
       PORT: "8080"
       NODE_ENV: development
-      # Database
-      DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
+      # PostgreSQL Sidecar connection
+      # In Kubernetes: postgres://shogo:shogo@localhost:5432/project
+      # In Docker Compose: use service name instead of localhost
+      DATABASE_URL: postgres://shogo:shogo@postgres-sidecar:5432/project
       # S3/MinIO configuration
       S3_WORKSPACES_BUCKET: shogo-workspaces
       S3_ENDPOINT: http://minio:9000
@@ -125,8 +147,10 @@ services:
     volumes:
       # Mount schemas for MCP
       - ./.schemas:/app/.schemas:ro
+      # Persist project data
+      - project-data:/app/project
     depends_on:
-      postgres:
+      postgres-sidecar:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
@@ -138,6 +162,14 @@ services:
       start_period: 30s
     networks:
       - project-runtime-network
+
+volumes:
+  postgres-sidecar-data:
+    name: project-runtime-postgres-data
+  minio-data:
+    name: project-runtime-minio-data
+  project-data:
+    name: project-runtime-project-data
 
 networks:
   project-runtime-network:

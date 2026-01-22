@@ -16,3 +16,8 @@ export type { TransitionPhase } from "./HomePage"
 
 export { ComposingWorkspaceView } from "./ComposingWorkspaceView"
 export type { ComposingWorkspaceViewProps } from "./ComposingWorkspaceView"
+
+export { TemplateCard, formatTemplateName } from "./TemplateCard"
+export type { TemplateMetadata } from "./TemplateCard"
+
+export { TemplatePreviewModal } from "./TemplatePreviewModal"

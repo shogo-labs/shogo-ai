@@ -40,7 +40,8 @@ import {
 } from '@ucast/sql'
 import type { FieldCondition } from '@ucast/core'
 import { parseQuery } from '../ast'
-import type { IBackend, BackendCapabilities, QueryOptions, QueryResult, DDLGenerationOptions, DDLExecutionResult } from './types'
+import type { IBackend, BackendCapabilities, QueryOptions, QueryResult, DDLGenerationOptions, DDLExecutionResult, CompileContext, ModelResolver } from './types'
+import type { SubqueryCondition } from '../ast/types'
 import type { ISqlExecutor } from '../execution/types'
 import { generateDDL, ddlOutputToSQL, createPostgresDialect, createSqliteDialect } from '../../ddl'
 
@@ -100,6 +101,32 @@ function createDialectOptions(dialect: SqlDialect, joinTracker: string[]) {
       return false // Signal we won't auto-generate the join
     },
   }
+}
+
+// ============================================================================
+// Parameter Renumbering Helper
+// ============================================================================
+
+/**
+ * Renumber PostgreSQL parameter placeholders in a SQL fragment.
+ *
+ * When compiling compound conditions, each child is compiled independently and
+ * @ucast/sql resets parameter numbering to $1 for each. This function adjusts
+ * the placeholders so they form a continuous sequence when concatenated.
+ *
+ * @param sql - SQL string with $1, $2, etc. placeholders
+ * @param offset - Starting offset (0 = first param stays $1, 2 = $1 becomes $3)
+ * @returns SQL with renumbered placeholders
+ *
+ * @example
+ * renumberPgParams('"user_id" = $1 AND "status" = $2', 2)
+ * // => '"user_id" = $3 AND "status" = $4'
+ */
+function renumberPgParams(sql: string, offset: number): string {
+  if (offset === 0) return sql
+
+  // Match $N where N is a number, replace with $(N + offset)
+  return sql.replace(/\$(\d+)/g, (_, num) => `$${parseInt(num, 10) + offset}`)
 }
 
 // ============================================================================
@@ -243,16 +270,20 @@ export class SqlBackend implements IBackend {
    * ```
    */
   compileSelect(
-    ast: Condition,
+    ast: Condition | SubqueryCondition,
     tableName: string,
-    options?: QueryOptions
+    options?: QueryOptions,
+    context?: CompileContext
   ): [string, any[], string[]] {
-    // Track required joins
+    // Track required joins - pass through context to compileCondition
     const joins: string[] = []
 
     // Compile WHERE clause using dialect-specific options
-    const [whereSql, params] = interpret(ast, createDialectOptions(this.dialect, joins))
+    // Use new compilation path that handles subqueries
+    // Pass joins array through context so joinRelation callback can populate it
+    const [whereSql, params] = this.compileCondition(ast, { ...context, joins })
 
+    // Note: whereSql may be "()" for empty conditions - caller (buildSelectSql) handles this
     const parts: string[] = [whereSql]
 
     // ORDER BY clause (manual construction)
@@ -306,14 +337,17 @@ export class SqlBackend implements IBackend {
    * ```
    */
   compileCount(
-    ast: Condition,
-    tableName: string
+    ast: Condition | SubqueryCondition,
+    tableName: string,
+    context?: CompileContext
   ): [string, any[], string[]] {
-    // Track required joins
+    // Track required joins - pass through context to compileCondition
     const joins: string[] = []
 
     // COUNT queries don't need ORDER BY or LIMIT
-    const [whereSql, params] = interpret(ast, createDialectOptions(this.dialect, joins))
+    // Use new compilation path that handles subqueries
+    // Pass joins array through context so joinRelation callback can populate it
+    const [whereSql, params] = this.compileCondition(ast, { ...context, joins })
 
     // Handle empty WHERE clause
     let sql: string
@@ -331,6 +365,7 @@ export class SqlBackend implements IBackend {
    *
    * @param ast - Query AST (from parseQuery)
    * @param tableName - Table name to query
+   * @param context - Optional compile context with ModelResolver for subqueries
    * @returns Tuple of [sql, params, joins]
    *
    * @remarks
@@ -346,14 +381,17 @@ export class SqlBackend implements IBackend {
    * ```
    */
   compileExists(
-    ast: Condition,
-    tableName: string
+    ast: Condition | SubqueryCondition,
+    tableName: string,
+    context?: CompileContext
   ): [string, any[], string[]] {
-    // Track required joins
+    // Track required joins - pass through context to compileCondition
     const joins: string[] = []
 
     // EXISTS queries should LIMIT 1 for efficiency
-    const [whereSql, params] = interpret(ast, createDialectOptions(this.dialect, joins))
+    // Use new compilation path that handles subqueries
+    // Pass joins array through context so joinRelation callback can populate it
+    const [whereSql, params] = this.compileCondition(ast, { ...context, joins })
 
     // Handle empty WHERE clause
     let sql: string
@@ -370,11 +408,18 @@ export class SqlBackend implements IBackend {
    * Compile just the WHERE clause from an AST.
    *
    * @param ast - Query AST (from parseQuery)
+   * @param context - Optional compile context with ModelResolver for subqueries
    * @returns Tuple of [whereClause, params]
    *
    * @remarks
    * Used by mutation operations (updateMany, deleteMany) that need
    * WHERE clause compilation without SELECT/ORDER BY/LIMIT.
+   *
+   * Supports SubqueryCondition nodes when ModelResolver is provided:
+   * ```typescript
+   * { authorId: { $in: { $query: { model: 'User', filter: { role: 'admin' } } } } }
+   * // Compiles to: "author_id" IN (SELECT "id" FROM "users" WHERE "role" = $1)
+   * ```
    *
    * @example
    * ```typescript
@@ -384,16 +429,264 @@ export class SqlBackend implements IBackend {
    * // params: ['active']
    * ```
    */
-  compileWhere(ast: Condition): [string, any[]] {
-    const joins: string[] = []
-    const [whereSql, params] = interpret(ast, createDialectOptions(this.dialect, joins))
+  compileWhere(ast: Condition | SubqueryCondition, context?: CompileContext): [string, any[]] {
+    // Use new compilation method that handles subqueries
+    const [sql, params] = this.compileCondition(ast, context ?? {})
 
-    // Handle empty WHERE clause (parseQuery({}))
-    if (whereSql.trim() === '()' || whereSql.trim() === '') {
-      return ['', []]
+    // Convert "()" (empty compound) to "" for callers that use this directly in SQL
+    // Note: compileSelect handles "()" separately via buildSelectSql in the executor
+    if (sql.trim() === '()' || sql.trim() === '') {
+      return ['', params]
     }
 
+    return [sql, params]
+  }
+
+  /**
+   * Compile a condition (regular or subquery) to SQL.
+   *
+   * @param ast - Query AST (Condition or SubqueryCondition)
+   * @param context - Compile context with ModelResolver, paramOffset, dialect, joins
+   * @returns Tuple of [sql, params]
+   */
+  private compileCondition(
+    ast: Condition | SubqueryCondition,
+    context: CompileContext
+  ): [string, any[]] {
+    // Check if this is a SubqueryCondition
+    if (this.isSubqueryCondition(ast)) {
+      return this.compileSubqueryCondition(ast, context)
+    }
+
+    // Check if this is a CompoundCondition that might contain subqueries
+    if (this.isCompoundCondition(ast)) {
+      return this.compileCompoundWithSubqueries(ast, context)
+    }
+
+    // Regular condition - delegate to @ucast/sql interpreter
+    // Use joins from context if provided, otherwise create local array
+    const joins = context.joins ?? []
+    const [whereSql, params] = interpret(ast as Condition, createDialectOptions(this.dialect, joins))
+
+    // Note: @ucast/sql returns "()" for empty conditions (e.g., parseQuery({}))
+    // Callers handle this case (e.g., compileCount checks for "()" or "")
     return [whereSql, params]
+  }
+
+  /**
+   * Check if an AST node is a SubqueryCondition.
+   */
+  private isSubqueryCondition(ast: any): ast is SubqueryCondition {
+    return ast && typeof ast === 'object' && ast.type === 'subquery'
+  }
+
+  /**
+   * Check if an AST node is a CompoundCondition.
+   */
+  private isCompoundCondition(ast: any): boolean {
+    return ast && typeof ast === 'object' && 'value' in ast && Array.isArray(ast.value)
+  }
+
+  /**
+   * Check if an AST node or any of its descendants contains a subquery.
+   * This is needed because compound conditions may have nested subqueries
+   * that the standard @ucast/sql interpreter cannot handle.
+   */
+  private containsSubquery(ast: any): boolean {
+    if (this.isSubqueryCondition(ast)) {
+      return true
+    }
+    if (this.isCompoundCondition(ast)) {
+      return (ast.value as any[]).some(child => this.containsSubquery(child))
+    }
+    return false
+  }
+
+  /**
+   * Compile a SubqueryCondition to SQL.
+   *
+   * @param ast - SubqueryCondition node
+   * @param context - Compile context with ModelResolver
+   * @returns Tuple of [sql, params]
+   */
+  private compileSubqueryCondition(
+    ast: SubqueryCondition,
+    context: CompileContext
+  ): [string, any[]] {
+    const { modelResolver } = context
+
+    if (!modelResolver) {
+      throw new Error(
+        'ModelResolver required for subquery compilation. ' +
+        'Pass a CompileContext with modelResolver when compiling queries with subqueries.'
+      )
+    }
+
+    const { field, operator, subquery } = ast
+    const { model, filter, selectField } = subquery
+
+    // Get table and column names from resolver
+    // Use getColumnName to map property name (e.g., 'workspace') to column name (e.g., 'workspace_id')
+    const tableName = modelResolver.getTableName(model)
+    const selectColumnName = modelResolver.getColumnName(model, selectField)
+    const selectColumn = this.escapeIdentifier(selectColumnName)
+
+    // Compile inner filter if present
+    let innerWhereSql = ''
+    let allParams: any[] = []
+
+    if (filter) {
+      // Normalize the inner filter field names using the ModelResolver
+      const normalizedFilter = this.normalizeSubqueryFilter(filter, model, modelResolver)
+
+      const [innerSql, innerParams] = this.compileCondition(normalizedFilter, {
+        ...context,
+        paramOffset: (context.paramOffset ?? 0) + allParams.length
+      })
+
+      if (innerSql) {
+        innerWhereSql = ` WHERE ${innerSql}`
+        allParams = innerParams
+      }
+    }
+
+    // Build the subquery
+    const subquerySql = `SELECT ${selectColumn} FROM ${tableName}${innerWhereSql}`
+
+    // Build the full condition
+    const escapedField = this.escapeIdentifier(field)
+    const inOperator = operator === 'nin' ? 'NOT IN' : 'IN'
+    const fullSql = `${escapedField} ${inOperator} (${subquerySql})`
+
+    return [fullSql, allParams]
+  }
+
+  /**
+   * Normalize field names in a subquery filter using the ModelResolver.
+   * Recursively transforms all FieldCondition and SubqueryCondition nodes.
+   *
+   * @param filter - The filter AST to normalize
+   * @param modelName - The model name for this filter's context
+   * @param resolver - The ModelResolver to use for field name resolution
+   * @returns Normalized filter with snake_case field names
+   */
+  private normalizeSubqueryFilter(
+    filter: Condition | SubqueryCondition,
+    modelName: string,
+    resolver: ModelResolver
+  ): Condition | SubqueryCondition {
+    // Handle SubqueryCondition - normalize outer field but don't normalize inner filter here
+    // (it will be normalized recursively when that subquery is compiled)
+    if (this.isSubqueryCondition(filter)) {
+      return {
+        type: 'subquery',
+        field: resolver.getColumnName(modelName, filter.field),
+        operator: filter.operator,
+        subquery: filter.subquery  // Inner filter normalized when this subquery is compiled
+      } as SubqueryCondition
+    }
+
+    // Handle FieldCondition (has 'field' property)
+    if ('field' in filter && typeof (filter as any).field === 'string') {
+      const fc = filter as any
+      const normalizedField = resolver.getColumnName(modelName, fc.field)
+
+      // Special case: 'ne' with null value should use 'exists' operator
+      // SQL: "field <> NULL" always returns NULL, not TRUE
+      // We need "field IS NOT NULL" which @ucast/sql generates for 'exists' operator
+      if (fc.operator === 'ne' && fc.value === null) {
+        return new (filter.constructor as any)('exists', normalizedField, true)
+      }
+
+      // Special case: 'eq' with null value should use 'exists' with false
+      // SQL: "field = NULL" always returns NULL, not TRUE
+      // We need "field IS NULL" which @ucast/sql generates for 'exists' with false
+      if (fc.operator === 'eq' && fc.value === null) {
+        return new (filter.constructor as any)('exists', normalizedField, false)
+      }
+
+      return new (filter.constructor as any)(fc.operator, normalizedField, fc.value)
+    }
+
+    // Handle CompoundCondition (has 'value' array)
+    if ('value' in filter && Array.isArray((filter as any).value)) {
+      const cc = filter as any
+      const normalizedChildren = cc.value.map((child: Condition | SubqueryCondition) =>
+        this.normalizeSubqueryFilter(child, modelName, resolver)
+      )
+      return new (filter.constructor as any)(cc.operator, normalizedChildren)
+    }
+
+    // Return as-is if not recognized
+    return filter
+  }
+
+  /**
+   * Compile a CompoundCondition that may contain SubqueryConditions.
+   *
+   * @param ast - CompoundCondition node
+   * @param context - Compile context
+   * @returns Tuple of [sql, params]
+   */
+  private compileCompoundWithSubqueries(
+    ast: any,
+    context: CompileContext
+  ): [string, any[]] {
+    const operator = ast.operator as string
+    const children = ast.value as any[]
+
+    // Check if any child (or descendant) contains a subquery
+    const hasSubquery = children.some(child => this.containsSubquery(child))
+
+    if (!hasSubquery) {
+      // No subqueries - delegate to standard interpreter
+      // Use joins from context if provided
+      const joins = context.joins ?? []
+      const [whereSql, params] = interpret(ast as Condition, createDialectOptions(this.dialect, joins))
+
+      // Note: Returns "()" for empty compound conditions
+      // Callers handle this case appropriately
+      return [whereSql, params]
+    }
+
+    // Has subqueries - compile each child and renumber parameters
+    // Note: @ucast/sql always resets to $1 for each compilation, so we
+    // compile with offset 0 and renumber afterwards using renumberPgParams()
+    const allParams: any[] = []
+    const compiledParts: string[] = []
+
+    for (const child of children) {
+      const [childSql, childParams] = this.compileCondition(child, {
+        ...context,
+        paramOffset: 0  // Each child compiles with offset 0, we renumber after
+      })
+
+      // Skip empty SQL (but "()" is not empty)
+      if (childSql && childSql.trim() !== '' && childSql.trim() !== '()') {
+        // Renumber parameters based on how many we've accumulated
+        const renumberedSql = this.dialect === 'pg'
+          ? renumberPgParams(childSql, allParams.length)
+          : childSql  // SQLite uses ? - no renumbering needed
+
+        compiledParts.push(renumberedSql)
+        allParams.push(...childParams)
+      }
+    }
+
+    // Handle empty result (no children compiled to SQL)
+    if (compiledParts.length === 0) {
+      return ['()', []]  // Return "()" for consistency with @ucast/sql
+    }
+
+    // Join with operator
+    const sqlOperator = operator.toUpperCase()
+    if (sqlOperator === 'NOT') {
+      // NOT has single child
+      return [`NOT (${compiledParts[0]})`, allParams]
+    }
+
+    const joinedSql = compiledParts.map(part => `(${part})`).join(` ${sqlOperator} `)
+    return [joinedSql, allParams]
   }
 
   /**

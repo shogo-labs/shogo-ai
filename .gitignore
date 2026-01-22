@@ -21,7 +21,8 @@ _.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # dotenv environment variable files
-.env
+# .env is a tracked symlink -> .env.local (for Docker Compose variable substitution)
+# The actual secrets live in .env.local which remains ignored
 .env.development.local
 .env.test.local
 .env.production.local

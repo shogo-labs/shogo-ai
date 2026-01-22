@@ -1,0 +1,125 @@
+// Prisma schema for Booking App
+// Demonstrates service management, time slots, and appointment booking
+// with status enums and date/time handling
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+// ============================================================================
+// User model (the service provider)
+// ============================================================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  timezone  String   @default("UTC")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  services  Service[]
+  timeSlots TimeSlot[]
+  bookings  Booking[]
+
+  @@map("users")
+}
+
+// ============================================================================
+// Service model (what can be booked)
+// ============================================================================
+
+model Service {
+  id          String  @id @default(cuid())
+  userId      String  @map("user_id")
+  name        String
+  description String?
+  duration    Int     @default(60) // Duration in minutes
+  price       Float   @default(0)
+  currency    String  @default("USD")
+  isActive    Boolean @default(true) @map("is_active")
+  color       String  @default("#3B82F6") // For calendar display
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+
+  @@index([userId, isActive])
+  @@map("services")
+}
+
+// ============================================================================
+// TimeSlot model (available booking windows)
+// ============================================================================
+
+model TimeSlot {
+  id        String  @id @default(cuid())
+  userId    String  @map("user_id")
+  dayOfWeek Int     // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+  startTime String  // Format: "HH:MM" (24-hour)
+  endTime   String  // Format: "HH:MM" (24-hour)
+  isActive  Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dayOfWeek, startTime])
+  @@index([userId, dayOfWeek, isActive])
+  @@map("time_slots")
+}
+
+// ============================================================================
+// Booking model (actual appointments)
+// ============================================================================
+
+model Booking {
+  id        String        @id @default(cuid())
+  userId    String        @map("user_id")
+  serviceId String        @map("service_id")
+  status    BookingStatus @default(PENDING)
+
+  // Booking time
+  startTime DateTime @map("start_time")
+  endTime   DateTime @map("end_time")
+
+  // Customer information
+  customerName  String  @map("customer_name")
+  customerEmail String  @map("customer_email")
+  customerPhone String? @map("customer_phone")
+  notes         String?
+
+  // Confirmation
+  confirmationCode String @unique @map("confirmation_code")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startTime])
+  @@index([userId, status])
+  @@index([serviceId])
+  @@index([confirmationCode])
+  @@map("bookings")
+}

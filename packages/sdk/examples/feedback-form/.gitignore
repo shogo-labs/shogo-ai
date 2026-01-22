@@ -1,0 +1,8 @@
+node_modules/
+.output/
+dist/
+prisma/dev.db
+prisma/dev.db-journal
+.vinxi/
+playwright-report/
+test-results/

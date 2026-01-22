@@ -1,0 +1,41 @@
+{
+  "name": "form-builder",
+  "description": "A form builder application that lets users create custom forms with dynamic fields, share them via public links, and collect responses. This is a meta-tool for BUILDING forms - users design their own form structures with custom fields, validation, and field ordering. Use this template when users need to create multiple different forms, not when you need a single pre-built form (use feedback-form for that).",
+  "complexity": "advanced",
+  "features": [
+    "prisma",
+    "user-auth",
+    "crud",
+    "one-to-many",
+    "many-to-many",
+    "json-fields",
+    "position-ordering",
+    "dynamic-schemas",
+    "public-sharing",
+    "aggregations",
+    "nested-includes",
+    "slug-urls"
+  ],
+  "models": ["User", "Form", "Field", "Submission", "Response"],
+  "tags": ["form-builder", "typeform", "google-forms", "dynamic-forms", "custom-fields", "surveys", "questionnaires", "data-collection-tool", "advanced"],
+  "useCases": [
+    "form builder",
+    "survey builder",
+    "typeform clone",
+    "google forms clone",
+    "questionnaire builder",
+    "custom form creator",
+    "dynamic form generator",
+    "form designer",
+    "survey creator",
+    "feedback tool builder",
+    "quiz builder"
+  ],
+  "techStack": {
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "router": "tanstack-router",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

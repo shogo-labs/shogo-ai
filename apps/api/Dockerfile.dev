@@ -25,6 +25,7 @@ COPY tsconfig.base.json ./
 # Copy package.json files for dependency resolution
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
+COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY apps/api/package.json ./apps/api/
 
 # Install all dependencies
@@ -33,6 +34,7 @@ RUN bun install
 # Copy source code (will be overridden by volume mounts in dev mode)
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
+COPY packages/project-runtime ./packages/project-runtime
 COPY apps/api ./apps/api
 
 # Copy entrypoint script to a location that won't be overwritten by volume mount

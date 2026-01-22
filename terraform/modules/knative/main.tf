@@ -109,7 +109,10 @@ locals {
 }
 
 # Configure Kourier to use AWS Load Balancer Controller with ALB
-# This enables SNI support with multiple SSL certificates
+# ALB is used instead of NLB because it:
+# 1. Properly sets X-Forwarded-Proto headers for HTTPS detection
+# 2. Supports native HTTP to HTTPS redirect rules
+# 3. Supports SNI with multiple SSL certificates
 resource "null_resource" "kourier_alb" {
   count      = local.has_ssl ? 1 : 0
   depends_on = [null_resource.kourier]
@@ -124,9 +127,8 @@ resource "null_resource" "kourier_alb" {
       # Wait for Kourier service to be created
       kubectl wait --for=condition=available deployment/3scale-kourier-gateway -n kourier-system --timeout=300s || sleep 30
 
-      # Patch Kourier service to use AWS Load Balancer Controller with NLB
-      # NLB is recommended for Knative as it preserves client IP and has better performance
-      # For SNI support, we use TLS termination at the load balancer
+      # Patch Kourier service to use AWS Load Balancer Controller with ALB
+      # ALB provides proper X-Forwarded-Proto headers and HTTP->HTTPS redirect support
       kubectl annotate service/kourier -n kourier-system --overwrite \
         service.beta.kubernetes.io/aws-load-balancer-type="external" \
         service.beta.kubernetes.io/aws-load-balancer-nlb-target-type="ip" \
@@ -137,18 +139,17 @@ resource "null_resource" "kourier_alb" {
         service.beta.kubernetes.io/aws-load-balancer-backend-protocol="tcp"
 
       # Force service recreation to pick up new load balancer type
-      # Note: This will cause a brief outage as the old ELB is deleted and new NLB is created
       kubectl patch service/kourier -n kourier-system -p '{"spec":{"type":"LoadBalancer"}}'
 
-      # Wait for the new NLB to be provisioned
-      echo "Waiting for NLB to be provisioned..."
+      # Wait for the load balancer to be provisioned
+      echo "Waiting for load balancer to be provisioned..."
       sleep 60
 
-      # Get the new load balancer hostname
-      NLB_HOSTNAME=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-      echo "Kourier NLB hostname: $NLB_HOSTNAME"
+      # Get the load balancer hostname
+      LB_HOSTNAME=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+      echo "Kourier LoadBalancer hostname: $LB_HOSTNAME"
 
-      echo "SSL certificates attached to Kourier LoadBalancer (NLB with TLS termination)"
+      echo "SSL certificates attached to Kourier LoadBalancer"
       echo "Certificates: ${local.ssl_cert_annotation}"
     EOT
   }

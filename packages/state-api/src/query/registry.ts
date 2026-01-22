@@ -32,7 +32,7 @@
 import type { IBackend, DDLGenerationOptions, DDLExecutionResult } from './backends/types'
 import type { IQueryExecutor } from './executors/types'
 import { MemoryQueryExecutor } from './executors/memory'
-import { SqlQueryExecutor } from './executors/sql'
+import { SqlQueryExecutor, type SchemaModelMetadata } from './executors/sql'
 import { SqlBackend } from './backends/sql'
 import { getMetaStore } from '../meta/bootstrap'
 import { toSnakeCase } from '../ddl/utils'
@@ -323,6 +323,10 @@ export class BackendRegistry implements IBackendRegistry {
       // Qualify table name with namespace
       const tableName = qualifyTableName(namespace, baseTableName, dialectName)
 
+      // Build schema models map for subquery support
+      // This enables cross-model subqueries like { authorId: { $in: { $query: { model: 'User', ... } } } }
+      const schemaModels = this.buildSchemaModelsMap(schema, metaStore, namespace, dialectName)
+
       return new SqlQueryExecutor<T>(
         tableName,
         backend as SqlBackend,  // Pass the SqlBackend instance
@@ -330,7 +334,8 @@ export class BackendRegistry implements IBackendRegistry {
         columnPropertyMap,
         backend.dialect,
         propertyTypes,
-        providedArrayReferences
+        providedArrayReferences,
+        schemaModels  // Pass schema models for subquery resolution
       )
     } else if (typeof backend.createExecutor === 'function') {
       // Remote backend with custom executor factory (e.g., MCPBackend)
@@ -405,6 +410,78 @@ export class BackendRegistry implements IBackendRegistry {
     }
 
     return {}
+  }
+
+  /**
+   * Build a map of all models in a schema for subquery support.
+   *
+   * @param schema - Meta-store schema entity
+   * @param metaStore - Meta-store instance
+   * @param namespace - SQL namespace for table qualification
+   * @param dialect - SQL dialect for table name formatting
+   * @returns Map of model name to SchemaModelMetadata
+   *
+   * @remarks
+   * This enables cross-model subqueries by providing table/column metadata
+   * for all models in the schema. The SqlQueryExecutor uses this to resolve
+   * table and column names when compiling subquery conditions.
+   *
+   * Example: { authorId: { $in: { $query: { model: 'User', filter: { role: 'admin' } } } } }
+   * The ModelResolver needs to know the User model's table name and column mappings.
+   */
+  private buildSchemaModelsMap(
+    schema: any,
+    metaStore: any,
+    _namespace: string,  // Unused - ModelResolver handles namespace
+    _dialect: QualifyDialect  // Unused - ModelResolver handles quoting
+  ): Map<string, SchemaModelMetadata> | undefined {
+    if (!schema) return undefined
+
+    const schemaModels = new Map<string, SchemaModelMetadata>()
+
+    try {
+      // Get all models for this schema
+      const models = metaStore.modelCollection.all().filter(
+        (m: any) => m.schema === schema
+      )
+
+      for (const model of models) {
+        const modelName = model.name
+        if (!modelName) continue
+
+        // Base table name only - ModelResolver in SqlQueryExecutor handles
+        // namespace qualification and dialect-specific quoting
+        const tableName = toSnakeCase(modelName)
+
+        // Get column→property map from model
+        const columnPropertyMap = model.columnPropertyMap ?? {}
+
+        // Find identifier field (property with x-mst-type: 'identifier')
+        let identifierField = 'id'
+        try {
+          const properties = model.properties
+          if (Array.isArray(properties)) {
+            const idProp = properties.find((p: any) => p.xMstType === 'identifier')
+            if (idProp?.name) {
+              identifierField = idProp.name
+            }
+          }
+        } catch {
+          // Fall back to 'id' if properties view not available
+        }
+
+        schemaModels.set(modelName, {
+          tableName,
+          columnPropertyMap,
+          identifierField
+        })
+      }
+    } catch {
+      // If meta-store access fails, return undefined (no subquery support)
+      return undefined
+    }
+
+    return schemaModels.size > 0 ? schemaModels : undefined
   }
 
   setDefault(name: string): void {

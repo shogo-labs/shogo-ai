@@ -13,12 +13,19 @@
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText, type CoreMessage } from 'ai'
+import { streamText, tool, type CoreMessage } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { z } from 'zod'
-import { resolve, isAbsolute, relative } from 'path'
-import { existsSync } from 'fs'
+import { resolve, isAbsolute, relative, dirname, join } from 'path'
+import { existsSync, readdirSync, readFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
 import { initializeS3Sync, type S3Sync } from './s3-sync'
+import { fileURLToPath } from 'url'
+
+// Get monorepo root for template access
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+// project-runtime/src/server.ts -> monorepo root is 3 levels up
+const MONOREPO_ROOT = resolve(__dirname, '../../..')
 
 // =============================================================================
 // Configuration
@@ -27,7 +34,7 @@ import { initializeS3Sync, type S3Sync } from './s3-sync'
 const PROJECT_ID = process.env.PROJECT_ID
 const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
-const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || '/app/packages/mcp/src/server.ts'
+const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || '/app/packages/mcp/src/server-templates.ts'
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
 // Validate required environment
@@ -58,6 +65,191 @@ let s3Sync: S3Sync | null = null
     console.error(`[project-runtime] S3 sync initialization failed:`, error)
   }
 })()
+
+// =============================================================================
+// Template Tools (Native - no MCP required)
+// =============================================================================
+
+interface TemplateMetadata {
+  name: string
+  description: string
+  complexity: string
+  features: string[]
+  models: string[]
+  tags: string[]
+  useCases: string[]
+  techStack: Record<string, string>
+}
+
+interface TemplateInfo extends TemplateMetadata {
+  path: string
+}
+
+/**
+ * Load all available templates from the SDK examples directory
+ */
+function loadTemplates(): TemplateInfo[] {
+  const templatesDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples')
+  const templates: TemplateInfo[] = []
+
+  if (!existsSync(templatesDir)) {
+    console.warn(`[project-runtime] Templates directory not found: ${templatesDir}`)
+    return templates
+  }
+
+  const entries = readdirSync(templatesDir, { withFileTypes: true })
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+
+    const templateJsonPath = resolve(templatesDir, entry.name, 'template.json')
+    if (!existsSync(templateJsonPath)) continue
+
+    try {
+      const content = readFileSync(templateJsonPath, 'utf-8')
+      const metadata: TemplateMetadata = JSON.parse(content)
+      templates.push({
+        ...metadata,
+        path: resolve(templatesDir, entry.name),
+      })
+    } catch {
+      // Skip invalid template.json files
+    }
+  }
+
+  return templates
+}
+
+/**
+ * Copy a template to the project directory
+ */
+function copyTemplate(templateName: string, projectName: string): { ok: boolean; message?: string; error?: string; needsRestart?: boolean } {
+  const templatesDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples')
+  const templatePath = resolve(templatesDir, templateName)
+
+  if (!existsSync(templatePath)) {
+    return { ok: false, error: `Template '${templateName}' not found` }
+  }
+
+  try {
+    // Clean up existing src directory to avoid conflicts
+    const srcDir = resolve(PROJECT_DIR, 'src')
+    if (existsSync(srcDir)) {
+      rmSync(srcDir, { recursive: true, force: true })
+    }
+
+    // Copy template files to project directory
+    cpSync(templatePath, PROJECT_DIR, {
+      recursive: true,
+      filter: (src) => !src.includes('node_modules') && !src.includes('.git') && !src.includes('template.json'),
+    })
+
+    return {
+      ok: true,
+      message: `Successfully copied template '${templateName}' to project. The Vite server needs to be restarted for changes to take effect. Run 'bun install' if dependencies changed.`,
+      needsRestart: true,
+    }
+  } catch (error: any) {
+    return { ok: false, error: error.message || 'Failed to copy template' }
+  }
+}
+
+/**
+ * AI SDK native tools for template operations
+ */
+const templateTools = {
+  'template.list': tool({
+    description: `List and search available starter templates. Returns templates with metadata including name, description, complexity, features, models, and tags.
+
+Available templates:
+- todo-app: Simple task management
+- expense-tracker: Personal finance with categories
+- crm: Customer relationship management
+- inventory: Stock and product management
+- kanban: Project boards with drag-and-drop
+- ai-chat: AI chatbot with conversation history`,
+    parameters: z.object({
+      query: z.string().optional().describe('Optional search query to filter templates'),
+    }),
+    execute: async ({ query }) => {
+      console.log(`[project-runtime] template.list called with query: ${query}`)
+      let templates = loadTemplates()
+
+      if (query) {
+        const queryLower = query.toLowerCase()
+        templates = templates.filter(t =>
+          t.name.toLowerCase().includes(queryLower) ||
+          t.description.toLowerCase().includes(queryLower) ||
+          t.tags.some(tag => tag.toLowerCase().includes(queryLower)) ||
+          t.useCases.some(uc => uc.toLowerCase().includes(queryLower))
+        )
+      }
+
+      return JSON.stringify({ ok: true, templates }, null, 2)
+    },
+  }),
+
+  'template.copy': tool({
+    description: `Copy a starter template to set up the project. This will copy all template files to the current project directory, install dependencies, build the project, and start the preview server automatically.`,
+    parameters: z.object({
+      templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app", "expense-tracker")'),
+      projectName: z.string().optional().describe('Optional project name (for package.json)'),
+    }),
+    execute: async ({ templateName, projectName }) => {
+      console.log(`[project-runtime] template.copy called: ${templateName}`)
+      const result = copyTemplate(templateName, projectName || templateName)
+      
+      // If successful, automatically rebuild and restart the preview
+      if (result.ok) {
+        let restartResult: { success: boolean; message: string; mode?: string; port?: number | null } = {
+          success: false,
+          message: 'Restart not attempted',
+        }
+        
+        try {
+          console.log(`[project-runtime] Rebuilding and restarting preview for project ${PROJECT_ID}...`)
+          // Call our local restart endpoint
+          const response = await fetch(`http://localhost:${PORT}/preview/restart`, {
+            method: 'POST',
+          })
+          
+          if (response.ok) {
+            const data = await response.json() as { success: boolean; mode: string; port: number | null }
+            restartResult = {
+              success: true,
+              message: `Preview restarted in ${data.mode} mode`,
+              mode: data.mode,
+              port: data.port,
+            }
+            console.log(`[project-runtime] Preview restarted in ${data.mode} mode`)
+          } else {
+            const errorData = await response.json().catch(() => ({})) as { error?: string }
+            restartResult = {
+              success: false,
+              message: errorData.error || `Restart failed with status ${response.status}`,
+            }
+          }
+        } catch (err: any) {
+          console.warn(`[project-runtime] Restart error: ${err.message}`)
+          restartResult = {
+            success: false,
+            message: err.message,
+          }
+        }
+        
+        return JSON.stringify({
+          ...result,
+          restart: restartResult,
+          message: restartResult.success 
+            ? `Template copied and preview rebuilt. The preview will show the ${templateName} app.`
+            : 'Template copied but rebuild failed. Try refreshing the preview.',
+        }, null, 2)
+      }
+      
+      return JSON.stringify(result, null, 2)
+    },
+  }),
+}
 
 // =============================================================================
 // Path Restriction (Security)
@@ -107,8 +299,8 @@ const claudeCode = createClaudeCode({
   defaultSettings: {
     // Enable streaming (required for hooks)
     streamingInput: 'always',
-    // Verbose logging for debugging
-    verbose: true,
+    // Verbose logging (disabled in production)
+    verbose: false,
     // Working directory is the project
     cwd: PROJECT_DIR,
     // Path restriction for security
@@ -123,7 +315,17 @@ const claudeCode = createClaudeCode({
         env: {
           SCHEMAS_PATH,
           PROJECT_ID: PROJECT_ID!,
+          PROJECT_DIR,  // Critical: template.copy needs this to copy to the right location
           NODE_ENV: process.env.NODE_ENV || 'production',
+          // Forward S3 configuration for schema persistence
+          S3_ENDPOINT: process.env.S3_ENDPOINT || '',
+          S3_SCHEMA_BUCKET: process.env.S3_SCHEMA_BUCKET || '',
+          S3_FORCE_PATH_STYLE: process.env.S3_FORCE_PATH_STYLE || '',
+          AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID || '',
+          AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY || '',
+          AWS_REGION: process.env.AWS_REGION || 'us-east-1',
+          SCHEMA_STORAGE: process.env.SCHEMA_STORAGE || '',
+          DATABASE_URL: process.env.DATABASE_URL || '',
         },
       },
     },
@@ -133,28 +335,31 @@ const claudeCode = createClaudeCode({
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
       // Skill and agent tools
       'Skill', 'Task', 'Bash', 'TodoWrite',
-      // Wavesmith MCP tools - Schema
-      'mcp__wavesmith__schema_set',
-      'mcp__wavesmith__schema_get',
-      'mcp__wavesmith__schema_list',
-      'mcp__wavesmith__schema_load',
-      // Wavesmith MCP tools - Store
-      'mcp__wavesmith__store_create',
-      'mcp__wavesmith__store_list',
-      'mcp__wavesmith__store_get',
-      'mcp__wavesmith__store_update',
-      'mcp__wavesmith__store_query',
-      'mcp__wavesmith__store_models',
-      'mcp__wavesmith__store_delete',
-      // Wavesmith MCP tools - Views
-      'mcp__wavesmith__view_execute',
-      'mcp__wavesmith__view_define',
-      'mcp__wavesmith__view_project',
-      // Wavesmith MCP tools - Data & DDL
-      'mcp__wavesmith__data_load',
-      'mcp__wavesmith__data_loadAll',
-      'mcp__wavesmith__ddl_execute',
-      'mcp__wavesmith__ddl_migrate',
+      // Template tools (underscores - Claude Code converts dots to underscores)
+      'mcp__wavesmith__template_list',
+      'mcp__wavesmith__template_copy',
+      // Wavesmith MCP tools - Schema (underscores)
+      // 'mcp__wavesmith__schema_set',
+      // 'mcp__wavesmith__schema_get',
+      // 'mcp__wavesmith__schema_list',
+      // 'mcp__wavesmith__schema_load',
+      // // Wavesmith MCP tools - Store (underscores)
+      // 'mcp__wavesmith__store_create',
+      // 'mcp__wavesmith__store_list',
+      // 'mcp__wavesmith__store_get',
+      // 'mcp__wavesmith__store_update',
+      // 'mcp__wavesmith__store_query',
+      // 'mcp__wavesmith__store_models',
+      // 'mcp__wavesmith__store_delete',
+      // // Wavesmith MCP tools - Views (underscores)
+      // 'mcp__wavesmith__view_execute',
+      // 'mcp__wavesmith__view_define',
+      // 'mcp__wavesmith__view_project',
+      // // Wavesmith MCP tools - Data & DDL (underscores)
+      // 'mcp__wavesmith__data_load',
+      // 'mcp__wavesmith__data_loadAll',
+      // 'mcp__wavesmith__ddl_execute',
+      // 'mcp__wavesmith__ddl_migrate',
     ],
     // Use default permission mode (our canUseTool callback handles restrictions)
     permissionMode: 'default',
@@ -284,13 +489,28 @@ app.post('/agent/chat', async (c) => {
     
     console.log(`[project-runtime] Processing ${messages.length} messages`)
     
-    // Create streaming response using Claude Code
+    // Create streaming response using Claude Code with native template tools
     const result = streamText({
       model: claudeCode('sonnet', {
         streamingInput: 'always',
       }) as Parameters<typeof streamText>[0]['model'],
-      system: system || `You are helping build a project. The project files are in ${PROJECT_DIR}. You have access to file operations and MCP tools for data management.`,
+      system: system || `You are Shogo - an AI assistant for building applications. The project files are in ${PROJECT_DIR}.
+
+## Starter Templates
+
+When a user wants to build an app, use the template tools:
+
+- **template.list** - List and search available starter templates
+- **template.copy** - Copy a template to set up the project
+
+Available templates include: todo-app, expense-tracker, crm, inventory, kanban, ai-chat.
+
+After using template.copy, the Vite server restarts automatically and the preview will update to show the new app. No manual restart is needed.
+
+You also have access to file operations (Read, Write, Edit, Glob, Grep, Bash) for file management.`,
       messages: coreMessages,
+      tools: templateTools,
+      maxSteps: 10,
     })
     
     // Return the AI SDK UI message stream response directly
@@ -392,6 +612,774 @@ app.post('/sync/download', async (c) => {
 })
 
 // =============================================================================
+// Preview Restart Endpoint
+// =============================================================================
+
+const DIST_DIR = join(PROJECT_DIR, 'dist')
+const NITRO_SERVER_PORT = parseInt(process.env.NITRO_SERVER_PORT || '3000', 10)
+
+// Track current preview mode and Nitro server process
+let isTanStackStart = process.env.IS_TANSTACK_START === 'true'
+let nitroProcess: ReturnType<typeof Bun.spawn> | null = null
+
+/**
+ * Restart the preview server after template changes.
+ * This will:
+ * 1. Kill any existing Nitro server process
+ * 2. Install dependencies
+ * 3. Run prisma generate/push if needed
+ * 4. Build with Vite (Nitro produces .output/server/index.mjs)
+ * 5. Start the Nitro server (for TanStack Start) or serve static files (plain Vite)
+ */
+app.post('/preview/restart', async (c) => {
+  console.log(`[project-runtime] Restarting preview for project ${PROJECT_ID}...`)
+  
+  try {
+    // 1. Kill existing Nitro server if running
+    if (nitroProcess) {
+      console.log('[project-runtime] Stopping existing Nitro server...')
+      nitroProcess.kill()
+      nitroProcess = null
+    }
+    
+    // 2. Check if this is a TanStack Start project
+    const packageJsonPath = join(PROJECT_DIR, 'package.json')
+    if (!existsSync(packageJsonPath)) {
+      return c.json({ success: false, error: 'No package.json found' }, 400)
+    }
+    
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
+    const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
+    isTanStackStart = !!deps['@tanstack/react-start']
+    const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
+    
+    console.log(`[project-runtime] Project type: ${isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'}`)
+    
+    // 3. Install dependencies
+    console.log('[project-runtime] Installing dependencies...')
+    const installProc = Bun.spawn(['bun', 'install'], {
+      cwd: PROJECT_DIR,
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    await installProc.exited
+    
+    if (installProc.exitCode !== 0) {
+      console.error('[project-runtime] Install failed')
+      return c.json({ success: false, error: 'Dependency installation failed' }, 500)
+    }
+    
+    // 4. Run prisma generate and db push if prisma is present
+    if (hasPrisma) {
+      console.log('[project-runtime] Running prisma generate...')
+      const prismaGenProc = Bun.spawn(['bunx', 'prisma', 'generate'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      await prismaGenProc.exited
+      
+      console.log('[project-runtime] Running prisma db push...')
+      const prismaPushProc = Bun.spawn(['bunx', 'prisma', 'db', 'push'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      await prismaPushProc.exited
+    }
+    
+    // 5. Build the project
+    console.log('[project-runtime] Building project...')
+    const buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
+      cwd: PROJECT_DIR,
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    await buildProc.exited
+    
+    if (buildProc.exitCode !== 0) {
+      console.error('[project-runtime] Build failed')
+      return c.json({ success: false, error: 'Build failed' }, 500)
+    }
+    
+    // 6. Start Nitro server for TanStack Start
+    if (isTanStackStart) {
+      const serverPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
+      if (!existsSync(serverPath)) {
+        return c.json({ success: false, error: 'Nitro build output not found at .output/server/index.mjs' }, 500)
+      }
+      
+      console.log(`[project-runtime] Starting Nitro server on port ${NITRO_SERVER_PORT}...`)
+      nitroProcess = Bun.spawn(['bun', 'run', serverPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(NITRO_SERVER_PORT) },
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      
+      // Wait for server to start
+      await new Promise(resolve => setTimeout(resolve, 3000))
+      
+      // Check if running
+      try {
+        const healthCheck = await fetch(`http://localhost:${NITRO_SERVER_PORT}/`)
+        console.log(`[project-runtime] Nitro server health check: ${healthCheck.status}`)
+      } catch (e) {
+        console.warn('[project-runtime] Nitro server may still be starting...')
+      }
+    }
+    
+    console.log('[project-runtime] Preview restart completed')
+    return c.json({
+      success: true,
+      mode: isTanStackStart ? 'nitro' : 'static',
+      port: isTanStackStart ? NITRO_SERVER_PORT : null,
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Preview restart error:', error)
+    return c.json({ success: false, error: error.message }, 500)
+  }
+})
+
+console.log(`[project-runtime] Preview mode: ${isTanStackStart ? 'TanStack Start (proxy)' : 'Static files'}`)
+
+/**
+ * MIME type mapping for static files (used for plain Vite projects)
+ */
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.mjs': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.webp': 'image/webp',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.eot': 'application/vnd.ms-fontobject',
+  '.otf': 'font/otf',
+  '.txt': 'text/plain',
+  '.xml': 'application/xml',
+  '.mp3': 'audio/mpeg',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.pdf': 'application/pdf',
+}
+
+/**
+ * Get MIME type from file extension
+ */
+function getMimeType(filePath: string): string {
+  const ext = filePath.substring(filePath.lastIndexOf('.'))
+  return MIME_TYPES[ext.toLowerCase()] || 'application/octet-stream'
+}
+
+/**
+ * Preview handler - proxies to TanStack Start server or serves static files.
+ * 
+ * For TanStack Start projects:
+ * - Proxies all requests to the running TanStack Start server on port 3000
+ * - Full SSR, server functions, and routing handled by TanStack
+ * 
+ * For plain Vite projects:
+ * - Serves pre-built static assets from dist/
+ */
+app.get('/preview/*', async (c) => {
+  const relativePath = c.req.path.replace('/preview', '') || '/'
+  
+  // TanStack Start: proxy to the running server
+  if (isTanStackStart) {
+    const targetUrl = `http://localhost:${NITRO_SERVER_PORT}${relativePath}`
+    console.log(`[project-runtime] Proxying preview to TanStack: ${targetUrl}`)
+    
+    try {
+      const response = await fetch(targetUrl, {
+        method: c.req.method,
+        headers: {
+          'Host': `localhost:${NITRO_SERVER_PORT}`,
+          'Accept': c.req.header('Accept') || '*/*',
+          'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+        },
+      })
+      
+      // Get response body
+      const contentType = response.headers.get('Content-Type') || 'text/html'
+      const body = await response.arrayBuffer()
+      
+      return new Response(body, {
+        status: response.status,
+        headers: {
+          'Content-Type': contentType,
+          'Cache-Control': 'no-cache',
+          'Access-Control-Allow-Origin': '*',
+        },
+      })
+    } catch (error: any) {
+      console.error('[project-runtime] TanStack proxy error:', error)
+      return c.html(`
+        <html>
+          <body style="font-family: system-ui; padding: 2rem;">
+            <h1>Preview Loading...</h1>
+            <p>The TanStack Start server is starting up. Please wait a moment and refresh.</p>
+            <p style="color: #666; font-size: 0.9em;">Error: ${error.message}</p>
+            <script>setTimeout(() => location.reload(), 3000)</script>
+          </body>
+        </html>
+      `, 503)
+    }
+  }
+  
+  // Plain Vite: serve static files from dist/
+  let filePath = relativePath
+  if (filePath.startsWith('/')) {
+    filePath = filePath.substring(1)
+  }
+  if (filePath === '' || filePath === '/') {
+    filePath = 'index.html'
+  }
+  
+  const absolutePath = join(DIST_DIR, filePath)
+  
+  console.log(`[project-runtime] Serving static preview: ${filePath} from ${absolutePath}`)
+  
+  try {
+    // Security: prevent path traversal
+    if (!absolutePath.startsWith(DIST_DIR)) {
+      return c.text('Forbidden', 403)
+    }
+    
+    // Check if file exists
+    if (!existsSync(absolutePath)) {
+      // For SPA routing: if file not found and not an asset, serve index.html
+      const ext = filePath.substring(filePath.lastIndexOf('.'))
+      if (!MIME_TYPES[ext.toLowerCase()]) {
+        const indexPath = join(DIST_DIR, 'index.html')
+        if (existsSync(indexPath)) {
+          const content = readFileSync(indexPath)
+          return new Response(content, {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/html',
+              'Cache-Control': 'no-cache',
+              'Access-Control-Allow-Origin': '*',
+            },
+          })
+        }
+      }
+      
+      console.log(`[project-runtime] File not found: ${absolutePath}`)
+      return c.text('Not Found', 404)
+    }
+    
+    // Check if it's a directory
+    const stats = statSync(absolutePath)
+    if (stats.isDirectory()) {
+      const indexPath = join(absolutePath, 'index.html')
+      if (existsSync(indexPath)) {
+        const content = readFileSync(indexPath)
+        return new Response(content, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/html',
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*',
+          },
+        })
+      }
+      return c.text('Not Found', 404)
+    }
+    
+    // Read and serve the file
+    const content = readFileSync(absolutePath)
+    const mimeType = getMimeType(absolutePath)
+    
+    // Set cache headers (long cache for hashed assets)
+    const isHashedAsset = /\.[a-f0-9]{8,}\.(js|css|woff2?|ttf|png|jpg|svg)$/i.test(filePath)
+    const cacheControl = isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache'
+    
+    return new Response(content, {
+      status: 200,
+      headers: {
+        'Content-Type': mimeType,
+        'Content-Length': String(content.length),
+        'Cache-Control': cacheControl,
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Static file serve error:', error)
+    return c.json({
+      error: { code: 'static_serve_error', message: error.message || 'Failed to serve file' }
+    }, 500)
+  }
+})
+
+// Handle base /preview path (redirect to /preview/)
+app.get('/preview', (c) => {
+  return c.redirect('/preview/')
+})
+
+// =============================================================================
+// Files API (for Code Explorer)
+// =============================================================================
+
+/**
+ * List all source files in the project directory.
+ * Used by the Code Explorer panel in the UI.
+ */
+app.get('/files', (c) => {
+  try {
+    const files: Array<{ path: string; size: number; isDirectory: boolean }> = []
+    
+    function listRecursive(dir: string, prefix: string = '') {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      
+      for (const entry of entries) {
+        // Skip node_modules, .git, and other common excludes
+        if (['node_modules', '.git', '.next', 'dist', 'build', '.cache'].includes(entry.name)) {
+          continue
+        }
+        
+        const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
+        const fullPath = `${dir}/${entry.name}`
+        
+        if (entry.isDirectory()) {
+          files.push({ path: relativePath, size: 0, isDirectory: true })
+          listRecursive(fullPath, relativePath)
+        } else {
+          const stats = statSync(fullPath)
+          files.push({ path: relativePath, size: stats.size, isDirectory: false })
+        }
+      }
+    }
+    
+    listRecursive(PROJECT_DIR)
+    
+    return c.json({ files })
+  } catch (error: any) {
+    console.error('[project-runtime] Files list error:', error)
+    return c.json({
+      error: { code: 'files_error', message: error.message || 'Failed to list files' }
+    }, 500)
+  }
+})
+
+/**
+ * Get content of a specific file.
+ */
+app.get('/files/*', (c) => {
+  try {
+    const filePath = c.req.path.replace('/files/', '')
+    
+    // Validate path (prevent directory traversal)
+    const absolutePath = isAbsolute(filePath) ? filePath : resolve(PROJECT_DIR, filePath)
+    const relativePath = relative(PROJECT_DIR, absolutePath)
+    
+    if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+      return c.json({
+        error: { code: 'invalid_path', message: 'Path is outside project directory' }
+      }, 400)
+    }
+    
+    if (!existsSync(absolutePath)) {
+      return c.json({
+        error: { code: 'not_found', message: 'File not found' }
+      }, 404)
+    }
+    
+    const content = readFileSync(absolutePath, 'utf-8')
+    return c.json({ path: filePath, content })
+  } catch (error: any) {
+    console.error('[project-runtime] File read error:', error)
+    return c.json({
+      error: { code: 'file_error', message: error.message || 'Failed to read file' }
+    }, 500)
+  }
+})
+
+// =============================================================================
+// Terminal API (for Terminal Panel)
+// =============================================================================
+
+/**
+ * Preset command definition
+ */
+interface PresetCommand {
+  id: string
+  label: string
+  description: string
+  category: string
+  dangerous: boolean
+}
+
+/**
+ * Available preset commands that users can execute
+ */
+const PRESET_COMMANDS: PresetCommand[] = [
+  // Package Management
+  { id: 'bun-install', label: 'Install Dependencies', description: 'Install all project dependencies with bun', category: 'package', dangerous: false },
+  // Database (Prisma)
+  { id: 'prisma-generate', label: 'Generate Prisma Client', description: 'Regenerate Prisma client after schema changes', category: 'database', dangerous: false },
+  { id: 'prisma-push', label: 'Push Schema', description: 'Push schema changes to the database', category: 'database', dangerous: false },
+  { id: 'prisma-reset', label: 'Reset Database', description: 'Wipe and recreate database from schema (destructive)', category: 'database', dangerous: true },
+  { id: 'prisma-migrate', label: 'Run Migrations', description: 'Create and apply database migrations', category: 'database', dangerous: false },
+  // Testing
+  { id: 'playwright-test', label: 'Run Tests', description: 'Run Playwright E2E tests', category: 'test', dangerous: false },
+  // Build
+  { id: 'typecheck', label: 'Type Check', description: 'Run TypeScript type checking', category: 'build', dangerous: false },
+  { id: 'build', label: 'Build for Production', description: 'Create production build', category: 'build', dangerous: false },
+]
+
+/**
+ * Map command ID to actual shell command
+ */
+const COMMAND_MAP: Record<string, { command: string; timeout: number }> = {
+  'bun-install': { command: 'bun install', timeout: 120000 },
+  'prisma-generate': { command: 'bunx prisma generate', timeout: 60000 },
+  'prisma-push': { command: 'bunx prisma db push', timeout: 60000 },
+  'prisma-reset': { command: 'bunx prisma db push --force-reset', timeout: 30000 },
+  'prisma-migrate': { command: 'bunx prisma migrate dev --name auto', timeout: 60000 },
+  'playwright-test': { command: 'bunx playwright test', timeout: 180000 },
+  'typecheck': { command: 'bunx tsc --noEmit', timeout: 60000 },
+  'build': { command: 'bun run build', timeout: 120000 },
+}
+
+/**
+ * List available terminal commands
+ */
+app.get('/terminal/commands', (c) => {
+  // Group commands by category
+  const commandsByCategory = PRESET_COMMANDS.reduce((acc, cmd) => {
+    if (!acc[cmd.category]) {
+      acc[cmd.category] = []
+    }
+    acc[cmd.category].push(cmd)
+    return acc
+  }, {} as Record<string, PresetCommand[]>)
+
+  return c.json({ commands: commandsByCategory })
+})
+
+/**
+ * Execute a preset command
+ */
+app.post('/terminal/exec', async (c) => {
+  try {
+    const body = await c.req.json() as { commandId: string; confirmDangerous?: boolean }
+    const { commandId, confirmDangerous } = body
+    
+    // Find the preset command
+    const preset = PRESET_COMMANDS.find(cmd => cmd.id === commandId)
+    if (!preset) {
+      return c.json({ error: { code: 'unknown_command', message: `Unknown command: ${commandId}` } }, 400)
+    }
+    
+    // Require confirmation for dangerous commands
+    if (preset.dangerous && !confirmDangerous) {
+      return c.json({ error: { code: 'confirmation_required', message: 'This command is destructive. Set confirmDangerous: true to proceed.' } }, 400)
+    }
+    
+    const cmdConfig = COMMAND_MAP[commandId]
+    if (!cmdConfig) {
+      return c.json({ error: { code: 'command_not_found', message: 'Command configuration not found' } }, 500)
+    }
+    
+    console.log(`[project-runtime] Executing terminal command: ${cmdConfig.command}`)
+    
+    // Create streaming response
+    const { readable, writable } = new TransformStream()
+    const writer = writable.getWriter()
+    const encoder = new TextEncoder()
+    
+    // Execute command asynchronously
+    ;(async () => {
+      try {
+        await writer.write(encoder.encode(`$ ${cmdConfig.command}\n\n`))
+        
+        const proc = Bun.spawn(['sh', '-c', cmdConfig.command], {
+          cwd: PROJECT_DIR,
+          env: { ...process.env, FORCE_COLOR: '1', CI: 'true' },
+        })
+        
+        // Stream stdout
+        const reader = proc.stdout.getReader()
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          await writer.write(value)
+        }
+        
+        // Stream stderr
+        if (proc.stderr) {
+          const stderrReader = proc.stderr.getReader()
+          while (true) {
+            const { done, value } = await stderrReader.read()
+            if (done) break
+            await writer.write(value)
+          }
+        }
+        
+        const exitCode = await proc.exited
+        await writer.write(encoder.encode(`\n\n[Process exited with code ${exitCode}]\n`))
+        await writer.close()
+      } catch (err: any) {
+        await writer.write(encoder.encode(`[ERROR] ${err.message}\n`))
+        await writer.close()
+      }
+    })()
+    
+    return new Response(readable, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Transfer-Encoding': 'chunked',
+        'Cache-Control': 'no-cache',
+      },
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Terminal exec error:', error)
+    return c.json({ error: { code: 'exec_error', message: error.message || 'Failed to execute command' } }, 500)
+  }
+})
+
+// =============================================================================
+// Database API (Prisma Studio) - Simplified for Kubernetes
+// =============================================================================
+
+// Note: In Kubernetes, we don't run Prisma Studio as a separate process.
+// Instead, we return a URL that the client can use to access the database.
+// For now, we'll indicate that database access is available through the runtime.
+
+let prismaStudioProcess: ReturnType<typeof Bun.spawn> | null = null
+const PRISMA_STUDIO_PORT = parseInt(process.env.PRISMA_STUDIO_PORT || '5555', 10)
+
+/**
+ * Start Prisma Studio internally (helper function)
+ */
+async function ensurePrismaStudioRunning(): Promise<{ ok: boolean; error?: string }> {
+  const schemaPath = join(PROJECT_DIR, 'prisma', 'schema.prisma')
+  
+  // Check if Prisma schema exists
+  if (!existsSync(schemaPath)) {
+    return { ok: false, error: 'no_prisma_schema' }
+  }
+  
+  // Check if Prisma Studio is already running
+  if (prismaStudioProcess) {
+    try {
+      const response = await fetch(`http://localhost:${PRISMA_STUDIO_PORT}`)
+      if (response.ok) {
+        return { ok: true }
+      }
+    } catch {
+      // Not reachable, need to restart
+      prismaStudioProcess.kill()
+      prismaStudioProcess = null
+    }
+  }
+  
+  // Start Prisma Studio
+  console.log(`[project-runtime] Starting Prisma Studio on port ${PRISMA_STUDIO_PORT}...`)
+  
+  try {
+    prismaStudioProcess = Bun.spawn(['bunx', 'prisma', 'studio', '--port', String(PRISMA_STUDIO_PORT), '--browser', 'none'], {
+      cwd: PROJECT_DIR,
+      env: { ...process.env },
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    
+    // Wait for studio to start (with retries)
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setTimeout(resolve, 500))
+      try {
+        const response = await fetch(`http://localhost:${PRISMA_STUDIO_PORT}`)
+        if (response.ok) {
+          return { ok: true }
+        }
+      } catch {
+        // Keep waiting
+      }
+    }
+    
+    return { ok: true } // Assume it's starting
+  } catch (error: any) {
+    console.error('[project-runtime] Failed to start Prisma Studio:', error)
+    return { ok: false, error: error.message || 'Failed to start Prisma Studio' }
+  }
+}
+
+/**
+ * Get Prisma Studio URL (starts if needed)
+ * Note: Returns 'proxy' as URL indicator - actual access is via /database/proxy/*
+ */
+app.get('/database/url', async (c) => {
+  const result = await ensurePrismaStudioRunning()
+  
+  if (!result.ok) {
+    if (result.error === 'no_prisma_schema') {
+      return c.json({
+        status: 'error',
+        url: null,
+        error: { code: 'no_prisma_schema', message: 'No Prisma schema found in project' }
+      }, 400)
+    }
+    return c.json({
+      status: 'error',
+      url: null,
+      error: { code: 'start_failed', message: result.error || 'Failed to start Prisma Studio' }
+    }, 500)
+  }
+  
+  // Return 'proxy' as indicator - the API layer will construct the correct proxy URL
+  return c.json({
+    status: 'running',
+    url: 'proxy', // Indicator that /database/proxy/* should be used
+  })
+})
+
+/**
+ * Proxy requests to Prisma Studio
+ * This allows the browser to access Prisma Studio through the API without CORS issues
+ */
+app.all('/database/proxy', async (c) => {
+  const result = await ensurePrismaStudioRunning()
+  if (!result.ok) {
+    return c.json({ error: 'Prisma Studio not available' }, 503)
+  }
+  
+  const targetUrl = `http://localhost:${PRISMA_STUDIO_PORT}/`
+  console.log(`[project-runtime] Proxying database request to ${targetUrl}`)
+  
+  try {
+    const response = await fetch(targetUrl, {
+      method: c.req.method,
+      headers: {
+        'Accept': c.req.header('Accept') || '*/*',
+        'Accept-Language': c.req.header('Accept-Language') || 'en-US,en;q=0.9',
+      },
+    })
+    
+    // Copy response headers
+    const headers = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection', 'content-encoding'].includes(key.toLowerCase())) {
+        headers.set(key, value)
+      }
+    })
+    
+    return new Response(response.body, {
+      status: response.status,
+      headers,
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Proxy error:', error)
+    return c.json({ error: 'Failed to proxy to Prisma Studio' }, 502)
+  }
+})
+
+app.all('/database/proxy/*', async (c) => {
+  const result = await ensurePrismaStudioRunning()
+  if (!result.ok) {
+    return c.json({ error: 'Prisma Studio not available' }, 503)
+  }
+  
+  // Get the path after /database/proxy/
+  const path = c.req.path.replace('/database/proxy', '') || '/'
+  const query = c.req.url.includes('?') ? '?' + c.req.url.split('?')[1] : ''
+  const targetUrl = `http://localhost:${PRISMA_STUDIO_PORT}${path}${query}`
+  
+  console.log(`[project-runtime] Proxying database request to ${targetUrl}`)
+  
+  try {
+    const reqHeaders: Record<string, string> = {
+      'Accept': c.req.header('Accept') || '*/*',
+      'Accept-Language': c.req.header('Accept-Language') || 'en-US,en;q=0.9',
+    }
+    
+    // Forward content-type for POST/PUT
+    const contentType = c.req.header('Content-Type')
+    if (contentType) {
+      reqHeaders['Content-Type'] = contentType
+    }
+    
+    const response = await fetch(targetUrl, {
+      method: c.req.method,
+      headers: reqHeaders,
+      body: ['POST', 'PUT', 'PATCH'].includes(c.req.method) ? await c.req.arrayBuffer() : undefined,
+    })
+    
+    // Copy response headers
+    const headers = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection', 'content-encoding'].includes(key.toLowerCase())) {
+        headers.set(key, value)
+      }
+    })
+    
+    return new Response(response.body, {
+      status: response.status,
+      headers,
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Proxy error:', error)
+    return c.json({ error: 'Failed to proxy to Prisma Studio' }, 502)
+  }
+})
+
+/**
+ * Get Prisma Studio status
+ */
+app.get('/database/status', async (c) => {
+  const schemaPath = join(PROJECT_DIR, 'prisma', 'schema.prisma')
+  
+  if (!existsSync(schemaPath)) {
+    return c.json({ status: 'stopped', hasPrisma: false })
+  }
+  
+  if (!prismaStudioProcess) {
+    return c.json({ status: 'stopped', hasPrisma: true })
+  }
+  
+  try {
+    const response = await fetch(`http://localhost:${PRISMA_STUDIO_PORT}`)
+    if (response.ok) {
+      return c.json({ status: 'running', hasPrisma: true, url: `http://localhost:${PRISMA_STUDIO_PORT}` })
+    }
+  } catch {
+    // Not reachable
+  }
+  
+  return c.json({ status: 'starting', hasPrisma: true })
+})
+
+/**
+ * Start Prisma Studio
+ */
+app.post('/database/start', async (c) => {
+  // Same as /database/url - fetch URL will start it if needed
+  const urlResponse = await fetch(`http://localhost:${PORT}/database/url`)
+  return urlResponse
+})
+
+/**
+ * Stop Prisma Studio
+ */
+app.post('/database/stop', (c) => {
+  if (prismaStudioProcess) {
+    prismaStudioProcess.kill()
+    prismaStudioProcess = null
+    console.log('[project-runtime] Prisma Studio stopped')
+  }
+  return c.json({ status: 'stopped' })
+})
+
+// =============================================================================
 // Graceful Shutdown
 // =============================================================================
 
@@ -427,4 +1415,6 @@ console.log(`[project-runtime] Starting server on port ${PORT}`)
 export default {
   port: PORT,
   fetch: app.fetch,
+  // Increase idle timeout for long-running Claude responses (2 minutes)
+  idleTimeout: 120,
 }

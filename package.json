@@ -28,9 +28,11 @@
     "db:init": "bun apps/api/scripts/init-database.ts",
     "docker:prod": "docker-compose up",
     "docker:prod:build": "docker-compose up --build",
-    "docker:prod:down": "docker-compose down"
+    "docker:prod:down": "docker-compose down",
+    "screenshots:templates": "bun run scripts/capture-template-screenshots.ts"
   },
   "devDependencies": {
+    "playwright": "^1.57.0",
     "turbo": "^2.6.3",
     "typescript": "^5.9.3"
   },

@@ -37,6 +37,8 @@ export interface IProjectRuntime {
   id: string
   /** Port the Vite dev server is running on */
   port: number
+  /** Port the agent server is running on (for local dev) */
+  agentPort?: number
   /** Current status of the runtime */
   status: RuntimeStatus
   /** Full URL to access the runtime (e.g., http://localhost:5200) */
@@ -99,6 +101,16 @@ export interface IRuntimeManager {
    * @throws If project has no active runtime
    */
   stop(projectId: string): Promise<void>
+
+  /**
+   * Restart the runtime for the specified project.
+   * Stops the current runtime and starts a new one.
+   * Useful after major file changes (e.g., template copy).
+   *
+   * @param projectId - The project to restart runtime for
+   * @returns The restarted runtime instance
+   */
+  restart(projectId: string): Promise<IProjectRuntime>
 
   /**
    * Get the current status of a project's runtime.

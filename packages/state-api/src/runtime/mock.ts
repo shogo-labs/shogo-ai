@@ -144,6 +144,15 @@ export class MockRuntimeManager implements IRuntimeManager {
     this.stopHistory.push(projectId)
   }
 
+  async restart(projectId: string): Promise<IProjectRuntime> {
+    // Stop the current runtime if it exists
+    if (this.runtimes.has(projectId)) {
+      await this.stop(projectId)
+    }
+    // Start a new runtime
+    return this.start(projectId)
+  }
+
   status(projectId: string): IProjectRuntime | null {
     return this.runtimes.get(projectId) ?? null
   }

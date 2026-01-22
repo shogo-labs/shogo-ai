@@ -5,8 +5,9 @@
 # Initializes the project environment and starts services:
 # 1. Syncs project files from S3 (if configured)
 # 2. Installs project dependencies
-# 3. Starts Vite dev server (background)
-# 4. Starts agent server (foreground)
+# 3. Builds the TanStack Start / Vite project
+# 4. Starts TanStack Start server (background) for preview
+# 5. Starts agent server (foreground)
 # =============================================================================
 
 set -e
@@ -91,18 +92,7 @@ if [ ! -f "$PROJECT_DIR/package.json" ]; then
 }
 EOF
     
-    cat > "$PROJECT_DIR/vite.config.ts" << 'EOF'
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    host: '0.0.0.0',
-    port: 5173,
-  },
-})
-EOF
+    # Note: vite.config.ts is generated dynamically in Step 4 with project-specific base path
     
     mkdir -p "$PROJECT_DIR/src"
     cat > "$PROJECT_DIR/src/main.tsx" << 'EOF'
@@ -164,28 +154,81 @@ if [ -f "$PROJECT_DIR/package.json" ]; then
 fi
 
 # =============================================================================
-# Step 4: Start Vite dev server (background)
+# Step 4: Detect project type and build
 # =============================================================================
-echo "[entrypoint] Starting Vite dev server..."
 cd "$PROJECT_DIR"
 
-# Start Vite in background
-bun run vite --port 5173 --host 0.0.0.0 &
-VITE_PID=$!
-echo "[entrypoint] Vite server started (PID: $VITE_PID)"
+# Check if this is a TanStack Start project (has @tanstack/react-start)
+IS_TANSTACK_START=false
+if grep -q "@tanstack/react-start" "$PROJECT_DIR/package.json" 2>/dev/null; then
+  IS_TANSTACK_START=true
+  echo "[entrypoint] Detected TanStack Start project (with Nitro)"
+else
+  echo "[entrypoint] Detected plain Vite project"
+  
+  # For plain Vite projects, generate config with base path
+  PREVIEW_BASE="/api/projects/${PROJECT_ID}/preview/"
+  echo "[entrypoint] Generating vite.config.ts with base: ${PREVIEW_BASE}"
+  
+  cat > "$PROJECT_DIR/vite.config.ts" << EOF
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
 
-# Wait for Vite to be ready
-echo "[entrypoint] Waiting for Vite server..."
-for i in $(seq 1 30); do
-  if curl -sf http://localhost:5173 > /dev/null 2>&1; then
-    echo "[entrypoint] Vite server is ready"
-    break
+// Auto-generated config for project: ${PROJECT_ID}
+export default defineConfig({
+  plugins: [react()],
+  base: '${PREVIEW_BASE}',
+})
+EOF
+fi
+
+# Build the project
+echo "[entrypoint] Building project..."
+if bun --bun vite build 2>&1; then
+  echo "[entrypoint] Build completed successfully"
+  if [ "$IS_TANSTACK_START" = true ]; then
+    echo "[entrypoint] TanStack Start (Nitro) build output:"
+    ls -la "$PROJECT_DIR/.output/server/" 2>/dev/null || echo "[entrypoint] .output/server/ not found"
+  else
+    echo "[entrypoint] Vite build output in $PROJECT_DIR/dist/"
   fi
-  sleep 1
-done
+else
+  echo "[entrypoint] WARNING: Build failed"
+fi
 
 # =============================================================================
-# Step 5: Start agent server (foreground)
+# Step 5: Start TanStack Start server (background) - using Nitro output
+# =============================================================================
+NITRO_SERVER_PORT=3000
+export NITRO_SERVER_PORT
+
+if [ "$IS_TANSTACK_START" = true ] && [ -f "$PROJECT_DIR/.output/server/index.mjs" ]; then
+  echo "[entrypoint] Starting TanStack Start server (Nitro) on port ${NITRO_SERVER_PORT}..."
+  cd "$PROJECT_DIR"
+  
+  # Start the Nitro server in background
+  PORT=$NITRO_SERVER_PORT bun run .output/server/index.mjs &
+  NITRO_PID=$!
+  echo "[entrypoint] TanStack Start server started (PID: $NITRO_PID)"
+  
+  # Wait for server to start
+  sleep 3
+  
+  # Check if it's running
+  if kill -0 $NITRO_PID 2>/dev/null; then
+    echo "[entrypoint] TanStack Start server is running on port ${NITRO_SERVER_PORT}"
+  else
+    echo "[entrypoint] WARNING: TanStack Start server failed to start"
+  fi
+elif [ "$IS_TANSTACK_START" = true ]; then
+  echo "[entrypoint] WARNING: TanStack Start build output not found at .output/server/index.mjs"
+fi
+
+# Export for server.ts to know the mode
+export IS_TANSTACK_START
+
+# =============================================================================
+# Step 6: Start agent server (foreground)
 # =============================================================================
 echo "[entrypoint] Starting agent server..."
 cd /app/packages/project-runtime

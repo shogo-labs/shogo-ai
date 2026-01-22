@@ -1,14 +1,10 @@
-import { fileURLToPath } from 'url'
-import { dirname, resolve } from 'path'
+import { resolve } from 'path'
 import { isS3Enabled } from "@shogo/state-api"
 import type { MCPContext } from '@shogo/state-api/mcp-isolation/types'
+import { MONOREPO_ROOT } from './paths'
 
-// Compute monorepo root from this file's location
-// This file is at: packages/mcp/src/state.ts
-// Monorepo root is 3 levels up
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
-export const MONOREPO_ROOT = resolve(__dirname, '../../../')
+// Re-export MONOREPO_ROOT for backward compatibility
+export { MONOREPO_ROOT }
 
 /**
  * Get the effective workspace location for schema operations.
@@ -29,7 +25,8 @@ export function getEffectiveWorkspace(workspace?: string): string {
   }
 
   // Filesystem mode: return absolute path
-  if (!workspace || workspace === 'workspace') {
+  // Handle common default workspace names - they all mean "use configured schemas path"
+  if (!workspace || workspace === 'workspace' || workspace === 'default') {
     // Use SCHEMAS_PATH env var if set (Docker), otherwise default to monorepo .schemas
     return process.env.SCHEMAS_PATH || resolve(MONOREPO_ROOT, '.schemas')
   }

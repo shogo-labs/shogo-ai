@@ -12,6 +12,8 @@
  */
 
 import { Hono } from "hono"
+import { existsSync } from "fs"
+import { join } from "path"
 import type { IRuntimeManager, IProjectRuntime } from "@shogo/state-api/runtime/types"
 
 /**
@@ -21,8 +23,9 @@ import type { IRuntimeManager, IProjectRuntime } from "@shogo/state-api/runtime/
 export interface RuntimeRoutesConfig {
   /**
    * Studio core store for project lookup.
+   * Optional - if not provided, uses workspace directory validation.
    */
-  studioCore: {
+  studioCore?: {
     projectCollection: {
       query: () => {
         where: (filter: Record<string, any>) => {
@@ -39,6 +42,11 @@ export interface RuntimeRoutesConfig {
    * Domain suffix for URL generation (default: 'localhost').
    */
   domainSuffix?: string
+  /**
+   * Workspaces directory for fallback project validation.
+   * Required if studioCore is not provided.
+   */
+  workspacesDir?: string
 }
 
 /**
@@ -55,23 +63,42 @@ const SANDBOX_ATTRIBUTES = 'allow-scripts allow-same-origin allow-forms allow-po
  * @returns Hono router instance
  */
 export function runtimeRoutes(config: RuntimeRoutesConfig) {
-  const { studioCore, runtimeManager, domainSuffix = 'localhost' } = config
+  const { studioCore, runtimeManager, domainSuffix = 'localhost', workspacesDir } = config
   const router = new Hono()
 
   /**
    * Validate project exists before runtime operations.
+   * Falls back to workspace directory check if database not available.
    */
   async function validateProject(projectId: string): Promise<any | null> {
-    try {
-      const project = await studioCore.projectCollection
-        .query()
-        .where({ id: projectId })
-        .first()
-      return project || null
-    } catch (err) {
-      console.error('[Runtime] Project lookup error:', err)
-      return null
+    // Try database validation first if studioCore is available
+    if (studioCore) {
+      try {
+        const project = await studioCore.projectCollection
+          .query()
+          .where({ id: projectId })
+          .first()
+        if (project) return project
+      } catch (err) {
+        console.warn('[Runtime] Database lookup failed, falling back to workspace check:', err)
+      }
     }
+    
+    // Fallback: Check if workspace directory exists
+    if (workspacesDir) {
+      const projectDir = join(workspacesDir, projectId)
+      if (existsSync(projectDir)) {
+        return { id: projectId, name: projectId } // Return minimal project object
+      }
+    }
+    
+    // Also check if runtime already exists
+    const runtime = runtimeManager.status(projectId)
+    if (runtime) {
+      return { id: projectId, name: projectId }
+    }
+    
+    return null
   }
 
   /**
@@ -155,6 +182,44 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
       console.error("[Runtime] Stop error:", error)
       return c.json(
         { error: { code: "stop_failed", message: error.message || "Failed to stop runtime" } },
+        500
+      )
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/runtime/restart - Restart runtime
+   *
+   * Stops and restarts the project's Vite dev server.
+   * Useful after major file changes like template copy.
+   */
+  router.post("/projects/:projectId/runtime/restart", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+
+      // Validate project exists
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404
+        )
+      }
+
+      // Restart runtime (handles both running and stopped cases)
+      const runtime = await runtimeManager.restart(projectId)
+
+      return c.json({
+        success: true,
+        url: runtime.url,
+        port: runtime.port,
+        status: runtime.status,
+        startedAt: runtime.startedAt,
+      }, 200)
+    } catch (error: any) {
+      console.error("[Runtime] Restart error:", error)
+      return c.json(
+        { error: { code: "restart_failed", message: error.message || "Failed to restart runtime" } },
         500
       )
     }

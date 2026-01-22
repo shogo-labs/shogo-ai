@@ -1,38 +1,38 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "id": "e5b71560-f3c2-4165-bdc8-d69a246f5ec8",
+  "name": "system-migrations",
+  "format": "enhanced-json-schema",
+  "createdAt": 1768862113954,
+  "version": 2,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "system-migrations",
-  "title": "System Migrations Schema",
-  "description": "Tracks applied database migrations for schema evolution",
-  "type": "object",
-  "x-persistence": {
-    "bootstrap": true,
-    "backend": "postgres"
-  },
   "$defs": {
     "MigrationRecord": {
       "type": "object",
-      "title": "MigrationRecord",
-      "x-original-name": "MigrationRecord",
-      "description": "Records an applied migration for tracking and preventing re-execution",
+      "description": "Records an applied migration step with chain tracking and verification status",
       "properties": {
         "id": {
           "type": "string",
           "format": "uuid",
-          "x-mst-type": "identifier",
+          "description": "Unique identifier for the migration record",
           "x-arktype": "string.uuid",
-          "description": "Unique identifier for the migration record"
+          "x-mst-type": "identifier"
         },
         "schemaName": {
           "type": "string",
           "description": "Name of the schema that was migrated"
         },
-        "version": {
+        "fromVersion": {
           "type": "integer",
-          "description": "Schema version number after migration"
+          "description": "Schema version before migration (null for fresh deploy)"
+        },
+        "toVersion": {
+          "type": "integer",
+          "description": "Schema version after migration"
         },
         "checksum": {
           "type": "string",
-          "description": "Hash of the schema content for drift detection"
+          "description": "Hash of the target schema content for drift detection"
         },
         "appliedAt": {
           "type": "number",
@@ -40,29 +40,39 @@
         },
         "statements": {
           "type": "array",
-          "items": {
-            "type": "string"
-          },
           "description": "SQL statements executed in this migration"
         },
         "success": {
           "type": "boolean",
-          "description": "Whether the migration completed successfully"
+          "description": "Whether the DDL execution completed without errors"
+        },
+        "verified": {
+          "type": "boolean",
+          "description": "Whether post-execution verification confirmed tables/columns exist"
         },
         "errorMessage": {
           "type": "string",
-          "description": "Error message if migration failed"
+          "description": "Error message if migration or verification failed"
+        },
+        "verificationDetails": {
+          "type": "object",
+          "description": "Details of what was verified (tables checked, columns checked, results)"
         }
       },
       "required": [
         "id",
         "schemaName",
-        "version",
+        "toVersion",
         "checksum",
         "appliedAt",
-        "success"
-      ]
+        "success",
+        "verified"
+      ],
+      "x-original-name": "MigrationRecord"
     }
   },
-  "version": 1
+  "x-persistence": {
+    "backend": "postgres",
+    "bootstrap": true
+  }
 }
