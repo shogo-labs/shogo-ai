@@ -17,14 +17,11 @@ import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentCo
 import { DomainProvider, type EagerCollectionsConfig } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { MCPBackend } from './query/MCPBackend'
-import { SupabaseAuthService, MockAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService } from '@shogo/state-api'
+import { createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
 import { mcpService } from './services/mcpService'
 import { Toaster } from '@/components/ui/toaster'
 import { useSession } from './auth/client'
-
-// Initialize auth service with mock for development
-const authService = new MockAuthService()
 
 // BetterAuth configuration
 // Uses VITE_BETTER_AUTH_URL or falls back to current origin for same-origin API
@@ -51,13 +48,13 @@ const env = createEnvironment({
 
 // Domain configuration - keys become property names in useDomains()
 // Access via: const { teams, auth, chat, componentBuilder, ... } = useDomains()
+// Note: platformFeatures removed from consumer app - available for internal/admin use only
 const domains = {
   teams: teamsDomain,
   multiTenancy: teamsMultiTenancyDomain,
   chat: chatDomain,
   studioCore: studioCoreDomain,
   studioChat: studioChatDomain,
-  platformFeatures: platformFeaturesDomain,
   auth: betterAuthDomain,
   componentBuilder: componentBuilderDomain,
   billing: billingDomain,
@@ -71,11 +68,12 @@ const domains = {
  * - studioCore: workspace/member/project/folder (sidebar, workspace switcher)
  * - componentBuilder: rendererBinding (component registry)
  * - billing: subscription (upgrade CTA)
- * - platformFeatures: featureSession (feature list if project selected)
  *
  * Deferred collections (empty array = don't load on mount):
- * - teams, multiTenancy, chat, studioChat, auth (not used on landing page)
+ * - teams, multiTenancy, chat, auth (not used on landing page)
  * - studioCore: starredProject, invitation (load on demand)
+ *
+ * Note: platformFeatures removed from consumer app - feature sessions not loaded
  */
 const eagerCollections: EagerCollectionsConfig = {
   // Essential for initial render
@@ -90,7 +88,6 @@ const eagerCollections: EagerCollectionsConfig = {
   // to render workspace layouts (e.g., when AI calls set_workspace)
   componentBuilder: ['rendererBindingCollection', 'compositionCollection', 'layoutTemplateCollection'],
   billing: ['subscriptionCollection'],
-  platformFeatures: ['featureSessionCollection'],
 
   // Deferred - don't load on mount (empty array)
   teams: [],
@@ -132,56 +129,63 @@ function App() {
           <DomainProvider key={authKey} domains={domains} eagerCollections={eagerCollections}>
             <SchemaLoadingGate>
               <WavesmithMetaStoreProvider>
-                <AuthProvider authService={authService}>
+                <AuthProvider authService={betterAuthService}>
                   <Routes>
-                  {/* Project view route - full screen without sidebar */}
-                  <Route path="/projects/:projectId" element={
-                    <AuthGate>
-                      <ProjectLayout />
-                    </AuthGate>
-                  } />
+                    {/* Project view route - full screen without sidebar */}
+                    <Route path="/projects/:projectId" element={
+                      <AuthGate>
+                        <ProjectLayout />
+                      </AuthGate>
+                    } />
 
-                  {/* Settings page - standalone without AppShell sidebar */}
-                  <Route path="/settings" element={
-                    <AuthGate>
-                      <SettingsPage />
-                    </AuthGate>
-                  } />
+                    {/* Advanced chat view - full screen, project-scoped (Cmd+Shift+A from project view) */}
+                    <Route path="/projects/:projectId/advanced-chat" element={
+                      <AuthGate>
+                        <AdvancedChatLayout />
+                      </AuthGate>
+                    } />
 
-                  {/* Project settings - with project context */}
-                  <Route path="/projects/:projectId/settings" element={
-                    <AuthGate>
-                      <SettingsPage />
-                    </AuthGate>
-                  } />
+                    {/* Settings page - standalone without AppShell sidebar */}
+                    <Route path="/settings" element={
+                      <AuthGate>
+                        <SettingsPage />
+                      </AuthGate>
+                    } />
 
-                  {/* Protected root route - Shogo Studio App */}
-                  <Route path="/*" element={
-                    <AuthGate>
-                      <AppShell />
-                    </AuthGate>
-                  }>
-                    {/* WorkspaceLayout as index route */}
-                    <Route index element={<WorkspaceLayout />} />
-                    {/* Advanced Chat testbed route (task-testbed-route) */}
-                    <Route path="advanced-chat" element={<AdvancedChatLayout />} />
-                    {/* Profile page */}
-                    <Route path="profile" element={<AppProfilePage />} />
-                    {/* Billing management */}
-                    <Route path="billing" element={<AppBillingPage />} />
-                    {/* Member management */}
-                    <Route path="members" element={<AppMemberManagementPage />} />
-                    {/* All projects page */}
-                    <Route path="projects" element={<AllProjectsPage />} />
-                    {/* Starred projects */}
-                    <Route path="starred" element={<StarredProjectsPage />} />
-                    {/* Shared projects */}
-                    <Route path="shared" element={<SharedWithMePage />} />
-                    {/* Discover */}
-                    <Route path="discover" element={<AllProjectsPage />} />
-                    {/* Templates */}
-                    <Route path="templates" element={<AllProjectsPage />} />
-                  </Route>
+                    {/* Project settings - with project context */}
+                    <Route path="/projects/:projectId/settings" element={
+                      <AuthGate>
+                        <SettingsPage />
+                      </AuthGate>
+                    } />
+
+                    {/* Protected root route - Shogo Studio App */}
+                    <Route path="/*" element={
+                      <AuthGate>
+                        <AppShell />
+                      </AuthGate>
+                    }>
+                      {/* WorkspaceLayout as index route */}
+                      <Route index element={<WorkspaceLayout />} />
+                      {/* Advanced Chat testbed route (task-testbed-route) */}
+                      <Route path="advanced-chat" element={<AdvancedChatLayout />} />
+                      {/* Profile page */}
+                      <Route path="profile" element={<AppProfilePage />} />
+                      {/* Billing management */}
+                      <Route path="billing" element={<AppBillingPage />} />
+                      {/* Member management */}
+                      <Route path="members" element={<AppMemberManagementPage />} />
+                      {/* All projects page */}
+                      <Route path="projects" element={<AllProjectsPage />} />
+                      {/* Starred projects */}
+                      <Route path="starred" element={<StarredProjectsPage />} />
+                      {/* Shared projects */}
+                      <Route path="shared" element={<SharedWithMePage />} />
+                      {/* Discover */}
+                      <Route path="discover" element={<AllProjectsPage />} />
+                      {/* Templates */}
+                      <Route path="templates" element={<AllProjectsPage />} />
+                    </Route>
                   </Routes>
                 </AuthProvider>
               </WavesmithMetaStoreProvider>

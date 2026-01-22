@@ -80,7 +80,7 @@ async function callMcpTool(toolName: string, args: Record<string, unknown>): Pro
     }
 
     const text = await response.text()
-    
+
     // Parse SSE response to get the result
     for (const line of text.split('\n')) {
       if (line.startsWith('data: ')) {
@@ -386,7 +386,7 @@ const virtualToolsServer = createSdkMcpServer({
         for (const op of args.operations ?? []) {
           // Check if this is a schema operation that should go to MCP
           const isSchemaOperation = op.model === 'Schema' || op.domain === 'schema' || (op.domain === 'wavesmith' && op.model === 'Schema')
-          
+
           if (isSchemaOperation && op.action === 'create' && op.data) {
             // Call MCP schema.set directly and return real result
             const schemaName = (op.data.name || op.data.id || op.id) as string
@@ -396,10 +396,10 @@ const virtualToolsServer = createSdkMcpServer({
             }
 
             console.log(`${VT_LOG_PREFIX} 📋 Calling MCP schema.set for: ${schemaName}`)
-            
+
             // Extract schema payload - AI sends { name, schema: { $defs: {...} } }
             const schemaPayload = op.data.schema || op.data
-            
+
             const mcpResult = await callMcpTool('schema.set', {
               name: schemaName,
               payload: schemaPayload,
@@ -437,7 +437,7 @@ const virtualToolsServer = createSdkMcpServer({
         // Build response message
         const schemaResults = results.filter(r => r.op.model === 'Schema' || r.op.domain === 'schema')
         const failures = schemaResults.filter(r => !r.success)
-        
+
         if (failures.length > 0) {
           // Return error details so AI can see what went wrong
           const errorMessages = failures.map(f => `- ${f.op.data?.name || 'unknown'}: ${f.error}`).join('\n')
@@ -658,206 +658,208 @@ function createProjectScopedClaudeCode(projectId?: string) {
   console.log(`[ClaudeCode] canUseTool callback: ${pathRestrictor ? 'SET' : 'NOT SET'}`);
 
   return createClaudeCode({
-  defaultSettings: {
-    // Enable streaming input - REQUIRED for hooks to fire
-    // See: https://ai-sdk.dev/providers/claude-code (hooks require streaming input)
-    streamingInput: 'always',
-    // Enable verbose logging for debugging
-    verbose: true,
-    // Set working directory - project workspace or project root
-    cwd,
-    // Path restriction for project-scoped sessions (prevents access outside workspace)
-    // undefined means no restriction (full filesystem access for platform-level operations)
-    canUseTool: pathRestrictor,
-    // Load project settings (picks up .claude/skills, .mcp.json, etc.)
-    settingSources: ['project', 'local'],
-    // MCP servers - Wavesmith for data + Virtual tools for client-side effects
-    mcpServers: {
-      wavesmith: {
-        // Run MCP server as subprocess (packages/mcp included in Docker build)
-        // Use absolute path since cwd is set to project workspace, not app root
-        command: 'bun',
-        args: ['run', '/app/packages/mcp/src/server.ts'],
+    defaultSettings: {
+      // Enable streaming input - REQUIRED for hooks to fire
+      // See: https://ai-sdk.dev/providers/claude-code (hooks require streaming input)
+      streamingInput: 'always',
+      // Enable verbose logging for debugging
+      verbose: true,
+      // Set working directory - project workspace or project root
+      cwd,
+      // Path restriction for project-scoped sessions (prevents access outside workspace)
+      // undefined means no restriction (full filesystem access for platform-level operations)
+      canUseTool: pathRestrictor,
+      // Load project settings (picks up .claude/skills, .mcp.json, etc.)
+      // NOTE: SDK requires 'user' (not 'local') for skill discovery
+      settingSources: ['user', 'project'],
+      // MCP servers - Wavesmith for data + Virtual tools for client-side effects
+      mcpServers: {
+        wavesmith: {
+          // Run MCP server as subprocess (packages/mcp included in Docker build)
+          // Use absolute path since cwd is set to project workspace, not app root
+          command: 'bun',
+          args: ['run', '/app/packages/mcp/src/server.ts'],
+        },
+        // SDK MCP server for virtual tools (in-process, defined above)
+        'virtual-tools': virtualToolsServer,
       },
-      // SDK MCP server for virtual tools (in-process, defined above)
-      'virtual-tools': virtualToolsServer,
-    },
-    // Allow MCP tools, file operations, and skill invocation
-    allowedTools: [
-      // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
-      'mcp__virtual-tools__navigate_to_phase',
-      'mcp__virtual-tools__set_workspace',
-      'mcp__virtual-tools__execute',
-      // File operations
-      'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
-      // Skill and agent tools (required for /platform-feature-* skills)
-      'Skill', 'Task', 'Bash', 'TodoWrite',
-      // Wavesmith MCP tools - Schema
-      'mcp__wavesmith__schema_set',
-      'mcp__wavesmith__schema_get',
-      'mcp__wavesmith__schema_list',
-      'mcp__wavesmith__schema_load',
-      // Wavesmith MCP tools - Store
-      'mcp__wavesmith__store_create',
-      'mcp__wavesmith__store_list',
-      'mcp__wavesmith__store_get',
-      'mcp__wavesmith__store_update',
-      'mcp__wavesmith__store_query',
-      'mcp__wavesmith__store_models',
-      'mcp__wavesmith__store_delete',
-      // Wavesmith MCP tools - Views
-      'mcp__wavesmith__view_execute',
-      'mcp__wavesmith__view_define',
-      'mcp__wavesmith__view_project',
-      // Wavesmith MCP tools - Data & DDL
-      'mcp__wavesmith__data_load',
-      'mcp__wavesmith__data_loadAll',
-      'mcp__wavesmith__ddl_execute',
-      'mcp__wavesmith__ddl_migrate',
-      // Chrome DevTools MCP - Navigation & Pages
-      'mcp__chrome-devtools__navigate_page',
-      'mcp__chrome-devtools__new_page',
-      'mcp__chrome-devtools__close_page',
-      'mcp__chrome-devtools__select_page',
-      'mcp__chrome-devtools__list_pages',
-      'mcp__chrome-devtools__wait_for',
-      'mcp__chrome-devtools__resize_page',
-      // Chrome DevTools MCP - Input & Interaction
-      'mcp__chrome-devtools__click',
-      'mcp__chrome-devtools__fill',
-      'mcp__chrome-devtools__fill_form',
-      'mcp__chrome-devtools__hover',
-      'mcp__chrome-devtools__press_key',
-      'mcp__chrome-devtools__drag',
-      'mcp__chrome-devtools__upload_file',
-      'mcp__chrome-devtools__handle_dialog',
-      // Chrome DevTools MCP - Inspection & Debugging
-      'mcp__chrome-devtools__take_screenshot',
-      'mcp__chrome-devtools__take_snapshot',
-      'mcp__chrome-devtools__evaluate_script',
-      'mcp__chrome-devtools__list_console_messages',
-      'mcp__chrome-devtools__get_console_message',
-      // Chrome DevTools MCP - Network
-      'mcp__chrome-devtools__list_network_requests',
-      'mcp__chrome-devtools__get_network_request',
-      'mcp__chrome-devtools__emulate',
-      // Chrome DevTools MCP - Performance
-      'mcp__chrome-devtools__performance_start_trace',
-      'mcp__chrome-devtools__performance_stop_trace',
-      'mcp__chrome-devtools__performance_analyze_insight',
-    ],
-    // Permission mode:
-    // - When canUseTool callback is provided (project-scoped): use 'default' so CLI sends
-    //   permission requests to SDK, which invokes our callback for path restriction
-    // - When no canUseTool callback (platform-level): use 'bypassPermissions' for non-interactive use
-    permissionMode: pathRestrictor ? 'default' : 'bypassPermissions',
-    // Skip the dangerous bypass confirmation for non-project sessions
-    allowDangerouslySkipPermissions: !pathRestrictor,
-    // Hooks for subagent progress streaming (task-subagent-progress-streaming)
-    // and virtual tool interception (virtual-tools-domain Phase 0 PoC)
-    hooks: {
-      // PreToolUse: Currently unused - virtual tools handled via sdkTool()
-      // SDK tools (virtualToolsServer) are the single execution path for virtual tools.
-      // See: sdkTool('set_workspace', ...), sdkTool('execute', ...), sdkTool('navigate_to_phase', ...)
-      // Keeping hook structure for future non-virtual-tool interceptors if needed.
-      SubagentStart: [{
-        hooks: [async (rawInput: unknown) => {
-          const input = rawInput as SubagentStartHookInput
-          console.log(`${LOG_PREFIX} 🚀 HOOK SubagentStart fired:`, {
-            agentId: input.agent_id,
-            agentType: input.agent_type,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          const event = {
-            type: 'subagent-start',
-            agentId: input.agent_id,
-            agentType: input.agent_type,
-            timestamp: Date.now(),
-          } satisfies SubagentProgressEvent
-          progressEvents.emit('progress', event)
-          console.log(`${LOG_PREFIX} 📤 Emitted subagent-start event`)
-          return { continue: true }
-        }]
-      }],
-      SubagentStop: [{
-        hooks: [async (rawInput: unknown) => {
-          const input = rawInput as SubagentStopHookInput
-          console.log(`${LOG_PREFIX} 🛑 HOOK SubagentStop fired:`, {
-            agentId: input.agent_id,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          const event = {
-            type: 'subagent-stop',
-            agentId: input.agent_id,
-            timestamp: Date.now(),
-          } satisfies SubagentProgressEvent
-          progressEvents.emit('progress', event)
-          console.log(`${LOG_PREFIX} 📤 Emitted subagent-stop event`)
-          return { continue: true }
-        }]
-      }],
-      PostToolUse: [{
-        hooks: [async (rawInput: unknown) => {
-          const input = rawInput as PostToolUseHookInput
-          // Only log MCP and Skill tools to reduce noise
-          if (input.tool_name.includes('mcp__') || input.tool_name === 'Skill' || input.tool_name === 'Task') {
-            console.log(`${LOG_PREFIX} 🔧 HOOK PostToolUse fired:`, {
+      // Allow MCP tools, file operations, and skill invocation
+      allowedTools: [
+        // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
+        'mcp__virtual-tools__navigate_to_phase',
+        'mcp__virtual-tools__set_workspace',
+        'mcp__virtual-tools__execute',
+        // File operations
+        'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
+        // Skill and agent tools (required for /platform-feature-* skills)
+        'Skill', 'Task', 'Bash', 'TodoWrite',
+        // Wavesmith MCP tools - Schema
+        'mcp__wavesmith__schema_set',
+        'mcp__wavesmith__schema_get',
+        'mcp__wavesmith__schema_list',
+        'mcp__wavesmith__schema_load',
+        // Wavesmith MCP tools - Store
+        'mcp__wavesmith__store_create',
+        'mcp__wavesmith__store_list',
+        'mcp__wavesmith__store_get',
+        'mcp__wavesmith__store_update',
+        'mcp__wavesmith__store_query',
+        'mcp__wavesmith__store_models',
+        'mcp__wavesmith__store_delete',
+        // Wavesmith MCP tools - Views
+        'mcp__wavesmith__view_execute',
+        'mcp__wavesmith__view_define',
+        'mcp__wavesmith__view_project',
+        // Wavesmith MCP tools - Data & DDL
+        'mcp__wavesmith__data_load',
+        'mcp__wavesmith__data_loadAll',
+        'mcp__wavesmith__ddl_execute',
+        'mcp__wavesmith__ddl_migrate',
+        // Chrome DevTools MCP - Navigation & Pages
+        'mcp__chrome-devtools__navigate_page',
+        'mcp__chrome-devtools__new_page',
+        'mcp__chrome-devtools__close_page',
+        'mcp__chrome-devtools__select_page',
+        'mcp__chrome-devtools__list_pages',
+        'mcp__chrome-devtools__wait_for',
+        'mcp__chrome-devtools__resize_page',
+        // Chrome DevTools MCP - Input & Interaction
+        'mcp__chrome-devtools__click',
+        'mcp__chrome-devtools__fill',
+        'mcp__chrome-devtools__fill_form',
+        'mcp__chrome-devtools__hover',
+        'mcp__chrome-devtools__press_key',
+        'mcp__chrome-devtools__drag',
+        'mcp__chrome-devtools__upload_file',
+        'mcp__chrome-devtools__handle_dialog',
+        // Chrome DevTools MCP - Inspection & Debugging
+        'mcp__chrome-devtools__take_screenshot',
+        'mcp__chrome-devtools__take_snapshot',
+        'mcp__chrome-devtools__evaluate_script',
+        'mcp__chrome-devtools__list_console_messages',
+        'mcp__chrome-devtools__get_console_message',
+        // Chrome DevTools MCP - Network
+        'mcp__chrome-devtools__list_network_requests',
+        'mcp__chrome-devtools__get_network_request',
+        'mcp__chrome-devtools__emulate',
+        // Chrome DevTools MCP - Performance
+        'mcp__chrome-devtools__performance_start_trace',
+        'mcp__chrome-devtools__performance_stop_trace',
+        'mcp__chrome-devtools__performance_analyze_insight',
+      ],
+      // Permission mode:
+      // - When canUseTool callback is provided (project-scoped): use 'default' so CLI sends
+      //   permission requests to SDK, which invokes our callback for path restriction
+      // - When no canUseTool callback (platform-level): use 'bypassPermissions' for non-interactive use
+      permissionMode: pathRestrictor ? 'default' : 'bypassPermissions',
+      // permissionMode: 'bypassPermissions',
+      // Skip the dangerous bypass confirmation for non-project sessions
+      allowDangerouslySkipPermissions: !pathRestrictor,
+      // Hooks for subagent progress streaming (task-subagent-progress-streaming)
+      // and virtual tool interception (virtual-tools-domain Phase 0 PoC)
+      hooks: {
+        // PreToolUse: Currently unused - virtual tools handled via sdkTool()
+        // SDK tools (virtualToolsServer) are the single execution path for virtual tools.
+        // See: sdkTool('set_workspace', ...), sdkTool('execute', ...), sdkTool('navigate_to_phase', ...)
+        // Keeping hook structure for future non-virtual-tool interceptors if needed.
+        SubagentStart: [{
+          hooks: [async (rawInput: unknown) => {
+            const input = rawInput as SubagentStartHookInput
+            console.log(`${LOG_PREFIX} 🚀 HOOK SubagentStart fired:`, {
+              agentId: input.agent_id,
+              agentType: input.agent_type,
+              rawInput: JSON.stringify(rawInput).slice(0, 200),
+            })
+            const event = {
+              type: 'subagent-start',
+              agentId: input.agent_id,
+              agentType: input.agent_type,
+              timestamp: Date.now(),
+            } satisfies SubagentProgressEvent
+            progressEvents.emit('progress', event)
+            console.log(`${LOG_PREFIX} 📤 Emitted subagent-start event`)
+            return { continue: true }
+          }]
+        }],
+        SubagentStop: [{
+          hooks: [async (rawInput: unknown) => {
+            const input = rawInput as SubagentStopHookInput
+            console.log(`${LOG_PREFIX} 🛑 HOOK SubagentStop fired:`, {
+              agentId: input.agent_id,
+              rawInput: JSON.stringify(rawInput).slice(0, 200),
+            })
+            const event = {
+              type: 'subagent-stop',
+              agentId: input.agent_id,
+              timestamp: Date.now(),
+            } satisfies SubagentProgressEvent
+            progressEvents.emit('progress', event)
+            console.log(`${LOG_PREFIX} 📤 Emitted subagent-stop event`)
+            return { continue: true }
+          }]
+        }],
+        PostToolUse: [{
+          hooks: [async (rawInput: unknown) => {
+            const input = rawInput as PostToolUseHookInput
+            // Only log MCP and Skill tools to reduce noise
+            if (input.tool_name.includes('mcp__') || input.tool_name === 'Skill' || input.tool_name === 'Task') {
+              console.log(`${LOG_PREFIX} 🔧 HOOK PostToolUse fired:`, {
+                toolName: input.tool_name,
+                toolUseId: input.tool_use_id,
+              })
+            }
+            const event = {
+              type: 'tool-complete',
               toolName: input.tool_name,
               toolUseId: input.tool_use_id,
+              timestamp: Date.now(),
+            } satisfies SubagentProgressEvent
+            progressEvents.emit('progress', event)
+            return { continue: true }
+          }]
+        }],
+        // Stop hook fires when PARENT agent finishes (not just subagents)
+        // This is the authoritative signal that the stream should complete
+        Stop: [{
+          hooks: [async (rawInput: unknown) => {
+            // Extract session_id from rawInput - SDK doesn't provide it in stream metadata
+            const sessionId = (rawInput as { session_id?: string }).session_id
+            console.log(`${LOG_PREFIX} 🏁 HOOK Stop (PARENT) fired:`, {
+              sessionId,
+              rawInput: JSON.stringify(rawInput).slice(0, 200),
             })
-          }
-          const event = {
-            type: 'tool-complete',
-            toolName: input.tool_name,
-            toolUseId: input.tool_use_id,
-            timestamp: Date.now(),
-          } satisfies SubagentProgressEvent
-          progressEvents.emit('progress', event)
-          return { continue: true }
-        }]
-      }],
-      // Stop hook fires when PARENT agent finishes (not just subagents)
-      // This is the authoritative signal that the stream should complete
-      Stop: [{
-        hooks: [async (rawInput: unknown) => {
-          // Extract session_id from rawInput - SDK doesn't provide it in stream metadata
-          const sessionId = (rawInput as { session_id?: string }).session_id
-          console.log(`${LOG_PREFIX} 🏁 HOOK Stop (PARENT) fired:`, {
-            sessionId,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          // Signal stream completion with session ID - this will unblock the reader.read() loop
-          streamCompletionEvents.emit('complete', {
-            source: 'Stop',
-            timestamp: Date.now(),
-            sessionId,  // Pass session ID for client persistence
-          })
-          console.log(`${LOG_PREFIX} 📤 Emitted stream-complete signal from Stop hook (sessionId: ${sessionId})`)
-          return { continue: true }
-        }]
-      }],
-      // SessionEnd hook fires when the Claude Code session ends
-      // This is a fallback signal in case Stop doesn't fire
-      SessionEnd: [{
-        hooks: [async (rawInput: unknown) => {
-          // Extract session_id from rawInput - SDK doesn't provide it in stream metadata
-          const sessionId = (rawInput as { session_id?: string }).session_id
-          console.log(`${LOG_PREFIX} 🔚 HOOK SessionEnd fired:`, {
-            sessionId,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          // Signal stream completion with session ID
-          streamCompletionEvents.emit('complete', {
-            source: 'SessionEnd',
-            timestamp: Date.now(),
-            sessionId,  // Pass session ID for client persistence
-          })
-          console.log(`${LOG_PREFIX} 📤 Emitted stream-complete signal from SessionEnd hook (sessionId: ${sessionId})`)
-          return { continue: true }
-        }]
-      }],
+            // Signal stream completion with session ID - this will unblock the reader.read() loop
+            streamCompletionEvents.emit('complete', {
+              source: 'Stop',
+              timestamp: Date.now(),
+              sessionId,  // Pass session ID for client persistence
+            })
+            console.log(`${LOG_PREFIX} 📤 Emitted stream-complete signal from Stop hook (sessionId: ${sessionId})`)
+            return { continue: true }
+          }]
+        }],
+        // SessionEnd hook fires when the Claude Code session ends
+        // This is a fallback signal in case Stop doesn't fire
+        SessionEnd: [{
+          hooks: [async (rawInput: unknown) => {
+            // Extract session_id from rawInput - SDK doesn't provide it in stream metadata
+            const sessionId = (rawInput as { session_id?: string }).session_id
+            console.log(`${LOG_PREFIX} 🔚 HOOK SessionEnd fired:`, {
+              sessionId,
+              rawInput: JSON.stringify(rawInput).slice(0, 200),
+            })
+            // Signal stream completion with session ID
+            streamCompletionEvents.emit('complete', {
+              source: 'SessionEnd',
+              timestamp: Date.now(),
+              sessionId,  // Pass session ID for client persistence
+            })
+            console.log(`${LOG_PREFIX} 📤 Emitted stream-complete signal from SessionEnd hook (sessionId: ${sessionId})`)
+            return { continue: true }
+          }]
+        }],
+      },
     },
-  },
   })
 }
 
@@ -2077,11 +2079,11 @@ app.post('/api/billing/portal', async (c) => {
     })
 
     if (customers.data.length === 0) {
-      return c.json({ 
-        error: { 
-          code: 'customer_not_found', 
-          message: `No Stripe customer found for workspace ${workspaceId}` 
-        } 
+      return c.json({
+        error: {
+          code: 'customer_not_found',
+          message: `No Stripe customer found for workspace ${workspaceId}`
+        }
       }, 404)
     }
 

@@ -3,6 +3,7 @@
  *
  * Schema-first reactive state management bridging arkType to MST
  * with isomorphic execution and built-in collaboration.
+ *
  */
 
 // Core types and utilities
