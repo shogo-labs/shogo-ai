@@ -1,38 +1,41 @@
 /**
- * AdvancedChatLayout - Smart component for the Advanced Chat Testbed
+ * AdvancedChatLayout - Project-scoped advanced chat view
  *
  * Uses ComposablePhaseView pattern with a "workspace" Composition entity.
  * Virtual tools (like show_schema) modify the Composition's slotContent,
  * and MobX reactivity triggers re-render via observer().
  *
+ * This layout is accessible via Cmd+Shift+A from ProjectLayout and provides
+ * a different UX focused on dynamic UI composition via virtual tools.
+ *
+ * Layout: ComposablePhaseView (LEFT) + ChatPanel (RIGHT)
+ * vs ProjectLayout: ChatPanel (LEFT) + Preview (RIGHT)
+ *
  * Task: task-testbed-layout, req-wpp-layout-refactor
  * Feature: virtual-tools-domain
- *
- * Design Decisions:
- * - dd-wpp-composition-state: Workspace state lives in Composition entity (not React state)
- * - dd-testbed-session-strategy: Create synthetic 'testbed-session' FeatureSession on-demand
- * - dd-wpp-composable-pattern: Use ComposablePhaseView to render workspace Composition
  */
 
 import { observer } from "mobx-react-lite";
-import { useEffect, useCallback, useState } from "react";
+import { useEffect, useCallback, useState, useRef } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import { useDomains } from "@/contexts/DomainProvider";
 import { ComposablePhaseView } from "../../rendering/composition/ComposablePhaseView";
+import { ComponentRegistryProvider } from "@/components/rendering";
+import { createRegistryFromDomain } from "@/components/rendering/registryFactory";
 import { ChatPanel } from "../chat/ChatPanel";
 import {
   ChatSessionPicker,
   type ChatSession,
-  mockChatSessions,
 } from "../chat/ChatSessionPicker";
 import { useChatSessionNavigation } from "./hooks/useChatSessionNavigation";
 import { useWorkspaceNavigation } from "../workspace/hooks/useWorkspaceNavigation";
 import { cn } from "@/lib/utils";
+import { useSession } from "@/auth/client";
 
 // ============================================================
 // Constants
 // ============================================================
 
-const TESTBED_SESSION_ID = "testbed-session";
 const WORKSPACE_COMPOSITION_NAME = "workspace";
 
 // ============================================================
@@ -40,26 +43,21 @@ const WORKSPACE_COMPOSITION_NAME = "workspace";
 // ============================================================
 
 export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
-  const { platformFeatures, componentBuilder, studioChat } = useDomains<{
-    platformFeatures?: any;
+  // Get projectId from URL params (route: /projects/:projectId/advanced-chat)
+  const { projectId } = useParams<{ projectId: string }>();
+  const navigate = useNavigate();
+  const { data: session } = useSession();
+
+  const { componentBuilder, studioChat, studioCore } = useDomains<{
     componentBuilder: any;
     studioChat: any;
+    studioCore: any;
   }>();
-
-  // Guard: Advanced Chat requires platformFeatures domain (internal use only)
-  if (!platformFeatures) {
-    return (
-      <div className="flex h-full items-center justify-center text-muted-foreground">
-        Advanced Chat is not available in this mode.
-      </div>
-    );
-  }
 
   // Track current chat session in URL (persists across refresh/hot reload)
   const { chatSessionId, setChatSessionId } = useChatSessionNavigation();
 
   // Register workspace params with nuqs so they're preserved during navigation
-  // Even though we don't use these values, calling the hook ensures nuqs doesn't clear them
   useWorkspaceNavigation();
 
   // Lift chat panel collapse state to parent to control layout
@@ -68,84 +66,140 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
   // Lift chat panel width to parent for proper layout control
   const [chatWidth, setChatWidth] = useState(400);
 
-  // Testbed session state (loaded async via query)
-  const [testbedSession, setTestbedSession] = useState<any>(null);
+  // Project state (loaded async)
+  const [project, setProject] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Load or create testbed session (for ChatPanel and DesignContainerSection)
+  // Create component registry from domain (same pattern as ProjectLayout)
+  const prevBindingsKeyRef = useRef<string>("");
+  const registryRef = useRef<ReturnType<typeof createRegistryFromDomain> | null>(null);
+
+  const bindings = componentBuilder?.rendererBindingCollection?.all() ?? [];
+  const currentBindingsKey = bindings
+    .map((b: any) => `${b.id}:${b.updatedAt ?? ""}`)
+    .join("|");
+
+  if (currentBindingsKey !== prevBindingsKeyRef.current || !registryRef.current) {
+    prevBindingsKeyRef.current = currentBindingsKey;
+    registryRef.current = createRegistryFromDomain(componentBuilder);
+  }
+
+  const registry = registryRef.current;
+
+  // Check if domains are ready
+  const domainsReady = !!studioCore?.projectCollection;
+
+  // Load project data
   useEffect(() => {
-    if (!platformFeatures?.featureSessionCollection?.query) return;
-    (async () => {
+    if (!projectId || !domainsReady) {
+      return;
+    }
+
+    let cancelled = false;
+    const MAX_RETRIES = 5;
+    const RETRY_DELAY_MS = 500;
+
+    const loadProject = async (attempt = 1): Promise<void> => {
+      if (cancelled) return;
+
       try {
-        // Check if session exists using query()
-        const existing = await platformFeatures.featureSessionCollection
+        const proj = await studioCore.projectCollection
           .query()
-          .where({ id: TESTBED_SESSION_ID })
+          .where({ id: projectId })
           .first();
 
-        if (existing) {
-          setTestbedSession(existing);
+        if (cancelled) return;
+
+        if (proj) {
+          setProject(proj);
+          setIsLoading(false);
         } else {
-          // Create if not exists
-          const created =
-            await platformFeatures.featureSessionCollection.insertOne({
-              id: TESTBED_SESSION_ID,
-              name: "Advanced Chat Testbed",
-              intent: "Virtual tools development testbed",
-              status: "discovery",
-              createdAt: Date.now(),
-            });
-          setTestbedSession(created);
+          console.warn("[AdvancedChatLayout] Project not found:", projectId);
+          setIsLoading(false);
         }
-      } catch (err) {
-        console.error(
-          "[AdvancedChatLayout] Failed to load/create testbed session:",
-          err,
-        );
+      } catch (err: any) {
+        if (cancelled) return;
+
+        // Retry if schema not loaded yet (race condition on page refresh)
+        const isSchemaNotLoaded =
+          err?.message?.includes("Schema") || err?.message?.includes("SCHEMA_NOT_FOUND");
+        if (isSchemaNotLoaded && attempt < MAX_RETRIES) {
+          console.debug(
+            `[AdvancedChatLayout] Schema not ready, retrying (${attempt}/${MAX_RETRIES})...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS * attempt));
+          return loadProject(attempt + 1);
+        }
+
+        console.error("[AdvancedChatLayout] Failed to load project:", err);
+        setIsLoading(false);
       }
-    })();
-  }, [platformFeatures]);
+    };
+
+    loadProject();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, domainsReady, studioCore]);
+
+  // Keyboard shortcut: Cmd+Shift+A to toggle back to normal project view
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        // Preserve chatSessionId in URL when switching
+        const params = chatSessionId ? `?chatSessionId=${chatSessionId}` : "";
+        navigate(`/projects/${projectId}${params}`);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [navigate, projectId, chatSessionId]);
 
   // Get workspace composition (for observability - triggers re-render when modified)
   const workspaceComposition =
     componentBuilder?.compositionCollection?.findByName?.(
-      WORKSPACE_COMPOSITION_NAME,
+      WORKSPACE_COMPOSITION_NAME
     );
 
-  // Get all chat sessions for the testbed feature
-  const testbedChatSessions: ChatSession[] = (
-    studioChat?.chatSessionCollection?.findByFeature?.(TESTBED_SESSION_ID) ?? []
-  ).map((s: any) => ({
-    id: s.id,
-    name: s.name || s.inferredName,
-    messageCount: s.messageCount ?? 0,
-    updatedAt: s.lastActiveAt,
-  }));
+  // Get all chat sessions for this project
+  const projectChatSessions: ChatSession[] = projectId
+    ? (studioChat?.chatSessionCollection?.findByContext?.(projectId) ?? []).map(
+        (s: any) => ({
+          id: s.id,
+          name: s.name || s.inferredName,
+          messageCount: s.messageCount ?? 0,
+          updatedAt: s.lastActiveAt,
+        })
+      )
+    : [];
 
   // Handler for session selection
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
       await setChatSessionId(sessionId);
     },
-    [setChatSessionId],
+    [setChatSessionId]
   );
 
   // Handler for creating a new session
   const handleCreateSession = useCallback(async () => {
-    if (!studioChat) return;
+    if (!studioChat || !projectId) return;
     const newSession = await studioChat.createChatSession({
       inferredName: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
-      contextType: "feature",
-      contextId: TESTBED_SESSION_ID,
+      contextType: "project",
+      contextId: projectId,
     });
     await setChatSessionId(newSession.id);
-  }, [studioChat, setChatSessionId]);
+  }, [studioChat, projectId, setChatSessionId]);
 
   // Sync from ChatPanel when it auto-creates a session
   const handleChatSessionChange = useCallback(
     async (sessionId: string) => {
       await setChatSessionId(sessionId);
     },
-    [setChatSessionId],
+    [setChatSessionId]
   );
 
   // Handler for renaming a session
@@ -156,69 +210,104 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
         name: newName,
       });
     },
-    [studioChat],
+    [studioChat]
   );
 
-  // Wait for session to be created before rendering ChatPanel
-  // This avoids race condition where ChatPanel tries to load messages before session exists
-  if (!testbedSession) {
+  // Get workspace ID for credit tracking
+  const workspaceId = project
+    ? typeof project.workspace === "string"
+      ? project.workspace
+      : project.workspace?.id
+    : null;
+
+  // Guard: No projectId in URL
+  if (!projectId) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-muted-foreground">Loading workspace...</div>
+      <div className="h-screen flex items-center justify-center text-muted-foreground">
+        No project selected. Navigate from a project to access Advanced Chat.
       </div>
     );
   }
 
-  return (
-    <div className="flex h-full">
-      {/* Dynamic Workspace - ComposablePhaseView renders the workspace Composition */}
-      <div className="flex-1 min-w-0 overflow-hidden">
-        <ComposablePhaseView
-          phaseName={WORKSPACE_COMPOSITION_NAME}
-          feature={testbedSession}
-          className="h-full"
-        />
-      </div>
-
-      {/* Chat Panel Container - dynamic width controlled by ChatPanel resize */}
-      <div
-        className={cn(
-          "border-l flex-shrink-0 flex flex-col transition-all duration-200",
-          isChatCollapsed && "w-16",
-        )}
-        style={!isChatCollapsed ? { width: `${chatWidth}px` } : undefined}
-      >
-        {/* Session Picker Header - hide when collapsed */}
-        {!isChatCollapsed && (
-          <div className="px-3 py-2 border-b flex items-center justify-between bg-muted/30">
-            <span className="text-sm font-medium text-muted-foreground">
-              Chat Sessions
-            </span>
-            <ChatSessionPicker
-              // sessions={mockChatSessions}
-              sessions={testbedChatSessions}
-              currentSessionId={chatSessionId ?? undefined}
-              onSelect={handleSelectSession}
-              onCreate={handleCreateSession}
-              onRename={handleRenameSession}
-            />
+  // Loading state
+  if (isLoading) {
+    return (
+      <ComponentRegistryProvider registry={registry}>
+        <div className="h-screen flex items-center justify-center">
+          <div className="text-muted-foreground animate-pulse">
+            Loading workspace...
           </div>
-        )}
+        </div>
+      </ComponentRegistryProvider>
+    );
+  }
 
-        {/* Chat Panel */}
-        <div className="flex-1 min-h-0">
-          <ChatPanel
-            featureId={TESTBED_SESSION_ID}
-            featureName="Advanced Chat Testbed"
-            phase={null}
-            chatSessionId={chatSessionId}
-            onChatSessionChange={handleChatSessionChange}
-            isCollapsed={isChatCollapsed}
-            onCollapsedChange={setIsChatCollapsed}
-            onWidthChange={setChatWidth}
+  // Project not found
+  if (!project) {
+    return (
+      <ComponentRegistryProvider registry={registry}>
+        <div className="h-screen flex items-center justify-center text-muted-foreground">
+          Project not found.
+        </div>
+      </ComponentRegistryProvider>
+    );
+  }
+
+  return (
+    <ComponentRegistryProvider registry={registry}>
+      <div className="h-screen flex">
+        {/* Dynamic Workspace - ComposablePhaseView renders the workspace Composition */}
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <ComposablePhaseView
+            phaseName={WORKSPACE_COMPOSITION_NAME}
+            feature={project}
+            className="h-full"
           />
         </div>
+
+        {/* Chat Panel Container - dynamic width controlled by ChatPanel resize */}
+        <div
+          className={cn(
+            "border-l flex-shrink-0 flex flex-col transition-all duration-200",
+            isChatCollapsed && "w-16"
+          )}
+          style={!isChatCollapsed ? { width: `${chatWidth}px` } : undefined}
+        >
+          {/* Session Picker Header - hide when collapsed */}
+          {!isChatCollapsed && (
+            <div className="px-3 py-2 border-b flex items-center justify-between bg-muted/30">
+              <span className="text-sm font-medium text-muted-foreground">
+                Chat Sessions
+              </span>
+              <ChatSessionPicker
+                sessions={projectChatSessions}
+                currentSessionId={chatSessionId ?? undefined}
+                onSelect={handleSelectSession}
+                onCreate={handleCreateSession}
+                onRename={handleRenameSession}
+              />
+            </div>
+          )}
+
+          {/* Chat Panel */}
+          <div className="flex-1 min-h-0">
+            <ChatPanel
+              featureId={null}
+              featureName={project.name}
+              phase={null}
+              projectId={projectId}
+              chatSessionId={chatSessionId}
+              onChatSessionChange={handleChatSessionChange}
+              isCollapsed={isChatCollapsed}
+              onCollapsedChange={setIsChatCollapsed}
+              onWidthChange={setChatWidth}
+              workspaceId={workspaceId}
+              userId={session?.user?.id}
+              useMainChatEndpoint
+            />
+          </div>
+        </div>
       </div>
-    </div>
+    </ComponentRegistryProvider>
   );
 });

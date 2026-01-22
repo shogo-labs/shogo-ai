@@ -2,7 +2,10 @@
   "name": "shogo-ai",
   "private": true,
   "packageManager": "bun@1.2.20",
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
     "build": "turbo build",
     "dev": "turbo dev",
@@ -28,7 +31,8 @@
     "db:init": "bun apps/api/scripts/init-database.ts",
     "docker:prod": "docker-compose up",
     "docker:prod:build": "docker-compose up --build",
-    "docker:prod:down": "docker-compose down"
+    "docker:prod:down": "docker-compose down",
+    "docker:prod:cycle": "docker-compose down && docker-compose up --build -d"
   },
   "devDependencies": {
     "turbo": "^2.6.3",

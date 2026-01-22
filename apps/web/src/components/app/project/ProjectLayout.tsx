@@ -15,7 +15,7 @@
 
 import { observer } from "mobx-react-lite"
 import { useEffect, useCallback, useState, useRef } from "react"
-import { useParams, useLocation } from "react-router-dom"
+import { useParams, useLocation, useNavigate } from "react-router-dom"
 import { useDomains } from "@/contexts/DomainProvider"
 import { ComposablePhaseView } from "@/components/rendering/composition/ComposablePhaseView"
 import { ComponentRegistryProvider } from "@/components/rendering"
@@ -59,6 +59,7 @@ interface TransitionLocationState {
 export const ProjectLayout = observer(function ProjectLayout() {
   const { projectId } = useParams<{ projectId: string }>()
   const location = useLocation()
+  const navigate = useNavigate()
   const { data: session } = useSession()
 
   // Extract state passed from homepage transition (for instant render + warm-start)
@@ -298,6 +299,20 @@ export const ProjectLayout = observer(function ProjectLayout() {
       cancelled = true
     }
   }, [projectId, studioChat, chatSessionId, setChatSessionId])
+
+  // Keyboard shortcut: Cmd+Shift+A to toggle to advanced chat view
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "a") {
+        e.preventDefault()
+        // Preserve chatSessionId in URL when switching
+        const params = chatSessionId ? `?chatSessionId=${chatSessionId}` : ""
+        navigate(`/projects/${projectId}/advanced-chat${params}`)
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [navigate, projectId, chatSessionId])
 
   // Session handlers
   const handleSelectSession = useCallback(

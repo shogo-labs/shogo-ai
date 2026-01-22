@@ -160,6 +160,8 @@ export interface ChatPanelProps {
   compactValue?: string
   /** Callback when compact mode input value changes */
   onCompactValueChange?: (value: string) => void
+  /** Force use of main /api/chat endpoint instead of project-scoped endpoint */
+  useMainChatEndpoint?: boolean
 }
 
 // ============================================================
@@ -495,6 +497,7 @@ export const ChatPanel = observer(function ChatPanel({
   inputContainerRef,
   compactValue,
   onCompactValueChange,
+  useMainChatEndpoint,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   // Note: platformFeatures is optional - not loaded in consumer app
@@ -692,11 +695,17 @@ export const ChatPanel = observer(function ChatPanel({
   // The transport must be memoized to prevent re-creation on every render
   // pod-per-project: Use project-specific endpoint when projectId is available
   // This routes chat requests to the dedicated project pod via Knative
+  // useMainChatEndpoint: Force main /api/chat endpoint (e.g., for AdvancedChatLayout)
+  const chatEndpoint = useMainChatEndpoint
+    ? "/api/chat"
+    : projectId
+      ? `/api/projects/${projectId}/chat`
+      : "/api/chat"
   const chatTransport = useMemo(
-    () => new DefaultChatTransport({ 
-      api: projectId ? `/api/projects/${projectId}/chat` : "/api/chat" 
+    () => new DefaultChatTransport({
+      api: chatEndpoint
     }),
-    [projectId]
+    [chatEndpoint]
   )
 
   // AI SDK useChat hook (v3 API - chat-session-sync-fix)
@@ -1665,7 +1674,10 @@ export const ChatPanel = observer(function ChatPanel({
               ccSessionId: ccSessionIdRef.current,
               workspaceId,
               userId,
-              projectId,
+              // Only send projectId when NOT using main chat endpoint
+              // When useMainChatEndpoint is true (e.g., AdvancedChatLayout), we want
+              // the API to use monorepo root for skill loading, not project workspace
+              ...(useMainChatEndpoint ? {} : { projectId }),
             },
           }
         )
@@ -1673,7 +1685,7 @@ export const ChatPanel = observer(function ChatPanel({
         console.error("[ChatPanel] Failed to send message:", err)
       }
     },
-    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId, projectId]
+    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId, projectId, useMainChatEndpoint]
   )
 
   // Handle form submit from ChatInput

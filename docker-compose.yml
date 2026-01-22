@@ -135,8 +135,16 @@ services:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
     volumes:
-      # Mount local .schemas for filesystem mode
+      # Mount workspaces for project runtime Vite servers
+      - ./workspaces:/app/workspaces
+      # Mount schemas for Claude Code SDK's MCP server
       - ./.schemas:/app/.schemas
+      # Mount Claude Code skills and agents (editable for development)
+      # Only mounting specific dirs so runtime artifacts (debug/, projects/, etc.) stay in container
+      - ./.claude/skills:/app/.claude/skills
+      - ./.claude/agents:/app/.claude/agents
+      - ./.claude/settings.json:/app/.claude/settings.json
+      - ./.claude/settings.local.json:/app/.claude/settings.local.json
     depends_on:
       postgres:
         condition: service_healthy
@@ -176,7 +184,16 @@ services:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
     volumes:
+      # Mount workspaces for project runtime Vite servers
+      - ./workspaces:/app/workspaces
+      # Mount schemas for Claude Code SDK's MCP server
       - ./.schemas:/app/.schemas
+      # Mount Claude Code skills and agents (editable for development)
+      # Only mounting specific dirs so runtime artifacts (debug/, projects/, etc.) stay in container
+      - ./.claude/skills:/app/.claude/skills
+      - ./.claude/agents:/app/.claude/agents
+      - ./.claude/settings.json:/app/.claude/settings.json
+      - ./.claude/settings.local.json:/app/.claude/settings.local.json
     depends_on:
       postgres:
         condition: service_healthy
@@ -242,6 +259,12 @@ services:
       - ./workspaces:/app/workspaces
       # Mount schemas for Claude Code SDK's MCP server
       - ./.schemas:/app/.schemas
+      # Mount Claude Code skills and agents (editable for development)
+      # Only mounting specific dirs so runtime artifacts (debug/, projects/, etc.) stay in container
+      - ./.claude/skills:/app/.claude/skills
+      - ./.claude/agents:/app/.claude/agents
+      - ./.claude/settings.json:/app/.claude/settings.json
+      - ./.claude/settings.local.json:/app/.claude/settings.local.json
     depends_on:
       postgres:
         condition: service_healthy

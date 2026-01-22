@@ -51,6 +51,15 @@ _tmp/
 .playwright-mcp/
 .serena/
 
+# Claude Code runtime artifacts (created by SDK, not tracked)
+# Only .claude/skills/, .claude/agents/, and settings files are tracked
+.claude/debug/
+.claude/projects/
+.claude/session-env/
+.claude/shell-snapshots/
+.claude/todos/
+.claude/statsig/
+
 # Workspace files
 *.code-workspace
 

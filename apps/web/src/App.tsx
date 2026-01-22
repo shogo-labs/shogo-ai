@@ -115,6 +115,13 @@ function App() {
                     </AuthGate>
                   } />
 
+                  {/* Advanced chat view - full screen, project-scoped (Cmd+Shift+A from project view) */}
+                  <Route path="/projects/:projectId/advanced-chat" element={
+                    <AuthGate>
+                      <AdvancedChatLayout />
+                    </AuthGate>
+                  } />
+
                   {/* Settings page - standalone without AppShell sidebar */}
                   <Route path="/settings" element={
                     <AuthGate>
