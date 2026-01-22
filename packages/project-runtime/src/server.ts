@@ -34,7 +34,7 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 const PROJECT_ID = process.env.PROJECT_ID
 const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
-const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || '/app/packages/mcp/src/server.ts'
+const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || '/app/packages/mcp/src/server-templates.ts'
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
 // Validate required environment

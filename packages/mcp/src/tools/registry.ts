@@ -66,39 +66,39 @@ import { registerTemplateCopy } from "./template.copy"
  * @param server - FastMCP server instance (stdio or HTTP transport)
  */
 export function registerPlatformTools(server: FastMCP) {
-  // // Schema namespace (3 tools)
-  // registerSchemaSet(server)
-  // registerSchemaLoad(server)
-  // registerSchemaList(server)
+  // Schema namespace (3 tools)
+  registerSchemaSet(server)
+  registerSchemaLoad(server)
+  registerSchemaList(server)
 
-  // // Store namespace (5 tools)
-  // registerStoreCreate(server)
-  // registerStoreGet(server)
-  // registerStoreUpdate(server)
-  // registerStoreDelete(server)
-  // registerStoreQuery(server)
+  // Store namespace (5 tools)
+  registerStoreCreate(server)
+  registerStoreGet(server)
+  registerStoreUpdate(server)
+  registerStoreDelete(server)
+  registerStoreQuery(server)
 
-  // // View namespace (4 tools)
-  // registerViewExecute(server)
-  // registerViewDefine(server)
-  // registerViewDelete(server)
-  // registerViewProject(server)
+  // View namespace (4 tools)
+  registerViewExecute(server)
+  registerViewDefine(server)
+  registerViewDelete(server)
+  registerViewProject(server)
 
-  // // DDL namespace (4 tools) - Platform only
-  // registerDdlExecute(server)
-  // registerDdlMigrate(server)
-  // registerDdlVerify(server)
-  // registerDdlRecover(server)
+  // DDL namespace (4 tools) - Platform only
+  registerDdlExecute(server)
+  registerDdlMigrate(server)
+  registerDdlVerify(server)
+  registerDdlRecover(server)
 
-  // // Agent namespace (1 tool) - Platform only
-  // registerAgentChat(server)
+  // Agent namespace (1 tool) - Platform only
+  registerAgentChat(server)
 
-  // // Workspace namespace (1 tool) - Platform only
-  // registerWorkspaceSync(server)
+  // Workspace namespace (1 tool) - Platform only
+  registerWorkspaceSync(server)
 
-  // // SDK namespace (2 tools) - Platform only
-  // registerSdkCreateRoutes(server)
-  // registerSdkCreateApp(server)
+  // SDK namespace (2 tools) - Platform only
+  registerSdkCreateRoutes(server)
+  registerSdkCreateApp(server)
 
   // Template namespace (2 tools) - Platform only
   registerTemplateList(server)
@@ -176,4 +176,21 @@ export function registerProjectTools(server: FastMCP) {
 export function registerAllTools(server: FastMCP) {
   // Backward compatible - delegates to platform tools
   registerPlatformTools(server)
+}
+
+/**
+ * Register only template tools on a FastMCP server instance.
+ *
+ * This minimal tool set is used by the Shogo agent in project runtime,
+ * which only needs access to starter templates for rapid app scaffolding.
+ *
+ * Total: 2 tools
+ * - Template: 2 tools (list, copy)
+ *
+ * @param server - FastMCP server instance (stdio or HTTP transport)
+ */
+export function registerTemplateTools(server: FastMCP) {
+  // Template namespace (2 tools) - for project scaffolding
+  registerTemplateList(server)
+  registerTemplateCopy(server)
 }

@@ -17,7 +17,7 @@ import {
   rmSync,
 } from "fs"
 import { execSync } from "child_process"
-import { MONOREPO_ROOT } from "../state"
+import { MONOREPO_ROOT } from "../paths"
 import { loadTemplates, type TemplateInfo } from "./template.list"
 
 // Parameter schema
@@ -87,9 +87,22 @@ function updatePackageJson(projectDir: string, projectName: string): void {
 
 /**
  * Get default output directory for new projects
+ * 
+ * If running in project context (PROJECT_ID env var set), uses the project's
+ * workspace directory. Otherwise creates a new directory based on project name.
  */
 function getDefaultOutputDir(projectName: string): string {
-  // Try to find workspaces directory
+  // Check for project context - if PROJECT_ID is set, use that directory
+  const projectId = process.env.PROJECT_ID
+  if (projectId) {
+    // Running in project runtime context - use the project's workspace directory
+    const workspacesDir = resolve(MONOREPO_ROOT, "workspaces")
+    if (existsSync(workspacesDir)) {
+      return resolve(workspacesDir, projectId)
+    }
+  }
+
+  // Not in project context - create new directory based on project name
   const workspacesDir = resolve(MONOREPO_ROOT, "workspaces")
   if (existsSync(workspacesDir)) {
     return resolve(workspacesDir, projectName)
@@ -131,10 +144,15 @@ export async function executeTemplateCopy(
       ? resolve(args.output)
       : getDefaultOutputDir(args.name)
 
+    // In project context (PROJECT_ID set), always force overwrite
+    // since we're copying into an existing project workspace
+    const isProjectContext = !!process.env.PROJECT_ID
+    const shouldForce = args.force || isProjectContext
+
     // Check if output already exists
     if (existsSync(projectDir) && !args.dryRun) {
       const contents = readdirSync(projectDir)
-      if (contents.length > 0 && !args.force) {
+      if (contents.length > 0 && !shouldForce) {
         return {
           ok: false,
           error: {
@@ -166,8 +184,8 @@ export async function executeTemplateCopy(
       }
     }
 
-    // When force is used, remove conflicting directories to ensure clean copy
-    if (args.force && existsSync(projectDir)) {
+    // When force is used (or in project context), remove conflicting directories to ensure clean copy
+    if (shouldForce && existsSync(projectDir)) {
       const dirsToClean = ["src", "prisma", ".tanstack"]
       for (const dir of dirsToClean) {
         const dirPath = join(projectDir, dir)
@@ -234,12 +252,27 @@ export async function executeTemplateCopy(
       f.replace(projectDir + "/", "")
     )
 
-    return {
+    // Build response with context-aware instructions
+    const response: any = {
       ok: true,
       projectDir,
       template,
       files: relativeFiles,
     }
+
+    // In project context, add restart instructions
+    if (isProjectContext) {
+      const projectId = process.env.PROJECT_ID
+      response.needsRestart = true
+      response.instructions = [
+        "Template files have been copied to the project directory.",
+        "The Vite dev server needs to be restarted for changes to take effect.",
+        `Use Bash to run: curl -X POST http://localhost:8002/api/projects/${projectId}/runtime/restart`,
+        "After restart, the preview will automatically show the new app.",
+      ]
+    }
+
+    return response
   } catch (error: any) {
     return {
       ok: false,
@@ -257,7 +290,10 @@ export async function executeTemplateCopy(
 export function registerTemplateCopy(server: FastMCP) {
   server.addTool({
     name: "template.copy",
-    description: `Copy a starter template to create a new project. The template provides a working app structure with Prisma schema, React components, TanStack Router, and Shogo SDK integration.
+    description: `Copy a starter template to set up the current project. The template provides a working app structure with Prisma schema, React components, TanStack Router, and Shogo SDK integration.
+
+NOTE: In project context, files are automatically overwritten (force is enabled by default).
+After copying, the Vite dev server will automatically reload with the new code.
 
 Available templates:
 - todo-app: Simple task management (beginner)
@@ -268,15 +304,12 @@ Available templates:
 - ai-chat: AI chatbot with conversation history, Vercel AI SDK (advanced)
 
 Options:
-- force: true - Overwrite files in existing non-empty directory
 - skipInstall: true - Don't run bun install or prisma setup
 - dryRun: true - Preview what would be copied without writing
 
 Examples:
 - template.copy({ template: "todo-app", name: "my-tasks" })
-- template.copy({ template: "ai-chat", name: "my-chatbot" })
-- template.copy({ template: "todo-app", name: "existing-project", output: "/path/to/project", force: true })
-- template.copy({ template: "todo-app", name: "test", dryRun: true })`,
+- template.copy({ template: "expense-tracker", name: "my-expenses" })`,
     parameters: Params as any,
     execute: async (args: any) => {
       const result = await executeTemplateCopy(args)
