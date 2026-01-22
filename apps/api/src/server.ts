@@ -29,6 +29,7 @@ import { filesRoutes } from './routes/files'
 import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { terminalRoutes } from './routes/terminal'
+import { testsRoutes } from './routes/tests'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { createRuntimeManager, type IRuntimeManager } from '@shogo/state-api/runtime'
 
@@ -1369,6 +1370,34 @@ app.post('/api/projects/:projectId/terminal/exec', async (c) => {
   const router = terminalRoutes({ workspacesDir })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/terminal/exec`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// Tests routes - E2E test management and execution
+// =============================================================================
+
+// List test files
+app.get('/api/projects/:projectId/tests/list', async (c) => {
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = testsRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/tests/list`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Run tests with options
+app.post('/api/projects/:projectId/tests/run', async (c) => {
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = testsRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/tests/run`
   const newReq = new Request(url.toString(), {
     method: 'POST',
     headers: c.req.raw.headers,

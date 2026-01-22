@@ -29,6 +29,7 @@ import { RuntimePreviewPanel } from "./RuntimePreviewPanel"
 import { CodeEditorPanel } from "./CodeEditorPanel"
 import { TerminalPanel } from "./TerminalPanel"
 import { DatabasePanel } from "./DatabasePanel"
+import { TestPanel } from "./TestPanel"
 import { cn } from "@/lib/utils"
 import { useSession } from "@/auth/client"
 import type { ViewportSize } from "./PreviewControls"
@@ -104,8 +105,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
   const [currentRoute, setCurrentRoute] = useState("/")
 
-  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'workspace' (ComposablePhaseView), 'terminal' (TerminalPanel), or 'database' (DatabasePanel)
-  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'workspace' | 'terminal' | 'database'>('runtime')
+  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'workspace' (ComposablePhaseView), 'terminal' (TerminalPanel), 'database' (DatabasePanel), or 'tests' (TestPanel)
+  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'workspace' | 'terminal' | 'database' | 'tests'>('runtime')
 
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
@@ -673,6 +674,17 @@ export const ProjectLayout = observer(function ProjectLayout() {
               >
                 Database
               </button>
+              <button
+                onClick={() => setPreviewMode('tests')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'tests'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Tests
+              </button>
             </div>
 
             {/* Preview Frame with border - all panels stay mounted for state persistence */}
@@ -747,6 +759,16 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   onLoad={() => {
                     console.log('[ProjectLayout] Prisma Studio loaded successfully')
                   }}
+                />
+              </div>
+              {/* Test Panel - Playwright E2E test runner */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'tests' && "invisible pointer-events-none"
+              )}>
+                <TestPanel
+                  projectId={projectId || ''}
+                  className="h-full"
                 />
               </div>
             </div>
