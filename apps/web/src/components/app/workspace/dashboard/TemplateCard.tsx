@@ -1,23 +1,13 @@
 /**
- * TemplateCard - Display a single SDK template
+ * TemplateCard - Template card matching Lovable's exact design
  *
- * Shows template name, description, complexity badge, and tech stack.
- * Clicking the card selects the template for project creation.
+ * Features:
+ * - Large screenshot with visible border
+ * - Bold title with short tagline description
+ * - Subtle hover effects
  */
 
 import { cn } from "@/lib/utils"
-import { Badge } from "@/components/ui/badge"
-import {
-  CheckSquare,
-  DollarSign,
-  Users,
-  Package,
-  Kanban,
-  MessageSquare,
-  FileText,
-  ClipboardList,
-  type LucideIcon,
-} from "lucide-react"
 
 /**
  * Template metadata from template.json
@@ -38,58 +28,50 @@ export interface TemplateMetadata {
     sdk: string
     [key: string]: string
   }
+  /** Optional preview image URL */
+  previewImage?: string
 }
 
 interface TemplateCardProps {
   template: TemplateMetadata
   onClick?: () => void
-  isSelected?: boolean
   isLoading?: boolean
-}
-
-/**
- * Map template names to icons
- */
-const TEMPLATE_ICONS: Record<string, LucideIcon> = {
-  "todo-app": CheckSquare,
-  "expense-tracker": DollarSign,
-  crm: Users,
-  inventory: Package,
-  kanban: Kanban,
-  "ai-chat": MessageSquare,
-  "feedback-form": FileText,
-  "form-builder": ClipboardList,
-}
-
-/**
- * Complexity badge colors
- */
-const COMPLEXITY_COLORS: Record<string, string> = {
-  beginner: "bg-green-500/10 text-green-500 border-green-500/20",
-  intermediate: "bg-yellow-500/10 text-yellow-500 border-yellow-500/20",
-  advanced: "bg-purple-500/10 text-purple-500 border-purple-500/20",
 }
 
 /**
  * Format template name for display
  * e.g., "todo-app" -> "Todo App"
  */
-function formatTemplateName(name: string): string {
+export function formatTemplateName(name: string): string {
   return name
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ")
 }
 
+/**
+ * Short tagline descriptions matching Lovable's style
+ * These are punchy, descriptive phrases
+ */
+const TEMPLATE_TAGLINES: Record<string, string> = {
+  "todo-app": "Simple task management",
+  "expense-tracker": "Track spending & budgets",
+  "crm": "Manage contacts & deals",
+  "inventory": "Stock & supplier tracking",
+  "kanban": "Visual project boards",
+  "ai-chat": "AI-powered conversations",
+  "feedback-form": "Collect user feedback",
+  "form-builder": "Build custom forms",
+  "booking-app": "Schedule appointments",
+}
+
 export function TemplateCard({
   template,
   onClick,
-  isSelected,
   isLoading,
 }: TemplateCardProps) {
-  const Icon = TEMPLATE_ICONS[template.name] ?? FileText
-  const complexityColor =
-    COMPLEXITY_COLORS[template.complexity] ?? COMPLEXITY_COLORS.beginner
+  const screenshotUrl = `/templates/${template.name}.png`
+  const tagline = TEMPLATE_TAGLINES[template.name] || template.description.split(".")[0]
 
   return (
     <button
@@ -97,64 +79,64 @@ export function TemplateCard({
       onClick={onClick}
       disabled={isLoading}
       className={cn(
-        "group p-4 bg-card rounded-lg border border-border transition-all duration-200 text-left w-full",
-        "hover:border-primary/50 hover:shadow-md hover:shadow-primary/5",
-        "focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-2 focus:ring-offset-background",
-        isSelected && "border-primary ring-2 ring-primary/50",
-        isLoading && "opacity-50 cursor-wait"
+        "group flex flex-col text-left transition-all duration-200",
+        "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
+        isLoading && "opacity-50 cursor-wait pointer-events-none"
       )}
     >
-      {/* Icon and title row */}
-      <div className="flex items-start gap-3 mb-2">
-        <div
+      {/* Screenshot preview - matching Lovable's visible border style */}
+      <div
+        className={cn(
+          "relative w-full aspect-[16/10] overflow-hidden rounded-lg",
+          "bg-card border border-border/60",
+          "transition-all duration-200"
+        )}
+      >
+        <img
+          src={screenshotUrl}
+          alt={`${formatTemplateName(template.name)} preview`}
           className={cn(
-            "flex-shrink-0 w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center",
-            "group-hover:bg-primary/20 transition-colors"
+            "w-full h-full object-cover object-top"
           )}
+          loading="lazy"
+          onError={(e) => {
+            // Show placeholder on error
+            const target = e.currentTarget
+            target.style.display = 'none'
+            const placeholder = target.parentElement?.querySelector('.placeholder')
+            if (placeholder) {
+              ;(placeholder as HTMLElement).style.display = 'flex'
+            }
+          }}
+        />
+
+        {/* Placeholder (hidden by default, shown on image error) */}
+        <div 
+          className="placeholder absolute inset-0 items-center justify-center bg-muted text-muted-foreground"
+          style={{ display: 'none' }}
         >
-          <Icon className="w-5 h-5 text-primary" />
+          <div className="text-center p-4">
+            <div className="text-4xl mb-2 opacity-40">📄</div>
+            <p className="text-sm opacity-60">Preview unavailable</p>
+          </div>
         </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="font-medium text-sm truncate">
-            {formatTemplateName(template.name)}
-          </h3>
-          <Badge
-            variant="outline"
-            className={cn("text-[10px] px-1.5 py-0 h-4 mt-1", complexityColor)}
-          >
-            {template.complexity}
-          </Badge>
-        </div>
+
+        {/* Loading overlay */}
+        {isLoading && (
+          <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center">
+            <div className="w-6 h-6 border-2 border-muted-foreground/30 border-t-primary rounded-full animate-spin" />
+          </div>
+        )}
       </div>
 
-      {/* Description */}
-      <p className="text-xs text-muted-foreground line-clamp-2 mb-3">
-        {template.description}
-      </p>
-
-      {/* Tech stack pills */}
-      <div className="flex flex-wrap gap-1">
-        {["prisma", "react", "tailwindcss"]
-          .filter((tech) =>
-            template.features.includes(tech) ||
-            Object.values(template.techStack).some(
-              (v) => v.toLowerCase().includes(tech.toLowerCase())
-            )
-          )
-          .slice(0, 3)
-          .map((tech) => (
-            <span
-              key={tech}
-              className="text-[10px] px-1.5 py-0.5 bg-muted rounded text-muted-foreground"
-            >
-              {tech}
-            </span>
-          ))}
-        {template.models.length > 0 && (
-          <span className="text-[10px] px-1.5 py-0.5 bg-muted rounded text-muted-foreground">
-            {template.models.length} models
-          </span>
-        )}
+      {/* Title and tagline - Lovable style */}
+      <div className="pt-3 pb-1">
+        <h3 className="font-semibold text-[15px] text-foreground">
+          {formatTemplateName(template.name)}
+        </h3>
+        <p className="text-sm text-muted-foreground mt-0.5">
+          {tagline}
+        </p>
       </div>
     </button>
   )

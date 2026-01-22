@@ -21,7 +21,8 @@ import { Sparkles, ChevronRight, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ChatPanel } from "@/components/app/chat/ChatPanel"
-import { TemplateCard, type TemplateMetadata } from "./TemplateCard"
+import { TemplateCard, formatTemplateName, type TemplateMetadata } from "./TemplateCard"
+import { TemplatePreviewModal } from "./TemplatePreviewModal"
 
 /** Transition phases for HomePage to Workspace animation */
 export type TransitionPhase = 'idle' | 'commit' | 'dissolve' | 'transform' | 'emerge' | 'settle' | 'complete'
@@ -71,6 +72,10 @@ export const HomePage = observer(function HomePage({
   // Templates state
   const [templates, setTemplates] = useState<TemplateMetadata[]>([])
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(true)
+  
+  // Template preview modal state
+  const [selectedTemplate, setSelectedTemplate] = useState<TemplateMetadata | null>(null)
+  const [isModalOpen, setIsModalOpen] = useState(false)
 
   // Fetch templates on mount
   useEffect(() => {
@@ -93,17 +98,23 @@ export const HomePage = observer(function HomePage({
   // Get first name only for greeting
   const firstName = userName.split(" ")[0] || "there"
 
-  // Format template name for display
-  const formatTemplateName = (name: string): string => {
-    return name
-      .split("-")
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(" ")
+  // Handle template card click - opens preview modal
+  const handleTemplateClick = (template: TemplateMetadata) => {
+    setSelectedTemplate(template)
+    setIsModalOpen(true)
+  }
+
+  // Handle "Use template" from modal
+  const handleUseTemplate = (template: TemplateMetadata) => {
+    if (onTemplateSelect && !loadingTemplate) {
+      onTemplateSelect(template.name, formatTemplateName(template.name))
+      setIsModalOpen(false)
+    }
   }
 
   return (
     <div
-      className="relative h-full flex flex-col overflow-hidden"
+      className="relative h-full flex flex-col overflow-y-auto"
       data-home-element="root"
       data-transition-phase={transitionPhase}
     >
@@ -198,7 +209,7 @@ export const HomePage = observer(function HomePage({
       `}</style>
 
       {/* Main content */}
-      <div className="relative flex-1 flex flex-col items-center justify-center p-8">
+      <div className="relative flex flex-col items-center justify-center p-8 min-h-[60vh]">
         {/* Greeting */}
         <h1
           className="home-greeting text-3xl sm:text-4xl md:text-5xl font-bold text-center mb-8 bg-clip-text text-transparent bg-gradient-to-r from-foreground via-foreground to-foreground/80"
@@ -252,28 +263,23 @@ export const HomePage = observer(function HomePage({
 
       {/* Templates section */}
       <div
-        className="home-templates relative bg-card/50 backdrop-blur-sm border-t border-border p-6"
+        className="home-templates relative bg-card/30 backdrop-blur-sm border-t border-border py-6"
         data-home-element="templates"
       >
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-sm font-medium">Start from a template</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Full-stack apps with database, auth, and React components
-            </p>
-          </div>
+        <div className="flex items-center justify-between mb-4 px-6">
+          <h2 className="text-sm font-medium">Templates</h2>
           <Button
             variant="ghost"
             size="sm"
-            className="text-xs text-muted-foreground hover:text-foreground gap-1"
+            className="text-sm text-muted-foreground hover:text-foreground gap-1"
             onClick={() => navigate("/templates")}
           >
-            View all
-            <ChevronRight className="h-3 w-3" />
+            Browse all
+            <ChevronRight className="h-4 w-4" />
           </Button>
         </div>
         
-        {/* Template cards - real templates from SDK */}
+        {/* Template cards - 3-column grid */}
         {isLoadingTemplates ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -283,23 +289,29 @@ export const HomePage = observer(function HomePage({
             No templates available
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {templates.map((template) => (
-              <TemplateCard
-                key={template.name}
-                template={template}
-                isLoading={loadingTemplate === template.name}
-                isSelected={loadingTemplate === template.name}
-                onClick={() => {
-                  if (onTemplateSelect && !loadingTemplate) {
-                    onTemplateSelect(template.name, formatTemplateName(template.name))
-                  }
-                }}
-              />
-            ))}
+          <div className="px-6 pb-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 max-w-5xl mx-auto">
+              {templates.map((template) => (
+                <TemplateCard
+                  key={template.name}
+                  template={template}
+                  isLoading={loadingTemplate === template.name}
+                  onClick={() => handleTemplateClick(template)}
+                />
+              ))}
+            </div>
           </div>
         )}
       </div>
+
+      {/* Template Preview Modal */}
+      <TemplatePreviewModal
+        template={selectedTemplate}
+        open={isModalOpen}
+        onOpenChange={setIsModalOpen}
+        onUseTemplate={handleUseTemplate}
+        isLoading={loadingTemplate !== null}
+      />
     </div>
   )
 })

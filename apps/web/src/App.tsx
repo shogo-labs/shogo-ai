@@ -11,6 +11,7 @@ import { AppMemberManagementPage } from './pages/AppMemberManagementPage'
 import { AllProjectsPage } from './pages/AllProjectsPage'
 import { StarredProjectsPage } from './pages/StarredProjectsPage'
 import { SharedWithMePage } from './pages/SharedWithMePage'
+import { TemplatesPage } from './pages/TemplatesPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
@@ -180,7 +181,7 @@ function App() {
                     {/* Discover */}
                     <Route path="discover" element={<AllProjectsPage />} />
                     {/* Templates */}
-                    <Route path="templates" element={<AllProjectsPage />} />
+                    <Route path="templates" element={<TemplatesPage />} />
                   </Route>
                   </Routes>
                 </AuthProvider>
