@@ -80,35 +80,85 @@ export function DatabasePanel({
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const isDarkMode = useIsDarkMode()
+  const retryCountRef = useRef(0)
+  const maxAutoRetries = 10
+  const autoRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   /**
    * Fetch Prisma Studio URL from API, which starts it if needed.
+   * Includes auto-retry for transient errors during project setup.
    */
-  const fetchStudioUrl = useCallback(async () => {
+  const fetchStudioUrl = useCallback(async (isAutoRetry = false) => {
     setIsLoading(true)
-    setError(null)
+    if (!isAutoRetry) {
+      setError(null)
+    }
 
     try {
       const response = await fetch(`/api/projects/${projectId}/database/url`)
       const data: DatabaseStatus = await response.json()
 
       if (!response.ok) {
+        const errorCode = data.error?.code || ''
         const errorMessage = data.error?.message || 'Failed to start Prisma Studio'
+
+        // Check if this is a transient error that should be auto-retried
+        const isTransientError = 
+          errorCode === 'project_not_found' ||
+          errorCode === 'pod_unavailable' ||
+          errorMessage.includes('not found') ||
+          errorMessage.includes('starting') ||
+          response.status === 503 ||
+          response.status === 502
+
+        if (isTransientError && retryCountRef.current < maxAutoRetries) {
+          retryCountRef.current += 1
+          const delay = Math.min(1000 * retryCountRef.current, 5000) // Exponential backoff, max 5s
+          
+          // Only show loading state, don't set error for auto-retries
+          if (retryCountRef.current > 3) {
+            // Only log after several attempts to reduce noise
+            console.debug(`[DatabasePanel] Project not ready, retrying (${retryCountRef.current}/${maxAutoRetries})...`)
+          }
+          
+          setIsLoading(true)
+          autoRetryTimeoutRef.current = setTimeout(() => {
+            fetchStudioUrl(true)
+          }, delay)
+          return
+        }
+
+        // After max retries or non-transient error, show error state
         setError(errorMessage)
         setStatus('error')
         onError?.(new Error(errorMessage))
+        setIsLoading(false)
         return
       }
 
+      // Success - reset retry count
+      retryCountRef.current = 0
       setStudioUrl(data.url)
       setStatus(data.status)
+      setIsLoading(false)
 
     } catch (err: any) {
       const errorMessage = err.message || 'Failed to connect to database service'
+      
+      // Network errors can also be transient
+      if (retryCountRef.current < maxAutoRetries) {
+        retryCountRef.current += 1
+        const delay = Math.min(1000 * retryCountRef.current, 5000)
+        
+        autoRetryTimeoutRef.current = setTimeout(() => {
+          fetchStudioUrl(true)
+        }, delay)
+        return
+      }
+
       setError(errorMessage)
       setStatus('error')
       onError?.(new Error(errorMessage))
-    } finally {
       setIsLoading(false)
     }
   }, [projectId, onError])
@@ -159,10 +209,15 @@ export function DatabasePanel({
 
   // Fetch studio URL on mount
   useEffect(() => {
+    // Reset retry count when projectId changes
+    retryCountRef.current = 0
     fetchStudioUrl()
 
-    // Cleanup: stop Prisma Studio when component unmounts
+    // Cleanup: stop Prisma Studio and clear any pending retries when component unmounts
     return () => {
+      if (autoRetryTimeoutRef.current) {
+        clearTimeout(autoRetryTimeoutRef.current)
+      }
       fetch(`/api/projects/${projectId}/database/stop`, { method: 'POST' })
         .catch(() => {}) // Ignore errors on unmount
     }

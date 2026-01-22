@@ -220,10 +220,10 @@ services:
       MCP_URL: http://mcp:3100
       REDIS_URL: redis://redis:6379
       # External URLs (use parameterized ports for browser access)
-      VITE_PORT: "${WEB_PORT:-3000}"
+      VITE_PORT: "${WEB_PORT:-3333}"
       BETTER_AUTH_SECRET: shogo-local-dev-secret-32-chars-minimum-ok
-      BETTER_AUTH_URL: http://localhost:${WEB_PORT:-3000}
-      ALLOWED_ORIGINS: http://localhost:${WEB_PORT:-3000},http://localhost:${VITE_DEV_PORT:-5173}
+      BETTER_AUTH_URL: http://localhost:${WEB_PORT:-3333}
+      ALLOWED_ORIGINS: http://localhost:${WEB_PORT:-3333},http://localhost:${VITE_DEV_PORT:-5173}
       # Agent persona: 'wavesmith' (default) or 'code'
       SHOGO_AGENT: wavesmith
       # ANTHROPIC_API_KEY loaded from .env.local via env_file
@@ -275,7 +275,7 @@ services:
         VITE_BETTER_AUTH_URL: http://localhost:${API_PORT:-8002}
         VITE_WORKSPACE: workspace
     ports:
-      - "${WEB_PORT:-3000}:80"
+      - "${WEB_PORT:-3333}:80"
     environment:
       # Docker internal DNS resolver
       DNS_RESOLVER: "127.0.0.11"

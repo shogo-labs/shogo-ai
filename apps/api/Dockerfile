@@ -17,6 +17,7 @@ COPY tsconfig.base.json ./
 # Copy package.json files for dependency resolution
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
+COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY apps/api/package.json ./apps/api/
 
 # Install all dependencies
@@ -25,6 +26,7 @@ RUN bun install
 # Copy source code
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
+COPY packages/project-runtime ./packages/project-runtime
 COPY apps/api ./apps/api
 
 # Build state-api first (dependency)
@@ -38,12 +40,16 @@ RUN bun run build
 # =============================================================================
 # Production image
 # =============================================================================
-FROM oven/bun:1.2-alpine
+# Use Node.js 22 Alpine as base (Vite 7 requires Node.js 20.19+ or 22.12+)
+FROM node:22-alpine
 
 WORKDIR /app
 
-# Install curl for healthchecks, Node.js for Claude Code CLI, and bash for shell
-RUN apk add --no-cache curl nodejs npm bash
+# Install curl for healthchecks, bash for shell, and Bun
+RUN apk add --no-cache curl bash unzip && \
+    curl -fsSL https://bun.sh/install | bash && \
+    mv /root/.bun/bin/bun /usr/local/bin/ && \
+    rm -rf /root/.bun
 
 # Install Claude Code CLI globally (required for ai-sdk-provider-claude-code)
 RUN npm install -g @anthropic-ai/claude-code
@@ -59,6 +65,7 @@ RUN addgroup -g 1001 -S appgroup && \
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/state-api ./packages/state-api
 COPY --from=builder /app/packages/mcp ./packages/mcp
+COPY --from=builder /app/packages/project-runtime ./packages/project-runtime
 COPY --from=builder /app/apps/api ./apps/api
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./

@@ -691,6 +691,10 @@ export const ChatPanel = observer(function ChatPanel({
   // Guard to prevent double-injection of initial message (homepage transition warm-start)
   const hasInjectedInitialMessageRef = useRef(false)
 
+  // Store last user input for retry functionality (task-chat-retry-fix)
+  // This allows retry to work even if AI SDK's reload() fails
+  const lastUserInputRef = useRef<{ content: string; imageData?: string } | null>(null)
+
   // Initialize ccSessionId from existing session (task-cc-chatpanel-integration)
   // This ensures session continuity when reloading the page or switching sessions
   useEffect(() => {
@@ -1154,17 +1158,25 @@ export const ChatPanel = observer(function ChatPanel({
         })
 
         // Record tool calls from the message (fire-and-forget)
+        // task-toolcall-warning-fix: Ensure args and result are serializable
         const toolCalls = extractToolCalls(message)
         for (const toolCall of toolCalls) {
+          // Ensure args and result are not null/undefined (can cause DB errors)
+          const safeArgs = toolCall.args ?? {}
+          const safeResult = toolCall.result !== undefined ? toolCall.result : null
+          
           studioChat.recordToolCall({
             sessionId: currentSessionId,
             toolName: toolCall.toolName,
             status: toolCall.state === "output-available" ? "complete" :
               toolCall.state === "output-error" ? "error" : "executing",
-            args: toolCall.args || {},
-            result: toolCall.result,
+            args: safeArgs,
+            result: safeResult,
           }).catch((err) => {
-            console.warn("[ChatPanel] Failed to record tool call:", err)
+            // Only log in debug - these are fire-and-forget operations
+            if (process.env.NODE_ENV === 'development') {
+              console.debug("[ChatPanel] Failed to record tool call:", err)
+            }
           })
         }
 
@@ -1670,6 +1682,9 @@ export const ChatPanel = observer(function ChatPanel({
 
       const trimmedContent = content.trim()
 
+      // task-chat-retry-fix: Store input for potential retry
+      lastUserInputRef.current = { content: trimmedContent, imageData }
+
       // Persist user message to local store (fire-and-forget)
       // task-chatpanel-sendmessage: Include imageData when present
       studioChat.addMessage({
@@ -1800,16 +1815,23 @@ export const ChatPanel = observer(function ChatPanel({
     [width, onWidthChange]
   )
 
-  // Error retry handler
+  // Error retry handler (task-chat-retry-fix)
   // AI SDK v3: reload() regenerates the last assistant message
-  // Guard against reload being undefined or no messages to retry
+  // If reload isn't available or no messages, fallback to resending last user input
   const handleRetry = useCallback(() => {
     if (typeof reload === 'function' && messages.length > 0) {
       reload()
+    } else if (lastUserInputRef.current) {
+      // Fallback: resend the last user message
+      console.log('[ChatPanel] Using fallback retry - resending last input')
+      handleSendMessage(
+        lastUserInputRef.current.content,
+        lastUserInputRef.current.imageData
+      )
     } else {
-      console.warn('[ChatPanel] Cannot retry: reload not available or no messages')
+      console.warn('[ChatPanel] Cannot retry: no messages or last input available')
     }
-  }, [reload, messages.length])
+  }, [reload, messages.length, handleSendMessage])
 
   // Convert messages for MessageList
   const messageListMessages = messages.map((msg) => ({

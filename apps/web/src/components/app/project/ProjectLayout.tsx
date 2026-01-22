@@ -177,14 +177,14 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Check if domains are ready
   const domainsReady = !!studioCore?.projectCollection
 
-  // Load project data with retry logic for schema loading race condition
+  // Load project data with retry logic for schema loading and project creation race conditions
   useEffect(() => {
     if (!projectId || !domainsReady) {
       return
     }
 
     let cancelled = false
-    const MAX_RETRIES = 5
+    const MAX_RETRIES = 10
     const RETRY_DELAY_MS = 500
 
     const loadProjectData = async (attempt = 1): Promise<void> => {
@@ -203,7 +203,18 @@ export const ProjectLayout = observer(function ProjectLayout() {
           setProject(proj)
           setIsLoading(false)
         } else {
-          console.warn("[ProjectLayout] Project not found:", projectId)
+          // Project not found - could be race condition during creation
+          // Retry a few times before giving up
+          if (attempt < MAX_RETRIES) {
+            // Only log at higher attempts to reduce noise
+            if (attempt > 3) {
+              console.debug(`[ProjectLayout] Project not found yet, retrying (${attempt}/${MAX_RETRIES})...`)
+            }
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt))
+            return loadProjectData(attempt + 1)
+          }
+          // Only warn after all retries exhausted
+          console.warn("[ProjectLayout] Project not found after retries:", projectId)
           setIsLoading(false)
         }
       } catch (err: any) {
@@ -211,8 +222,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
         // Retry if schema not loaded yet (race condition on page refresh)
         const isSchemaNotLoaded = err?.message?.includes("Schema") || err?.message?.includes("SCHEMA_NOT_FOUND")
-        if (isSchemaNotLoaded && attempt < MAX_RETRIES) {
-          console.debug(`[ProjectLayout] Schema not ready, retrying (${attempt}/${MAX_RETRIES})...`)
+        const isTransientError = err?.message?.includes("not found") || err?.message?.includes("temporarily")
+        
+        if ((isSchemaNotLoaded || isTransientError) && attempt < MAX_RETRIES) {
+          if (attempt > 3) {
+            console.debug(`[ProjectLayout] Transient error, retrying (${attempt}/${MAX_RETRIES})...`)
+          }
           await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt))
           return loadProjectData(attempt + 1)
         }
@@ -601,7 +616,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                     inputContainerRef={chatInputContainerRef}
                     onFilesChanged={(paths) => {
                       console.log('[ProjectLayout] 📁 Agent modified files:', paths)
-                      // Increment refresh trigger to reload code editor
+                      // Increment refresh trigger to reload code editor and preview
                       setCodeRefreshTrigger(prev => prev + 1)
                     }}
                   />
@@ -697,6 +712,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <RuntimePreviewPanel
                   projectId={projectId || ''}
                   className="h-full"
+                  refreshTrigger={codeRefreshTrigger}
                   onError={(err) => {
                     console.error('[ProjectLayout] Runtime error:', err)
                     // Could show toast here

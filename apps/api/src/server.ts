@@ -292,6 +292,22 @@ function convertUIMessagesToCoreMessages(messages: any[]): ModelMessage[] {
 const API_PORT = parseInt(process.env.API_PORT || '8002', 10)
 const VITE_PORT = parseInt(process.env.VITE_PORT || '3000', 10)
 
+// Get the frontend URL for redirects (Stripe checkout, etc.)
+// Priority: APP_URL > first ALLOWED_ORIGINS > localhost fallback
+const getFrontendUrl = (): string => {
+  if (process.env.APP_URL) {
+    return process.env.APP_URL
+  }
+  const allowedOrigins = process.env.ALLOWED_ORIGINS
+  if (allowedOrigins) {
+    const firstOrigin = allowedOrigins.split(',')[0]?.trim()
+    if (firstOrigin) {
+      return firstOrigin
+    }
+  }
+  return `http://localhost:${VITE_PORT}`
+}
+
 // Compute project root from this file's location
 // This file is at: apps/api/src/server.ts
 // Project root is 3 levels up
@@ -2238,8 +2254,9 @@ app.post('/api/billing/checkout', async (c) => {
     }
 
     // Include workspace ID in URLs for proper navigation after checkout
-    const successUrl = `http://localhost:${VITE_PORT}/app?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
-    const cancelUrl = `http://localhost:${VITE_PORT}/app?workspace=${workspaceId}&checkout=canceled`
+    const frontendUrl = getFrontendUrl()
+    const successUrl = `${frontendUrl}/app?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = `${frontendUrl}/app?workspace=${workspaceId}&checkout=canceled`
 
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
@@ -2274,7 +2291,7 @@ app.post('/api/billing/portal', async (c) => {
     }
 
     // Get return URL from request body if provided
-    let returnUrl = `http://localhost:${VITE_PORT}/app/billing`
+    let returnUrl = `${getFrontendUrl()}/app/billing`
     try {
       const body = await c.req.json<{ returnUrl?: string }>()
       if (body?.returnUrl) {

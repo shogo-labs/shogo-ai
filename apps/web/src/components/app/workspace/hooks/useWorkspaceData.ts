@@ -15,7 +15,7 @@
  * Note: This hook triggers MCP reload when userId/workspaceId changes.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useDomains } from "../../../../contexts/DomainProvider"
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation"
 import { useSession } from "../../../../auth/client"
@@ -196,30 +196,60 @@ export function useWorkspaceData(): WorkspaceDataState {
     return workspaces.map((ws: any) => ws.id).sort().join(",")
   }, [workspaces])
 
-  // Find current workspace by slug
-  const currentWorkspace = workspaceSlug ? workspaces.find((ws: any) => ws.slug === workspaceSlug) : undefined
+  // Find current workspace by slug - memoize to prevent unnecessary recalculations
+  const currentWorkspace = useMemo(() => {
+    if (!workspaceSlug || workspaces.length === 0) return undefined
+    return workspaces.find((ws: any) => ws.slug === workspaceSlug)
+  }, [workspaceSlug, workspaceIdsKey, workspaces.length])
+
+  // Track if we've already performed auto-selection to prevent infinite loops
+  const hasAutoSelectedRef = useRef(false)
+  const lastAutoSelectedSlugRef = useRef<string | null>(null)
 
   // Auto-select first workspace when user has workspaces but none is selected OR current selection is invalid
   // This ensures the user lands on a workspace after signup/login
   useEffect(() => {
-    // Only auto-select when:
-    // 1. Data has finished loading
-    // 2. User has at least one workspace
-    // 3. No workspace is currently selected OR the selected workspace doesn't exist in the user's workspaces
-    const needsAutoSelect = !isLoadingWorkspaces && workspaces.length > 0 && (!workspaceSlug || !currentWorkspace)
-    
-    if (needsAutoSelect) {
-      // Prefer a "personal" workspace if one exists, otherwise use first
-      const personalWorkspace = workspaces.find((ws: any) =>
-        ws.slug?.includes("personal") || ws.name?.toLowerCase().includes("personal")
-      )
-      const workspaceToSelect = personalWorkspace || workspaces[0]
-      if (workspaceToSelect?.slug) {
-        console.log("[useWorkspaceData] Auto-selecting workspace:", workspaceToSelect.slug, "from", workspaces.length, "workspaces", workspaceSlug ? "(replacing invalid selection)" : "(no selection)")
-        setWorkspaceSlug(workspaceToSelect.slug)
-      }
+    // Skip if still loading
+    if (isLoadingWorkspaces) {
+      return
     }
-  }, [isLoadingWorkspaces, workspaceIdsKey, workspaces.length, workspaceSlug, currentWorkspace, setWorkspaceSlug, workspaces])
+
+    // Skip if no workspaces available
+    if (workspaces.length === 0) {
+      hasAutoSelectedRef.current = false
+      lastAutoSelectedSlugRef.current = null
+      return
+    }
+
+    // Check if current workspace slug is valid
+    const currentWorkspaceExists = workspaceSlug && workspaces.some((ws: any) => ws.slug === workspaceSlug)
+
+    // Skip if we already have a valid workspace selected
+    if (currentWorkspaceExists) {
+      // Reset auto-select tracking since user has a valid selection
+      hasAutoSelectedRef.current = false
+      lastAutoSelectedSlugRef.current = null
+      return
+    }
+
+    // Prevent repeated auto-selection attempts for the same workspace set
+    if (hasAutoSelectedRef.current && lastAutoSelectedSlugRef.current) {
+      return
+    }
+
+    // Prefer a "personal" workspace if one exists, otherwise use first
+    const personalWorkspace = workspaces.find((ws: any) =>
+      ws.slug?.includes("personal") || ws.name?.toLowerCase().includes("personal")
+    )
+    const workspaceToSelect = personalWorkspace || workspaces[0]
+    
+    if (workspaceToSelect?.slug && workspaceToSelect.slug !== workspaceSlug) {
+      console.log("[useWorkspaceData] Auto-selecting workspace:", workspaceToSelect.slug, "from", workspaces.length, "workspaces", workspaceSlug ? "(replacing invalid selection)" : "(no selection)")
+      hasAutoSelectedRef.current = true
+      lastAutoSelectedSlugRef.current = workspaceToSelect.slug
+      setWorkspaceSlug(workspaceToSelect.slug)
+    }
+  }, [isLoadingWorkspaces, workspaceIdsKey, workspaces.length, workspaceSlug, setWorkspaceSlug])
 
   // Get current user's role in the current workspace from memberCollection
   let currentWorkspaceRole: "owner" | "admin" | "member" | "viewer" | undefined = undefined

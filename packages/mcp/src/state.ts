@@ -25,7 +25,8 @@ export function getEffectiveWorkspace(workspace?: string): string {
   }
 
   // Filesystem mode: return absolute path
-  if (!workspace || workspace === 'workspace') {
+  // Handle common default workspace names - they all mean "use configured schemas path"
+  if (!workspace || workspace === 'workspace' || workspace === 'default') {
     // Use SCHEMAS_PATH env var if set (Docker), otherwise default to monorepo .schemas
     return process.env.SCHEMAS_PATH || resolve(MONOREPO_ROOT, '.schemas')
   }

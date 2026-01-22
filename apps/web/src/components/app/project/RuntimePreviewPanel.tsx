@@ -40,6 +40,8 @@ export interface RuntimePreviewPanelProps {
   onError?: (error: Error) => void
   /** Callback when runtime successfully loads */
   onLoad?: () => void
+  /** Trigger to refresh the preview (increment to refresh) */
+  refreshTrigger?: number
 }
 
 export function RuntimePreviewPanel({
@@ -47,6 +49,7 @@ export function RuntimePreviewPanel({
   className,
   onError,
   onLoad,
+  refreshTrigger = 0,
 }: RuntimePreviewPanelProps) {
   const [sandboxUrl, setSandboxUrl] = useState<string | null>(null)
   const [sandboxAttributes, setSandboxAttributes] = useState<string>('')
@@ -58,20 +61,52 @@ export function RuntimePreviewPanel({
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const retryCountRef = useRef(0)
+  const maxAutoRetries = 10
+  const autoRetryTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   /**
    * Fetch sandbox URL from API, which starts the runtime if needed.
+   * Includes auto-retry for transient errors during project setup.
    */
-  const fetchSandboxUrl = useCallback(async () => {
+  const fetchSandboxUrl = useCallback(async (isAutoRetry = false) => {
     setIsLoading(true)
-    setError(null)
+    if (!isAutoRetry) {
+      setError(null)
+    }
 
     try {
       const response = await fetch(`/api/projects/${projectId}/sandbox/url`)
       const data: SandboxUrlResponse = await response.json()
 
       if (!response.ok) {
+        const errorCode = data.error?.code || ''
         const errorMessage = data.error?.message || 'Failed to get sandbox URL'
+        
+        // Check if this is a transient error that should be auto-retried
+        const isTransientError = 
+          errorCode === 'pod_unavailable' ||
+          errorCode === 'project_not_found' ||
+          errorMessage.includes('not found') ||
+          errorMessage.includes('starting') ||
+          errorMessage.includes('unavailable') ||
+          response.status === 503 ||
+          response.status === 502
+
+        if (isTransientError && retryCountRef.current < maxAutoRetries) {
+          retryCountRef.current += 1
+          const delay = Math.min(1000 * retryCountRef.current, 5000) // Exponential backoff, max 5s
+          
+          // Only show loading state, don't set error for auto-retries
+          if (retryCountRef.current > 3) {
+            console.debug(`[RuntimePreviewPanel] Runtime not ready, auto-retrying (${retryCountRef.current}/${maxAutoRetries})...`)
+          }
+          
+          autoRetryTimeoutRef.current = setTimeout(() => {
+            fetchSandboxUrl(true)
+          }, delay)
+          return
+        }
+
         setError(errorMessage)
         onError?.(new Error(errorMessage))
         return
@@ -84,6 +119,22 @@ export function RuntimePreviewPanel({
 
     } catch (err: any) {
       const errorMessage = err.message || 'Failed to connect to runtime'
+      
+      // Auto-retry network errors during setup
+      if (retryCountRef.current < maxAutoRetries) {
+        retryCountRef.current += 1
+        const delay = Math.min(1000 * retryCountRef.current, 5000)
+        
+        if (retryCountRef.current > 3) {
+          console.debug(`[RuntimePreviewPanel] Network error, auto-retrying (${retryCountRef.current}/${maxAutoRetries})...`)
+        }
+        
+        autoRetryTimeoutRef.current = setTimeout(() => {
+          fetchSandboxUrl(true)
+        }, delay)
+        return
+      }
+
       setError(errorMessage)
       onError?.(new Error(errorMessage))
     } finally {
@@ -120,12 +171,17 @@ export function RuntimePreviewPanel({
   }, [onError])
 
   /**
-   * Retry loading the runtime.
+   * Retry loading the runtime (manual retry resets auto-retry counter).
    */
   const handleRetry = useCallback(() => {
-    retryCountRef.current += 1
+    // Clear any pending auto-retry
+    if (autoRetryTimeoutRef.current) {
+      clearTimeout(autoRetryTimeoutRef.current)
+    }
+    retryCountRef.current = 0 // Reset counter for manual retry
     setIframeLoaded(false)
     setHmrConnected(false)
+    setError(null)
     fetchSandboxUrl()
   }, [fetchSandboxUrl])
 
@@ -151,6 +207,38 @@ export function RuntimePreviewPanel({
     fetchSandboxUrl()
   }, [fetchSandboxUrl])
 
+  // Track previous refreshTrigger to detect changes
+  const prevRefreshTriggerRef = useRef(refreshTrigger)
+
+  // Auto-refresh when refreshTrigger changes (triggered by agent file modifications)
+  // task-preview-autorefresh-fix: Multi-stage refresh for reliability after template operations
+  useEffect(() => {
+    if (refreshTrigger !== prevRefreshTriggerRef.current && sandboxUrl) {
+      prevRefreshTriggerRef.current = refreshTrigger
+      console.log('[RuntimePreviewPanel] Auto-refreshing preview due to file changes')
+      
+      // Stage 1: Initial refresh after Vite detects changes (2s)
+      // This handles most file modifications
+      const timer1 = setTimeout(() => {
+        console.log('[RuntimePreviewPanel] Stage 1 refresh')
+        handleRefresh()
+      }, 2000)
+      
+      // Stage 2: Follow-up refresh for template_copy operations (5s)
+      // Template operations may cause Vite to rebuild which invalidates the first load
+      // This catches "Failed to fetch dynamically imported module" errors
+      const timer2 = setTimeout(() => {
+        console.log('[RuntimePreviewPanel] Stage 2 refresh (template fallback)')
+        handleRefresh()
+      }, 5000)
+      
+      return () => {
+        clearTimeout(timer1)
+        clearTimeout(timer2)
+      }
+    }
+  }, [refreshTrigger, sandboxUrl, handleRefresh])
+
   // Listen for HMR status messages from iframe
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -169,9 +257,13 @@ export function RuntimePreviewPanel({
     return () => window.removeEventListener('message', handleMessage)
   }, [sandboxUrl])
 
-  // Stop runtime on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
+      // Clear any pending auto-retry timeouts
+      if (autoRetryTimeoutRef.current) {
+        clearTimeout(autoRetryTimeoutRef.current)
+      }
       // Fire-and-forget stop request on unmount
       fetch(`/api/projects/${projectId}/runtime/stop`, { method: 'POST' })
         .catch(() => {}) // Ignore errors on unmount
