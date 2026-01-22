@@ -1328,12 +1328,40 @@ app.post('/api/projects/:projectId/s3/presign', async (c) => {
 // =============================================================================
 
 // POST /api/projects/:projectId/chat - Proxy chat to project pod
+// In local dev (non-K8s), forwards to /api/chat which already supports project-scoped Claude Code
+// In Kubernetes, proxies to the project's dedicated runtime pod
 app.post('/api/projects/:projectId/chat', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  // Local dev: forward to /api/chat with projectId in body
+  // This uses the existing project-scoped Claude Code support
+  if (!isKubernetes()) {
+    const body = await c.req.json()
+    body.projectId = projectId
+
+    const url = new URL(c.req.url)
+    url.pathname = '/api/chat'
+    const newReq = new Request(url.toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...Object.fromEntries(
+          Array.from(c.req.raw.headers.entries()).filter(([k]) =>
+            !['content-length', 'content-type'].includes(k.toLowerCase())
+          )
+        ),
+      },
+      body: JSON.stringify(body),
+    })
+    return app.fetch(newReq)
+  }
+
+  // Kubernetes: proxy to project pod
   const studioCore = await getStudioCoreStore()
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ studioCore, runtimeManager: manager })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/chat`
+  url.pathname = `/projects/${projectId}/chat`
   const newReq = new Request(url.toString(), {
     method: 'POST',
     headers: c.req.raw.headers,
@@ -1344,6 +1372,19 @@ app.post('/api/projects/:projectId/chat', async (c) => {
 
 // GET /api/projects/:projectId/chat/status - Check project runtime status
 app.get('/api/projects/:projectId/chat/status', async (c) => {
+  // Local dev: always ready (uses /api/chat directly)
+  if (!isKubernetes()) {
+    return c.json({
+      mode: 'local',
+      exists: true,
+      ready: true,
+      url: null,
+      status: 'running',
+      message: 'Local dev mode - using /api/chat directly',
+    })
+  }
+
+  // Kubernetes: check pod status
   const studioCore = await getStudioCoreStore()
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ studioCore, runtimeManager: manager })
@@ -1355,6 +1396,16 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
 
 // POST /api/projects/:projectId/chat/wake - Wake up a scaled-to-zero pod
 app.post('/api/projects/:projectId/chat/wake', async (c) => {
+  // Local dev: no-op (always ready)
+  if (!isKubernetes()) {
+    return c.json({
+      success: true,
+      url: null,
+      message: 'Local dev mode - no pod to wake',
+    })
+  }
+
+  // Kubernetes: wake the pod
   const studioCore = await getStudioCoreStore()
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ studioCore, runtimeManager: manager })
