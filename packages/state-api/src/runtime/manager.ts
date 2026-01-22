@@ -37,8 +37,9 @@ const PROJECT_RUNTIME_SERVER = join(__dirname, '..', '..', '..', 'project-runtim
 
 /**
  * Path to the MCP server (for project-runtime to spawn).
+ * Uses server-templates.ts which only exposes template tools (template.list, template.copy).
  */
-const MCP_SERVER_PATH = join(__dirname, '..', '..', '..', 'mcp', 'src', 'server.ts')
+const MCP_SERVER_PATH = join(__dirname, '..', '..', '..', 'mcp', 'src', 'server-templates.ts')
 
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {
@@ -319,7 +320,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
     try {
       // Spawn Vite dev server in the project directory
-      const proc = spawn('bun', ['run', 'vite', '--port', String(port), '--host', '0.0.0.0'], {
+      // Use `bun run dev` to properly initialize TanStack Start and other Vite plugins
+      // Pass port via VITE_PORT env var since some frameworks don't support --port flag directly
+      const proc = spawn('bun', ['run', 'dev', '--port', String(port), '--host', '0.0.0.0'], {
         cwd: projectDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,
@@ -328,6 +331,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           PROJECT_ID: projectId,
           VITE_PROJECT_ID: projectId,
           VITE_PORT: String(port),
+          PORT: String(port),
         },
       })
 

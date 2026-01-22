@@ -184,13 +184,25 @@ export async function executeTemplateCopy(
       }
     }
 
-    // When force is used (or in project context), remove conflicting directories to ensure clean copy
+    // When force is used (or in project context), remove conflicting directories and files to ensure clean copy
     if (shouldForce && existsSync(projectDir)) {
+      // Remove directories that might conflict
       const dirsToClean = ["src", "prisma", ".tanstack"]
       for (const dir of dirsToClean) {
         const dirPath = join(projectDir, dir)
         if (existsSync(dirPath)) {
           rmSync(dirPath, { recursive: true, force: true })
+        }
+      }
+      
+      // Remove files that might conflict with TanStack Start templates
+      // TanStack Start generates its own HTML, so remove any existing index.html
+      const filesToClean = ["index.html"]
+      for (const file of filesToClean) {
+        const filePath = join(projectDir, file)
+        if (existsSync(filePath)) {
+          rmSync(filePath, { force: true })
+          console.log(`[template.copy] Removed conflicting file: ${file}`)
         }
       }
     }
@@ -220,30 +232,56 @@ export async function executeTemplateCopy(
     }
 
     // Install dependencies unless skipped
+    const installResults: { step: string; success: boolean; error?: string }[] = []
+    
     if (!args.skipInstall) {
+      // Step 1: bun install
       try {
+        console.log("[template.copy] Running bun install...")
         execSync("bun install", {
           cwd: projectDir,
           stdio: "pipe",
           timeout: 120000,
         })
-
-        // Run prisma generate
-        execSync("bunx prisma generate", {
-          cwd: projectDir,
-          stdio: "pipe",
-          timeout: 60000,
-        })
-
-        // Run prisma db push to create database
-        execSync("bunx prisma db push", {
-          cwd: projectDir,
-          stdio: "pipe",
-          timeout: 60000,
-        })
+        installResults.push({ step: "bun install", success: true })
+        console.log("[template.copy] bun install completed")
       } catch (error: any) {
-        // Non-fatal - user can run manually
-        console.warn("[template.copy] Warning: Install/setup failed, run manually")
+        console.error("[template.copy] bun install failed:", error.message)
+        installResults.push({ step: "bun install", success: false, error: error.message })
+      }
+
+      // Step 2: prisma generate (only if bun install succeeded)
+      if (installResults[0]?.success) {
+        try {
+          console.log("[template.copy] Running prisma generate...")
+          execSync("bunx prisma generate", {
+            cwd: projectDir,
+            stdio: "pipe",
+            timeout: 60000,
+          })
+          installResults.push({ step: "prisma generate", success: true })
+          console.log("[template.copy] prisma generate completed")
+        } catch (error: any) {
+          console.error("[template.copy] prisma generate failed:", error.message)
+          installResults.push({ step: "prisma generate", success: false, error: error.message })
+        }
+      }
+
+      // Step 3: prisma db push (only if previous steps succeeded)
+      if (installResults.every(r => r.success)) {
+        try {
+          console.log("[template.copy] Running prisma db push...")
+          execSync("bunx prisma db push", {
+            cwd: projectDir,
+            stdio: "pipe",
+            timeout: 60000,
+          })
+          installResults.push({ step: "prisma db push", success: true })
+          console.log("[template.copy] prisma db push completed")
+        } catch (error: any) {
+          console.error("[template.copy] prisma db push failed:", error.message)
+          installResults.push({ step: "prisma db push", success: false, error: error.message })
+        }
       }
     }
 
@@ -260,12 +298,22 @@ export async function executeTemplateCopy(
       files: relativeFiles,
     }
 
+    // Include install results if we ran install steps
+    if (installResults.length > 0) {
+      response.install = {
+        ran: true,
+        steps: installResults,
+        allSucceeded: installResults.every(r => r.success),
+      }
+    }
+
     // In project context, add restart instructions
     if (isProjectContext) {
       const projectId = process.env.PROJECT_ID
       response.needsRestart = true
       response.instructions = [
         "Template files have been copied to the project directory.",
+        "Dependencies have been installed and Prisma database has been set up.",
         "The Vite dev server needs to be restarted for changes to take effect.",
         `Use Bash to run: curl -X POST http://localhost:8002/api/projects/${projectId}/runtime/restart`,
         "After restart, the preview will automatically show the new app.",
