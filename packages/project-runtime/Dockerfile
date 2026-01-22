@@ -68,6 +68,9 @@ COPY --from=builder /app/packages/project-runtime ./packages/project-runtime
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./
 
+# Copy SDK examples for template.list and template.copy tools
+COPY packages/sdk/examples ./packages/sdk/examples
+
 # Create directories for project files and schemas
 # /app/project - mounted volume or synced from S3
 # /app/.schemas - project-specific schemas

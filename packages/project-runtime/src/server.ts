@@ -16,8 +16,8 @@ import { cors } from 'hono/cors'
 import { streamText, tool, type CoreMessage } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { z } from 'zod'
-import { resolve, isAbsolute, relative, dirname } from 'path'
-import { existsSync, readdirSync, readFileSync, cpSync, mkdirSync, rmSync } from 'fs'
+import { resolve, isAbsolute, relative, dirname, join } from 'path'
+import { existsSync, readdirSync, readFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
 import { initializeS3Sync, type S3Sync } from './s3-sync'
 import { fileURLToPath } from 'url'
 
@@ -190,41 +190,43 @@ Available templates:
   }),
 
   'template.copy': tool({
-    description: `Copy a starter template to set up the project. This will copy all template files to the current project directory, install dependencies, and restart the Vite server automatically.`,
+    description: `Copy a starter template to set up the project. This will copy all template files to the current project directory, install dependencies, build the project, and start the preview server automatically.`,
     parameters: z.object({
-      templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app")'),
+      templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app", "expense-tracker")'),
       projectName: z.string().optional().describe('Optional project name (for package.json)'),
     }),
     execute: async ({ templateName, projectName }) => {
       console.log(`[project-runtime] template.copy called: ${templateName}`)
       const result = copyTemplate(templateName, projectName || templateName)
       
-      // If successful, automatically restart the Vite server
+      // If successful, automatically rebuild and restart the preview
       if (result.ok) {
-        let restartResult: { success: boolean; message: string; url?: string; port?: number } = {
+        let restartResult: { success: boolean; message: string; mode?: string; port?: number | null } = {
           success: false,
           message: 'Restart not attempted',
         }
         
         try {
-          console.log(`[project-runtime] Restarting Vite server for project ${PROJECT_ID}...`)
-          const response = await fetch(`http://localhost:8002/api/projects/${PROJECT_ID}/runtime/restart`, {
+          console.log(`[project-runtime] Rebuilding and restarting preview for project ${PROJECT_ID}...`)
+          // Call our local restart endpoint
+          const response = await fetch(`http://localhost:${PORT}/preview/restart`, {
             method: 'POST',
           })
           
           if (response.ok) {
-            const data = await response.json()
+            const data = await response.json() as { success: boolean; mode: string; port: number | null }
             restartResult = {
               success: true,
-              message: 'Vite server restarted automatically',
-              url: data.url,
+              message: `Preview restarted in ${data.mode} mode`,
+              mode: data.mode,
               port: data.port,
             }
-            console.log(`[project-runtime] Vite server restarted on port ${data.port}`)
+            console.log(`[project-runtime] Preview restarted in ${data.mode} mode`)
           } else {
+            const errorData = await response.json().catch(() => ({})) as { error?: string }
             restartResult = {
               success: false,
-              message: `Restart failed with status ${response.status}`,
+              message: errorData.error || `Restart failed with status ${response.status}`,
             }
           }
         } catch (err: any) {
@@ -239,8 +241,8 @@ Available templates:
           ...result,
           restart: restartResult,
           message: restartResult.success 
-            ? 'Template copied and Vite server restarted. The preview will update automatically.'
-            : 'Template copied. Please refresh the preview to see changes.',
+            ? `Template copied and preview rebuilt. The preview will show the ${templateName} app.`
+            : 'Template copied but rebuild failed. Try refreshing the preview.',
         }, null, 2)
       }
       
@@ -297,8 +299,8 @@ const claudeCode = createClaudeCode({
   defaultSettings: {
     // Enable streaming (required for hooks)
     streamingInput: 'always',
-    // Verbose logging for debugging
-    verbose: true,
+    // Verbose logging (disabled in production)
+    verbose: false,
     // Working directory is the project
     cwd: PROJECT_DIR,
     // Path restriction for security
@@ -313,6 +315,7 @@ const claudeCode = createClaudeCode({
         env: {
           SCHEMAS_PATH,
           PROJECT_ID: PROJECT_ID!,
+          PROJECT_DIR,  // Critical: template.copy needs this to copy to the right location
           NODE_ENV: process.env.NODE_ENV || 'production',
           // Forward S3 configuration for schema persistence
           S3_ENDPOINT: process.env.S3_ENDPOINT || '',
@@ -604,6 +607,398 @@ app.post('/sync/download', async (c) => {
     return c.json({
       success: false,
       error: error.message,
+    }, 500)
+  }
+})
+
+// =============================================================================
+// Preview Restart Endpoint
+// =============================================================================
+
+const DIST_DIR = join(PROJECT_DIR, 'dist')
+const NITRO_SERVER_PORT = parseInt(process.env.NITRO_SERVER_PORT || '3000', 10)
+
+// Track current preview mode and Nitro server process
+let isTanStackStart = process.env.IS_TANSTACK_START === 'true'
+let nitroProcess: ReturnType<typeof Bun.spawn> | null = null
+
+/**
+ * Restart the preview server after template changes.
+ * This will:
+ * 1. Kill any existing Nitro server process
+ * 2. Install dependencies
+ * 3. Run prisma generate/push if needed
+ * 4. Build with Vite (Nitro produces .output/server/index.mjs)
+ * 5. Start the Nitro server (for TanStack Start) or serve static files (plain Vite)
+ */
+app.post('/preview/restart', async (c) => {
+  console.log(`[project-runtime] Restarting preview for project ${PROJECT_ID}...`)
+  
+  try {
+    // 1. Kill existing Nitro server if running
+    if (nitroProcess) {
+      console.log('[project-runtime] Stopping existing Nitro server...')
+      nitroProcess.kill()
+      nitroProcess = null
+    }
+    
+    // 2. Check if this is a TanStack Start project
+    const packageJsonPath = join(PROJECT_DIR, 'package.json')
+    if (!existsSync(packageJsonPath)) {
+      return c.json({ success: false, error: 'No package.json found' }, 400)
+    }
+    
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
+    const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
+    isTanStackStart = !!deps['@tanstack/react-start']
+    const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
+    
+    console.log(`[project-runtime] Project type: ${isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'}`)
+    
+    // 3. Install dependencies
+    console.log('[project-runtime] Installing dependencies...')
+    const installProc = Bun.spawn(['bun', 'install'], {
+      cwd: PROJECT_DIR,
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    await installProc.exited
+    
+    if (installProc.exitCode !== 0) {
+      console.error('[project-runtime] Install failed')
+      return c.json({ success: false, error: 'Dependency installation failed' }, 500)
+    }
+    
+    // 4. Run prisma generate and db push if prisma is present
+    if (hasPrisma) {
+      console.log('[project-runtime] Running prisma generate...')
+      const prismaGenProc = Bun.spawn(['bunx', 'prisma', 'generate'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      await prismaGenProc.exited
+      
+      console.log('[project-runtime] Running prisma db push...')
+      const prismaPushProc = Bun.spawn(['bunx', 'prisma', 'db', 'push'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      await prismaPushProc.exited
+    }
+    
+    // 5. Build the project
+    console.log('[project-runtime] Building project...')
+    const buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
+      cwd: PROJECT_DIR,
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    await buildProc.exited
+    
+    if (buildProc.exitCode !== 0) {
+      console.error('[project-runtime] Build failed')
+      return c.json({ success: false, error: 'Build failed' }, 500)
+    }
+    
+    // 6. Start Nitro server for TanStack Start
+    if (isTanStackStart) {
+      const serverPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
+      if (!existsSync(serverPath)) {
+        return c.json({ success: false, error: 'Nitro build output not found at .output/server/index.mjs' }, 500)
+      }
+      
+      console.log(`[project-runtime] Starting Nitro server on port ${NITRO_SERVER_PORT}...`)
+      nitroProcess = Bun.spawn(['bun', 'run', serverPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(NITRO_SERVER_PORT) },
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      
+      // Wait for server to start
+      await new Promise(resolve => setTimeout(resolve, 3000))
+      
+      // Check if running
+      try {
+        const healthCheck = await fetch(`http://localhost:${NITRO_SERVER_PORT}/`)
+        console.log(`[project-runtime] Nitro server health check: ${healthCheck.status}`)
+      } catch (e) {
+        console.warn('[project-runtime] Nitro server may still be starting...')
+      }
+    }
+    
+    console.log('[project-runtime] Preview restart completed')
+    return c.json({
+      success: true,
+      mode: isTanStackStart ? 'nitro' : 'static',
+      port: isTanStackStart ? NITRO_SERVER_PORT : null,
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Preview restart error:', error)
+    return c.json({ success: false, error: error.message }, 500)
+  }
+})
+
+console.log(`[project-runtime] Preview mode: ${isTanStackStart ? 'TanStack Start (proxy)' : 'Static files'}`)
+
+/**
+ * MIME type mapping for static files (used for plain Vite projects)
+ */
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.mjs': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.webp': 'image/webp',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.eot': 'application/vnd.ms-fontobject',
+  '.otf': 'font/otf',
+  '.txt': 'text/plain',
+  '.xml': 'application/xml',
+  '.mp3': 'audio/mpeg',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.pdf': 'application/pdf',
+}
+
+/**
+ * Get MIME type from file extension
+ */
+function getMimeType(filePath: string): string {
+  const ext = filePath.substring(filePath.lastIndexOf('.'))
+  return MIME_TYPES[ext.toLowerCase()] || 'application/octet-stream'
+}
+
+/**
+ * Preview handler - proxies to TanStack Start server or serves static files.
+ * 
+ * For TanStack Start projects:
+ * - Proxies all requests to the running TanStack Start server on port 3000
+ * - Full SSR, server functions, and routing handled by TanStack
+ * 
+ * For plain Vite projects:
+ * - Serves pre-built static assets from dist/
+ */
+app.get('/preview/*', async (c) => {
+  const relativePath = c.req.path.replace('/preview', '') || '/'
+  
+  // TanStack Start: proxy to the running server
+  if (isTanStackStart) {
+    const targetUrl = `http://localhost:${NITRO_SERVER_PORT}${relativePath}`
+    console.log(`[project-runtime] Proxying preview to TanStack: ${targetUrl}`)
+    
+    try {
+      const response = await fetch(targetUrl, {
+        method: c.req.method,
+        headers: {
+          'Host': `localhost:${NITRO_SERVER_PORT}`,
+          'Accept': c.req.header('Accept') || '*/*',
+          'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+        },
+      })
+      
+      // Get response body
+      const contentType = response.headers.get('Content-Type') || 'text/html'
+      const body = await response.arrayBuffer()
+      
+      return new Response(body, {
+        status: response.status,
+        headers: {
+          'Content-Type': contentType,
+          'Cache-Control': 'no-cache',
+          'Access-Control-Allow-Origin': '*',
+        },
+      })
+    } catch (error: any) {
+      console.error('[project-runtime] TanStack proxy error:', error)
+      return c.html(`
+        <html>
+          <body style="font-family: system-ui; padding: 2rem;">
+            <h1>Preview Loading...</h1>
+            <p>The TanStack Start server is starting up. Please wait a moment and refresh.</p>
+            <p style="color: #666; font-size: 0.9em;">Error: ${error.message}</p>
+            <script>setTimeout(() => location.reload(), 3000)</script>
+          </body>
+        </html>
+      `, 503)
+    }
+  }
+  
+  // Plain Vite: serve static files from dist/
+  let filePath = relativePath
+  if (filePath.startsWith('/')) {
+    filePath = filePath.substring(1)
+  }
+  if (filePath === '' || filePath === '/') {
+    filePath = 'index.html'
+  }
+  
+  const absolutePath = join(DIST_DIR, filePath)
+  
+  console.log(`[project-runtime] Serving static preview: ${filePath} from ${absolutePath}`)
+  
+  try {
+    // Security: prevent path traversal
+    if (!absolutePath.startsWith(DIST_DIR)) {
+      return c.text('Forbidden', 403)
+    }
+    
+    // Check if file exists
+    if (!existsSync(absolutePath)) {
+      // For SPA routing: if file not found and not an asset, serve index.html
+      const ext = filePath.substring(filePath.lastIndexOf('.'))
+      if (!MIME_TYPES[ext.toLowerCase()]) {
+        const indexPath = join(DIST_DIR, 'index.html')
+        if (existsSync(indexPath)) {
+          const content = readFileSync(indexPath)
+          return new Response(content, {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/html',
+              'Cache-Control': 'no-cache',
+              'Access-Control-Allow-Origin': '*',
+            },
+          })
+        }
+      }
+      
+      console.log(`[project-runtime] File not found: ${absolutePath}`)
+      return c.text('Not Found', 404)
+    }
+    
+    // Check if it's a directory
+    const stats = statSync(absolutePath)
+    if (stats.isDirectory()) {
+      const indexPath = join(absolutePath, 'index.html')
+      if (existsSync(indexPath)) {
+        const content = readFileSync(indexPath)
+        return new Response(content, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/html',
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*',
+          },
+        })
+      }
+      return c.text('Not Found', 404)
+    }
+    
+    // Read and serve the file
+    const content = readFileSync(absolutePath)
+    const mimeType = getMimeType(absolutePath)
+    
+    // Set cache headers (long cache for hashed assets)
+    const isHashedAsset = /\.[a-f0-9]{8,}\.(js|css|woff2?|ttf|png|jpg|svg)$/i.test(filePath)
+    const cacheControl = isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache'
+    
+    return new Response(content, {
+      status: 200,
+      headers: {
+        'Content-Type': mimeType,
+        'Content-Length': String(content.length),
+        'Cache-Control': cacheControl,
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Static file serve error:', error)
+    return c.json({
+      error: { code: 'static_serve_error', message: error.message || 'Failed to serve file' }
+    }, 500)
+  }
+})
+
+// Handle base /preview path (redirect to /preview/)
+app.get('/preview', (c) => {
+  return c.redirect('/preview/')
+})
+
+// =============================================================================
+// Files API (for Code Explorer)
+// =============================================================================
+
+/**
+ * List all source files in the project directory.
+ * Used by the Code Explorer panel in the UI.
+ */
+app.get('/files', (c) => {
+  try {
+    const files: Array<{ path: string; size: number; isDirectory: boolean }> = []
+    
+    function listRecursive(dir: string, prefix: string = '') {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      
+      for (const entry of entries) {
+        // Skip node_modules, .git, and other common excludes
+        if (['node_modules', '.git', '.next', 'dist', 'build', '.cache'].includes(entry.name)) {
+          continue
+        }
+        
+        const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
+        const fullPath = `${dir}/${entry.name}`
+        
+        if (entry.isDirectory()) {
+          files.push({ path: relativePath, size: 0, isDirectory: true })
+          listRecursive(fullPath, relativePath)
+        } else {
+          const stats = statSync(fullPath)
+          files.push({ path: relativePath, size: stats.size, isDirectory: false })
+        }
+      }
+    }
+    
+    listRecursive(PROJECT_DIR)
+    
+    return c.json({ files })
+  } catch (error: any) {
+    console.error('[project-runtime] Files list error:', error)
+    return c.json({
+      error: { code: 'files_error', message: error.message || 'Failed to list files' }
+    }, 500)
+  }
+})
+
+/**
+ * Get content of a specific file.
+ */
+app.get('/files/*', (c) => {
+  try {
+    const filePath = c.req.path.replace('/files/', '')
+    
+    // Validate path (prevent directory traversal)
+    const absolutePath = isAbsolute(filePath) ? filePath : resolve(PROJECT_DIR, filePath)
+    const relativePath = relative(PROJECT_DIR, absolutePath)
+    
+    if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+      return c.json({
+        error: { code: 'invalid_path', message: 'Path is outside project directory' }
+      }, 400)
+    }
+    
+    if (!existsSync(absolutePath)) {
+      return c.json({
+        error: { code: 'not_found', message: 'File not found' }
+      }, 404)
+    }
+    
+    const content = readFileSync(absolutePath, 'utf-8')
+    return c.json({ path: filePath, content })
+  } catch (error: any) {
+    console.error('[project-runtime] File read error:', error)
+    return c.json({
+      error: { code: 'file_error', message: error.message || 'Failed to read file' }
     }, 500)
   }
 })

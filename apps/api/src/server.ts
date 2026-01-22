@@ -1219,8 +1219,11 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       await getProjectPodUrl(projectId)
       
       // Return the proxy URL - all requests to this URL will be proxied to the project pod
-      const host = c.req.header('host') || 'localhost'
-      const protocol = c.req.header('x-forwarded-proto') || 'https'
+      // Use X-Original-Host (set by nginx) if available, otherwise fall back to Host header
+      const host = c.req.header('x-original-host') || c.req.header('host') || 'localhost'
+      // In Kubernetes, always use HTTPS (Knative/ALB terminates TLS)
+      // x-forwarded-proto may not be preserved through all proxy layers
+      const protocol = 'https'
       const proxyUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
       
       return c.json({
@@ -1252,11 +1255,12 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
 // =============================================================================
 
 // Preview proxy for project runtime (all methods, all paths)
+// Routes to the /preview/ endpoint on the project-runtime server which proxies to Vite
 app.all('/api/projects/:projectId/preview/*', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (!isKubernetes()) {
-    // In local dev, redirect to the local runtime URL
+    // In local dev, redirect to the local Vite dev server directly
     const manager = getRuntimeManager()
     const runtime = manager.status(projectId)
     if (runtime?.url) {
@@ -1270,13 +1274,14 @@ app.all('/api/projects/:projectId/preview/*', async (c) => {
     const { getProjectPodUrl } = await import('./lib/knative-project-manager')
     const podUrl = await getProjectPodUrl(projectId)
     
-    // Extract the path after /preview/
+    // Extract the path after /preview/ and route to /preview/ on the project-runtime
+    // The project-runtime server proxies /preview/* to the Vite dev server on port 5173
     const path = c.req.path.replace(`/api/projects/${projectId}/preview`, '') || '/'
-    const targetUrl = `${podUrl}${path}`
+    const targetUrl = `${podUrl}/preview${path}`
     
     console.log(`[PreviewProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
     
-    // Forward the request to the project pod
+    // Forward the request to the project pod's preview proxy
     const headers = new Headers()
     
     // Copy relevant headers
@@ -1345,26 +1350,90 @@ app.all('/api/projects/:projectId/preview', async (c) => {
 
 // =============================================================================
 // Files routes - Project file listing and reading
+// In Kubernetes mode, proxies to project-runtime pod's /files endpoint
 // =============================================================================
 
 // List project files
 app.get('/api/projects/:projectId/files', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/files`
+      
+      console.log(`[FilesProxy] Proxying file list to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[FilesProxy] Error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to list files' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Use local filesystem
   const studioCore = await getStudioCoreStore()
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
   const router = filesRoutes({ studioCore, workspacesDir })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/files`
+  url.pathname = `/projects/${projectId}/files`
   const newReq = new Request(url.toString(), { method: 'GET' })
   return router.fetch(newReq)
 })
 
 // Get file content
 app.get('/api/projects/:projectId/files/*', async (c) => {
+  const projectId = c.req.param('projectId')
+  const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/files/${filePath}`
+      
+      console.log(`[FilesProxy] Proxying file read to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[FilesProxy] Error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to read file' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Use local filesystem
   const studioCore = await getStudioCoreStore()
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
   const router = filesRoutes({ studioCore, workspacesDir })
-  const projectId = c.req.param('projectId')
-  const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
   const url = new URL(c.req.url)
   url.pathname = `/projects/${projectId}/files/${filePath}`
   const newReq = new Request(url.toString(), { method: 'GET' })

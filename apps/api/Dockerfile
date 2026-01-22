@@ -63,6 +63,9 @@ COPY --from=builder /app/apps/api ./apps/api
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./
 
+# Copy SDK examples folder for templates API
+COPY packages/sdk/examples ./packages/sdk/examples
+
 # Copy entrypoint script
 COPY apps/api/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh

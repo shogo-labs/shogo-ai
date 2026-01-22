@@ -288,31 +288,52 @@ export class KnativeProjectManager {
    * Also creates the PVC for project storage if it doesn't exist.
    */
   async createProject(projectId: string): Promise<string> {
+    const createStartTime = Date.now()
     console.log(`[KnativeProjectManager] Creating project: ${projectId}`)
 
     // Check if already exists
+    const statusCheckStart = Date.now()
     const status = await this.getStatus(projectId)
+    console.log(`[KnativeProjectManager] Status check took ${Date.now() - statusCheckStart}ms`)
+    
     if (status.exists) {
-      console.log(`[KnativeProjectManager] Project ${projectId} already exists`)
+      console.log(`[KnativeProjectManager] Project ${projectId} already exists (total: ${Date.now() - createStartTime}ms)`)
       return this.getProjectPodUrl(projectId)
     }
 
     // Create PVC first - needed for project code storage
+    const pvcStartTime = Date.now()
     await this.ensurePVC(projectId)
+    console.log(`[KnativeProjectManager] PVC creation took ${Date.now() - pvcStartTime}ms`)
 
     // Create Knative Service
+    const ksvcStartTime = Date.now()
     const service = this.buildKnativeService(projectId)
     const api = getCustomApi()
 
-    await api.createNamespacedCustomObject({
-      group: KNATIVE_GROUP,
-      version: KNATIVE_VERSION,
-      namespace: this.namespace,
-      plural: "services",
-      body: service,
-    })
+    try {
+      await api.createNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: "services",
+        body: service,
+      })
 
-    console.log(`[KnativeProjectManager] Created Knative Service: project-${projectId}`)
+      const ksvcDuration = Date.now() - ksvcStartTime
+      const totalDuration = Date.now() - createStartTime
+      console.log(`[KnativeProjectManager] Created Knative Service: project-${projectId} (ksvc: ${ksvcDuration}ms, total: ${totalDuration}ms)`)
+    } catch (error: any) {
+      // Handle race condition: if service already exists (409), that's fine
+      const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code
+      if (statusCode === 409 || error?.message?.includes('already exists') || error?.body?.reason === 'AlreadyExists') {
+        console.log(`[KnativeProjectManager] Project ${projectId} already exists (race condition handled) (total: ${Date.now() - createStartTime}ms)`)
+      } else {
+        // Re-throw other errors
+        throw error
+      }
+    }
+    
     return this.getProjectPodUrl(projectId)
   }
 
@@ -369,23 +390,45 @@ export class KnativeProjectManager {
    */
   async waitForReady(projectId: string, timeoutMs: number = 60000): Promise<void> {
     const startTime = Date.now()
+    let pollCount = 0
+    let firstReadyTime: number | null = null
+
+    console.log(`[KnativeProjectManager] waitForReady started for ${projectId} (timeout: ${timeoutMs}ms)`)
 
     while (Date.now() - startTime < timeoutMs) {
+      pollCount++
+      const elapsed = Date.now() - startTime
       const status = await this.getStatus(projectId)
       
       if (status.ready) {
+        if (!firstReadyTime) {
+          firstReadyTime = Date.now() - startTime
+          console.log(`[KnativeProjectManager] Project ${projectId} Knative status=ready at ${firstReadyTime}ms (poll #${pollCount})`)
+        }
+        
         // Double-check with an active health probe
+        const healthCheckStart = Date.now()
         const healthy = await this.healthCheck(projectId)
+        const healthCheckDuration = Date.now() - healthCheckStart
+        
         if (healthy) {
-          console.log(`[KnativeProjectManager] Project ${projectId} is ready and healthy`)
+          const totalDuration = Date.now() - startTime
+          console.log(`[KnativeProjectManager] Project ${projectId} is ready and healthy (health check: ${healthCheckDuration}ms, total wait: ${totalDuration}ms, polls: ${pollCount})`)
           return
         }
-        console.log(`[KnativeProjectManager] Project ${projectId} reports ready but health check failed, retrying...`)
+        console.log(`[KnativeProjectManager] Project ${projectId} reports ready but health check failed (${healthCheckDuration}ms), retrying... (elapsed: ${elapsed}ms)`)
+      } else {
+        // Log status periodically (every 5 polls = ~5 seconds)
+        if (pollCount % 5 === 0) {
+          console.log(`[KnativeProjectManager] Project ${projectId} not ready yet (replicas: ${status.replicas}, elapsed: ${elapsed}ms, poll #${pollCount})`)
+        }
       }
       
       await new Promise((resolve) => setTimeout(resolve, 1000))
     }
 
+    const totalDuration = Date.now() - startTime
+    console.log(`[KnativeProjectManager] Project ${projectId} TIMEOUT after ${totalDuration}ms (polls: ${pollCount}, first ready: ${firstReadyTime || 'never'}ms)`)
     throw new Error(`Project ${projectId} did not become ready within ${timeoutMs}ms`)
   }
 
@@ -488,10 +531,11 @@ export class KnativeProjectManager {
     }
   ): Promise<void> {
     const { name, projectId, component, storageClass, size } = options
+    const pvcStartTime = Date.now()
 
     try {
       await coreApi.readNamespacedPersistentVolumeClaim({ name, namespace: this.namespace })
-      console.log(`[KnativeProjectManager] PVC ${name} already exists`)
+      console.log(`[KnativeProjectManager] PVC ${name} already exists (check: ${Date.now() - pvcStartTime}ms)`)
       return
     } catch (error: any) {
       if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
@@ -519,7 +563,7 @@ export class KnativeProjectManager {
     }
 
     await coreApi.createNamespacedPersistentVolumeClaim({ namespace: this.namespace, body: pvc })
-    console.log(`[KnativeProjectManager] Created PVC: ${name}`)
+    console.log(`[KnativeProjectManager] Created PVC: ${name} (${Date.now() - pvcStartTime}ms)`)
   }
 
   /**
@@ -581,6 +625,7 @@ export class KnativeProjectManager {
       {
         name: "project-runtime",
         image: this.image,
+        imagePullPolicy: "Always", // Always pull to get latest staging-latest tag
         ports: [{ containerPort: 8080, name: "http1" }],
         env,
         resources: {
@@ -617,6 +662,8 @@ export class KnativeProjectManager {
     ]
 
     // Add PostgreSQL sidecar container if enabled
+    // NOTE: Knative doesn't allow probes on sidecar containers (only on the main container)
+    // The main project-runtime container handles all probing; postgres sidecar just runs alongside
     if (this.postgresEnabled) {
       containers.push({
         name: "postgres",
@@ -635,28 +682,7 @@ export class KnativeProjectManager {
         volumeMounts: [
           { name: "postgres-data", mountPath: "/var/lib/postgresql/data" },
         ],
-        // Readiness probe - PostgreSQL ready check
-        readinessProbe: {
-          exec: {
-            command: ["pg_isready", "-U", this.postgresUser, "-d", this.postgresDatabase],
-          },
-          initialDelaySeconds: 2,
-          periodSeconds: 3,
-          timeoutSeconds: 2,
-          successThreshold: 1,
-          failureThreshold: 10,
-        },
-        // Liveness probe - PostgreSQL health check
-        livenessProbe: {
-          exec: {
-            command: ["pg_isready", "-U", this.postgresUser, "-d", this.postgresDatabase],
-          },
-          initialDelaySeconds: 30,
-          periodSeconds: 10,
-          timeoutSeconds: 5,
-          successThreshold: 1,
-          failureThreshold: 3,
-        },
+        // No probes allowed on sidecar containers in Knative Serving
       })
     }
 
@@ -744,22 +770,30 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
     return `http://localhost:${basePort}`
   }
 
+  const totalStartTime = Date.now()
+  console.log(`[KnativeProjectManager] getProjectPodUrl started for ${projectId}`)
+  
   const manager = getKnativeProjectManager()
   const status = await manager.getStatus(projectId)
 
   if (!status.exists) {
     // Create the project pod
+    console.log(`[KnativeProjectManager] Project ${projectId} does not exist, creating... (elapsed: ${Date.now() - totalStartTime}ms)`)
     await manager.createProject(projectId)
     // Wait for the pod to be ready before returning the URL
     // This prevents "connection refused" errors when proxying immediately after creation
-    console.log(`[KnativeProjectManager] Waiting for project ${projectId} to be ready...`)
+    console.log(`[KnativeProjectManager] Waiting for project ${projectId} to be ready... (elapsed: ${Date.now() - totalStartTime}ms)`)
     await manager.waitForReady(projectId, 60000)
   } else if (!status.ready) {
     // Pod exists but isn't ready (cold start from scale-to-zero)
     // Wait for it to become ready
-    console.log(`[KnativeProjectManager] Project ${projectId} exists but not ready, waiting...`)
+    console.log(`[KnativeProjectManager] Project ${projectId} exists but not ready (cold start), waiting... (elapsed: ${Date.now() - totalStartTime}ms)`)
     await manager.waitForReady(projectId, 30000)
+  } else {
+    console.log(`[KnativeProjectManager] Project ${projectId} already running (warm hit) (elapsed: ${Date.now() - totalStartTime}ms)`)
   }
 
+  const totalDuration = Date.now() - totalStartTime
+  console.log(`[KnativeProjectManager] getProjectPodUrl completed for ${projectId} in ${totalDuration}ms`)
   return manager.getProjectPodUrl(projectId)
 }

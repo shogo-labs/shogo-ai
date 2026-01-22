@@ -88,28 +88,48 @@ function updatePackageJson(projectDir: string, projectName: string): void {
 /**
  * Get default output directory for new projects
  * 
- * If running in project context (PROJECT_ID env var set), uses the project's
- * workspace directory. Otherwise creates a new directory based on project name.
+ * Priority:
+ * 1. PROJECT_DIR env var (Kubernetes runtime - /app/project)
+ * 2. PROJECT_ID with workspaces dir (local dev with project context)
+ * 3. workspaces/{name} (local dev, new project)
+ * 4. current directory (fallback)
+ * 
+ * NOTE: The name parameter is ONLY used for package.json, NOT for directory creation.
+ * Templates always copy to the root of the project directory.
  */
 function getDefaultOutputDir(projectName: string): string {
-  // Check for project context - if PROJECT_ID is set, use that directory
+  // Priority 1: PROJECT_DIR env var (Kubernetes runtime)
+  // This is the correct path in containerized environments
+  const projectDir = process.env.PROJECT_DIR
+  if (projectDir && existsSync(projectDir)) {
+    console.log(`[template.copy] Using PROJECT_DIR: ${projectDir}`)
+    return projectDir
+  }
+
+  // Priority 2: PROJECT_ID with workspaces directory (local dev with project context)
   const projectId = process.env.PROJECT_ID
   if (projectId) {
-    // Running in project runtime context - use the project's workspace directory
     const workspacesDir = resolve(MONOREPO_ROOT, "workspaces")
     if (existsSync(workspacesDir)) {
-      return resolve(workspacesDir, projectId)
+      const projectPath = resolve(workspacesDir, projectId)
+      console.log(`[template.copy] Using PROJECT_ID workspace: ${projectPath}`)
+      return projectPath
     }
   }
 
-  // Not in project context - create new directory based on project name
+  // Priority 3: workspaces/{projectId or name} for local development
   const workspacesDir = resolve(MONOREPO_ROOT, "workspaces")
   if (existsSync(workspacesDir)) {
-    return resolve(workspacesDir, projectName)
+    // Use projectId if available, otherwise use name
+    const dirName = projectId || projectName
+    const projectPath = resolve(workspacesDir, dirName)
+    console.log(`[template.copy] Using workspaces directory: ${projectPath}`)
+    return projectPath
   }
 
-  // Fallback to current directory
-  return resolve(process.cwd(), projectName)
+  // Priority 4: Fallback to cwd
+  console.log(`[template.copy] Using cwd fallback: ${process.cwd()}`)
+  return process.cwd()
 }
 
 /**
@@ -231,10 +251,68 @@ export async function executeTemplateCopy(
       rmSync(devDbPath, { force: true })
     }
 
-    // Install dependencies unless skipped
-    const installResults: { step: string; success: boolean; error?: string }[] = []
-    
-    if (!args.skipInstall) {
+    // Get relative file paths for response
+    const relativeFiles = copiedFiles.map((f) =>
+      f.replace(projectDir + "/", "")
+    )
+
+    // Build response with context-aware instructions
+    const response: any = {
+      ok: true,
+      projectDir,
+      template,
+      files: relativeFiles,
+    }
+
+    // In project context, automatically rebuild and restart the preview server
+    // The /preview/restart endpoint handles: bun install, prisma generate, prisma db push, build, and server start
+    if (isProjectContext) {
+      const projectId = process.env.PROJECT_ID
+      response.projectId = projectId
+      
+      // Call the local runtime's restart endpoint (port 8080)
+      // This will: install deps, run prisma, build the project, and start the Nitro/Vite server
+      try {
+        console.log(`[template.copy] Triggering preview restart for project ${projectId}...`)
+        console.log(`[template.copy] This will run: bun install, prisma generate, prisma db push, vite build, and start server`)
+        
+        const restartResponse = await fetch(`http://localhost:8080/preview/restart`, {
+          method: 'POST',
+        })
+        
+        if (restartResponse.ok) {
+          const restartResult = await restartResponse.json() as { mode: string; port: number | null }
+          response.setup = {
+            success: true,
+            steps: ['bun install', 'prisma generate', 'prisma db push', 'vite build', `start ${restartResult.mode} server`],
+            message: `Template fully set up and running in ${restartResult.mode} mode`,
+            mode: restartResult.mode,
+            port: restartResult.port,
+          }
+          console.log(`[template.copy] Setup complete: ${restartResult.mode} mode on port ${restartResult.port}`)
+        } else {
+          const errorData = await restartResponse.json().catch(() => ({})) as { error?: string }
+          response.setup = {
+            success: false,
+            error: errorData.error || `Setup failed with status ${restartResponse.status}`,
+          }
+          console.warn(`[template.copy] Setup failed: ${restartResponse.status}`)
+        }
+      } catch (restartError: any) {
+        response.setup = {
+          success: false,
+          error: `Could not reach runtime server: ${restartError.message}`,
+        }
+        console.warn(`[template.copy] Setup error: ${restartError.message}`)
+      }
+      
+      response.message = response.setup?.success 
+        ? `Template "${template.name}" copied and fully set up. The preview should now show the app.`
+        : `Template copied but setup failed: ${response.setup?.error}. Try refreshing the preview.`
+    } else if (!args.skipInstall) {
+      // Local development (not in project context) - run install steps here
+      const installResults: { step: string; success: boolean; error?: string }[] = []
+      
       // Step 1: bun install
       try {
         console.log("[template.copy] Running bun install...")
@@ -283,71 +361,16 @@ export async function executeTemplateCopy(
           installResults.push({ step: "prisma db push", success: false, error: error.message })
         }
       }
-    }
 
-    // Get relative file paths for response
-    const relativeFiles = copiedFiles.map((f) =>
-      f.replace(projectDir + "/", "")
-    )
-
-    // Build response with context-aware instructions
-    const response: any = {
-      ok: true,
-      projectDir,
-      template,
-      files: relativeFiles,
-    }
-
-    // Include install results if we ran install steps
-    if (installResults.length > 0) {
       response.install = {
         ran: true,
         steps: installResults,
         allSucceeded: installResults.every(r => r.success),
       }
-    }
-
-    // In project context, automatically restart the Vite server
-    if (isProjectContext) {
-      const projectId = process.env.PROJECT_ID
-      response.projectId = projectId
       
-      // Try to restart the Vite server automatically
-      try {
-        console.log(`[template.copy] Restarting Vite server for project ${projectId}...`)
-        const restartResponse = await fetch(`http://localhost:8002/api/projects/${projectId}/runtime/restart`, {
-          method: 'POST',
-        })
-        
-        if (restartResponse.ok) {
-          const restartResult = await restartResponse.json()
-          response.restart = {
-            success: true,
-            message: 'Vite server restarted automatically',
-            url: restartResult.url,
-            port: restartResult.port,
-          }
-          console.log(`[template.copy] Vite server restarted successfully on port ${restartResult.port}`)
-        } else {
-          response.restart = {
-            success: false,
-            message: 'Failed to restart Vite server automatically',
-            fallback: `Run: curl -X POST http://localhost:8002/api/projects/${projectId}/runtime/restart`,
-          }
-          console.warn(`[template.copy] Failed to restart Vite server: ${restartResponse.status}`)
-        }
-      } catch (restartError: any) {
-        response.restart = {
-          success: false,
-          message: 'Could not reach API to restart Vite server',
-          fallback: `Run: curl -X POST http://localhost:8002/api/projects/${projectId}/runtime/restart`,
-        }
-        console.warn(`[template.copy] Restart error: ${restartError.message}`)
-      }
-      
-      response.message = response.restart?.success 
-        ? 'Template copied and Vite server restarted. The preview should update automatically.'
-        : 'Template copied. Please refresh the preview to see the changes.'
+      response.message = installResults.every(r => r.success)
+        ? `Template copied and dependencies installed. Run "cd ${projectDir} && bun run dev" to start.`
+        : `Template copied but some setup steps failed. Check the install results.`
     }
 
     return response
@@ -370,11 +393,16 @@ export function registerTemplateCopy(server: FastMCP) {
     name: "template.copy",
     description: `Copy a starter template to set up the current project. The template provides a working app structure with Prisma schema, React components, TanStack Router, and Shogo SDK integration.
 
-NOTE: In project context:
-- Files are automatically overwritten (force is enabled by default)
-- Dependencies are installed automatically (bun install, prisma generate, prisma db push)
-- The Vite dev server is restarted automatically after copying
-- The preview will update to show the new app
+IMPORTANT: This tool handles EVERYTHING automatically:
+1. Copies template files to the project root
+2. Runs "bun install" to install dependencies
+3. Runs "prisma generate" to generate Prisma client
+4. Runs "prisma db push" to set up the database
+5. Builds the project with "vite build" (using Nitro for TanStack Start)
+6. Starts the production server
+7. The preview will automatically show the running app
+
+You do NOT need to run any commands after using this tool. Just call template.copy and the app will be ready.
 
 Available templates:
 - todo-app: Simple task management (beginner)
@@ -383,9 +411,11 @@ Available templates:
 - inventory: Stock and product management with suppliers (intermediate)
 - kanban: Project boards with drag-and-drop cards (intermediate)
 - ai-chat: AI chatbot with conversation history, Vercel AI SDK (advanced)
+- form-builder: Dynamic form creation (intermediate)
+- feedback-form: User feedback collection (beginner)
+- booking-app: Appointment/booking system (intermediate)
 
 Options:
-- skipInstall: true - Don't run bun install or prisma setup
 - dryRun: true - Preview what would be copied without writing
 
 Examples:
