@@ -3,9 +3,15 @@
  *
  * Manages the lifecycle of per-project Knative Services:
  * - Creates Knative Services for projects on demand
- * - Creates PVCs for project storage
+ * - Creates PVCs for project storage and PostgreSQL data
  * - Provides URLs for routing to project pods
  * - Handles scale-to-zero and cold starts
+ * - Includes PostgreSQL sidecar container for per-project database
+ *
+ * Architecture:
+ * Each project pod contains two containers:
+ * 1. project-runtime: The main application (Claude Code, MCP, Vite)
+ * 2. postgres: PostgreSQL 16 sidecar for project data
  *
  * Used by the API to proxy requests to project-specific runtimes.
  */
@@ -112,6 +118,25 @@ export interface KnativeProjectManagerConfig {
   s3Region?: string
   /** Enable S3 path-style access (for MinIO) */
   s3ForcePathStyle?: boolean
+  /** PostgreSQL sidecar configuration */
+  postgres?: {
+    /** Enable PostgreSQL sidecar (default: true) */
+    enabled?: boolean
+    /** PostgreSQL image (default: postgres:16-alpine) */
+    image?: string
+    /** PostgreSQL user (default: shogo) */
+    user?: string
+    /** PostgreSQL password (default: shogo) */
+    password?: string
+    /** PostgreSQL database name (default: project) */
+    database?: string
+    /** Memory limit for PostgreSQL container (default: 512Mi) */
+    memoryLimit?: string
+    /** CPU limit for PostgreSQL container (default: 250m) */
+    cpuLimit?: string
+    /** Storage size for PostgreSQL PVC (default: 1Gi) */
+    storageSize?: string
+  }
 }
 
 // =============================================================================
@@ -128,17 +153,35 @@ export class KnativeProjectManager {
   private s3Endpoint: string | null
   private s3Region: string
   private s3ForcePathStyle: boolean
+  // PostgreSQL sidecar configuration
+  private postgresEnabled: boolean
+  private postgresImage: string
+  private postgresUser: string
+  private postgresPassword: string
+  private postgresDatabase: string
+  private postgresMemoryLimit: string
+  private postgresCpuLimit: string
+  private postgresStorageSize: string
 
   constructor(config: KnativeProjectManagerConfig = {}) {
     this.namespace = config.namespace || NAMESPACE
     this.image = config.image || PROJECT_RUNTIME_IMAGE
-    this.idleTimeoutSeconds = config.idleTimeoutSeconds || 300 // 5 minutes
+    this.idleTimeoutSeconds = config.idleTimeoutSeconds || parseInt(process.env.PROJECT_IDLE_TIMEOUT || "300", 10)
     this.memoryLimit = config.memoryLimit || "2Gi"
     this.cpuLimit = config.cpuLimit || "1000m"
     this.s3WorkspacesBucket = config.s3WorkspacesBucket || process.env.S3_WORKSPACES_BUCKET || null
     this.s3Endpoint = config.s3Endpoint || process.env.S3_ENDPOINT || null
     this.s3Region = config.s3Region || process.env.S3_REGION || "us-east-1"
     this.s3ForcePathStyle = config.s3ForcePathStyle ?? (process.env.S3_FORCE_PATH_STYLE === "true")
+    // PostgreSQL sidecar configuration - read from env vars or config
+    this.postgresEnabled = config.postgres?.enabled ?? (process.env.POSTGRES_ENABLED !== "false")
+    this.postgresImage = config.postgres?.image || process.env.POSTGRES_IMAGE || "postgres:16-alpine"
+    this.postgresUser = config.postgres?.user || process.env.POSTGRES_USER || "shogo"
+    this.postgresPassword = config.postgres?.password || process.env.POSTGRES_PASSWORD || "shogo"
+    this.postgresDatabase = config.postgres?.database || process.env.POSTGRES_DATABASE || "project"
+    this.postgresMemoryLimit = config.postgres?.memoryLimit || process.env.POSTGRES_MEMORY_LIMIT || "512Mi"
+    this.postgresCpuLimit = config.postgres?.cpuLimit || process.env.POSTGRES_CPU_LIMIT || "250m"
+    this.postgresStorageSize = config.postgres?.storageSize || process.env.POSTGRES_STORAGE_SIZE || "1Gi"
   }
 
   /**
@@ -274,7 +317,8 @@ export class KnativeProjectManager {
   }
 
   /**
-   * Delete a project's Knative Service and PVC.
+   * Delete a project's Knative Service and PVCs.
+   * Removes both the project code PVC and PostgreSQL data PVC.
    */
   async deleteProject(projectId: string): Promise<void> {
     console.log(`[KnativeProjectManager] Deleting project: ${projectId}`)
@@ -296,13 +340,24 @@ export class KnativeProjectManager {
       if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
     }
 
-    // Delete PVC
+    // Delete project code PVC
     try {
       await coreApi.deleteNamespacedPersistentVolumeClaim({
         name: `pvc-project-${projectId}`,
         namespace: this.namespace,
       })
       console.log(`[KnativeProjectManager] Deleted PVC: pvc-project-${projectId}`)
+    } catch (error: any) {
+      if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
+    }
+
+    // Delete PostgreSQL data PVC
+    try {
+      await coreApi.deleteNamespacedPersistentVolumeClaim({
+        name: `pvc-postgres-${projectId}`,
+        namespace: this.namespace,
+      })
+      console.log(`[KnativeProjectManager] Deleted PVC: pvc-postgres-${projectId}`)
     } catch (error: any) {
       if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
     }
@@ -389,52 +444,90 @@ export class KnativeProjectManager {
   }
 
   /**
-   * Ensure project has a PVC for storage.
+   * Ensure project has PVCs for storage.
+   * Creates two PVCs:
+   * 1. pvc-project-{id}: For project code/files
+   * 2. pvc-postgres-{id}: For PostgreSQL data (if postgres sidecar is enabled)
    */
   private async ensurePVC(projectId: string): Promise<void> {
     const coreApi = getCoreApi()
-    const pvcName = `pvc-project-${projectId}`
+    const storageClass = process.env.STORAGE_CLASS_NAME || "ebs-sc"
+
+    // Create project code PVC
+    await this.createPVCIfNotExists(coreApi, {
+      name: `pvc-project-${projectId}`,
+      projectId,
+      component: "project-storage",
+      storageClass,
+      size: "1Gi",
+    })
+
+    // Create PostgreSQL data PVC if postgres sidecar is enabled
+    if (this.postgresEnabled) {
+      await this.createPVCIfNotExists(coreApi, {
+        name: `pvc-postgres-${projectId}`,
+        projectId,
+        component: "postgres-storage",
+        storageClass,
+        size: this.postgresStorageSize,
+      })
+    }
+  }
+
+  /**
+   * Create a PVC if it doesn't already exist.
+   */
+  private async createPVCIfNotExists(
+    coreApi: k8s.CoreV1Api,
+    options: {
+      name: string
+      projectId: string
+      component: string
+      storageClass: string
+      size: string
+    }
+  ): Promise<void> {
+    const { name, projectId, component, storageClass, size } = options
 
     try {
-      await coreApi.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace: this.namespace })
-      console.log(`[KnativeProjectManager] PVC ${pvcName} already exists`)
+      await coreApi.readNamespacedPersistentVolumeClaim({ name, namespace: this.namespace })
+      console.log(`[KnativeProjectManager] PVC ${name} already exists`)
       return
     } catch (error: any) {
-      // Kubernetes client uses error.code for HTTP status codes
       if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
     }
 
-    // Create PVC
     const pvc: k8s.V1PersistentVolumeClaim = {
       apiVersion: "v1",
       kind: "PersistentVolumeClaim",
       metadata: {
-        name: pvcName,
+        name,
         namespace: this.namespace,
         labels: {
           "app.kubernetes.io/part-of": "shogo",
           "shogo.io/project": projectId,
-          "shogo.io/component": "project-storage",
+          "shogo.io/component": component,
         },
       },
       spec: {
         accessModes: ["ReadWriteOnce"],
-        storageClassName: process.env.STORAGE_CLASS_NAME || "ebs-sc",
+        storageClassName: storageClass,
         resources: {
-          requests: { storage: "1Gi" },
+          requests: { storage: size },
         },
       },
     }
 
     await coreApi.createNamespacedPersistentVolumeClaim({ namespace: this.namespace, body: pvc })
-    console.log(`[KnativeProjectManager] Created PVC: ${pvcName}`)
+    console.log(`[KnativeProjectManager] Created PVC: ${name}`)
   }
 
   /**
    * Build the Knative Service spec for a project.
+   * Includes PostgreSQL sidecar container for per-project database.
    */
   private buildKnativeService(projectId: string): any {
-    // Build environment variables
+    // Build environment variables for project-runtime container
     const env: any[] = [
       { name: "PROJECT_ID", value: projectId },
       { name: "PROJECT_DIR", value: "/app/project" },
@@ -446,6 +539,15 @@ export class KnativeProjectManager {
         },
       },
     ]
+
+    // Add PostgreSQL DATABASE_URL if postgres sidecar is enabled
+    // Uses localhost since postgres runs in the same pod
+    if (this.postgresEnabled) {
+      env.push({
+        name: "DATABASE_URL",
+        value: `postgres://${this.postgresUser}:${this.postgresPassword}@localhost:5432/${this.postgresDatabase}`,
+      })
+    }
 
     // Add S3 configuration if bucket is specified
     if (this.s3WorkspacesBucket) {
@@ -474,6 +576,106 @@ export class KnativeProjectManager {
       })
     }
 
+    // Build containers array
+    const containers: any[] = [
+      {
+        name: "project-runtime",
+        image: this.image,
+        ports: [{ containerPort: 8080, name: "http1" }],
+        env,
+        resources: {
+          requests: { memory: "256Mi", cpu: "100m" },
+          limits: { memory: this.memoryLimit, cpu: this.cpuLimit },
+        },
+        volumeMounts: [{ name: "project-data", mountPath: "/app/project" }],
+        // Readiness probe - checks if the pod is ready to receive traffic
+        // Uses /ready endpoint which verifies project directory exists
+        readinessProbe: {
+          httpGet: {
+            path: "/ready",
+            port: 8080,
+          },
+          initialDelaySeconds: 5,
+          periodSeconds: 5,
+          timeoutSeconds: 5,
+          successThreshold: 1,
+          failureThreshold: 6,
+        },
+        // Liveness probe - checks if the pod is still alive
+        livenessProbe: {
+          httpGet: {
+            path: "/health",
+            port: 8080,
+          },
+          initialDelaySeconds: 30,
+          periodSeconds: 30,
+          timeoutSeconds: 10,
+          successThreshold: 1,
+          failureThreshold: 3,
+        },
+      },
+    ]
+
+    // Add PostgreSQL sidecar container if enabled
+    if (this.postgresEnabled) {
+      containers.push({
+        name: "postgres",
+        image: this.postgresImage,
+        env: [
+          { name: "POSTGRES_USER", value: this.postgresUser },
+          { name: "POSTGRES_PASSWORD", value: this.postgresPassword },
+          { name: "POSTGRES_DB", value: this.postgresDatabase },
+          // PGDATA must be a subdirectory of the volume mount
+          { name: "PGDATA", value: "/var/lib/postgresql/data/pgdata" },
+        ],
+        resources: {
+          requests: { memory: "128Mi", cpu: "50m" },
+          limits: { memory: this.postgresMemoryLimit, cpu: this.postgresCpuLimit },
+        },
+        volumeMounts: [
+          { name: "postgres-data", mountPath: "/var/lib/postgresql/data" },
+        ],
+        // Readiness probe - PostgreSQL ready check
+        readinessProbe: {
+          exec: {
+            command: ["pg_isready", "-U", this.postgresUser, "-d", this.postgresDatabase],
+          },
+          initialDelaySeconds: 2,
+          periodSeconds: 3,
+          timeoutSeconds: 2,
+          successThreshold: 1,
+          failureThreshold: 10,
+        },
+        // Liveness probe - PostgreSQL health check
+        livenessProbe: {
+          exec: {
+            command: ["pg_isready", "-U", this.postgresUser, "-d", this.postgresDatabase],
+          },
+          initialDelaySeconds: 30,
+          periodSeconds: 10,
+          timeoutSeconds: 5,
+          successThreshold: 1,
+          failureThreshold: 3,
+        },
+      })
+    }
+
+    // Build volumes array
+    const volumes: any[] = [
+      {
+        name: "project-data",
+        persistentVolumeClaim: { claimName: `pvc-project-${projectId}` },
+      },
+    ]
+
+    // Add PostgreSQL data volume if enabled
+    if (this.postgresEnabled) {
+      volumes.push({
+        name: "postgres-data",
+        persistentVolumeClaim: { claimName: `pvc-postgres-${projectId}` },
+      })
+    }
+
     return {
       apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
       kind: "Service",
@@ -498,55 +700,14 @@ export class KnativeProjectManager {
           },
           spec: {
             timeoutSeconds: 600,
-            // Security context - fsGroup ensures PVC is accessible by appuser (gid 1001)
+            // Security context - fsGroup ensures PVCs are accessible
+            // PostgreSQL needs gid 999 (postgres group), project-runtime needs 1001
+            // Using 999 allows both to work (postgres is owner, runtime can read/write)
             securityContext: {
-              fsGroup: 1001,
+              fsGroup: 999,
             },
-            containers: [
-              {
-                name: "project-runtime",
-                image: this.image,
-                ports: [{ containerPort: 8080, name: "http1" }],
-                env,
-                resources: {
-                  requests: { memory: "256Mi", cpu: "100m" },
-                  limits: { memory: this.memoryLimit, cpu: this.cpuLimit },
-                },
-                volumeMounts: [{ name: "project-data", mountPath: "/app/project" }],
-                // Readiness probe - checks if the pod is ready to receive traffic
-                // Uses /ready endpoint which verifies project directory exists
-                readinessProbe: {
-                  httpGet: {
-                    path: "/ready",
-                    port: 8080,
-                  },
-                  initialDelaySeconds: 5,
-                  periodSeconds: 5,
-                  timeoutSeconds: 5,
-                  successThreshold: 1,
-                  failureThreshold: 6,
-                },
-                // Liveness probe - checks if the pod is still alive
-                livenessProbe: {
-                  httpGet: {
-                    path: "/health",
-                    port: 8080,
-                  },
-                  initialDelaySeconds: 30,
-                  periodSeconds: 30,
-                  timeoutSeconds: 10,
-                  successThreshold: 1,
-                  failureThreshold: 3,
-                },
-              },
-            ],
-            // PVC for project data - enables code persistence across pod restarts
-            volumes: [
-              {
-                name: "project-data",
-                persistentVolumeClaim: { claimName: `pvc-project-${projectId}` },
-              },
-            ],
+            containers,
+            volumes,
           },
         },
       },
