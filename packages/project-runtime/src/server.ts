@@ -190,10 +190,7 @@ Available templates:
   }),
 
   'template.copy': tool({
-    description: `Copy a starter template to set up the project. This will copy all template files to the current project directory.
-
-IMPORTANT: After copying a template, the Vite server needs to be restarted for changes to take effect.
-Call POST /api/projects/{projectId}/runtime/restart to restart the dev server after template copy.`,
+    description: `Copy a starter template to set up the project. This will copy all template files to the current project directory, install dependencies, and restart the Vite server automatically.`,
     parameters: z.object({
       templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app")'),
       projectName: z.string().optional().describe('Optional project name (for package.json)'),
@@ -202,16 +199,48 @@ Call POST /api/projects/{projectId}/runtime/restart to restart the dev server af
       console.log(`[project-runtime] template.copy called: ${templateName}`)
       const result = copyTemplate(templateName, projectName || templateName)
       
-      // If successful, include instructions about restarting
+      // If successful, automatically restart the Vite server
       if (result.ok) {
+        let restartResult: { success: boolean; message: string; url?: string; port?: number } = {
+          success: false,
+          message: 'Restart not attempted',
+        }
+        
+        try {
+          console.log(`[project-runtime] Restarting Vite server for project ${PROJECT_ID}...`)
+          const response = await fetch(`http://localhost:8002/api/projects/${PROJECT_ID}/runtime/restart`, {
+            method: 'POST',
+          })
+          
+          if (response.ok) {
+            const data = await response.json()
+            restartResult = {
+              success: true,
+              message: 'Vite server restarted automatically',
+              url: data.url,
+              port: data.port,
+            }
+            console.log(`[project-runtime] Vite server restarted on port ${data.port}`)
+          } else {
+            restartResult = {
+              success: false,
+              message: `Restart failed with status ${response.status}`,
+            }
+          }
+        } catch (err: any) {
+          console.warn(`[project-runtime] Restart error: ${err.message}`)
+          restartResult = {
+            success: false,
+            message: err.message,
+          }
+        }
+        
         return JSON.stringify({
           ...result,
-          instructions: [
-            'Template files have been copied to the project directory.',
-            'The Vite dev server needs to be restarted for changes to take effect.',
-            `Call POST /api/projects/${PROJECT_ID}/runtime/restart to restart the server.`,
-            'Run "bun install" if the template has different dependencies.',
-          ],
+          restart: restartResult,
+          message: restartResult.success 
+            ? 'Template copied and Vite server restarted. The preview will update automatically.'
+            : 'Template copied. Please refresh the preview to see changes.',
         }, null, 2)
       }
       
@@ -473,7 +502,7 @@ When a user wants to build an app, use the template tools:
 
 Available templates include: todo-app, expense-tracker, crm, inventory, kanban, ai-chat.
 
-IMPORTANT: After using template.copy, you MUST restart the Vite server by telling the user to refresh the preview or by using the Bash tool to call: curl -X POST http://localhost:8002/api/projects/${PROJECT_ID}/runtime/restart
+After using template.copy, the Vite server restarts automatically and the preview will update to show the new app. No manual restart is needed.
 
 You also have access to file operations (Read, Write, Edit, Glob, Grep, Bash) for file management.`,
       messages: coreMessages,

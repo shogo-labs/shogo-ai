@@ -28,6 +28,8 @@ import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
+import { terminalRoutes } from './routes/terminal'
+import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { createRuntimeManager, type IRuntimeManager } from '@shogo/state-api/runtime'
 
 // Billing domain store singleton for webhook handling
@@ -1348,6 +1350,78 @@ app.post('/api/projects/:projectId/s3/presign', async (c) => {
 })
 
 // =============================================================================
+// Terminal routes - Execute preset shell commands on project workspaces
+// =============================================================================
+
+// List available terminal commands
+app.get('/api/projects/:projectId/terminal/commands', async (c) => {
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = terminalRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/terminal/commands`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Execute a preset command
+app.post('/api/projects/:projectId/terminal/exec', async (c) => {
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = terminalRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/terminal/exec`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// Database routes - Prisma Studio management for project workspaces
+// =============================================================================
+
+// Start Prisma Studio
+app.post('/api/projects/:projectId/database/start', async (c) => {
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = databaseRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/database/start`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
+// Stop Prisma Studio
+app.post('/api/projects/:projectId/database/stop', async (c) => {
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = databaseRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/database/stop`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
+// Get Prisma Studio status
+app.get('/api/projects/:projectId/database/status', async (c) => {
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = databaseRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/database/status`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// Get Prisma Studio URL (starts if needed)
+app.get('/api/projects/:projectId/database/url', async (c) => {
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = databaseRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/database/url`
+  const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
 // Project Chat Proxy Routes (pod-per-project architecture)
 // =============================================================================
 
@@ -2182,6 +2256,11 @@ async function gracefulShutdown(signal: string) {
       console.error('[Server] Error stopping runtimes:', err.message)
     }
   }
+
+  // Stop all Prisma Studio instances
+  console.log('[Server] Stopping all Prisma Studio instances...')
+  stopAllPrismaStudios()
+  console.log('[Server] All Prisma Studios stopped')
 
   console.log('[Server] Shutdown complete')
   process.exit(0)

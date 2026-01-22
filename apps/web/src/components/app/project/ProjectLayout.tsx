@@ -27,6 +27,8 @@ import { ProjectTopBar } from "./ProjectTopBar"
 import { ChatSessionsPanel, type ChatSessionItem } from "./ChatSessionsPanel"
 import { RuntimePreviewPanel } from "./RuntimePreviewPanel"
 import { CodeEditorPanel } from "./CodeEditorPanel"
+import { TerminalPanel } from "./TerminalPanel"
+import { DatabasePanel } from "./DatabasePanel"
 import { cn } from "@/lib/utils"
 import { useSession } from "@/auth/client"
 import type { ViewportSize } from "./PreviewControls"
@@ -102,8 +104,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
   const [currentRoute, setCurrentRoute] = useState("/")
 
-  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), or 'workspace' (ComposablePhaseView)
-  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'workspace'>('runtime')
+  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'workspace' (ComposablePhaseView), 'terminal' (TerminalPanel), or 'database' (DatabasePanel)
+  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'workspace' | 'terminal' | 'database'>('runtime')
 
   // Project state
   // Use transition state if available (from homepage flow) to avoid loading flash
@@ -641,6 +643,28 @@ export const ProjectLayout = observer(function ProjectLayout() {
               >
                 Workspace
               </button>
+              <button
+                onClick={() => setPreviewMode('terminal')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'terminal'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Terminal
+              </button>
+              <button
+                onClick={() => setPreviewMode('database')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'database'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Database
+              </button>
             </div>
 
             {/* Preview Frame with border - all panels stay mounted for state persistence */}
@@ -681,6 +705,39 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   phaseName={WORKSPACE_COMPOSITION_NAME}
                   feature={project}
                   className="h-full"
+                />
+              </div>
+              {/* Terminal Panel - stays mounted for output persistence */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'terminal' && "invisible pointer-events-none"
+              )}>
+                <TerminalPanel
+                  projectId={projectId || ''}
+                  className="h-full"
+                  onRestartServer={async () => {
+                    try {
+                      await fetch(`/api/projects/${projectId}/runtime/restart`, { method: 'POST' })
+                    } catch (err) {
+                      console.error('[ProjectLayout] Failed to restart runtime:', err)
+                    }
+                  }}
+                />
+              </div>
+              {/* Database Panel - Prisma Studio iframe */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'database' && "invisible pointer-events-none"
+              )}>
+                <DatabasePanel
+                  projectId={projectId || ''}
+                  className="h-full"
+                  onError={(err) => {
+                    console.error('[ProjectLayout] Database error:', err)
+                  }}
+                  onLoad={() => {
+                    console.log('[ProjectLayout] Prisma Studio loaded successfully')
+                  }}
                 />
               </div>
             </div>

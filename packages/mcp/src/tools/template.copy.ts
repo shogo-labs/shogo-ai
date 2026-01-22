@@ -307,17 +307,47 @@ export async function executeTemplateCopy(
       }
     }
 
-    // In project context, add restart instructions
+    // In project context, automatically restart the Vite server
     if (isProjectContext) {
       const projectId = process.env.PROJECT_ID
-      response.needsRestart = true
-      response.instructions = [
-        "Template files have been copied to the project directory.",
-        "Dependencies have been installed and Prisma database has been set up.",
-        "The Vite dev server needs to be restarted for changes to take effect.",
-        `Use Bash to run: curl -X POST http://localhost:8002/api/projects/${projectId}/runtime/restart`,
-        "After restart, the preview will automatically show the new app.",
-      ]
+      response.projectId = projectId
+      
+      // Try to restart the Vite server automatically
+      try {
+        console.log(`[template.copy] Restarting Vite server for project ${projectId}...`)
+        const restartResponse = await fetch(`http://localhost:8002/api/projects/${projectId}/runtime/restart`, {
+          method: 'POST',
+        })
+        
+        if (restartResponse.ok) {
+          const restartResult = await restartResponse.json()
+          response.restart = {
+            success: true,
+            message: 'Vite server restarted automatically',
+            url: restartResult.url,
+            port: restartResult.port,
+          }
+          console.log(`[template.copy] Vite server restarted successfully on port ${restartResult.port}`)
+        } else {
+          response.restart = {
+            success: false,
+            message: 'Failed to restart Vite server automatically',
+            fallback: `Run: curl -X POST http://localhost:8002/api/projects/${projectId}/runtime/restart`,
+          }
+          console.warn(`[template.copy] Failed to restart Vite server: ${restartResponse.status}`)
+        }
+      } catch (restartError: any) {
+        response.restart = {
+          success: false,
+          message: 'Could not reach API to restart Vite server',
+          fallback: `Run: curl -X POST http://localhost:8002/api/projects/${projectId}/runtime/restart`,
+        }
+        console.warn(`[template.copy] Restart error: ${restartError.message}`)
+      }
+      
+      response.message = response.restart?.success 
+        ? 'Template copied and Vite server restarted. The preview should update automatically.'
+        : 'Template copied. Please refresh the preview to see the changes.'
     }
 
     return response
@@ -340,8 +370,11 @@ export function registerTemplateCopy(server: FastMCP) {
     name: "template.copy",
     description: `Copy a starter template to set up the current project. The template provides a working app structure with Prisma schema, React components, TanStack Router, and Shogo SDK integration.
 
-NOTE: In project context, files are automatically overwritten (force is enabled by default).
-After copying, the Vite dev server will automatically reload with the new code.
+NOTE: In project context:
+- Files are automatically overwritten (force is enabled by default)
+- Dependencies are installed automatically (bun install, prisma generate, prisma db push)
+- The Vite dev server is restarted automatically after copying
+- The preview will update to show the new app
 
 Available templates:
 - todo-app: Simple task management (beginner)
