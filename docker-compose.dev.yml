@@ -40,14 +40,13 @@ services:
       - /app/packages/state-api/node_modules
       - /app/packages/mcp/node_modules
       - /app/.config
-      # - /app/.claude/debug
-      # - /app/.claude/projects
-      # - /app/.claude/session-env
-      # - /app/.claude/shell-snapshots
-      # - /app/.claude/todos
-      # - /app/.claude/statsig
-      # - /app/.claude/plugins
-      # - /app/.claude/plans
+      # Shadow host's .claude/ with anonymous volume, then mount only what we need
+      # This keeps runtime artifacts (debug/, projects/, etc.) in container only
+      - /app/.claude
+      - ./.claude/skills:/app/.claude/skills
+      - ./.claude/agents:/app/.claude/agents
+      - ./.claude/settings.json:/app/.claude/settings.json
+      - ./.claude/settings.local.json:/app/.claude/settings.local.json
     environment:
       NODE_ENV: development
     # Note: Intentionally NOT using --watch here
@@ -71,14 +70,12 @@ services:
       - /app/packages/state-api/node_modules
       - /app/packages/mcp/node_modules
       - /app/.config
-      # - /app/.claude/debug
-      # - /app/.claude/projects
-      # - /app/.claude/session-env
-      # - /app/.claude/shell-snapshots
-      # - /app/.claude/todos
-      # - /app/.claude/statsig
-      # - /app/.claude/plugins
-      # - /app/.claude/plans
+      # Shadow host's .claude/ with anonymous volume, then mount only what we need
+      - /app/.claude
+      - ./.claude/skills:/app/.claude/skills
+      - ./.claude/agents:/app/.claude/agents
+      - ./.claude/settings.json:/app/.claude/settings.json
+      - ./.claude/settings.local.json:/app/.claude/settings.local.json
     environment:
       NODE_ENV: development
     # Note: Intentionally NOT using --watch here
@@ -103,17 +100,15 @@ services:
       - /app/packages/state-api/node_modules
       - /app/packages/mcp/node_modules
       - /app/apps/api/node_modules
-      # Mask Claude Code SDK runtime directories (stay in container, don't sync to host)
-      # Note: .claude.json files can't be masked (SDK needs read/write) - rely on .gitignore
       - /app/.config
-      # - /app/.claude/debug
-      # - /app/.claude/projects
-      # - /app/.claude/session-env
-      # - /app/.claude/shell-snapshots
-      # - /app/.claude/todos
-      # - /app/.claude/statsig
-      # - /app/.claude/plugins
-      # - /app/.claude/plans
+      # Shadow host's .claude/ with anonymous volume, then mount only what we need
+      # This keeps runtime artifacts (debug/, projects/, etc.) in container only
+      # Note: .claude.json files still sync to host (SDK needs read/write) - rely on .gitignore
+      - /app/.claude
+      - ./.claude/skills:/app/.claude/skills
+      - ./.claude/agents:/app/.claude/agents
+      - ./.claude/settings.json:/app/.claude/settings.json
+      - ./.claude/settings.local.json:/app/.claude/settings.local.json
     environment:
       NODE_ENV: development
       # Dynamic CORS for worktree isolation (matches ports from .env.local)
