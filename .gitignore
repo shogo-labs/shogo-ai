@@ -59,6 +59,13 @@ _tmp/
 .claude/shell-snapshots/
 .claude/todos/
 .claude/statsig/
+.claude/plugins/
+.claude/plans/
+.claude.json
+.claude.json.backup
+
+# Config directories created by various tools (bun, node, etc.)
+.config/
 
 # Workspace files
 *.code-workspace
