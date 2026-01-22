@@ -1,0 +1,7 @@
+node_modules/
+.output/
+dist/
+.vinxi/
+playwright-report/
+test-results/
+.env
