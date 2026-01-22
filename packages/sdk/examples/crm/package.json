@@ -9,7 +9,7 @@
     "start": "node .output/server/index.mjs",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
-    "db:reset": "rm -f prisma/dev.db && prisma db push",
+    "db:reset": "prisma db push --force-reset --accept-data-loss",
     "db:studio": "prisma studio",
     "test": "playwright test",
     "test:ui": "playwright test --ui",

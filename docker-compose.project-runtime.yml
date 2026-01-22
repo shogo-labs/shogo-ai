@@ -34,6 +34,9 @@ services:
       POSTGRES_PASSWORD: shogo
       POSTGRES_DB: project
       PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      # Expose on 5433 for local testing (5432 is used by main postgres)
+      - "5433:5432"
     volumes:
       - postgres-sidecar-data:/var/lib/postgresql/data
     healthcheck:
