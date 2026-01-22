@@ -107,6 +107,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'workspace' (ComposablePhaseView), 'terminal' (TerminalPanel), or 'database' (DatabasePanel)
   const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'workspace' | 'terminal' | 'database'>('runtime')
 
+  // Code editor refresh trigger - incremented when agent modifies files
+  const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
+
   // Project state
   // Use transition state if available (from homepage flow) to avoid loading flash
   const [project, setProject] = useState<any>(transitionState?.project ?? null)
@@ -595,6 +598,11 @@ export const ProjectLayout = observer(function ProjectLayout() {
                     className="flex-1 min-h-0"
                     initialMessage={transitionState?.initialMessage}
                     inputContainerRef={chatInputContainerRef}
+                    onFilesChanged={(paths) => {
+                      console.log('[ProjectLayout] 📁 Agent modified files:', paths)
+                      // Increment refresh trigger to reload code editor
+                      setCodeRefreshTrigger(prev => prev + 1)
+                    }}
                   />
                 )}
               </>
@@ -694,6 +702,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <CodeEditorPanel
                   projectId={projectId || ''}
                   className="h-full"
+                  refreshTrigger={codeRefreshTrigger}
                 />
               </div>
               {/* Workspace View - stays mounted for consistency */}

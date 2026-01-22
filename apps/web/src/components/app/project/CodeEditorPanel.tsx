@@ -48,6 +48,8 @@ export interface CodeEditorPanelProps {
   className?: string
   /** Callback when file content changes */
   onFileChange?: (path: string, content: string) => void
+  /** Trigger to force refresh files (increment to refresh) */
+  refreshTrigger?: number
 }
 
 /**
@@ -112,9 +114,9 @@ function buildFileTree(files: FileInfo[]): TreeNode[] {
 function getMonacoLanguage(extension?: string): string {
   const languageMap: Record<string, string> = {
     '.ts': 'typescript',
-    '.tsx': 'typescript',
+    '.tsx': 'typescriptreact',  // TypeScript with JSX support
     '.js': 'javascript',
-    '.jsx': 'javascript',
+    '.jsx': 'javascriptreact',  // JavaScript with JSX support
     '.json': 'json',
     '.css': 'css',
     '.scss': 'scss',
@@ -125,6 +127,11 @@ function getMonacoLanguage(extension?: string): string {
     '.xml': 'xml',
     '.yaml': 'yaml',
     '.yml': 'yaml',
+    '.prisma': 'graphql',  // Prisma schema has GraphQL-like syntax
+    '.sql': 'sql',
+    '.sh': 'shell',
+    '.bash': 'shell',
+    '.env': 'plaintext',
   }
   return extension ? languageMap[extension] || 'plaintext' : 'plaintext'
 }
@@ -239,6 +246,7 @@ export function CodeEditorPanel({
   projectId,
   className,
   onFileChange,
+  refreshTrigger,
 }: CodeEditorPanelProps) {
   const [files, setFiles] = useState<FileInfo[]>([])
   const [isLoadingFiles, setIsLoadingFiles] = useState(true)
@@ -340,6 +348,18 @@ export function CodeEditorPanel({
   useEffect(() => {
     loadFiles()
   }, [loadFiles])
+
+  // Refresh files when refreshTrigger changes (agent made file modifications)
+  useEffect(() => {
+    if (refreshTrigger !== undefined && refreshTrigger > 0) {
+      console.log('[CodeEditorPanel] 🔄 Refresh triggered by agent file modifications')
+      loadFiles()
+      // Also reload the currently selected file content
+      if (selectedFile) {
+        loadFileContent(selectedFile)
+      }
+    }
+  }, [refreshTrigger, loadFiles, loadFileContent, selectedFile])
 
   // Load content when file is selected
   useEffect(() => {
@@ -541,6 +561,34 @@ export function CodeEditorPanel({
               value={fileContent}
               theme="vs-dark"
               onChange={handleEditorChange}
+              onMount={(editor, monaco) => {
+                // Configure TypeScript/JavaScript compiler options for JSX support
+                monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+                  target: monaco.languages.typescript.ScriptTarget.ESNext,
+                  module: monaco.languages.typescript.ModuleKind.ESNext,
+                  moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+                  jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
+                  allowJs: true,
+                  allowSyntheticDefaultImports: true,
+                  esModuleInterop: true,
+                  strict: true,
+                  skipLibCheck: true,
+                  noEmit: true,
+                })
+                monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
+                  target: monaco.languages.typescript.ScriptTarget.ESNext,
+                  module: monaco.languages.typescript.ModuleKind.ESNext,
+                  jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
+                  allowJs: true,
+                  allowSyntheticDefaultImports: true,
+                  esModuleInterop: true,
+                })
+                // Disable some noisy diagnostics for a cleaner experience
+                monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+                  noSemanticValidation: false,
+                  noSyntaxValidation: false,
+                })
+              }}
               options={{
                 minimap: { enabled: true },
                 fontSize: 13,
