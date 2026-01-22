@@ -12,40 +12,47 @@
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
-import Editor, { loader } from "@monaco-editor/react"
-import * as monaco from "monaco-editor"
+import Editor, { type Monaco } from "@monaco-editor/react"
 import { Loader2, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, RefreshCw, Cloud, CloudOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-// Import Monaco workers for syntax highlighting
-import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker"
-import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker"
-import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker"
-import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker"
-import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker"
+/**
+ * Configure Monaco Editor when it mounts.
+ * This ensures TypeScript/JavaScript settings are correct for JSX/TSX files.
+ */
+function handleEditorWillMount(monaco: Monaco) {
+  // Configure TypeScript/JavaScript compiler options for JSX support
+  monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+    target: monaco.languages.typescript.ScriptTarget.ESNext,
+    allowNonTsExtensions: true,
+    moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+    module: monaco.languages.typescript.ModuleKind.ESNext,
+    noEmit: true,
+    esModuleInterop: true,
+    jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
+    reactNamespace: "React",
+    allowJs: true,
+    typeRoots: ["node_modules/@types"],
+  })
 
-// Configure Monaco to use bundled instance instead of CDN
-// This ensures syntax highlighting works in production
-self.MonacoEnvironment = {
-  getWorker(_, label) {
-    if (label === "typescript" || label === "javascript") {
-      return new tsWorker()
-    }
-    if (label === "json") {
-      return new jsonWorker()
-    }
-    if (label === "css" || label === "scss" || label === "less") {
-      return new cssWorker()
-    }
-    if (label === "html" || label === "handlebars" || label === "razor") {
-      return new htmlWorker()
-    }
-    return new editorWorker()
-  },
+  monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
+    target: monaco.languages.typescript.ScriptTarget.ESNext,
+    allowNonTsExtensions: true,
+    moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+    module: monaco.languages.typescript.ModuleKind.ESNext,
+    noEmit: true,
+    esModuleInterop: true,
+    jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
+    reactNamespace: "React",
+    allowJs: true,
+  })
+
+  // Enable semantic validation for TypeScript
+  monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+    noSemanticValidation: false,
+    noSyntaxValidation: false,
+  })
 }
-
-// Tell @monaco-editor/react to use our bundled Monaco instance
-loader.config({ monaco })
 
 /**
  * Hook to detect dark mode from document.documentElement.classList
@@ -170,11 +177,13 @@ function buildFileTree(files: FileInfo[]): TreeNode[] {
  * Get Monaco language from file extension.
  */
 function getMonacoLanguage(extension?: string): string {
+  // Note: Monaco's tokenizer uses 'typescript' for both .ts and .tsx files
+  // The TypeScript language service handles JSX based on the file extension in the path prop
   const languageMap: Record<string, string> = {
     '.ts': 'typescript',
-    '.tsx': 'typescriptreact',  // TypeScript with JSX support
+    '.tsx': 'typescript',
     '.js': 'javascript',
-    '.jsx': 'javascriptreact',  // JavaScript with JSX support
+    '.jsx': 'javascript',
     '.json': 'json',
     '.css': 'css',
     '.scss': 'scss',
@@ -650,38 +659,12 @@ export function CodeEditorPanel({
           ) : (
             <Editor
               height="100%"
-              language={language}
+              path={selectedFile}
+              defaultLanguage={language}
               value={fileContent}
               theme={monacoTheme}
               onChange={handleEditorChange}
-              onMount={(editor, monaco) => {
-                // Configure TypeScript/JavaScript compiler options for JSX support
-                monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
-                  target: monaco.languages.typescript.ScriptTarget.ESNext,
-                  module: monaco.languages.typescript.ModuleKind.ESNext,
-                  moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
-                  jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
-                  allowJs: true,
-                  allowSyntheticDefaultImports: true,
-                  esModuleInterop: true,
-                  strict: true,
-                  skipLibCheck: true,
-                  noEmit: true,
-                })
-                monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
-                  target: monaco.languages.typescript.ScriptTarget.ESNext,
-                  module: monaco.languages.typescript.ModuleKind.ESNext,
-                  jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
-                  allowJs: true,
-                  allowSyntheticDefaultImports: true,
-                  esModuleInterop: true,
-                })
-                // Disable some noisy diagnostics for a cleaner experience
-                monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
-                  noSemanticValidation: false,
-                  noSyntaxValidation: false,
-                })
-              }}
+              beforeMount={handleEditorWillMount}
               options={{
                 minimap: { enabled: true },
                 fontSize: 13,
