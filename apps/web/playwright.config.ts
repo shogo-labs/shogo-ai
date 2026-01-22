@@ -55,6 +55,13 @@ loadEnvLocal();
  */
 export default defineConfig({
   testDir: './src/__tests__',
+  /* Only match Playwright e2e test files (exclude bun:test files) */
+  testMatch: /.*e2e.*\.test\.(ts|tsx)$/,
+  /* Exclude files that use bun:test (not Playwright) */
+  testIgnore: [
+    '**/domain-mcp-e2e.test.ts', // Uses bun:test, not Playwright
+    '**/node_modules/**',
+  ],
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
@@ -82,11 +89,23 @@ export default defineConfig({
   ],
 
   /* Run your local dev server, API server, and MCP server before starting the tests */
-  webServer: [
+  /* Note: MCP and API are assumed to be running via Docker when WEB_URL points to Docker web service */
+  webServer: process.env.WEB_URL?.includes('3001') ? [
+    // When using Docker web service (port 3001), assume MCP and API are also running in Docker
+    // Only start local dev server if needed
+    {
+      command: 'bun run dev',
+      url: 'http://localhost:5173',
+      reuseExistingServer: true,
+      timeout: 120 * 1000,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  ] : [
     {
       command: 'cd ../../ && DATABASE_URL="${DATABASE_URL:-postgres://shogo:shogo_dev@localhost:5432/shogo}" bun run mcp:http',
       url: 'http://localhost:3100/mcp',
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: true,
       timeout: 120 * 1000,
       stdout: 'pipe',
       stderr: 'pipe',
@@ -98,7 +117,7 @@ export default defineConfig({
     {
       command: 'cd ../../ && DATABASE_URL="${DATABASE_URL:-postgres://shogo:shogo_dev@localhost:5432/shogo}" bun run api:start',
       url: 'http://localhost:8002/api/health',
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: true,
       timeout: 120 * 1000,
       stdout: 'pipe',
       stderr: 'pipe',
@@ -110,7 +129,7 @@ export default defineConfig({
     {
       command: 'bun run dev',
       url: 'http://localhost:5173',
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: true,
       timeout: 120 * 1000,
       stdout: 'pipe',
       stderr: 'pipe',

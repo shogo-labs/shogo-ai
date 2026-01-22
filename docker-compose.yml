@@ -76,6 +76,9 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      # Skip workspace seeding for faster startup (workspaces can be synced on-demand)
+      SKIP_WORKSPACE_SEEDING: "${SKIP_WORKSPACE_SEEDING:-1}"
     volumes:
       # Mount local schemas to seed into S3
       - ./.schemas:/schemas:ro

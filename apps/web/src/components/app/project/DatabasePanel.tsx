@@ -5,11 +5,42 @@
  * - Loading state while Prisma Studio starts
  * - Error state if no Prisma schema exists
  * - Refresh capability
+ * - Theme matching via CSS filters (Prisma Studio uses system theme,
+ *   so we apply filters to match our app's dark/light mode)
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
 import { Loader2, AlertCircle, Database, RefreshCw, ExternalLink } from "lucide-react"
 import { cn } from "@/lib/utils"
+
+/**
+ * Hook to detect dark mode from document.documentElement.classList
+ * Uses MutationObserver to react to theme changes
+ */
+function useIsDarkMode(): boolean {
+  const [isDark, setIsDark] = useState(() =>
+    document.documentElement.classList.contains("dark")
+  )
+
+  useEffect(() => {
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.attributeName === "class") {
+          setIsDark(document.documentElement.classList.contains("dark"))
+        }
+      }
+    })
+
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    })
+
+    return () => observer.disconnect()
+  }, [])
+
+  return isDark
+}
 
 /**
  * Database status from API response
@@ -48,6 +79,7 @@ export function DatabasePanel({
   const [iframeLoaded, setIframeLoaded] = useState(false)
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const isDarkMode = useIsDarkMode()
 
   /**
    * Fetch Prisma Studio URL from API, which starts it if needed.
@@ -237,11 +269,19 @@ export function DatabasePanel({
       )}
 
       {/* Prisma Studio iframe */}
+      {/* Apply CSS filter in dark mode to match app theme since Prisma Studio
+          uses system theme and can't be controlled via postMessage */}
       {studioUrl && (
         <iframe
           ref={iframeRef}
           src={studioUrl}
-          className="h-full w-full border-0"
+          className={cn(
+            "h-full w-full border-0 transition-[filter] duration-200",
+            isDarkMode && "invert hue-rotate-180 [&_img]:invert [&_img]:hue-rotate-180"
+          )}
+          style={isDarkMode ? {
+            filter: "invert(0.92) hue-rotate(180deg)",
+          } : undefined}
           onLoad={handleIframeLoad}
           onError={handleIframeError}
           title={`Database - ${projectId}`}
