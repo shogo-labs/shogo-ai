@@ -1,4 +1,3 @@
-import { useRef } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { AuthGate, AppShell, SchemaLoadingGate } from '@/components/app'
@@ -13,17 +12,18 @@ import { StarredProjectsPage } from './pages/StarredProjectsPage'
 import { SharedWithMePage } from './pages/SharedWithMePage'
 import { SettingsPage } from './pages/SettingsPage'
 import {
-  AuthProvider,
   EnvironmentProvider,
   createEnvironment,
   DomainProvider,
   type EagerCollectionsConfig,
   WavesmithMetaStoreProvider,
+  MCPBackend,
+  MCPPersistence,
+  StableAuthProvider,
+  useStableAuth,
 } from '@shogo/app-core'
-import { MCPBackend } from './query/MCPBackend'
 import { createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService } from '@shogo/state-api'
-import { MCPPersistence } from './persistence/MCPPersistence'
-import { mcpService } from './services/mcpService'
+import { mcpService } from './services'
 import { Toaster } from '@/components/ui/toaster'
 import { useSession } from './auth/client'
 
@@ -102,38 +102,40 @@ const eagerCollections: EagerCollectionsConfig = {
   auth: [],
 }
 
+/**
+ * App wrapper that provides StableAuthProvider.
+ * This must be separate so AppContent can use useStableAuth().
+ */
 function App() {
-  // Track current user ID to force DomainProvider remount on user change
-  // This ensures stores are recreated with fresh data when switching users
   const session = useSession()
 
-  // Use a ref to stabilize the key during transient loading states.
-  // This prevents DomainProvider from remounting when Better Auth refetches
-  // the session (e.g., on tab focus), which would cause an unwanted logout.
-  //
-  // IMPORTANT: We ONLY update the ref when we see a valid user ID.
-  // We NEVER clear the ref based on session becoming null - that could be
-  // a transient state during refetch. The ref only resets on page refresh.
-  // If the user actually logs out, AuthGate handles showing the login page
-  // without needing to remount DomainProvider.
-  const lastKnownUserIdRef = useRef<string | null>(null)
+  return (
+    <StableAuthProvider session={session}>
+      <AppContent />
+    </StableAuthProvider>
+  )
+}
 
-  const currentUserId = session.data?.user?.id
-  if (currentUserId) {
-    lastKnownUserIdRef.current = currentUserId
-  }
+/**
+ * Main app content - uses stable auth from StableAuthProvider.
+ * The stable userId survives Better Auth's transient refetch states.
+ */
+function AppContent() {
+  const { userId } = useStableAuth()
 
-  // Use the stable ref value, or 'anonymous' only if we've never seen a user
-  const authKey = lastKnownUserIdRef.current ?? 'anonymous'
+  // authKey controls DomainProvider lifecycle - stable via StableAuthProvider
+  const authKey = userId ?? 'anonymous'
+
+  // DEBUG: Log stable auth state
+  console.log('[AppContent] userId:', userId, 'authKey:', authKey)
 
   return (
     <NuqsAdapter>
       <BrowserRouter>
         <EnvironmentProvider env={env}>
-          <AuthProvider authService={betterAuthService}>
-            <DomainProvider key={authKey} domains={domains} eagerCollections={eagerCollections}>
-              <SchemaLoadingGate>
-                <WavesmithMetaStoreProvider>
+          <DomainProvider key={authKey} domains={domains} eagerCollections={eagerCollections} currentUserId={userId}>
+            <SchemaLoadingGate>
+              <WavesmithMetaStoreProvider>
                   <Routes>
                     {/* Project view route - full screen without sidebar */}
                     <Route path="/projects/:projectId" element={
@@ -194,7 +196,6 @@ function App() {
                 </WavesmithMetaStoreProvider>
               </SchemaLoadingGate>
             </DomainProvider>
-          </AuthProvider>
         </EnvironmentProvider>
         <Toaster />
       </BrowserRouter>

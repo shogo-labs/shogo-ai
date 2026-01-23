@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { mcpService } from '../services/mcpService'
+import { mcpService } from '../services'
 
 export interface Artifact {
   id: string

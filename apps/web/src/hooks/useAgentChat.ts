@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react'
-import { mcpService } from '../services/mcpService'
+import { mcpService } from '../services'
 
 /**
  * Record artifacts created by tool calls

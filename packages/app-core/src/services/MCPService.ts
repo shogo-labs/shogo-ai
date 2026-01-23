@@ -1,3 +1,16 @@
+/**
+ * MCPService - HTTP client for MCP protocol communication
+ *
+ * Provides a browser-side client for interacting with MCP servers via HTTP.
+ * Handles session management, SSE streaming, and tool invocation.
+ *
+ * @remarks
+ * Each app should create its own MCPService instance with appropriate configuration.
+ * The baseUrl can be:
+ * - Relative path (e.g., '/mcp') for same-origin requests
+ * - Full URL (e.g., 'http://localhost:3001/mcp') for cross-origin
+ */
+
 export interface MCPToolCall {
   jsonrpc: '2.0'
   id: number
@@ -26,12 +39,13 @@ export interface BatchToolCall {
   arguments: Record<string, any>
 }
 
+export interface MCPServiceConfig {
+  /** Base URL for MCP server. Defaults to '/mcp' for same-origin. */
+  baseUrl?: string
+}
+
 export class MCPService {
-  // Use relative /mcp path by default (proxied by nginx in k8s, Vite in dev)
-  // Only use VITE_MCP_URL if explicitly set to a non-empty value
-  private baseUrl = import.meta.env.VITE_MCP_URL
-    ? `${import.meta.env.VITE_MCP_URL}/mcp`
-    : '/mcp'
+  private baseUrl: string
   private requestId = 0
   private mcpSessionId: string | null = null  // Track MCP session for stateful mode
   private projectId: string | null = null     // Current project ID for schema isolation
@@ -39,15 +53,19 @@ export class MCPService {
   private notificationHandler: ((data: any) => void) | null = null
   private initPromise: Promise<void> | null = null  // Track initialization state
 
+  constructor(config: MCPServiceConfig = {}) {
+    this.baseUrl = config.baseUrl ?? '/mcp'
+  }
+
   // Session management helpers
   getMcpSessionId(): string | null { return this.mcpSessionId }
   getProjectId(): string | null { return this.projectId }
-  
+
   /** Set the current project ID - used for schema isolation in all MCP calls */
   setProjectId(projectId: string | null): void {
     this.projectId = projectId
   }
-  
+
   clearSession(): void {
     this.stopSSEListener()
     this.mcpSessionId = null
@@ -229,7 +247,7 @@ export class MCPService {
     const argsWithWorkspace = this.projectId && !args.workspace
       ? { ...args, workspace: this.projectId }
       : args
-    
+
     const request: MCPToolCall = {
       jsonrpc: '2.0',
       id: ++this.requestId,
@@ -547,5 +565,3 @@ export class MCPService {
     }
   }
 }
-
-export const mcpService = new MCPService()

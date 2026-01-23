@@ -12,10 +12,8 @@
  * with `x-persistence.backend: 'postgres'` work in the browser environment.
  */
 
-import type { IBackend, BackendCapabilities, QueryResult } from "@shogo/state-api/query/backends/types"
-import type { IQueryExecutor } from "@shogo/state-api/query/executors/types"
-import type { Condition } from "@shogo/state-api/query/ast/types"
-import type { MCPService } from "../services/mcpService"
+import type { IBackend, BackendCapabilities, QueryResult, IQueryExecutor, Condition } from "@shogo/state-api"
+import type { MCPService } from "../services/MCPService"
 import { MCPQueryExecutor } from "./MCPQueryExecutor"
 
 /**

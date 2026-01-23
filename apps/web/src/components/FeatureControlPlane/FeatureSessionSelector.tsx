@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from "react"
-import { mcpService } from "@/services/mcpService"
+import { mcpService } from "@/services"
 
 interface FeatureSession {
   id: string

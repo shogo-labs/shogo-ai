@@ -8,8 +8,7 @@
  */
 
 import { describe, test, expect, beforeEach, mock } from "bun:test"
-import { MCPQueryExecutor } from "../MCPQueryExecutor"
-import type { MCPService } from "../../services/mcpService"
+import { MCPQueryExecutor, type MCPService } from "@shogo/app-core"
 import { FieldCondition, CompoundCondition } from "@shogo/state-api"
 
 // =============================================================================

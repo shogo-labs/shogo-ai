@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { mcpService } from '../services/mcpService'
+import { mcpService } from '../services'
 
 export interface AgentState {
   isGenerating: boolean

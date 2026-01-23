@@ -5,7 +5,7 @@
  * via the MCP protocol, achieving isomorphic persistence with the
  * server-side FileSystemPersistence.
  */
-import type { MCPService, BatchToolCall } from '../services/mcpService'
+import type { MCPService, BatchToolCall } from '../services/MCPService'
 import type {
   IPersistenceService,
   PersistenceContext,
@@ -95,7 +95,7 @@ export class MCPPersistence implements IPersistenceService {
       if (!loadResult?.ok) {
         const errorCode = loadResult?.error?.code || 'UNKNOWN_ERROR'
         const errorMessage = loadResult?.error?.message || 'Unknown schema load error'
-        
+
         // Log with appropriate severity - SCHEMA_NOT_FOUND is often expected during app creation
         if (errorCode === 'SCHEMA_NOT_FOUND') {
           console.debug(`[MCPPersistence] Schema '${name}' not found - may need to be created first`)

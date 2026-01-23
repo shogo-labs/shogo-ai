@@ -16,9 +16,8 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react"
-import { useDomains } from "@shogo/app-core"
+import { useDomains, useStableAuth } from "@shogo/app-core"
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation"
-import { useSession } from "../../../../auth/client"
 
 /**
  * Phase type for feature grouping - matches FeatureSession status values
@@ -130,8 +129,9 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Get URL state and setters
   const { workspaceSlug, projectId, featureId, folderId, setWorkspaceSlug } = useWorkspaceNavigation()
 
-  // Get auth session from Better Auth
-  const { data: session, isPending: isSessionLoading } = useSession()
+  // Get STABLE auth state - survives Better Auth's transient refetch states
+  const { userId, rawSession } = useStableAuth()
+  const isSessionLoading = rawSession.isPending
 
   // Get domains for workspaces, projects, and features
   // Note: platformFeatures is optional - not loaded in consumer app
@@ -150,8 +150,7 @@ export function useWorkspaceData(): WorkspaceDataState {
   const [foldersRefetchCounter, setFoldersRefetchCounter] = useState(0)
   const [starredRefetchCounter, setStarredRefetchCounter] = useState(0)
 
-  // User ID from session (stable reference for dependency tracking)
-  const userId = session?.user?.id
+  // userId comes from useStableAuth() - stable across Better Auth refetches
 
   // Reload workspaces from MCP when user changes or refetch is triggered
   useEffect(() => {

@@ -9,7 +9,7 @@
  */
 
 import { useState, useEffect, useCallback } from "react"
-import { mcpService } from "@/services/mcpService"
+import { mcpService } from "@/services"
 import { cn } from "@/lib/utils"
 
 interface EntityDataPanelProps {

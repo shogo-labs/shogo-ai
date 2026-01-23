@@ -11,7 +11,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { mcpService } from "@/services/mcpService"
+import { mcpService } from "@/services"
 
 /**
  * Schema field type

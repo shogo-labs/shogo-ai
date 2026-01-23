@@ -24,12 +24,18 @@
  *   auth: ['userCollection'],
  * }
  *
+ * // Get currentUserId from your auth provider (e.g., Better Auth)
+ * const { data: session } = useSession()
+ * const currentUserId = session?.user?.id
+ *
  * <EnvironmentProvider env={env}>
- *   <AuthProvider authService={authService}>
- *     <DomainProvider domains={domains} eagerCollections={eagerCollections}>
- *       <Routes>...</Routes>
- *     </DomainProvider>
- *   </AuthProvider>
+ *   <DomainProvider
+ *     domains={domains}
+ *     eagerCollections={eagerCollections}
+ *     currentUserId={currentUserId}
+ *   >
+ *     <Routes>...</Routes>
+ *   </DomainProvider>
  * </EnvironmentProvider>
  *
  * // In components - destructure what you need
@@ -44,7 +50,6 @@ import { createContext, useContext, useRef, useEffect, useMemo, useState, type R
 import type { DomainResult } from "@shogo/state-api"
 import { getMetaStore } from "@shogo/state-api"
 import { useEnv } from "../environment/EnvironmentContext"
-import { useAuth } from "../auth/AuthContext"
 
 // ============================================================================
 // Types
@@ -97,6 +102,12 @@ export interface DomainProviderProps<T extends DomainsMap> {
    * - If domain key absent: ALL collections load for that domain (backwards compat)
    */
   eagerCollections?: EagerCollectionsConfig
+  /**
+   * Current authenticated user ID for authorization context.
+   * Pass from your auth provider (e.g., Better Auth's useSession().data?.user?.id).
+   * If provided, enables authorization-based query filtering.
+   */
+  currentUserId?: string
 }
 
 /**
@@ -105,7 +116,7 @@ export interface DomainProviderProps<T extends DomainsMap> {
  * Features:
  * - Map-based: Keys you provide become property names for access
  * - Uses EnvironmentProvider: Gets persistence/context from ancestor
- * - Uses AuthProvider: Gets current user ID for authorization context
+ * - Accepts currentUserId prop: For authorization context (pass from your auth provider)
  * - Stable stores: Uses useRef to ensure stores aren't recreated
  * - Auto-loading: Loads persisted data on mount via useEffect
  *
@@ -120,9 +131,9 @@ export function DomainProvider<T extends DomainsMap>({
   domains,
   children,
   eagerCollections,
+  currentUserId,
 }: DomainProviderProps<T>) {
   const env = useEnv() // Get environment from EnvironmentProvider (throws if missing)
-  const auth = useAuth() // Get auth store for current user ID
   const storesRef = useRef<Record<string, any> | null>(null)
   const schemaNameToKeyRef = useRef<Record<string, string> | null>(null)
 
@@ -130,14 +141,25 @@ export function DomainProvider<T extends DomainsMap>({
   const [schemasLoading, setSchemasLoading] = useState(true)
   const [schemasLoaded, setSchemasLoaded] = useState(false)
 
-  // Get current user ID for authorization context
+  // DEBUG: Track mount/unmount
+  useEffect(() => {
+    console.log('[DomainProvider] MOUNTED with currentUserId:', currentUserId)
+    return () => {
+      console.log('[DomainProvider] UNMOUNTED')
+    }
+  }, [])
+
+  // DEBUG: Log currentUserId prop changes
+  console.log('[DomainProvider] Render - currentUserId:', currentUserId, 'storesInitialized:', !!storesRef.current)
+
+  // currentUserId is passed from app (e.g., from Better Auth's useSession())
   // This will be injected into each store's environment for query-level filtering
-  const currentUserId = auth?.currentUser?.id
 
   // Initialize all domain stores once (stable across re-renders)
   // Note: When user changes, App.tsx remounts DomainProvider via key={authKey},
   // so stores are recreated with the new user's authContext
   if (!storesRef.current) {
+    console.log('[DomainProvider] Initializing stores...')
     const stores: Record<string, any> = {}
     const schemaNameToKey: Record<string, string> = {}
 

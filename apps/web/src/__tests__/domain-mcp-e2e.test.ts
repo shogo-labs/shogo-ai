@@ -19,8 +19,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test"
-import { MCPService } from "../services/mcpService"
-import { MCPBackend } from "../query/MCPBackend"
+import { MCPService, MCPBackend } from "@shogo/app-core"
 import { teamsDomain, createBackendRegistry, NullPersistence } from "@shogo/state-api"
 
 // Check if MCP server is available

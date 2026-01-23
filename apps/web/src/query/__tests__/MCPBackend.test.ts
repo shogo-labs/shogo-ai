@@ -8,9 +8,7 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test"
-import { MCPBackend } from "../MCPBackend"
-import { MCPQueryExecutor } from "../MCPQueryExecutor"
-import type { MCPService } from "../../services/mcpService"
+import { MCPBackend, MCPQueryExecutor, type MCPService } from "@shogo/app-core"
 
 // =============================================================================
 // Mock MCPService

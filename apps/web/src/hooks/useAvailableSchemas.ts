@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useState } from 'react'
-import { mcpService } from '@/services/mcpService'
+import { mcpService } from '@/services'
 
 interface UseAvailableSchemasResult {
   /** List of available schema names */

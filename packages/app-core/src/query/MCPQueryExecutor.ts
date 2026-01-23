@@ -14,11 +14,18 @@
  * - deleteMany → store.deleteMany (requires batch tools)
  */
 
-import type { IQueryExecutor } from "@shogo/state-api/query/executors/types"
-import type { Condition } from "@shogo/state-api/query/ast/types"
-import type { QueryOptions } from "@shogo/state-api/query/backends/types"
+import type { IQueryExecutor, Condition, QueryOptions, OrderByClause } from "@shogo/state-api"
 import { serializeCondition } from "@shogo/state-api"
-import type { MCPService } from "../services/mcpService"
+
+/**
+ * Extract first orderBy clause from QueryOptions.orderBy
+ * Handles both single OrderByClause and OrderByClause[] cases.
+ */
+function getFirstOrderBy(orderBy: OrderByClause | OrderByClause[] | undefined): OrderByClause | undefined {
+  if (!orderBy) return undefined
+  return Array.isArray(orderBy) ? orderBy[0] : orderBy
+}
+import type { MCPService } from "../services/MCPService"
 
 // =============================================================================
 // Response Types
@@ -71,6 +78,7 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
 
   async select(ast: Condition, options?: QueryOptions): Promise<T[]> {
     const serializedAst = serializeCondition(ast)
+    const firstOrderBy = getFirstOrderBy(options?.orderBy)
 
     const result = await this.mcp.callTool<StoreQueryResponse<T>>("store.query", {
       schema: this.schemaName,
@@ -78,10 +86,10 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
       workspace: this.workspace,
       ast: serializedAst,
       terminal: "toArray",
-      ...(options?.orderBy?.[0] && {
+      ...(firstOrderBy && {
         orderBy: {
-          field: options.orderBy[0].field,
-          direction: options.orderBy[0].direction,
+          field: firstOrderBy.field,
+          direction: firstOrderBy.direction,
         },
       }),
       ...(options?.skip !== undefined && { skip: options.skip }),
@@ -97,6 +105,7 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
 
   async first(ast: Condition, options?: QueryOptions): Promise<T | undefined> {
     const serializedAst = serializeCondition(ast)
+    const firstOrderBy = getFirstOrderBy(options?.orderBy)
 
     const result = await this.mcp.callTool<StoreQueryResponse<T>>("store.query", {
       schema: this.schemaName,
@@ -104,10 +113,10 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
       workspace: this.workspace,
       ast: serializedAst,
       terminal: "first",
-      ...(options?.orderBy?.[0] && {
+      ...(firstOrderBy && {
         orderBy: {
-          field: options.orderBy[0].field,
-          direction: options.orderBy[0].direction,
+          field: firstOrderBy.field,
+          direction: firstOrderBy.direction,
         },
       }),
       ...(options?.skip !== undefined && { skip: options.skip }),
@@ -282,7 +291,7 @@ export class MCPQueryExecutor<T> implements IQueryExecutor<T> {
     // Compound AND: combine all field equalities
     if (serialized.type === "compound" && serialized.operator === "and") {
       const filter: Record<string, unknown> = {}
-      for (const child of serialized.conditions) {
+      for (const child of serialized.value) {
         if (child.type === "field" && child.operator === "eq") {
           filter[child.field] = child.value
         } else {
