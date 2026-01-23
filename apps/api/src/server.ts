@@ -1295,10 +1295,16 @@ app.all('/api/projects/:projectId/preview/*', async (c) => {
     const path = c.req.path.replace(`/api/projects/${projectId}/preview`, '') || '/'
     const targetUrl = `${podUrl}/preview${path}`
     
-    console.log(`[PreviewProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
+    // Tell project-runtime the external base path for URL rewriting in HTML
+    const externalBasePath = `/api/projects/${projectId}/preview/`
+    
+    console.log(`[PreviewProxy] Proxying ${c.req.method} ${path} to ${targetUrl} (external base: ${externalBasePath})`)
     
     // Forward the request to the project pod's preview proxy
     const headers = new Headers()
+    
+    // Pass the external base path for HTML rewriting
+    headers.set('X-Proxy-Base-Path', externalBasePath)
     
     // Copy relevant headers
     const contentType = c.req.header('content-type')
@@ -1605,6 +1611,37 @@ app.post('/api/projects/:projectId/terminal/exec', async (c) => {
 
 // List test files
 app.get('/api/projects/:projectId/tests/list', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/tests/list`
+      
+      console.log(`[TestsProxy] Proxying tests list to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error(`[TestsProxy] Error proxying tests list:`, error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
+      }, 502)
+    }
+  }
+  
+  // Local/development mode: use local filesystem
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
   const router = testsRoutes({ workspacesDir })
   const url = new URL(c.req.url)
@@ -1615,6 +1652,45 @@ app.get('/api/projects/:projectId/tests/list', async (c) => {
 
 // Run tests with options
 app.post('/api/projects/:projectId/tests/run', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/tests/run`
+      
+      console.log(`[TestsProxy] Proxying tests run to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': c.req.header('Content-Type') || 'application/json',
+        },
+        body: c.req.raw.body,
+      })
+      
+      // Return streaming response
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error(`[TestsProxy] Error proxying tests run:`, error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
+      }, 502)
+    }
+  }
+  
+  // Local/development mode: use local filesystem
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
   const router = testsRoutes({ workspacesDir })
   const url = new URL(c.req.url)
@@ -1810,10 +1886,14 @@ app.all('/api/projects/:projectId/database/proxy', async (c) => {
     const podUrl = await getProjectPodUrl(projectId)
     const targetUrl = `${podUrl}/database/proxy`
     
-    console.log(`[DatabaseProxy] Proxying to ${targetUrl}`)
+    // Tell project-runtime the external base path for URL rewriting
+    const externalBasePath = `/api/projects/${projectId}/database/proxy/`
+    
+    console.log(`[DatabaseProxy] Proxying to ${targetUrl} (external base: ${externalBasePath})`)
     
     const reqHeaders: Record<string, string> = {
       'Accept': c.req.header('Accept') || '*/*',
+      'X-Proxy-Base-Path': externalBasePath,
     }
     const contentType = c.req.header('Content-Type')
     if (contentType) {
@@ -1860,10 +1940,14 @@ app.all('/api/projects/:projectId/database/proxy/*', async (c) => {
     const query = c.req.url.includes('?') ? '?' + c.req.url.split('?')[1] : ''
     const targetUrl = `${podUrl}/database/proxy${proxyPath}${query}`
     
+    // Tell project-runtime the external base path for URL rewriting
+    const externalBasePath = `/api/projects/${projectId}/database/proxy/`
+    
     console.log(`[DatabaseProxy] Proxying to ${targetUrl}`)
     
     const reqHeaders: Record<string, string> = {
       'Accept': c.req.header('Accept') || '*/*',
+      'X-Proxy-Base-Path': externalBasePath,
     }
     const contentType = c.req.header('Content-Type')
     if (contentType) {

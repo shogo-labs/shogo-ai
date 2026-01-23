@@ -781,6 +781,100 @@ function getMimeType(filePath: string): string {
 }
 
 /**
+ * Rewrite HTML content for preview to work through a proxy path.
+ * Vite/React apps assume they run at root, but we serve through /preview/.
+ * When accessed through API proxy, the full path is /api/projects/:id/preview/.
+ * 
+ * This fixes dynamic imports and asset loading by:
+ * - Rewriting absolute paths in link/script tags to use the proxy path
+ * - Adding a <base> tag with the correct proxy path
+ * - Patching fetch/XHR to handle dynamically constructed URLs
+ * 
+ * @param html - The original HTML content
+ * @param basePath - The full proxy base path (e.g., '/api/projects/xyz/preview/')
+ */
+function rewritePreviewHtml(html: string, basePath: string = '/preview/'): string {
+  // Ensure basePath ends with /
+  if (!basePath.endsWith('/')) {
+    basePath += '/'
+  }
+  
+  // Rewrite absolute paths in link tags (modulepreload, stylesheet, etc.)
+  // This is critical because <link rel="modulepreload" href="/assets/..."> is fetched
+  // by the browser before any JavaScript runs, so the script patch doesn't help
+  html = html.replace(/<link([^>]*)\s+href="\/assets\/([^"]+)"([^>]*)>/gi, 
+    `<link$1 href="${basePath}assets/$2"$3>`)
+  html = html.replace(/<link([^>]*)\s+href="\/src\/([^"]+)"([^>]*)>/gi, 
+    `<link$1 href="${basePath}src/$2"$3>`)
+  
+  // Rewrite absolute paths in script tags
+  html = html.replace(/<script([^>]*)\s+src="\/assets\/([^"]+)"([^>]*)>/gi, 
+    `<script$1 src="${basePath}assets/$2"$3>`)
+  html = html.replace(/<script([^>]*)\s+src="\/src\/([^"]+)"([^>]*)>/gi, 
+    `<script$1 src="${basePath}src/$2"$3>`)
+  
+  // Check if already has a base tag
+  if (html.includes('<base')) {
+    // Replace existing base tag
+    html = html.replace(/<base[^>]*>/, `<base href="${basePath}">`)
+  } else if (html.includes('<head>')) {
+    // Inject base tag after <head>
+    html = html.replace('<head>', `<head><base href="${basePath}">`)
+  }
+  
+  // Inject a script to patch dynamic imports and fetch calls
+  // This handles cases where code constructs URLs dynamically at runtime
+  const patchScript = `
+<script>
+(function() {
+  var proxyBase = ${JSON.stringify(basePath)};
+  
+  // Store original fetch
+  var originalFetch = window.fetch;
+  window.fetch = function(url, options) {
+    if (typeof url === 'string') {
+      // Rewrite absolute /assets/ paths to use proxy base
+      if (url.startsWith('/assets/') || url.startsWith('/src/')) {
+        url = proxyBase + url.substring(1);
+      }
+      // Fix any http:// to https:// if current page is https
+      if (window.location.protocol === 'https:' && url.startsWith('http://')) {
+        url = url.replace('http://', 'https://');
+      }
+    }
+    return originalFetch.call(this, url, options);
+  };
+  
+  // Store original XMLHttpRequest.open
+  var originalOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    var args = Array.prototype.slice.call(arguments, 2);
+    if (typeof url === 'string') {
+      if (url.startsWith('/assets/') || url.startsWith('/src/')) {
+        url = proxyBase + url.substring(1);
+      }
+      if (window.location.protocol === 'https:' && url.startsWith('http://')) {
+        url = url.replace('http://', 'https://');
+      }
+    }
+    return originalOpen.apply(this, [method, url].concat(args));
+  };
+  
+  console.log('[Preview Proxy] URL rewriting enabled, base:', proxyBase);
+})();
+</script>`
+  
+  // Insert patch script early in head (after base tag if present)
+  if (html.includes('<base')) {
+    html = html.replace(/<base[^>]*>/, (match) => match + patchScript)
+  } else if (html.includes('<head>')) {
+    html = html.replace('<head>', `<head>${patchScript}`)
+  }
+  
+  return html
+}
+
+/**
  * Preview handler - proxies to TanStack Start server or serves static files.
  * 
  * For TanStack Start projects:
@@ -792,6 +886,10 @@ function getMimeType(filePath: string): string {
  */
 app.get('/preview/*', async (c) => {
   const relativePath = c.req.path.replace('/preview', '') || '/'
+  
+  // Get external proxy base path from header (set by API server when proxying)
+  // Falls back to local /preview/ path if not proxied through API
+  const externalBasePath = c.req.header('X-Proxy-Base-Path') || '/preview/'
   
   // TanStack Start: proxy to the running server
   if (isTanStackStart) {
@@ -811,6 +909,44 @@ app.get('/preview/*', async (c) => {
       // Get response body
       const contentType = response.headers.get('Content-Type') || 'text/html'
       const body = await response.arrayBuffer()
+      
+      // Rewrite HTML responses to fix asset paths when accessed through proxy
+      if (contentType.includes('text/html')) {
+        const html = new TextDecoder().decode(body)
+        const rewrittenHtml = rewritePreviewHtml(html, externalBasePath)
+        return new Response(rewrittenHtml, {
+          status: response.status,
+          headers: {
+            'Content-Type': contentType,
+            'Content-Length': String(Buffer.byteLength(rewrittenHtml)),
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*',
+          },
+        })
+      }
+      
+      // Rewrite JavaScript responses to fix dynamic import paths
+      // Vite generates code like import('/assets/...') which needs to be rewritten
+      if (contentType.includes('javascript') || contentType.includes('application/javascript')) {
+        let js = new TextDecoder().decode(body)
+        // Rewrite absolute paths in dynamic imports: import("/assets/...") and import('/assets/...')
+        js = js.replace(/import\(["']\/assets\//g, `import("${externalBasePath}assets/`)
+        js = js.replace(/import\(["']\/src\//g, `import("${externalBasePath}src/`)
+        // Also handle other common patterns: __vite_ssr_dynamic_import__, etc.
+        js = js.replace(/"\/assets\//g, `"${externalBasePath}assets/`)
+        js = js.replace(/'\/assets\//g, `'${externalBasePath}assets/`)
+        js = js.replace(/"\/src\//g, `"${externalBasePath}src/`)
+        js = js.replace(/'\/src\//g, `'${externalBasePath}src/`)
+        return new Response(js, {
+          status: response.status,
+          headers: {
+            'Content-Type': contentType,
+            'Content-Length': String(Buffer.byteLength(js)),
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*',
+          },
+        })
+      }
       
       return new Response(body, {
         status: response.status,
@@ -848,6 +984,22 @@ app.get('/preview/*', async (c) => {
   
   console.log(`[project-runtime] Serving static preview: ${filePath} from ${absolutePath}`)
   
+  // Helper to serve HTML with rewriting for proxy support
+  const serveHtml = (htmlPath: string) => {
+    const content = readFileSync(htmlPath)
+    const html = content.toString()
+    const rewrittenHtml = rewritePreviewHtml(html, externalBasePath)
+    return new Response(rewrittenHtml, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html',
+        'Content-Length': String(Buffer.byteLength(rewrittenHtml)),
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  }
+  
   try {
     // Security: prevent path traversal
     if (!absolutePath.startsWith(DIST_DIR)) {
@@ -861,15 +1013,7 @@ app.get('/preview/*', async (c) => {
       if (!MIME_TYPES[ext.toLowerCase()]) {
         const indexPath = join(DIST_DIR, 'index.html')
         if (existsSync(indexPath)) {
-          const content = readFileSync(indexPath)
-          return new Response(content, {
-            status: 200,
-            headers: {
-              'Content-Type': 'text/html',
-              'Cache-Control': 'no-cache',
-              'Access-Control-Allow-Origin': '*',
-            },
-          })
+          return serveHtml(indexPath)
         }
       }
       
@@ -882,15 +1026,7 @@ app.get('/preview/*', async (c) => {
     if (stats.isDirectory()) {
       const indexPath = join(absolutePath, 'index.html')
       if (existsSync(indexPath)) {
-        const content = readFileSync(indexPath)
-        return new Response(content, {
-          status: 200,
-          headers: {
-            'Content-Type': 'text/html',
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
+        return serveHtml(indexPath)
       }
       return c.text('Not Found', 404)
     }
@@ -898,6 +1034,43 @@ app.get('/preview/*', async (c) => {
     // Read and serve the file
     const content = readFileSync(absolutePath)
     const mimeType = getMimeType(absolutePath)
+    
+    // Rewrite HTML files for proxy support
+    if (mimeType === 'text/html') {
+      const html = content.toString()
+      const rewrittenHtml = rewritePreviewHtml(html, externalBasePath)
+      return new Response(rewrittenHtml, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html',
+          'Content-Length': String(Buffer.byteLength(rewrittenHtml)),
+          'Cache-Control': 'no-cache',
+          'Access-Control-Allow-Origin': '*',
+        },
+      })
+    }
+    
+    // Rewrite JavaScript files for proxy support (fix dynamic imports)
+    if (mimeType === 'application/javascript' || mimeType === 'text/javascript') {
+      let js = content.toString()
+      // Rewrite absolute paths in dynamic imports: import("/assets/...") and import('/assets/...')
+      js = js.replace(/import\(["']\/assets\//g, `import("${externalBasePath}assets/`)
+      js = js.replace(/import\(["']\/src\//g, `import("${externalBasePath}src/`)
+      // Also handle other common patterns
+      js = js.replace(/"\/assets\//g, `"${externalBasePath}assets/`)
+      js = js.replace(/'\/assets\//g, `'${externalBasePath}assets/`)
+      js = js.replace(/"\/src\//g, `"${externalBasePath}src/`)
+      js = js.replace(/'\/src\//g, `'${externalBasePath}src/`)
+      return new Response(js, {
+        status: 200,
+        headers: {
+          'Content-Type': mimeType,
+          'Content-Length': String(Buffer.byteLength(js)),
+          'Cache-Control': 'no-cache', // Don't cache rewritten JS
+          'Access-Control-Allow-Origin': '*',
+        },
+      })
+    }
     
     // Set cache headers (long cache for hashed assets)
     const isHashedAsset = /\.[a-f0-9]{8,}\.(js|css|woff2?|ttf|png|jpg|svg)$/i.test(filePath)
@@ -1148,6 +1321,282 @@ app.post('/terminal/exec', async (c) => {
 })
 
 // =============================================================================
+// Tests API (for Tests Panel)
+// =============================================================================
+
+/**
+ * Test file with its test cases
+ */
+interface TestFile {
+  /** Relative path to test file */
+  path: string
+  /** File name */
+  name: string
+  /** Test cases discovered in file */
+  tests: TestCase[]
+}
+
+/**
+ * Individual test case
+ */
+interface TestCase {
+  /** Test title */
+  title: string
+  /** Line number where test is defined */
+  line?: number
+  /** Full test path (describe > test) */
+  fullTitle: string
+}
+
+/**
+ * Parse test file to extract test cases
+ * Looks for test('...') and it('...') patterns
+ */
+function parseTestCases(filePath: string): TestCase[] {
+  const tests: TestCase[] = []
+  
+  try {
+    const content = readFileSync(filePath, 'utf-8')
+    const lines = content.split('\n')
+    
+    // Stack to track describe blocks
+    const describeStack: string[] = []
+    
+    lines.forEach((line, index) => {
+      // Match describe blocks
+      const describeMatch = line.match(/(?:describe|test\.describe)\s*\(\s*['"`]([^'"`]+)['"`]/)
+      if (describeMatch) {
+        describeStack.push(describeMatch[1])
+      }
+      
+      // Match end of describe blocks (rough heuristic)
+      if (line.match(/^\s*\}\s*\)\s*;?\s*$/)) {
+        describeStack.pop()
+      }
+      
+      // Match test/it blocks
+      const testMatch = line.match(/(?:test|it)\s*\(\s*['"`]([^'"`]+)['"`]/)
+      if (testMatch) {
+        const title = testMatch[1]
+        const fullTitle = describeStack.length > 0 
+          ? `${describeStack.join(' › ')} › ${title}`
+          : title
+        
+        tests.push({
+          title,
+          line: index + 1,
+          fullTitle,
+        })
+      }
+    })
+  } catch {
+    // File can't be read, return empty
+  }
+  
+  return tests
+}
+
+/**
+ * Recursively find test files in a directory
+ */
+function findTestFiles(dir: string, baseDir: string): TestFile[] {
+  const files: TestFile[] = []
+  
+  if (!existsSync(dir)) {
+    return files
+  }
+  
+  const entries = readdirSync(dir, { withFileTypes: true })
+  
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name)
+    
+    if (entry.isDirectory()) {
+      // Skip node_modules
+      if (entry.name === 'node_modules') continue
+      files.push(...findTestFiles(fullPath, baseDir))
+    } else if (entry.isFile()) {
+      // Match test files
+      if (entry.name.match(/\.(test|spec)\.(ts|tsx|js|jsx)$/)) {
+        const relativePath = relative(baseDir, fullPath)
+        const tests = parseTestCases(fullPath)
+        
+        files.push({
+          path: relativePath,
+          name: entry.name,
+          tests,
+        })
+      }
+    }
+  }
+  
+  return files
+}
+
+/**
+ * GET /tests/list - List test files and cases in the project
+ */
+app.get('/tests/list', (c) => {
+  console.log(`[project-runtime] Listing tests for project ${PROJECT_ID}`)
+  
+  // Look for test files in common locations
+  const testLocations = ['tests', 'test', '__tests__', 'e2e', 'spec']
+  let allFiles: TestFile[] = []
+  
+  for (const loc of testLocations) {
+    const testDir = join(PROJECT_DIR, loc)
+    if (existsSync(testDir)) {
+      allFiles.push(...findTestFiles(testDir, PROJECT_DIR))
+    }
+  }
+  
+  // Also check root for test files
+  try {
+    const rootEntries = readdirSync(PROJECT_DIR, { withFileTypes: true })
+    for (const entry of rootEntries) {
+      if (entry.isFile() && entry.name.match(/\.(test|spec)\.(ts|tsx|js|jsx)$/)) {
+        const tests = parseTestCases(join(PROJECT_DIR, entry.name))
+        allFiles.push({
+          path: entry.name,
+          name: entry.name,
+          tests,
+        })
+      }
+    }
+  } catch {
+    // Ignore errors reading root
+  }
+
+  // Deduplicate by path
+  const seen = new Set<string>()
+  const files = allFiles.filter(f => {
+    if (seen.has(f.path)) return false
+    seen.add(f.path)
+    return true
+  })
+
+  return c.json({
+    files,
+    hasTests: files.length > 0,
+    totalTests: files.reduce((sum, f) => sum + f.tests.length, 0),
+  }, 200)
+})
+
+/**
+ * POST /tests/run - Run tests with options
+ * 
+ * Request body:
+ * - file?: string - Specific test file to run (relative path)
+ * - testName?: string - Specific test name pattern (grep)
+ * - headed?: boolean - Run in headed mode
+ * - reporter?: 'list' | 'json' | 'line' - Reporter to use
+ */
+app.post('/tests/run', async (c) => {
+  console.log(`[project-runtime] Running tests for project ${PROJECT_ID}`)
+  
+  // Parse request body
+  let body: { 
+    file?: string
+    testName?: string
+    headed?: boolean
+    reporter?: 'list' | 'json' | 'line'
+  } = {}
+  
+  try {
+    body = await c.req.json()
+  } catch {
+    // Empty body is fine, use defaults
+  }
+
+  const { file, testName, headed, reporter = 'list' } = body
+
+  // Build command
+  let command = 'bunx playwright test'
+  
+  // Add specific file
+  if (file) {
+    command += ` "${file}"`
+  }
+  
+  // Add test name filter (grep)
+  if (testName) {
+    command += ` --grep "${testName}"`
+  }
+  
+  // Add headed mode
+  if (headed) {
+    command += ' --headed'
+  }
+  
+  // Add reporter
+  command += ` --reporter=${reporter}`
+
+  console.log(`[project-runtime] Executing: ${command}`)
+
+  // Create a streaming response
+  const { readable, writable } = new TransformStream()
+  const writer = writable.getWriter()
+  const encoder = new TextEncoder()
+
+  // Execute command asynchronously
+  ;(async () => {
+    try {
+      // Write header
+      await writer.write(encoder.encode(`$ ${command}\n\n`))
+
+      // Spawn the command using Bun
+      const proc = Bun.spawn(['sh', '-c', command], {
+        cwd: PROJECT_DIR,
+        env: {
+          ...process.env,
+          FORCE_COLOR: '1',
+          CI: 'true',
+        },
+      })
+
+      // Stream stdout
+      const reader = proc.stdout.getReader()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        await writer.write(value)
+      }
+      
+      // Stream stderr
+      if (proc.stderr) {
+        const stderrReader = proc.stderr.getReader()
+        while (true) {
+          const { done, value } = await stderrReader.read()
+          if (done) break
+          await writer.write(value)
+        }
+      }
+
+      const exitCode = await proc.exited
+      await writer.write(encoder.encode(`\n\n[Process exited with code ${exitCode}]\n`))
+      await writer.close()
+    } catch (err: any) {
+      try {
+        await writer.write(encoder.encode(`[ERROR] ${err.message}\n`))
+        await writer.close()
+      } catch {
+        // Writer already closed, ignore
+      }
+    }
+  })()
+
+  // Return streaming response
+  return new Response(readable, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Transfer-Encoding': 'chunked',
+      'Cache-Control': 'no-cache',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  })
+})
+
+// =============================================================================
 // Database API (Prisma Studio) - Simplified for Kubernetes
 // =============================================================================
 
@@ -1244,6 +1693,109 @@ app.get('/database/url', async (c) => {
 })
 
 /**
+ * Rewrite HTML content for Prisma Studio to work through a proxy path.
+ * Prisma Studio assumes it runs at root, but we serve it through a proxy path.
+ * This fixes:
+ * - Mixed content errors (http:// -> https://)
+ * - Asset paths resolved correctly via base tag
+ * - API calls intercepted and rewritten via fetch/XHR patching
+ * 
+ * @param html - The original HTML content
+ * @param basePath - The full proxy base path (e.g., '/api/projects/xyz/database/proxy/')
+ */
+function rewritePrismaStudioHtml(html: string, basePath: string = '/database/proxy/'): string {
+  // Ensure basePath ends with /
+  if (!basePath.endsWith('/')) {
+    basePath += '/'
+  }
+  
+  // Inject a base tag to fix relative URLs - this is the most reliable approach
+  // The base tag tells the browser to resolve all relative URLs from this path
+  const baseTag = `<base href="${basePath}">`
+  
+  // Insert base tag after <head>
+  if (html.includes('<head>')) {
+    html = html.replace('<head>', `<head>${baseTag}`)
+  }
+  
+  // Fix any hardcoded http://localhost:PORT URLs to be empty (rely on base tag)
+  html = html.replace(/http:\/\/localhost:\d+/g, '')
+  
+  // Fix any absolute /api/ paths that bypass the base tag (in inline scripts)
+  // Prisma Studio's JS sometimes constructs URLs like: location.origin + '/api/'
+  // We inject a script to patch fetch/XMLHttpRequest to rewrite /api/ calls
+  const patchScript = `
+<script>
+(function() {
+  var proxyBase = ${JSON.stringify(basePath)};
+  
+  // Helper to rewrite URL for proxy
+  function rewriteUrl(url) {
+    if (typeof url !== 'string') return url;
+    
+    // Handle full URLs (http://... or https://...)
+    if (url.indexOf('://') !== -1) {
+      try {
+        var urlObj = new URL(url);
+        // Check if same domain or localhost - rewrite to use proxy
+        if (urlObj.hostname === window.location.hostname || urlObj.hostname === 'localhost') {
+          // Strip the origin and treat as relative path through proxy
+          var path = urlObj.pathname;
+          if (path.startsWith('/')) path = path.substring(1);
+          url = proxyBase + path + urlObj.search;
+          console.log('[Prisma Studio Proxy] Rewrote full URL to:', url);
+        }
+      } catch(e) {
+        // Invalid URL, leave as-is
+      }
+    }
+    // Handle /api/ calls  
+    else if (url.startsWith('/api/') || url.startsWith('/api')) {
+      url = proxyBase + url.substring(1);
+    }
+    // Handle other absolute paths at root
+    else if (url.startsWith('/') && !url.startsWith(proxyBase)) {
+      url = proxyBase + url.substring(1);
+    }
+    
+    // Ensure https if page is https
+    if (window.location.protocol === 'https:' && url.startsWith('http://')) {
+      url = url.replace('http://', 'https://');
+    }
+    
+    return url;
+  }
+  
+  // Store original fetch
+  var originalFetch = window.fetch;
+  window.fetch = function(url, options) {
+    url = rewriteUrl(url);
+    return originalFetch.call(this, url, options);
+  };
+  
+  // Store original XMLHttpRequest.open
+  var originalOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    var args = Array.prototype.slice.call(arguments, 2);
+    url = rewriteUrl(url);
+    return originalOpen.apply(this, [method, url].concat(args));
+  };
+  
+  console.log('[Prisma Studio Proxy] URL rewriting enabled, base:', proxyBase);
+})();
+</script>`
+  
+  // Insert patch script early in head (after base tag)
+  if (html.includes(baseTag)) {
+    html = html.replace(baseTag, baseTag + patchScript)
+  } else if (html.includes('<head>')) {
+    html = html.replace('<head>', `<head>${patchScript}`)
+  }
+  
+  return html
+}
+
+/**
  * Proxy requests to Prisma Studio
  * This allows the browser to access Prisma Studio through the API without CORS issues
  */
@@ -1255,6 +1807,10 @@ app.all('/database/proxy', async (c) => {
   
   const targetUrl = `http://localhost:${PRISMA_STUDIO_PORT}/`
   console.log(`[project-runtime] Proxying database request to ${targetUrl}`)
+  
+  // Get external proxy base path from header (set by API server)
+  // Falls back to local path if not proxied through API
+  const externalBasePath = c.req.header('X-Proxy-Base-Path') || '/database/proxy/'
   
   try {
     const response = await fetch(targetUrl, {
@@ -1272,6 +1828,18 @@ app.all('/database/proxy', async (c) => {
         headers.set(key, value)
       }
     })
+    
+    // Check if this is HTML and rewrite it
+    const contentType = response.headers.get('content-type') || ''
+    if (contentType.includes('text/html')) {
+      const html = await response.text()
+      const rewrittenHtml = rewritePrismaStudioHtml(html, externalBasePath)
+      headers.set('content-length', String(Buffer.byteLength(rewrittenHtml)))
+      return new Response(rewrittenHtml, {
+        status: response.status,
+        headers,
+      })
+    }
     
     return new Response(response.body, {
       status: response.status,
@@ -1295,6 +1863,9 @@ app.all('/database/proxy/*', async (c) => {
   const targetUrl = `http://localhost:${PRISMA_STUDIO_PORT}${path}${query}`
   
   console.log(`[project-runtime] Proxying database request to ${targetUrl}`)
+  
+  // Get external proxy base path from header (set by API server)
+  const externalBasePath = c.req.header('X-Proxy-Base-Path') || '/database/proxy/'
   
   try {
     const reqHeaders: Record<string, string> = {
@@ -1321,6 +1892,18 @@ app.all('/database/proxy/*', async (c) => {
         headers.set(key, value)
       }
     })
+    
+    // Check if this is HTML and rewrite it
+    const respContentType = response.headers.get('content-type') || ''
+    if (respContentType.includes('text/html')) {
+      const html = await response.text()
+      const rewrittenHtml = rewritePrismaStudioHtml(html, externalBasePath)
+      headers.set('content-length', String(Buffer.byteLength(rewrittenHtml)))
+      return new Response(rewrittenHtml, {
+        status: response.status,
+        headers,
+      })
+    }
     
     return new Response(response.body, {
       status: response.status,

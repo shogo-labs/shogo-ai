@@ -33,6 +33,10 @@ function handleEditorWillMount(monaco: Monaco) {
     reactNamespace: "React",
     allowJs: true,
     typeRoots: ["node_modules/@types"],
+    // Enable strict mode for better IntelliSense
+    strict: true,
+    // Allow synthetic default imports (import React from 'react')
+    allowSyntheticDefaultImports: true,
   })
 
   monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
@@ -45,6 +49,7 @@ function handleEditorWillMount(monaco: Monaco) {
     jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
     reactNamespace: "React",
     allowJs: true,
+    allowSyntheticDefaultImports: true,
   })
 
   // Enable semantic validation for TypeScript
@@ -52,6 +57,63 @@ function handleEditorWillMount(monaco: Monaco) {
     noSemanticValidation: false,
     noSyntaxValidation: false,
   })
+
+  // Add React type definitions for IntelliSense
+  // This provides basic React types so Monaco can offer completions
+  const reactTypes = `
+declare module 'react' {
+  export function useState<T>(initialState: T | (() => T)): [T, (value: T | ((prev: T) => T)) => void];
+  export function useEffect(effect: () => void | (() => void), deps?: readonly any[]): void;
+  export function useCallback<T extends (...args: any[]) => any>(callback: T, deps: readonly any[]): T;
+  export function useMemo<T>(factory: () => T, deps: readonly any[]): T;
+  export function useRef<T>(initialValue: T): { current: T };
+  export function useContext<T>(context: React.Context<T>): T;
+  export function useReducer<R extends React.Reducer<any, any>>(reducer: R, initialState: React.ReducerState<R>): [React.ReducerState<R>, React.Dispatch<React.ReducerAction<R>>];
+  
+  export type FC<P = {}> = (props: P) => JSX.Element | null;
+  export type ReactNode = JSX.Element | string | number | boolean | null | undefined | ReactNode[];
+  export type PropsWithChildren<P = {}> = P & { children?: ReactNode };
+  export type CSSProperties = { [key: string]: string | number };
+  export type ChangeEvent<T = Element> = { target: T; currentTarget: T };
+  export type MouseEvent<T = Element> = { target: T; currentTarget: T; preventDefault(): void; stopPropagation(): void };
+  export type FormEvent<T = Element> = { target: T; currentTarget: T; preventDefault(): void };
+  export type KeyboardEvent<T = Element> = { key: string; code: string; target: T; preventDefault(): void };
+  
+  export interface Context<T> { Provider: FC<{ value: T; children?: ReactNode }>; Consumer: FC<{ children: (value: T) => ReactNode }> }
+  export function createContext<T>(defaultValue: T): Context<T>;
+  export type Reducer<S, A> = (state: S, action: A) => S;
+  export type ReducerState<R extends Reducer<any, any>> = R extends Reducer<infer S, any> ? S : never;
+  export type ReducerAction<R extends Reducer<any, any>> = R extends Reducer<any, infer A> ? A : never;
+  export type Dispatch<A> = (action: A) => void;
+  
+  export const Fragment: unique symbol;
+  export function createElement(type: any, props?: any, ...children: any[]): JSX.Element;
+  export function forwardRef<T, P = {}>(render: (props: P, ref: React.Ref<T>) => JSX.Element | null): React.FC<P & { ref?: React.Ref<T> }>;
+  export type Ref<T> = { current: T | null } | ((instance: T | null) => void) | null;
+  export function memo<P extends object>(Component: FC<P>): FC<P>;
+  
+  export default { useState, useEffect, useCallback, useMemo, useRef, useContext, useReducer, createContext, Fragment, createElement, forwardRef, memo };
+}
+
+declare global {
+  namespace JSX {
+    interface Element {}
+    interface IntrinsicElements {
+      div: any; span: any; p: any; a: any; button: any; input: any; form: any;
+      h1: any; h2: any; h3: any; h4: any; h5: any; h6: any;
+      ul: any; ol: any; li: any; nav: any; header: any; footer: any; main: any; section: any; article: any; aside: any;
+      img: any; svg: any; path: any; circle: any; rect: any; line: any; polygon: any; polyline: any; g: any;
+      table: any; thead: any; tbody: any; tr: any; td: any; th: any;
+      label: any; select: any; option: any; textarea: any;
+      video: any; audio: any; source: any; canvas: any; iframe: any;
+      br: any; hr: any; pre: any; code: any; blockquote: any; strong: any; em: any; small: any;
+    }
+  }
+}
+`;
+
+  monaco.languages.typescript.typescriptDefaults.addExtraLib(reactTypes, 'file:///node_modules/@types/react/index.d.ts');
+  monaco.languages.typescript.javascriptDefaults.addExtraLib(reactTypes, 'file:///node_modules/@types/react/index.d.ts');
 }
 
 /**
@@ -660,7 +722,7 @@ export function CodeEditorPanel({
             <Editor
               height="100%"
               path={selectedFile}
-              defaultLanguage={language}
+              language={language}
               value={fileContent}
               theme={monacoTheme}
               onChange={handleEditorChange}

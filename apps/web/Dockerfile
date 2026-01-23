@@ -41,6 +41,12 @@ COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 COPY apps/web ./apps/web
 
+# Copy scripts directory (needed for list-skills.ts)
+COPY scripts ./scripts
+
+# Copy .claude/skills directory (needed for list-skills.ts)
+COPY .claude/skills ./.claude/skills
+
 # Build state-api first (dependency)
 WORKDIR /app/packages/state-api
 RUN bun run build

@@ -273,8 +273,21 @@ export function TestPanel({
       })
 
       if (!response.ok) {
-        const error = await response.json()
-        newExecution.output = `Error: ${error.error?.message || 'Failed to start tests'}\n`
+        // Try to parse as JSON, but handle text responses
+        const contentType = response.headers.get('content-type') || ''
+        let errorMessage = 'Failed to start tests'
+        if (contentType.includes('application/json')) {
+          try {
+            const error = await response.json()
+            errorMessage = error.error?.message || errorMessage
+          } catch {
+            // Fall back to text if JSON parsing fails
+            errorMessage = await response.text() || errorMessage
+          }
+        } else {
+          errorMessage = await response.text() || errorMessage
+        }
+        newExecution.output = `Error: ${errorMessage}\n`
         newExecution.status = 'error'
         setExecution({ ...newExecution })
         setHistory(prev => [newExecution, ...prev])
@@ -367,8 +380,21 @@ export function TestPanel({
       })
 
       if (!response.ok) {
-        const error = await response.json()
-        newExecution.output = `Error: ${error.error?.message || 'Failed to start tests'}\n`
+        // Try to parse as JSON, but handle text responses
+        const contentType = response.headers.get('content-type') || ''
+        let errorMessage = 'Failed to start tests'
+        if (contentType.includes('application/json')) {
+          try {
+            const error = await response.json()
+            errorMessage = error.error?.message || errorMessage
+          } catch {
+            // Fall back to text if JSON parsing fails
+            errorMessage = await response.text() || errorMessage
+          }
+        } else {
+          errorMessage = await response.text() || errorMessage
+        }
+        newExecution.output = `Error: ${errorMessage}\n`
         newExecution.status = 'error'
         setExecution({ ...newExecution })
         setHistory(prev => [newExecution, ...prev])
