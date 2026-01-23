@@ -294,9 +294,16 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       bottom: startRect.bottom,
     } : null
 
+    // Extract serializable project data (MST instances can't be cloned for pushState)
+    const serializableProject = {
+      id: data.project.id,
+      name: data.project.name,
+      description: data.project.description,
+    }
+
     navigate(`/projects/${data.project.id}?chatSessionId=${data.chatSessionId}`, {
       state: {
-        project: data.project,
+        project: serializableProject,
         chatSessionId: data.chatSessionId,
         initialMessage: data.prompt,
         // Pass transition data for overlay animation
@@ -423,9 +430,16 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       // The AI will automatically call template.copy when it receives this message
       const initialMessage = `I want to use the ${templateName} template. Please set up this project by copying the template files, then tell me what I can do next with this ${displayName} app.`
 
+      // Extract serializable project data (MST instances can't be cloned for pushState)
+      const serializableProject = {
+        id: newProject.id,
+        name: newProject.name,
+        description: newProject.description,
+      }
+
       navigate(`/projects/${newProject.id}?chatSessionId=${chatSession.id}`, {
         state: {
-          project: newProject,
+          project: serializableProject,
           chatSessionId: chatSession.id,
           initialMessage,
           fromTemplate: templateName,

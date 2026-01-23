@@ -98,6 +98,12 @@ export const studioCoreDomain = domain({
         findPending(): any[] {
           return self.all().filter((i: any) => i.status === "pending")
         },
+        findByEmail(email: string): any[] {
+          return self.all().filter((i: any) => i.email === email)
+        },
+        findPendingByEmail(email: string): any[] {
+          return self.all().filter((i: any) => i.email === email && i.status === "pending")
+        },
       })),
 
       NotificationCollection: collections.NotificationCollection.views((self: any) => ({
@@ -203,6 +209,55 @@ export const studioCoreDomain = domain({
           })
 
           return ws
+        },
+
+        async createProject(name: string, workspaceId: string, description?: string, createdBy?: string): Promise<any> {
+          const now = Date.now()
+          const projectId = crypto.randomUUID()
+
+          // Make API call to create project in database
+          const apiUrl = typeof window !== 'undefined' 
+            ? '/api/v2/projects' 
+            : `${process.env.VITE_API_URL || ''}/api/v2/projects`
+
+          const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: projectId,
+              name,
+              description,
+              workspaceId,
+              createdBy,
+              createdAt: new Date(now).toISOString(),
+              updatedAt: new Date(now).toISOString(),
+              tier: "starter",
+              status: "draft",
+            }),
+          })
+
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({ message: 'Failed to create project' }))
+            throw new Error(error.error?.message || error.message || 'Failed to create project')
+          }
+
+          const result = await response.json()
+          const projectData = result.data
+
+          // Also add to local MST store for immediate UI updates
+          const project = self.projectCollection.add({
+            id: projectData.id,
+            name: projectData.name,
+            description: projectData.description,
+            workspace: workspaceId,
+            createdBy: projectData.createdBy,
+            createdAt: new Date(projectData.createdAt).getTime(),
+            updatedAt: new Date(projectData.updatedAt).getTime(),
+            tier: projectData.tier || "starter",
+            status: projectData.status || "draft",
+          })
+
+          return project
         },
 
         async toggleStarProject(

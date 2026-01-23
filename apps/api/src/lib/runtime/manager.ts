@@ -343,19 +343,31 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       // Spawn project-runtime agent server for local development
       if (existsSync(PROJECT_RUNTIME_SERVER)) {
         console.log(`[RuntimeManager] Starting agent server for ${projectId} on port ${agentPort}`)
+        
+        // Build environment for project runtime
+        const runtimeEnv: Record<string, string> = {
+          ...process.env as Record<string, string>,
+          PROJECT_ID: projectId,
+          PROJECT_DIR: projectDir,
+          PORT: String(agentPort),
+          SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),
+          MCP_SERVER_PATH: MCP_SERVER_PATH,
+          NODE_ENV: 'development',
+        }
+        
+        // Only override DATABASE_URL if PROJECTS_DATABASE_URL is explicitly set.
+        // This prevents AI agents from accidentally modifying platform data in local dev,
+        // while not affecting cloud deployments where database isolation is handled differently.
+        if (process.env.PROJECTS_DATABASE_URL) {
+          runtimeEnv.DATABASE_URL = process.env.PROJECTS_DATABASE_URL
+          console.log(`[RuntimeManager] Using isolated projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
+        }
+        
         const agentProc = spawn('bun', ['run', PROJECT_RUNTIME_SERVER], {
           cwd: projectDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: false,
-          env: {
-            ...process.env,
-            PROJECT_ID: projectId,
-            PROJECT_DIR: projectDir,
-            PORT: String(agentPort),
-            SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),
-            MCP_SERVER_PATH: MCP_SERVER_PATH,
-            NODE_ENV: 'development',
-          },
+          env: runtimeEnv,
         })
 
         runtime.agentProcess = agentProc
