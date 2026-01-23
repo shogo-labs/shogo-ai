@@ -1,28 +1,27 @@
 /**
- * User Operations via shogo.db
+ * User Server Functions
  * 
- * Demonstrates: shogo.db.user.* methods
+ * Custom user functions that aren't basic CRUD.
+ * Basic CRUD operations are in ../generated/server-functions.ts
  */
 
 import { createServerFn } from '@tanstack/react-start'
 import { shogo } from '../lib/shogo'
+import type { UserType } from '../generated/types'
 
-export type UserType = {
-  id: string
-  email: string
-  name: string | null
-}
+// Re-export the type for convenience
+export type { UserType }
 
 /**
- * Get or create the current user (first user for demo)
+ * Get current user - finds the first user (demo app simplicity)
  */
-export const getCurrentUser = createServerFn({ method: 'GET' }).handler(async () => {
-  // For demo: get first user or return null
-  const user = await shogo.db.user.findFirst({
-    orderBy: { createdAt: 'asc' },
+export const getCurrentUser = createServerFn({ method: 'GET' })
+  .handler(async () => {
+    const user = await shogo.db.user.findFirst({
+      orderBy: { createdAt: 'asc' },
+    })
+    return user as UserType | null
   })
-  return user
-})
 
 /**
  * Create a new user
@@ -36,5 +35,5 @@ export const createUser = createServerFn({ method: 'POST' })
         name: data.name,
       },
     })
-    return user
+    return user as UserType
   })

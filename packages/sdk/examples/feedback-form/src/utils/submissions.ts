@@ -1,27 +1,22 @@
 /**
  * Submission Server Functions
  * 
- * Demonstrates using shogo.db (Prisma pass-through) for submission operations.
- * Includes aggregations for dashboard statistics.
+ * Custom submission functions with business logic.
+ * Basic CRUD operations are in ../generated/server-functions.ts
+ * 
+ * This file contains:
+ * - Custom filtered listing
+ * - Mark as read toggle
+ * - Star toggle
+ * - Statistics aggregation
  */
 
 import { createServerFn } from '@tanstack/react-start'
 import { shogo } from '../lib/shogo'
+import type { SubmissionType } from '../generated/types'
 
-export type SubmissionType = {
-  id: string
-  name: string
-  email: string
-  rating: number
-  category: string
-  message: string
-  wouldRecommend: boolean
-  isRead: boolean
-  isStarred: boolean
-  userId: string
-  createdAt: Date
-  updatedAt: Date
-}
+// Re-export type
+export type { SubmissionType }
 
 export type SubmissionStats = {
   total: number
@@ -33,11 +28,11 @@ export type SubmissionStats = {
   recommendRate: number
 }
 
-// Get all submissions for a user
+// Get all submissions for a user with optional filter
 export const getSubmissions = createServerFn({ method: 'POST' })
   .inputValidator((data: { userId: string; filter?: 'all' | 'unread' | 'starred' }) => data)
   .handler(async ({ data }) => {
-    const where: any = { userId: data.userId }
+    const where: Record<string, unknown> = { userId: data.userId }
     
     if (data.filter === 'unread') {
       where.isRead = false
@@ -52,51 +47,7 @@ export const getSubmissions = createServerFn({ method: 'POST' })
     return submissions as SubmissionType[]
   })
 
-// Get a single submission
-export const getSubmission = createServerFn({ method: 'POST' })
-  .inputValidator((data: { id: string; userId: string }) => data)
-  .handler(async ({ data }) => {
-    const submission = await shogo.db.submission.findFirst({
-      where: { id: data.id, userId: data.userId },
-    })
-    return submission as SubmissionType | null
-  })
-
-// Create a submission (public - no auth required for respondent)
-export const createSubmission = createServerFn({ method: 'POST' })
-  .inputValidator((data: {
-    userId: string // The form owner's ID
-    name: string
-    email: string
-    rating: number
-    category: string
-    message: string
-    wouldRecommend: boolean
-  }) => data)
-  .handler(async ({ data }) => {
-    // Verify the user (form owner) exists
-    const user = await shogo.db.user.findUnique({
-      where: { id: data.userId },
-    })
-    if (!user) {
-      throw new Error('Form not found')
-    }
-
-    const submission = await shogo.db.submission.create({
-      data: {
-        name: data.name,
-        email: data.email,
-        rating: data.rating,
-        category: data.category,
-        message: data.message,
-        wouldRecommend: data.wouldRecommend,
-        userId: data.userId,
-      },
-    })
-    return submission as SubmissionType
-  })
-
-// Mark submission as read
+// Mark submission as read/unread
 export const markAsRead = createServerFn({ method: 'POST' })
   .inputValidator((data: { id: string; userId: string; isRead: boolean }) => data)
   .handler(async ({ data }) => {
@@ -202,4 +153,38 @@ export const getStats = createServerFn({ method: 'POST' })
       byRating,
       recommendRate: Math.round(recommendRate),
     } as SubmissionStats
+  })
+
+// Create a submission (public - no auth required for respondent)
+export const createSubmission = createServerFn({ method: 'POST' })
+  .inputValidator((data: {
+    userId: string // The form owner's ID
+    name: string
+    email: string
+    rating: number
+    category: string
+    message: string
+    wouldRecommend: boolean
+  }) => data)
+  .handler(async ({ data }) => {
+    // Verify the user (form owner) exists
+    const user = await shogo.db.user.findUnique({
+      where: { id: data.userId },
+    })
+    if (!user) {
+      throw new Error('Form not found')
+    }
+
+    const submission = await shogo.db.submission.create({
+      data: {
+        name: data.name,
+        email: data.email,
+        rating: data.rating,
+        category: data.category,
+        message: data.message,
+        wouldRecommend: data.wouldRecommend,
+        userId: data.userId,
+      },
+    })
+    return submission as SubmissionType
   })
