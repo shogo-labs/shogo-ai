@@ -141,17 +141,6 @@ export function DomainProvider<T extends DomainsMap>({
   const [schemasLoading, setSchemasLoading] = useState(true)
   const [schemasLoaded, setSchemasLoaded] = useState(false)
 
-  // DEBUG: Track mount/unmount
-  useEffect(() => {
-    console.log('[DomainProvider] MOUNTED with currentUserId:', currentUserId)
-    return () => {
-      console.log('[DomainProvider] UNMOUNTED')
-    }
-  }, [])
-
-  // DEBUG: Log currentUserId prop changes
-  console.log('[DomainProvider] Render - currentUserId:', currentUserId, 'storesInitialized:', !!storesRef.current)
-
   // currentUserId is passed from app (e.g., from Better Auth's useSession())
   // This will be injected into each store's environment for query-level filtering
 
@@ -159,7 +148,6 @@ export function DomainProvider<T extends DomainsMap>({
   // Note: When user changes, App.tsx remounts DomainProvider via key={authKey},
   // so stores are recreated with the new user's authContext
   if (!storesRef.current) {
-    console.log('[DomainProvider] Initializing stores...')
     const stores: Record<string, any> = {}
     const schemaNameToKey: Record<string, string> = {}
 

@@ -126,9 +126,6 @@ function AppContent() {
   // authKey controls DomainProvider lifecycle - stable via StableAuthProvider
   const authKey = userId ?? 'anonymous'
 
-  // DEBUG: Log stable auth state
-  console.log('[AppContent] userId:', userId, 'authKey:', authKey)
-
   return (
     <NuqsAdapter>
       <BrowserRouter>
