@@ -80,19 +80,18 @@ RUN apk add --no-cache \
 # Install Claude Code CLI globally (required for ai-sdk-provider-claude-code)
 RUN npm install -g @anthropic-ai/claude-code
 
-# Install Playwright with Chromium for E2E testing
-# Use the system-installed Chromium to avoid downloading ~300MB of binaries
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
-RUN npm install -g playwright && \
-    npx playwright install-deps chromium 2>/dev/null || true
-
 # Set SHELL environment variable (required by Claude Code CLI)
 ENV SHELL=/bin/bash
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup
+
+# Configure Playwright to use system-installed Chromium
+# Alpine uses musl-libc so we can't use Playwright's glibc-based browsers
+# The system chromium package is installed via apk above
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # Copy built artifacts and dependencies
 COPY --from=builder /app/node_modules ./node_modules
@@ -131,7 +130,7 @@ ENV HOME=/app
 # Enable fast start mode by default
 ENV FAST_START_MODE=true
 ENV BUILD_STATUS_FILE=/tmp/build-status
-# Playwright: use system Chromium to avoid downloading browsers at runtime
+# Playwright: use system Chromium (Alpine doesn't support Playwright's glibc binaries)
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 

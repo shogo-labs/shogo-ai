@@ -4,15 +4,20 @@ export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: false, // Run tests sequentially to avoid DB conflicts
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  retries: process.env.CI ? 2 : 2, // Always retry to capture traces on failure
   workers: 1, // Single worker for E2E tests
   reporter: 'html',
   timeout: 30000,
+  outputDir: './test-results',
 
   use: {
     baseURL: 'http://localhost:5174',
-    trace: 'on-first-retry',
-    screenshot: 'only-on-failure',
+    // Always capture traces for replay in the UI
+    trace: 'on',
+    // Always capture screenshots
+    screenshot: 'on',
+    // Capture video on failure for additional debugging
+    video: 'retain-on-failure',
   },
 
   projects: [

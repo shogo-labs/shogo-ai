@@ -1,7 +1,7 @@
 # =============================================================================
 # Shogo AI - Staging EKS Deployment
 # =============================================================================
-# Region: us-east-1 (Ohio)
+# Region: us-east-1 (N. Virginia)
 # Architecture: Pod-per-Workspace with Knative scale-to-zero
 # Updated: January 2026
 # =============================================================================
@@ -173,6 +173,9 @@ module "eks" {
   node_desired_size   = var.node_desired_size
   node_min_size       = var.node_min_size
   node_max_size       = var.node_max_size
+
+  # Enable secondary node group for additional capacity (matching deployed config)
+  enable_secondary_node_group = var.enable_secondary_node_group
 
   # Enable Karpenter for workspace autoscaling
   enable_karpenter = true

@@ -8,10 +8,12 @@ export default defineConfig({
   workers: 1,
   reporter: [['list'], ['html', { open: 'never' }]],
   timeout: 30000,
+  outputDir: './test-results',
   use: {
     baseURL: process.env.BASE_URL || 'http://localhost:3000',
-    trace: 'on-first-retry',
-    screenshot: 'only-on-failure',
+    trace: 'on',
+    screenshot: 'on',
+    video: 'retain-on-failure',
   },
   projects: [
     {

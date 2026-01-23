@@ -63,6 +63,12 @@ variable "node_max_size" {
   default     = 5 # Smaller than production
 }
 
+variable "enable_secondary_node_group" {
+  description = "Enable secondary node group for additional capacity"
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------------------
 # RDS Configuration
 # -----------------------------------------------------------------------------

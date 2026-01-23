@@ -7,6 +7,7 @@
  * - Run tests in headed mode (visible browser)
  * - Streaming test output with pass/fail highlighting
  * - Test summary (passed/failed counts)
+ * - Trace viewer for replaying test execution
  *
  * Uses the tests API for file discovery and the terminal exec API
  * for backwards compatibility with preset commands.
@@ -28,6 +29,10 @@ import {
   ChevronRight,
   FolderOpen,
   RefreshCw,
+  Film,
+  Download,
+  ExternalLink,
+  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -74,6 +79,16 @@ interface TestSummary {
   duration?: string
 }
 
+/**
+ * Trace file info from API
+ */
+interface TraceFile {
+  name: string
+  path: string
+  size: number
+  modified: string
+}
+
 export interface TestPanelProps {
   /** Project ID to run tests for */
   projectId: string
@@ -107,6 +122,22 @@ function parseTestSummary(output: string): TestSummary | null {
     total: passed + failed + skipped,
     duration: durationMatch ? durationMatch[1] : undefined,
   }
+}
+
+/**
+ * Get relative time string (e.g., "2m ago", "1h ago")
+ */
+function getTimeAgo(date: Date): string {
+  const now = new Date()
+  const diff = now.getTime() - date.getTime()
+  const minutes = Math.floor(diff / 60000)
+  const hours = Math.floor(diff / 3600000)
+  const days = Math.floor(diff / 86400000)
+  
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  if (hours < 24) return `${hours}h ago`
+  return `${days}d ago`
 }
 
 /**
@@ -188,6 +219,13 @@ export function TestPanel({
   })
   const [history, setHistory] = useState<TestExecution[]>([])
   
+  // Trace viewer state
+  const [traces, setTraces] = useState<TraceFile[]>([])
+  const [isLoadingTraces, setIsLoadingTraces] = useState(false)
+  const [activeTrace, setActiveTrace] = useState<TraceFile | null>(null)
+  const [showTraceViewer, setShowTraceViewer] = useState(false)
+  const [traceViewerUrl, setTraceViewerUrl] = useState<string | null>(null)
+  
   const outputRef = useRef<HTMLPreElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -226,6 +264,85 @@ export function TestPanel({
       console.error('[TestPanel] Failed to refresh test files:', err)
     } finally {
       setIsLoadingFiles(false)
+    }
+  }, [projectId])
+
+  // Fetch traces
+  const fetchTraces = useCallback(async () => {
+    setIsLoadingTraces(true)
+    try {
+      const response = await fetch(`/api/projects/${projectId}/tests/traces`)
+      if (response.ok) {
+        const data = await response.json()
+        setTraces(data.traces || [])
+      }
+    } catch (err) {
+      console.error('[TestPanel] Failed to fetch traces:', err)
+    } finally {
+      setIsLoadingTraces(false)
+    }
+  }, [projectId])
+
+  // Fetch traces when execution completes
+  useEffect(() => {
+    if (execution.status === 'success' || execution.status === 'error') {
+      // Wait a bit for trace files to be written
+      const timer = setTimeout(() => {
+        fetchTraces()
+      }, 1000)
+      return () => clearTimeout(timer)
+    }
+  }, [execution.status, fetchTraces])
+
+  // Open trace in viewer
+  const openTrace = useCallback((trace: TraceFile) => {
+    setActiveTrace(trace)
+    setShowTraceViewer(true)
+    
+    // Construct the full URL to the trace file
+    // trace.playwright.dev accepts a trace URL parameter
+    const traceFileUrl = `${window.location.origin}/api/projects/${projectId}/tests/traces/${encodeURIComponent(trace.path)}`
+    const viewerUrl = `https://trace.playwright.dev/?trace=${encodeURIComponent(traceFileUrl)}`
+    setTraceViewerUrl(viewerUrl)
+  }, [projectId])
+
+  // Close trace viewer
+  const closeTraceViewer = useCallback(() => {
+    setShowTraceViewer(false)
+    setActiveTrace(null)
+    if (traceViewerUrl) {
+      URL.revokeObjectURL(traceViewerUrl)
+      setTraceViewerUrl(null)
+    }
+  }, [traceViewerUrl])
+
+  // Download trace file
+  const downloadTrace = useCallback(async (trace: TraceFile) => {
+    try {
+      const response = await fetch(`/api/projects/${projectId}/tests/traces/${encodeURIComponent(trace.path)}`)
+      if (response.ok) {
+        const blob = await response.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = trace.name
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      }
+    } catch (err) {
+      console.error('[TestPanel] Failed to download trace:', err)
+    }
+  }, [projectId])
+
+  // Clear traces
+  const clearTraces = useCallback(async () => {
+    try {
+      await fetch(`/api/projects/${projectId}/tests/traces`, { method: 'DELETE' })
+      setTraces([])
+    } catch (err) {
+      console.error('[TestPanel] Failed to clear traces:', err)
     }
   }, [projectId])
 
@@ -492,6 +609,7 @@ export function TestPanel({
   const hasOutput = execution.output.length > 0
   const hasTestFiles = testFiles.length > 0
   const totalTests = testFiles.reduce((sum, f) => sum + f.tests.length, 0)
+  const hasTraces = traces.length > 0
 
   // Calculate elapsed time
   const elapsedTime = useMemo(() => {
@@ -552,6 +670,24 @@ export function TestPanel({
             title={showSidebar ? "Hide test files" : "Show test files"}
           >
             <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
+          </button>
+          <button
+            onClick={fetchTraces}
+            className={cn(
+              "p-1.5 rounded hover:bg-muted transition-colors relative",
+              hasTraces && "text-purple-500"
+            )}
+            title="View test traces"
+            disabled={isLoadingTraces}
+          >
+            <Film className={cn(
+              "h-3.5 w-3.5",
+              isLoadingTraces && "animate-pulse",
+              hasTraces ? "text-purple-500" : "text-muted-foreground"
+            )} />
+            {hasTraces && (
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-purple-500 rounded-full" />
+            )}
           </button>
           <button
             onClick={clearOutput}
@@ -727,6 +863,61 @@ export function TestPanel({
                 ))}
               </div>
             )}
+
+            {/* Traces section */}
+            {hasTraces && (
+              <div className="border-t py-2">
+                <div className="px-3 py-1 flex items-center justify-between">
+                  <span className="text-[10px] font-medium text-purple-500 uppercase tracking-wide flex items-center gap-1">
+                    <Film className="h-3 w-3" />
+                    Traces
+                  </span>
+                  <button
+                    onClick={clearTraces}
+                    className="text-[10px] text-muted-foreground hover:text-foreground"
+                    title="Clear all traces"
+                  >
+                    Clear
+                  </button>
+                </div>
+                {traces.map((trace) => {
+                  // Extract test name from path (e.g., test-results/test-name-chromium/trace.zip)
+                  const testName = trace.path.split('/')[1]?.replace(/-chromium$/, '') || trace.name
+                  const sizeKb = Math.round(trace.size / 1024)
+                  const modified = new Date(trace.modified)
+                  const timeAgo = getTimeAgo(modified)
+                  
+                  return (
+                    <div
+                      key={trace.path}
+                      className="flex items-center gap-1 px-3 py-1.5 hover:bg-muted/50 group"
+                    >
+                      <button
+                        onClick={() => openTrace(trace)}
+                        className="flex-1 flex items-center gap-2 text-xs text-left text-muted-foreground hover:text-foreground truncate"
+                        title={`View trace: ${trace.path}`}
+                      >
+                        <Film className="h-3 w-3 text-purple-400 shrink-0" />
+                        <span className="truncate">{testName}</span>
+                      </button>
+                      <span className="text-[10px] text-muted-foreground/60 shrink-0">
+                        {sizeKb}KB
+                      </span>
+                      <span className="text-[10px] text-muted-foreground/60 shrink-0 hidden group-hover:block">
+                        {timeAgo}
+                      </span>
+                      <button
+                        onClick={() => downloadTrace(trace)}
+                        className="p-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity"
+                        title="Download trace"
+                      >
+                        <Download className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         )}
 
@@ -833,6 +1024,76 @@ export function TestPanel({
           )}
         </div>
       </div>
+
+      {/* Trace Viewer Overlay */}
+      {showTraceViewer && activeTrace && (
+        <div className="absolute inset-0 z-50 bg-background flex flex-col">
+          {/* Trace viewer header */}
+          <div className="flex items-center justify-between px-4 py-2 border-b bg-purple-500/10">
+            <div className="flex items-center gap-3">
+              <Film className="h-4 w-4 text-purple-500" />
+              <span className="text-sm font-medium">Trace Viewer</span>
+              <span className="text-xs text-muted-foreground">
+                {activeTrace.path.split('/')[1]?.replace(/-chromium$/, '') || activeTrace.name}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {traceViewerUrl && (
+                <a
+                  href={traceViewerUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md",
+                    "border border-border hover:bg-muted transition-colors"
+                  )}
+                  title="Open in new tab"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  Open in New Tab
+                </a>
+              )}
+              <button
+                onClick={() => downloadTrace(activeTrace)}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md",
+                  "border border-border hover:bg-muted transition-colors"
+                )}
+              >
+                <Download className="h-3 w-3" />
+                Download
+              </button>
+              <button
+                onClick={closeTraceViewer}
+                className="p-1.5 rounded hover:bg-muted transition-colors"
+                title="Close trace viewer"
+              >
+                <X className="h-4 w-4 text-muted-foreground" />
+              </button>
+            </div>
+          </div>
+
+          {/* Trace viewer content - embedded iframe */}
+          <div className="flex-1 flex flex-col min-h-0">
+            {traceViewerUrl ? (
+              <iframe
+                src={traceViewerUrl}
+                className="flex-1 w-full border-0"
+                title="Playwright Trace Viewer"
+                allow="clipboard-read; clipboard-write"
+                sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+              />
+            ) : (
+              <div className="flex-1 flex items-center justify-center">
+                <div className="flex items-center gap-3">
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  <span className="text-muted-foreground">Loading trace viewer...</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

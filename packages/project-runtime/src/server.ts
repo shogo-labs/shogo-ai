@@ -16,7 +16,7 @@ import { cors } from 'hono/cors'
 import { streamText, tool, type CoreMessage } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { z } from 'zod'
-import { resolve, isAbsolute, relative, dirname, join } from 'path'
+import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
 import { existsSync, readdirSync, readFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
 import { initializeS3Sync, type S3Sync } from './s3-sync'
 import { fileURLToPath } from 'url'
@@ -1726,6 +1726,141 @@ app.post('/tests/run', async (c) => {
 })
 
 // =============================================================================
+// Test Traces API - List and serve Playwright trace files
+// =============================================================================
+
+/**
+ * GET /tests/traces
+ * List all available trace files from test-results
+ * Returns: { traces: [{ name, path, size, modified }] }
+ */
+app.get('/tests/traces', async (c) => {
+  const testResultsDir = join(PROJECT_DIR, 'test-results')
+  
+  if (!existsSync(testResultsDir)) {
+    return c.json({ traces: [] })
+  }
+
+  const traces: { name: string; path: string; size: number; modified: string }[] = []
+  
+  // Recursively find all trace.zip files
+  const findTraces = (dir: string) => {
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          findTraces(fullPath)
+        } else if (entry.name === 'trace.zip' || entry.name.endsWith('-trace.zip')) {
+          const stat = statSync(fullPath)
+          const relativePath = fullPath.replace(PROJECT_DIR + '/', '')
+          traces.push({
+            name: entry.name,
+            path: relativePath,
+            size: stat?.size || 0,
+            modified: stat?.mtime?.toISOString() || new Date().toISOString(),
+          })
+        }
+      }
+    } catch {
+      // Directory doesn't exist or can't be read
+    }
+  }
+
+  findTraces(testResultsDir)
+  
+  // Sort by modified date, newest first
+  traces.sort((a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime())
+  
+  return c.json({ traces })
+})
+
+// CORS headers for trace viewer
+const traceViewerCorsHeaders: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*', // Allow all origins for trace viewing
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Range',
+  'Access-Control-Expose-Headers': 'Content-Length, Content-Range',
+}
+
+/**
+ * OPTIONS /tests/traces/*
+ * Handle CORS preflight for trace files
+ */
+app.options('/tests/traces/*', (c) => {
+  return new Response(null, {
+    status: 204,
+    headers: traceViewerCorsHeaders,
+  })
+})
+
+/**
+ * GET /tests/traces/:path
+ * Download a specific trace file
+ * The path should be URL-encoded
+ * 
+ * Includes CORS headers to allow trace.playwright.dev to load traces
+ */
+app.get('/tests/traces/*', async (c) => {
+  // Get the path from the URL (everything after /tests/traces/)
+  const tracePath = c.req.path.replace('/tests/traces/', '')
+  
+  if (!tracePath || tracePath === '') {
+    return c.json({ error: 'No trace path specified' }, 400)
+  }
+
+  // Decode the path
+  const decodedPath = decodeURIComponent(tracePath)
+  const fullPath = join(PROJECT_DIR, decodedPath)
+  
+  // Security check - ensure path is within project directory
+  const normalizedPath = fullPath.replace(/\.\./g, '')
+  if (!normalizedPath.startsWith(PROJECT_DIR)) {
+    return c.json({ error: 'Invalid path' }, 403)
+  }
+
+  // Check if file exists
+  if (!existsSync(fullPath)) {
+    return c.json({ error: 'Trace file not found' }, 404)
+  }
+  
+
+  // Serve the trace file with CORS headers for trace.playwright.dev
+  const file = Bun.file(fullPath)
+  const stat = await file.stat()
+  
+  return new Response(file.stream(), {
+    headers: {
+      ...traceViewerCorsHeaders,
+      'Content-Type': 'application/zip',
+      'Content-Length': String(stat?.size || 0),
+      'Content-Disposition': `inline; filename="${basename(fullPath)}"`, // inline for viewing
+      'Cache-Control': 'no-cache',
+    },
+  })
+})
+
+/**
+ * DELETE /tests/traces
+ * Clear all test results (traces, screenshots, videos)
+ */
+app.delete('/tests/traces', async (c) => {
+  const testResultsDir = join(PROJECT_DIR, 'test-results')
+  
+  if (!existsSync(testResultsDir)) {
+    return c.json({ ok: true, message: 'No test results to clear' })
+  }
+
+  try {
+    // Remove the entire test-results directory
+    await Bun.spawn(['rm', '-rf', testResultsDir]).exited
+    return c.json({ ok: true, message: 'Test results cleared' })
+  } catch (error: any) {
+    return c.json({ ok: false, error: error.message }, 500)
+  }
+})
+
+// =============================================================================
 // Database API (Prisma Studio) - Simplified for Kubernetes
 // =============================================================================
 
@@ -2096,9 +2231,10 @@ app.post('/database/stop', (c) => {
 // =============================================================================
 
 import { lspManager } from './lsp-service'
+import type { ServerWebSocket } from 'bun'
 
 // Track active LSP WebSocket connections
-const lspConnections = new Set<WebSocket>()
+const lspConnections = new Set<ServerWebSocket<unknown>>()
 
 /**
  * LSP WebSocket handler for Monaco editor IntelliSense
@@ -2156,66 +2292,83 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
 console.log(`[project-runtime] Starting server on port ${PORT}`)
 
+// WebSocket handlers for LSP
+const websocketHandlers = {
+  async open(ws: ServerWebSocket<unknown>) {
+    console.log('[LSP WebSocket] Client connected')
+    lspConnections.add(ws)
+
+    try {
+      // Get or create language server for this project
+      const lspServer = await lspManager.getServer(PROJECT_DIR)
+      
+      // Forward messages from tsserver to WebSocket
+      const unsubscribe = lspServer.onMessage((msg) => {
+        // readyState 1 = OPEN
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify(msg))
+        }
+      })
+
+      // Store unsubscribe function on ws for cleanup
+      ;(ws as any).__lspUnsubscribe = unsubscribe
+      ;(ws as any).__lspServer = lspServer
+      
+      console.log('[LSP WebSocket] Language server ready')
+    } catch (error) {
+      console.error('[LSP WebSocket] Failed to start language server:', error)
+      ws.close(1011, 'Failed to start language server')
+    }
+  },
+  
+  message(ws: ServerWebSocket<unknown>, message: string | Buffer) {
+    try {
+      const msg = JSON.parse(typeof message === 'string' ? message : message.toString())
+      const lspServer = (ws as any).__lspServer
+      
+      if (lspServer) {
+        // Forward message to tsserver
+        lspServer.send(msg)
+      }
+    } catch (error) {
+      console.error('[LSP WebSocket] Error handling message:', error)
+    }
+  },
+  
+  close(ws: ServerWebSocket<unknown>, code: number, reason: string) {
+    console.log('[LSP WebSocket] Client disconnected:', code, reason)
+    lspConnections.delete(ws)
+    
+    // Clean up
+    const unsubscribe = (ws as any).__lspUnsubscribe
+    if (unsubscribe) {
+      unsubscribe()
+    }
+  },
+}
+
+// Create a wrapper fetch function that handles WebSocket upgrades
+function fetchHandler(request: Request, server: { upgrade: (req: Request, options?: { data?: unknown }) => boolean }) {
+  const url = new URL(request.url)
+  
+  // Handle WebSocket upgrade for /lsp endpoint
+  if (url.pathname === '/lsp' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+    const success = server.upgrade(request)
+    if (success) {
+      // Return undefined to signal Bun that the upgrade was handled
+      return undefined
+    }
+    return new Response('WebSocket upgrade failed', { status: 500 })
+  }
+  
+  // Forward all other requests to Hono
+  return app.fetch(request)
+}
+
+// Export default server configuration
 export default {
   port: PORT,
-  fetch: app.fetch,
-  // Increase idle timeout for long-running Claude responses (2 minutes)
+  fetch: fetchHandler,
   idleTimeout: 120,
-  // WebSocket handlers for LSP
-  websocket: {
-    async open(ws: WebSocket) {
-      console.log('[LSP WebSocket] Client connected')
-      lspConnections.add(ws)
-
-      try {
-        // Get or create language server for this project
-        const server = await lspManager.getServer(PROJECT_DIR)
-        
-        // Forward messages from tsserver to WebSocket
-        const unsubscribe = server.onMessage((msg) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(msg))
-          }
-        })
-
-        // Store unsubscribe function on ws for cleanup
-        ;(ws as any).__lspUnsubscribe = unsubscribe
-        ;(ws as any).__lspServer = server
-        
-        console.log('[LSP WebSocket] Language server ready')
-      } catch (error) {
-        console.error('[LSP WebSocket] Failed to start language server:', error)
-        ws.close(1011, 'Failed to start language server')
-      }
-    },
-    
-    message(ws: WebSocket, message: string | Buffer) {
-      try {
-        const msg = JSON.parse(typeof message === 'string' ? message : message.toString())
-        const server = (ws as any).__lspServer
-        
-        if (server) {
-          // Forward message to tsserver
-          server.send(msg)
-        }
-      } catch (error) {
-        console.error('[LSP WebSocket] Error handling message:', error)
-      }
-    },
-    
-    close(ws: WebSocket) {
-      console.log('[LSP WebSocket] Client disconnected')
-      lspConnections.delete(ws)
-      
-      // Clean up
-      const unsubscribe = (ws as any).__lspUnsubscribe
-      if (unsubscribe) {
-        unsubscribe()
-      }
-    },
-    
-    error(ws: WebSocket, error: Error) {
-      console.error('[LSP WebSocket] Error:', error)
-    },
-  },
+  websocket: websocketHandlers,
 }

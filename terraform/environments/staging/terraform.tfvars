@@ -11,11 +11,12 @@ project_name = "shogo"
 vpc_cidr = "10.1.0.0/16"
 
 # EKS Configuration (smaller than production)
-eks_cluster_version = "1.33"
-node_instance_types = ["t3.medium"]  # 17 pod limit per node, 4GB RAM
-node_desired_size   = 2             # Need 2 nodes for system + app pods
-node_min_size       = 2             # Keep 2 minimum to avoid scheduling issues
-node_max_size       = 5
+eks_cluster_version         = "1.33"
+node_instance_types         = ["t3.medium"]  # 17 pod limit per node, 4GB RAM
+node_desired_size           = 2              # Need 2 nodes for system + app pods
+node_min_size               = 2              # Keep 2 minimum to avoid scheduling issues
+node_max_size               = 5
+enable_secondary_node_group = true           # Secondary node group for additional capacity
 
 # RDS Configuration (smaller than production)
 rds_instance_class         = "db.t3.micro"

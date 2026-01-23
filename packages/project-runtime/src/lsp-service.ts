@@ -1,18 +1,18 @@
 /**
- * TypeScript Language Server (tsserver) Service
+ * TypeScript Language Server Service
  * 
  * Provides LSP (Language Server Protocol) support for Monaco editor.
- * Runs tsserver as a subprocess and bridges WebSocket connections to it.
+ * Uses typescript-language-server which wraps tsserver with a proper LSP interface.
  * 
  * Features:
- * - Spawns tsserver with proper configuration
- * - Handles LSP JSON-RPC protocol over WebSocket
+ * - Spawns typescript-language-server with proper configuration
+ * - Handles standard LSP JSON-RPC protocol over WebSocket
  * - Provides full IntelliSense, diagnostics, go-to-definition, etc.
  */
 
 import { spawn, type Subprocess } from 'bun'
 import { existsSync } from 'fs'
-import { join } from 'path'
+import { join, dirname } from 'path'
 
 // LSP message types
 interface LSPMessage {
@@ -58,18 +58,37 @@ export class TSLanguageServer {
       return
     }
 
-    // Find tsserver - try project's node_modules first, then global
-    const localTsserver = join(this.projectDir, 'node_modules', '.bin', 'tsserver')
-    const tsserverPath = existsSync(localTsserver) ? localTsserver : 'tsserver'
+    // Find typescript-language-server - check multiple locations
+    const possiblePaths = [
+      // Project's node_modules
+      join(this.projectDir, 'node_modules', '.bin', 'typescript-language-server'),
+      // project-runtime's node_modules (where we installed it)
+      join(dirname(dirname(import.meta.path)), 'node_modules', '.bin', 'typescript-language-server'),
+      // Global fallback
+      'typescript-language-server',
+    ]
 
-    console.log(`[LSP] Starting TypeScript language server from: ${tsserverPath}`)
+    let serverPath = 'typescript-language-server'
+    for (const path of possiblePaths) {
+      if (path === 'typescript-language-server' || existsSync(path)) {
+        serverPath = path
+        break
+      }
+    }
+
+    console.log(`[LSP] Starting TypeScript language server from: ${serverPath}`)
     console.log(`[LSP] Project directory: ${this.projectDir}`)
 
     try {
-      this.process = spawn([tsserverPath, '--stdio'], {
+      // typescript-language-server uses --stdio for LSP communication
+      // It will automatically find TypeScript from the project's node_modules
+      const args = ['--stdio', '--log-level', '3']
+
+      this.process = spawn([serverPath, ...args], {
         cwd: this.projectDir,
         env: {
           ...process.env,
+          // Enable logging for debugging
           TSS_LOG: '-level verbose -file /tmp/tsserver.log',
         },
         stdin: 'pipe',
@@ -86,13 +105,13 @@ export class TSLanguageServer {
       // Wait for process to be ready
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
-          reject(new Error('Timeout waiting for tsserver to start'))
+          reject(new Error('Timeout waiting for typescript-language-server to start'))
         }, 10000)
 
         // Check if process started successfully
         if (this.process?.exitCode !== null) {
           clearTimeout(timeout)
-          reject(new Error(`tsserver exited with code ${this.process?.exitCode}`))
+          reject(new Error(`typescript-language-server exited with code ${this.process?.exitCode}`))
           return
         }
 
@@ -103,7 +122,7 @@ export class TSLanguageServer {
 
       console.log('[LSP] TypeScript language server started successfully')
     } catch (error) {
-      console.error('[LSP] Failed to start tsserver:', error)
+      console.error('[LSP] Failed to start typescript-language-server:', error)
       this.process = null
       throw error
     }
@@ -222,9 +241,8 @@ export class TSLanguageServer {
     const content = JSON.stringify(message)
     const header = `Content-Length: ${Buffer.byteLength(content)}\r\n\r\n`
     
-    const writer = this.process.stdin.getWriter()
-    writer.write(new TextEncoder().encode(header + content))
-    writer.releaseLock()
+    // Bun's stdin is a FileSink, use .write() directly
+    this.process.stdin.write(header + content)
   }
 
   /**
@@ -413,6 +431,7 @@ class LSPServerManager {
 
   /**
    * Get or create a language server for a project
+   * Note: Does NOT auto-initialize - client should send initialize request
    */
   async getServer(projectDir: string): Promise<TSLanguageServer> {
     let server = this.servers.get(projectDir)
@@ -421,7 +440,8 @@ class LSPServerManager {
       server = new TSLanguageServer(projectDir)
       this.servers.set(projectDir, server)
       await server.start()
-      await server.initialize()
+      // Don't initialize here - let the client send initialize request
+      // This allows proper LSP handshake where client controls initialization
     }
 
     return server

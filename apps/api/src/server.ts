@@ -1716,6 +1716,140 @@ app.post('/api/projects/:projectId/tests/run', async (c) => {
   return router.fetch(newReq)
 })
 
+// List test traces
+app.get('/api/projects/:projectId/tests/traces', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/tests/traces`
+      
+      console.log(`[TestsProxy] Proxying traces list to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error(`[TestsProxy] Error proxying traces list:`, error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Return empty for now
+  return c.json({ traces: [] })
+})
+
+// CORS headers for trace viewer (trace.playwright.dev)
+const traceViewerCorsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Range',
+  'Access-Control-Expose-Headers': 'Content-Length, Content-Range',
+}
+
+// Handle CORS preflight for trace files
+app.options('/api/projects/:projectId/tests/traces/*', (c) => {
+  return new Response(null, {
+    status: 204,
+    headers: traceViewerCorsHeaders,
+  })
+})
+
+// Download a specific trace file
+app.get('/api/projects/:projectId/tests/traces/*', async (c) => {
+  const projectId = c.req.param('projectId')
+  // Get the trace path from the URL (everything after /tests/traces/)
+  const tracePath = c.req.path.replace(`/api/projects/${projectId}/tests/traces/`, '')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/tests/traces/${tracePath}`
+      
+      console.log(`[TestsProxy] Proxying trace download to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl)
+      const responseHeaders = new Headers()
+      // Pass through all headers from project-runtime
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      // Ensure CORS headers are set
+      Object.entries(traceViewerCorsHeaders).forEach(([key, value]) => {
+        responseHeaders.set(key, value)
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error(`[TestsProxy] Error proxying trace download:`, error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Not implemented
+  return c.json({ error: 'Not implemented' }, 501)
+})
+
+// Clear all traces
+app.delete('/api/projects/:projectId/tests/traces', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/tests/traces`
+      
+      console.log(`[TestsProxy] Proxying traces clear to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl, { method: 'DELETE' })
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error(`[TestsProxy] Error proxying traces clear:`, error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Not implemented
+  return c.json({ ok: true, message: 'Not implemented in local mode' })
+})
+
 // =============================================================================
 // Database routes - Prisma Studio management for project workspaces
 // =============================================================================
