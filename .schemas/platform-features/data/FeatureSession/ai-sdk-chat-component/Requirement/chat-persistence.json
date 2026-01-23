@@ -1,9 +1,0 @@
-{
-  "id": "ai-sdk-chat-persistence",
-  "name": "chat-persistence",
-  "description": "Persist chat sessions and message history using MST domain entities with CollectionPersistable. Store ChatSession (id, name, createdAt, status) and ChatMessage (role, content, toolCalls, timestamp) entities.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734462000000,
-  "session": "ai-sdk-chat-component"
-}

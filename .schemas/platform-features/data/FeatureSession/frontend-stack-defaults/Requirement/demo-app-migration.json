@@ -1,9 +1,0 @@
-{
-  "id": "req-fsd-005",
-  "name": "demo-app-migration",
-  "description": "Demo app pages migrated from inline styles to Tailwind classes. Navigation component done. Remaining: HomePage, Unit pages, Auth pages, Teams pages should use Tailwind utilities and shadcn components where appropriate.",
-  "priority": "should",
-  "status": "proposed",
-  "createdAt": 1734480120000,
-  "session": "fs-frontend-defaults-001"
-}

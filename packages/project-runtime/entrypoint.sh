@@ -1,18 +1,20 @@
 #!/bin/bash
 # =============================================================================
-# Project Runtime Entrypoint
+# Project Runtime Entrypoint (Optimized for Fast Startup)
 # =============================================================================
-# Initializes the project environment and starts services:
-# 1. Syncs project files from S3 (if configured)
-# 2. Installs project dependencies
-# 3. Starts Vite dev server (background)
-# 4. Starts agent server (foreground)
+# FAST START: Server starts immediately, heavy initialization runs in background
+#
+# Architecture:
+# 1. Start agent server IMMEDIATELY (health check passes in <2s)
+# 2. Background process handles: S3 sync, bun install, vite build
+# 3. /ready endpoint returns 503 until build completes
+# 4. Preview shows "loading" state during initialization
 # =============================================================================
 
 set -e
 
 echo "[entrypoint] =================================================="
-echo "[entrypoint] Project Runtime Starting"
+echo "[entrypoint] Project Runtime Starting (Fast Mode)"
 echo "[entrypoint] =================================================="
 echo "[entrypoint] PROJECT_ID: ${PROJECT_ID:-not set}"
 echo "[entrypoint] PROJECT_DIR: ${PROJECT_DIR:-/app/project}"
@@ -26,49 +28,25 @@ if [ -z "$PROJECT_ID" ]; then
 fi
 
 PROJECT_DIR="${PROJECT_DIR:-/app/project}"
+export PROJECT_DIR
 
 # =============================================================================
-# Step 1: S3 sync is now handled by the server.ts using @aws-sdk/client-s3
+# S3 sync configuration (handled by server.ts)
 # =============================================================================
-# The S3 sync has been moved into the server code for better integration:
-# - Downloads files from S3 on startup (via initializeS3Sync)
-# - Uploads changes periodically (configurable via S3_SYNC_INTERVAL)
-# - Optional file watcher for real-time sync (via S3_WATCH_ENABLED)
-# - Graceful shutdown uploads pending changes
-#
-# Environment variables:
-#   S3_WORKSPACES_BUCKET - S3 bucket name
-#   S3_ENDPOINT - Custom S3 endpoint (for MinIO)
-#   S3_REGION - AWS region (default: us-east-1)
-#   S3_FORCE_PATH_STYLE - Use path-style URLs (for MinIO)
-#   S3_SYNC_INTERVAL - Sync interval in ms (default: 60000)
-#   S3_WATCH_ENABLED - Enable file watcher (default: false)
-#
 if [ -n "$S3_WORKSPACES_BUCKET" ] && [ -n "$PROJECT_ID" ]; then
-  echo "[entrypoint] S3 sync configured:"
-  echo "[entrypoint]   Bucket: $S3_WORKSPACES_BUCKET"
-  echo "[entrypoint]   Prefix: $PROJECT_ID"
-  echo "[entrypoint]   Endpoint: ${S3_ENDPOINT:-default}"
-  echo "[entrypoint]   Sync will be handled by server.ts"
+  echo "[entrypoint] S3 sync configured: $S3_WORKSPACES_BUCKET/$PROJECT_ID"
 else
-  echo "[entrypoint] S3 sync not configured (no S3_WORKSPACES_BUCKET)"
+  echo "[entrypoint] S3 sync not configured"
 fi
 
 # =============================================================================
-# Step 2: Initialize project directory (if empty)
+# Quick project initialization (just create minimal structure if needed)
 # =============================================================================
 if [ ! -f "$PROJECT_DIR/package.json" ]; then
-  echo "[entrypoint] No package.json found, initializing from template..."
+  echo "[entrypoint] Creating minimal project structure..."
+  mkdir -p "$PROJECT_DIR/src"
   
-  TEMPLATE_DIR="${TEMPLATE_DIR:-/app/packages/project-runtime/template}"
-  
-  if [ -d "$TEMPLATE_DIR" ]; then
-    cp -r "$TEMPLATE_DIR"/* "$PROJECT_DIR/" 2>/dev/null || true
-    echo "[entrypoint] Template files copied"
-  else
-    # Create minimal Vite project structure
-    echo "[entrypoint] Creating minimal Vite project..."
-    cat > "$PROJECT_DIR/package.json" << 'EOF'
+  cat > "$PROJECT_DIR/package.json" << 'EOF'
 {
   "name": "project",
   "private": true,
@@ -90,22 +68,8 @@ if [ ! -f "$PROJECT_DIR/package.json" ]; then
   }
 }
 EOF
-    
-    cat > "$PROJECT_DIR/vite.config.ts" << 'EOF'
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    host: '0.0.0.0',
-    port: 5173,
-  },
-})
-EOF
-    
-    mkdir -p "$PROJECT_DIR/src"
-    cat > "$PROJECT_DIR/src/main.tsx" << 'EOF'
+  
+  cat > "$PROJECT_DIR/src/main.tsx" << 'EOF'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
@@ -116,8 +80,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   </React.StrictMode>,
 )
 EOF
-    
-    cat > "$PROJECT_DIR/src/App.tsx" << 'EOF'
+  
+  cat > "$PROJECT_DIR/src/App.tsx" << 'EOF'
 export default function App() {
   return (
     <div style={{ padding: '2rem', fontFamily: 'system-ui' }}>
@@ -127,8 +91,8 @@ export default function App() {
   )
 }
 EOF
-    
-    cat > "$PROJECT_DIR/index.html" << 'EOF'
+  
+  cat > "$PROJECT_DIR/index.html" << 'EOF'
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -142,53 +106,107 @@ EOF
   </body>
 </html>
 EOF
-    
-    echo "[entrypoint] Minimal Vite project created"
-  fi
-fi
-
-# =============================================================================
-# Step 3: Install project dependencies
-# =============================================================================
-if [ -f "$PROJECT_DIR/package.json" ]; then
-  echo "[entrypoint] Installing project dependencies..."
-  cd "$PROJECT_DIR"
   
-  # Check if node_modules exists and is recent
-  if [ -d "node_modules" ] && [ -f "bun.lock" ]; then
-    echo "[entrypoint] Dependencies already installed, skipping"
-  else
-    bun install 2>&1 || echo "[entrypoint] Dependency install failed (continuing anyway)"
-    echo "[entrypoint] Dependencies installed"
-  fi
+  echo "[entrypoint] Minimal project created"
 fi
 
 # =============================================================================
-# Step 4: Start Vite dev server (background)
+# Background initialization script
 # =============================================================================
-echo "[entrypoint] Starting Vite dev server..."
+cat > /tmp/background-init.sh << 'BGSCRIPT'
+#!/bin/bash
+set -e
+
+PROJECT_DIR="${PROJECT_DIR:-/app/project}"
+BUILD_STATUS_FILE="/tmp/build-status"
+TEMPLATE_CACHE="/template-cache/node_modules"
+
+echo "initializing" > "$BUILD_STATUS_FILE"
+
 cd "$PROJECT_DIR"
 
-# Start Vite in background
-bun run vite --port 5173 --host 0.0.0.0 &
-VITE_PID=$!
-echo "[entrypoint] Vite server started (PID: $VITE_PID)"
-
-# Wait for Vite to be ready
-echo "[entrypoint] Waiting for Vite server..."
-for i in $(seq 1 30); do
-  if curl -sf http://localhost:5173 > /dev/null 2>&1; then
-    echo "[entrypoint] Vite server is ready"
-    break
+# Step 1: Install dependencies (with cache optimization)
+echo "[bg-init] Installing dependencies..."
+if [ -d "node_modules" ] && [ -f "bun.lock" ]; then
+  echo "[bg-init] Dependencies already installed"
+else
+  # Use pre-cached template dependencies if available
+  # This dramatically speeds up install by using pre-downloaded packages
+  if [ -d "$TEMPLATE_CACHE" ]; then
+    echo "[bg-init] Using pre-cached template dependencies..."
+    # Copy cache to speed up bun install resolution
+    cp -r "$TEMPLATE_CACHE" ./node_modules 2>/dev/null || true
   fi
-  sleep 1
-done
+  
+  if bun install 2>&1; then
+    echo "[bg-init] Dependencies installed"
+  else
+    echo "[bg-init] Dependency install failed"
+    echo "failed:install" > "$BUILD_STATUS_FILE"
+    exit 1
+  fi
+fi
+
+# Step 2: Detect project type
+IS_TANSTACK_START=false
+if grep -q "@tanstack/react-start" "$PROJECT_DIR/package.json" 2>/dev/null; then
+  IS_TANSTACK_START=true
+  echo "[bg-init] TanStack Start project detected"
+else
+  echo "[bg-init] Plain Vite project detected"
+  
+  # Generate vite config
+  PREVIEW_BASE="/api/projects/${PROJECT_ID}/preview/"
+  cat > "$PROJECT_DIR/vite.config.ts" << EOF
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  base: '${PREVIEW_BASE}',
+})
+EOF
+fi
+
+# Step 3: Build
+echo "[bg-init] Building project..."
+if bun --bun vite build 2>&1; then
+  echo "[bg-init] Build completed"
+else
+  echo "[bg-init] Build failed"
+  echo "failed:build" > "$BUILD_STATUS_FILE"
+  exit 1
+fi
+
+# Step 4: Start Nitro server if TanStack Start
+if [ "$IS_TANSTACK_START" = true ] && [ -f "$PROJECT_DIR/.output/server/index.mjs" ]; then
+  echo "[bg-init] Starting TanStack Start server..."
+  PORT=3000 bun run "$PROJECT_DIR/.output/server/index.mjs" &
+  sleep 2
+fi
+
+echo "ready" > "$BUILD_STATUS_FILE"
+echo "[bg-init] Initialization complete!"
+BGSCRIPT
+chmod +x /tmp/background-init.sh
 
 # =============================================================================
-# Step 5: Start agent server (foreground)
+# Start background initialization (non-blocking)
 # =============================================================================
-echo "[entrypoint] Starting agent server..."
+echo "[entrypoint] Starting background initialization..."
+/tmp/background-init.sh &
+BG_PID=$!
+echo "[entrypoint] Background init PID: $BG_PID"
+
+# =============================================================================
+# Start agent server IMMEDIATELY (fast health check)
+# =============================================================================
+echo "[entrypoint] Starting agent server (fast mode)..."
 cd /app/packages/project-runtime
+
+# Export for server.ts
+export BUILD_STATUS_FILE="/tmp/build-status"
+export FAST_START_MODE=true
 
 # Run the server - this blocks and keeps the container running
 exec bun run src/server.ts

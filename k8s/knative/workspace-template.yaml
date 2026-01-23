@@ -2,9 +2,12 @@
 # Knative Service Template for Workspaces
 # =============================================================================
 # Each workspace gets its own Knative Service that:
-#   - Scales to zero when idle (after 60s by default)
-#   - Scales up on first request (cold start)
+#   - Keeps at least 1 pod running (min-scale: 1) to preserve meta-store state
+#   - Scales up to max-scale on high traffic
 #   - Has its own PVC for schema storage
+#
+# IMPORTANT: min-scale: 1 prevents cold start delays and "Schema not found"
+# errors that occur when pods scale to zero and lose loaded schemas.
 #
 # The Workspace Operator would create these dynamically.
 # For testing, we create two sample workspaces.
@@ -41,12 +44,11 @@ spec:
   template:
     metadata:
       annotations:
-        # Scale to zero after 60 seconds of no traffic
-        autoscaling.knative.dev/scale-to-zero-pod-retention-period: "60s"
-        # Maximum 1 replica (single-tenant workspace)
-        autoscaling.knative.dev/max-scale: "1"
-        # Minimum 0 replicas (enable scale-to-zero)
-        autoscaling.knative.dev/min-scale: "0"
+        # Keep at least 1 pod running to preserve meta-store state
+        # This prevents cold start delays and "Schema not found" errors
+        autoscaling.knative.dev/min-scale: "1"
+        # Maximum 3 replicas for high traffic
+        autoscaling.knative.dev/max-scale: "3"
         # Target 100 concurrent requests per pod
         autoscaling.knative.dev/target: "100"
     spec:
@@ -116,9 +118,12 @@ spec:
   template:
     metadata:
       annotations:
-        autoscaling.knative.dev/scale-to-zero-pod-retention-period: "60s"
-        autoscaling.knative.dev/max-scale: "1"
-        autoscaling.knative.dev/min-scale: "0"
+        # Keep at least 1 pod running to preserve meta-store state
+        # This prevents cold start delays and "Schema not found" errors
+        autoscaling.knative.dev/min-scale: "1"
+        # Maximum 3 replicas for high traffic
+        autoscaling.knative.dev/max-scale: "3"
+        # Target 100 concurrent requests per pod
         autoscaling.knative.dev/target: "100"
     spec:
       timeoutSeconds: 300

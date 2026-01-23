@@ -27,6 +27,9 @@ import { ProjectTopBar } from "./ProjectTopBar"
 import { ChatSessionsPanel, type ChatSessionItem } from "./ChatSessionsPanel"
 import { RuntimePreviewPanel } from "./RuntimePreviewPanel"
 import { CodeEditorPanel } from "./CodeEditorPanel"
+import { TerminalPanel } from "./TerminalPanel"
+import { DatabasePanel } from "./DatabasePanel"
+import { TestPanel } from "./TestPanel"
 import { cn } from "@/lib/utils"
 import { useSession } from "@/auth/client"
 import type { ViewportSize } from "./PreviewControls"
@@ -102,8 +105,11 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
   const [currentRoute, setCurrentRoute] = useState("/")
 
-  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), or 'workspace' (ComposablePhaseView)
-  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'workspace'>('runtime')
+  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'workspace' (ComposablePhaseView), 'terminal' (TerminalPanel), 'database' (DatabasePanel), or 'tests' (TestPanel)
+  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'workspace' | 'terminal' | 'database' | 'tests'>('runtime')
+
+  // Code editor refresh trigger - incremented when agent modifies files
+  const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
 
   // Project state
   // Use transition state if available (from homepage flow) to avoid loading flash
@@ -171,14 +177,14 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Check if domains are ready
   const domainsReady = !!studioCore?.projectCollection
 
-  // Load project data with retry logic for schema loading race condition
+  // Load project data with retry logic for schema loading and project creation race conditions
   useEffect(() => {
     if (!projectId || !domainsReady) {
       return
     }
 
     let cancelled = false
-    const MAX_RETRIES = 5
+    const MAX_RETRIES = 10
     const RETRY_DELAY_MS = 500
 
     const loadProjectData = async (attempt = 1): Promise<void> => {
@@ -197,7 +203,18 @@ export const ProjectLayout = observer(function ProjectLayout() {
           setProject(proj)
           setIsLoading(false)
         } else {
-          console.warn("[ProjectLayout] Project not found:", projectId)
+          // Project not found - could be race condition during creation
+          // Retry a few times before giving up
+          if (attempt < MAX_RETRIES) {
+            // Only log at higher attempts to reduce noise
+            if (attempt > 3) {
+              console.debug(`[ProjectLayout] Project not found yet, retrying (${attempt}/${MAX_RETRIES})...`)
+            }
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt))
+            return loadProjectData(attempt + 1)
+          }
+          // Only warn after all retries exhausted
+          console.warn("[ProjectLayout] Project not found after retries:", projectId)
           setIsLoading(false)
         }
       } catch (err: any) {
@@ -205,8 +222,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
         // Retry if schema not loaded yet (race condition on page refresh)
         const isSchemaNotLoaded = err?.message?.includes("Schema") || err?.message?.includes("SCHEMA_NOT_FOUND")
-        if (isSchemaNotLoaded && attempt < MAX_RETRIES) {
-          console.debug(`[ProjectLayout] Schema not ready, retrying (${attempt}/${MAX_RETRIES})...`)
+        const isTransientError = err?.message?.includes("not found") || err?.message?.includes("temporarily")
+        
+        if ((isSchemaNotLoaded || isTransientError) && attempt < MAX_RETRIES) {
+          if (attempt > 3) {
+            console.debug(`[ProjectLayout] Transient error, retrying (${attempt}/${MAX_RETRIES})...`)
+          }
           await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt))
           return loadProjectData(attempt + 1)
         }
@@ -593,6 +614,11 @@ export const ProjectLayout = observer(function ProjectLayout() {
                     className="flex-1 min-h-0"
                     initialMessage={transitionState?.initialMessage}
                     inputContainerRef={chatInputContainerRef}
+                    onFilesChanged={(paths) => {
+                      console.log('[ProjectLayout] 📁 Agent modified files:', paths)
+                      // Increment refresh trigger to reload code editor and preview
+                      setCodeRefreshTrigger(prev => prev + 1)
+                    }}
                   />
                 )}
               </>
@@ -641,6 +667,39 @@ export const ProjectLayout = observer(function ProjectLayout() {
               >
                 Workspace
               </button>
+              <button
+                onClick={() => setPreviewMode('terminal')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'terminal'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Terminal
+              </button>
+              <button
+                onClick={() => setPreviewMode('database')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'database'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Database
+              </button>
+              <button
+                onClick={() => setPreviewMode('tests')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'tests'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Tests
+              </button>
             </div>
 
             {/* Preview Frame with border - all panels stay mounted for state persistence */}
@@ -653,6 +712,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <RuntimePreviewPanel
                   projectId={projectId || ''}
                   className="h-full"
+                  refreshTrigger={codeRefreshTrigger}
                   onError={(err) => {
                     console.error('[ProjectLayout] Runtime error:', err)
                     // Could show toast here
@@ -670,6 +730,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <CodeEditorPanel
                   projectId={projectId || ''}
                   className="h-full"
+                  refreshTrigger={codeRefreshTrigger}
                 />
               </div>
               {/* Workspace View - stays mounted for consistency */}
@@ -680,6 +741,49 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <ComposablePhaseView
                   phaseName={WORKSPACE_COMPOSITION_NAME}
                   feature={project}
+                  className="h-full"
+                />
+              </div>
+              {/* Terminal Panel - stays mounted for output persistence */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'terminal' && "invisible pointer-events-none"
+              )}>
+                <TerminalPanel
+                  projectId={projectId || ''}
+                  className="h-full"
+                  onRestartServer={async () => {
+                    try {
+                      await fetch(`/api/projects/${projectId}/runtime/restart`, { method: 'POST' })
+                    } catch (err) {
+                      console.error('[ProjectLayout] Failed to restart runtime:', err)
+                    }
+                  }}
+                />
+              </div>
+              {/* Database Panel - Prisma Studio iframe */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'database' && "invisible pointer-events-none"
+              )}>
+                <DatabasePanel
+                  projectId={projectId || ''}
+                  className="h-full"
+                  onError={(err) => {
+                    console.error('[ProjectLayout] Database error:', err)
+                  }}
+                  onLoad={() => {
+                    console.log('[ProjectLayout] Prisma Studio loaded successfully')
+                  }}
+                />
+              </div>
+              {/* Test Panel - Playwright E2E test runner */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'tests' && "invisible pointer-events-none"
+              )}>
+                <TestPanel
+                  projectId={projectId || ''}
                   className="h-full"
                 />
               </div>

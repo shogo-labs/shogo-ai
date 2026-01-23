@@ -10,9 +10,9 @@ variable "cluster_name" {
 }
 
 variable "cluster_version" {
-  description = "Kubernetes version (EKS supports up to 1.31 as of Jan 2026)"
+  description = "Kubernetes version (EKS supports up to 1.33 as of Jan 2026)"
   type        = string
-  default     = "1.31"
+  default     = "1.33"
 }
 
 variable "vpc_id" {
@@ -53,6 +53,36 @@ variable "enable_karpenter" {
   description = "Enable Karpenter for autoscaling"
   type        = bool
   default     = true
+}
+
+variable "enable_secondary_node_group" {
+  description = "Enable secondary node group for additional capacity"
+  type        = bool
+  default     = false
+}
+
+variable "secondary_node_instance_types" {
+  description = "Instance types for secondary node group (defaults to primary node_instance_types)"
+  type        = list(string)
+  default     = null
+}
+
+variable "secondary_node_desired_size" {
+  description = "Desired number of nodes in secondary node group (defaults to node_desired_size)"
+  type        = number
+  default     = null
+}
+
+variable "secondary_node_min_size" {
+  description = "Minimum number of nodes in secondary node group (defaults to node_min_size)"
+  type        = number
+  default     = null
+}
+
+variable "secondary_node_max_size" {
+  description = "Maximum number of nodes in secondary node group (defaults to node_max_size)"
+  type        = number
+  default     = null
 }
 
 variable "tags" {
@@ -263,6 +293,47 @@ resource "aws_eks_node_group" "main" {
     desired_size = var.node_desired_size
     min_size     = var.node_min_size
     max_size     = var.node_max_size
+  }
+
+  update_config {
+    max_unavailable = 1
+  }
+
+  labels = {
+    "node.kubernetes.io/purpose" = "general"
+  }
+
+  tags = var.tags
+
+  depends_on = [
+    aws_iam_role_policy_attachment.node_group_policies
+  ]
+}
+
+# -----------------------------------------------------------------------------
+# Secondary EKS Managed Node Group (optional, for additional capacity)
+# -----------------------------------------------------------------------------
+resource "aws_eks_node_group" "medium" {
+  count = var.enable_secondary_node_group ? 1 : 0
+
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.cluster_name}-medium"
+  node_role_arn   = aws_iam_role.node_group.arn
+  subnet_ids      = var.private_subnets
+
+  instance_types = coalesce(var.secondary_node_instance_types, var.node_instance_types)
+  capacity_type  = "ON_DEMAND"
+
+  # Use same launch template as primary node group
+  launch_template {
+    id      = aws_launch_template.node_group.id
+    version = aws_launch_template.node_group.latest_version
+  }
+
+  scaling_config {
+    desired_size = coalesce(var.secondary_node_desired_size, var.node_desired_size)
+    min_size     = coalesce(var.secondary_node_min_size, var.node_min_size)
+    max_size     = coalesce(var.secondary_node_max_size, var.node_max_size)
   }
 
   update_config {

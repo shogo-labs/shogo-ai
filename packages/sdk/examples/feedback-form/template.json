@@ -1,0 +1,35 @@
+{
+  "name": "feedback-form",
+  "description": "A ready-to-use feedback collection form with submissions dashboard. This is an example of a pre-built form for a specific use case (collecting customer/user feedback), NOT a form builder tool. Use this template when you need a simple data collection form with a fixed set of fields like name, email, rating, category, and message.",
+  "complexity": "beginner",
+  "features": [
+    "prisma",
+    "user-auth",
+    "crud",
+    "one-to-many",
+    "aggregations",
+    "public-form"
+  ],
+  "models": ["User", "Submission"],
+  "tags": ["form", "feedback", "survey", "data-collection", "submissions", "simple", "fixed-form", "contact-form", "beginner"],
+  "useCases": [
+    "feedback form",
+    "contact form",
+    "customer feedback",
+    "user feedback",
+    "simple survey",
+    "data collection",
+    "intake form",
+    "lead capture",
+    "registration form",
+    "rsvp form",
+    "support request form"
+  ],
+  "techStack": {
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "router": "tanstack-router",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

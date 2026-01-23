@@ -81,3 +81,6 @@ workspaces/
 
 .bun/
 .npm/
+
+/packages/sdk/examples/*/test-results
+/packages/sdk/examples/*/playwright-report

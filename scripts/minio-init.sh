@@ -64,10 +64,11 @@ else
     echo "No /schemas mount found - skipping schema seeding"
 fi
 
-# Seed workspaces if /workspaces is mounted
-if [ -d "/workspaces" ]; then
+# Seed workspaces if /workspaces is mounted and SKIP_WORKSPACE_SEEDING is not set
+if [ -d "/workspaces" ] && [ -z "${SKIP_WORKSPACE_SEEDING:-}" ]; then
     echo ""
     echo "Seeding workspaces to S3..."
+    echo "  (Set SKIP_WORKSPACE_SEEDING=1 to skip this step for faster startup)"
 
     workspace_count=0
 
@@ -80,7 +81,19 @@ if [ -d "/workspaces" ]; then
                 continue
             fi
             echo "  Seeding workspace: $workspace_name"
-            mc cp --recursive "$workspace_dir" "myminio/shogo-workspaces/${workspace_name}/"
+            # Use mc mirror with exclusions to skip node_modules and other build artifacts
+            # Note: --exclude patterns match against object names, use glob patterns
+            mc mirror \
+                --exclude "**/node_modules/**" \
+                --exclude "**/.git/**" \
+                --exclude "**/dist/**" \
+                --exclude "**/build/**" \
+                --exclude "**/.next/**" \
+                --exclude "**/.turbo/**" \
+                --exclude "**/*.log" \
+                "$workspace_dir" "myminio/shogo-workspaces/${workspace_name}/" || {
+                echo "    Warning: Some files may have been skipped"
+            }
             workspace_count=$((workspace_count + 1))
         fi
     done
@@ -90,6 +103,9 @@ if [ -d "/workspaces" ]; then
     echo ""
     echo "Listing workspaces in S3:"
     mc ls myminio/shogo-workspaces/ 2>/dev/null | head -20 || echo "  (none found)"
+elif [ -n "${SKIP_WORKSPACE_SEEDING:-}" ]; then
+    echo ""
+    echo "Skipping workspace seeding (SKIP_WORKSPACE_SEEDING is set)"
 else
     echo "No /workspaces mount found - skipping workspace seeding"
 fi

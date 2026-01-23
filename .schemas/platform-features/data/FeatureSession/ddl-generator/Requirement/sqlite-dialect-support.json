@@ -1,9 +1,0 @@
-{
-  "id": "req-ddl-sqlite-dialect",
-  "name": "sqlite-dialect-support",
-  "description": "SQLite dialect with appropriate type fallbacks: UUID→TEXT, TIMESTAMPTZ→TEXT, BOOLEAN→INTEGER. Inline REFERENCES in CREATE TABLE (not ALTER TABLE). No native array types.",
-  "priority": "should",
-  "status": "proposed",
-  "createdAt": 1734188400000,
-  "session": "ddl-generator-001"
-}

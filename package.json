@@ -1,7 +1,7 @@
 {
   "name": "shogo-ai",
   "private": true,
-  "packageManager": "bun@1.2.20",
+  "packageManager": "bun@1.3.6",
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
     "build": "turbo build",
@@ -26,15 +26,29 @@
     "docker:infra": "docker-compose up -d postgres redis minio minio-init",
     "docker:infra:down": "docker-compose down",
     "db:init": "bun apps/api/scripts/init-database.ts",
+    "db:migrate": "npx prisma migrate dev",
+    "db:migrate:deploy": "npx prisma migrate deploy",
+    "generate:domain": "bun run scripts/generate-domain.ts",
+    "generate:auth": "bun run scripts/generate-better-auth.ts",
+    "generate:routes": "bun run scripts/generate-routes.ts",
+    "generate:all": "bun run generate:domain && bun run generate:auth && bun run generate:routes",
+    "db:push": "npx prisma db push",
+    "db:studio": "npx prisma studio",
+    "db:generate": "npx prisma generate",
+    "db:reset": "npx prisma migrate reset",
     "docker:prod": "docker-compose up",
     "docker:prod:build": "docker-compose up --build",
-    "docker:prod:down": "docker-compose down"
+    "docker:prod:down": "docker-compose down",
+    "screenshots:templates": "bun run scripts/capture-template-screenshots.ts"
   },
   "devDependencies": {
+    "playwright": "^1.57.0",
+    "prisma": "6",
     "turbo": "^2.6.3",
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@prisma/client": "6",
     "@radix-ui/react-checkbox": "^1.3.3",
     "@radix-ui/react-dialog": "^1.1.15"
   }

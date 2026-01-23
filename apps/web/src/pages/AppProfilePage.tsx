@@ -71,7 +71,7 @@ export const AppProfilePage = observer(function AppProfilePage() {
           <p className="text-muted-foreground mb-4">
             Please log in to view your profile.
           </p>
-          <Link to="/app">
+          <Link to="/">
             <Button variant="outline">
               <ArrowLeft className="h-4 w-4 mr-2" />
               Back to App
@@ -86,7 +86,7 @@ export const AppProfilePage = observer(function AppProfilePage() {
     <div className="p-6 max-w-3xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-4 mb-6">
-        <Link to="/app">
+        <Link to="/">
           <Button variant="ghost" size="sm">
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back

@@ -55,22 +55,35 @@ loadEnvLocal();
  */
 export default defineConfig({
   testDir: './src/__tests__',
+  /* Only match Playwright e2e test files (exclude bun:test files) */
+  testMatch: /.*e2e.*\.test\.(ts|tsx)$/,
+  /* Exclude files that use bun:test (not Playwright) */
+  testIgnore: [
+    '**/domain-mcp-e2e.test.ts', // Uses bun:test, not Playwright
+    '**/node_modules/**',
+  ],
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
   forbidOnly: !!process.env.CI,
   /* Retry on CI only */
-  retries: process.env.CI ? 2 : 0,
+  retries: process.env.CI ? 2 : 2,
   /* Opt out of parallel tests on CI. */
   workers: process.env.CI ? 1 : undefined,
   /* Reporter to use. See https://playwright.dev/docs/test-reporters */
   reporter: 'html',
+  /* Output directory for test results (traces, screenshots, etc.) */
+  outputDir: './test-results',
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
     baseURL: process.env.WEB_URL || 'http://localhost:5173',
-    /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
-    trace: 'on-first-retry',
+    /* Always capture traces for replay in the UI */
+    trace: 'on',
+    /* Always capture screenshots */
+    screenshot: 'on',
+    /* Capture video on failure */
+    video: 'retain-on-failure',
   },
 
   /* Configure projects for major browsers */
@@ -82,11 +95,24 @@ export default defineConfig({
   ],
 
   /* Run your local dev server, API server, and MCP server before starting the tests */
-  webServer: [
+  /* Note: MCP and API are assumed to be running via Docker when WEB_URL points to Docker web service */
+  /* Skip server startup for remote environments (staging/production) */
+  webServer: (process.env.WEB_URL?.includes('3001') || process.env.WEB_URL?.includes('shogo.ai')) ? [
+    // When using Docker web service (port 3001), assume MCP and API are also running in Docker
+    // Only start local dev server if needed
+    {
+      command: 'bun run dev',
+      url: 'http://localhost:5173',
+      reuseExistingServer: true,
+      timeout: 120 * 1000,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  ] : [
     {
       command: 'cd ../../ && DATABASE_URL="${DATABASE_URL:-postgres://shogo:shogo_dev@localhost:5432/shogo}" bun run mcp:http',
       url: 'http://localhost:3100/mcp',
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: true,
       timeout: 120 * 1000,
       stdout: 'pipe',
       stderr: 'pipe',
@@ -98,7 +124,7 @@ export default defineConfig({
     {
       command: 'cd ../../ && DATABASE_URL="${DATABASE_URL:-postgres://shogo:shogo_dev@localhost:5432/shogo}" bun run api:start',
       url: 'http://localhost:8002/api/health',
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: true,
       timeout: 120 * 1000,
       stdout: 'pipe',
       stderr: 'pipe',
@@ -110,7 +136,7 @@ export default defineConfig({
     {
       command: 'bun run dev',
       url: 'http://localhost:5173',
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: true,
       timeout: 120 * 1000,
       stdout: 'pipe',
       stderr: 'pipe',

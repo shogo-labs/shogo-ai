@@ -1,9 +1,0 @@
-{
-  "id": "decision-enhancement-hooks-plan",
-  "name": "enhancement-hooks-plan",
-  "question": "What enhancements will the infrastructure need?",
-  "decision": "Infrastructure feature - no domain enhancements. Key exports: ISqlExecutor interface, BunSqlExecutor class, PostgresBackend class, normalizeRow/denormalizeRow utils. MCP tools: registerDbConnect, registerDbMigrate, registerDbQuery. Integration: PostgresBackend registered in backendRegistry under 'postgres' key.",
-  "rationale": "Infrastructure features export classes/interfaces/utilities rather than domain enhancements. Consumers create PostgresBackend with their executor instance and register it in their environment's backendRegistry.",
-  "createdAt": 1734278400005,
-  "session": "iqueryable-persistence-projection"
-}

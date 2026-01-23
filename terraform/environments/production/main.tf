@@ -642,6 +642,19 @@ resource "null_resource" "knative_services" {
                         name: api-secrets
                         key: ANTHROPIC_API_KEY
                         optional: true
+                  # PostgreSQL sidecar configuration for project runtimes
+                  - name: POSTGRES_ENABLED
+                    value: "${var.project_runtime_postgres_enabled}"
+                  - name: POSTGRES_IMAGE
+                    value: "${var.project_runtime_postgres_image}"
+                  - name: POSTGRES_STORAGE_SIZE
+                    value: "${var.project_runtime_postgres_storage_size}"
+                  - name: POSTGRES_MEMORY_LIMIT
+                    value: "${var.project_runtime_postgres_memory_limit}"
+                  - name: POSTGRES_CPU_LIMIT
+                    value: "${var.project_runtime_postgres_cpu_limit}"
+                  - name: PROJECT_IDLE_TIMEOUT
+                    value: "${var.project_runtime_idle_timeout}"
                 resources:
                   requests:
                     memory: "256Mi"

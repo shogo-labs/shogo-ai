@@ -1,9 +1,0 @@
-{
-  "id": "req-ddl-single-refs",
-  "name": "single-reference-fks",
-  "description": "Properties with x-reference-type: single generate FK constraints. Column named {target}_id (derived from target entity). ON DELETE CASCADE for required refs, SET NULL for optional. FK constraint format: fk_{table}_{column}.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734188400000,
-  "session": "ddl-generator-001"
-}

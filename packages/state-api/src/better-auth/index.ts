@@ -12,8 +12,8 @@ export type {
   IBetterAuthService,
 } from "./types"
 
-// Schema
-export { BetterAuthSchema } from "./schema"
+// Schema (auto-generated from Prisma)
+export { BetterAuthScope, BetterAuthScope as BetterAuthSchema } from "../generated/better-auth.schema"
 
 // Domain store
 export { betterAuthDomain, createBetterAuthStore } from "./domain"

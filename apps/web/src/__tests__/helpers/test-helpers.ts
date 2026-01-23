@@ -3,6 +3,7 @@
  */
 
 export const WEB_URL = process.env.WEB_URL || 'http://localhost:5173'
+export const API_URL = process.env.API_URL || 'http://localhost:8002'
 
 /**
  * Generate a unique test email
@@ -75,11 +76,14 @@ export async function signInUser(page: any, email: string, password: string = TE
 
 /**
  * Wait for project to be created - handles both redirect and non-redirect cases
+ * Also waits for the project runtime to be ready to accept chat messages.
  */
-export async function waitForProjectCreation(page: any, timeout = 20000) {
+export async function waitForProjectCreation(page: any, timeout = 30000) {
+  const startTime = Date.now()
+  
   try {
     // Try waiting for redirect to project page
-    await page.waitForURL(/\/projects\/[a-f0-9-]+/, { timeout: 10000 })
+    await page.waitForURL(/\/projects\/[a-f0-9-]+/, { timeout: 15000 })
   } catch (e) {
     // If no redirect, wait for project to appear in sidebar or for chat to load
     await page.waitForTimeout(3000)
@@ -97,6 +101,66 @@ export async function waitForProjectCreation(page: any, timeout = 20000) {
     )
   }
   
+  // Extract project ID from URL if available
+  const url = page.url()
+  const projectIdMatch = url.match(/\/projects\/([a-f0-9-]+)/)
+  
+  if (projectIdMatch) {
+    const projectId = projectIdMatch[1]
+    const remainingTimeout = Math.max(5000, timeout - (Date.now() - startTime))
+    
+    // Wait for the project runtime to be ready by calling the wake endpoint
+    // This ensures the chat endpoint will work when we send messages
+    await waitForProjectRuntime(page, projectId, remainingTimeout)
+  }
+  
   // Additional wait for UI to stabilize
   await page.waitForTimeout(1000)
+}
+
+/**
+ * Wait for project runtime to be ready to accept chat messages.
+ * Calls the wake endpoint to ensure the pod is started and healthy.
+ * Uses constant 500ms delay with max 50 retries (up to 25 seconds total).
+ */
+export async function waitForProjectRuntime(page: any, projectId: string, _timeout = 30000) {
+  const MAX_RETRIES = 50
+  const RETRY_DELAY_MS = 500
+  
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      // Use the wake endpoint to ensure the runtime is ready
+      // This will start the pod if needed and wait for it to be healthy
+      const response = await page.request.post(`${API_URL}/api/projects/${projectId}/chat/wake`)
+      
+      if (response.ok()) {
+        const body = await response.json()
+        if (body.success) {
+          console.log(`[test-helpers] Project runtime ready for ${projectId} (attempt ${attempt})`)
+          return
+        }
+      }
+      
+      // If wake fails, check status
+      const statusResponse = await page.request.get(`${API_URL}/api/projects/${projectId}/chat/status`)
+      if (statusResponse.ok()) {
+        const status = await statusResponse.json()
+        if (status.ready) {
+          console.log(`[test-helpers] Project runtime already ready for ${projectId}`)
+          return
+        }
+      }
+    } catch (error) {
+      // Ignore errors and retry
+      if (attempt % 10 === 0) {
+        console.log(`[test-helpers] Waiting for project runtime ${projectId}... (attempt ${attempt}/${MAX_RETRIES})`)
+      }
+    }
+    
+    if (attempt < MAX_RETRIES) {
+      await page.waitForTimeout(RETRY_DELAY_MS)
+    }
+  }
+  
+  console.warn(`[test-helpers] Timeout waiting for project runtime ${projectId} after ${MAX_RETRIES} attempts, continuing anyway...`)
 }

@@ -10,8 +10,8 @@ import { observer } from "mobx-react-lite"
 import { Link, useSearchParams } from "react-router-dom"
 import { ArrowLeft, Building2, CheckCircle2, Info } from "lucide-react"
 
-import { useDomains } from "@/contexts/DomainProvider"
 import { useWorkspaceData } from "@/components/app/workspace/hooks"
+import { useBillingData } from "@/hooks/useBillingData"
 import { useSession } from "@/auth/client"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -21,10 +21,20 @@ import { PlanSelector } from "@/components/app/billing/PlanSelector"
 import { ManageBillingDialog } from "@/components/app/billing/ManageBillingDialog"
 
 export const AppBillingPage = observer(function AppBillingPage() {
-  const { billing } = useDomains()
   const { data: session, isPending: isAuthLoading } = useSession()
   const { currentWorkspace, isLoading: isWorkspaceLoading } = useWorkspaceData()
   const [searchParams, setSearchParams] = useSearchParams()
+
+  // Use the billing data hook to load subscription and credit data from API
+  const {
+    subscription,
+    creditLedger,
+    effectiveBalance,
+    hasActiveSubscription,
+    isLoading: isBillingLoading,
+    refetchSubscription,
+    refetchCreditLedger,
+  } = useBillingData(currentWorkspace?.id)
 
   const [showSuccess, setShowSuccess] = useState(false)
   const [manageDialogOpen, setManageDialogOpen] = useState(false)
@@ -44,31 +54,22 @@ export const AppBillingPage = observer(function AppBillingPage() {
       newParams.delete("session_id")
       setSearchParams(newParams, { replace: true })
 
-      // Refresh subscription data from the server
-      billing.subscriptionCollection.query().toArray().catch(console.error)
-      billing.creditLedgerCollection.query().toArray().catch(console.error)
+      // Refresh subscription and credit data from the API
+      refetchSubscription()
+      refetchCreditLedger()
     }
-  }, [isSuccess, currentWorkspace, searchParams, setSearchParams, billing])
+  }, [isSuccess, currentWorkspace, searchParams, setSearchParams, refetchSubscription, refetchCreditLedger])
 
-  // Get current subscription
-  const subscription = currentWorkspace
-    ? billing.subscriptionCollection.findByWorkspace(currentWorkspace.id)[0]
-    : null
-
-  // Get credit ledger and balance
-  const creditLedger = currentWorkspace
-    ? billing.creditLedgerCollection.findByWorkspace(currentWorkspace.id)
-    : null
-  const effectiveBalance = creditLedger?.effectiveBalance
-  const creditsRemaining = effectiveBalance?.total ?? (subscription ? 105 : 5)
-  const creditsTotal = subscription ? 105 : 5
+  // Calculate credits
+  const creditsRemaining = effectiveBalance?.total ?? (hasActiveSubscription ? 105 : 5)
+  const creditsTotal = hasActiveSubscription ? 105 : 5
 
   // Get plan name
   const planName = subscription
     ? `${subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)} Plan`
     : "Free Plan"
 
-  if (isAuthLoading || isWorkspaceLoading) {
+  if (isAuthLoading || isWorkspaceLoading || isBillingLoading) {
     return (
       <div className="p-6 max-w-6xl mx-auto">
         <div className="animate-pulse space-y-4">
@@ -87,7 +88,7 @@ export const AppBillingPage = observer(function AppBillingPage() {
         <p className="text-muted-foreground mb-4">
           Please select or create a workspace to manage billing.
         </p>
-        <Link to="/app">
+        <Link to="/">
           <Button variant="outline">
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to App
@@ -101,7 +102,7 @@ export const AppBillingPage = observer(function AppBillingPage() {
     <div className="p-6 max-w-6xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
-        <Link to="/app">
+        <Link to="/">
           <Button variant="ghost" size="sm">
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back

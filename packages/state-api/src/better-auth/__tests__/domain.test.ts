@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test"
-import { BetterAuthSchema } from "../schema"
+import { BetterAuthSchema } from "../../generated/better-auth.schema"
 import { betterAuthDomain, createBetterAuthStore } from "../domain"
 import { NullPersistence } from "../../persistence/null"
 import type { IEnvironment } from "../../environment/types"

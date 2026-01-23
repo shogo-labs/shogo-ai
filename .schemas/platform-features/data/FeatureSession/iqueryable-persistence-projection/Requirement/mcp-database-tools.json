@@ -1,9 +1,0 @@
-{
-  "id": "req-10-mcp-database-tools",
-  "name": "mcp-database-tools",
-  "description": "New MCP tool namespace db.* with tools: db.connect (establish database connection from connection string or config), db.migrate (execute DDL from schema using DDL generator), db.query (raw SQL execution for power users/debugging). Tools integrate with existing MCP state management patterns.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734278400000,
-  "session": "iqueryable-persistence-projection"
-}

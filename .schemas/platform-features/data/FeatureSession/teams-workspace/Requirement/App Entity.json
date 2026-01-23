@@ -1,9 +1,0 @@
-{
-  "id": "req-app-entity",
-  "name": "App Entity",
-  "description": "Define App entity that belongs to a team. Apps inherit permissions from their parent team. Include name, description, and team reference.",
-  "priority": "should",
-  "status": "proposed",
-  "createdAt": 1733868120005,
-  "session": "teams-workspace"
-}

@@ -1,0 +1,62 @@
+// Prisma schema for Feedback Form
+// Demonstrates a simple pre-built form with fixed fields for data collection
+// This is NOT a form builder - it's an example of a specific form implementation
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// User model (form owner who receives submissions)
+// ============================================================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  submissions Submission[]
+
+  @@map("users")
+}
+
+// ============================================================================
+// Feedback Submission Model
+// ============================================================================
+
+// Each submission represents one completed feedback form
+model Submission {
+  id        String   @id @default(cuid())
+  
+  // Fixed form fields - these are the actual data collected
+  name           String            // Respondent name
+  email          String            // Respondent email
+  rating         Int               // 1-5 star rating
+  category       String            // feedback, bug, feature, question
+  message        String            // Main feedback text
+  wouldRecommend Boolean @default(false) @map("would_recommend") // NPS-style question
+  
+  // Management fields
+  isRead    Boolean  @default(false) @map("is_read")
+  isStarred Boolean  @default(false) @map("is_starred")
+  
+  // Owner relationship (who receives this submission)
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, isRead])
+  @@index([userId, category])
+  @@index([userId, rating])
+  @@map("submissions")
+}

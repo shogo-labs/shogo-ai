@@ -149,7 +149,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           label: project.name,
           description: "Project",
           icon: LayoutGrid,
-          action: () => navigate(`/app?project=${project.id}`),
+          action: () => navigate(`/?project=${project.id}`),
           category: "projects",
           keywords: [project.name.toLowerCase()],
         })
@@ -164,7 +164,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           label: feature.name,
           description: feature.intent || "Feature",
           icon: FileCode2,
-          action: () => navigate(`/app?feature=${feature.id}`),
+          action: () => navigate(`/?feature=${feature.id}`),
           category: "features",
           keywords: [feature.name.toLowerCase(), feature.intent?.toLowerCase() || ""],
         })

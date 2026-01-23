@@ -8,7 +8,7 @@
 
 import { describe, test, expect } from "bun:test"
 import { type } from "arktype"
-import { BetterAuthSchema } from "../schema"
+import { BetterAuthSchema } from "../../generated/better-auth.schema"
 import { arkTypeToEnhancedJsonSchema } from "../../schematic/arktype-to-json-schema"
 
 describe("BetterAuthSchema scope exports User type with all fields", () => {

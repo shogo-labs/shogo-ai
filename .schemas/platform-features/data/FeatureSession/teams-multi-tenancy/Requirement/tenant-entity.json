@@ -1,9 +1,0 @@
-{
-  "id": "req-002",
-  "name": "tenant-entity",
-  "description": "Define Tenant entity with id, name, sso_settings fields",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734307400000,
-  "session": "teams-multi-tenancy-001"
-}

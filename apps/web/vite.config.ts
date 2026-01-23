@@ -1,8 +1,12 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import monacoEditorPluginModule from 'vite-plugin-monaco-editor'
 import path from 'path'
 import { fileURLToPath } from 'url'
+
+// Handle both ESM and CJS exports
+const monacoEditorPlugin = (monacoEditorPluginModule as any).default || monacoEditorPluginModule
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const monorepoRoot = path.resolve(__dirname, '../..')
@@ -30,7 +34,14 @@ export default defineConfig(({ mode }) => {
   const mcpProxyTarget = env.VITE_MCP_PROXY_TARGET || `http://localhost:3100`
 
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      // Monaco Editor plugin for proper worker loading and syntax highlighting
+      monacoEditorPlugin({
+        languageWorkers: ['editorWorkerService', 'typescript', 'json', 'css', 'html'],
+      }),
+    ],
     root: __dirname, // Serve from the client directory
     envDir: monorepoRoot, // Also expose env vars to app code via import.meta.env
     server: {

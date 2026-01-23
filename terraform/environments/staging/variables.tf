@@ -63,6 +63,12 @@ variable "node_max_size" {
   default     = 5 # Smaller than production
 }
 
+variable "enable_secondary_node_group" {
+  description = "Enable secondary node group for additional capacity"
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------------------
 # RDS Configuration
 # -----------------------------------------------------------------------------
@@ -140,6 +146,45 @@ variable "anthropic_api_key" {
   type        = string
   sensitive   = true
   default     = ""  # Optional - can be managed by GitHub Actions instead
+}
+
+# -----------------------------------------------------------------------------
+# Project Runtime Configuration (Per-Project PostgreSQL Sidecar)
+# -----------------------------------------------------------------------------
+variable "project_runtime_postgres_enabled" {
+  description = "Enable PostgreSQL sidecar for project runtimes"
+  type        = bool
+  default     = true
+}
+
+variable "project_runtime_postgres_image" {
+  description = "PostgreSQL image for project runtime sidecar"
+  type        = string
+  default     = "postgres:16-alpine"
+}
+
+variable "project_runtime_postgres_storage_size" {
+  description = "Storage size for PostgreSQL data PVC per project"
+  type        = string
+  default     = "1Gi"
+}
+
+variable "project_runtime_postgres_memory_limit" {
+  description = "Memory limit for PostgreSQL sidecar container"
+  type        = string
+  default     = "512Mi"
+}
+
+variable "project_runtime_postgres_cpu_limit" {
+  description = "CPU limit for PostgreSQL sidecar container"
+  type        = string
+  default     = "250m"
+}
+
+variable "project_runtime_idle_timeout" {
+  description = "Idle timeout in seconds before project pods scale to zero"
+  type        = number
+  default     = 300
 }
 
 # -----------------------------------------------------------------------------

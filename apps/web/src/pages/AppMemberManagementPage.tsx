@@ -55,7 +55,7 @@ export const AppMemberManagementPage = observer(function AppMemberManagementPage
           <p className="text-muted-foreground mb-4">
             Select a workspace from the dropdown to manage members.
           </p>
-          <Link to="/app">
+          <Link to="/">
             <Button variant="outline">
               <ArrowLeft className="h-4 w-4 mr-2" />
               Back to Workspace
@@ -71,7 +71,7 @@ export const AppMemberManagementPage = observer(function AppMemberManagementPage
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
-          <Link to="/app">
+          <Link to="/">
             <Button variant="ghost" size="sm">
               <ArrowLeft className="h-4 w-4 mr-2" />
               Back

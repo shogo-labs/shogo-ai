@@ -1,9 +1,0 @@
-{
-  "id": "dd-001-no-new-schema",
-  "name": "no-new-schema",
-  "question": "Does this feature need a new Wavesmith schema?",
-  "decision": "No new schema. Extend existing ai-sdk-chat schema with featureSessionId field on ChatSession.",
-  "rationale": "This is primarily a UI integration feature. All domain entities exist in platform-features and ai-sdk-chat schemas. Only need to link ChatSession to FeatureSession via new field.",
-  "createdAt": 1734480500000,
-  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
-}

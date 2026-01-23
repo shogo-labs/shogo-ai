@@ -26,9 +26,12 @@ const getBaseURL = (): string => {
 /**
  * Better Auth client instance configured for this application.
  * Provides authentication methods and React hooks.
+ *
+ * Note: basePath must match the server route (/api/auth/*)
  */
 export const authClient = createAuthClient({
   baseURL: getBaseURL(),
+  basePath: "/api/auth",
 })
 
 // Export individual auth methods for convenience

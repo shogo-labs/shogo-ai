@@ -5,18 +5,24 @@
  * - Personalized greeting with user's name
  * - Beautiful gradient mesh background
  * - AI prompt input via ChatPanel in compact mode
- * - Templates carousel (placeholder for now)
+ * - SDK example templates that can be selected to create new projects
  *
- * Inspired by Lovable.dev's engaging home page design.
+ * Template flow (inspired by Lovable.dev):
+ * 1. User clicks a template card
+ * 2. Project is created with template name
+ * 3. Template files are copied via template.copy MCP
+ * 4. User is navigated to the new project with a welcome message
  */
 
-import { useState, useRef, type RefObject } from "react"
+import { useState, useRef, useEffect, type RefObject } from "react"
 import { observer } from "mobx-react-lite"
 import { useNavigate } from "react-router-dom"
-import { Sparkles } from "lucide-react"
+import { Sparkles, ChevronRight, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ChatPanel } from "@/components/app/chat/ChatPanel"
+import { TemplateCard, formatTemplateName, type TemplateMetadata } from "./TemplateCard"
+import { TemplatePreviewModal } from "./TemplatePreviewModal"
 
 /** Transition phases for HomePage to Workspace animation */
 export type TransitionPhase = 'idle' | 'commit' | 'dissolve' | 'transform' | 'emerge' | 'settle' | 'complete'
@@ -26,8 +32,12 @@ interface HomePageProps {
   userName?: string
   /** Callback when a new prompt is submitted */
   onPromptSubmit?: (prompt: string) => void
+  /** Callback when a template is selected - receives template name and display name */
+  onTemplateSelect?: (templateName: string, displayName: string) => void
   /** Loading state - true when creating project/feature from prompt */
   isLoading?: boolean
+  /** Template currently being loaded (template name) */
+  loadingTemplate?: string | null
   /** Current transition phase for animation (default: 'idle') */
   transitionPhase?: TransitionPhase
   /** Ref for the input card element (used for FLIP animation position capture) */
@@ -45,7 +55,9 @@ interface HomePageProps {
 export const HomePage = observer(function HomePage({
   userName = "there",
   onPromptSubmit,
+  onTemplateSelect,
   isLoading = false,
+  loadingTemplate = null,
   transitionPhase = 'idle',
   inputRef,
   flipStyle,
@@ -57,12 +69,52 @@ export const HomePage = observer(function HomePage({
   const internalInputRef = useRef<HTMLDivElement>(null)
   const chatPanelRef = inputRef ?? internalInputRef
 
+  // Templates state
+  const [templates, setTemplates] = useState<TemplateMetadata[]>([])
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState(true)
+  
+  // Template preview modal state
+  const [selectedTemplate, setSelectedTemplate] = useState<TemplateMetadata | null>(null)
+  const [isModalOpen, setIsModalOpen] = useState(false)
+
+  // Fetch templates on mount
+  useEffect(() => {
+    async function fetchTemplates() {
+      try {
+        const response = await fetch("/api/templates")
+        if (response.ok) {
+          const data = await response.json()
+          setTemplates(data.templates || [])
+        }
+      } catch (error) {
+        console.error("[HomePage] Failed to fetch templates:", error)
+      } finally {
+        setIsLoadingTemplates(false)
+      }
+    }
+    fetchTemplates()
+  }, [])
+
   // Get first name only for greeting
   const firstName = userName.split(" ")[0] || "there"
 
+  // Handle template card click - opens preview modal
+  const handleTemplateClick = (template: TemplateMetadata) => {
+    setSelectedTemplate(template)
+    setIsModalOpen(true)
+  }
+
+  // Handle "Use template" from modal
+  const handleUseTemplate = (template: TemplateMetadata) => {
+    if (onTemplateSelect && !loadingTemplate) {
+      onTemplateSelect(template.name, formatTemplateName(template.name))
+      setIsModalOpen(false)
+    }
+  }
+
   return (
     <div
-      className="relative h-full flex flex-col overflow-hidden"
+      className="relative h-full flex flex-col overflow-y-auto"
       data-home-element="root"
       data-transition-phase={transitionPhase}
     >
@@ -157,7 +209,7 @@ export const HomePage = observer(function HomePage({
       `}</style>
 
       {/* Main content */}
-      <div className="relative flex-1 flex flex-col items-center justify-center p-8">
+      <div className="relative flex flex-col items-center justify-center p-8 min-h-[60vh]">
         {/* Greeting */}
         <h1
           className="home-greeting text-3xl sm:text-4xl md:text-5xl font-bold text-center mb-8 bg-clip-text text-transparent bg-gradient-to-r from-foreground via-foreground to-foreground/80"
@@ -211,44 +263,55 @@ export const HomePage = observer(function HomePage({
 
       {/* Templates section */}
       <div
-        className="home-templates relative bg-card/50 backdrop-blur-sm border-t border-border p-6"
+        className="home-templates relative bg-card/30 backdrop-blur-sm border-t border-border py-6"
         data-home-element="templates"
       >
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 px-6">
           <h2 className="text-sm font-medium">Templates</h2>
           <Button
             variant="ghost"
             size="sm"
-            className="text-xs text-muted-foreground hover:text-foreground"
+            className="text-sm text-muted-foreground hover:text-foreground gap-1"
             onClick={() => navigate("/templates")}
           >
-            Browse all →
+            Browse all
+            <ChevronRight className="h-4 w-4" />
           </Button>
         </div>
         
-        {/* Template cards placeholder */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-          {[
-            { name: "Portfolio", desc: "Personal website" },
-            { name: "E-commerce", desc: "Online store" },
-            { name: "Dashboard", desc: "Admin panel" },
-            { name: "Blog", desc: "Content site" },
-            { name: "Landing", desc: "Marketing page" },
-            { name: "SaaS", desc: "Web application" },
-          ].map((template) => (
-            <div
-              key={template.name}
-              className="group p-3 bg-card rounded-lg border border-border hover:border-primary/50 transition-colors cursor-pointer"
-            >
-              <div className="aspect-video bg-muted rounded mb-2" />
-              <div className="text-xs font-medium truncate">{template.name}</div>
-              <div className="text-[10px] text-muted-foreground truncate">
-                {template.desc}
-              </div>
+        {/* Template cards - 3-column grid */}
+        {isLoadingTemplates ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : templates.length === 0 ? (
+          <div className="text-center py-8 text-sm text-muted-foreground">
+            No templates available
+          </div>
+        ) : (
+          <div className="px-6 pb-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 max-w-5xl mx-auto">
+              {templates.map((template) => (
+                <TemplateCard
+                  key={template.name}
+                  template={template}
+                  isLoading={loadingTemplate === template.name}
+                  onClick={() => handleTemplateClick(template)}
+                />
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
+        )}
       </div>
+
+      {/* Template Preview Modal */}
+      <TemplatePreviewModal
+        template={selectedTemplate}
+        open={isModalOpen}
+        onOpenChange={setIsModalOpen}
+        onUseTemplate={handleUseTemplate}
+        isLoading={loadingTemplate !== null}
+      />
     </div>
   )
 })

@@ -21,7 +21,10 @@
 
 services:
   # ---------------------------------------------------------------------------
-  # PostgreSQL Database (Control Plane + Workspace Data)
+  # PostgreSQL Database (Control Plane - Platform Data)
+  # ---------------------------------------------------------------------------
+  # This database stores platform data: users, workspaces, projects, sessions, etc.
+  # Project runtimes should NOT have access to this database.
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
@@ -35,6 +38,32 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shogo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database (Project Runtimes - User Project Data)
+  # ---------------------------------------------------------------------------
+  # This database is used by project runtimes for user-created applications.
+  # Each project can have its own schema within this database.
+  # CRITICAL: This is separate from the platform database to prevent AI agents
+  # from accidentally modifying platform data.
+  # ---------------------------------------------------------------------------
+  postgres-projects:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: project
+      POSTGRES_PASSWORD: project_dev
+      POSTGRES_DB: projects
+    volumes:
+      - postgres_projects_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PROJECTS_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U project"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -76,6 +105,9 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      # Skip workspace seeding for faster startup (workspaces can be synced on-demand)
+      SKIP_WORKSPACE_SEEDING: "${SKIP_WORKSPACE_SEEDING:-1}"
     volumes:
       # Mount local schemas to seed into S3
       - ./.schemas:/schemas:ro
@@ -213,14 +245,19 @@ services:
       API_PORT: "8002"
       NODE_ENV: development
       # Internal connections (always use Docker service names and internal ports)
+      # Platform database - stores users, workspaces, projects, sessions, etc.
       DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
+      # Projects database - used by project runtimes for user-created apps
+      # CRITICAL: This is separate to prevent AI agents from modifying platform data
+      PROJECTS_DATABASE_URL: postgres://project:project_dev@postgres-projects:5432/projects
+      POSTGRES_PROJECTS_PORT: "5433"
       MCP_URL: http://mcp:3100
       REDIS_URL: redis://redis:6379
       # External URLs (use parameterized ports for browser access)
-      VITE_PORT: "${WEB_PORT:-3000}"
+      VITE_PORT: "${WEB_PORT:-3333}"
       BETTER_AUTH_SECRET: shogo-local-dev-secret-32-chars-minimum-ok
-      BETTER_AUTH_URL: http://localhost:${WEB_PORT:-3000}
-      ALLOWED_ORIGINS: http://localhost:${WEB_PORT:-3000},http://localhost:${VITE_DEV_PORT:-5173}
+      BETTER_AUTH_URL: http://localhost:${WEB_PORT:-3333}
+      ALLOWED_ORIGINS: http://localhost:${WEB_PORT:-3333},http://localhost:${VITE_DEV_PORT:-5173}
       # Agent persona: 'wavesmith' (default) or 'code'
       SHOGO_AGENT: wavesmith
       # ANTHROPIC_API_KEY loaded from .env.local via env_file
@@ -244,6 +281,8 @@ services:
       - ./.schemas:/app/.schemas
     depends_on:
       postgres:
+        condition: service_healthy
+      postgres-projects:
         condition: service_healthy
       redis:
         condition: service_started
@@ -272,7 +311,7 @@ services:
         VITE_BETTER_AUTH_URL: http://localhost:${API_PORT:-8002}
         VITE_WORKSPACE: workspace
     ports:
-      - "${WEB_PORT:-3000}:80"
+      - "${WEB_PORT:-3333}:80"
     environment:
       # Docker internal DNS resolver
       DNS_RESOLVER: "127.0.0.11"
@@ -294,6 +333,7 @@ services:
 # e.g., shogo-feat-myfeature_postgres_data
 volumes:
   postgres_data:
+  postgres_projects_data:
   minio_data:
   redis_data:
   # Note: mcp_schemas_ws1 and mcp_schemas_ws2 volumes removed

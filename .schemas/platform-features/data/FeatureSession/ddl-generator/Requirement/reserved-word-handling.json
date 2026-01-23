@@ -1,9 +1,0 @@
-{
-  "id": "req-ddl-reserved-words",
-  "name": "reserved-word-handling",
-  "description": "Properly quote table/column names that are SQL reserved words (user, order, group). PostgreSQL uses double quotes, SQLite uses backticks or double quotes.",
-  "priority": "could",
-  "status": "proposed",
-  "createdAt": 1734188400000,
-  "session": "ddl-generator-001"
-}

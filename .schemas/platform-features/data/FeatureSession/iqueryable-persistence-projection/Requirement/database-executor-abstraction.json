@@ -1,9 +1,0 @@
-{
-  "id": "req-08-database-executor",
-  "name": "database-executor-abstraction",
-  "description": "BunSqlExecutor class that takes [sql, params] tuple from SqlBackend and executes against Postgres/SQLite via Bun.sql native driver. Implements programmatic tagged template invocation pattern: split SQL on $N placeholders, call sql(parts, ...params). Handles connection lifecycle and query result normalization.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734278400000,
-  "session": "iqueryable-persistence-projection"
-}

@@ -1,9 +1,0 @@
-{
-  "id": "dd-fsd-001",
-  "name": "no-domain-schema",
-  "question": "Does this Infrastructure feature need a domain schema?",
-  "decision": "No schema needed - pure configuration and component library work",
-  "rationale": "Infrastructure features establishing tooling defaults don't create domain entities. All artifacts are configuration files, utility functions, and UI components that don't require Wavesmith persistence.",
-  "createdAt": 1734480700000,
-  "session": "fs-frontend-defaults-001"
-}

@@ -1,9 +1,0 @@
-{
-  "id": "req-004",
-  "name": "billing-account-entity",
-  "description": "Define Billing_Account entity with tenant_id reference, stripe_customer_id, tax_id, credits_balance fields",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734307400000,
-  "session": "teams-multi-tenancy-001"
-}

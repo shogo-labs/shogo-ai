@@ -6,7 +6,7 @@
 # 2. Serve static files with Nginx
 # =============================================================================
 
-FROM oven/bun:1.2-alpine AS builder
+FROM oven/bun:1.3-alpine AS builder
 
 WORKDIR /app
 
@@ -40,6 +40,12 @@ RUN bun install
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 COPY apps/web ./apps/web
+
+# Copy scripts directory (needed for list-skills.ts)
+COPY scripts ./scripts
+
+# Copy .claude/skills directory (needed for list-skills.ts)
+COPY .claude/skills ./.claude/skills
 
 # Build state-api first (dependency)
 WORKDIR /app/packages/state-api

@@ -1,7 +1,7 @@
 # =============================================================================
 # Shogo AI - Staging EKS Deployment
 # =============================================================================
-# Region: us-east-1 (Ohio)
+# Region: us-east-1 (N. Virginia)
 # Architecture: Pod-per-Workspace with Knative scale-to-zero
 # Updated: January 2026
 # =============================================================================
@@ -173,6 +173,9 @@ module "eks" {
   node_desired_size   = var.node_desired_size
   node_min_size       = var.node_min_size
   node_max_size       = var.node_max_size
+
+  # Enable secondary node group for additional capacity (matching deployed config)
+  enable_secondary_node_group = var.enable_secondary_node_group
 
   # Enable Karpenter for workspace autoscaling
   enable_karpenter = true
@@ -653,6 +656,19 @@ resource "null_resource" "knative_services" {
                         name: api-secrets
                         key: ANTHROPIC_API_KEY
                         optional: true
+                  # PostgreSQL sidecar configuration for project runtimes
+                  - name: POSTGRES_ENABLED
+                    value: "${var.project_runtime_postgres_enabled}"
+                  - name: POSTGRES_IMAGE
+                    value: "${var.project_runtime_postgres_image}"
+                  - name: POSTGRES_STORAGE_SIZE
+                    value: "${var.project_runtime_postgres_storage_size}"
+                  - name: POSTGRES_MEMORY_LIMIT
+                    value: "${var.project_runtime_postgres_memory_limit}"
+                  - name: POSTGRES_CPU_LIMIT
+                    value: "${var.project_runtime_postgres_cpu_limit}"
+                  - name: PROJECT_IDLE_TIMEOUT
+                    value: "${var.project_runtime_idle_timeout}"
                 resources:
                   requests:
                     memory: "256Mi"
