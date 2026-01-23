@@ -87,7 +87,7 @@ export const AppBillingPage = observer(function AppBillingPage() {
         <p className="text-muted-foreground mb-4">
           Please select or create a workspace to manage billing.
         </p>
-        <Link to="/app">
+        <Link to="/">
           <Button variant="outline">
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to App
@@ -101,7 +101,7 @@ export const AppBillingPage = observer(function AppBillingPage() {
     <div className="p-6 max-w-6xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
-        <Link to="/app">
+        <Link to="/">
           <Button variant="ghost" size="sm">
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back
