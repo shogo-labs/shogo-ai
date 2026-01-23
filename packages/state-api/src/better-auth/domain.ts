@@ -5,14 +5,15 @@
  * and Verification entities with enhancement hooks for computed views,
  * volatile state, and domain actions.
  *
- * Based on packages/state-api/src/auth/domain.ts pattern.
+ * Schema is auto-generated from Prisma. Regenerate with:
+ *   bun run scripts/generate-better-auth.ts
  */
 
 import { getEnv } from "mobx-state-tree"
 import { domain } from "../domain"
 import type { IEnvironment } from "../environment/types"
 import type { AuthCredentials, AuthSession as ServiceAuthSession } from "../auth/types"
-import { BetterAuthSchema } from "./schema"
+import { BetterAuthScope } from "../generated/better-auth.schema"
 
 // ============================================================
 // 1. STORE FACTORY OPTIONS
@@ -33,7 +34,7 @@ export interface CreateBetterAuthStoreOptions {
  */
 export const betterAuthDomain = domain({
   name: "better-auth",
-  from: BetterAuthSchema,
+  from: BetterAuthScope,
   enhancements: {
     // --------------------------------------------------------
     // models: Add computed views to individual entities
@@ -45,8 +46,8 @@ export const betterAuthDomain = domain({
          * Check if session is expired by comparing expiresAt to current time
          */
         get isExpired(): boolean {
-          const expiresAt = new Date(self.expiresAt).getTime()
-          return Date.now() > expiresAt
+          // expiresAt is now a timestamp (number)
+          return Date.now() > self.expiresAt
         },
       })),
     }),
@@ -104,6 +105,12 @@ export const betterAuthDomain = domain({
             self.userCollection.clear()
             self.sessionCollection.clear()
 
+            // Helper to convert date string/Date to timestamp
+            const toTimestamp = (date: string | Date | undefined): number | undefined => {
+              if (!date) return undefined
+              return new Date(date).getTime()
+            }
+
             // Add user
             const user = self.userCollection.add({
               id: session.user.id,
@@ -111,20 +118,20 @@ export const betterAuthDomain = domain({
               email: session.user.email,
               emailVerified: session.user.emailVerified,
               image: session.user.image ?? undefined, // Include profile image URL (only if present)
-              createdAt: session.user.createdAt,
-              updatedAt: session.user.createdAt,
+              createdAt: toTimestamp(session.user.createdAt),
+              updatedAt: toTimestamp(session.user.createdAt),
             })
 
-            // Add session with reference to user
+            // Add session with reference to user (using user.id for the reference)
             self.sessionCollection.add({
-              id: crypto.randomUUID(),
-              userId: user.id,
+              id: crypto.randomUUID(), // Generate UUID for frontend session
+              user: user.id, // Reference to user by ID
               token: session.accessToken,
-              expiresAt: session.expiresAt,
+              expiresAt: toTimestamp(session.expiresAt) ?? Date.now() + 7 * 24 * 60 * 60 * 1000,
               ipAddress: "unknown",
               userAgent: "unknown",
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
             })
           },
 

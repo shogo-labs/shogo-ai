@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test"
-import { StudioCoreDomain, createStudioCoreStore, RoleLevels } from "../domain"
+import { StudioCoreDomain, createStudioCoreStore, RoleLevels } from "../index"
 import { NullPersistence } from "../../persistence/null"
 import type { IEnvironment } from "../../environment/types"
 

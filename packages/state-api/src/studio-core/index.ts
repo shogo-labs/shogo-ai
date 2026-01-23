@@ -1,25 +1,14 @@
 /**
- * Studio Core Domain Barrel Exports
- *
- * Re-exports all public APIs from the studio-core domain including:
- * - StudioCoreDomain (ArkType scope)
- * - studioCoreDomain (domain result)
- * - RoleLevels constant
- * - Types and store factory
- * - Seed IDs for deterministic operations
+ * StudioCore - Domain store for workspace, project, member management
  */
 
 export {
-  StudioCoreDomain,
   studioCoreDomain,
-  RoleLevels,
   createStudioCoreStore,
-  type CreateStudioCoreStoreOptions,
-} from './domain'
+  RoleLevels,
+} from "./domain"
 
-// Seed IDs for deterministic seed operations
-export {
-  SHOGO_ORG_ID,
-  PLATFORM_PROJECT_ID,
-  SHOGO_DEFAULT_TEAM_ID,
-} from './seeds/ids'
+// Re-export generated schema for tests that need to access the scope
+export { StudioCoreScope } from "../generated/studio-core.schema"
+// Alias for backwards compatibility with tests
+export { StudioCoreScope as StudioCoreDomain } from "../generated/studio-core.schema"

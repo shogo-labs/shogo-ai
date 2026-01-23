@@ -1,21 +1,36 @@
 /**
  * Shogo SDK Client Setup
- * 
- * This demonstrates the SDK's Prisma pass-through pattern:
- * - shogo.db IS your Prisma client
- * - Same API you know, zero overhead
- * - Unified access through the SDK
+ *
+ * Production-grade configuration:
+ * - shogo.auth: Real authentication (email/password, OAuth)
+ * - shogo.db: Prisma pass-through for database access
+ * - Proper API URL configuration
  */
 
 import { createClient, type ShogoClient } from '@shogo-ai/sdk'
 import { prisma } from './db'
 import type { PrismaClient } from '@prisma/client'
 
-// Create the Shogo client with Prisma pass-through
+// Determine API URL based on environment
+const getApiUrl = () => {
+  if (typeof window !== 'undefined') {
+    return window.location.origin
+  }
+  return process.env.API_URL || 'http://localhost:3000'
+}
+
+// Create the Shogo client with full configuration
 export const shogo: ShogoClient<PrismaClient> = createClient({
-  apiUrl: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000',
+  apiUrl: getApiUrl(),
   db: prisma,
+  auth: {
+    // Use headless mode for custom UI (our LoginPage component)
+    mode: 'headless',
+    // Auth endpoints path (default is /api/auth)
+    authPath: '/api/auth',
+  },
 })
 
-// Type for convenience
+// Type exports for convenience
 export type { PrismaClient }
+export type { ShogoUser, AuthState } from '@shogo-ai/sdk'

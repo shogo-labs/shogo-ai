@@ -1,23 +1,20 @@
+/**
+ * Router Configuration
+ *
+ * Production-grade setup:
+ * - No server-side auth context (handled by MobX AuthStore)
+ * - Scroll restoration enabled
+ * - Preloading on intent for better UX
+ */
+
 import { createRouter as createTanStackRouter } from '@tanstack/react-router'
 import { routeTree } from './routeTree.gen'
-
-// Router context with user
-export interface RouterContext {
-  user: {
-    id: string
-    email: string
-    name?: string | null
-  } | null
-}
 
 export function createRouter() {
   const router = createTanStackRouter({
     routeTree,
     scrollRestoration: true,
     defaultPreload: 'intent',
-    context: {
-      user: null,
-    },
   })
   return router
 }

@@ -27,22 +27,31 @@ export const getCurrentUser = createServerFn({ method: 'GET' })
 
 // Create user using shogo.db
 export const createUser = createServerFn({ method: 'POST' })
-  .inputValidator((data: { email: string; name?: string }) => data)
+  .inputValidator((data: { email: string; name?: string }) => {
+    console.log('[createUser] inputValidator received:', data)
+    return data
+  })
   .handler(async ({ data }) => {
+    console.log('[createUser] handler called with data:', data)
+    
     // Check if user exists
     const existing = await shogo.db.user.findUnique({
       where: { email: data.email },
     })
+    console.log('[createUser] existing user:', existing)
+    
     if (existing) {
       throw new Error('User already exists')
     }
 
     // Create user with shogo.db
+    console.log('[createUser] creating user...')
     const user = await shogo.db.user.create({
       data: {
         email: data.email,
         name: data.name,
       },
     })
+    console.log('[createUser] user created:', user)
     return user as UserType
   })

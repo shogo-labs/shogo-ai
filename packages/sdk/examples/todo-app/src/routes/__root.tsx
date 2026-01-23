@@ -1,39 +1,38 @@
+/**
+ * Root Route - App Shell
+ *
+ * Production-grade setup:
+ * - StoreProvider wraps entire app for MobX store access
+ * - No server-side auth loading (handled by AuthStore on client)
+ * - Clean separation between root layout and protected routes
+ */
+
 import {
   HeadContent,
   Scripts,
   Outlet,
-  createRootRouteWithContext,
+  createRootRoute,
 } from '@tanstack/react-router'
 import * as React from 'react'
-import { getCurrentUser } from '../utils/user'
-import type { RouterContext } from '../router'
+import { StoreProvider } from '../stores'
 
-export const Route = createRootRouteWithContext<RouterContext>()({
+export const Route = createRootRoute({
   head: () => ({
     meta: [
       { charSet: 'utf-8' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1' },
       { title: 'Todo App - Shogo SDK Example' },
     ],
-    links: [
-      {
-        rel: 'stylesheet',
-        href: 'https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css',
-      },
-    ],
   }),
-  // Load user using shogo.db
-  beforeLoad: async () => {
-    const user = await getCurrentUser()
-    return { user }
-  },
   component: RootComponent,
 })
 
 function RootComponent() {
   return (
     <RootDocument>
-      <Outlet />
+      <StoreProvider>
+        <Outlet />
+      </StoreProvider>
     </RootDocument>
   )
 }
@@ -43,13 +42,28 @@ function RootDocument({ children }: { children: React.ReactNode }) {
     <html lang="en">
       <head>
         <HeadContent />
+        <style dangerouslySetInnerHTML={{ __html: globalStyles }} />
       </head>
       <body>
-        <main className="container" style={{ maxWidth: '600px', paddingTop: '2rem' }}>
-          {children}
-        </main>
+        {children}
         <Scripts />
       </body>
     </html>
   )
 }
+
+// Global styles
+const globalStyles = `
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background-color: #f9fafb;
+    color: #111827;
+    line-height: 1.5;
+  }
+`
