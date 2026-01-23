@@ -6,7 +6,7 @@
  */
 
 import { observer } from 'mobx-react-lite'
-import { useWavesmithStore } from '../contexts/WavesmithStoreContext'
+import { useWavesmithStore } from '@shogo/app-core'
 
 export interface EntityListProps {
   /** Name of the collection to display (e.g., 'pageCollection') */

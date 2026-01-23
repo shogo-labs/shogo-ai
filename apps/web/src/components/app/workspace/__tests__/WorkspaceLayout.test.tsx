@@ -20,9 +20,9 @@ import React, { useState } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { act } from "react"
 import { Window } from "happy-dom"
-import { EnvironmentProvider, createEnvironment } from "../../../../contexts/EnvironmentContext"
-import { DomainProvider } from "../../../../contexts/DomainProvider"
-import { AuthProvider } from "../../../../contexts/AuthContext"
+import { EnvironmentProvider, createEnvironment } from "@shogo/app-core"
+import { DomainProvider } from "@shogo/app-core"
+import { AuthProvider } from "@shogo/app-core"
 import {
   studioCoreDomain,
   platformFeaturesDomain,

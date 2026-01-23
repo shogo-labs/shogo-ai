@@ -14,7 +14,7 @@
  */
 
 import React, { createContext, useContext, useState, useCallback, useMemo, type ReactNode } from "react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import type { ProviderWrapperProps } from "../../composition/providerImplementationMap"
 
 /**

@@ -9,7 +9,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { useDomains } from "../contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 
 /**
  * Default collections to poll from platformFeatures domain.

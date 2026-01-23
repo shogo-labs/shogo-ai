@@ -21,7 +21,7 @@
 
 import { useState, useCallback, useEffect } from "react"
 import { observer } from "mobx-react-lite"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"

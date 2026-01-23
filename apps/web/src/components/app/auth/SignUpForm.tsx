@@ -11,7 +11,7 @@
 
 import { useState, type FormEvent } from "react"
 import { observer } from "mobx-react-lite"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { useSession } from "@/auth/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"

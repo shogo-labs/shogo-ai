@@ -8,7 +8,7 @@ import { observer } from "mobx-react-lite"
 import { Link } from "react-router-dom"
 import { ArrowLeft, User, Building2, Mail, Calendar, CreditCard, Zap, TrendingUp, Settings } from "lucide-react"
 
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"

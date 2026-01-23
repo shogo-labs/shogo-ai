@@ -9,7 +9,7 @@
  */
 
 import { useState, useEffect, useMemo, useCallback } from "react"
-import { useDomainStore } from "@/contexts/DomainProvider"
+import { useDomainStore } from "@shogo/app-core"
 
 interface QueryConfig {
   filter?: Record<string, any>

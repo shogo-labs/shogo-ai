@@ -18,8 +18,8 @@
 
 import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { PropertyRenderer } from "@/components/rendering/PropertyRenderer"
-import type { PropertyMetadata } from "@/components/rendering/types"
+import { PropertyRenderer } from "@/components/rendering"
+import type { PropertyMetadata } from "@/components/rendering"
 import { IntegrationPointsSection } from "./IntegrationPointsSection"
 import type { IntegrationPoint } from "./IntegrationPointCard"
 

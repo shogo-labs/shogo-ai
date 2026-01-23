@@ -7,7 +7,7 @@
  */
 
 import { useMemo } from "react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 
 /**
  * Minimal input types for the metrics computation

@@ -28,7 +28,7 @@
  */
 
 import { useState, useCallback } from "react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 
 /**
  * Props for useDeleteFeature hook

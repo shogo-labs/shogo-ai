@@ -20,7 +20,7 @@ import { observer } from "mobx-react-lite"
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { PropertyRenderer } from "@/components/rendering"
-import type { PropertyMetadata } from "@/components/rendering/types"
+import type { PropertyMetadata } from "@/components/rendering"
 
 /**
  * Test type enum - matches TestSpecification entity

@@ -13,11 +13,11 @@
 
 import { observer } from "mobx-react-lite"
 import { useState, useMemo } from "react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { cn } from "@/lib/utils"
 import { Grid, List, Search, MapPin } from "lucide-react"
-import { ProgressBar } from "@/components/rendering/displays/visualization/ProgressBar"
-import { DataCard } from "@/components/rendering/displays/visualization/DataCard"
+import { ProgressBar } from "@/components/rendering"
+import { DataCard } from "@/components/rendering"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
 import {
   FindingCard,

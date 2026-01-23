@@ -29,8 +29,8 @@ import type { SectionRendererProps } from "../sectionImplementations"
 import { useDataGridMetadata } from "./hooks"
 import { deriveUiSchema, filterFormProperties } from "./utils"
 import { radixRenderers } from "./forms"
-import { useDomainStore } from "@/contexts/DomainProvider"
-import { useWavesmithMetaStore } from "@/contexts/WavesmithMetaStoreContext"
+import { useDomainStore } from "@shogo/app-core"
+import { useWavesmithMetaStore } from "@shogo/app-core"
 
 // ============================================================================
 // Types

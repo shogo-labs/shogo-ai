@@ -19,8 +19,8 @@
 import { observer } from "mobx-react-lite"
 import { useMemo } from "react"
 import { cn } from "@/lib/utils"
-import { useDomains } from "@/contexts/DomainProvider"
-import { ProgressBar } from "@/components/rendering/displays/visualization/ProgressBar"
+import { useDomains } from "@shogo/app-core"
+import { ProgressBar } from "@/components/rendering"
 import { ArchetypeBadge, type FeatureArchetype } from "@/components/app/shared"
 import type { SectionRendererProps } from "../../types"
 

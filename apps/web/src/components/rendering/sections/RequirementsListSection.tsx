@@ -19,7 +19,7 @@
  */
 
 import { observer } from "mobx-react-lite"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { RequirementCard } from "@/components/app/shared"
 import type { SectionRendererProps } from "../sectionImplementations"
 

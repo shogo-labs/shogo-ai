@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect, useMemo } from "react"
-import { useWavesmithMetaStore } from "@/contexts/WavesmithMetaStoreContext"
+import { useWavesmithMetaStore } from "@shogo/app-core"
 
 interface UseDataGridMetadataResult {
   /** Property entities from meta-store (compatible with PropertyMetadata) */

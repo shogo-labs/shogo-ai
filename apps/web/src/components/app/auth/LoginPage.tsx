@@ -18,7 +18,7 @@
 
 import { useState } from "react"
 import { observer } from "mobx-react-lite"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { Card, CardHeader, CardContent, CardTitle, CardDescription } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Alert, AlertDescription } from "@/components/ui/alert"

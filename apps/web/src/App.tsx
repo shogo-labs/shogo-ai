@@ -12,10 +12,14 @@ import { AllProjectsPage } from './pages/AllProjectsPage'
 import { StarredProjectsPage } from './pages/StarredProjectsPage'
 import { SharedWithMePage } from './pages/SharedWithMePage'
 import { SettingsPage } from './pages/SettingsPage'
-import { AuthProvider } from './contexts/AuthContext'
-import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
-import { DomainProvider, type EagerCollectionsConfig } from './contexts/DomainProvider'
-import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
+import {
+  AuthProvider,
+  EnvironmentProvider,
+  createEnvironment,
+  DomainProvider,
+  type EagerCollectionsConfig,
+  WavesmithMetaStoreProvider,
+} from '@shogo/app-core'
 import { MCPBackend } from './query/MCPBackend'
 import { createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService } from '@shogo/state-api'
 import { MCPPersistence } from './persistence/MCPPersistence'
@@ -126,10 +130,10 @@ function App() {
     <NuqsAdapter>
       <BrowserRouter>
         <EnvironmentProvider env={env}>
-          <DomainProvider key={authKey} domains={domains} eagerCollections={eagerCollections}>
-            <SchemaLoadingGate>
-              <WavesmithMetaStoreProvider>
-                <AuthProvider authService={betterAuthService}>
+          <AuthProvider authService={betterAuthService}>
+            <DomainProvider key={authKey} domains={domains} eagerCollections={eagerCollections}>
+              <SchemaLoadingGate>
+                <WavesmithMetaStoreProvider>
                   <Routes>
                     {/* Project view route - full screen without sidebar */}
                     <Route path="/projects/:projectId" element={
@@ -187,10 +191,10 @@ function App() {
                       <Route path="templates" element={<AllProjectsPage />} />
                     </Route>
                   </Routes>
-                </AuthProvider>
-              </WavesmithMetaStoreProvider>
-            </SchemaLoadingGate>
-          </DomainProvider>
+                </WavesmithMetaStoreProvider>
+              </SchemaLoadingGate>
+            </DomainProvider>
+          </AuthProvider>
         </EnvironmentProvider>
         <Toaster />
       </BrowserRouter>

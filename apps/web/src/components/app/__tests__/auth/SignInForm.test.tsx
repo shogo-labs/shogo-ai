@@ -12,8 +12,8 @@ import { render, cleanup, fireEvent, waitFor, act } from "@testing-library/react
 import React from "react"
 import { Window } from "happy-dom"
 import { SignInForm } from "../../auth/SignInForm"
-import { EnvironmentProvider, createEnvironment } from "@/contexts/EnvironmentContext"
-import { DomainProvider } from "@/contexts/DomainProvider"
+import { EnvironmentProvider, createEnvironment } from "@shogo/app-core"
+import { DomainProvider } from "@shogo/app-core"
 import { betterAuthDomain, MockAuthService } from "@shogo/state-api"
 
 // Set up happy-dom

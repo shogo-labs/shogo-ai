@@ -13,10 +13,10 @@
 
 import { observer } from "mobx-react-lite"
 import { useMemo } from "react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { cn } from "@/lib/utils"
 import { ArrowRight, Check, X, Sparkles, AlertTriangle } from "lucide-react"
-import { ProgressBar } from "@/components/rendering/displays/visualization/ProgressBar"
+import { ProgressBar } from "@/components/rendering"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
 import {
   PatternChips,

@@ -21,7 +21,7 @@
  */
 
 import { Loader2 } from "lucide-react"
-import { useSchemaLoadingState } from "@/contexts/DomainProvider"
+import { useSchemaLoadingState } from "@shogo/app-core"
 
 export interface SchemaLoadingGateProps {
   children: React.ReactNode

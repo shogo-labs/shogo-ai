@@ -16,7 +16,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react"
-import { useDomains } from "../../../../contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation"
 import { useSession } from "../../../../auth/client"
 

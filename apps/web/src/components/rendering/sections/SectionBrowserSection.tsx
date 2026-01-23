@@ -19,7 +19,7 @@ import { observer } from "mobx-react-lite"
 import { Code, Layout, Tag, FileText, Sparkles } from "lucide-react"
 import type { SectionRendererProps } from "../types"
 import { DynamicSectionRenderer } from "../sectionImplementations"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { useAppShell } from "../contexts/AppShellContext"
 
 // ============================================================================

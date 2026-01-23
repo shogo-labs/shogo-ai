@@ -18,10 +18,10 @@
 import { observer } from "mobx-react-lite";
 import { useEffect, useCallback, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useDomains } from "@/contexts/DomainProvider";
+import { useDomains } from "@shogo/app-core";
 import { ComposablePhaseView } from "../../rendering/composition/ComposablePhaseView";
 import { ComponentRegistryProvider } from "@/components/rendering";
-import { createRegistryFromDomain } from "@/components/rendering/registryFactory";
+import { createRegistryFromDomain } from "@/components/rendering";
 import { ChatPanel } from "../chat/ChatPanel";
 import {
   ChatSessionPicker,

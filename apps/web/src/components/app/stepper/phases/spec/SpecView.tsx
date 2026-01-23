@@ -24,12 +24,12 @@ import {
   type NodeProps,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { cn } from "@/lib/utils"
 import { GitBranch, CheckCircle, Clock, AlertCircle, X, Circle, Link2 } from "lucide-react"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
 import { PropertyRenderer } from "@/components/rendering"
-import type { PropertyMetadata } from "@/components/rendering/types"
+import type { PropertyMetadata } from "@/components/rendering"
 import { type Task } from "../../cards"
 import { EmptyPhaseContent } from "../../EmptyStates"
 

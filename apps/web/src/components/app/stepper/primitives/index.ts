@@ -6,4 +6,4 @@
  */
 
 // Re-export ProgressBar from rendering displays
-export { ProgressBar, type ProgressBarProps, type ProgressSegment } from "@/components/rendering/displays/visualization/ProgressBar"
+export { ProgressBar, type ProgressBarProps, type ProgressSegment } from "@/components/rendering"

@@ -13,7 +13,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react"
 import { autorun } from "mobx"
-import { useWavesmithMetaStore } from "@/contexts/WavesmithMetaStoreContext"
+import { useWavesmithMetaStore } from "@shogo/app-core"
 
 export interface UseFormMetadataResult {
   /** JSON Schema generated from model.toJsonSchema() */

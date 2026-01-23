@@ -40,7 +40,7 @@ import { usePhaseNavigation } from "./hooks/usePhaseNavigation"
 import { getPhaseStatus, PHASE_CONFIG } from "./phaseUtils"
 import { useChatContextSafe } from "../chat/ChatContext"
 // Composable phase view for data-driven phase composition (Session CPV)
-import { ComposablePhaseView } from "@/components/rendering/composition/ComposablePhaseView"
+import { ComposablePhaseView } from "@/components/rendering"
 // Phase view components (Session 2.3B, 2.3C, 2.3D)
 import { DiscoveryView, AnalysisView, ClassificationView } from "./phases"
 import { SpecView } from "./phases/spec/SpecView"

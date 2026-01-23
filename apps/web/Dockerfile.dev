@@ -20,6 +20,8 @@ COPY tsconfig.base.json ./
 # Copy package.json files for dependency resolution
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
+COPY packages/app-core/package.json ./packages/app-core/
+COPY packages/composition-runtime/package.json ./packages/composition-runtime/
 COPY apps/web/package.json ./apps/web/
 
 # Install all dependencies
@@ -28,6 +30,8 @@ RUN bun install
 # Copy source code (will be overridden by volume mounts in dev mode)
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
+COPY packages/app-core ./packages/app-core
+COPY packages/composition-runtime ./packages/composition-runtime
 COPY apps/web ./apps/web
 
 # Environment defaults

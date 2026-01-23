@@ -16,8 +16,8 @@
  */
 
 import { cn } from "@/lib/utils"
-import { PropertyRenderer } from "@/components/rendering/PropertyRenderer"
-import type { PropertyMetadata } from "@/components/rendering/types"
+import { PropertyRenderer } from "@/components/rendering"
+import type { PropertyMetadata } from "@/components/rendering"
 
 /**
  * IntegrationPoint interface

@@ -17,8 +17,8 @@ import { describe, test, expect, beforeEach, beforeAll, afterAll, afterEach, moc
 import { render, fireEvent, waitFor, cleanup, act } from "@testing-library/react"
 import React from "react"
 import { BrowserRouter } from "react-router-dom"
-import { EnvironmentProvider, createEnvironment } from "@/contexts/EnvironmentContext"
-import { DomainProvider } from "@/contexts/DomainProvider"
+import { EnvironmentProvider, createEnvironment } from "@shogo/app-core"
+import { DomainProvider } from "@shogo/app-core"
 import { betterAuthDomain, MockAuthService } from "@shogo/state-api"
 import { SignUpForm } from "../SignUpForm"
 

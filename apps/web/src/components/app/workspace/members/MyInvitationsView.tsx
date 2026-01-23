@@ -15,7 +15,7 @@ import { Loader2, Check, X, Building2, Clock, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { useSession } from "@/auth/client"
 
 /**

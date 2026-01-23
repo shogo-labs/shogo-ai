@@ -136,6 +136,8 @@ services:
       - /app/node_modules
       - /app/packages/state-api/node_modules
       - /app/packages/mcp/node_modules
+      - /app/packages/app-core/node_modules
+      - /app/packages/composition-runtime/node_modules
       - /app/apps/web/node_modules
     environment:
       NODE_ENV: development

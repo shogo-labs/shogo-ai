@@ -8,7 +8,7 @@
 import { useState, useEffect, useRef } from "react"
 import { observer } from "mobx-react-lite"
 import { useChat, type Message } from "@ai-sdk/react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { ToolCallPart, type ToolCallState } from "./ToolCallPart"
 import { cn } from "@/lib/utils"
 

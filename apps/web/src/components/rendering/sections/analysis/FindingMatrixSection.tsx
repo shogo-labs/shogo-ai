@@ -16,7 +16,7 @@
 import { observer } from "mobx-react-lite"
 import { useMemo } from "react"
 import { cn } from "@/lib/utils"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { useAnalysisPanelContext, type FindingType } from "./AnalysisPanelContext"
 import { findingTypeBadgeVariants } from "@/components/app/shared"
 import type { SectionRendererProps } from "../../types"

@@ -24,7 +24,7 @@ import {
   ListChecks,
   Clock,
 } from "lucide-react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { cn } from "@/lib/utils"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
 

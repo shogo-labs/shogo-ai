@@ -6,7 +6,13 @@
  * Domain renderers register at priority 200 to override the generic EnumBadge (50).
  */
 
-import { createDefaultRegistry } from "./defaultRegistry"
+import {
+  createDefaultRegistry,
+  ProgressBar,
+  DataCard,
+  GraphNode,
+  StatusIndicator,
+} from "@shogo/composition-runtime"
 import {
   PriorityBadge,
   ArchetypeBadge,
@@ -21,12 +27,6 @@ import {
   TaskRenderer,
   PhaseStatusRenderer,
 } from "./displays/domain"
-import {
-  ProgressBar,
-  DataCard,
-  GraphNode,
-  StatusIndicator,
-} from "./displays/visualization"
 
 /**
  * Creates a registry with default renderers plus Studio domain renderers.

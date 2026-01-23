@@ -1,19 +1,26 @@
 /**
- * Component Implementations Map
+ * Component Implementations Map - Extended
  * Task: task-dcb-003
  *
- * Maps implementationRef strings to their corresponding React components.
- * This bridges entity data (from Wavesmith) to code-side implementations.
+ * Extends the base componentImplementationMap from @shogo/composition-runtime
+ * with domain-specific renderers for the Shogo Studio application.
  *
- * The map is used by the dynamic component builder to resolve component
- * references from RendererBinding entities to actual React components.
+ * Base components (from composition-runtime):
+ * - 14 primitive renderers (StringDisplay, NumberDisplay, etc.)
+ * - 4 visualization renderers (ProgressBar, DataCard, etc.)
+ *
+ * Domain-specific renderers (local):
+ * - 14 domain renderers (PriorityBadge, TaskStatusBadge, etc.)
  */
 
 import type { ComponentType } from "react"
-import type { DisplayRendererProps } from "./types"
+import type { DisplayRendererProps } from "@shogo/composition-runtime"
 
-// Primitive display renderers
+// Import base map and getComponent from composition-runtime
 import {
+  componentImplementationMap as baseComponentMap,
+  getComponent as baseGetComponent,
+  // Re-export primitive displays so consumers don't need to import from two places
   StringDisplay,
   NumberDisplay,
   BooleanDisplay,
@@ -28,9 +35,14 @@ import {
   StringArrayDisplay,
   LongTextDisplay,
   ImageDisplay,
-} from "./displays"
+  // Visualization displays
+  ProgressBar,
+  DataCard,
+  GraphNode,
+  StatusIndicator,
+} from "@shogo/composition-runtime"
 
-// Domain-specific renderers
+// Domain-specific renderers (these stay local - feature-specific)
 import {
   PriorityBadge,
   ArchetypeBadge,
@@ -48,43 +60,20 @@ import {
   PhaseStatusRenderer,
 } from "./displays/domain"
 
-// Visualization renderers
-import {
-  ProgressBar,
-  DataCard,
-  GraphNode,
-  StatusIndicator,
-} from "./displays/visualization"
-
 /**
- * Map of implementationRef strings to React components.
+ * Extended component implementation map.
  *
- * This map contains all registered display renderers:
- * - 14 primitive renderers (StringDisplay, NumberDisplay, StringArrayDisplay, LongTextDisplay, ImageDisplay, etc.)
- * - 14 domain renderers (PriorityBadge, TaskStatusBadge, CodePathDisplay, ChangeTypeBadge, PhaseStatusRenderer, etc.)
- * - 4 visualization renderers (ProgressBar, DataCard, etc.)
+ * Starts with all base components from @shogo/composition-runtime,
+ * then adds domain-specific renderers for the Shogo Studio application.
  */
 export const componentImplementationMap = new Map<
   string,
   ComponentType<DisplayRendererProps>
 >([
-  // Primitive display renderers
-  ["StringDisplay", StringDisplay],
-  ["NumberDisplay", NumberDisplay],
-  ["BooleanDisplay", BooleanDisplay],
-  ["DateTimeDisplay", DateTimeDisplay],
-  ["EmailDisplay", EmailDisplay],
-  ["UriDisplay", UriDisplay],
-  ["EnumBadge", EnumBadge],
-  ["ReferenceDisplay", ReferenceDisplay],
-  ["ComputedDisplay", ComputedDisplay],
-  ["ArrayDisplay", ArrayDisplay],
-  ["ObjectDisplay", ObjectDisplay],
-  ["StringArrayDisplay", StringArrayDisplay],
-  ["LongTextDisplay", LongTextDisplay],
-  ["ImageDisplay", ImageDisplay],
+  // Start with base components from composition-runtime
+  ...baseComponentMap,
 
-  // Domain-specific renderers
+  // Domain-specific renderers (feature-specific, stay in apps/web)
   ["PriorityBadge", PriorityBadge],
   ["ArchetypeBadge", ArchetypeBadge],
   ["FindingTypeBadge", FindingTypeBadge],
@@ -99,12 +88,6 @@ export const componentImplementationMap = new Map<
   ["CodePathDisplay", CodePathDisplay],
   ["ChangeTypeBadge", ChangeTypeBadge],
   ["PhaseStatusRenderer", PhaseStatusRenderer],
-
-  // Visualization renderers
-  ["ProgressBar", ProgressBar as ComponentType<DisplayRendererProps>],
-  ["DataCard", DataCard as ComponentType<DisplayRendererProps>],
-  ["GraphNode", GraphNode as ComponentType<DisplayRendererProps>],
-  ["StatusIndicator", StatusIndicator as ComponentType<DisplayRendererProps>],
 ])
 
 /**
@@ -130,3 +113,6 @@ export function getComponent(
   }
   return componentImplementationMap.get(implementationRef) ?? StringDisplay
 }
+
+// Re-export types for convenience
+export type { DisplayRendererProps }

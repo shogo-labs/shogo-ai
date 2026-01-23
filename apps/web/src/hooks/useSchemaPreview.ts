@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect } from 'react'
-import { useWavesmithMetaStore } from '../contexts/WavesmithMetaStoreContext'
+import { useWavesmithMetaStore } from '@shogo/app-core'
 import { getRuntimeStore } from '@shogo/state-api'
 
 export interface SchemaPreviewState {

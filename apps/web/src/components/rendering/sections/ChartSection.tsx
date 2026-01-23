@@ -21,7 +21,7 @@
 
 import { useState, useEffect, useRef, useMemo } from "react"
 import { observer } from "mobx-react-lite"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import * as d3 from "d3"
 import { cn } from "@/lib/utils"
 import type { SectionRendererProps } from "../sectionImplementations"

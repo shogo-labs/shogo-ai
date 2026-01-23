@@ -86,7 +86,7 @@ import { WorkspaceSwitcher } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
 import { useSession } from "@/auth/client"
 import { useCommandPaletteContext } from "./AppShell"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { LogOut, User, Sun, Moon, Monitor } from "lucide-react"
 

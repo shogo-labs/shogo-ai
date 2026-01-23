@@ -18,9 +18,9 @@ import { observer } from "mobx-react-lite"
 import { useMemo } from "react"
 import { Layers } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
-import { ProgressBar } from "@/components/rendering/displays/visualization/ProgressBar"
+import { ProgressBar } from "@/components/rendering"
 import {
   SectionCard,
   SectionHeader,

@@ -14,7 +14,7 @@ import { Tags } from "lucide-react"
 import {
   FilterControl,
   type FilterOption,
-} from "@/components/rendering/displays/visualization/FilterControl"
+} from "@/components/rendering"
 
 /**
  * Decision category types

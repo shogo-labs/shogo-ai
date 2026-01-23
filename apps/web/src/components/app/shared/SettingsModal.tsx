@@ -71,7 +71,7 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { useWorkspaceData } from "../workspace"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { useSession } from "@/auth/client"
 import { InviteMemberModal } from "../workspace/members/InviteMemberModal"
 

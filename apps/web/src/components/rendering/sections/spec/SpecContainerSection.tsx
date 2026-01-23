@@ -44,7 +44,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { EmptyPhaseContent } from "@/components/app/stepper/EmptyStates"
 import type { SectionRendererProps } from "../../types"
 import { TaskDetailsPanel, type Task as TaskDetailTask } from "./TaskDetailsPanel"

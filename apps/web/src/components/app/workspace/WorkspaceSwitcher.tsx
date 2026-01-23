@@ -23,7 +23,7 @@ import { useState, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { Plus, Settings, Users, ChevronDown, Check, Zap, ArrowLeft } from "lucide-react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { useSession } from "@/auth/client"
 
 import {

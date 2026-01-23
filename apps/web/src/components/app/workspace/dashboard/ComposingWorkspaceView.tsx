@@ -11,8 +11,8 @@
 
 import { useState, useCallback, useEffect } from "react"
 import { observer } from "mobx-react-lite"
-import { useDomains } from "@/contexts/DomainProvider"
-import { ComposablePhaseView } from "@/components/rendering/composition/ComposablePhaseView"
+import { useDomains } from "@shogo/app-core"
+import { ComposablePhaseView } from "@/components/rendering"
 import { ChatPanel } from "../../chat/ChatPanel"
 import {
   ChatSessionPicker,

@@ -70,7 +70,7 @@ import {
 } from "@/components/ui/dialog"
 import { useWorkspaceData, useWorkspaceNavigation } from "@/components/app/workspace/hooks"
 import { Label } from "@/components/ui/label"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { useSession } from "@/auth/client"
 import { cn } from "@/lib/utils"
 

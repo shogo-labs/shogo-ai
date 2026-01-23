@@ -15,8 +15,8 @@ import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll, moc
 import { render, fireEvent, waitFor, cleanup, screen } from "@testing-library/react"
 import React, { useEffect } from "react"
 import { UserMenu } from "../UserMenu"
-import { EnvironmentProvider, createEnvironment } from "../../../../contexts/EnvironmentContext"
-import { DomainProvider, useDomains } from "../../../../contexts/DomainProvider"
+import { EnvironmentProvider, createEnvironment } from "@shogo/app-core"
+import { DomainProvider, useDomains } from "@shogo/app-core"
 import { betterAuthDomain, MockAuthService } from "@shogo/state-api"
 
 // Set up happy-dom

@@ -11,7 +11,7 @@ import { Loader2, Bell, CheckCircle } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { useSession } from "@/auth/client"
 import { NotificationItem } from "./NotificationItem"
 

@@ -18,7 +18,7 @@
 import { observer } from "mobx-react-lite"
 import { useMemo } from "react"
 import { AlertTriangle } from "lucide-react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import type { SectionRendererProps } from "../../types"
 
 /**

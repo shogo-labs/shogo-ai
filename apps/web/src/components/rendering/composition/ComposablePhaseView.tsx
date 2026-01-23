@@ -26,7 +26,7 @@
 
 import { observer } from "mobx-react-lite"
 import type { ReactNode } from "react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { SlotLayout } from "./SlotLayout"
 import { DynamicSectionRenderer } from "../sectionImplementations"
 import { getProviderComponent } from "./providerImplementationMap"

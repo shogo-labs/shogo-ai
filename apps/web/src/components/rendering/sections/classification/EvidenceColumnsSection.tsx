@@ -21,7 +21,7 @@ import { observer } from "mobx-react-lite"
 import { useMemo } from "react"
 import { Check, X } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { ArchetypeBadge, type FeatureArchetype } from "@/components/app/shared"
 import type { SectionRendererProps } from "../../types"
 

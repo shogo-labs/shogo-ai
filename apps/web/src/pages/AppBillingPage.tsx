@@ -10,7 +10,7 @@ import { observer } from "mobx-react-lite"
 import { Link, useSearchParams } from "react-router-dom"
 import { ArrowLeft, Building2, CheckCircle2, Info } from "lucide-react"
 
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { useWorkspaceData } from "@/components/app/workspace/hooks"
 import { useSession } from "@/auth/client"
 import { Button } from "@/components/ui/button"

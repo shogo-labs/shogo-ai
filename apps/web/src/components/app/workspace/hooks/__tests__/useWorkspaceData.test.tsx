@@ -18,9 +18,9 @@ import { createRoot, type Root } from "react-dom/client"
 import { act } from "react"
 import { Window } from "happy-dom"
 import { render, cleanup, waitFor } from "@testing-library/react"
-import { EnvironmentProvider, createEnvironment } from "../../../../../contexts/EnvironmentContext"
-import { DomainProvider, useDomains } from "../../../../../contexts/DomainProvider"
-import { AuthProvider } from "../../../../../contexts/AuthContext"
+import { EnvironmentProvider, createEnvironment } from "@shogo/app-core"
+import { DomainProvider, useDomains } from "@shogo/app-core"
+import { AuthProvider } from "@shogo/app-core"
 import {
   studioCoreDomain,
   platformFeaturesDomain,

@@ -20,7 +20,7 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains } from "@shogo/app-core"
 import { useSession } from "@/auth/client"
 import type { Notification } from "./NotificationList"
 

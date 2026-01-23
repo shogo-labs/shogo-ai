@@ -27,10 +27,13 @@ ENV VITE_WORKSPACE=$VITE_WORKSPACE
 # Copy workspace root files
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
+COPY turbo.json ./
 
 # Copy package.json files for dependency resolution
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
+COPY packages/app-core/package.json ./packages/app-core/
+COPY packages/composition-runtime/package.json ./packages/composition-runtime/
 COPY apps/web/package.json ./apps/web/
 
 # Install all dependencies
@@ -39,15 +42,13 @@ RUN bun install
 # Copy source code (including mcp for raw imports in WavesmithMetaDemo)
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
+COPY packages/app-core ./packages/app-core
+COPY packages/composition-runtime ./packages/composition-runtime
 COPY apps/web ./apps/web
 
-# Build state-api first (dependency)
-WORKDIR /app/packages/state-api
-RUN bun run build
-
-# Build web app
-WORKDIR /app/apps/web
-RUN bun run build
+# Build all packages via turbo (handles dependency order and workspace resolution)
+WORKDIR /app
+RUN bun run build --filter=@shogo/web
 
 # =============================================================================
 # Production image with Nginx

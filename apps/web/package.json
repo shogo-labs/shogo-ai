@@ -34,6 +34,8 @@
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-toast": "^1.2.15",
+    "@shogo/app-core": "workspace:*",
+    "@shogo/composition-runtime": "workspace:*",
     "@shogo/state-api": "workspace:*",
     "@supabase/supabase-js": "^2.86.2",
     "@xyflow/react": "^12.10.0",
