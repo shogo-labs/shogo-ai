@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target browser --external @shogo/state-api --external @shogo/app-core --external react --external react-dom --external mobx --external mobx-react-lite --external mobx-state-tree",
+    "build": "NODE_ENV=production bun build src/index.ts --outdir dist --target browser --external @shogo/state-api --external @shogo/app-core --external react --external react-dom --external mobx --external mobx-react-lite --external mobx-state-tree",
     "build:with-types": "bun run build && tsc --emitDeclarationOnly --outDir dist",
     "dev": "bun run --watch src/index.ts",
     "typecheck": "tsc --noEmit"
