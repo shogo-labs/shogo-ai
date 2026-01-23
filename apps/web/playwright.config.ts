@@ -96,7 +96,8 @@ export default defineConfig({
 
   /* Run your local dev server, API server, and MCP server before starting the tests */
   /* Note: MCP and API are assumed to be running via Docker when WEB_URL points to Docker web service */
-  webServer: process.env.WEB_URL?.includes('3001') ? [
+  /* Skip server startup for remote environments (staging/production) */
+  webServer: (process.env.WEB_URL?.includes('3001') || process.env.WEB_URL?.includes('shogo.ai')) ? [
     // When using Docker web service (port 3001), assume MCP and API are also running in Docker
     // Only start local dev server if needed
     {

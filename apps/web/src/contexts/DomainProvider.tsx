@@ -279,11 +279,19 @@ export function DomainProvider<T extends DomainsMap>({
         await Promise.all(schemaLoadPromises)
       }
 
-      // Then load persisted data for each store using query() API
-      // This uses the backend registry (PostgreSQL) and auto-syncs to MST
-      // OPTIMIZATION: Only load collections specified in eagerCollections config
+      // Then load persisted data for each store
+      // OPTIMIZATION: Use batch loading to reduce HTTP requests from N to 1
       // If no config provided, load ALL collections (backwards compatibility)
-      const collectionLoadPromises: Promise<void>[] = []
+
+      // Step 1: Gather all collections to load with their contexts
+      type CollectionInfo = {
+        key: string           // Domain key (e.g., "studioCore")
+        collectionName: string // Collection name (e.g., "workspaceCollection")
+        collection: any       // MST collection instance
+        schemaName: string    // Schema name (e.g., "studio-core")
+        modelName: string     // Model name (e.g., "Workspace")
+      }
+      const collectionsToLoad: CollectionInfo[] = []
 
       for (const [key, store] of Object.entries(stores)) {
         // Find all collections (properties ending with "Collection")
@@ -292,39 +300,87 @@ export function DomainProvider<T extends DomainsMap>({
         )
 
         // Determine which collections to load for this domain
-        let collectionsToLoad: string[]
+        let collectionNames: string[]
         if (eagerCollections === undefined) {
           // No config provided - load ALL collections (backwards compatibility)
-          collectionsToLoad = allCollectionNames
+          collectionNames = allCollectionNames
         } else if (eagerCollections[key] !== undefined) {
           // Config specifies which collections to load for this domain
           // Filter to only collections that exist in the store
-          collectionsToLoad = eagerCollections[key].filter(name =>
+          collectionNames = eagerCollections[key].filter(name =>
             allCollectionNames.includes(name)
           )
         } else {
           // Domain not in config - load ALL its collections (backwards compatibility)
-          collectionsToLoad = allCollectionNames
+          collectionNames = allCollectionNames
         }
 
-        for (const collectionName of collectionsToLoad) {
+        for (const collectionName of collectionNames) {
           const collection = store[collectionName]
-          // Use query().toArray() which routes through backendRegistry
-          // Remote executors auto-sync results to MST via syncFromRemote callback
-          if (collection?.query && typeof collection.query === "function") {
-            collectionLoadPromises.push(
-              collection.query().toArray().catch((err: unknown) => {
-                console.error(
-                  `[DomainProvider] Failed to load "${collectionName}" for "${key}":`,
-                  err
-                )
-              })
-            )
+          if (collection?.persistenceContext) {
+            const ctx = collection.persistenceContext
+            collectionsToLoad.push({
+              key,
+              collectionName,
+              collection,
+              schemaName: ctx.schemaName,
+              modelName: ctx.modelName,
+            })
           }
         }
       }
 
-      await Promise.all(collectionLoadPromises)
+      // Step 2: Use batch loading if available, otherwise fall back to individual loads
+      if (persistence?.loadCollectionsBatch && collectionsToLoad.length > 0) {
+        // OPTIMIZATION: Single HTTP request for all collections
+        const batchContexts = collectionsToLoad.map(info => ({
+          schemaName: info.schemaName,
+          modelName: info.modelName,
+          location: env.context?.location,
+        }))
+
+        try {
+          const batchResults = await persistence.loadCollectionsBatch(batchContexts)
+
+          // Sync results to each collection
+          for (const info of collectionsToLoad) {
+            const resultKey = `${info.schemaName}:${info.modelName}`
+            const result = batchResults.get(resultKey)
+            if (result?.items) {
+              // Convert items map to array for syncFromRemote
+              const itemsArray = Object.values(result.items)
+              if (itemsArray.length > 0 && info.collection.syncFromRemote) {
+                await info.collection.syncFromRemote(itemsArray)
+              }
+            }
+          }
+          console.debug(`[DomainProvider] Batch loaded ${collectionsToLoad.length} collections in 1 request`)
+        } catch (err) {
+          console.error('[DomainProvider] Batch collection load failed, falling back to individual loads:', err)
+          // Fall back to individual loads
+          await loadCollectionsIndividually(collectionsToLoad)
+        }
+      } else {
+        // Fall back to individual loads (no batch support or no collections)
+        await loadCollectionsIndividually(collectionsToLoad)
+      }
+
+      // Helper function for individual collection loading (fallback)
+      async function loadCollectionsIndividually(collections: CollectionInfo[]) {
+        const promises = collections.map(async (info) => {
+          try {
+            if (info.collection?.query && typeof info.collection.query === "function") {
+              await info.collection.query().toArray()
+            }
+          } catch (err) {
+            console.error(
+              `[DomainProvider] Failed to load "${info.collectionName}" for "${info.key}":`,
+              err
+            )
+          }
+        })
+        await Promise.all(promises)
+      }
     }
 
     loadAllDomainData()

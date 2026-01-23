@@ -94,11 +94,13 @@ const eagerCollections: EagerCollectionsConfig = {
   platformFeatures: ['featureSessionCollection'],
 
   // Deferred - don't load on mount (empty array)
+  // These collections are loaded on-demand when the user navigates to relevant views
   teams: [],
   multiTenancy: [],
   chat: [],
-  // studioChat needs to load sessions for chat persistence to work
-  studioChat: ['chatSessionCollection', 'chatMessageCollection'],
+  // studioChat: Lazy load chat data only when entering a project/chat view
+  // This avoids loading potentially large chat history on every page load
+  studioChat: [],
   auth: [],
 }
 
