@@ -1568,11 +1568,19 @@ app.post('/api/projects/:projectId/terminal/exec', async (c) => {
       
       console.log(`[TerminalProxy] Proxying exec to ${targetUrl}`)
       
+      // Read and forward only the necessary headers and body
+      const body = await c.req.text()
+      
       const response = await fetch(targetUrl, {
         method: 'POST',
-        headers: c.req.raw.headers,
-        body: c.req.raw.body,
+        headers: {
+          'Content-Type': c.req.header('Content-Type') || 'application/json',
+        },
+        body,
       })
+      
+      console.log(`[TerminalProxy] Response status: ${response.status}`)
+      
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
@@ -1663,13 +1671,18 @@ app.post('/api/projects/:projectId/tests/run', async (c) => {
       
       console.log(`[TestsProxy] Proxying tests run to ${targetUrl}`)
       
+      // Read body first to avoid streaming issues
+      const body = await c.req.text()
+      
       const response = await fetch(targetUrl, {
         method: 'POST',
         headers: {
           'Content-Type': c.req.header('Content-Type') || 'application/json',
         },
-        body: c.req.raw.body,
+        body,
       })
+      
+      console.log(`[TestsProxy] Response status: ${response.status}`)
       
       // Return streaming response
       const responseHeaders = new Headers()

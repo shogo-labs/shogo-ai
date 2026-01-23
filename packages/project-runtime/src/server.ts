@@ -37,6 +37,10 @@ const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || '/app/packages/mcp/src/server-templates.ts'
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
+// Fast start mode: server starts before build completes
+const FAST_START_MODE = process.env.FAST_START_MODE === 'true'
+const BUILD_STATUS_FILE = process.env.BUILD_STATUS_FILE || '/tmp/build-status'
+
 // Validate required environment
 if (!PROJECT_ID) {
   console.error('[project-runtime] ERROR: PROJECT_ID environment variable is required')
@@ -47,6 +51,9 @@ console.log(`[project-runtime] Starting for project: ${PROJECT_ID}`)
 console.log(`[project-runtime] Project directory: ${PROJECT_DIR}`)
 console.log(`[project-runtime] Schemas path: ${SCHEMAS_PATH}`)
 console.log(`[project-runtime] MCP server path: ${MCP_SERVER_PATH}`)
+if (FAST_START_MODE) {
+  console.log(`[project-runtime] Fast start mode enabled (build runs in background)`)
+}
 
 // =============================================================================
 // S3 Sync Initialization
@@ -407,17 +414,43 @@ app.use('*', cors({
   allowHeaders: ['Content-Type', 'Authorization', 'X-Session-Id'],
 }))
 
+// =============================================================================
+// Build Status Helper (for fast start mode)
+// =============================================================================
+
+function getBuildStatus(): { status: string; ready: boolean } {
+  if (!FAST_START_MODE) {
+    return { status: 'ready', ready: true }
+  }
+  
+  try {
+    if (existsSync(BUILD_STATUS_FILE)) {
+      const status = readFileSync(BUILD_STATUS_FILE, 'utf-8').trim()
+      return {
+        status,
+        ready: status === 'ready',
+      }
+    }
+  } catch {
+    // File doesn't exist yet
+  }
+  
+  return { status: 'initializing', ready: false }
+}
+
 // Health check endpoint for Kubernetes probes
+// Always returns ok quickly - this is for liveness, not readiness
 app.get('/health', (c) => {
   return c.json({
     status: 'ok',
     projectId: PROJECT_ID,
     projectDir: PROJECT_DIR,
     uptime: process.uptime(),
+    fastStartMode: FAST_START_MODE,
   })
 })
 
-// Readiness check - verify project directory exists
+// Readiness check - returns 503 until build completes in fast start mode
 app.get('/ready', (c) => {
   const projectDirExists = existsSync(PROJECT_DIR)
   
@@ -429,10 +462,35 @@ app.get('/ready', (c) => {
     }, 503)
   }
   
+  // In fast start mode, check if background build has completed
+  if (FAST_START_MODE) {
+    const buildStatus = getBuildStatus()
+    
+    if (!buildStatus.ready) {
+      return c.json({
+        status: 'initializing',
+        buildStatus: buildStatus.status,
+        reason: 'Background initialization in progress',
+        projectId: PROJECT_ID,
+      }, 503)
+    }
+  }
+  
   return c.json({
     status: 'ready',
     projectId: PROJECT_ID,
     projectDir: PROJECT_DIR,
+  })
+})
+
+// Build status endpoint - shows detailed initialization progress
+app.get('/build-status', (c) => {
+  const buildStatus = getBuildStatus()
+  return c.json({
+    projectId: PROJECT_ID,
+    fastStartMode: FAST_START_MODE,
+    ...buildStatus,
+    uptime: process.uptime(),
   })
 })
 
@@ -890,6 +948,77 @@ app.get('/preview/*', async (c) => {
   // Get external proxy base path from header (set by API server when proxying)
   // Falls back to local /preview/ path if not proxied through API
   const externalBasePath = c.req.header('X-Proxy-Base-Path') || '/preview/'
+  
+  // In fast start mode, show loading page if build not ready
+  if (FAST_START_MODE) {
+    const buildStatus = getBuildStatus()
+    if (!buildStatus.ready) {
+      return c.html(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loading Preview...</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+    .container {
+      text-align: center;
+      padding: 2rem;
+    }
+    .spinner {
+      width: 50px;
+      height: 50px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 1s ease-in-out infinite;
+      margin: 0 auto 1.5rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p { opacity: 0.8; font-size: 0.9rem; }
+    .status { 
+      margin-top: 1rem; 
+      padding: 0.5rem 1rem; 
+      background: rgba(255,255,255,0.2); 
+      border-radius: 20px;
+      font-size: 0.8rem;
+      text-transform: capitalize;
+    }
+  </style>
+  <script>
+    // Auto-refresh when build completes
+    setInterval(async () => {
+      try {
+        const res = await fetch('/build-status');
+        const data = await res.json();
+        if (data.ready) location.reload();
+      } catch {}
+    }, 2000);
+  </script>
+</head>
+<body>
+  <div class="container">
+    <div class="spinner"></div>
+    <h1>Building Your App</h1>
+    <p>Installing dependencies and compiling...</p>
+    <div class="status">${buildStatus.status}</div>
+  </div>
+</body>
+</html>
+      `, 200)
+    }
+  }
   
   // TanStack Start: proxy to the running server
   if (isTanStackStart) {

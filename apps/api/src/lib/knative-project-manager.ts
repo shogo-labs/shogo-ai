@@ -633,28 +633,30 @@ export class KnativeProjectManager {
           limits: { memory: this.memoryLimit, cpu: this.cpuLimit },
         },
         volumeMounts: [{ name: "project-data", mountPath: "/app/project" }],
-        // Readiness probe - checks if the pod is ready to receive traffic
-        // Uses /ready endpoint which verifies project directory exists
+        // Readiness probe - optimized for fast start mode
+        // With fast start, /health passes in ~2s, /ready passes after build (~5-10s)
+        // Lower initialDelay + higher failureThreshold allows for background build time
         readinessProbe: {
           httpGet: {
             path: "/ready",
             port: 8080,
           },
-          initialDelaySeconds: 5,
-          periodSeconds: 5,
-          timeoutSeconds: 5,
+          initialDelaySeconds: 1,
+          periodSeconds: 2,
+          timeoutSeconds: 2,
           successThreshold: 1,
-          failureThreshold: 6,
+          failureThreshold: 30, // Allow up to 60s for build to complete
         },
         // Liveness probe - checks if the pod is still alive
+        // /health endpoint always passes quickly with fast start mode
         livenessProbe: {
           httpGet: {
             path: "/health",
             port: 8080,
           },
-          initialDelaySeconds: 30,
-          periodSeconds: 30,
-          timeoutSeconds: 10,
+          initialDelaySeconds: 5,
+          periodSeconds: 10,
+          timeoutSeconds: 5,
           successThreshold: 1,
           failureThreshold: 3,
         },

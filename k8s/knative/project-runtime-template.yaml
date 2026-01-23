@@ -87,21 +87,23 @@ spec:
           volumeMounts:
             - name: project-data
               mountPath: /app/project
+          # Optimized probes for fast startup
+          # Health check passes in ~2s, ready in ~5s with deferred init
           readinessProbe:
             httpGet:
               path: /ready
               port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 5
-            timeoutSeconds: 5
-            failureThreshold: 6
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 10
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
 
         # ===========================================

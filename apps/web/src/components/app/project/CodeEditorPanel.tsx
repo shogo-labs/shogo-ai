@@ -9,6 +9,7 @@
  * - Filesystem API for file access (synced with Vite/Preview)
  * - Auto-save with debouncing (triggers Vite HMR)
  * - JSX/TSX support with proper TypeScript compiler options
+ * - Automatic Type Acquisition (ATA) from CDN for npm packages
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
@@ -16,11 +17,161 @@ import Editor, { type Monaco } from "@monaco-editor/react"
 import { Loader2, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, RefreshCw, Cloud, CloudOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 
+// =============================================================================
+// Automatic Type Acquisition (ATA) System
+// =============================================================================
+// Fetches type definitions from CDN for npm packages found in import statements.
+// This enables IntelliSense for popular packages like React, TanStack, etc.
+// =============================================================================
+
+/** Cache for fetched type definitions to avoid repeated network requests */
+const typeCache = new Map<string, string>()
+
+/** Set of packages currently being fetched (to avoid duplicate requests) */
+const fetchingTypes = new Set<string>()
+
+/** Set of packages that failed to fetch (to avoid retrying) */
+const failedTypes = new Set<string>()
+
+/** CDN URLs for fetching types - try multiple sources */
+const TYPE_CDN_URLS = [
+  // esm.sh provides bundled types
+  (pkg: string) => `https://esm.sh/${pkg}?bundle&target=esnext`,
+  // unpkg for @types packages
+  (pkg: string) => `https://unpkg.com/@types/${pkg.replace('@', '').replace('/', '__')}/index.d.ts`,
+  // jsdelivr as fallback
+  (pkg: string) => `https://cdn.jsdelivr.net/npm/@types/${pkg.replace('@', '').replace('/', '__')}/index.d.ts`,
+]
+
+/**
+ * Extract npm package names from import statements in code.
+ * Handles various import syntaxes:
+ * - import x from 'package'
+ * - import { x } from 'package'
+ * - import 'package'
+ * - import type { x } from 'package'
+ */
+function extractImports(code: string): string[] {
+  const importRegex = /import\s+(?:type\s+)?(?:[\w\s{},*]+\s+from\s+)?['"]([^'"./][^'"]*)['"]/g
+  const packages = new Set<string>()
+  let match
+
+  while ((match = importRegex.exec(code)) !== null) {
+    const pkg = match[1]
+    // Get the base package name (e.g., '@tanstack/react-router' -> '@tanstack/react-router')
+    // For scoped packages, include the scope
+    if (pkg.startsWith('@')) {
+      // Scoped package: @scope/name or @scope/name/subpath
+      const parts = pkg.split('/')
+      if (parts.length >= 2) {
+        packages.add(`${parts[0]}/${parts[1]}`)
+      }
+    } else {
+      // Regular package: name or name/subpath
+      const basePkg = pkg.split('/')[0]
+      packages.add(basePkg)
+    }
+  }
+
+  return Array.from(packages)
+}
+
+/**
+ * Fetch type definitions for a package from CDN.
+ * Tries multiple CDN sources and caches successful results.
+ */
+async function fetchTypesForPackage(packageName: string): Promise<string | null> {
+  // Check cache first
+  if (typeCache.has(packageName)) {
+    return typeCache.get(packageName)!
+  }
+
+  // Skip if already fetching or previously failed
+  if (fetchingTypes.has(packageName) || failedTypes.has(packageName)) {
+    return null
+  }
+
+  fetchingTypes.add(packageName)
+
+  // Try fetching from unpkg @types first (most reliable for type definitions)
+  const typesPackageName = packageName.startsWith('@')
+    ? packageName.replace('@', '').replace('/', '__')
+    : packageName
+
+  const urls = [
+    `https://unpkg.com/@types/${typesPackageName}/index.d.ts`,
+    `https://cdn.jsdelivr.net/npm/@types/${typesPackageName}/index.d.ts`,
+  ]
+
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, { 
+        signal: AbortSignal.timeout(5000) // 5 second timeout
+      })
+      if (response.ok) {
+        const types = await response.text()
+        // Validate it looks like a type definition
+        if (types.includes('declare') || types.includes('export') || types.includes('interface')) {
+          typeCache.set(packageName, types)
+          fetchingTypes.delete(packageName)
+          console.log(`[ATA] Loaded types for ${packageName}`)
+          return types
+        }
+      }
+    } catch {
+      // Try next URL
+    }
+  }
+
+  // Mark as failed so we don't retry
+  failedTypes.add(packageName)
+  fetchingTypes.delete(packageName)
+  console.log(`[ATA] No types found for ${packageName}`)
+  return null
+}
+
+/**
+ * Load types for all imports in the given code.
+ * Returns a map of package name to type definitions.
+ */
+async function loadTypesForCode(code: string, monaco: Monaco): Promise<void> {
+  const packages = extractImports(code)
+  
+  // Skip packages we've already loaded or that are relative imports
+  const packagesToLoad = packages.filter(pkg => 
+    !typeCache.has(pkg) && 
+    !failedTypes.has(pkg) && 
+    !fetchingTypes.has(pkg)
+  )
+
+  if (packagesToLoad.length === 0) return
+
+  // Fetch types in parallel (with concurrency limit)
+  const results = await Promise.allSettled(
+    packagesToLoad.map(pkg => fetchTypesForPackage(pkg))
+  )
+
+  // Add successfully fetched types to Monaco
+  packagesToLoad.forEach((pkg, index) => {
+    const result = results[index]
+    if (result.status === 'fulfilled' && result.value) {
+      const typePath = `file:///node_modules/@types/${pkg.replace('@', '').replace('/', '__')}/index.d.ts`
+      monaco.languages.typescript.typescriptDefaults.addExtraLib(result.value, typePath)
+      monaco.languages.typescript.javascriptDefaults.addExtraLib(result.value, typePath)
+    }
+  })
+}
+
+// Store Monaco instance for ATA
+let monacoInstance: Monaco | null = null
+
 /**
  * Configure Monaco Editor when it mounts.
  * This ensures TypeScript/JavaScript settings are correct for JSX/TSX files.
  */
 function handleEditorWillMount(monaco: Monaco) {
+  monacoInstance = monaco
+
   // Configure TypeScript/JavaScript compiler options for JSX support
   monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
     target: monaco.languages.typescript.ScriptTarget.ESNext,
@@ -52,68 +203,37 @@ function handleEditorWillMount(monaco: Monaco) {
     allowSyntheticDefaultImports: true,
   })
 
-  // Enable semantic validation for TypeScript
+  // Enable semantic validation now that we have ATA
+  // This provides type errors for actual mistakes while ATA handles package types
   monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
     noSemanticValidation: false,
     noSyntaxValidation: false,
   })
 
-  // Add React type definitions for IntelliSense
-  // This provides basic React types so Monaco can offer completions
-  const reactTypes = `
-declare module 'react' {
-  export function useState<T>(initialState: T | (() => T)): [T, (value: T | ((prev: T) => T)) => void];
-  export function useEffect(effect: () => void | (() => void), deps?: readonly any[]): void;
-  export function useCallback<T extends (...args: any[]) => any>(callback: T, deps: readonly any[]): T;
-  export function useMemo<T>(factory: () => T, deps: readonly any[]): T;
-  export function useRef<T>(initialValue: T): { current: T };
-  export function useContext<T>(context: React.Context<T>): T;
-  export function useReducer<R extends React.Reducer<any, any>>(reducer: R, initialState: React.ReducerState<R>): [React.ReducerState<R>, React.Dispatch<React.ReducerAction<R>>];
-  
-  export type FC<P = {}> = (props: P) => JSX.Element | null;
-  export type ReactNode = JSX.Element | string | number | boolean | null | undefined | ReactNode[];
-  export type PropsWithChildren<P = {}> = P & { children?: ReactNode };
-  export type CSSProperties = { [key: string]: string | number };
-  export type ChangeEvent<T = Element> = { target: T; currentTarget: T };
-  export type MouseEvent<T = Element> = { target: T; currentTarget: T; preventDefault(): void; stopPropagation(): void };
-  export type FormEvent<T = Element> = { target: T; currentTarget: T; preventDefault(): void };
-  export type KeyboardEvent<T = Element> = { key: string; code: string; target: T; preventDefault(): void };
-  
-  export interface Context<T> { Provider: FC<{ value: T; children?: ReactNode }>; Consumer: FC<{ children: (value: T) => ReactNode }> }
-  export function createContext<T>(defaultValue: T): Context<T>;
-  export type Reducer<S, A> = (state: S, action: A) => S;
-  export type ReducerState<R extends Reducer<any, any>> = R extends Reducer<infer S, any> ? S : never;
-  export type ReducerAction<R extends Reducer<any, any>> = R extends Reducer<any, infer A> ? A : never;
-  export type Dispatch<A> = (action: A) => void;
-  
-  export const Fragment: unique symbol;
-  export function createElement(type: any, props?: any, ...children: any[]): JSX.Element;
-  export function forwardRef<T, P = {}>(render: (props: P, ref: React.Ref<T>) => JSX.Element | null): React.FC<P & { ref?: React.Ref<T> }>;
-  export type Ref<T> = { current: T | null } | ((instance: T | null) => void) | null;
-  export function memo<P extends object>(Component: FC<P>): FC<P>;
-  
-  export default { useState, useEffect, useCallback, useMemo, useRef, useContext, useReducer, createContext, Fragment, createElement, forwardRef, memo };
+  monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+    noSemanticValidation: false,
+    noSyntaxValidation: false,
+  })
+
+  // Pre-load common React types immediately (these are almost always needed)
+  loadCommonTypes(monaco)
 }
 
-declare global {
-  namespace JSX {
-    interface Element {}
-    interface IntrinsicElements {
-      div: any; span: any; p: any; a: any; button: any; input: any; form: any;
-      h1: any; h2: any; h3: any; h4: any; h5: any; h6: any;
-      ul: any; ol: any; li: any; nav: any; header: any; footer: any; main: any; section: any; article: any; aside: any;
-      img: any; svg: any; path: any; circle: any; rect: any; line: any; polygon: any; polyline: any; g: any;
-      table: any; thead: any; tbody: any; tr: any; td: any; th: any;
-      label: any; select: any; option: any; textarea: any;
-      video: any; audio: any; source: any; canvas: any; iframe: any;
-      br: any; hr: any; pre: any; code: any; blockquote: any; strong: any; em: any; small: any;
+/**
+ * Pre-load type definitions for commonly used packages.
+ * This provides immediate IntelliSense without waiting for code analysis.
+ */
+async function loadCommonTypes(monaco: Monaco) {
+  const commonPackages = ['react', 'react-dom']
+  
+  for (const pkg of commonPackages) {
+    const types = await fetchTypesForPackage(pkg)
+    if (types) {
+      const typePath = `file:///node_modules/@types/${pkg}/index.d.ts`
+      monaco.languages.typescript.typescriptDefaults.addExtraLib(types, typePath)
+      monaco.languages.typescript.javascriptDefaults.addExtraLib(types, typePath)
     }
   }
-}
-`;
-
-  monaco.languages.typescript.typescriptDefaults.addExtraLib(reactTypes, 'file:///node_modules/@types/react/index.d.ts');
-  monaco.languages.typescript.javascriptDefaults.addExtraLib(reactTypes, 'file:///node_modules/@types/react/index.d.ts');
 }
 
 /**
@@ -472,6 +592,16 @@ export function CodeEditorPanel({
       setFileContent(content)
       setOriginalContent(content) // Track original for dirty detection
       setLastSaved(new Date())
+
+      // Trigger Automatic Type Acquisition for TypeScript/JavaScript files
+      const isTypeScriptFile = filePath.endsWith('.ts') || filePath.endsWith('.tsx') || 
+                               filePath.endsWith('.js') || filePath.endsWith('.jsx')
+      if (isTypeScriptFile && monacoInstance && content) {
+        // Load types in background (don't block file display)
+        loadTypesForCode(content, monacoInstance).catch(err => {
+          console.warn('[ATA] Failed to load types:', err)
+        })
+      }
     } catch (err: any) {
       setContentError(err.message || 'Failed to load file')
       setFileContent('')
@@ -553,7 +683,10 @@ export function CodeEditorPanel({
     }
   }, [selectedFile, projectId, onFileChange])
 
-  // Handle editor content changes with debounced auto-save
+  // Ref for debounced type loading
+  const typeLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Handle editor content changes with debounced auto-save and type loading
   const handleEditorChange = useCallback((value: string | undefined) => {
     const newContent = value || ''
     setFileContent(newContent)
@@ -569,13 +702,28 @@ export function CodeEditorPanel({
         saveFile(newContent)
       }, AUTO_SAVE_DELAY)
     }
+
+    // Debounced type loading for new imports (longer delay to avoid excessive fetches)
+    if (typeLoadTimeoutRef.current) {
+      clearTimeout(typeLoadTimeoutRef.current)
+    }
+    if (monacoInstance && newContent) {
+      typeLoadTimeoutRef.current = setTimeout(() => {
+        loadTypesForCode(newContent, monacoInstance!).catch(err => {
+          console.warn('[ATA] Failed to load types:', err)
+        })
+      }, 2000) // 2 second delay for type loading
+    }
   }, [originalContent, saveFile])
 
-  // Cleanup timeout on unmount
+  // Cleanup timeouts on unmount
   useEffect(() => {
     return () => {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current)
+      }
+      if (typeLoadTimeoutRef.current) {
+        clearTimeout(typeLoadTimeoutRef.current)
       }
     }
   }, [])
