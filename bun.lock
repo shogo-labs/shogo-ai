@@ -1,6 +1,5 @@
 {
   "lockfileVersion": 1,
-  "configVersion": 1,
   "workspaces": {
     "": {
       "name": "shogo-ai",
@@ -94,6 +93,47 @@
         "tailwindcss": "^4.1.18",
         "typescript": "^5.7.2",
         "vite": "^6.0.0",
+      },
+    },
+    "packages/app-core": {
+      "name": "@shogo/app-core",
+      "version": "0.1.0",
+      "dependencies": {
+        "@shogo/state-api": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "typescript": "^5.7.2",
+      },
+      "peerDependencies": {
+        "mobx": "^6.13.5",
+        "mobx-react-lite": "^4.1.1",
+        "mobx-state-tree": "^6.0.1",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+      },
+    },
+    "packages/composition-runtime": {
+      "name": "@shogo/composition-runtime",
+      "version": "0.1.0",
+      "dependencies": {
+        "@shogo/app-core": "workspace:*",
+        "@shogo/state-api": "workspace:*",
+        "class-variance-authority": "^0.7.1",
+        "clsx": "^2.1.1",
+        "tailwind-merge": "^3.4.0",
+      },
+      "devDependencies": {
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "typescript": "^5.7.2",
+      },
+      "peerDependencies": {
+        "mobx": "^6.13.5",
+        "mobx-react-lite": "^4.1.1",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
       },
     },
     "packages/mcp": {
@@ -641,6 +681,10 @@
     "@shikijs/vscode-textmate": ["@shikijs/vscode-textmate@10.0.2", "", {}, "sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg=="],
 
     "@shogo/api": ["@shogo/api@workspace:apps/api"],
+
+    "@shogo/app-core": ["@shogo/app-core@workspace:packages/app-core"],
+
+    "@shogo/composition-runtime": ["@shogo/composition-runtime@workspace:packages/composition-runtime"],
 
     "@shogo/mcp": ["@shogo/mcp@workspace:packages/mcp"],
 

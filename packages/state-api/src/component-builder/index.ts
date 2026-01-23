@@ -22,6 +22,13 @@ export type {
   CreateComponentBuilderStoreOptions,
   SlotDefinition,
   SlotContentEntry,
+  // ComponentSpec nested types (used by PlanPreviewSection)
+  ComponentRequirement,
+  LayoutDecision,
+  DataBinding,
+  InteractionPattern,
+  ReuseOpportunity,
+  ComponentSpecPreviewSummary,
 } from "./domain"
 
 // Types exports
