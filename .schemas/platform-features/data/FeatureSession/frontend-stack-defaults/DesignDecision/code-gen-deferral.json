@@ -1,9 +1,0 @@
-{
-  "id": "dd-fsd-004",
-  "name": "code-gen-deferral",
-  "question": "Should code generation templates be included in scope?",
-  "decision": "Defer code-gen templates - app-builder skills were deleted, focus on demo app first",
-  "rationale": "The app-builder-implementation-code-generator skill was deleted. Code generation for React/TypeScript would require a new skill. Current scope focuses on establishing patterns in the demo app.",
-  "createdAt": 1734480700000,
-  "session": "fs-frontend-defaults-001"
-}

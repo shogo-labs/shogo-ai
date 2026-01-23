@@ -1,9 +1,0 @@
-{
-  "id": "design-ddl-reference-resolution",
-  "name": "reference-column-naming",
-  "question": "How to derive FK column names from references?",
-  "decision": "Column name derived from x-reference-target, not property key. organizationId referencing Organization → column organization_id. Pattern: snake_case(targetEntity) + '_id'. Matches resolved design from vault documentation (02-discovery-entrypoint.md decision #2).",
-  "rationale": "Normalizes inconsistent property naming. Property key might be 'orgId', 'organization', 'organizationId' - all become 'organization_id' column. Provides consistent DDL regardless of schema variations.",
-  "createdAt": 1734188800000,
-  "session": "ddl-generator-001"
-}

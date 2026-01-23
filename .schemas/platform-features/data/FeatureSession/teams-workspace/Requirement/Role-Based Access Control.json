@@ -1,9 +1,0 @@
-{
-  "id": "req-role-hierarchy",
-  "name": "Role-Based Access Control",
-  "description": "Define Role enum with numeric levels (owner=40, admin=30, member=20, viewer=10) for permission comparison. Provide utilities to check if a user can perform actions based on minimum required role.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1733868120004,
-  "session": "teams-workspace"
-}

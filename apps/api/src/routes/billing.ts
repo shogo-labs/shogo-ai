@@ -2,13 +2,11 @@
  * Billing API Routes
  *
  * Authenticated endpoints for billing operations.
- * All routes require authentication and billing admin permission.
+ * Uses Prisma-based billing service.
  */
 
 import { Hono } from "hono"
-import type { Context } from "hono"
-import type { IBillingService, BillingError, PlanId, BillingInterval } from "@shogo/state-api"
-import { isBillingError } from "@shogo/state-api"
+import * as billingService from "../services/billing.service"
 
 /**
  * Auth context expected from authentication middleware
@@ -20,71 +18,10 @@ interface AuthContext {
 }
 
 /**
- * Billing route configuration
- */
-export interface BillingRoutesConfig {
-  /** Billing service for Stripe operations */
-  billingService: IBillingService
-  /** Billing domain store for local state queries */
-  billingStore: {
-    subscriptionCollection: {
-      findByWorkspace: (workspaceId: string) => any[]
-    }
-    creditLedgerCollection: {
-      findByWorkspace: (workspaceId: string) => any | null
-    }
-  }
-}
-
-/**
  * Create billing routes
- *
- * @param config - Route configuration
- * @returns Hono router with billing endpoints
  */
-export function billingRoutes(config: BillingRoutesConfig) {
-  const { billingService, billingStore } = config
+export function billingRoutes() {
   const router = new Hono()
-
-  /**
-   * POST /checkout - Create Stripe checkout session
-   *
-   * Request body:
-   * - planId: 'pro' | 'business' | 'enterprise'
-   * - billingInterval: 'monthly' | 'annual'
-   *
-   * Response:
-   * - sessionId: string
-   * - url: string (redirect URL)
-   */
-  router.post("/checkout", async (c) => {
-    try {
-      const auth = c.get("auth" as never) as AuthContext | undefined
-      if (!auth?.workspaceId) {
-        return c.json({ error: { code: "unauthorized", message: "Missing workspace context" } }, 401)
-      }
-
-      const body = await c.req.json<{ planId: PlanId; billingInterval: BillingInterval }>()
-      const { planId, billingInterval } = body
-
-      if (!planId || !billingInterval) {
-        return c.json(
-          { error: { code: "invalid_request", message: "planId and billingInterval required" } },
-          400
-        )
-      }
-
-      const result = await billingService.createCheckoutSession(
-        auth.workspaceId,
-        planId,
-        billingInterval
-      )
-
-      return c.json(result, 200)
-    } catch (error) {
-      return handleBillingError(c, error)
-    }
-  })
 
   /**
    * GET /subscription - Get current subscription and credit balance
@@ -100,14 +37,13 @@ export function billingRoutes(config: BillingRoutesConfig) {
         return c.json({ error: { code: "unauthorized", message: "Missing workspace context" } }, 401)
       }
 
-      // Get subscription from local store
-      const subscriptions = billingStore.subscriptionCollection.findByWorkspace(auth.workspaceId)
-      const subscription = subscriptions[0] || null
+      // Get subscription from Prisma
+      const subscription = await billingService.getSubscription(auth.workspaceId)
 
-      // Get credit balance from local store
-      const ledger = billingStore.creditLedgerCollection.findByWorkspace(auth.workspaceId)
+      // Get credit balance from Prisma
+      const ledger = await billingService.getCreditLedger(auth.workspaceId)
       const credits = ledger
-        ? ledger.effectiveBalance || {
+        ? {
             dailyCredits: ledger.dailyCredits,
             monthlyCredits: ledger.monthlyCredits,
             rolloverCredits: ledger.rolloverCredits,
@@ -117,108 +53,66 @@ export function billingRoutes(config: BillingRoutesConfig) {
 
       return c.json({ subscription, credits }, 200)
     } catch (error) {
-      return handleBillingError(c, error)
+      console.error("[Billing API] Error:", error)
+      const message = error instanceof Error ? error.message : "Unknown error"
+      return c.json({ error: { code: "internal_error", message } }, 500)
     }
   })
 
   /**
-   * POST /portal - Get Stripe Customer Portal URL
+   * GET /usage - Get usage events for the workspace
    *
-   * Request body (optional):
-   * - returnUrl: string - URL to return to after portal session
-   *
-   * Response:
-   * - url: string (redirect URL)
+   * Query params:
+   * - projectId: string (optional)
+   * - limit: number (optional, default 100)
+   * - offset: number (optional, default 0)
    */
-  router.post("/portal", async (c) => {
+  router.get("/usage", async (c) => {
     try {
       const auth = c.get("auth" as never) as AuthContext | undefined
       if (!auth?.workspaceId) {
         return c.json({ error: { code: "unauthorized", message: "Missing workspace context" } }, 401)
       }
 
-      const body = await c.req.json<{ returnUrl?: string }>().catch(() => ({}))
-      const returnUrl = body.returnUrl
+      const projectId = c.req.query("projectId")
+      const limit = parseInt(c.req.query("limit") || "100", 10)
+      const offset = parseInt(c.req.query("offset") || "0", 10)
 
-      const result = await billingService.getPortalUrl(auth.workspaceId, returnUrl)
-      return c.json(result, 200)
+      const events = await billingService.getUsageEvents(auth.workspaceId, {
+        projectId: projectId || undefined,
+        limit,
+        offset,
+      })
+
+      return c.json({ events }, 200)
     } catch (error) {
-      return handleBillingError(c, error)
+      console.error("[Billing API] Error:", error)
+      const message = error instanceof Error ? error.message : "Unknown error"
+      return c.json({ error: { code: "internal_error", message } }, 500)
     }
   })
 
   /**
-   * POST /cancel - Cancel subscription at period end
-   *
-   * Response:
-   * - subscription: Updated subscription with cancelAtPeriodEnd=true
+   * POST /allocate-credits - Allocate free credits for a workspace (admin only)
    */
-  router.post("/cancel", async (c) => {
+  router.post("/allocate-credits", async (c) => {
     try {
       const auth = c.get("auth" as never) as AuthContext | undefined
       if (!auth?.workspaceId) {
         return c.json({ error: { code: "unauthorized", message: "Missing workspace context" } }, 401)
       }
 
-      // Get current subscription
-      const subscriptions = billingStore.subscriptionCollection.findByWorkspace(auth.workspaceId)
-      const subscription = subscriptions[0]
+      const ledger = await billingService.allocateFreeCredits(auth.workspaceId)
 
-      if (!subscription) {
-        return c.json(
-          { error: { code: "subscription_not_found", message: "No active subscription found" } },
-          404
-        )
-      }
-
-      const updatedSubscription = await billingService.cancelSubscription(
-        subscription.stripeSubscriptionId
-      )
-
-      return c.json({ subscription: updatedSubscription }, 200)
+      return c.json({ ledger }, 200)
     } catch (error) {
-      return handleBillingError(c, error)
+      console.error("[Billing API] Error:", error)
+      const message = error instanceof Error ? error.message : "Unknown error"
+      return c.json({ error: { code: "internal_error", message } }, 500)
     }
   })
 
   return router
-}
-
-/**
- * Handle billing errors and return consistent error response
- */
-function handleBillingError(c: any, error: unknown) {
-  console.error("[Billing API] Error:", error)
-
-  if (isBillingError(error)) {
-    const billingError = error as BillingError
-    const status = getStatusForBillingError(billingError.code)
-    return c.json({ error: billingError }, status)
-  }
-
-  // Generic error
-  const message = error instanceof Error ? error.message : "Unknown error"
-  return c.json({ error: { code: "internal_error", message } }, 500)
-}
-
-/**
- * Map billing error codes to HTTP status codes
- */
-function getStatusForBillingError(code: string): number {
-  switch (code) {
-    case "invalid_plan":
-    case "invalid_request":
-      return 400
-    case "subscription_not_found":
-    case "customer_not_found":
-      return 404
-    case "payment_failed":
-      return 402
-    case "webhook_verification_failed":
-      return 401
-    default:
-      return 500
-  }
 }
 
 export default billingRoutes

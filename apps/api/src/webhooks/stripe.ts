@@ -6,8 +6,47 @@
  */
 
 import type { Context } from "hono"
-import type { IBillingService, WebhookEvent } from "@shogo/state-api"
-import { isBillingError } from "@shogo/state-api"
+
+/**
+ * Webhook event from Stripe (simplified interface)
+ */
+export interface WebhookEvent {
+  type: "subscription.created" | "subscription.updated" | "subscription.deleted" | "invoice.payment_failed"
+  data: {
+    subscriptionId?: string
+    workspaceId?: string
+    customerId?: string
+    planId?: string
+    status?: string
+    billingInterval?: string
+    currentPeriodStart?: number
+    currentPeriodEnd?: number
+    cancelAtPeriodEnd?: boolean
+    invoiceId?: string
+    failureMessage?: string
+  }
+}
+
+/**
+ * Billing service interface for webhook processing
+ */
+export interface IBillingService {
+  processWebhookEvent(payload: string, signature: string): Promise<WebhookEvent>
+}
+
+/**
+ * Billing error structure
+ */
+export interface BillingError extends Error {
+  code: string
+}
+
+/**
+ * Type guard for billing errors
+ */
+export function isBillingError(error: unknown): error is BillingError {
+  return error instanceof Error && "code" in error
+}
 
 /**
  * Configuration for the webhook handler

@@ -2,10 +2,12 @@
  * Invitation API Routes
  *
  * Authenticated endpoints for invitation operations.
- * All routes require authentication.
+ * Uses Prisma-based member service.
  */
 
 import { Hono } from "hono"
+import * as memberService from "../services/member.service"
+import { prisma, MemberRole } from "../lib/prisma"
 
 /**
  * Auth context expected from authentication middleware
@@ -16,58 +18,18 @@ interface AuthContext {
 }
 
 /**
- * Invitation route configuration
- */
-export interface InvitationRoutesConfig {
-  /** Studio core domain store for invitation operations */
-  studioCore: {
-    invitationCollection: {
-      query: () => {
-        where: (filter: Record<string, any>) => {
-          first: () => Promise<any>
-          toArray: () => Promise<any[]>
-        }
-      }
-      insertOne: (data: any) => Promise<any>
-      updateOne: (id: string, changes: any) => Promise<void>
-    }
-    memberCollection: {
-      loadAll: () => Promise<void>
-      findForResource: (type: "workspace" | "project", id: string) => any[]
-    }
-    workspaceCollection: {
-      get: (id: string) => any
-    }
-    sendInvitationEmail: (invitationId: string) => Promise<{ success: boolean; error?: string }>
-    resendInvitation: (invitationId: string) => Promise<{ success: boolean; error?: string }>
-    acceptInvitation: (invitationId: string, userId: string) => Promise<void>
-    declineInvitation: (invitationId: string) => Promise<void>
-    createNotification: (params: any) => Promise<any>
-    resolvePermissions: (userId: string, resourceType: "workspace" | "project", resourceId: string) => string | null
-  }
-}
-
-/**
  * Create invitation routes
- *
- * @param config - Route configuration
- * @returns Hono router with invitation endpoints
  */
-export function invitationRoutes(config: InvitationRoutesConfig) {
-  const { studioCore } = config
+export function invitationRoutes() {
   const router = new Hono()
 
   /**
-   * POST /invitations - Create invitation and send email
+   * POST /invitations - Create invitation
    *
    * Request body:
    * - email: string (recipient email)
    * - workspaceId: string (workspace to invite to)
    * - role: 'owner' | 'admin' | 'member' | 'viewer'
-   *
-   * Response:
-   * - invitation: Invitation object
-   * - emailStatus: 'sent' | 'failed' | 'not_sent'
    */
   router.post("/", async (c) => {
     try {
@@ -79,7 +41,7 @@ export function invitationRoutes(config: InvitationRoutesConfig) {
       const body = await c.req.json<{
         email: string
         workspaceId: string
-        role: "owner" | "admin" | "member" | "viewer"
+        role: MemberRole
       }>()
       const { email, workspaceId, role } = body
 
@@ -91,240 +53,227 @@ export function invitationRoutes(config: InvitationRoutesConfig) {
       }
 
       // Check user has permission to invite (admin or owner)
-      await studioCore.memberCollection.query().where({ userId: auth.userId }).toArray()
-      const userRole = studioCore.resolvePermissions(auth.userId, "workspace", workspaceId)
-      if (!userRole || (userRole !== "owner" && userRole !== "admin")) {
+      const userMember = await memberService.getMemberByUserAndWorkspace(auth.userId, workspaceId)
+      if (!userMember || (userMember.role !== "owner" && userMember.role !== "admin")) {
         return c.json(
           { error: { code: "forbidden", message: "Only owners and admins can invite members" } },
           403
         )
       }
 
+      // Check if user is already a member
+      const existingUser = await prisma.user.findUnique({
+        where: { email: email.toLowerCase() },
+      })
+      if (existingUser) {
+        const existingMember = await memberService.getMemberByUserAndWorkspace(existingUser.id, workspaceId)
+        if (existingMember) {
+          return c.json(
+            { error: { code: "already_member", message: "User is already a member of this workspace" } },
+            400
+          )
+        }
+      }
+
+      // Check for existing pending invitation
+      const existingInvitations = await memberService.getInvitationsForEmail(email)
+      const existingInvitation = existingInvitations.find(
+        (inv) => inv.workspaceId === workspaceId && inv.status === "pending"
+      )
+      if (existingInvitation) {
+        return c.json(
+          { error: { code: "invitation_exists", message: "An invitation for this email is already pending" } },
+          400
+        )
+      }
+
       // Create the invitation
-      const now = Date.now()
-      const invitation = await studioCore.invitationCollection.insertOne({
-        id: crypto.randomUUID(),
+      const invitation = await memberService.createInvitation({
         email,
-        role,
         workspaceId,
-        status: "pending",
-        emailStatus: "not_sent",
+        role,
         invitedBy: auth.userId,
-        expiresAt: now + 7 * 24 * 60 * 60 * 1000, // 7 days
-        createdAt: now,
       })
 
-      // Send invitation email (gracefully handles missing SMTP config)
-      const emailResult = await studioCore.sendInvitationEmail(invitation.id)
-
-      return c.json(
-        {
-          invitation: {
-            id: invitation.id,
-            email: invitation.email,
-            role: invitation.role,
-            status: invitation.status,
-            emailStatus: emailResult.success ? "sent" : "not_sent",
-          },
-          emailSent: emailResult.success,
-          emailError: emailResult.error,
-        },
-        201
-      )
-    } catch (error: any) {
-      console.error("[invitations] POST / error:", error)
-      return c.json(
-        { error: { code: "internal_error", message: error.message || "Failed to create invitation" } },
-        500
-      )
+      return c.json({ invitation }, 201)
+    } catch (error) {
+      console.error("[Invitations API] Error:", error)
+      const message = error instanceof Error ? error.message : "Unknown error"
+      return c.json({ error: { code: "internal_error", message } }, 500)
     }
   })
 
   /**
-   * POST /invitations/:id/accept - Accept an invitation
-   *
-   * Response:
-   * - success: true
-   * - member: Created member object
+   * GET /invitations - Get invitations for current user's email
    */
-  router.post("/:id/accept", async (c) => {
+  router.get("/", async (c) => {
     try {
       const auth = c.get("auth" as never) as AuthContext | undefined
       if (!auth?.userId) {
         return c.json({ error: { code: "unauthorized", message: "Authentication required" } }, 401)
       }
 
-      const invitationId = c.req.param("id")
+      // Get user's email
+      const user = await prisma.user.findUnique({
+        where: { id: auth.userId },
+        select: { email: true },
+      })
 
-      // Get the invitation
-      const invitation = await studioCore.invitationCollection
-        .query()
-        .where({ id: invitationId })
-        .first()
-
-      if (!invitation) {
-        return c.json({ error: { code: "not_found", message: "Invitation not found" } }, 404)
+      if (!user?.email) {
+        return c.json({ invitations: [] }, 200)
       }
 
-      // Verify invitation is for the authenticated user's email
-      if (auth.email && invitation.email.toLowerCase() !== auth.email.toLowerCase()) {
+      const invitations = await memberService.getInvitationsForEmail(user.email)
+
+      return c.json({ invitations }, 200)
+    } catch (error) {
+      console.error("[Invitations API] Error:", error)
+      const message = error instanceof Error ? error.message : "Unknown error"
+      return c.json({ error: { code: "internal_error", message } }, 500)
+    }
+  })
+
+  /**
+   * GET /invitations/workspace/:workspaceId - Get pending invitations for a workspace
+   */
+  router.get("/workspace/:workspaceId", async (c) => {
+    try {
+      const auth = c.get("auth" as never) as AuthContext | undefined
+      if (!auth?.userId) {
+        return c.json({ error: { code: "unauthorized", message: "Authentication required" } }, 401)
+      }
+
+      const workspaceId = c.req.param("workspaceId")
+
+      // Check user has permission to view invitations
+      const userMember = await memberService.getMemberByUserAndWorkspace(auth.userId, workspaceId)
+      if (!userMember || (userMember.role !== "owner" && userMember.role !== "admin")) {
         return c.json(
-          { error: { code: "forbidden", message: "This invitation is for a different email address" } },
+          { error: { code: "forbidden", message: "Only owners and admins can view invitations" } },
           403
         )
       }
 
-      // Check invitation status
-      if (invitation.status !== "pending") {
-        return c.json(
-          { error: { code: "invalid_state", message: `Invitation is ${invitation.status}` } },
-          400
-        )
-      }
+      const invitations = await memberService.getWorkspaceInvitations(workspaceId)
 
-      // Check if expired
-      if (Date.now() > invitation.expiresAt) {
-        return c.json({ error: { code: "expired", message: "Invitation has expired" } }, 400)
-      }
-
-      // Accept the invitation (creates Member)
-      await studioCore.acceptInvitation(invitationId, auth.userId)
-
-      // Create notification for the inviter
-      if (invitation.invitedBy) {
-        const workspace = studioCore.workspaceCollection.get(invitation.workspaceId)
-        await studioCore.createNotification({
-          userId: invitation.invitedBy,
-          type: "invitation_accepted",
-          title: "Invitation accepted",
-          message: `${auth.email || "A user"} has joined ${workspace?.name || "the workspace"} as ${invitation.role}`,
-          metadata: {
-            invitationId,
-            workspaceId: invitation.workspaceId,
-            acceptedBy: auth.userId,
-          },
-        })
-      }
-
-      return c.json({ success: true }, 200)
-    } catch (error: any) {
-      console.error("[invitations] POST /:id/accept error:", error)
-      return c.json(
-        { error: { code: "internal_error", message: error.message || "Failed to accept invitation" } },
-        500
-      )
+      return c.json({ invitations }, 200)
+    } catch (error) {
+      console.error("[Invitations API] Error:", error)
+      const message = error instanceof Error ? error.message : "Unknown error"
+      return c.json({ error: { code: "internal_error", message } }, 500)
     }
   })
 
   /**
-   * POST /invitations/:id/decline - Decline an invitation
-   *
-   * Response:
-   * - success: true
+   * POST /invitations/:invitationId/accept - Accept an invitation
    */
-  router.post("/:id/decline", async (c) => {
+  router.post("/:invitationId/accept", async (c) => {
     try {
       const auth = c.get("auth" as never) as AuthContext | undefined
       if (!auth?.userId) {
         return c.json({ error: { code: "unauthorized", message: "Authentication required" } }, 401)
       }
 
-      const invitationId = c.req.param("id")
+      const invitationId = c.req.param("invitationId")
+
+      // Get user's email to verify invitation is for them
+      const user = await prisma.user.findUnique({
+        where: { id: auth.userId },
+        select: { email: true },
+      })
 
       // Get the invitation
-      const invitation = await studioCore.invitationCollection
-        .query()
-        .where({ id: invitationId })
-        .first()
+      const invitation = await prisma.invitation.findUnique({
+        where: { id: invitationId },
+      })
 
       if (!invitation) {
         return c.json({ error: { code: "not_found", message: "Invitation not found" } }, 404)
       }
 
-      // Check invitation status
-      if (invitation.status !== "pending") {
+      // Verify invitation is for this user's email
+      if (invitation.email.toLowerCase() !== user?.email?.toLowerCase()) {
         return c.json(
-          { error: { code: "invalid_state", message: `Invitation is ${invitation.status}` } },
-          400
-        )
-      }
-
-      // Decline the invitation
-      await studioCore.declineInvitation(invitationId)
-
-      return c.json({ success: true }, 200)
-    } catch (error: any) {
-      console.error("[invitations] POST /:id/decline error:", error)
-      return c.json(
-        { error: { code: "internal_error", message: error.message || "Failed to decline invitation" } },
-        500
-      )
-    }
-  })
-
-  /**
-   * POST /invitations/:id/resend - Resend invitation email
-   *
-   * Response:
-   * - success: true
-   * - emailStatus: 'sent' | 'failed'
-   */
-  router.post("/:id/resend", async (c) => {
-    try {
-      const auth = c.get("auth" as never) as AuthContext | undefined
-      if (!auth?.userId) {
-        return c.json({ error: { code: "unauthorized", message: "Authentication required" } }, 401)
-      }
-
-      const invitationId = c.req.param("id")
-
-      // Get the invitation
-      const invitation = await studioCore.invitationCollection
-        .query()
-        .where({ id: invitationId })
-        .first()
-
-      if (!invitation) {
-        return c.json({ error: { code: "not_found", message: "Invitation not found" } }, 404)
-      }
-
-      // Check user has permission (admin/owner of workspace)
-      await studioCore.memberCollection.query().where({ userId: auth.userId }).toArray()
-      const userRole = studioCore.resolvePermissions(auth.userId, "workspace", invitation.workspaceId)
-      if (!userRole || (userRole !== "owner" && userRole !== "admin")) {
-        return c.json(
-          { error: { code: "forbidden", message: "Only owners and admins can resend invitations" } },
+          { error: { code: "forbidden", message: "This invitation is not for your email address" } },
           403
         )
       }
 
-      // Check invitation is still pending
-      if (invitation.status !== "pending") {
-        return c.json(
-          { error: { code: "invalid_state", message: "Can only resend pending invitations" } },
-          400
-        )
+      const result = await memberService.acceptInvitation(invitationId, auth.userId)
+
+      return c.json({ success: true, member: result.member }, 200)
+    } catch (error) {
+      console.error("[Invitations API] Error:", error)
+      const message = error instanceof Error ? error.message : "Unknown error"
+      return c.json({ error: { code: "internal_error", message } }, 500)
+    }
+  })
+
+  /**
+   * POST /invitations/:invitationId/decline - Decline an invitation
+   */
+  router.post("/:invitationId/decline", async (c) => {
+    try {
+      const auth = c.get("auth" as never) as AuthContext | undefined
+      if (!auth?.userId) {
+        return c.json({ error: { code: "unauthorized", message: "Authentication required" } }, 401)
       }
 
-      // Resend the invitation email
-      const result = await studioCore.resendInvitation(invitationId)
+      const invitationId = c.req.param("invitationId")
 
-      return c.json(
-        {
-          success: result.success,
-          emailStatus: result.success ? "sent" : "failed",
-          error: result.error,
-        },
-        result.success ? 200 : 500
-      )
-    } catch (error: any) {
-      console.error("[invitations] POST /:id/resend error:", error)
-      return c.json(
-        { error: { code: "internal_error", message: error.message || "Failed to resend invitation" } },
-        500
-      )
+      await memberService.declineInvitation(invitationId)
+
+      return c.json({ success: true }, 200)
+    } catch (error) {
+      console.error("[Invitations API] Error:", error)
+      const message = error instanceof Error ? error.message : "Unknown error"
+      return c.json({ error: { code: "internal_error", message } }, 500)
+    }
+  })
+
+  /**
+   * DELETE /invitations/:invitationId - Cancel an invitation (admin only)
+   */
+  router.delete("/:invitationId", async (c) => {
+    try {
+      const auth = c.get("auth" as never) as AuthContext | undefined
+      if (!auth?.userId) {
+        return c.json({ error: { code: "unauthorized", message: "Authentication required" } }, 401)
+      }
+
+      const invitationId = c.req.param("invitationId")
+
+      // Get the invitation to check permissions
+      const invitation = await prisma.invitation.findUnique({
+        where: { id: invitationId },
+      })
+
+      if (!invitation) {
+        return c.json({ error: { code: "not_found", message: "Invitation not found" } }, 404)
+      }
+
+      // Check user has permission to cancel (admin or owner of workspace)
+      if (invitation.workspaceId) {
+        const userMember = await memberService.getMemberByUserAndWorkspace(auth.userId, invitation.workspaceId)
+        if (!userMember || (userMember.role !== "owner" && userMember.role !== "admin")) {
+          return c.json(
+            { error: { code: "forbidden", message: "Only owners and admins can cancel invitations" } },
+            403
+          )
+        }
+      }
+
+      await memberService.cancelInvitation(invitationId)
+
+      return c.json({ success: true }, 200)
+    } catch (error) {
+      console.error("[Invitations API] Error:", error)
+      const message = error instanceof Error ? error.message : "Unknown error"
+      return c.json({ error: { code: "internal_error", message } }, 500)
     }
   })
 
   return router
 }
+
+export default invitationRoutes

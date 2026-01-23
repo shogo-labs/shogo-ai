@@ -1,9 +1,0 @@
-{
-  "id": "req-fsd-004",
-  "name": "core-components",
-  "description": "Core shadcn/ui components installed and available: Button (done), Card, Input, Label, Dialog, Sheet, Tabs, Badge, Separator. Components follow new-york style with dark theme.",
-  "priority": "should",
-  "status": "proposed",
-  "createdAt": 1734480120000,
-  "session": "fs-frontend-defaults-001"
-}

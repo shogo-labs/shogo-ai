@@ -1,9 +1,0 @@
-{
-  "id": "dd-ai-sdk-integration",
-  "name": "ai-sdk-integration",
-  "question": "How to integrate AI SDK with existing MCP infrastructure?",
-  "decision": "Replace agent.chat MCP tool internals with AI SDK streamText() using claudeCode() provider. Keep MCP interface unchanged.",
-  "rationale": "Frontend continues using mcpService.streamChat() unchanged. Only the implementation switches from @anthropic-ai/claude-agent-sdk to ai-sdk-provider-claude-code. MCP interface provides stability.",
-  "createdAt": 1734462301000,
-  "session": "ai-sdk-chat-component"
-}

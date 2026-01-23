@@ -1,9 +1,0 @@
-{
-  "id": "req-fsd-006",
-  "name": "code-gen-templates",
-  "description": "Implementation spec and code generation skills include shadcn/ui + Tailwind patterns in generated React components. Templates produce components using cn() utility, Tailwind classes, and shadcn component imports.",
-  "priority": "could",
-  "status": "proposed",
-  "createdAt": 1734480120000,
-  "session": "fs-frontend-defaults-001"
-}

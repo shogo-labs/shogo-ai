@@ -1,9 +1,0 @@
-{
-  "id": "dd-role-hierarchy",
-  "name": "role-hierarchy",
-  "question": "How to implement role hierarchy for permission comparison?",
-  "decision": "Role enum values with numeric levels: owner=40, admin=30, member=20, viewer=10",
-  "rationale": "Numeric levels allow simple comparison (role >= requiredRole). Higher number = more permissions. Gaps between levels allow future insertion.",
-  "createdAt": 1733868600002,
-  "session": "teams-workspace"
-}

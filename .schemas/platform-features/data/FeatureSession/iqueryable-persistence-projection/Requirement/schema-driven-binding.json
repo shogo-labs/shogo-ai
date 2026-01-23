@@ -1,9 +1,0 @@
-{
-  "id": "req-04-schema-driven-binding",
-  "name": "schema-driven-binding",
-  "description": "x-persistence extension vocabulary with schema-level default and model-level override for backend selection. Resolution: model → schema → runtime default. Vision §5.1.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734019200000,
-  "session": "iqueryable-persistence-projection"
-}

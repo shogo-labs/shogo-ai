@@ -1,9 +1,0 @@
-{
-  "id": "req-09-ddl-execution",
-  "name": "ddl-execution-integration",
-  "description": "Integration between DDL generator output and BunSqlExecutor for schema migration. Execute CREATE TABLE statements from generateSQL() against target database. Support execution ordering via topological sort. Handle IF NOT EXISTS semantics for idempotent migrations.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734278400000,
-  "session": "iqueryable-persistence-projection"
-}

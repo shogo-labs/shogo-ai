@@ -1,9 +1,0 @@
-{
-  "id": "req-fsd-003",
-  "name": "discovery-skill-defaults",
-  "description": "Discovery skill (app-builder-discovery) documents shadcn/ui + Tailwind CSS as default frontend stack with examples for capturing in requirements and solution proposals, plus user override patterns",
-  "priority": "must",
-  "status": "implemented",
-  "createdAt": 1734480120000,
-  "session": "fs-frontend-defaults-001"
-}

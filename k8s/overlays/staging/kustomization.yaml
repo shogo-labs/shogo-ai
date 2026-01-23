@@ -15,6 +15,7 @@ resources:
   - api-service.yaml
   - web-service.yaml
   - workspace-services.yaml
+  - alb-ingress.yaml  # AWS Application Load Balancer for HTTPS ingress
 
 labels:
   - pairs:

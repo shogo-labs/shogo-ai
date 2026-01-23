@@ -1,9 +1,0 @@
-{
-  "id": "dd-005-enhancement-hooks-plan",
-  "name": "enhancement-hooks-plan",
-  "question": "What enhancements will the domain need?",
-  "decision": "Extend chatDomain: models: ChatSession.featureSession (view to resolve linked FeatureSession); collections: ChatSessionCollection.findByFeatureSession(featureSessionId); rootStore: createFeatureChat(featureSessionId, name) action.",
-  "rationale": "Minimal enhancements to existing chatDomain. No new domain needed. CollectionPersistable auto-composed. Changes contained to packages/state-api/src/chat/domain.ts.",
-  "createdAt": 1734480504000,
-  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
-}

@@ -1,9 +1,0 @@
-{
-  "id": "req-11-backend-registry-mcp",
-  "name": "backend-registry-mcp-integration",
-  "description": "Wire backend registry into MCP tools. Honor x-persistence.backend schema extension to select between 'file' (FileSystemPersistence) and 'postgres' (BunSqlExecutor) backends. Backend selection flows through environment DI to CollectionQueryable and CollectionPersistable mixins.",
-  "priority": "should",
-  "status": "proposed",
-  "createdAt": 1734278400000,
-  "session": "iqueryable-persistence-projection"
-}

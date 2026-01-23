@@ -1,9 +1,0 @@
-{
-  "id": "req-org-entity",
-  "name": "Organization Entity",
-  "description": "Define Organization as top-level container with name, slug, description, and metadata. Organizations own teams and serve as the root for permission inheritance.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1733868120000,
-  "session": "teams-workspace"
-}

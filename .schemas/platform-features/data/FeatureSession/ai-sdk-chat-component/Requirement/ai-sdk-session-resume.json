@@ -1,9 +1,0 @@
-{
-  "id": "ai-sdk-session-resume",
-  "name": "ai-sdk-session-resume",
-  "description": "Support multi-turn conversations by tracking session/conversation ID. Allow resuming conversations so context is maintained across messages, similar to the existing sessionId pattern.",
-  "priority": "should",
-  "status": "proposed",
-  "createdAt": 1734461715000,
-  "session": "ai-sdk-chat-component"
-}

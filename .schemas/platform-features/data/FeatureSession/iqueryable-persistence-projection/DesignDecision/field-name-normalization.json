@@ -1,9 +1,0 @@
-{
-  "id": "decision-field-normalization",
-  "name": "field-name-normalization",
-  "question": "How should snake_case database columns map to camelCase MST properties?",
-  "decision": "Add normalizeRow() utility in execution/utils.ts that converts snake_case keys to camelCase. PostgresBackend calls this on each row before returning. DDL generator already does camelCase->snake_case for column names.",
-  "rationale": "Keeps normalization logic centralized. Schema properties use camelCase (JSON/JS convention), database columns use snake_case (SQL convention). Bidirectional mapping maintains consistency.",
-  "createdAt": 1734278400004,
-  "session": "iqueryable-persistence-projection"
-}

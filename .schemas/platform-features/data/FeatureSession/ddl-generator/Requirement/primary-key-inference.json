@@ -1,9 +1,0 @@
-{
-  "id": "req-ddl-primary-keys",
-  "name": "primary-key-inference",
-  "description": "Properties with x-mst-type: identifier become PRIMARY KEY. Exactly one PK per table required. Missing identifier produces error. Identifier is implicitly NOT NULL.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734188400000,
-  "session": "ddl-generator-001"
-}

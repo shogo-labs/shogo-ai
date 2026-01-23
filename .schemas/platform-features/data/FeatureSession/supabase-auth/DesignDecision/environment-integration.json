@@ -1,9 +1,0 @@
-{
-  "id": "dd-auth-002",
-  "name": "environment-integration",
-  "question": "How does auth service integrate with MST environment?",
-  "decision": "Add optional services.auth slot to IEnvironment, accessible via getEnv().services.auth in store actions.",
-  "rationale": "Follows existing environment pattern for dependency injection. Auth is optional since not all stores need it.",
-  "createdAt": 1733616000000,
-  "session": "auth-001"
-}

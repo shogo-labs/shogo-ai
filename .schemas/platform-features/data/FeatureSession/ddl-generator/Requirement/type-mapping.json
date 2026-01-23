@@ -1,9 +1,0 @@
-{
-  "id": "req-ddl-type-mapping",
-  "name": "type-mapping",
-  "description": "Map JSON Schema primitive types to SQL types for PostgreSQL and SQLite dialects. String→TEXT, string+uuid→UUID/TEXT, string+date-time→TIMESTAMPTZ/TEXT, integer→INTEGER, number→DOUBLE PRECISION/REAL, boolean→BOOLEAN/INTEGER.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734188400000,
-  "session": "ddl-generator-001"
-}

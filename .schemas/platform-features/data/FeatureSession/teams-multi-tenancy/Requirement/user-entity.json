@@ -1,9 +1,0 @@
-{
-  "id": "req-001",
-  "name": "user-entity",
-  "description": "Define User entity with id, email, name fields using snake_case naming",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734307400000,
-  "session": "teams-multi-tenancy-001"
-}

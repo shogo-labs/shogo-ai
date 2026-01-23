@@ -2,7 +2,7 @@
  * Runtime API Routes
  *
  * Endpoints for managing project Vite runtimes.
- * Follows the publish.ts pattern with project membership auth.
+ * Uses Prisma for project validation.
  *
  * Endpoints:
  * - POST /projects/:projectId/runtime/start - Spawn project runtime
@@ -14,26 +14,13 @@
 import { Hono } from "hono"
 import { existsSync } from "fs"
 import { join } from "path"
-import type { IRuntimeManager, IProjectRuntime } from "@shogo/state-api/runtime/types"
+import { prisma } from "../lib/prisma"
+import type { IRuntimeManager, IProjectRuntime } from "../lib/runtime"
 
 /**
  * Configuration for runtime routes.
- * Follows publish.ts pattern for store access.
  */
 export interface RuntimeRoutesConfig {
-  /**
-   * Studio core store for project lookup.
-   * Optional - if not provided, uses workspace directory validation.
-   */
-  studioCore?: {
-    projectCollection: {
-      query: () => {
-        where: (filter: Record<string, any>) => {
-          first: () => Promise<any>
-        }
-      }
-    }
-  }
   /**
    * Runtime manager for process lifecycle.
    */
@@ -44,7 +31,7 @@ export interface RuntimeRoutesConfig {
   domainSuffix?: string
   /**
    * Workspaces directory for fallback project validation.
-   * Required if studioCore is not provided.
+   * Required if database is not available.
    */
   workspacesDir?: string
 }
@@ -63,7 +50,7 @@ const SANDBOX_ATTRIBUTES = 'allow-scripts allow-same-origin allow-forms allow-po
  * @returns Hono router instance
  */
 export function runtimeRoutes(config: RuntimeRoutesConfig) {
-  const { studioCore, runtimeManager, domainSuffix = 'localhost', workspacesDir } = config
+  const { runtimeManager, domainSuffix = 'localhost', workspacesDir } = config
   const router = new Hono()
 
   /**
@@ -71,47 +58,39 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
    * Falls back to workspace directory check if database not available.
    */
   async function validateProject(projectId: string): Promise<any | null> {
-    // Try database validation first if studioCore is available
-    if (studioCore) {
-      try {
-        const project = await studioCore.projectCollection
-          .query()
-          .where({ id: projectId })
-          .first()
-        if (project) return project
-      } catch (err) {
-        console.warn('[Runtime] Database lookup failed, falling back to workspace check:', err)
-      }
+    // Try database validation first
+    try {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { id: true, name: true, workspaceId: true },
+      })
+      if (project) return project
+    } catch (err) {
+      console.warn('[Runtime] Database lookup failed, falling back to filesystem:', err)
     }
-    
-    // Fallback: Check if workspace directory exists
+
+    // Fall back to filesystem check
     if (workspacesDir) {
       const projectDir = join(workspacesDir, projectId)
       if (existsSync(projectDir)) {
-        return { id: projectId, name: projectId } // Return minimal project object
+        return { id: projectId }
       }
     }
-    
-    // Also check if runtime already exists
-    const runtime = runtimeManager.status(projectId)
-    if (runtime) {
-      return { id: projectId, name: projectId }
-    }
-    
+
     return null
   }
 
   /**
-   * POST /projects/:projectId/runtime/start - Spawn runtime
+   * POST /projects/:projectId/runtime/start - Spawn project runtime
    *
-   * Spawns a Vite dev server for the project.
-   * Returns 409 if runtime already running.
+   * Starts a Vite dev server for the project. Idempotent - if already running,
+   * returns existing runtime info.
    */
   router.post("/projects/:projectId/runtime/start", async (c) => {
-    try {
-      const projectId = c.req.param("projectId")
+    const projectId = c.req.param("projectId")
 
-      // Validate project exists
+    try {
+      // Validate project
       const project = await validateProject(projectId)
       if (!project) {
         return c.json(
@@ -120,24 +99,16 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
         )
       }
 
-      // Check if already running
-      const existing = runtimeManager.status(projectId)
-      if (existing && (existing.status === 'running' || existing.status === 'starting')) {
-        return c.json(
-          { error: { code: "already_running", message: "Runtime is already running" } },
-          409
-        )
-      }
-
-      // Start runtime
+      // Start or get existing runtime
       const runtime = await runtimeManager.start(projectId)
 
       return c.json({
+        success: true,
+        projectId,
+        status: runtime.status,
         url: runtime.url,
         port: runtime.port,
-        status: runtime.status,
-        startedAt: runtime.startedAt,
-      }, 200)
+      })
     } catch (error: any) {
       console.error("[Runtime] Start error:", error)
       return c.json(
@@ -148,36 +119,21 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
   })
 
   /**
-   * POST /projects/:projectId/runtime/stop - Stop runtime
+   * POST /projects/:projectId/runtime/stop - Stop project runtime
    *
-   * Gracefully stops the project's Vite dev server.
+   * Stops the Vite dev server. Idempotent - if not running, succeeds.
    */
   router.post("/projects/:projectId/runtime/stop", async (c) => {
+    const projectId = c.req.param("projectId")
+
     try {
-      const projectId = c.req.param("projectId")
-
-      // Validate project exists
-      const project = await validateProject(projectId)
-      if (!project) {
-        return c.json(
-          { error: { code: "project_not_found", message: "Project not found" } },
-          404
-        )
-      }
-
-      // Check if running
-      const existing = runtimeManager.status(projectId)
-      if (!existing) {
-        return c.json(
-          { error: { code: "not_running", message: "No runtime found for project" } },
-          404
-        )
-      }
-
-      // Stop runtime
       await runtimeManager.stop(projectId)
 
-      return c.json({ success: true }, 200)
+      return c.json({
+        success: true,
+        projectId,
+        status: "stopped",
+      })
     } catch (error: any) {
       console.error("[Runtime] Stop error:", error)
       return c.json(
@@ -188,82 +144,31 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
   })
 
   /**
-   * POST /projects/:projectId/runtime/restart - Restart runtime
-   *
-   * Stops and restarts the project's Vite dev server.
-   * Useful after major file changes like template copy.
-   */
-  router.post("/projects/:projectId/runtime/restart", async (c) => {
-    try {
-      const projectId = c.req.param("projectId")
-
-      // Validate project exists
-      const project = await validateProject(projectId)
-      if (!project) {
-        return c.json(
-          { error: { code: "project_not_found", message: "Project not found" } },
-          404
-        )
-      }
-
-      // Restart runtime (handles both running and stopped cases)
-      const runtime = await runtimeManager.restart(projectId)
-
-      return c.json({
-        success: true,
-        url: runtime.url,
-        port: runtime.port,
-        status: runtime.status,
-        startedAt: runtime.startedAt,
-      }, 200)
-    } catch (error: any) {
-      console.error("[Runtime] Restart error:", error)
-      return c.json(
-        { error: { code: "restart_failed", message: error.message || "Failed to restart runtime" } },
-        500
-      )
-    }
-  })
-
-  /**
    * GET /projects/:projectId/runtime/status - Get runtime status
    *
-   * Returns current runtime state including uptime and health.
+   * Returns current status of the runtime (running, stopped, starting, error).
    */
   router.get("/projects/:projectId/runtime/status", async (c) => {
+    const projectId = c.req.param("projectId")
+
     try {
-      const projectId = c.req.param("projectId")
-
-      // Validate project exists
-      const project = await validateProject(projectId)
-      if (!project) {
-        return c.json(
-          { error: { code: "project_not_found", message: "Project not found" } },
-          404
-        )
-      }
-
-      // Get runtime status
       const runtime = runtimeManager.status(projectId)
+
       if (!runtime) {
         return c.json({
+          projectId,
           status: "stopped",
           url: null,
-          uptimeSeconds: 0,
-          lastHealthCheck: null,
-        }, 200)
+          port: null,
+        })
       }
 
-      // Calculate uptime
-      const uptimeSeconds = Math.floor((Date.now() - runtime.startedAt) / 1000)
-
       return c.json({
+        projectId,
         status: runtime.status,
         url: runtime.url,
         port: runtime.port,
-        uptimeSeconds,
-        lastHealthCheck: runtime.lastHealthCheck || null,
-      }, 200)
+      })
     } catch (error: any) {
       console.error("[Runtime] Status error:", error)
       return c.json(
@@ -274,58 +179,15 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
   })
 
   /**
-   * GET /projects/:projectId/runtime/lsp - WebSocket LSP endpoint info
+   * GET /projects/:projectId/sandbox/url - Get sandbox URL
    *
-   * Returns info about the LSP WebSocket endpoint.
-   * Actual WebSocket upgrade is handled by the server's websocket handler.
-   */
-  router.get("/projects/:projectId/runtime/lsp", async (c) => {
-    try {
-      const projectId = c.req.param("projectId")
-
-      // Validate project exists
-      const project = await validateProject(projectId)
-      if (!project) {
-        return c.json(
-          { error: { code: "project_not_found", message: "Project not found" } },
-          404
-        )
-      }
-
-      // Get runtime status
-      const runtime = runtimeManager.status(projectId)
-      if (!runtime || runtime.status !== 'running') {
-        return c.json(
-          { error: { code: "runtime_not_running", message: "Project runtime is not running" } },
-          503
-        )
-      }
-
-      return c.json({
-        status: 'available',
-        message: 'Connect via WebSocket to this endpoint for LSP support',
-        runtimeUrl: runtime.url,
-      }, 200)
-    } catch (error: any) {
-      console.error("[Runtime] LSP info error:", error)
-      return c.json(
-        { error: { code: "lsp_failed", message: error.message || "Failed to get LSP info" } },
-        500
-      )
-    }
-  })
-
-  /**
-   * GET /projects/:projectId/sandbox/url - Get iframe-ready URL
-   *
-   * Returns the URL and sandbox attributes for embedding in an iframe.
-   * Starts the runtime if not already running.
+   * Returns URL with sandbox attributes for secure iframe embedding.
    */
   router.get("/projects/:projectId/sandbox/url", async (c) => {
-    try {
-      const projectId = c.req.param("projectId")
+    const projectId = c.req.param("projectId")
 
-      // Validate project exists
+    try {
+      // Validate project
       const project = await validateProject(projectId)
       if (!project) {
         return c.json(
@@ -336,27 +198,63 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
 
       // Get or start runtime
       let runtime = runtimeManager.status(projectId)
-      if (!runtime || runtime.status === 'stopped' || runtime.status === 'error') {
+      if (!runtime || runtime.status === 'stopped') {
         runtime = await runtimeManager.start(projectId)
       }
 
-      // Build sandbox URL
-      // For local dev: use direct port URL (no reverse proxy needed)
-      // For production with Traefik: use subdomain routing
-      const sandboxUrl = domainSuffix === 'localhost'
-        ? runtime.url  // Direct port URL: http://localhost:{port}
-        : `http://${projectId}.${domainSuffix}`
+      // Generate sandbox URL
+      const sandboxUrl = runtime.url
 
       return c.json({
+        success: true,
+        projectId,
         url: sandboxUrl,
-        directUrl: runtime.url, // Direct port URL for debugging
-        sandbox: SANDBOX_ATTRIBUTES,
-        status: runtime.status,
-      }, 200)
+        sandboxAttributes: SANDBOX_ATTRIBUTES,
+      })
     } catch (error: any) {
       console.error("[Runtime] Sandbox URL error:", error)
       return c.json(
         { error: { code: "sandbox_failed", message: error.message || "Failed to get sandbox URL" } },
+        500
+      )
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/runtime/restart - Restart project runtime
+   *
+   * Stops and starts the runtime. Useful after config changes.
+   */
+  router.post("/projects/:projectId/runtime/restart", async (c) => {
+    const projectId = c.req.param("projectId")
+
+    try {
+      // Validate project
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404
+        )
+      }
+
+      // Stop first (ignore if not running)
+      await runtimeManager.stop(projectId)
+
+      // Start fresh
+      const runtime = await runtimeManager.start(projectId)
+
+      return c.json({
+        success: true,
+        projectId,
+        status: runtime.status,
+        url: runtime.url,
+        port: runtime.port,
+      })
+    } catch (error: any) {
+      console.error("[Runtime] Restart error:", error)
+      return c.json(
+        { error: { code: "restart_failed", message: error.message || "Failed to restart runtime" } },
         500
       )
     }
