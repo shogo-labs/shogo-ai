@@ -25,10 +25,7 @@ import { projectAdminRoutes } from './routes/project-admin'
 import { terminalRoutes } from './routes/terminal'
 import { testsRoutes } from './routes/tests'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
-import { workspaceRoutes } from './routes/workspaces'
-import { projectRoutes } from './routes/projects'
-import { folderRoutes } from './routes/folders'
-import { starredRoutes } from './routes/starred'
+// Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
 import { createRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
 import { createGeneratedRoutes } from './generated/routes'
@@ -2786,11 +2783,7 @@ app.post('/api/webhooks/stripe', async (c) => {
 // Domain API routes - For APIPersistence layer
 // =============================================================================
 
-// Mount domain routes for frontend persistence (v1 - manual routes)
-app.route('/api/workspaces', workspaceRoutes())
-app.route('/api/projects', projectRoutes())
-app.route('/api/folders', folderRoutes())
-app.route('/api/starred', starredRoutes())
+// Note: Domain routes are now served via /api/v2 (generated routes below)
 
 // =============================================================================
 // Generated API routes (v2) - Auto-generated from Prisma schema with hooks

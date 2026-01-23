@@ -39,6 +39,34 @@ export interface RouteHooksConfig {
   Invitation?: ModelHooks
   Folder?: ModelHooks
   Notification?: ModelHooks
+  // Billing
+  Subscription?: ModelHooks
+  CreditLedger?: ModelHooks
+  UsageEvent?: ModelHooks
+  // Chat
+  ChatSession?: ModelHooks
+  ChatMessage?: ModelHooks
+  ToolCallLog?: ModelHooks
+  // Platform Features
+  FeatureSession?: ModelHooks
+  Requirement?: ModelHooks
+  DesignDecision?: ModelHooks
+  ClassificationDecision?: ModelHooks
+  AnalysisFinding?: ModelHooks
+  IntegrationPoint?: ModelHooks
+  TestCase?: ModelHooks
+  ImplementationTask?: ModelHooks
+  TaskDependency?: ModelHooks
+  TestSpecification?: ModelHooks
+  ImplementationRun?: ModelHooks
+  TaskExecution?: ModelHooks
+  // Component Builder
+  ComponentDefinition?: ModelHooks
+  Registry?: ModelHooks
+  RendererBinding?: ModelHooks
+  LayoutTemplate?: ModelHooks
+  Composition?: ModelHooks
+  ComponentSpec?: ModelHooks
 }
 
 let hooksConfig: RouteHooksConfig = {}
