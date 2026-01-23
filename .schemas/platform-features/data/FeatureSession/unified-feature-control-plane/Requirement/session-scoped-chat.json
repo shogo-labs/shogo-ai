@@ -1,9 +1,0 @@
-{
-  "id": "req-004-session-scoped-chat",
-  "name": "session-scoped-chat",
-  "description": "Chat interface is contextually linked to the selected FeatureSession. Chat messages and artifacts are associated with the feature being developed, enabling conversational feature development.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734480004000,
-  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
-}

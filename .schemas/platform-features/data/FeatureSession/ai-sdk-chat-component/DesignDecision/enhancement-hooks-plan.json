@@ -1,9 +1,0 @@
-{
-  "id": "dd-enhancement-hooks-plan",
-  "name": "enhancement-hooks-plan",
-  "question": "What enhancements will the chat domain need?",
-  "decision": "models: ChatSession.messageCount, ChatSession.latestMessage; collections: chatSessionCollection.findByStatus; rootStore: createChatSession action, recordArtifact action",
-  "rationale": "Views compute derived values from raw fields. Collection helpers enable common queries. Root actions coordinate multi-entity operations like starting a new chat or recording artifacts created.",
-  "createdAt": 1734462302000,
-  "session": "ai-sdk-chat-component"
-}

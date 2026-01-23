@@ -1,18 +1,16 @@
 /**
  * User Server Functions
+ * 
+ * Custom user functions that aren't basic CRUD.
+ * Basic CRUD operations are in ../generated/server-functions.ts
  */
 
 import { createServerFn } from '@tanstack/react-start'
 import { shogo } from '../lib/shogo'
+import type { UserType } from '../generated/types'
 
-export type UserType = {
-  id: string
-  email: string
-  name: string | null
-  timezone: string
-  createdAt: Date
-  updatedAt: Date
-}
+// Re-export the type for convenience
+export type { UserType }
 
 export const getCurrentUser = createServerFn({ method: 'GET' })
   .handler(async () => {

@@ -1,9 +1,0 @@
-{
-  "id": "design-ddl-module-structure",
-  "name": "module-structure",
-  "question": "How should the DDL generator module be organized?",
-  "decision": "Create src/ddl/ as top-level module (sibling to query/, composition/) with submodules: types.ts (interfaces), type-mapper.ts (JSON Schema → SQL types), constraint-builder.ts (PK, FK, NOT NULL), table-generator.ts (CREATE TABLE), dialect.ts (PostgreSQL/SQLite), utils.ts (escapeIdentifier, topological sort), index.ts (barrel exports)",
-  "rationale": "Follows query module pattern found in analysis. Separation of concerns: type mapping, constraint inference, SQL generation are distinct responsibilities. Dialect abstraction allows adding MySQL/etc later. Utils are reusable by SqlBackend.",
-  "createdAt": 1734188800000,
-  "session": "ddl-generator-001"
-}

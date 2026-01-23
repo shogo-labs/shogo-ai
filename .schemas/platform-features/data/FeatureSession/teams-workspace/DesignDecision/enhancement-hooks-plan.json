@@ -1,9 +1,0 @@
-{
-  "id": "dd-enhancement-hooks-plan",
-  "name": "enhancement-hooks-plan",
-  "question": "What enhancement hooks will the domain need?",
-  "decision": "enhanceModels: Membership.level (numeric role value), Invitation.isExpired (computed from expiresAt); enhanceCollections: membershipCollection.findByUserId(userId), membershipCollection.findForResource(type, id); enhanceRootStore: initialize() syncs from ITeamsService, resolvePermissions(userId, resourceType, resourceId) walks hierarchy for max role",
-  "rationale": "All hooks implemented in single domain.ts using createStoreFromScope(). Computed views derive from stored fields. Collection queries enable efficient lookups. Root store coordinates permission resolution across hierarchy.",
-  "createdAt": 1733868600004,
-  "session": "teams-workspace"
-}

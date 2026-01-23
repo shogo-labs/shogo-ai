@@ -1,9 +1,0 @@
-{
-  "id": "dd-chat-persistence-model",
-  "name": "chat-persistence-model",
-  "question": "How to model persistent chat state?",
-  "decision": "Three entities: ChatSession (root), ChatMessage (nested under session), CreatedArtifact (nested under session)",
-  "rationale": "ChatSession is the root entity containing metadata. Messages and artifacts nest under sessions for organized persistence. References enable querying 'what did this chat create?'",
-  "createdAt": 1734462300000,
-  "session": "ai-sdk-chat-component"
-}

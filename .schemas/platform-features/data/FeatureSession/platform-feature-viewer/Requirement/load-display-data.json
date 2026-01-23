@@ -1,9 +1,0 @@
-{
-  "id": "req-pfv-001",
-  "name": "load-display-data",
-  "description": "Load platform-features schema data via MCP and display all entity types (FeatureSession, Requirement, AnalysisFinding, ImplementationTask, etc.) in the UI",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734480000000,
-  "session": "pf-viewer-001"
-}

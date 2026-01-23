@@ -1,9 +1,0 @@
-{
-  "id": "req-13-browser-query-proxy",
-  "name": "browser-query-proxy",
-  "description": "Browser-side query routing that delegates to MCP server for SQL-backed collections. MCPPersistence detects x-persistence.backend='postgres' and routes IQueryable terminal operations through MCP rather than loading all data for in-memory filtering. Enables full isomorphic execution story.",
-  "priority": "could",
-  "status": "proposed",
-  "createdAt": 1734278400000,
-  "session": "iqueryable-persistence-projection"
-}

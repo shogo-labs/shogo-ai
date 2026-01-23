@@ -2,7 +2,7 @@
  * Project Files API Routes
  *
  * Endpoints for reading and listing project source files.
- * Used by the code editor panel in the project view.
+ * Uses Prisma for project validation.
  *
  * Endpoints:
  * - GET /projects/:projectId/files - List all source files (from S3 or filesystem)
@@ -17,29 +17,18 @@
 import { Hono } from "hono"
 import { readdir, readFile, writeFile, mkdir, stat } from "fs/promises"
 import { join, relative, extname } from "path"
+import { prisma } from "../lib/prisma"
 import {
   getPresignedReadUrl,
   getPresignedWriteUrl,
   listAllObjectsInS3,
   isS3Enabled,
-} from "@shogo/state-api"
+} from "../lib/s3"
 
 /**
  * Configuration for files routes.
  */
 export interface FilesRoutesConfig {
-  /**
-   * Studio core store for project lookup.
-   */
-  studioCore: {
-    projectCollection: {
-      query: () => {
-        where: (filter: Record<string, any>) => {
-          first: () => Promise<any>
-        }
-      }
-    }
-  }
   /**
    * Directory containing project workspaces.
    */
@@ -135,7 +124,7 @@ async function listFilesRecursive(
  * @returns Hono router instance
  */
 export function filesRoutes(config: FilesRoutesConfig) {
-  const { studioCore, workspacesDir } = config
+  const { workspacesDir } = config
   const router = new Hono()
 
   /**
@@ -148,10 +137,10 @@ export function filesRoutes(config: FilesRoutesConfig) {
 
     try {
       // First try to check if project exists in database
-      const project = await studioCore.projectCollection
-        .query()
-        .where({ id: projectId })
-        .first()
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { id: true },
+      })
       if (project) {
         return workspacePath
       }
@@ -468,6 +457,7 @@ export function filesRoutes(config: FilesRoutesConfig) {
   router.post("/projects/:projectId/s3/presign", async (c) => {
     try {
       const projectId = c.req.param("projectId")
+
       const body = await c.req.json<{
         files: Array<{
           path: string
@@ -476,46 +466,25 @@ export function filesRoutes(config: FilesRoutesConfig) {
         }>
       }>()
 
-      if (!Array.isArray(body.files) || body.files.length === 0) {
+      if (!body.files || !Array.isArray(body.files)) {
         return c.json(
           { error: { code: "invalid_body", message: "files array is required" } },
           400
         )
       }
 
-      // Validate all paths
-      for (const file of body.files) {
-        if (!file.path || !validateFilePath(file.path)) {
-          return c.json(
-            { error: { code: "invalid_path", message: `Invalid file path: ${file.path}` } },
-            400
-          )
-        }
-        if (file.action !== 'read' && file.action !== 'write') {
-          return c.json(
-            { error: { code: "invalid_action", message: `Invalid action: ${file.action}` } },
-            400
-          )
-        }
-      }
-
-      // Generate pre-signed URLs
       const urls = await Promise.all(
         body.files.map(async (file) => {
           const key = buildProjectFileKey(projectId, file.path)
 
-          if (file.action === 'read') {
-            const url = await getPresignedReadUrl(key, {
+          if (file.action === 'write') {
+            const url = await getPresignedWriteUrl(key, {
               bucket: S3_WORKSPACES_BUCKET,
-              expiresIn: 3600, // 1 hour
+              contentType: file.contentType || 'application/octet-stream',
             })
             return { path: file.path, action: file.action, url }
           } else {
-            const url = await getPresignedWriteUrl(key, {
-              bucket: S3_WORKSPACES_BUCKET,
-              expiresIn: 3600, // 1 hour
-              contentType: file.contentType || getContentType(file.path),
-            })
+            const url = await getPresignedReadUrl(key, { bucket: S3_WORKSPACES_BUCKET })
             return { path: file.path, action: file.action, url }
           }
         })
@@ -525,32 +494,13 @@ export function filesRoutes(config: FilesRoutesConfig) {
     } catch (error: any) {
       console.error("[Files] S3 presign error:", error)
       return c.json(
-        { error: { code: "presign_failed", message: error.message || "Failed to generate pre-signed URLs" } },
+        { error: { code: "s3_presign_failed", message: error.message || "Failed to generate pre-signed URLs" } },
         500
       )
     }
   })
 
   return router
-}
-
-/**
- * Get content type from file extension.
- */
-function getContentType(filePath: string): string {
-  const ext = extname(filePath).toLowerCase()
-  const contentTypes: Record<string, string> = {
-    '.ts': 'text/typescript',
-    '.tsx': 'text/typescript',
-    '.js': 'text/javascript',
-    '.jsx': 'text/javascript',
-    '.json': 'application/json',
-    '.css': 'text/css',
-    '.html': 'text/html',
-    '.md': 'text/markdown',
-    '.svg': 'image/svg+xml',
-  }
-  return contentTypes[ext] || 'text/plain'
 }
 
 export default filesRoutes

@@ -1,9 +1,0 @@
-{
-  "id": "ai-sdk-chat-hook",
-  "name": "ai-sdk-chat-hook",
-  "description": "Create a React hook (useAIChat or similar) that connects to the AI SDK API route. Should handle streaming responses, message state, loading/error states, and session continuity similar to the existing useAgentChat hook.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734461711000,
-  "session": "ai-sdk-chat-component"
-}

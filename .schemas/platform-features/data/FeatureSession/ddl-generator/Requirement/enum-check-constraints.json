@@ -1,9 +1,0 @@
-{
-  "id": "req-ddl-enum-checks",
-  "name": "enum-check-constraints",
-  "description": "Enum properties generate CHECK constraints: status TEXT CHECK (status IN ('active', 'inactive')). Avoids CREATE TYPE complexity. Works in both PostgreSQL and SQLite.",
-  "priority": "could",
-  "status": "proposed",
-  "createdAt": 1734188400000,
-  "session": "ddl-generator-001"
-}

@@ -478,9 +478,6 @@ export class KnativeProjectManager {
       plural: "services",
       name: `project-${projectId}`,
       body: patch,
-      // Specify the patch type
-    }, {
-      headers: { "Content-Type": "application/merge-patch+json" },
     })
 
     console.log(`[KnativeProjectManager] Scaled project ${projectId} to ${replicas} replica(s)`)

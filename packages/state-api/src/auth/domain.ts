@@ -31,7 +31,7 @@ export const AuthDomain = scope({
     id: "string.uuid",
     userId: "AuthUser", // Reference to AuthUser
     accessToken: "string",
-    "refreshToken?": "string",
+    "refreshToken?": "string | null",
     expiresAt: "string",
   },
 })

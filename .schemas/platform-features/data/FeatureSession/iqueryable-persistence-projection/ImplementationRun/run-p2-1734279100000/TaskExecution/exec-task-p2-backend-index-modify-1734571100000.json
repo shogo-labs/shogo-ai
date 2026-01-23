@@ -1,9 +1,0 @@
-{
-  "id": "exec-task-p2-backend-index-modify-1734571100000",
-  "status": "test_failing",
-  "testFilePath": "packages/state-api/src/query/backends/__tests__/index.test.ts",
-  "testOutput": "2 fail: PostgresBackend class accessible, SqlBackend accessible alongside existing exports",
-  "startedAt": 1734571100000,
-  "run": "run-p2-1734279100000",
-  "task": "task-p2-backend-index-modify"
-}

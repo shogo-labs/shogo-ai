@@ -149,7 +149,7 @@ export function useWorkspaceData(): WorkspaceDataState {
   // User ID from session (stable reference for dependency tracking)
   const userId = session?.user?.id
 
-  // Reload workspaces from MCP when user changes or refetch is triggered
+  // Reload workspaces from API when user changes or refetch is triggered
   useEffect(() => {
     const loadWorkspaces = async () => {
       if (!userId || !studioCore?.workspaceCollection) {
@@ -159,9 +159,10 @@ export function useWorkspaceData(): WorkspaceDataState {
 
       try {
         setIsLoadingWorkspaces(true)
-        // Reload workspaces and members from backend
-        await studioCore.workspaceCollection.query().toArray()
-        await studioCore.memberCollection.query().toArray()
+        // Use the persistence layer (APIPersistence -> v2 API routes)
+        // Load workspaces first (filtered by user), then members
+        await studioCore.workspaceCollection.loadAll({ userId })
+        await studioCore.memberCollection.loadAll({ userId })
       } catch (error) {
         console.error("[useWorkspaceData] Error loading workspaces:", error)
       } finally {
@@ -265,7 +266,7 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
   }
 
-  // Reload projects from MCP when workspace changes or refetch is triggered
+  // Reload projects from API when workspace changes or refetch is triggered
   useEffect(() => {
     const loadProjects = async () => {
       if (!currentWorkspace?.id || !studioCore?.projectCollection) {
@@ -275,8 +276,8 @@ export function useWorkspaceData(): WorkspaceDataState {
 
       try {
         setIsLoadingProjects(true)
-        // Reload projects from backend
-        await studioCore.projectCollection.query().toArray()
+        // Use the persistence layer (APIPersistence -> v2 API routes)
+        await studioCore.projectCollection.loadAll({ workspaceId: currentWorkspace.id })
       } catch (error) {
         console.error("[useWorkspaceData] Error loading projects:", error)
       } finally {
@@ -292,7 +293,7 @@ export function useWorkspaceData(): WorkspaceDataState {
     setProjectsRefetchCounter((c) => c + 1)
   }, [])
 
-  // Reload folders from MCP when workspace changes or refetch is triggered
+  // Reload folders from API when workspace changes or refetch is triggered
   useEffect(() => {
     const loadFolders = async () => {
       if (!currentWorkspace?.id || !studioCore?.folderCollection) {
@@ -302,8 +303,8 @@ export function useWorkspaceData(): WorkspaceDataState {
 
       try {
         setIsLoadingFolders(true)
-        // Reload folders from backend
-        await studioCore.folderCollection.query().toArray()
+        // Use the persistence layer (APIPersistence -> v2 API routes)
+        await studioCore.folderCollection.loadAll({ workspaceId: currentWorkspace.id })
       } catch (error) {
         console.error("[useWorkspaceData] Error loading folders:", error)
       } finally {
@@ -319,7 +320,7 @@ export function useWorkspaceData(): WorkspaceDataState {
     setFoldersRefetchCounter((c) => c + 1)
   }, [])
 
-  // Reload starred projects from MCP when user changes or refetch is triggered
+  // Reload starred projects from API when user changes or refetch is triggered
   useEffect(() => {
     const loadStarred = async () => {
       if (!userId || !studioCore?.starredProjectCollection) {
@@ -329,8 +330,8 @@ export function useWorkspaceData(): WorkspaceDataState {
 
       try {
         setIsLoadingStarred(true)
-        // Reload starred projects from backend
-        await studioCore.starredProjectCollection.query().toArray()
+        // Use the persistence layer (APIPersistence -> v2 API routes)
+        await studioCore.starredProjectCollection.loadAll({ userId })
       } catch (error) {
         console.error("[useWorkspaceData] Error loading starred projects:", error)
       } finally {

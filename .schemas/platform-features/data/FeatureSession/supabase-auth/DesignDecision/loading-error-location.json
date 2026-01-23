@@ -1,9 +1,0 @@
-{
-  "id": "dd-auth-004",
-  "name": "loading-error-location",
-  "question": "Where do isLoading and error states live?",
-  "decision": "Volatile state on root store: authStatus (idle|loading|error), authError (string|null).",
-  "rationale": "These are UI concerns, not domain data. Volatile means they reset on page reload, which is correct for transient UI state.",
-  "createdAt": 1733616000000,
-  "session": "auth-001"
-}

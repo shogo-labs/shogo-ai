@@ -1,9 +1,0 @@
-{
-  "id": "dd-004-component-structure",
-  "name": "component-structure",
-  "question": "What UI components are needed?",
-  "decision": "Create: (1) FeatureControlPlanePage - main page, (2) SkillCycleStepper - horizontal stepper for phases, (3) FeatureSessionSelector - sidebar list, (4) FeatureChatPanel - chat interface with tool call display, (5) EntityDataPanel - tabbed entity viewer.",
-  "rationale": "Modular component structure allows reuse and testing. Each component has single responsibility. Compose on main page.",
-  "createdAt": 1734480503000,
-  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
-}

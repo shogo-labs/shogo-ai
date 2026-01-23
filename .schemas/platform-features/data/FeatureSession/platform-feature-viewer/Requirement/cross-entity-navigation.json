@@ -1,9 +1,0 @@
-{
-  "id": "req-pfv-005",
-  "name": "cross-entity-navigation",
-  "description": "Click on a FeatureSession to see its related Requirements, Findings, Tasks. Click on reference fields to navigate to the referenced entity.",
-  "priority": "should",
-  "status": "proposed",
-  "createdAt": 1734480000000,
-  "session": "pf-viewer-001"
-}

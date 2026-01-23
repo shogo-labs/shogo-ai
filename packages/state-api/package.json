@@ -86,6 +86,7 @@
     "uuid": "^13.0.0"
   },
   "devDependencies": {
+    "@prisma/internals": "^6.0.0",
     "@types/bun": "latest",
     "@types/nodemailer": "^7.0.5",
     "@types/nunjucks": "^3.2.6",

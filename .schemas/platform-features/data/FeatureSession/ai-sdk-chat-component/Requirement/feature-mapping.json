@@ -1,9 +1,0 @@
-{
-  "id": "ai-sdk-feature-mapping",
-  "name": "feature-mapping",
-  "description": "Map chat sessions to the features/schemas they create. When Claude creates a schema via MCP tools, link the ChatSession to the created schema name. Enable querying 'which chat created this schema?' and 'what did this chat create?'",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734462001000,
-  "session": "ai-sdk-chat-component"
-}

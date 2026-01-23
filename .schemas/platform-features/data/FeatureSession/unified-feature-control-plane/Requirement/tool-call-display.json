@@ -1,9 +1,0 @@
-{
-  "id": "req-008-tool-call-display",
-  "name": "tool-call-display",
-  "description": "Display tool calls from the AI SDK in the chat interface to show live progress. Use message.parts with typed tool parts (tool-{toolName}) and the state property (input-streaming, input-available, output-available, output-error) to render tool execution status. When Claude invokes Wavesmith tools (store.create, store.update), show the tool name, input parameters, and results in real-time.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734480008000,
-  "session": "f4e3d2c1-b0a9-4857-9c6e-2d1a3b4c5d6e"
-}

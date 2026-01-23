@@ -2,7 +2,7 @@
  * Project Chat Proxy Routes
  *
  * Proxies chat requests to per-project runtime pods.
- * 
+ *
  * In Kubernetes: Routes to Knative Services via internal DNS
  * In Local Dev: Routes to local RuntimeManager-spawned processes
  *
@@ -12,7 +12,8 @@
 
 import { Hono } from "hono"
 import { getProjectPodUrl } from "../lib/knative-project-manager"
-import type { IRuntimeManager } from "@shogo/state-api/runtime"
+import { prisma } from "../lib/prisma"
+import type { IRuntimeManager } from "../lib/runtime"
 
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
@@ -22,18 +23,6 @@ const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 // =============================================================================
 
 export interface ProjectChatRoutesConfig {
-  /**
-   * Studio core store for project lookup.
-   */
-  studioCore: {
-    projectCollection: {
-      query: () => {
-        where: (filter: Record<string, any>) => {
-          first: () => Promise<any>
-        }
-      }
-    }
-  }
   /**
    * Local runtime manager (used in non-K8s environments).
    */
@@ -45,18 +34,18 @@ export interface ProjectChatRoutesConfig {
 // =============================================================================
 
 export function projectChatRoutes(config: ProjectChatRoutesConfig) {
-  const { studioCore, runtimeManager } = config
+  const { runtimeManager } = config
   const router = new Hono()
 
   /**
    * Validate project exists before operations.
    */
-  async function validateProject(projectId: string): Promise<any | null> {
+  async function validateProject(projectId: string) {
     try {
-      const project = await studioCore.projectCollection
-        .query()
-        .where({ id: projectId })
-        .first()
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { id: true, name: true, workspaceId: true },
+      })
       return project || null
     } catch (err) {
       console.error("[ProjectChat] Project lookup error:", err)
@@ -88,7 +77,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   /**
    * Get the URL for a project's runtime agent server.
    * Handles both Kubernetes (Knative) and local development.
-   * 
+   *
    * Properly handles concurrent requests by:
    * - Starting the runtime if stopped/error/missing
    * - Waiting if runtime is already starting from another request
@@ -100,7 +89,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
     } else if (runtimeManager) {
       // Local development: Use RuntimeManager
       let runtime = runtimeManager.status(projectId)
-      
+
       if (!runtime || runtime.status === "stopped" || runtime.status === "error") {
         // No runtime or failed - start it
         console.log(`[ProjectChat] Starting runtime for ${projectId}...`)
@@ -112,7 +101,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         runtime = runtimeManager.status(projectId)!
       }
       // else: runtime.status === "running" - proceed immediately
-      
+
       // Use agentPort if available, otherwise calculate from Vite port
       // Agent runs on port = Vite port + 1000 (e.g., 5200 -> 6200)
       const agentPort = runtime.agentPort || (runtime.port + 1000)
@@ -127,7 +116,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
    *
    * Forwards the chat request to the project's runtime pod and streams
    * the response back to the client.
-   * 
+   *
    * Includes retry logic for transient errors (connection refused, etc.)
    * during cold starts when the pod may not be fully ready yet.
    */
@@ -170,7 +159,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Copy relevant headers from original request
       const authHeader = c.req.header("Authorization")
       if (authHeader) headers["Authorization"] = authHeader
-      
+
       const sessionHeader = c.req.header("X-Session-Id")
       if (sessionHeader) headers["X-Session-Id"] = sessionHeader
 
@@ -193,7 +182,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           if (!response.ok) {
             const errorText = await response.text()
             console.error(`[ProjectChat] Pod returned error: ${response.status} ${errorText}`)
-            
+
             // Don't retry on client errors (4xx)
             if (response.status >= 400 && response.status < 500) {
               return c.json(
@@ -201,14 +190,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                 response.status as any
               )
             }
-            
+
             // Retry on 5xx errors (server temporarily unavailable)
             if (attempt < MAX_RETRIES) {
               console.log(`[ProjectChat] Retrying in ${RETRY_DELAY_MS}ms (attempt ${attempt}/${MAX_RETRIES})...`)
               await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
               continue
             }
-            
+
             return c.json(
               { error: { code: "pod_error", message: `Pod error: ${response.status}` } },
               response.status as any
@@ -237,9 +226,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           })
         } catch (fetchError: any) {
           lastError = fetchError
-          
+
           // Retry on connection errors (ECONNREFUSED, ECONNRESET, etc.)
-          const isTransientError = 
+          const isTransientError =
             fetchError.code === 'ECONNREFUSED' ||
             fetchError.code === 'ECONNRESET' ||
             fetchError.code === 'ETIMEDOUT' ||
@@ -248,18 +237,18 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             fetchError.cause?.code === 'ETIMEDOUT' ||
             fetchError.message?.includes('connection refused') ||
             fetchError.message?.includes('ECONNREFUSED')
-          
+
           if (isTransientError && attempt < MAX_RETRIES) {
             console.log(`[ProjectChat] Connection error, retrying in ${RETRY_DELAY_MS}ms (attempt ${attempt}/${MAX_RETRIES}):`, fetchError.message || fetchError.code)
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
             continue
           }
-          
+
           // Non-transient error or max retries reached
           throw fetchError
         }
       }
-      
+
       // Should not reach here, but handle just in case
       console.error("[ProjectChat] Max retries exceeded:", lastError)
       return c.json(

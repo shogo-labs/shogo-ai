@@ -1,36 +1,94 @@
-# Todo App - Shogo SDK Example
+# Todo App - Shogo SDK Example (Production-Grade)
 
-A todo application demonstrating the **@shogo-ai/sdk** with Prisma pass-through.
+A todo application demonstrating production-grade patterns with **@shogo-ai/sdk**:
 
-## Key Concept: Prisma Pass-Through
+- **MobX stores** for reactive state management
+- **Route protection** via AuthGate component
+- **Real authentication** with shogo.auth
+- **Optimistic updates** for instant UI feedback
+- **Prisma pass-through** for database access
 
-The SDK's `db` property is a direct reference to your Prisma client:
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     App Shell                           │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │              StoreProvider (MobX)                 │  │
+│  │  ┌─────────────────────────────────────────────┐  │  │
+│  │  │              AuthGate                       │  │  │
+│  │  │  ┌───────────┐       ┌───────────────────┐ │  │  │
+│  │  │  │ LoginPage │  OR   │  Protected Routes │ │  │  │
+│  │  │  └───────────┘       └───────────────────┘ │  │  │
+│  │  └─────────────────────────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Key Patterns
+
+### 1. MobX State Management
 
 ```typescript
-import { createClient } from '@shogo-ai/sdk'
-import { prisma } from './db'
+// stores/auth-store.ts
+export class AuthStore {
+  user: ShogoUser | null = null
+  isLoading = true
+  isAuthenticated = false
 
-const shogo = createClient({
-  apiUrl: 'http://localhost:3000',
-  db: prisma,  // Your Prisma client becomes shogo.db
-})
+  constructor() {
+    makeAutoObservable(this)
+  }
 
-// shogo.db IS your Prisma client - same API, zero overhead
-const user = await shogo.db.user.create({
-  data: { email: 'user@example.com', name: 'Alice' }
-})
+  async signIn(email: string, password: string) {
+    await shogo.auth.signIn({ email, password })
+    // State updated via onAuthStateChanged subscription
+  }
+}
+```
 
-const todos = await shogo.db.todo.findMany({
-  where: { userId: user.id },
-  orderBy: { createdAt: 'desc' }
+### 2. Route Protection
+
+```typescript
+// components/AuthGate.tsx
+export const AuthGate = observer(({ children }) => {
+  const { auth } = useStores()
+
+  if (auth.isLoading) return <LoadingSpinner />
+  if (!auth.isAuthenticated) return <LoginPage />
+  return <>{children}</>
 })
 ```
 
-## Features
+### 3. Optimistic Updates
 
-- User creation via `shogo.db.user.create()`
-- Todo CRUD via `shogo.db.todo.*`
-- Full Prisma API available through SDK
+```typescript
+// stores/todo-store.ts
+async addTodo(title: string, userId: string) {
+  // Optimistically add to UI
+  const tempId = crypto.randomUUID()
+  this.todos.unshift({ id: tempId, title, completed: false, ... })
+
+  try {
+    const todo = await shogo.db.todo.create({ data: { title, userId } })
+    // Replace temp with real data
+    this.todos[0] = todo
+  } catch {
+    // Rollback on error
+    this.todos = this.todos.filter(t => t.id !== tempId)
+  }
+}
+```
+
+### 4. Real Authentication
+
+```typescript
+// Uses shogo.auth for email/password and OAuth
+await shogo.auth.signIn({ email, password })
+await shogo.auth.signUp({ email, password, name })
+await shogo.auth.signInWithGoogle()
+await shogo.auth.signOut()
+```
 
 ## Getting Started
 
@@ -56,66 +114,93 @@ const todos = await shogo.db.todo.findMany({
 ```
 todo-app/
 ├── prisma/
-│   └── schema.prisma    # User & Todo models
+│   └── schema.prisma        # User & Todo models
 ├── src/
+│   ├── components/
+│   │   ├── AuthGate.tsx     # Route protection
+│   │   ├── LoginPage.tsx    # Authentication UI
+│   │   └── LoadingSpinner.tsx
+│   ├── stores/
+│   │   ├── index.ts         # RootStore & StoreProvider
+│   │   ├── auth-store.ts    # Authentication state
+│   │   └── todo-store.ts    # Todo CRUD with optimistic updates
 │   ├── lib/
-│   │   ├── db.ts        # Prisma client
-│   │   └── shogo.ts     # SDK client setup
+│   │   ├── db.ts            # Prisma client
+│   │   └── shogo.ts         # SDK client setup
 │   ├── routes/
-│   │   ├── __root.tsx   # Root layout
-│   │   └── index.tsx    # Todo app
+│   │   ├── __root.tsx       # Root layout with StoreProvider
+│   │   └── index.tsx        # Protected todo app
 │   └── utils/
-│       ├── user.ts      # User operations via shogo.db
-│       └── todos.ts     # Todo operations via shogo.db
+│       ├── user.ts          # (Legacy) User operations
+│       └── todos.ts         # (Legacy) Todo operations
 ├── package.json
 └── vite.config.ts
 ```
 
-## SDK Usage Examples
+## Benefits of This Architecture
 
-### User Operations
+| Feature | Benefit |
+|---------|---------|
+| MobX stores | Reactive UI updates, centralized state |
+| AuthGate | Declarative route protection |
+| Optimistic updates | Instant UI feedback, better UX |
+| shogo.auth | Real authentication flows |
+| observer() | Auto re-render on state changes |
+
+## SDK Usage
+
+### Authentication
 
 ```typescript
-// Create user
-const user = await shogo.db.user.create({
-  data: { email, name }
-})
+// Sign up
+await shogo.auth.signUp({ email, password, name })
 
-// Find user
-const user = await shogo.db.user.findFirst({
-  orderBy: { createdAt: 'asc' }
+// Sign in
+await shogo.auth.signIn({ email, password })
+
+// OAuth
+await shogo.auth.signInWithGoogle()
+await shogo.auth.signInWithGitHub()
+
+// Sign out
+await shogo.auth.signOut()
+
+// Listen to auth state changes
+shogo.auth.onAuthStateChanged((state) => {
+  console.log(state.user, state.isAuthenticated)
 })
 ```
 
-### Todo Operations
+### Database (Prisma Pass-Through)
 
 ```typescript
-// List todos
+// Create
+const todo = await shogo.db.todo.create({
+  data: { title, userId }
+})
+
+// Read
 const todos = await shogo.db.todo.findMany({
   where: { userId },
   orderBy: { createdAt: 'desc' }
 })
 
-// Create todo
-const todo = await shogo.db.todo.create({
-  data: { title, userId }
-})
-
-// Update todo
+// Update
 await shogo.db.todo.update({
   where: { id },
   data: { completed: true }
 })
 
-// Delete todo
-await shogo.db.todo.delete({
-  where: { id }
-})
+// Delete
+await shogo.db.todo.delete({ where: { id } })
 ```
 
-## Why Prisma Pass-Through?
+## Comparison: Before vs After
 
-1. **Zero learning curve** - If you know Prisma, you know `shogo.db`
-2. **Full type safety** - All Prisma types work automatically
-3. **No abstraction overhead** - It's literally your Prisma client
-4. **Unified SDK** - Access auth, db, and other features from one client
+| Aspect | Before (Demo) | After (Production) |
+|--------|---------------|-------------------|
+| Auth | Fake user lookup | Real shogo.auth |
+| State | useState + invalidate | MobX stores |
+| Routes | All public | Protected via AuthGate |
+| Updates | Server roundtrip | Optimistic |
+| Reactivity | Manual refresh | Automatic via observer |

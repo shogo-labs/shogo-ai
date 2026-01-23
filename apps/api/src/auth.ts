@@ -4,22 +4,17 @@
  *
  * Configures Better Auth with:
  * - PostgreSQL database via pg Pool from DATABASE_URL
- * - Custom model names with better_auth schema
- * - Field mappings for snake_case columns
+ * - Uses Prisma-managed tables (users, sessions, accounts, verifications)
  * - Email/password authentication (no email verification required)
  * - JWT sessions with 7-day expiry
  * - Google OAuth social provider
  * - Trusted origins for CORS
- * - Database hooks for auto-creating personal organization on signup (via MCP domain)
+ * - Database hooks for auto-creating personal workspace on signup
  */
 
 import { betterAuth } from "better-auth"
 import { Pool } from "pg"
-import { studioCoreDomain } from "@shogo/state-api/studio-core/domain"
-import { BunPostgresExecutor } from "@shogo/state-api/query/execution/bun-postgres"
-import { createBackendRegistry } from "@shogo/state-api/query/registry"
-import { SqlBackend } from "@shogo/state-api/query/backends/sql"
-import { NullPersistence } from "@shogo/state-api/persistence/null"
+import { createPersonalWorkspace } from "./services/workspace.service"
 
 // Port configuration from environment
 const API_PORT = process.env.API_PORT || "8002"
@@ -45,43 +40,6 @@ const getAllowedOrigins = (): string[] => {
   return [`http://localhost:${VITE_PORT}`]
 }
 
-// Domain store singleton for database hooks (used to create personal workspaces)
-// Uses studioCoreDomain with PostgreSQL backend via backendRegistry
-let domainStore: ReturnType<typeof studioCoreDomain.createStore> | null = null
-
-async function getDomainStore(): Promise<ReturnType<typeof studioCoreDomain.createStore>> {
-  if (domainStore) {
-    return domainStore
-  }
-
-  const DATABASE_URL = process.env.DATABASE_URL
-  if (!DATABASE_URL) {
-    throw new Error("DATABASE_URL environment variable is required")
-  }
-
-  const isSupabase = DATABASE_URL.includes("supabase")
-  const executor = new BunPostgresExecutor(DATABASE_URL, {
-    tls: isSupabase,
-    max: 5,
-  })
-
-  const registry = createBackendRegistry()
-  const sqlBackend = new SqlBackend({ dialect: "pg", executor })
-  registry.register("postgres", sqlBackend)
-  registry.setDefault("postgres")
-
-  domainStore = studioCoreDomain.createStore({
-    services: {
-      persistence: new NullPersistence(),
-      backendRegistry: registry,
-    },
-    context: {
-      schemaName: "studio-core",
-    },
-  })
-
-  return domainStore
-}
 
 export const auth = betterAuth({
   // Base URL for OAuth callbacks - must match Google's authorized redirect URIs
@@ -92,55 +50,55 @@ export const auth = betterAuth({
     connectionString: process.env.DATABASE_URL,
   }),
 
-  // User model configuration with schema-qualified name and field mappings
+  // User model configuration - uses Prisma's users table
   user: {
-    modelName: "better_auth.user",
+    modelName: "users",
     fields: {
-      emailVerified: "email_verified",
-      createdAt: "created_at",
-      updatedAt: "updated_at",
+      emailVerified: "emailVerified",
+      createdAt: "createdAt",
+      updatedAt: "updatedAt",
     },
   },
 
-  // Session model configuration with field mappings
+  // Session model configuration - uses Prisma's sessions table
   session: {
-    modelName: "better_auth.session",
+    modelName: "sessions",
     fields: {
-      userId: "user_id",
-      expiresAt: "expires_at",
-      ipAddress: "ip_address",
-      userAgent: "user_agent",
-      createdAt: "created_at",
-      updatedAt: "updated_at",
+      userId: "userId",
+      expiresAt: "expiresAt",
+      ipAddress: "ipAddress",
+      userAgent: "userAgent",
+      createdAt: "createdAt",
+      updatedAt: "updatedAt",
     },
     // JWT session with 7-day expiry (in seconds)
     expiresIn: 60 * 60 * 24 * 7,
   },
 
-  // Account model configuration with field mappings for OAuth providers
+  // Account model configuration - uses Prisma's accounts table
   account: {
-    modelName: "better_auth.account",
+    modelName: "accounts",
     fields: {
-      userId: "user_id",
-      accountId: "account_id",
-      providerId: "provider_id",
-      accessToken: "access_token",
-      refreshToken: "refresh_token",
-      accessTokenExpiresAt: "access_token_expires_at",
-      refreshTokenExpiresAt: "refresh_token_expires_at",
-      idToken: "id_token",
-      createdAt: "created_at",
-      updatedAt: "updated_at",
+      userId: "userId",
+      accountId: "accountId",
+      providerId: "providerId",
+      accessToken: "accessToken",
+      refreshToken: "refreshToken",
+      accessTokenExpiresAt: "accessTokenExpiresAt",
+      refreshTokenExpiresAt: "refreshTokenExpiresAt",
+      idToken: "idToken",
+      createdAt: "createdAt",
+      updatedAt: "updatedAt",
     },
   },
 
-  // Verification model configuration for email verification tokens
+  // Verification model configuration - uses Prisma's verifications table
   verification: {
-    modelName: "better_auth.verification",
+    modelName: "verifications",
     fields: {
-      expiresAt: "expires_at",
-      createdAt: "created_at",
-      updatedAt: "updated_at",
+      expiresAt: "expiresAt",
+      createdAt: "createdAt",
+      updatedAt: "updatedAt",
     },
   },
 
@@ -161,6 +119,14 @@ export const auth = betterAuth({
   // Trusted origins for CORS - configured via ALLOWED_ORIGINS env var
   trustedOrigins: getAllowedOrigins(),
 
+  // Advanced configuration
+  advanced: {
+    database: {
+      // Generate UUIDs for all BetterAuth tables to match our frontend schema
+      generateId: (options) => crypto.randomUUID(),
+    },
+  },
+
   // Database hooks for auto-creating personal workspace on user signup
   // Task: task-org-002
   databaseHooks: {
@@ -170,14 +136,13 @@ export const auth = betterAuth({
          * After a new user is created, automatically create their personal workspace.
          * This ensures every user has at least one workspace to work in immediately after signup.
          *
-         * Uses studioCoreDomain.createPersonalWorkspace() action via MCP domain layer.
+         * Uses Prisma-based workspace service.
          *
          * Errors are logged but do not block user creation (graceful degradation).
          */
         after: async (user) => {
           try {
-            const store = await getDomainStore()
-            await store.createPersonalWorkspace(user.id, user.name || "User")
+            await createPersonalWorkspace(user.id, user.name || "User")
             console.log(`Created personal workspace for user ${user.email}`)
           } catch (error) {
             // Log error but don't block user creation

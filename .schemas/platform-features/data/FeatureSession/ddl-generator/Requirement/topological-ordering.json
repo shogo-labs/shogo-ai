@@ -1,9 +1,0 @@
-{
-  "id": "req-ddl-topo-sort",
-  "name": "topological-ordering",
-  "description": "Generate tables in dependency order so FKs resolve. Tables with no FK dependencies come first. Self-references don't break ordering. Circular dependencies detected and reported as error.",
-  "priority": "must",
-  "status": "proposed",
-  "createdAt": 1734188400000,
-  "session": "ddl-generator-001"
-}

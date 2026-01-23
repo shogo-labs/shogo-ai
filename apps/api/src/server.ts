@@ -13,16 +13,10 @@ import { resolve, join, extname, relative, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 import { readdir, stat } from 'fs/promises'
 import { auth } from './auth'
-import { PHASE_PROMPTS, isPhase, type Phase } from './prompts/phase-prompts'
 import { PERSONA_PROMPTS, isAgentPersona, type AgentPersona } from './prompts/persona-prompts'
 import { getPriceId } from './config/stripe-prices'
 import { processInterleavedStream, finalizeCurrentText } from './lib/interleaved-stream'
-import { billingDomain } from '@shogo/state-api/billing/domain'
-import { studioCoreDomain } from '@shogo/state-api/studio-core/domain'
-import { BunPostgresExecutor } from '@shogo/state-api/query/execution/bun-postgres'
-import { createBackendRegistry } from '@shogo/state-api/query/registry'
-import { SqlBackend } from '@shogo/state-api/query/backends/sql'
-import { NullPersistence } from '@shogo/state-api/persistence/null'
+import * as billingService from './services/billing.service'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
@@ -31,13 +25,14 @@ import { projectAdminRoutes } from './routes/project-admin'
 import { terminalRoutes } from './routes/terminal'
 import { testsRoutes } from './routes/tests'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
-import { createRuntimeManager, type IRuntimeManager } from '@shogo/state-api/runtime'
-
-// Billing domain store singleton for webhook handling
-let billingStore: ReturnType<typeof billingDomain.createStore> | null = null
-
-// Studio core domain store singleton for project operations
-let studioCoreStore: ReturnType<typeof studioCoreDomain.createStore> | null = null
+// Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
+import { createRuntimeManager, type IRuntimeManager } from './lib/runtime'
+// Generated routes (v2 API)
+import { createGeneratedRoutes } from './generated/routes'
+import { routeHooks } from './generated/hooks'
+import { prisma } from './lib/prisma'
+// Auth middleware for generated routes
+import { authMiddleware, requireAuth } from './middleware/auth'
 
 // Runtime manager singleton for project Vite runtimes
 let runtimeManager: IRuntimeManager | null = null
@@ -102,87 +97,6 @@ async function callMcpTool(toolName: string, args: Record<string, unknown>): Pro
     return { ok: false, error: { code: 'MCP_ERROR', message: 'No valid response from MCP' } }
   } catch (err: any) {
     return { ok: false, error: { code: 'MCP_CALL_FAILED', message: err.message || 'MCP call failed' } }
-  }
-}
-
-async function getBillingStore(): Promise<ReturnType<typeof billingDomain.createStore>> {
-  if (billingStore) {
-    return billingStore
-  }
-
-  const DATABASE_URL = process.env.DATABASE_URL
-  if (!DATABASE_URL) {
-    throw new Error("DATABASE_URL environment variable is required")
-  }
-
-  const isSupabase = DATABASE_URL.includes("supabase")
-  const executor = new BunPostgresExecutor(DATABASE_URL, {
-    tls: isSupabase,
-    max: 5,
-  })
-
-  const registry = createBackendRegistry()
-  const sqlBackend = new SqlBackend({ dialect: "pg", executor })
-  registry.register("postgres", sqlBackend)
-  registry.setDefault("postgres")
-
-  billingStore = billingDomain.createStore({
-    services: {
-      persistence: new NullPersistence(),
-      backendRegistry: registry,
-    },
-    context: {
-      schemaName: "billing",
-    },
-  })
-
-  return billingStore
-}
-
-async function getStudioCoreStore(): Promise<ReturnType<typeof studioCoreDomain.createStore>> {
-  if (studioCoreStore) {
-    return studioCoreStore
-  }
-
-  const DATABASE_URL = process.env.DATABASE_URL
-  if (!DATABASE_URL) {
-    throw new Error("DATABASE_URL environment variable is required")
-  }
-
-  const isSupabase = DATABASE_URL.includes("supabase")
-  const executor = new BunPostgresExecutor(DATABASE_URL, {
-    tls: isSupabase,
-    max: 5,
-  })
-
-  const registry = createBackendRegistry()
-  const sqlBackend = new SqlBackend({ dialect: "pg", executor })
-  registry.register("postgres", sqlBackend)
-  registry.setDefault("postgres")
-
-  studioCoreStore = studioCoreDomain.createStore({
-    services: {
-      persistence: new NullPersistence(),
-      backendRegistry: registry,
-    },
-    context: {
-      schemaName: "studio-core",
-    },
-  })
-
-  return studioCoreStore
-}
-
-/**
- * Safely get the studioCore store, returning undefined if database is not available.
- * Used by runtime routes that can work without database validation.
- */
-async function getStudioCoreStoreOptional(): Promise<ReturnType<typeof studioCoreDomain.createStore> | undefined> {
-  try {
-    return await getStudioCoreStore()
-  } catch (err) {
-    console.warn('[API] Database not available, using workspace-based project validation')
-    return undefined
   }
 }
 
@@ -335,35 +249,6 @@ const virtualToolsServer = createSdkMcpServer({
   name: 'virtual-tools',
   version: '1.0.0',
   tools: [
-    sdkTool(
-      'navigate_to_phase',
-      'Navigate the user to a different pipeline phase in the Shogo Studio UI. Use when user asks to go to a different phase like "take me to design" or "let\'s move to implementation".',
-      {
-        phase: z.enum(['discovery', 'analysis', 'classification', 'design', 'spec', 'testing', 'implementation', 'complete'])
-          .describe('The target phase to navigate to'),
-      },
-      async (args) => {
-        console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing:`, args)
-
-        // Emit event for client-side execution
-        const event: VirtualToolEvent = {
-          type: 'virtual-tool-execute',
-          toolUseId: `vt-${Date.now()}`,
-          toolName: 'navigate_to_phase',
-          args: args as Record<string, unknown>,
-          timestamp: Date.now(),
-        }
-        virtualToolEvents.emit('virtual-tool', event)
-        console.log(`${VT_LOG_PREFIX} ✅ Emitted virtual tool event`)
-
-        return {
-          content: [{
-            type: 'text',
-            text: `Navigation initiated to ${args.phase} phase`
-          }]
-        }
-      }
-    ),
     // set_workspace: Declaratively set workspace state (v2 architecture)
     // Client handler updates workspace Composition entity based on desired state
     // NOTE: Using z.any() for complex nested types to avoid SDK schema validation issues
@@ -403,7 +288,7 @@ const virtualToolsServer = createSdkMcpServer({
     // NOTE: Using z.any() for complex nested types to avoid SDK schema validation issues
     sdkTool(
       'execute',
-      'Execute state operations on the client. Use for creating/updating/deleting entities across domains. Each operation has: domain ("component-builder"|"studio-chat"|"platform-features"), action ("create"|"update"|"delete"), model (string like "Composition", "FeatureSession"), optional id (required for update/delete), and data object.',
+      'Execute state operations on the client. Use for creating/updating/deleting entities across domains. Each operation has: domain ("component-builder"|"studio-chat"), action ("create"|"update"|"delete"), model (string like "Composition", "ChatSession"), optional id (required for update/delete), and data object.',
       {
         operations: z.array(z.any())
           .describe('Array of operation objects with domain, action, model, optional id, and data'),
@@ -717,12 +602,11 @@ function createProjectScopedClaudeCode(projectId?: string) {
     // Allow MCP tools, file operations, and skill invocation
     allowedTools: [
       // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
-      'mcp__virtual-tools__navigate_to_phase',
       'mcp__virtual-tools__set_workspace',
       'mcp__virtual-tools__execute',
       // File operations
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
-      // Skill and agent tools (required for /platform-feature-* skills)
+      // Skill and agent tools
       'Skill', 'Task', 'Bash', 'TodoWrite',
       // Wavesmith MCP tools - Schema
       'mcp__wavesmith__schema_set',
@@ -790,7 +674,7 @@ function createProjectScopedClaudeCode(projectId?: string) {
     hooks: {
       // PreToolUse: Currently unused - virtual tools handled via sdkTool()
       // SDK tools (virtualToolsServer) are the single execution path for virtual tools.
-      // See: sdkTool('set_workspace', ...), sdkTool('execute', ...), sdkTool('navigate_to_phase', ...)
+      // See: sdkTool('set_workspace', ...), sdkTool('execute', ...)
       // Keeping hook structure for future non-virtual-tool interceptors if needed.
       SubagentStart: [{
         hooks: [async (rawInput: unknown) => {
@@ -930,22 +814,18 @@ When calling schema_set, your payload MUST use Enhanced JSON Schema format with 
 - id property must have "x-mst-type": "identifier"
 
 You also have access to virtual tools for UI control:
-- navigate_to_phase: Navigate the user to a different pipeline phase
-  Arguments: { phase: "discovery" | "analysis" | "classification" | "design" | "spec" | "testing" | "implementation" | "complete" }
-  Example: When user says "take me to the design phase" or "let's move to implementation", call this tool.
 - set_workspace: Declaratively set workspace state
   Arguments: { layout?: "single"|"split-h"|"split-v", panels: [{ slot, section, config? }] }
-  Example: set_workspace({ panels: [{ slot: "main", section: "DesignContainerSection", config: { schemaName: "platform-features" } }] })
+  Example: set_workspace({ panels: [{ slot: "main", section: "DesignContainerSection", config: { schemaName: "component-builder" } }] })
   Use this to show schemas, change layouts, or display any combination of panels.
   Available sections: DesignContainerSection, WorkspaceBlankStateSection, DynamicCompositionSection, DataGridSection
 
 - execute: Run domain operations on client state
   Arguments: { operations: [{ domain, action, model, id?, data }] }
-  Example: execute({ operations: [{ domain: "platform-features", action: "update", model: "FeatureSession", id: "...", data: { status: "design" } }] })
-  Use for creating/updating/deleting entities. Domains: component-builder, studio-chat, platform-features
+  Example: execute({ operations: [{ domain: "component-builder", action: "create", model: "Composition", data: { name: "..." } }] })
+  Use for creating/updating/deleting entities. Domains: component-builder, studio-chat
 
 Available schemas:
-- platform-features: Feature sessions, requirements, analysis findings, integration points, tasks, test specs
 - component-builder: UI composition system - ComponentDefinition, Composition, LayoutTemplate, Registry, RendererBinding
 - studio-core: Organizations, projects, project membership
 - studio-chat: Chat sessions and messages
@@ -956,10 +836,9 @@ You can help users:
 - Query and update data
 - Inspect and modify UI compositions (use component-builder schema)
 - Explain data modeling concepts and best practices
-- Navigate between pipeline phases when requested
 
 **Skill Invocation (CRITICAL):**
-When a user's message starts with a slash command like "/view-builder" or "/platform-feature-discovery", you MUST immediately invoke the Skill tool before doing anything else.
+When a user's message starts with a slash command like "/view-builder", you MUST immediately invoke the Skill tool before doing anything else.
 
 Example:
 - User: "/view-builder Create a todo app"
@@ -968,28 +847,18 @@ Example:
 
 Available skills:
 - /view-builder - For displaying data, layouts, views, workspace panels
-- /platform-feature-discovery - Start the feature pipeline (discovery phase)
-- /platform-feature-analysis - Run codebase analysis
-- /platform-feature-classification - Classify feature requirements
-- /platform-feature-design - Design schemas and models
-- /platform-feature-spec - Create implementation specs
-- /platform-feature-tests - Generate test specifications
-- /platform-feature-implementation - Execute TDD implementation
 
 When users ask to create schemas or data, use the appropriate MCP tools.
-When users ask to navigate to a phase, use the navigate_to_phase tool.
-When users ask about phase views, compositions, or UI sections, query the component-builder schema.
+When users ask about compositions, or UI sections, query the component-builder schema.
 Be concise and practical. Show tool results when relevant.`
 
 /**
- * Build a dynamic system prompt based on agent persona and pipeline phase.
+ * Build a dynamic system prompt based on agent persona.
  *
- * @param phase - The current pipeline phase, or null/undefined for generic prompt
  * @param agentPersona - The agent persona ('wavesmith' or 'code'), defaults to 'wavesmith'
- * @returns The complete system prompt with persona guidance, base prompt, and optional phase-specific guidance
+ * @returns The complete system prompt with persona guidance and base prompt
  */
 export function buildSystemPrompt(
-  phase: Phase | null | undefined,
   agentPersona?: AgentPersona | null
 ): string {
   // Validate and default persona
@@ -1000,16 +869,9 @@ export function buildSystemPrompt(
     return PERSONA_PROMPTS.code
   }
 
-  // Wavesmith and Shogo agents get persona intro + base prompt + phase guidance
+  // Wavesmith and Shogo agents get persona intro + base prompt
   // Shogo has all the same tools as Wavesmith, plus code generation capabilities
-  let systemPrompt = `${PERSONA_PROMPTS[persona]}\n\n${BASE_SYSTEM_PROMPT}`
-
-  // Add phase-specific guidance if a valid phase is provided
-  if (phase && isPhase(phase)) {
-    systemPrompt = `${systemPrompt}\n\n${PHASE_PROMPTS[phase]}`
-  }
-
-  return systemPrompt
+  return `${PERSONA_PROMPTS[persona]}\n\n${BASE_SYSTEM_PROMPT}`
 }
 
 const app = new Hono()
@@ -1122,8 +984,7 @@ app.get('/api/templates', async (c) => {
 
 // Check subdomain availability
 app.get('/api/subdomains/:subdomain/check', async (c) => {
-  const studioCore = await getStudioCoreStore()
-  const router = publishRoutes({ studioCore })
+  const router = publishRoutes()
   // Forward with properly constructed URL
   const url = new URL(c.req.url)
   url.pathname = `/subdomains/${c.req.param('subdomain')}/check`
@@ -1133,8 +994,7 @@ app.get('/api/subdomains/:subdomain/check', async (c) => {
 
 // Publish a project
 app.post('/api/projects/:projectId/publish', async (c) => {
-  const studioCore = await getStudioCoreStore()
-  const router = publishRoutes({ studioCore })
+  const router = publishRoutes()
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/publish`
   const newReq = new Request(url.toString(), {
@@ -1147,8 +1007,7 @@ app.post('/api/projects/:projectId/publish', async (c) => {
 
 // Update publish settings
 app.patch('/api/projects/:projectId/publish', async (c) => {
-  const studioCore = await getStudioCoreStore()
-  const router = publishRoutes({ studioCore })
+  const router = publishRoutes()
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/publish`
   const newReq = new Request(url.toString(), {
@@ -1161,8 +1020,7 @@ app.patch('/api/projects/:projectId/publish', async (c) => {
 
 // Unpublish a project
 app.post('/api/projects/:projectId/unpublish', async (c) => {
-  const studioCore = await getStudioCoreStore()
-  const router = publishRoutes({ studioCore })
+  const router = publishRoutes()
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/unpublish`
   const newReq = new Request(url.toString(), {
@@ -1179,9 +1037,8 @@ app.post('/api/projects/:projectId/unpublish', async (c) => {
 
 // Start project runtime
 app.post('/api/projects/:projectId/runtime/start', async (c) => {
-  const studioCore = await getStudioCoreStoreOptional()
   const manager = getRuntimeManager()
-  const router = runtimeRoutes({ studioCore, runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/runtime/start`
   const newReq = new Request(url.toString(), { method: 'POST' })
@@ -1190,9 +1047,8 @@ app.post('/api/projects/:projectId/runtime/start', async (c) => {
 
 // Stop project runtime
 app.post('/api/projects/:projectId/runtime/stop', async (c) => {
-  const studioCore = await getStudioCoreStoreOptional()
   const manager = getRuntimeManager()
-  const router = runtimeRoutes({ studioCore, runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/runtime/stop`
   const newReq = new Request(url.toString(), { method: 'POST' })
@@ -1201,9 +1057,8 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
 
 // Restart project runtime (useful after template copy)
 app.post('/api/projects/:projectId/runtime/restart', async (c) => {
-  const studioCore = await getStudioCoreStoreOptional()
   const manager = getRuntimeManager()
-  const router = runtimeRoutes({ studioCore, runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/runtime/restart`
   const newReq = new Request(url.toString(), { method: 'POST' })
@@ -1212,9 +1067,8 @@ app.post('/api/projects/:projectId/runtime/restart', async (c) => {
 
 // Get project runtime status
 app.get('/api/projects/:projectId/runtime/status', async (c) => {
-  const studioCore = await getStudioCoreStoreOptional()
   const manager = getRuntimeManager()
-  const router = runtimeRoutes({ studioCore, runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/runtime/status`
   const newReq = new Request(url.toString(), { method: 'GET' })
@@ -1256,9 +1110,8 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     }
   } else {
     // Local development: Use RuntimeManager
-    const studioCore = await getStudioCoreStoreOptional()
     const manager = getRuntimeManager()
-    const router = runtimeRoutes({ studioCore, runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+    const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
     const url = new URL(c.req.url)
     url.pathname = `/projects/${projectId}/sandbox/url`
     const newReq = new Request(url.toString(), { method: 'GET' })
@@ -1409,9 +1262,8 @@ app.get('/api/projects/:projectId/files', async (c) => {
   }
   
   // Local development: Use local filesystem
-  const studioCore = await getStudioCoreStore()
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = filesRoutes({ studioCore, workspacesDir })
+  const router = filesRoutes({ workspacesDir })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${projectId}/files`
   const newReq = new Request(url.toString(), { method: 'GET' })
@@ -1453,9 +1305,8 @@ app.get('/api/projects/:projectId/files/*', async (c) => {
   }
   
   // Local development: Use local filesystem
-  const studioCore = await getStudioCoreStore()
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = filesRoutes({ studioCore, workspacesDir })
+  const router = filesRoutes({ workspacesDir })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${projectId}/files/${filePath}`
   const newReq = new Request(url.toString(), { method: 'GET' })
@@ -1464,9 +1315,8 @@ app.get('/api/projects/:projectId/files/*', async (c) => {
 
 // Write file content
 app.put('/api/projects/:projectId/files/*', async (c) => {
-  const studioCore = await getStudioCoreStore()
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = filesRoutes({ studioCore, workspacesDir })
+  const router = filesRoutes({ workspacesDir })
   const projectId = c.req.param('projectId')
   const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
   const url = new URL(c.req.url)
@@ -1485,9 +1335,8 @@ app.put('/api/projects/:projectId/files/*', async (c) => {
 
 // List project files from S3
 app.get('/api/projects/:projectId/s3/files', async (c) => {
-  const studioCore = await getStudioCoreStore()
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = filesRoutes({ studioCore, workspacesDir })
+  const router = filesRoutes({ workspacesDir })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/s3/files`
   const newReq = new Request(url.toString(), { method: 'GET' })
@@ -1496,9 +1345,8 @@ app.get('/api/projects/:projectId/s3/files', async (c) => {
 
 // Get pre-signed URLs for S3 file read/write
 app.post('/api/projects/:projectId/s3/presign', async (c) => {
-  const studioCore = await getStudioCoreStore()
   const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = filesRoutes({ studioCore, workspacesDir })
+  const router = filesRoutes({ workspacesDir })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/s3/presign`
   const newReq = new Request(url.toString(), {
@@ -2130,9 +1978,8 @@ app.all('/api/projects/:projectId/database/proxy/*', async (c) => {
 
 // POST /api/projects/:projectId/chat - Proxy chat to project pod
 app.post('/api/projects/:projectId/chat', async (c) => {
-  const studioCore = await getStudioCoreStore()
   const manager = getRuntimeManager()
-  const router = projectChatRoutes({ studioCore, runtimeManager: manager })
+  const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat`
   const newReq = new Request(url.toString(), {
@@ -2145,9 +1992,8 @@ app.post('/api/projects/:projectId/chat', async (c) => {
 
 // GET /api/projects/:projectId/chat/status - Check project runtime status
 app.get('/api/projects/:projectId/chat/status', async (c) => {
-  const studioCore = await getStudioCoreStore()
   const manager = getRuntimeManager()
-  const router = projectChatRoutes({ studioCore, runtimeManager: manager })
+  const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat/status`
   const newReq = new Request(url.toString(), { method: 'GET' })
@@ -2156,9 +2002,8 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
 
 // POST /api/projects/:projectId/chat/wake - Wake up a scaled-to-zero pod
 app.post('/api/projects/:projectId/chat/wake', async (c) => {
-  const studioCore = await getStudioCoreStore()
   const manager = getRuntimeManager()
-  const router = projectChatRoutes({ studioCore, runtimeManager: manager })
+  const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat/wake`
   const newReq = new Request(url.toString(), { method: 'POST' })
@@ -2353,7 +2198,7 @@ function calculateCreditCost(totalTokens: number): number {
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, phase, ccSessionId, workspaceId, userId, projectId } = await c.req.json()
+    const { messages, ccSessionId, workspaceId, userId, projectId } = await c.req.json()
 
     // Create project-scoped Claude Code instance if projectId is provided
     // This sets the cwd to the project's workspace directory for file operations
@@ -2364,18 +2209,12 @@ app.post('/api/chat', async (c) => {
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
     // This prevents users from sending messages when they have no credits remaining
     if (workspaceId) {
-      const store = await getBillingStore()
-
-      // Query the SQL backend directly for the credit ledger
-      // Use .where() for filtering, then .toArray() to execute the query
-      const ledgers = await store.creditLedgerCollection.query().where({ workspace: workspaceId }).toArray()
-      let ledger = ledgers[0]
+      // Get credit ledger via Prisma service
+      let ledger = await billingService.getCreditLedger(workspaceId)
 
       // If no ledger exists, allocate free tier credits
       if (!ledger) {
-        await store.allocateFreeCredits(workspaceId)
-        const newLedgers = await store.creditLedgerCollection.query().where({ workspace: workspaceId }).toArray()
-        ledger = newLedgers[0]
+        ledger = await billingService.allocateFreeCredits(workspaceId)
       }
 
       if (ledger) {
@@ -2402,9 +2241,9 @@ app.post('/api/chat', async (c) => {
       }
     }
 
-    // Build dynamic system prompt based on agent persona (env var) and pipeline phase
+    // Build dynamic system prompt based on agent persona (env var)
     const agentPersona = process.env.SHOGO_AGENT as AgentPersona | undefined
-    let systemPrompt = buildSystemPrompt(phase, agentPersona)
+    let systemPrompt = buildSystemPrompt(agentPersona)
 
     // Include project file list in the prompt so agent knows what files exist
     if (projectId) {
@@ -2693,15 +2532,13 @@ Use the Read, Write, and Edit tools to view and modify these files. All file pat
                 const totalTokens = usage?.totalTokens ?? (inputTokens + outputTokens)
                 const creditCost = calculateCreditCost(totalTokens)
 
-                const store = await getBillingStore()
-                await store.consumeCredits(
+                await billingService.consumeCredits(
                   workspaceId,
-                  creditCost,
+                  projectId || null, // projectId
                   userId,
                   'chat_message',
-                  undefined, // projectId
+                  creditCost,
                   {
-                    phase,
                     ccSessionId,
                     inputTokens,
                     outputTokens,
@@ -2899,30 +2736,32 @@ app.post('/api/webhooks/stripe', async (c) => {
         if (workspaceId && planId && billingInterval && session.subscription && session.customer) {
           try {
             // Fetch the full subscription details from Stripe
-            const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string)
+            // Note: current_period_start/end are returned by the API but not in the TypeScript types for Stripe v20+
+            const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
+              current_period_start?: number
+              current_period_end?: number
+            }
 
             // Convert Stripe timestamps (seconds) to milliseconds, with fallbacks
+            // Use billing_cycle_anchor or start_date as fallback if current_period fields are missing
             const now = Date.now()
             const currentPeriodStart = stripeSubscription.current_period_start
               ? stripeSubscription.current_period_start * 1000
-              : now
+              : (stripeSubscription.billing_cycle_anchor || stripeSubscription.start_date) * 1000 || now
             const currentPeriodEnd = stripeSubscription.current_period_end
               ? stripeSubscription.current_period_end * 1000
               : now + (30 * 24 * 60 * 60 * 1000) // Default to 30 days from now
 
-            const store = await getBillingStore()
-            await store.subscriptionCollection.insertOne({
-              id: crypto.randomUUID(),
-              workspace: workspaceId,
+            await billingService.syncFromStripe({
               stripeSubscriptionId: stripeSubscription.id,
               stripeCustomerId: session.customer as string,
+              workspaceId,
               planId: planId as 'pro' | 'business' | 'enterprise',
               status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
               billingInterval: billingInterval as 'monthly' | 'annual',
-              currentPeriodStart,
-              currentPeriodEnd,
+              currentPeriodStart: new Date(currentPeriodStart),
+              currentPeriodEnd: new Date(currentPeriodEnd),
               cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
-              createdAt: now,
             })
             console.log('[Webhook] Subscription created for workspace:', workspaceId)
           } catch (err: any) {
@@ -2941,6 +2780,31 @@ app.post('/api/webhooks/stripe', async (c) => {
     return c.json({ error: 'Webhook error' }, 500)
   }
 })
+
+// =============================================================================
+// Domain API routes - For APIPersistence layer
+// =============================================================================
+
+// Note: Domain routes are now served via /api/v2 (generated routes below)
+
+// =============================================================================
+// Generated API routes (v2) - Auto-generated from Prisma schema with hooks
+// =============================================================================
+
+// Apply auth middleware to extract session for all v2 routes
+// This makes ctx.userId available in route hooks for authorization
+app.use('/api/v2/*', authMiddleware)
+
+// Require authentication for all v2 routes
+// Unauthenticated requests get 401 Unauthorized
+app.use('/api/v2/*', requireAuth)
+
+// Mount generated routes at /api/v2
+const generatedRoutes = createGeneratedRoutes({
+  prisma,
+  hooks: routeHooks,
+})
+app.route('/api/v2', generatedRoutes)
 
 // =============================================================================
 // Graceful shutdown handling
