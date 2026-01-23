@@ -1,12 +1,18 @@
 /**
- * @shogo/sdk
+ * @shogo-ai/sdk
  *
- * Shogo Platform SDK - Zero-boilerplate auth with Prisma pass-through for database.
+ * Shogo Platform SDK - Zero-boilerplate auth, database, and state management.
+ *
+ * Features:
+ * - Authentication (email/password, OAuth)
+ * - Database (Prisma pass-through)
+ * - Code generation (server functions, domain stores)
+ * - React bindings (hooks, providers)
  *
  * @example
  * ```typescript
  * import { PrismaClient } from '@prisma/client'
- * import { createClient } from '@shogo/sdk'
+ * import { createClient } from '@shogo-ai/sdk'
  *
  * const prisma = new PrismaClient()
  *
@@ -18,13 +24,15 @@
  * // Auth
  * await shogo.auth.signUp({ email: 'user@example.com', password: 'secret' })
  * await shogo.auth.signIn({ email: 'user@example.com', password: 'secret' })
- * const user = shogo.auth.currentUser()
  *
  * // Database - direct Prisma pass-through
  * const todos = await shogo.db.todo.findMany({ where: { completed: false } })
- * const todo = await shogo.db.todo.create({ data: { title: 'Buy milk' } })
- * await shogo.db.todo.update({ where: { id: todo.id }, data: { completed: true } })
- * await shogo.db.todo.delete({ where: { id: todo.id } })
+ * ```
+ *
+ * @example Code Generation
+ * ```bash
+ * # Generate server functions and domain stores from Prisma schema
+ * npx shogo generate
  * ```
  */
 
