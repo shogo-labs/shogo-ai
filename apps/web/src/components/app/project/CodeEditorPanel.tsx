@@ -9,13 +9,15 @@
  * - Filesystem API for file access (synced with Vite/Preview)
  * - Auto-save with debouncing (triggers Vite HMR)
  * - JSX/TSX support with proper TypeScript compiler options
- * - Automatic Type Acquisition (ATA) from CDN for npm packages
+ * - LSP integration for full IntelliSense (via tsserver)
+ * - Automatic Type Acquisition (ATA) from CDN as fallback
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import Editor, { type Monaco } from "@monaco-editor/react"
 import { Loader2, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, RefreshCw, Cloud, CloudOff } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { getLSPClient, type MonacoLSPClient } from "@/lib/lsp-client"
 
 // =============================================================================
 // Automatic Type Acquisition (ATA) System
@@ -526,6 +528,10 @@ export function CodeEditorPanel({
   const [lastSaved, setLastSaved] = useState<Date | null>(null)
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
+  // LSP client for IntelliSense
+  const lspClientRef = useRef<MonacoLSPClient | null>(null)
+  const [lspConnected, setLspConnected] = useState(false)
+
   // Track if content has unsaved changes
   const isDirty = fileContent !== originalContent
 
@@ -719,7 +725,7 @@ export function CodeEditorPanel({
     }
   }, [originalContent, saveFile])
 
-  // Cleanup timeouts on unmount
+  // Cleanup timeouts and LSP on unmount
   useEffect(() => {
     return () => {
       if (saveTimeoutRef.current) {
@@ -728,8 +734,57 @@ export function CodeEditorPanel({
       if (typeLoadTimeoutRef.current) {
         clearTimeout(typeLoadTimeoutRef.current)
       }
+      // Disconnect LSP client
+      if (lspClientRef.current) {
+        lspClientRef.current.disconnect()
+        lspClientRef.current = null
+      }
     }
   }, [])
+
+  // Connect to LSP server when Monaco is ready
+  useEffect(() => {
+    if (!monacoInstance || !projectId) return
+
+    // Get or create LSP client for this project
+    const client = getLSPClient(projectId)
+    lspClientRef.current = client
+
+    // Connect to the LSP server
+    client.connect(monacoInstance)
+      .then(() => {
+        console.log('[CodeEditorPanel] LSP connected for project:', projectId)
+        setLspConnected(true)
+      })
+      .catch((error) => {
+        console.warn('[CodeEditorPanel] LSP connection failed, using ATA fallback:', error.message)
+        setLspConnected(false)
+      })
+
+    return () => {
+      // Don't disconnect on every effect re-run, only on unmount (handled above)
+    }
+  }, [projectId])
+
+  // Notify LSP when file content changes
+  useEffect(() => {
+    if (!lspClientRef.current || !selectedFile || !lspConnected) return
+
+    const uri = `file://${selectedFile}`
+    const isTypeScriptFile = selectedFile.endsWith('.ts') || selectedFile.endsWith('.tsx') || 
+                             selectedFile.endsWith('.js') || selectedFile.endsWith('.jsx')
+    
+    if (isTypeScriptFile && fileContent) {
+      const languageId = selectedFile.endsWith('.tsx') || selectedFile.endsWith('.jsx') 
+        ? 'typescriptreact' 
+        : selectedFile.endsWith('.ts') 
+          ? 'typescript' 
+          : 'javascript'
+      
+      // Notify LSP of document open/change
+      lspClientRef.current.didOpenTextDocument(uri, languageId, fileContent)
+    }
+  }, [selectedFile, fileContent, lspConnected])
 
   // Get current file extension for language detection
   const currentExtension = selectedFile

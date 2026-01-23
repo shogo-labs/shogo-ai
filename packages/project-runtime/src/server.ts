@@ -2092,11 +2092,43 @@ app.post('/database/stop', (c) => {
 })
 
 // =============================================================================
+// LSP (Language Server Protocol) WebSocket Endpoint
+// =============================================================================
+
+import { lspManager } from './lsp-service'
+
+// Track active LSP WebSocket connections
+const lspConnections = new Set<WebSocket>()
+
+/**
+ * LSP WebSocket handler for Monaco editor IntelliSense
+ * Bridges WebSocket messages to TypeScript language server
+ */
+app.get('/lsp', (c) => {
+  // Return info about LSP endpoint (actual WebSocket upgrade happens in server config)
+  return c.json({
+    status: 'available',
+    message: 'Connect via WebSocket to this endpoint for LSP support',
+    projectDir: PROJECT_DIR,
+  })
+})
+
+// =============================================================================
 // Graceful Shutdown
 // =============================================================================
 
 async function gracefulShutdown(signal: string) {
   console.log(`[project-runtime] Received ${signal}, starting graceful shutdown...`)
+
+  // Stop LSP servers
+  console.log(`[project-runtime] Stopping LSP servers...`)
+  lspManager.stopAll()
+
+  // Close LSP WebSocket connections
+  for (const ws of lspConnections) {
+    ws.close(1001, 'Server shutting down')
+  }
+  lspConnections.clear()
 
   // Upload any pending changes to S3 before shutdown
   if (s3Sync) {
@@ -2129,4 +2161,61 @@ export default {
   fetch: app.fetch,
   // Increase idle timeout for long-running Claude responses (2 minutes)
   idleTimeout: 120,
+  // WebSocket handlers for LSP
+  websocket: {
+    async open(ws: WebSocket) {
+      console.log('[LSP WebSocket] Client connected')
+      lspConnections.add(ws)
+
+      try {
+        // Get or create language server for this project
+        const server = await lspManager.getServer(PROJECT_DIR)
+        
+        // Forward messages from tsserver to WebSocket
+        const unsubscribe = server.onMessage((msg) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(msg))
+          }
+        })
+
+        // Store unsubscribe function on ws for cleanup
+        ;(ws as any).__lspUnsubscribe = unsubscribe
+        ;(ws as any).__lspServer = server
+        
+        console.log('[LSP WebSocket] Language server ready')
+      } catch (error) {
+        console.error('[LSP WebSocket] Failed to start language server:', error)
+        ws.close(1011, 'Failed to start language server')
+      }
+    },
+    
+    message(ws: WebSocket, message: string | Buffer) {
+      try {
+        const msg = JSON.parse(typeof message === 'string' ? message : message.toString())
+        const server = (ws as any).__lspServer
+        
+        if (server) {
+          // Forward message to tsserver
+          server.send(msg)
+        }
+      } catch (error) {
+        console.error('[LSP WebSocket] Error handling message:', error)
+      }
+    },
+    
+    close(ws: WebSocket) {
+      console.log('[LSP WebSocket] Client disconnected')
+      lspConnections.delete(ws)
+      
+      // Clean up
+      const unsubscribe = (ws as any).__lspUnsubscribe
+      if (unsubscribe) {
+        unsubscribe()
+      }
+    },
+    
+    error(ws: WebSocket, error: Error) {
+      console.error('[LSP WebSocket] Error:', error)
+    },
+  },
 }

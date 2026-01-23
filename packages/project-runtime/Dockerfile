@@ -66,10 +66,26 @@ WORKDIR /app
 # - nodejs + npm: Claude Code CLI
 # - bash: Claude Code requires SHELL=/bin/bash
 # - git: for project operations
-RUN apk add --no-cache curl nodejs npm bash git
+# - Chromium dependencies for Playwright E2E tests
+RUN apk add --no-cache \
+    curl nodejs npm bash git \
+    # Playwright/Chromium dependencies
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont
 
 # Install Claude Code CLI globally (required for ai-sdk-provider-claude-code)
 RUN npm install -g @anthropic-ai/claude-code
+
+# Install Playwright with Chromium for E2E testing
+# Use the system-installed Chromium to avoid downloading ~300MB of binaries
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+RUN npm install -g playwright && \
+    npx playwright install-deps chromium 2>/dev/null || true
 
 # Set SHELL environment variable (required by Claude Code CLI)
 ENV SHELL=/bin/bash
@@ -115,6 +131,9 @@ ENV HOME=/app
 # Enable fast start mode by default
 ENV FAST_START_MODE=true
 ENV BUILD_STATUS_FILE=/tmp/build-status
+# Playwright: use system Chromium to avoid downloading browsers at runtime
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # Expose ports:
 # - 8080: Agent server (chat endpoint)

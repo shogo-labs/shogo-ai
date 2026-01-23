@@ -274,6 +274,48 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
   })
 
   /**
+   * GET /projects/:projectId/runtime/lsp - WebSocket LSP endpoint info
+   *
+   * Returns info about the LSP WebSocket endpoint.
+   * Actual WebSocket upgrade is handled by the server's websocket handler.
+   */
+  router.get("/projects/:projectId/runtime/lsp", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+
+      // Validate project exists
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404
+        )
+      }
+
+      // Get runtime status
+      const runtime = runtimeManager.status(projectId)
+      if (!runtime || runtime.status !== 'running') {
+        return c.json(
+          { error: { code: "runtime_not_running", message: "Project runtime is not running" } },
+          503
+        )
+      }
+
+      return c.json({
+        status: 'available',
+        message: 'Connect via WebSocket to this endpoint for LSP support',
+        runtimeUrl: runtime.url,
+      }, 200)
+    } catch (error: any) {
+      console.error("[Runtime] LSP info error:", error)
+      return c.json(
+        { error: { code: "lsp_failed", message: error.message || "Failed to get LSP info" } },
+        500
+      )
+    }
+  })
+
+  /**
    * GET /projects/:projectId/sandbox/url - Get iframe-ready URL
    *
    * Returns the URL and sandbox attributes for embedding in an iframe.

@@ -49,12 +49,15 @@
     "mobx-react-lite": "^4.1.1",
     "mobx-state-tree": "^6.0.1",
     "monaco-editor": "^0.55.1",
+    "monaco-languageclient": "^10.6.0",
     "nuqs": "^2.8.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.9.6",
     "streamdown": "^2.0.1",
-    "tailwind-merge": "^3.4.0"
+    "tailwind-merge": "^3.4.0",
+    "vscode-languageclient": "^9.0.1",
+    "vscode-ws-jsonrpc": "^3.5.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
