@@ -1,37 +1,15 @@
 /**
  * Store Provider and Context
  *
- * Simple store management:
- * - TodoStore for todo CRUD with optimistic updates
- * - React context for store access
+ * Uses the generated domain store from @shogo-ai/sdk
  */
 
 import { createContext, useContext, useRef } from 'react'
-import { TodoStore } from './todo-store'
+import { RootStore, getStore } from '../generated/domain'
 
-/**
- * RootStore - Just the TodoStore for now
- */
-export class RootStore {
-  todos: TodoStore
-
-  constructor() {
-    this.todos = new TodoStore()
-  }
-}
-
-// Client-side singleton
-let clientStore: RootStore | null = null
-
-function getStore(): RootStore {
-  if (typeof window === 'undefined') {
-    return new RootStore()
-  }
-  if (!clientStore) {
-    clientStore = new RootStore()
-  }
-  return clientStore
-}
+// Re-export types
+export type { RootStore } from '../generated/domain'
+export type { TodoType, UserType } from '../generated/types'
 
 const StoreContext = createContext<RootStore | null>(null)
 
@@ -56,5 +34,3 @@ export function useStores(): RootStore {
   }
   return store
 }
-
-export type { TodoStore, Todo } from './todo-store'

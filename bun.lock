@@ -147,12 +147,30 @@
     },
     "packages/sdk": {
       "name": "@shogo-ai/sdk",
-      "version": "0.1.0",
+      "version": "0.2.0",
+      "bin": {
+        "shogo": "./bin/shogo.ts",
+      },
+      "dependencies": {
+        "mobx": "^6.13.0",
+      },
       "devDependencies": {
         "@playwright/test": "^1.40.0",
+        "@prisma/internals": "^6.0.0",
+        "@types/react": "^19.0.0",
+        "react": "^19.0.0",
         "tsup": "^8.0.0",
         "typescript": "^5.0.0",
       },
+      "peerDependencies": {
+        "@tanstack/react-start": ">=1.0.0",
+        "mobx-react-lite": ">=4.0.0",
+        "react": ">=18.0.0",
+      },
+      "optionalPeers": [
+        "@tanstack/react-start",
+        "mobx-react-lite",
+      ],
     },
     "packages/state-api": {
       "name": "@shogo/state-api",

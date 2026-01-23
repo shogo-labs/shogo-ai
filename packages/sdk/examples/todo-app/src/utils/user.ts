@@ -1,57 +1,51 @@
 /**
  * User Server Functions
  * 
- * Demonstrates using shogo.db (Prisma pass-through) for user operations.
+ * Custom user functions that aren't CRUD - like getCurrentUser.
+ * The basic CRUD operations are in ../generated/server-functions.ts
  */
 
 import { createServerFn } from '@tanstack/react-start'
 import { shogo } from '../lib/shogo'
+import type { UserType } from '../generated/types'
 
-export type UserType = {
-  id: string
-  email: string
-  name: string | null
-  createdAt: Date
-  updatedAt: Date
-}
+// Re-export the type for convenience
+export type { UserType }
 
-// Get current user using shogo.db
+/**
+ * Get current user - finds the first user (demo app simplicity)
+ * In a real app, this would use session/auth
+ */
 export const getCurrentUser = createServerFn({ method: 'GET' })
   .handler(async () => {
-    // shogo.db is the Prisma client
     const user = await shogo.db.user.findFirst({
       orderBy: { createdAt: 'asc' },
     })
     return user as UserType | null
   })
 
-// Create user using shogo.db
+/**
+ * Create user - custom because we need to check for existing
+ */
 export const createUser = createServerFn({ method: 'POST' })
-  .inputValidator((data: { email: string; name?: string }) => {
-    console.log('[createUser] inputValidator received:', data)
-    return data
-  })
+  .inputValidator((data: { email: string; name?: string }) => data)
   .handler(async ({ data }) => {
-    console.log('[createUser] handler called with data:', data)
-    
     // Check if user exists
     const existing = await shogo.db.user.findUnique({
       where: { email: data.email },
     })
-    console.log('[createUser] existing user:', existing)
     
     if (existing) {
       throw new Error('User already exists')
     }
 
-    // Create user with shogo.db
-    console.log('[createUser] creating user...')
+    // Create user
     const user = await shogo.db.user.create({
       data: {
         email: data.email,
         name: data.name,
       },
     })
-    console.log('[createUser] user created:', user)
+    
     return user as UserType
   })

@@ -2,23 +2,23 @@
  * Todo App - Shogo SDK Example
  *
  * Demonstrates:
- * - Server functions for database operations
+ * - Auto-generated server functions (from Prisma schema)
+ * - Auto-generated domain store with optimistic updates
  * - Route loader for initial data
- * - MobX store for todo state with optimistic updates
  */
 
 import { createFileRoute, useRouter } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
-import { useStores } from '../stores'
-import { createUser, getCurrentUser, type UserType } from '../utils/user'
-import { getTodos } from '../utils/todos'
+import { useStores, type TodoType, type UserType } from '../stores'
+import { getCurrentUser, createUser } from '../utils/user'
+import { getTodoList } from '../generated/server-functions'
 
 export const Route = createFileRoute('/')({
   loader: async () => {
     const user = await getCurrentUser()
     if (user) {
-      const todos = await getTodos({ data: { userId: user.id } })
+      const todos = await getTodoList({ data: { userId: user.id } })
       return { user, todos }
     }
     return { user: null, todos: [] }
@@ -45,19 +45,15 @@ function SetupForm({ onComplete }: { onComplete: () => void }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    console.log('[SetupForm] handleSubmit called with email:', email, 'name:', name)
     if (!email) return
 
     setIsLoading(true)
     setError('')
 
     try {
-      console.log('[SetupForm] calling createUser...')
-      const user = await createUser({ data: { email, name: name || undefined } })
-      console.log('[SetupForm] createUser returned:', user)
+      await createUser({ data: { email, name: name || undefined } })
       onComplete()
     } catch (err) {
-      console.error('[SetupForm] createUser error:', err)
       setError(err instanceof Error ? err.message : 'Failed to create user')
     } finally {
       setIsLoading(false)
@@ -101,7 +97,7 @@ function SetupForm({ onComplete }: { onComplete: () => void }) {
         </form>
 
         <footer style={styles.footer}>
-          <p>Uses <code>shogo.db</code> via server functions</p>
+          <p>Uses auto-generated server functions from Prisma</p>
         </footer>
       </article>
     </div>
@@ -114,41 +110,53 @@ const TodoList = observer(function TodoList({
   onSignOut,
 }: { 
   user: UserType
-  initialTodos: any[]
+  initialTodos: TodoType[]
   onSignOut: () => void 
 }) {
-  const { todos } = useStores()
-  const router = useRouter()
+  const store = useStores()
   const [newTitle, setNewTitle] = useState('')
   const [initialized, setInitialized] = useState(false)
 
-  // Initialize MobX store with server data on first render
-  if (!initialized && initialTodos.length > 0) {
-    todos.todos = initialTodos
-    setInitialized(true)
-  }
+  // Initialize store with server data on first render
+  useEffect(() => {
+    if (!initialized) {
+      // Load initial todos into the store
+      for (const todo of initialTodos) {
+        store.todo.items.set(todo.id, todo)
+      }
+      setInitialized(true)
+    }
+  }, [initialized, initialTodos, store.todo])
 
-  // Load fresh todos if store is empty
-  if (!initialized && initialTodos.length === 0 && !todos.isLoading) {
-    todos.loadTodos(user.id)
-    setInitialized(true)
-  }
+  // Get todos from store (sorted by createdAt desc)
+  const todos = store.todo.all.slice().sort((a, b) => {
+    const dateA = a.createdAt instanceof Date ? a.createdAt : new Date(a.createdAt)
+    const dateB = b.createdAt instanceof Date ? b.createdAt : new Date(b.createdAt)
+    return dateB.getTime() - dateA.getTime()
+  })
+
+  const completedCount = todos.filter(t => t.completed).length
+  const pendingCount = todos.filter(t => !t.completed).length
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!newTitle.trim()) return
 
     try {
-      await todos.addTodo(newTitle.trim(), user.id)
+      await store.todo.create({
+        title: newTitle.trim(),
+        userId: user.id,
+        completed: false,
+      })
       setNewTitle('')
     } catch {
       // Error is handled by the store
     }
   }
 
-  const handleToggle = async (id: string) => {
+  const handleToggle = async (todo: TodoType) => {
     try {
-      await todos.toggleTodoItem(id, user.id)
+      await store.todo.update(todo.id, { completed: !todo.completed })
     } catch {
       // Error is handled by the store
     }
@@ -156,15 +164,14 @@ const TodoList = observer(function TodoList({
 
   const handleDelete = async (id: string) => {
     try {
-      await todos.deleteTodoItem(id, user.id)
+      await store.todo.delete(id)
     } catch {
       // Error is handled by the store
     }
   }
 
   const handleSignOut = async () => {
-    todos.clear()
-    // Delete user from DB to reset demo state
+    store.clearAll()
     onSignOut()
   }
 
@@ -204,43 +211,43 @@ const TodoList = observer(function TodoList({
         </form>
 
         {/* Error Display */}
-        {todos.error && (
+        {store.todo.error && (
           <div style={styles.errorBox}>
-            <p>{todos.error}</p>
-            <button onClick={() => todos.clearError()} style={styles.dismissButton}>
+            <p>{store.todo.error}</p>
+            <button onClick={() => store.todo.clearError()} style={styles.dismissButton}>
               Dismiss
             </button>
           </div>
         )}
 
         {/* Todo List */}
-        {todos.isLoading && todos.todos.length === 0 ? (
+        {store.todo.isLoading && todos.length === 0 ? (
           <p style={styles.emptyState}>Loading todos...</p>
-        ) : todos.todos.length === 0 ? (
+        ) : todos.length === 0 ? (
           <p style={styles.emptyState}>No todos yet. Add one above!</p>
         ) : (
           <>
             {/* Stats */}
             <div style={styles.stats}>
-              <span>{todos.pendingCount} pending</span>
-              <span>{todos.completedCount} completed</span>
+              <span>{pendingCount} pending</span>
+              <span>{completedCount} completed</span>
             </div>
 
             {/* Todo Items */}
             <ul style={styles.list}>
-              {todos.todos.map((todo) => (
+              {todos.map((todo) => (
                 <li
                   key={todo.id}
                   style={{
                     ...styles.todoItem,
-                    opacity: todos.isPending(todo.id) ? 0.6 : 1,
+                    opacity: store.todo.isPending(todo.id) ? 0.6 : 1,
                   }}
                 >
                   <input
                     type="checkbox"
                     checked={todo.completed}
-                    onChange={() => handleToggle(todo.id)}
-                    disabled={todos.isPending(todo.id)}
+                    onChange={() => handleToggle(todo)}
+                    disabled={store.todo.isPending(todo.id)}
                     style={styles.checkbox}
                   />
                   <span
@@ -254,7 +261,7 @@ const TodoList = observer(function TodoList({
                   </span>
                   <button
                     onClick={() => handleDelete(todo.id)}
-                    disabled={todos.isPending(todo.id)}
+                    disabled={store.todo.isPending(todo.id)}
                     style={styles.deleteButton}
                   >
                     Delete
@@ -268,7 +275,7 @@ const TodoList = observer(function TodoList({
         {/* Footer */}
         <footer style={styles.listFooter}>
           <p>
-            Built with <code>@shogo-ai/sdk</code> + MobX
+            Built with <code>@shogo-ai/sdk</code> + auto-generated stores
           </p>
         </footer>
       </article>
