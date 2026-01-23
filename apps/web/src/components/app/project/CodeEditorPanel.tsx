@@ -203,15 +203,18 @@ function handleEditorWillMount(monaco: Monaco) {
     allowSyntheticDefaultImports: true,
   })
 
-  // Enable semantic validation now that we have ATA
-  // This provides type errors for actual mistakes while ATA handles package types
+  // Disable semantic validation - ATA can't fetch all types (many packages bundle their own)
+  // This prevents red squiggles for missing types while still providing:
+  // - Syntax highlighting
+  // - Syntax error detection
+  // - IntelliSense for packages with @types available (react, react-dom, etc.)
   monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
-    noSemanticValidation: false,
+    noSemanticValidation: true,
     noSyntaxValidation: false,
   })
 
   monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
-    noSemanticValidation: false,
+    noSemanticValidation: true,
     noSyntaxValidation: false,
   })
 
