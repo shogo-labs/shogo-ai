@@ -86,7 +86,7 @@ const eagerCollections: EagerCollectionsConfig = {
   // compositionCollection and layoutTemplateCollection are needed for ComposablePhaseView
   // to render workspace layouts (e.g., when AI calls set_workspace)
   componentBuilder: ['rendererBindingCollection', 'compositionCollection', 'layoutTemplateCollection'],
-  billing: ['subscriptionCollection'],
+  billing: ['subscriptionCollection', 'creditLedgerCollection'],
   platformFeatures: ['featureSessionCollection'],
 
   // Deferred - don't load on mount (empty array)

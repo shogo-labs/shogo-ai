@@ -13,6 +13,27 @@ import type {
 // Base API URL - use relative path (proxied by nginx in k8s, Vite in dev)
 const API_BASE = import.meta.env.VITE_API_URL || ''
 
+// Model name to route path mapping (kebab-case, plural)
+const MODEL_ROUTE_MAP: Record<string, string> = {
+  // Studio-Core
+  Workspace: 'workspaces',
+  Project: 'projects',
+  Folder: 'folders',
+  Member: 'members',
+  Invitation: 'invitations',
+  StarredProject: 'starred-projects',
+  Notification: 'notifications',
+  BillingAccount: 'billing-accounts',
+  // Billing
+  Subscription: 'subscriptions',
+  CreditLedger: 'credit-ledgers',
+  UsageEvent: 'usage-events',
+  // Studio-Chat
+  ChatSession: 'chat-sessions',
+  ChatMessage: 'chat-messages',
+  ToolCallLog: 'tool-call-logs',
+}
+
 export class APIPersistence implements IPersistenceService {
   private userId: string | null = null
 
@@ -233,19 +254,7 @@ export class APIPersistence implements IPersistenceService {
   private getCollectionEndpoint(ctx: PersistenceContext): string | null {
     const { modelName, filter } = ctx
 
-    // Model name to route path mapping (kebab-case, plural)
-    const routeMap: Record<string, string> = {
-      Workspace: 'workspaces',
-      Project: 'projects',
-      Folder: 'folders',
-      Member: 'members',
-      Invitation: 'invitations',
-      StarredProject: 'starred-projects',
-      Notification: 'notifications',
-      BillingAccount: 'billing-accounts',
-    }
-
-    const routePath = routeMap[modelName]
+    const routePath = MODEL_ROUTE_MAP[modelName]
     if (!routePath) {
       return null
     }
@@ -279,19 +288,7 @@ export class APIPersistence implements IPersistenceService {
   private getEntityEndpoint(ctx: EntityContext): string | null {
     const { modelName, entityId } = ctx
 
-    // Model name to route path mapping (kebab-case, plural)
-    const routeMap: Record<string, string> = {
-      Workspace: 'workspaces',
-      Project: 'projects',
-      Folder: 'folders',
-      Member: 'members',
-      Invitation: 'invitations',
-      StarredProject: 'starred-projects',
-      Notification: 'notifications',
-      BillingAccount: 'billing-accounts',
-    }
-
-    const routePath = routeMap[modelName]
+    const routePath = MODEL_ROUTE_MAP[modelName]
     if (!routePath) {
       return null
     }

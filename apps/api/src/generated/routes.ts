@@ -39,34 +39,12 @@ export interface RouteHooksConfig {
   Invitation?: ModelHooks
   Folder?: ModelHooks
   Notification?: ModelHooks
-  // Billing
   Subscription?: ModelHooks
   CreditLedger?: ModelHooks
   UsageEvent?: ModelHooks
-  // Chat
   ChatSession?: ModelHooks
   ChatMessage?: ModelHooks
   ToolCallLog?: ModelHooks
-  // Platform Features
-  FeatureSession?: ModelHooks
-  Requirement?: ModelHooks
-  DesignDecision?: ModelHooks
-  ClassificationDecision?: ModelHooks
-  AnalysisFinding?: ModelHooks
-  IntegrationPoint?: ModelHooks
-  TestCase?: ModelHooks
-  ImplementationTask?: ModelHooks
-  TaskDependency?: ModelHooks
-  TestSpecification?: ModelHooks
-  ImplementationRun?: ModelHooks
-  TaskExecution?: ModelHooks
-  // Component Builder
-  ComponentDefinition?: ModelHooks
-  Registry?: ModelHooks
-  RendererBinding?: ModelHooks
-  LayoutTemplate?: ModelHooks
-  Composition?: ModelHooks
-  ComponentSpec?: ModelHooks
 }
 
 let hooksConfig: RouteHooksConfig = {}
@@ -1551,6 +1529,1110 @@ function createNotificationRoutes(): Hono {
 }
 
 // ============================================================================
+// Subscription Routes
+// ============================================================================
+
+function createSubscriptionRoutes(): Hono {
+  const router = new Hono()
+  const prisma = getPrisma()
+  const hooks = hooksConfig.Subscription || {}
+
+  const buildContext = (c: any, body?: any): RouteHookContext => ({
+    body: body || {},
+    params: c.req.param() || {},
+    query: Object.fromEntries(new URL(c.req.url).searchParams),
+    userId: c.get("auth")?.userId,
+    prisma,
+  })
+
+  // GET / - List all
+  router.get("/", async (c) => {
+    try {
+      const ctx = buildContext(c)
+      let where: any = {}
+      let include: any = undefined
+
+      // Apply beforeList hook
+      if (hooks.beforeList) {
+        const result = await hooks.beforeList(ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          where = result.data.where || where
+          include = result.data.include || include
+        }
+      }
+
+      // Query params are handled by hooks, not directly passed to Prisma
+      // Use hooks.beforeList to convert query params to Prisma where clauses
+      const query = ctx.query
+
+      const items = await prisma.subscription.findMany({
+        where,
+        include,
+        take: query.limit ? parseInt(query.limit) : undefined,
+        skip: query.offset ? parseInt(query.offset) : undefined,
+      })
+
+      return c.json({ ok: true, items })
+    } catch (error: any) {
+      console.error("[Subscription] List error:", error)
+      return c.json({ error: { code: "list_failed", message: error.message } }, 500)
+    }
+  })
+
+  // GET /:id - Get by ID
+  router.get("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeGet hook
+      if (hooks.beforeGet) {
+        const result = await hooks.beforeGet(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, result.error?.code === "not_found" ? 404 : 400)
+        }
+      }
+
+      const item = await prisma.subscription.findUnique({
+        where: { id },
+      })
+
+      if (!item) {
+        return c.json({ error: { code: "not_found", message: "Subscription not found" } }, 404)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[Subscription] Get error:", error)
+      return c.json({ error: { code: "get_failed", message: error.message } }, 500)
+    }
+  })
+
+  // POST / - Create
+  router.post("/", async (c) => {
+    try {
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeCreate hook
+      if (hooks.beforeCreate) {
+        const result = await hooks.beforeCreate(body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.subscription.create({
+        data: body,
+      })
+
+      // Apply afterCreate hook
+      if (hooks.afterCreate) {
+        await hooks.afterCreate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item }, 201)
+    } catch (error: any) {
+      console.error("[Subscription] Create error:", error)
+      return c.json({ error: { code: "create_failed", message: error.message } }, 500)
+    }
+  })
+
+  // PATCH /:id - Update
+  router.patch("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeUpdate hook
+      if (hooks.beforeUpdate) {
+        const result = await hooks.beforeUpdate(id, body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.subscription.update({
+        where: { id },
+        data: body,
+      })
+
+      // Apply afterUpdate hook
+      if (hooks.afterUpdate) {
+        await hooks.afterUpdate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[Subscription] Update error:", error)
+      return c.json({ error: { code: "update_failed", message: error.message } }, 500)
+    }
+  })
+
+  // DELETE /:id - Delete
+  router.delete("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeDelete hook
+      if (hooks.beforeDelete) {
+        const result = await hooks.beforeDelete(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+      }
+
+      await prisma.subscription.delete({
+        where: { id },
+      })
+
+      // Apply afterDelete hook
+      if (hooks.afterDelete) {
+        await hooks.afterDelete(id, ctx)
+      }
+
+      return c.json({ ok: true })
+    } catch (error: any) {
+      console.error("[Subscription] Delete error:", error)
+      return c.json({ error: { code: "delete_failed", message: error.message } }, 500)
+    }
+  })
+
+  return router
+}
+
+// ============================================================================
+// CreditLedger Routes
+// ============================================================================
+
+function createCreditLedgerRoutes(): Hono {
+  const router = new Hono()
+  const prisma = getPrisma()
+  const hooks = hooksConfig.CreditLedger || {}
+
+  const buildContext = (c: any, body?: any): RouteHookContext => ({
+    body: body || {},
+    params: c.req.param() || {},
+    query: Object.fromEntries(new URL(c.req.url).searchParams),
+    userId: c.get("auth")?.userId,
+    prisma,
+  })
+
+  // GET / - List all
+  router.get("/", async (c) => {
+    try {
+      const ctx = buildContext(c)
+      let where: any = {}
+      let include: any = undefined
+
+      // Apply beforeList hook
+      if (hooks.beforeList) {
+        const result = await hooks.beforeList(ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          where = result.data.where || where
+          include = result.data.include || include
+        }
+      }
+
+      // Query params are handled by hooks, not directly passed to Prisma
+      // Use hooks.beforeList to convert query params to Prisma where clauses
+      const query = ctx.query
+
+      const items = await prisma.creditLedger.findMany({
+        where,
+        include,
+        take: query.limit ? parseInt(query.limit) : undefined,
+        skip: query.offset ? parseInt(query.offset) : undefined,
+      })
+
+      return c.json({ ok: true, items })
+    } catch (error: any) {
+      console.error("[CreditLedger] List error:", error)
+      return c.json({ error: { code: "list_failed", message: error.message } }, 500)
+    }
+  })
+
+  // GET /:id - Get by ID
+  router.get("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeGet hook
+      if (hooks.beforeGet) {
+        const result = await hooks.beforeGet(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, result.error?.code === "not_found" ? 404 : 400)
+        }
+      }
+
+      const item = await prisma.creditLedger.findUnique({
+        where: { id },
+      })
+
+      if (!item) {
+        return c.json({ error: { code: "not_found", message: "CreditLedger not found" } }, 404)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[CreditLedger] Get error:", error)
+      return c.json({ error: { code: "get_failed", message: error.message } }, 500)
+    }
+  })
+
+  // POST / - Create
+  router.post("/", async (c) => {
+    try {
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeCreate hook
+      if (hooks.beforeCreate) {
+        const result = await hooks.beforeCreate(body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.creditLedger.create({
+        data: body,
+      })
+
+      // Apply afterCreate hook
+      if (hooks.afterCreate) {
+        await hooks.afterCreate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item }, 201)
+    } catch (error: any) {
+      console.error("[CreditLedger] Create error:", error)
+      return c.json({ error: { code: "create_failed", message: error.message } }, 500)
+    }
+  })
+
+  // PATCH /:id - Update
+  router.patch("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeUpdate hook
+      if (hooks.beforeUpdate) {
+        const result = await hooks.beforeUpdate(id, body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.creditLedger.update({
+        where: { id },
+        data: body,
+      })
+
+      // Apply afterUpdate hook
+      if (hooks.afterUpdate) {
+        await hooks.afterUpdate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[CreditLedger] Update error:", error)
+      return c.json({ error: { code: "update_failed", message: error.message } }, 500)
+    }
+  })
+
+  // DELETE /:id - Delete
+  router.delete("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeDelete hook
+      if (hooks.beforeDelete) {
+        const result = await hooks.beforeDelete(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+      }
+
+      await prisma.creditLedger.delete({
+        where: { id },
+      })
+
+      // Apply afterDelete hook
+      if (hooks.afterDelete) {
+        await hooks.afterDelete(id, ctx)
+      }
+
+      return c.json({ ok: true })
+    } catch (error: any) {
+      console.error("[CreditLedger] Delete error:", error)
+      return c.json({ error: { code: "delete_failed", message: error.message } }, 500)
+    }
+  })
+
+  return router
+}
+
+// ============================================================================
+// UsageEvent Routes
+// ============================================================================
+
+function createUsageEventRoutes(): Hono {
+  const router = new Hono()
+  const prisma = getPrisma()
+  const hooks = hooksConfig.UsageEvent || {}
+
+  const buildContext = (c: any, body?: any): RouteHookContext => ({
+    body: body || {},
+    params: c.req.param() || {},
+    query: Object.fromEntries(new URL(c.req.url).searchParams),
+    userId: c.get("auth")?.userId,
+    prisma,
+  })
+
+  // GET / - List all
+  router.get("/", async (c) => {
+    try {
+      const ctx = buildContext(c)
+      let where: any = {}
+      let include: any = undefined
+
+      // Apply beforeList hook
+      if (hooks.beforeList) {
+        const result = await hooks.beforeList(ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          where = result.data.where || where
+          include = result.data.include || include
+        }
+      }
+
+      // Query params are handled by hooks, not directly passed to Prisma
+      // Use hooks.beforeList to convert query params to Prisma where clauses
+      const query = ctx.query
+
+      const items = await prisma.usageEvent.findMany({
+        where,
+        include,
+        take: query.limit ? parseInt(query.limit) : undefined,
+        skip: query.offset ? parseInt(query.offset) : undefined,
+      })
+
+      return c.json({ ok: true, items })
+    } catch (error: any) {
+      console.error("[UsageEvent] List error:", error)
+      return c.json({ error: { code: "list_failed", message: error.message } }, 500)
+    }
+  })
+
+  // GET /:id - Get by ID
+  router.get("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeGet hook
+      if (hooks.beforeGet) {
+        const result = await hooks.beforeGet(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, result.error?.code === "not_found" ? 404 : 400)
+        }
+      }
+
+      const item = await prisma.usageEvent.findUnique({
+        where: { id },
+      })
+
+      if (!item) {
+        return c.json({ error: { code: "not_found", message: "UsageEvent not found" } }, 404)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[UsageEvent] Get error:", error)
+      return c.json({ error: { code: "get_failed", message: error.message } }, 500)
+    }
+  })
+
+  // POST / - Create
+  router.post("/", async (c) => {
+    try {
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeCreate hook
+      if (hooks.beforeCreate) {
+        const result = await hooks.beforeCreate(body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.usageEvent.create({
+        data: body,
+      })
+
+      // Apply afterCreate hook
+      if (hooks.afterCreate) {
+        await hooks.afterCreate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item }, 201)
+    } catch (error: any) {
+      console.error("[UsageEvent] Create error:", error)
+      return c.json({ error: { code: "create_failed", message: error.message } }, 500)
+    }
+  })
+
+  // PATCH /:id - Update
+  router.patch("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeUpdate hook
+      if (hooks.beforeUpdate) {
+        const result = await hooks.beforeUpdate(id, body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.usageEvent.update({
+        where: { id },
+        data: body,
+      })
+
+      // Apply afterUpdate hook
+      if (hooks.afterUpdate) {
+        await hooks.afterUpdate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[UsageEvent] Update error:", error)
+      return c.json({ error: { code: "update_failed", message: error.message } }, 500)
+    }
+  })
+
+  // DELETE /:id - Delete
+  router.delete("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeDelete hook
+      if (hooks.beforeDelete) {
+        const result = await hooks.beforeDelete(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+      }
+
+      await prisma.usageEvent.delete({
+        where: { id },
+      })
+
+      // Apply afterDelete hook
+      if (hooks.afterDelete) {
+        await hooks.afterDelete(id, ctx)
+      }
+
+      return c.json({ ok: true })
+    } catch (error: any) {
+      console.error("[UsageEvent] Delete error:", error)
+      return c.json({ error: { code: "delete_failed", message: error.message } }, 500)
+    }
+  })
+
+  return router
+}
+
+// ============================================================================
+// ChatSession Routes
+// ============================================================================
+
+function createChatSessionRoutes(): Hono {
+  const router = new Hono()
+  const prisma = getPrisma()
+  const hooks = hooksConfig.ChatSession || {}
+
+  const buildContext = (c: any, body?: any): RouteHookContext => ({
+    body: body || {},
+    params: c.req.param() || {},
+    query: Object.fromEntries(new URL(c.req.url).searchParams),
+    userId: c.get("auth")?.userId,
+    prisma,
+  })
+
+  // GET / - List all
+  router.get("/", async (c) => {
+    try {
+      const ctx = buildContext(c)
+      let where: any = {}
+      let include: any = undefined
+
+      // Apply beforeList hook
+      if (hooks.beforeList) {
+        const result = await hooks.beforeList(ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          where = result.data.where || where
+          include = result.data.include || include
+        }
+      }
+
+      // Query params are handled by hooks, not directly passed to Prisma
+      // Use hooks.beforeList to convert query params to Prisma where clauses
+      const query = ctx.query
+
+      const items = await prisma.chatSession.findMany({
+        where,
+        include,
+        take: query.limit ? parseInt(query.limit) : undefined,
+        skip: query.offset ? parseInt(query.offset) : undefined,
+      })
+
+      return c.json({ ok: true, items })
+    } catch (error: any) {
+      console.error("[ChatSession] List error:", error)
+      return c.json({ error: { code: "list_failed", message: error.message } }, 500)
+    }
+  })
+
+  // GET /:id - Get by ID
+  router.get("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeGet hook
+      if (hooks.beforeGet) {
+        const result = await hooks.beforeGet(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, result.error?.code === "not_found" ? 404 : 400)
+        }
+      }
+
+      const item = await prisma.chatSession.findUnique({
+        where: { id },
+      })
+
+      if (!item) {
+        return c.json({ error: { code: "not_found", message: "ChatSession not found" } }, 404)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[ChatSession] Get error:", error)
+      return c.json({ error: { code: "get_failed", message: error.message } }, 500)
+    }
+  })
+
+  // POST / - Create
+  router.post("/", async (c) => {
+    try {
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeCreate hook
+      if (hooks.beforeCreate) {
+        const result = await hooks.beforeCreate(body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.chatSession.create({
+        data: body,
+      })
+
+      // Apply afterCreate hook
+      if (hooks.afterCreate) {
+        await hooks.afterCreate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item }, 201)
+    } catch (error: any) {
+      console.error("[ChatSession] Create error:", error)
+      return c.json({ error: { code: "create_failed", message: error.message } }, 500)
+    }
+  })
+
+  // PATCH /:id - Update
+  router.patch("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeUpdate hook
+      if (hooks.beforeUpdate) {
+        const result = await hooks.beforeUpdate(id, body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.chatSession.update({
+        where: { id },
+        data: body,
+      })
+
+      // Apply afterUpdate hook
+      if (hooks.afterUpdate) {
+        await hooks.afterUpdate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[ChatSession] Update error:", error)
+      return c.json({ error: { code: "update_failed", message: error.message } }, 500)
+    }
+  })
+
+  // DELETE /:id - Delete
+  router.delete("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeDelete hook
+      if (hooks.beforeDelete) {
+        const result = await hooks.beforeDelete(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+      }
+
+      await prisma.chatSession.delete({
+        where: { id },
+      })
+
+      // Apply afterDelete hook
+      if (hooks.afterDelete) {
+        await hooks.afterDelete(id, ctx)
+      }
+
+      return c.json({ ok: true })
+    } catch (error: any) {
+      console.error("[ChatSession] Delete error:", error)
+      return c.json({ error: { code: "delete_failed", message: error.message } }, 500)
+    }
+  })
+
+  return router
+}
+
+// ============================================================================
+// ChatMessage Routes
+// ============================================================================
+
+function createChatMessageRoutes(): Hono {
+  const router = new Hono()
+  const prisma = getPrisma()
+  const hooks = hooksConfig.ChatMessage || {}
+
+  const buildContext = (c: any, body?: any): RouteHookContext => ({
+    body: body || {},
+    params: c.req.param() || {},
+    query: Object.fromEntries(new URL(c.req.url).searchParams),
+    userId: c.get("auth")?.userId,
+    prisma,
+  })
+
+  // GET / - List all
+  router.get("/", async (c) => {
+    try {
+      const ctx = buildContext(c)
+      let where: any = {}
+      let include: any = undefined
+
+      // Apply beforeList hook
+      if (hooks.beforeList) {
+        const result = await hooks.beforeList(ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          where = result.data.where || where
+          include = result.data.include || include
+        }
+      }
+
+      // Query params are handled by hooks, not directly passed to Prisma
+      // Use hooks.beforeList to convert query params to Prisma where clauses
+      const query = ctx.query
+
+      const items = await prisma.chatMessage.findMany({
+        where,
+        include,
+        take: query.limit ? parseInt(query.limit) : undefined,
+        skip: query.offset ? parseInt(query.offset) : undefined,
+      })
+
+      return c.json({ ok: true, items })
+    } catch (error: any) {
+      console.error("[ChatMessage] List error:", error)
+      return c.json({ error: { code: "list_failed", message: error.message } }, 500)
+    }
+  })
+
+  // GET /:id - Get by ID
+  router.get("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeGet hook
+      if (hooks.beforeGet) {
+        const result = await hooks.beforeGet(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, result.error?.code === "not_found" ? 404 : 400)
+        }
+      }
+
+      const item = await prisma.chatMessage.findUnique({
+        where: { id },
+      })
+
+      if (!item) {
+        return c.json({ error: { code: "not_found", message: "ChatMessage not found" } }, 404)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[ChatMessage] Get error:", error)
+      return c.json({ error: { code: "get_failed", message: error.message } }, 500)
+    }
+  })
+
+  // POST / - Create
+  router.post("/", async (c) => {
+    try {
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeCreate hook
+      if (hooks.beforeCreate) {
+        const result = await hooks.beforeCreate(body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.chatMessage.create({
+        data: body,
+      })
+
+      // Apply afterCreate hook
+      if (hooks.afterCreate) {
+        await hooks.afterCreate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item }, 201)
+    } catch (error: any) {
+      console.error("[ChatMessage] Create error:", error)
+      return c.json({ error: { code: "create_failed", message: error.message } }, 500)
+    }
+  })
+
+  // PATCH /:id - Update
+  router.patch("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeUpdate hook
+      if (hooks.beforeUpdate) {
+        const result = await hooks.beforeUpdate(id, body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.chatMessage.update({
+        where: { id },
+        data: body,
+      })
+
+      // Apply afterUpdate hook
+      if (hooks.afterUpdate) {
+        await hooks.afterUpdate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[ChatMessage] Update error:", error)
+      return c.json({ error: { code: "update_failed", message: error.message } }, 500)
+    }
+  })
+
+  // DELETE /:id - Delete
+  router.delete("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeDelete hook
+      if (hooks.beforeDelete) {
+        const result = await hooks.beforeDelete(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+      }
+
+      await prisma.chatMessage.delete({
+        where: { id },
+      })
+
+      // Apply afterDelete hook
+      if (hooks.afterDelete) {
+        await hooks.afterDelete(id, ctx)
+      }
+
+      return c.json({ ok: true })
+    } catch (error: any) {
+      console.error("[ChatMessage] Delete error:", error)
+      return c.json({ error: { code: "delete_failed", message: error.message } }, 500)
+    }
+  })
+
+  return router
+}
+
+// ============================================================================
+// ToolCallLog Routes
+// ============================================================================
+
+function createToolCallLogRoutes(): Hono {
+  const router = new Hono()
+  const prisma = getPrisma()
+  const hooks = hooksConfig.ToolCallLog || {}
+
+  const buildContext = (c: any, body?: any): RouteHookContext => ({
+    body: body || {},
+    params: c.req.param() || {},
+    query: Object.fromEntries(new URL(c.req.url).searchParams),
+    userId: c.get("auth")?.userId,
+    prisma,
+  })
+
+  // GET / - List all
+  router.get("/", async (c) => {
+    try {
+      const ctx = buildContext(c)
+      let where: any = {}
+      let include: any = undefined
+
+      // Apply beforeList hook
+      if (hooks.beforeList) {
+        const result = await hooks.beforeList(ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          where = result.data.where || where
+          include = result.data.include || include
+        }
+      }
+
+      // Query params are handled by hooks, not directly passed to Prisma
+      // Use hooks.beforeList to convert query params to Prisma where clauses
+      const query = ctx.query
+
+      const items = await prisma.toolCallLog.findMany({
+        where,
+        include,
+        take: query.limit ? parseInt(query.limit) : undefined,
+        skip: query.offset ? parseInt(query.offset) : undefined,
+      })
+
+      return c.json({ ok: true, items })
+    } catch (error: any) {
+      console.error("[ToolCallLog] List error:", error)
+      return c.json({ error: { code: "list_failed", message: error.message } }, 500)
+    }
+  })
+
+  // GET /:id - Get by ID
+  router.get("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeGet hook
+      if (hooks.beforeGet) {
+        const result = await hooks.beforeGet(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, result.error?.code === "not_found" ? 404 : 400)
+        }
+      }
+
+      const item = await prisma.toolCallLog.findUnique({
+        where: { id },
+      })
+
+      if (!item) {
+        return c.json({ error: { code: "not_found", message: "ToolCallLog not found" } }, 404)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[ToolCallLog] Get error:", error)
+      return c.json({ error: { code: "get_failed", message: error.message } }, 500)
+    }
+  })
+
+  // POST / - Create
+  router.post("/", async (c) => {
+    try {
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeCreate hook
+      if (hooks.beforeCreate) {
+        const result = await hooks.beforeCreate(body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.toolCallLog.create({
+        data: body,
+      })
+
+      // Apply afterCreate hook
+      if (hooks.afterCreate) {
+        await hooks.afterCreate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item }, 201)
+    } catch (error: any) {
+      console.error("[ToolCallLog] Create error:", error)
+      return c.json({ error: { code: "create_failed", message: error.message } }, 500)
+    }
+  })
+
+  // PATCH /:id - Update
+  router.patch("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      let body = await c.req.json()
+      const ctx = buildContext(c, body)
+
+      // Apply beforeUpdate hook
+      if (hooks.beforeUpdate) {
+        const result = await hooks.beforeUpdate(id, body, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+        if (result?.data) {
+          body = result.data
+        }
+      }
+
+      const item = await prisma.toolCallLog.update({
+        where: { id },
+        data: body,
+      })
+
+      // Apply afterUpdate hook
+      if (hooks.afterUpdate) {
+        await hooks.afterUpdate(item, ctx)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[ToolCallLog] Update error:", error)
+      return c.json({ error: { code: "update_failed", message: error.message } }, 500)
+    }
+  })
+
+  // DELETE /:id - Delete
+  router.delete("/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const ctx = buildContext(c)
+
+      // Apply beforeDelete hook
+      if (hooks.beforeDelete) {
+        const result = await hooks.beforeDelete(id, ctx)
+        if (result && !result.ok) {
+          return c.json({ error: result.error }, 400)
+        }
+      }
+
+      await prisma.toolCallLog.delete({
+        where: { id },
+      })
+
+      // Apply afterDelete hook
+      if (hooks.afterDelete) {
+        await hooks.afterDelete(id, ctx)
+      }
+
+      return c.json({ ok: true })
+    } catch (error: any) {
+      console.error("[ToolCallLog] Delete error:", error)
+      return c.json({ error: { code: "delete_failed", message: error.message } }, 500)
+    }
+  })
+
+  return router
+}
+
+// ============================================================================
 // Main Router Factory
 // ============================================================================
 
@@ -1588,6 +2670,12 @@ export function createGeneratedRoutes(options: CreateRoutesOptions = {}): Hono {
   router.route("/invitations", createInvitationRoutes())
   router.route("/folders", createFolderRoutes())
   router.route("/notifications", createNotificationRoutes())
+  router.route("/subscriptions", createSubscriptionRoutes())
+  router.route("/credit-ledgers", createCreditLedgerRoutes())
+  router.route("/usage-events", createUsageEventRoutes())
+  router.route("/chat-sessions", createChatSessionRoutes())
+  router.route("/chat-messages", createChatMessageRoutes())
+  router.route("/tool-call-logs", createToolCallLogRoutes())
 
   // Apply custom routes if provided
   if (options.customRoutes) {

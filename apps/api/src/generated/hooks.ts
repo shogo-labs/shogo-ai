@@ -63,18 +63,128 @@ const workspaceHooks: ModelHooks = {
 
 const projectHooks: ModelHooks = {
   /**
-   * Include workspace and folder in list responses
+   * Filter projects to only those the user has access to via workspace membership.
+   * Include workspace and folder in list responses.
    */
   beforeList: async (ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Filter by workspaceId if provided, otherwise show all accessible projects
+    const workspaceId = ctx.query.workspaceId
+
+    if (workspaceId) {
+      // Verify user has access to this workspace
+      const membership = await ctx.prisma.member.findFirst({
+        where: { userId, workspaceId },
+      })
+
+      if (!membership) {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Access denied to this workspace" },
+        }
+      }
+
+      return {
+        ok: true,
+        data: {
+          where: { workspaceId },
+          include: { workspace: true, folder: true },
+        },
+      }
+    }
+
+    // No workspaceId provided - return projects from all workspaces user is a member of
     return {
       ok: true,
       data: {
-        include: {
-          workspace: true,
-          folder: true,
+        where: {
+          workspace: {
+            members: {
+              some: { userId },
+            },
+          },
         },
+        include: { workspace: true, folder: true },
       },
     }
+  },
+
+  /**
+   * Verify user has access to the project's workspace before returning
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Get project and check workspace membership
+    const project = await ctx.prisma.project.findUnique({
+      where: { id },
+      include: { workspace: { include: { members: true } } },
+    })
+
+    if (!project) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Project not found" },
+      }
+    }
+
+    const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this project" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user can create projects in the target workspace
+   */
+  beforeCreate: async (input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const workspaceId = input.workspaceId
+    if (!workspaceId) {
+      return {
+        ok: false,
+        error: { code: "bad_request", message: "workspaceId is required" },
+      }
+    }
+
+    // Verify user has access to create in this workspace (member or higher)
+    const membership = await ctx.prisma.member.findFirst({
+      where: { userId, workspaceId },
+    })
+
+    if (!membership) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this workspace" },
+      }
+    }
+
+    return { ok: true }
   },
 }
 
@@ -84,16 +194,54 @@ const projectHooks: ModelHooks = {
 
 const folderHooks: ModelHooks = {
   /**
-   * Include parent and workspace in list responses
+   * Filter folders to only those in workspaces the user has access to.
+   * Include parent and workspace in list responses.
    */
   beforeList: async (ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const workspaceId = ctx.query.workspaceId
+
+    if (workspaceId) {
+      // Verify user has access to this workspace
+      const membership = await ctx.prisma.member.findFirst({
+        where: { userId, workspaceId },
+      })
+
+      if (!membership) {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Access denied to this workspace" },
+        }
+      }
+
+      return {
+        ok: true,
+        data: {
+          where: { workspaceId },
+          include: { parent: true, workspace: true },
+        },
+      }
+    }
+
+    // No workspaceId - return folders from all accessible workspaces
     return {
       ok: true,
       data: {
-        include: {
-          parent: true,
-          workspace: true,
+        where: {
+          workspace: {
+            members: {
+              some: { userId },
+            },
+          },
         },
+        include: { parent: true, workspace: true },
       },
     }
   },
@@ -316,10 +464,337 @@ const notificationHooks: ModelHooks = {
 }
 
 // ============================================================================
+// Subscription Hooks
+// ============================================================================
+
+const subscriptionHooks: ModelHooks = {
+  /**
+   * Filter subscriptions by workspaceId - user must have access
+   */
+  beforeList: async (ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const workspaceId = ctx.query.workspaceId
+    if (!workspaceId) {
+      // Without workspaceId, return subscriptions for all accessible workspaces
+      return {
+        ok: true,
+        data: {
+          where: {
+            workspace: {
+              members: { some: { userId } },
+            },
+          },
+          include: { workspace: true },
+        },
+      }
+    }
+
+    // Verify user has access to this workspace
+    const membership = await ctx.prisma.member.findFirst({
+      where: { userId, workspaceId },
+    })
+
+    if (!membership) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this workspace" },
+      }
+    }
+
+    return {
+      ok: true,
+      data: {
+        where: { workspaceId },
+        include: { workspace: true },
+      },
+    }
+  },
+
+  /**
+   * Include workspace in get response - verify access
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Get subscription and verify workspace access
+    const subscription = await ctx.prisma.subscription.findUnique({
+      where: { id },
+      include: { workspace: { include: { members: true } } },
+    })
+
+    if (!subscription) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Subscription not found" },
+      }
+    }
+
+    const hasAccess = subscription.workspace.members.some((m: any) => m.userId === userId)
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    return {
+      ok: true,
+      data: { include: { workspace: true } },
+    }
+  },
+}
+
+// ============================================================================
+// CreditLedger Hooks
+// ============================================================================
+
+const creditLedgerHooks: ModelHooks = {
+  /**
+   * Filter credit ledgers by workspaceId - user must have access
+   */
+  beforeList: async (ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const workspaceId = ctx.query.workspaceId
+    if (!workspaceId) {
+      // Return credit ledgers for all accessible workspaces
+      return {
+        ok: true,
+        data: {
+          where: {
+            workspace: {
+              members: { some: { userId } },
+            },
+          },
+          include: { workspace: true },
+        },
+      }
+    }
+
+    // Verify user has access to this workspace
+    const membership = await ctx.prisma.member.findFirst({
+      where: { userId, workspaceId },
+    })
+
+    if (!membership) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this workspace" },
+      }
+    }
+
+    return {
+      ok: true,
+      data: {
+        where: { workspaceId },
+        include: { workspace: true },
+      },
+    }
+  },
+}
+
+// ============================================================================
+// UsageEvent Hooks
+// ============================================================================
+
+const usageEventHooks: ModelHooks = {
+  /**
+   * Filter usage events by workspaceId - user must have access
+   */
+  beforeList: async (ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const { workspaceId, projectId, memberId } = ctx.query
+    const where: Record<string, any> = {}
+
+    if (workspaceId) {
+      // Verify user has access to this workspace
+      const membership = await ctx.prisma.member.findFirst({
+        where: { userId, workspaceId },
+      })
+
+      if (!membership) {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Access denied to this workspace" },
+        }
+      }
+      where.workspaceId = workspaceId
+    } else {
+      // Filter to accessible workspaces only
+      where.workspace = {
+        members: { some: { userId } },
+      }
+    }
+
+    if (projectId) where.projectId = projectId
+    if (memberId) where.memberId = memberId
+
+    return {
+      ok: true,
+      data: {
+        where,
+        include: { workspace: true, project: true },
+        orderBy: { createdAt: 'desc' },
+      },
+    }
+  },
+}
+
+// ============================================================================
+// ChatSession Hooks
+// ============================================================================
+
+const chatSessionHooks: ModelHooks = {
+  /**
+   * Filter chat sessions by contextType and contextId (projectId)
+   */
+  beforeList: async (ctx) => {
+    const { contextType, contextId, projectId } = ctx.query
+    const where: Record<string, any> = {}
+
+    if (contextType) where.contextType = contextType
+    if (contextId) where.contextId = contextId
+    if (projectId) where.contextId = projectId
+
+    return {
+      ok: true,
+      data: {
+        where,
+        include: {
+          project: true,
+        },
+        orderBy: { lastActiveAt: 'desc' },
+      },
+    }
+  },
+
+  /**
+   * Set default values for new chat sessions
+   */
+  beforeCreate: async (input, ctx) => {
+    // Set default inferred name if not provided
+    if (!input.inferredName) {
+      input.inferredName = input.name || 'New Chat'
+    }
+
+    // Set default context type
+    if (!input.contextType) {
+      input.contextType = 'general'
+    }
+
+    return { ok: true, data: input }
+  },
+}
+
+// ============================================================================
+// ChatMessage Hooks
+// ============================================================================
+
+const chatMessageHooks: ModelHooks = {
+  /**
+   * Filter messages by sessionId
+   */
+  beforeList: async (ctx) => {
+    const sessionId = ctx.query.sessionId
+    if (!sessionId) {
+      return {
+        ok: false,
+        error: {
+          code: "missing_session_id",
+          message: "sessionId query param required",
+        },
+      }
+    }
+
+    return {
+      ok: true,
+      data: {
+        where: { sessionId },
+        include: { session: true },
+        orderBy: { createdAt: 'asc' },
+      },
+    }
+  },
+
+  /**
+   * Update session lastActiveAt when message is created
+   */
+  afterCreate: async (message, ctx) => {
+    await ctx.prisma.chatSession.update({
+      where: { id: message.sessionId },
+      data: { lastActiveAt: new Date() },
+    })
+  },
+}
+
+// ============================================================================
+// ToolCallLog Hooks
+// ============================================================================
+
+const toolCallLogHooks: ModelHooks = {
+  /**
+   * Filter tool calls by chatSessionId or messageId
+   */
+  beforeList: async (ctx) => {
+    const { chatSessionId, messageId } = ctx.query
+    const where: Record<string, any> = {}
+
+    if (chatSessionId) where.chatSessionId = chatSessionId
+    if (messageId) where.messageId = messageId
+
+    if (!chatSessionId && !messageId) {
+      return {
+        ok: false,
+        error: {
+          code: "missing_filter",
+          message: "chatSessionId or messageId query param required",
+        },
+      }
+    }
+
+    return {
+      ok: true,
+      data: {
+        where,
+        include: { chatSession: true },
+        orderBy: { createdAt: 'asc' },
+      },
+    }
+  },
+}
+
+// ============================================================================
 // Export Combined Hooks Config
 // ============================================================================
 
 export const routeHooks: RouteHooksConfig = {
+  // Studio-Core
   Workspace: workspaceHooks,
   Project: projectHooks,
   Folder: folderHooks,
@@ -327,6 +802,14 @@ export const routeHooks: RouteHooksConfig = {
   Member: memberHooks,
   Invitation: invitationHooks,
   Notification: notificationHooks,
+  // Billing
+  Subscription: subscriptionHooks,
+  CreditLedger: creditLedgerHooks,
+  UsageEvent: usageEventHooks,
+  // Studio-Chat
+  ChatSession: chatSessionHooks,
+  ChatMessage: chatMessageHooks,
+  ToolCallLog: toolCallLogHooks,
 }
 
 export default routeHooks

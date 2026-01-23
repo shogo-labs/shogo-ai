@@ -31,6 +31,8 @@ import { createRuntimeManager, type IRuntimeManager } from './lib/runtime'
 import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
+// Auth middleware for generated routes
+import { authMiddleware, requireAuth } from './middleware/auth'
 
 // Runtime manager singleton for project Vite runtimes
 let runtimeManager: IRuntimeManager | null = null
@@ -2788,6 +2790,14 @@ app.post('/api/webhooks/stripe', async (c) => {
 // =============================================================================
 // Generated API routes (v2) - Auto-generated from Prisma schema with hooks
 // =============================================================================
+
+// Apply auth middleware to extract session for all v2 routes
+// This makes ctx.userId available in route hooks for authorization
+app.use('/api/v2/*', authMiddleware)
+
+// Require authentication for all v2 routes
+// Unauthenticated requests get 401 Unauthorized
+app.use('/api/v2/*', requireAuth)
 
 // Mount generated routes at /api/v2
 const generatedRoutes = createGeneratedRoutes({

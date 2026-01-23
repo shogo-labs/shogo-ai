@@ -14,6 +14,7 @@ async function main() {
   const result = await prismaToRoutesCode({
     schemaPath: "./prisma/schema.prisma",
     models: [
+      // Studio-Core
       "Workspace",
       "Project",
       "Folder",
@@ -22,6 +23,14 @@ async function main() {
       "StarredProject",
       "Notification",
       "BillingAccount",
+      // Billing
+      "Subscription",
+      "CreditLedger",
+      "UsageEvent",
+      // Studio-Chat
+      "ChatSession",
+      "ChatMessage",
+      "ToolCallLog",
     ],
   })
 
