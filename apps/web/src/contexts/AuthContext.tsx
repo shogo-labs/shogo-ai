@@ -5,6 +5,10 @@
  * The store syncs with auth service state changes and provides
  * reactive views and actions for auth flows.
  *
+ * IMPORTANT: This provider receives session data from SessionProvider.
+ * It does NOT make its own /api/auth/get-session calls to avoid duplicates.
+ * See: https://github.com/better-auth/better-auth/issues/duplicate-calls
+ *
  * Usage:
  * ```tsx
  * import { createClient } from '@supabase/supabase-js'
@@ -13,9 +17,11 @@
  * const supabase = createClient(url, key)
  * const authService = new SupabaseAuthService(supabase)
  *
- * <AuthProvider authService={authService}>
- *   <MyApp />
- * </AuthProvider>
+ * <SessionProvider>
+ *   <AuthProvider authService={authService}>
+ *     <MyApp />
+ *   </AuthProvider>
+ * </SessionProvider>
  *
  * function MyApp() {
  *   const auth = useAuth()
@@ -36,6 +42,7 @@ import {
   type IAuthService,
   type AuthSession,
 } from "@shogo/state-api"
+import { useSessionContext } from "./SessionProvider"
 
 interface AuthContextValue {
   store: any
@@ -54,13 +61,20 @@ export interface AuthProviderProps {
  *
  * Features:
  * - Creates stable store instance (useRef)
- * - Subscribes to auth service state changes
- * - Syncs external auth events to store state
+ * - Syncs session data from SessionProvider (no duplicate API calls)
+ * - Subscribes to auth service state changes for cross-tab sync
  * - Cleans up subscription on unmount
+ *
+ * OPTIMIZATION: This provider no longer calls store.initialize() which made
+ * a redundant /api/auth/get-session call. Instead, it syncs session data
+ * from SessionProvider which already has the session from Better Auth's useSession.
  */
 export function AuthProvider({ authService, children }: AuthProviderProps) {
   const contextRef = useRef<AuthContextValue | null>(null)
   const unsubscribeRef = useRef<(() => void) | null>(null)
+  
+  // Get session data from SessionProvider (already fetched, no new API call)
+  const sessionContext = useSessionContext()
 
   // Initialize store once
   if (!contextRef.current) {
@@ -80,7 +94,45 @@ export function AuthProvider({ authService, children }: AuthProviderProps) {
     contextRef.current = { store }
   }
 
-  // Subscribe to auth state changes
+  // Sync session data from SessionProvider to the auth store
+  // This replaces the redundant store.initialize() call that was making duplicate API requests
+  useEffect(() => {
+    const store = contextRef.current?.store
+    if (!store || sessionContext.isPending) return
+
+    if (sessionContext.data?.user && sessionContext.data?.session) {
+      // Map SessionProvider data to AuthSession format
+      const authSession: AuthSession = {
+        accessToken: sessionContext.data.session.token,
+        refreshToken: null,
+        expiresAt: sessionContext.data.session.expiresAt instanceof Date 
+          ? sessionContext.data.session.expiresAt.toISOString()
+          : String(sessionContext.data.session.expiresAt),
+        user: {
+          id: sessionContext.data.user.id,
+          email: sessionContext.data.user.email,
+          name: sessionContext.data.user.name ?? undefined,
+          image: sessionContext.data.user.image ?? undefined,
+          emailVerified: sessionContext.data.user.emailVerified,
+          createdAt: sessionContext.data.user.createdAt instanceof Date
+            ? sessionContext.data.user.createdAt.toISOString()
+            : String(sessionContext.data.user.createdAt),
+        },
+      }
+      
+      // Sync to store if not already there or if session changed
+      if (!store.isAuthenticated || store.currentSession?.accessToken !== authSession.accessToken) {
+        store.syncFromServiceSession(authSession)
+        store.setAuthStatus("idle")
+      }
+    } else if (!sessionContext.data && store.isAuthenticated) {
+      // User logged out
+      store.clearAuthState()
+    }
+  }, [sessionContext.data, sessionContext.isPending])
+
+  // Subscribe to auth state changes for cross-tab sync only
+  // This subscription handles events like logout in another tab
   useEffect(() => {
     const store = contextRef.current?.store
     if (!store) return
@@ -89,7 +141,6 @@ export function AuthProvider({ authService, children }: AuthProviderProps) {
     unsubscribeRef.current = authService.onAuthStateChange(async (session: AuthSession | null) => {
       if (session) {
         // Sync session to store if not already there
-        // The store's syncFromServiceSession handles this
         if (!store.isAuthenticated || store.currentSession?.accessToken !== session.accessToken) {
           store.syncFromServiceSession(session)
         }
@@ -101,8 +152,9 @@ export function AuthProvider({ authService, children }: AuthProviderProps) {
       }
     })
 
-    // Initialize store with current session
-    store.initialize()
+    // NOTE: We intentionally do NOT call store.initialize() here anymore.
+    // Session data comes from SessionProvider which already called Better Auth's useSession.
+    // This eliminates duplicate /api/auth/get-session calls.
 
     return () => {
       if (unsubscribeRef.current) {

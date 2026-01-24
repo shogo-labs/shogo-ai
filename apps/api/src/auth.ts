@@ -73,6 +73,13 @@ export const auth = betterAuth({
     },
     // JWT session with 7-day expiry (in seconds)
     expiresIn: 60 * 60 * 24 * 7,
+    // Cookie cache to reduce database queries on repeated get-session calls
+    // This stores session data in a short-lived signed cookie, avoiding
+    // database lookups for each useSession() call in React StrictMode
+    cookieCache: {
+      enabled: true,
+      maxAge: 5 * 60, // Cache for 5 minutes
+    },
   },
 
   // Account model configuration - uses Prisma's accounts table
