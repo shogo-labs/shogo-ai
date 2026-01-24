@@ -127,6 +127,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [setup]
     environment: ${{ needs.setup.outputs.environment }}
+    timeout-minutes: 45  # project-runtime needs time for template builds
     
     strategy:
       fail-fast: false
