@@ -258,20 +258,26 @@ resource "aws_s3_bucket_policy" "published_apps" {
 }
 
 # -----------------------------------------------------------------------------
-# Route53 Record (if hosted zone exists)
+# Route53 Record (if hosted zone exists and is managed here)
 # -----------------------------------------------------------------------------
 # Note: This requires the hosted zone to be managed in the same AWS account
 # If DNS is managed elsewhere, create this record manually:
 #   *.shogo.one CNAME → {cloudfront_distribution_domain_name}
 
+variable "create_route53_record" {
+  description = "Whether to create Route53 record (requires hosted zone in same account)"
+  type        = bool
+  default     = false
+}
+
 data "aws_route53_zone" "publish_domain" {
-  count        = var.publish_domain != "" ? 1 : 0
+  count        = var.create_route53_record ? 1 : 0
   name         = "${var.publish_domain}."
   private_zone = false
 }
 
 resource "aws_route53_record" "wildcard" {
-  count   = var.publish_domain != "" ? 1 : 0
+  count   = var.create_route53_record ? 1 : 0
   zone_id = data.aws_route53_zone.publish_domain[0].zone_id
   name    = "*.${var.publish_domain}"
   type    = "A"

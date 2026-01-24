@@ -23,6 +23,7 @@ import {
   XCircle,
   Loader2,
   ExternalLink,
+  AlertCircle,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -33,6 +34,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+import { useToast } from "@/hooks/use-toast"
 
 export type AccessLevel = "anyone" | "authenticated" | "private"
 
@@ -101,6 +103,7 @@ export function PublishDropdown({
   onUpdateSettings,
   onViewPublished,
 }: PublishDropdownProps) {
+  const { toast } = useToast()
   const [subdomain, setSubdomain] = useState(currentSubdomain || defaultSubdomain)
   const [accessLevel, setAccessLevel] = useState<AccessLevel>(initialAccessLevel)
   const [siteTitle, setSiteTitle] = useState(initialSiteTitle)
@@ -111,6 +114,7 @@ export function PublishDropdown({
   const [isAccessOpen, setIsAccessOpen] = useState(false)
   const [isPublished, setIsPublished] = useState(initialIsPublished)
   const [publishedAt, setPublishedAt] = useState(initialPublishedAt)
+  const [publishError, setPublishError] = useState<string | null>(null)
 
   // Subdomain availability state
   const [subdomainStatus, setSubdomainStatus] = useState<{
@@ -187,6 +191,7 @@ export function PublishDropdown({
   const handlePublish = async () => {
     if (!onPublish || !subdomain) return
     setIsPublishing(true)
+    setPublishError(null)
     try {
       const result = await onPublish({
         subdomain,
@@ -196,8 +201,19 @@ export function PublishDropdown({
       })
       setIsPublished(true)
       setPublishedAt(new Date(result.publishedAt))
+      toast({
+        title: "Published successfully",
+        description: `Your app is now live at ${subdomain}.shogo.one`,
+      })
     } catch (error: any) {
       console.error("[PublishDropdown] Publish failed:", error)
+      const errorMessage = error.message || "Failed to publish. Please try again."
+      setPublishError(errorMessage)
+      toast({
+        variant: "destructive",
+        title: "Publish failed",
+        description: errorMessage,
+      })
     } finally {
       setIsPublishing(false)
     }
@@ -206,12 +222,24 @@ export function PublishDropdown({
   const handleUnpublish = async () => {
     if (!onUnpublish) return
     setIsUnpublishing(true)
+    setPublishError(null)
     try {
       await onUnpublish()
       setIsPublished(false)
       setPublishedAt(undefined)
+      toast({
+        title: "Unpublished",
+        description: "Your app is no longer publicly accessible.",
+      })
     } catch (error: any) {
       console.error("[PublishDropdown] Unpublish failed:", error)
+      const errorMessage = error.message || "Failed to unpublish. Please try again."
+      setPublishError(errorMessage)
+      toast({
+        variant: "destructive",
+        title: "Unpublish failed",
+        description: errorMessage,
+      })
     } finally {
       setIsUnpublishing(false)
     }
@@ -433,6 +461,16 @@ export function PublishDropdown({
             )}
           </div>
         </div>
+
+        {/* Error Display */}
+        {publishError && (
+          <div className="px-4 pb-2">
+            <div className="flex items-start gap-2 p-2 bg-red-50 dark:bg-red-950/30 rounded-md border border-red-200 dark:border-red-800">
+              <AlertCircle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+              <p className="text-xs text-red-600 dark:text-red-400">{publishError}</p>
+            </div>
+          </div>
+        )}
 
         {/* Bottom Actions */}
         <div className="p-3 pt-0 flex gap-2">

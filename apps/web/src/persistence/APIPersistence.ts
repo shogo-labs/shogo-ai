@@ -210,6 +210,7 @@ export class APIPersistence implements IPersistenceService {
    * - Convert ISO date strings to timestamps
    * - Convert null values to undefined (MST optional fields)
    * - Convert *Id fields to reference fields (e.g., workspaceId -> workspace)
+   * - Convert embedded objects (from Prisma includes) to just their IDs for MST references
    */
   private transformForMST(obj: any): any {
     if (!obj || typeof obj !== 'object') return obj
@@ -217,6 +218,9 @@ export class APIPersistence implements IPersistenceService {
     const dateFields = ['createdAt', 'updatedAt', 'expiresAt', 'publishedAt', 'readAt', 'emailSentAt']
     // Fields that are FK references (e.g., workspaceId -> workspace as MST reference)
     const referenceFields = ['workspaceId', 'projectId', 'folderId', 'parentId', 'userId']
+    // Fields that should be treated as references (MST expects just an ID, not an object)
+    // These correspond to Prisma relations that get included as full objects
+    const referenceObjectFields = ['workspace', 'project', 'folder', 'parent', 'user']
     const result: Record<string, any> = {}
     
     for (const [key, value] of Object.entries(obj)) {
@@ -236,11 +240,17 @@ export class APIPersistence implements IPersistenceService {
         // Also keep the original Id field for convenience
         result[key] = value
       }
+      // Handle embedded reference objects (from Prisma includes) - extract just the ID
+      // MST expects references to be string IDs, not full objects
+      else if (referenceObjectFields.includes(key) && value && typeof value === 'object' && 'id' in value) {
+        // Extract just the ID for MST reference resolution
+        result[key] = value.id
+      }
       // Convert date strings to timestamps
       else if (dateFields.includes(key) && typeof value === 'string') {
         result[key] = new Date(value).getTime()
       }
-      // Recursively transform nested objects (like workspace, project references)
+      // Recursively transform nested objects (but not reference objects which we handle above)
       else if (value && typeof value === 'object' && !Array.isArray(value)) {
         result[key] = this.transformForMST(value)
       }

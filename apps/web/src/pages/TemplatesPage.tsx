@@ -7,46 +7,28 @@
  * - Click to open preview modal
  */
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { observer } from "mobx-react-lite"
 import { Loader2 } from "lucide-react"
-import { TemplateCard, formatTemplateName, type TemplateMetadata } from "@/components/app/workspace/dashboard/TemplateCard"
+import { TemplateCard, formatTemplateName } from "@/components/app/workspace/dashboard/TemplateCard"
 import { TemplatePreviewModal } from "@/components/app/workspace/dashboard/TemplatePreviewModal"
 import { useNavigate } from "react-router-dom"
 import { useDomains } from "@/contexts/DomainProvider"
 import { useWorkspaceData } from "@/components/app/workspace/hooks"
+import { useTemplates, type TemplateMetadata } from "@/hooks/useTemplates"
 
 export const TemplatesPage = observer(function TemplatesPage() {
   const navigate = useNavigate()
   const { studioCore } = useDomains()
   const { currentWorkspace, refetchProjects } = useWorkspaceData()
 
-  // Templates state
-  const [templates, setTemplates] = useState<TemplateMetadata[]>([])
-  const [isLoadingTemplates, setIsLoadingTemplates] = useState(true)
+  // Templates state - use shared hook with deduplication
+  const { templates, isLoading: isLoadingTemplates } = useTemplates()
   
   // Modal state
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateMetadata | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
-
-  // Fetch templates on mount
-  useEffect(() => {
-    async function fetchTemplates() {
-      try {
-        const response = await fetch("/api/templates")
-        if (response.ok) {
-          const data = await response.json()
-          setTemplates(data.templates || [])
-        }
-      } catch (error) {
-        console.error("[TemplatesPage] Failed to fetch templates:", error)
-      } finally {
-        setIsLoadingTemplates(false)
-      }
-    }
-    fetchTemplates()
-  }, [])
 
   const handleTemplateClick = (template: TemplateMetadata) => {
     setSelectedTemplate(template)

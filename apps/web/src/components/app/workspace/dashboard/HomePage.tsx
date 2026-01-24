@@ -14,15 +14,16 @@
  * 4. User is navigated to the new project with a welcome message
  */
 
-import { useState, useRef, useEffect, type RefObject } from "react"
+import { useState, useRef, type RefObject } from "react"
 import { observer } from "mobx-react-lite"
 import { useNavigate } from "react-router-dom"
 import { Sparkles, ChevronRight, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ChatPanel } from "@/components/app/chat/ChatPanel"
-import { TemplateCard, formatTemplateName, type TemplateMetadata } from "./TemplateCard"
+import { TemplateCard, formatTemplateName } from "./TemplateCard"
 import { TemplatePreviewModal } from "./TemplatePreviewModal"
+import { useTemplates } from "@/hooks/useTemplates"
 
 /** Transition phases for HomePage to Workspace animation */
 export type TransitionPhase = 'idle' | 'commit' | 'dissolve' | 'transform' | 'emerge' | 'settle' | 'complete'
@@ -69,31 +70,12 @@ export const HomePage = observer(function HomePage({
   const internalInputRef = useRef<HTMLDivElement>(null)
   const chatPanelRef = inputRef ?? internalInputRef
 
-  // Templates state
-  const [templates, setTemplates] = useState<TemplateMetadata[]>([])
-  const [isLoadingTemplates, setIsLoadingTemplates] = useState(true)
+  // Templates state - use shared hook with deduplication
+  const { templates, isLoading: isLoadingTemplates } = useTemplates()
   
   // Template preview modal state
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateMetadata | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
-
-  // Fetch templates on mount
-  useEffect(() => {
-    async function fetchTemplates() {
-      try {
-        const response = await fetch("/api/templates")
-        if (response.ok) {
-          const data = await response.json()
-          setTemplates(data.templates || [])
-        }
-      } catch (error) {
-        console.error("[HomePage] Failed to fetch templates:", error)
-      } finally {
-        setIsLoadingTemplates(false)
-      }
-    }
-    fetchTemplates()
-  }, [])
 
   // Get first name only for greeting
   const firstName = userName.split(" ")[0] || "there"
