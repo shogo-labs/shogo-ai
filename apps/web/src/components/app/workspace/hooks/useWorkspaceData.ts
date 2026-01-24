@@ -15,10 +15,25 @@
  * Note: This hook triggers MCP reload when userId/workspaceId changes.
  */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { useDomains } from "../../../../contexts/DomainProvider"
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation"
 import { useSession } from "../../../../auth/client"
+
+/**
+ * Global auto-selection state to prevent multiple hook instances from
+ * all trying to auto-select simultaneously. This is necessary because
+ * useWorkspaceData() is used by 15+ components, and each would otherwise
+ * independently attempt auto-selection, causing log spam and wasted renders.
+ */
+const autoSelectState = {
+  /** The workspace slug that was auto-selected */
+  selectedSlug: null as string | null,
+  /** The user ID for which auto-selection was performed */
+  forUserId: null as string | null,
+  /** Timestamp of last auto-selection to allow re-selection after user change */
+  timestamp: 0,
+}
 
 /**
  * Phase type for feature grouping - matches FeatureSession status values
@@ -203,12 +218,9 @@ export function useWorkspaceData(): WorkspaceDataState {
     return workspaces.find((ws: any) => ws.slug === workspaceSlug)
   }, [workspaceSlug, workspaceIdsKey, workspaces.length])
 
-  // Track if we've already performed auto-selection to prevent infinite loops
-  const hasAutoSelectedRef = useRef(false)
-  const lastAutoSelectedSlugRef = useRef<string | null>(null)
-
   // Auto-select first workspace when user has workspaces but none is selected OR current selection is invalid
   // This ensures the user lands on a workspace after signup/login
+  // Uses global autoSelectState to prevent multiple hook instances from all trying to auto-select
   useEffect(() => {
     // Skip if still loading
     if (isLoadingWorkspaces) {
@@ -217,8 +229,6 @@ export function useWorkspaceData(): WorkspaceDataState {
 
     // Skip if no workspaces available
     if (workspaces.length === 0) {
-      hasAutoSelectedRef.current = false
-      lastAutoSelectedSlugRef.current = null
       return
     }
 
@@ -227,14 +237,20 @@ export function useWorkspaceData(): WorkspaceDataState {
 
     // Skip if we already have a valid workspace selected
     if (currentWorkspaceExists) {
-      // Reset auto-select tracking since user has a valid selection
-      hasAutoSelectedRef.current = false
-      lastAutoSelectedSlugRef.current = null
+      // Update global state to reflect the valid selection
+      autoSelectState.selectedSlug = workspaceSlug
+      autoSelectState.forUserId = userId || null
       return
     }
 
-    // Prevent repeated auto-selection attempts for the same workspace set
-    if (hasAutoSelectedRef.current && lastAutoSelectedSlugRef.current) {
+    // Check if another hook instance already performed auto-selection for this user
+    // Allow re-selection if user changed or if selection was for a different user
+    if (
+      autoSelectState.selectedSlug &&
+      autoSelectState.forUserId === userId &&
+      Date.now() - autoSelectState.timestamp < 5000 // Within 5 seconds
+    ) {
+      // Another instance already selected, skip
       return
     }
 
@@ -245,12 +261,15 @@ export function useWorkspaceData(): WorkspaceDataState {
     const workspaceToSelect = personalWorkspace || workspaces[0]
     
     if (workspaceToSelect?.slug && workspaceToSelect.slug !== workspaceSlug) {
+      // Mark globally that we're performing auto-selection
+      autoSelectState.selectedSlug = workspaceToSelect.slug
+      autoSelectState.forUserId = userId || null
+      autoSelectState.timestamp = Date.now()
+      
       console.log("[useWorkspaceData] Auto-selecting workspace:", workspaceToSelect.slug, "from", workspaces.length, "workspaces", workspaceSlug ? "(replacing invalid selection)" : "(no selection)")
-      hasAutoSelectedRef.current = true
-      lastAutoSelectedSlugRef.current = workspaceToSelect.slug
       setWorkspaceSlug(workspaceToSelect.slug)
     }
-  }, [isLoadingWorkspaces, workspaceIdsKey, workspaces.length, workspaceSlug, setWorkspaceSlug])
+  }, [isLoadingWorkspaces, workspaceIdsKey, workspaces.length, workspaceSlug, setWorkspaceSlug, userId])
 
   // Get current user's role in the current workspace from memberCollection
   let currentWorkspaceRole: "owner" | "admin" | "member" | "viewer" | undefined = undefined
