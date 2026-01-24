@@ -104,6 +104,19 @@ RUN for template in todo-app expense-tracker crm inventory kanban ai-chat form-b
       cd /templates; \
     done
 
+# ---- LAYER 5: Create tar.gz archives and delete uncompressed templates ----
+# This dramatically reduces image size (compressed vs uncompressed node_modules)
+# template.copy extracts from these archives for fast cold starts
+RUN mkdir -p /templates/archives && \
+    for template in todo-app expense-tracker crm inventory kanban ai-chat form-builder feedback-form booking-app; do \
+      echo "=== Archiving: $template ===" && \
+      cd /templates/examples && \
+      tar -czf /templates/archives/${template}.tar.gz $template && \
+      rm -rf /templates/examples/$template && \
+      echo "=== $template archived ($(du -h /templates/archives/${template}.tar.gz | cut -f1)) ===" ; \
+    done && \
+    rmdir /templates/examples
+
 # =============================================================================
 # Production image
 # =============================================================================
@@ -152,9 +165,9 @@ COPY --from=builder /app/packages/project-runtime ./packages/project-runtime
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./
 
-# Copy SDK examples WITH pre-installed node_modules from template-deps stage
-# This allows template.copy to copy node_modules directly (~1-2s vs ~12s for bun install)
-COPY --from=template-deps /templates/examples ./packages/sdk/examples
+# Copy template archives (tar.gz files with node_modules + .output pre-built)
+# template.copy extracts from these for instant cold starts with pre-installed deps
+COPY --from=template-deps /templates/archives ./packages/sdk/templates
 
 # Create directories for project files and schemas
 # /app/project - mounted volume or synced from S3

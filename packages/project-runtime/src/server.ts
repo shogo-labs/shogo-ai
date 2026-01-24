@@ -147,39 +147,67 @@ interface TemplateInfo extends TemplateMetadata {
   path: string
 }
 
+// Embedded template metadata (used when running from Docker with archived templates)
+const EMBEDDED_TEMPLATES: TemplateInfo[] = [
+  { name: 'todo-app', description: 'Simple task management with lists', path: 'todo-app', complexity: 'beginner', tags: ['productivity', 'tasks'], features: ['CRUD', 'lists'], useCases: ['personal task tracking'], models: ['Todo', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+  { name: 'expense-tracker', description: 'Personal finance with categories', path: 'expense-tracker', complexity: 'beginner', tags: ['finance', 'budgeting'], features: ['categories', 'charts'], useCases: ['expense tracking'], models: ['Expense', 'Category', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+  { name: 'crm', description: 'Customer relationship management', path: 'crm', complexity: 'intermediate', tags: ['business', 'sales'], features: ['contacts', 'deals', 'pipeline'], useCases: ['sales management'], models: ['Contact', 'Deal', 'Company', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+  { name: 'inventory', description: 'Stock and product management', path: 'inventory', complexity: 'intermediate', tags: ['business', 'warehouse'], features: ['products', 'stock', 'suppliers'], useCases: ['inventory management'], models: ['Product', 'Supplier', 'StockMovement', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+  { name: 'kanban', description: 'Project boards with drag-and-drop', path: 'kanban', complexity: 'intermediate', tags: ['productivity', 'project-management'], features: ['boards', 'columns', 'cards', 'drag-drop'], useCases: ['project management'], models: ['Board', 'Column', 'Card', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+  { name: 'ai-chat', description: 'AI chatbot with conversation history', path: 'ai-chat', complexity: 'intermediate', tags: ['ai', 'chatbot'], features: ['chat', 'ai-responses', 'history'], useCases: ['ai assistant'], models: ['Conversation', 'Message', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL', ai: 'Anthropic Claude' } },
+  { name: 'form-builder', description: 'Build custom forms and collect responses', path: 'form-builder', complexity: 'intermediate', tags: ['forms', 'surveys'], features: ['form-builder', 'responses'], useCases: ['surveys', 'data collection'], models: ['Form', 'Field', 'Response', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+  { name: 'feedback-form', description: 'Collect user feedback', path: 'feedback-form', complexity: 'beginner', tags: ['feedback', 'forms'], features: ['feedback', 'ratings'], useCases: ['user feedback'], models: ['Feedback', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+  { name: 'booking-app', description: 'Schedule appointments', path: 'booking-app', complexity: 'intermediate', tags: ['scheduling', 'appointments'], features: ['calendar', 'bookings', 'availability'], useCases: ['appointment scheduling'], models: ['Booking', 'TimeSlot', 'Service', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+]
+
 /**
- * Load all available templates from the SDK examples directory
+ * Load all available templates from the SDK examples directory or archives
  */
 function loadTemplates(): TemplateInfo[] {
   const templatesDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples')
+  const templatesArchiveDir = resolve(MONOREPO_ROOT, 'packages/sdk/templates')
   const templates: TemplateInfo[] = []
 
-  if (!existsSync(templatesDir)) {
-    console.warn(`[project-runtime] Templates directory not found: ${templatesDir}`)
-    return templates
-  }
+  // Check if we have uncompressed templates (local development)
+  if (existsSync(templatesDir)) {
+    const entries = readdirSync(templatesDir, { withFileTypes: true })
 
-  const entries = readdirSync(templatesDir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
+      const templateJsonPath = resolve(templatesDir, entry.name, 'template.json')
+      if (!existsSync(templateJsonPath)) continue
 
-    const templateJsonPath = resolve(templatesDir, entry.name, 'template.json')
-    if (!existsSync(templateJsonPath)) continue
-
-    try {
-      const content = readFileSync(templateJsonPath, 'utf-8')
-      const metadata: TemplateMetadata = JSON.parse(content)
-      templates.push({
-        ...metadata,
-        path: resolve(templatesDir, entry.name),
-      })
-    } catch {
-      // Skip invalid template.json files
+      try {
+        const content = readFileSync(templateJsonPath, 'utf-8')
+        const metadata: TemplateMetadata = JSON.parse(content)
+        templates.push({
+          ...metadata,
+          path: resolve(templatesDir, entry.name),
+        })
+      } catch {
+        // Skip invalid template.json files
+      }
+    }
+    
+    if (templates.length > 0) {
+      return templates
     }
   }
 
-  return templates
+  // Check if we have archived templates (Docker production mode)
+  if (existsSync(templatesArchiveDir)) {
+    const entries = readdirSync(templatesArchiveDir)
+    const archiveNames = entries
+      .filter(f => f.endsWith('.tar.gz'))
+      .map(f => f.replace('.tar.gz', ''))
+    
+    // Return embedded metadata for available archives
+    return EMBEDDED_TEMPLATES.filter(t => archiveNames.includes(t.name))
+  }
+
+  console.warn(`[project-runtime] No templates found in ${templatesDir} or ${templatesArchiveDir}`)
+  return []
 }
 
 /**
@@ -215,11 +243,19 @@ function sanitizeEnvFile(projectDir: string): void {
  * Copy a template to the project directory
  */
 function copyTemplate(templateName: string, projectName: string): { ok: boolean; message?: string; error?: string; needsRestart?: boolean } {
+  // First, try to find the template archive (tar.gz - includes node_modules + .output)
+  const templatesArchiveDir = resolve(MONOREPO_ROOT, 'packages/sdk/templates')
+  const templateArchivePath = resolve(templatesArchiveDir, `${templateName}.tar.gz`)
+  
+  // Fallback to uncompressed directory (for local development)
   const templatesDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples')
   const templatePath = resolve(templatesDir, templateName)
+  
+  const hasArchive = existsSync(templateArchivePath)
+  const hasDirectory = existsSync(templatePath)
 
-  if (!existsSync(templatePath)) {
-    return { ok: false, error: `Template '${templateName}' not found` }
+  if (!hasArchive && !hasDirectory) {
+    return { ok: false, error: `Template '${templateName}' not found (checked ${templateArchivePath} and ${templatePath})` }
   }
 
   try {
@@ -228,19 +264,51 @@ function copyTemplate(templateName: string, projectName: string): { ok: boolean;
     if (existsSync(srcDir)) {
       rmSync(srcDir, { recursive: true, force: true })
     }
+    
+    // Clean up existing node_modules and .output to ensure fresh copy
+    const nodeModulesDir = resolve(PROJECT_DIR, 'node_modules')
+    const outputDir = resolve(PROJECT_DIR, '.output')
+    if (existsSync(nodeModulesDir)) {
+      rmSync(nodeModulesDir, { recursive: true, force: true })
+    }
+    if (existsSync(outputDir)) {
+      rmSync(outputDir, { recursive: true, force: true })
+    }
 
-    // Copy template files to project directory
-    cpSync(templatePath, PROJECT_DIR, {
-      recursive: true,
-      filter: (src) => !src.includes('node_modules') && !src.includes('.git') && !src.includes('template.json'),
-    })
+    if (hasArchive) {
+      // Extract from tar.gz archive (includes node_modules + .output for instant cold start)
+      console.log(`[project-runtime] Extracting template archive: ${templateArchivePath}`)
+      const startTime = Date.now()
+      
+      // Extract archive - tar strips the first component (template name) with --strip-components=1
+      const result = Bun.spawnSync(['tar', '-xzf', templateArchivePath, '--strip-components=1', '-C', PROJECT_DIR], {
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      
+      if (result.exitCode !== 0) {
+        return { ok: false, error: `Failed to extract template archive (exit code ${result.exitCode})` }
+      }
+      
+      const extractTime = Date.now() - startTime
+      console.log(`[project-runtime] Template extracted in ${extractTime}ms (with node_modules + .output)`)
+    } else {
+      // Fallback: Copy from uncompressed directory (local development mode)
+      console.log(`[project-runtime] Copying template directory: ${templatePath}`)
+      cpSync(templatePath, PROJECT_DIR, {
+        recursive: true,
+        filter: (src) => !src.includes('.git') && !src.includes('template.json'),
+      })
+    }
 
     // Sanitize .env file to remove DATABASE_URL (K8s provides it via env var)
     sanitizeEnvFile(PROJECT_DIR)
 
     return {
       ok: true,
-      message: `Successfully copied template '${templateName}' to project. The Vite server needs to be restarted for changes to take effect. Run 'bun install' if dependencies changed.`,
+      message: hasArchive 
+        ? `Successfully extracted template '${templateName}' with pre-installed dependencies. No bun install needed.`
+        : `Successfully copied template '${templateName}' to project. The Vite server needs to be restarted for changes to take effect.`,
       needsRestart: true,
     }
   } catch (error: any) {

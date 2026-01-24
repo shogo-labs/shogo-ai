@@ -950,70 +950,15 @@ resource "null_resource" "knative_services" {
           apiVersion: serving.knative.dev/v1
       EOF
 
-      # Deploy Image Pre-Puller DaemonSet
-      # This ensures the project-runtime image is pre-pulled on all nodes
-      # to eliminate cold start image pull delays (60+ seconds)
-      cat <<EOF | kubectl apply -f -
-      apiVersion: apps/v1
-      kind: DaemonSet
-      metadata:
-        name: image-prepuller
-        namespace: shogo-staging-workspaces
-        labels:
-          app.kubernetes.io/name: image-prepuller
-          app.kubernetes.io/part-of: shogo
-          environment: staging
-      spec:
-        selector:
-          matchLabels:
-            app.kubernetes.io/name: image-prepuller
-        updateStrategy:
-          type: RollingUpdate
-          rollingUpdate:
-            maxUnavailable: "100%"
-        template:
-          metadata:
-            labels:
-              app.kubernetes.io/name: image-prepuller
-              app.kubernetes.io/part-of: shogo
-          spec:
-            tolerations:
-              - operator: Exists
-            containers:
-              - name: project-runtime-prepull
-                image: ${local.ecr_registry}/shogo/project-runtime:${local.image_tag}
-                imagePullPolicy: Always
-                command: ["sleep", "infinity"]
-                resources:
-                  requests:
-                    memory: "1Mi"
-                    cpu: "1m"
-                  limits:
-                    memory: "8Mi"
-                    cpu: "10m"
-              - name: postgres-prepull
-                image: postgres:16-alpine
-                imagePullPolicy: IfNotPresent
-                command: ["sleep", "infinity"]
-                resources:
-                  requests:
-                    memory: "1Mi"
-                    cpu: "1m"
-                  limits:
-                    memory: "8Mi"
-                    cpu: "10m"
-            restartPolicy: Always
-      EOF
+      # NOTE: Image pre-puller DaemonSet is deployed via kustomize overlay
+      # (k8s/overlays/staging/image-prepuller.yaml) to shogo-staging-system namespace
+      # Do NOT deploy it here to avoid duplicate DaemonSets causing disk pressure
 
       # Wait for services to be ready
       echo "Waiting for services to be ready..."
       kubectl wait --for=condition=ready ksvc/studio -n shogo-staging-system --timeout=300s || true
       kubectl wait --for=condition=ready ksvc/api -n shogo-staging-system --timeout=300s || true
       kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n shogo-staging-workspaces --timeout=300s || true
-      
-      # Wait for DaemonSet to be ready (images pre-pulled)
-      echo "Waiting for image pre-puller to be ready..."
-      kubectl rollout status daemonset/image-prepuller -n shogo-staging-workspaces --timeout=300s || true
       
       echo "Knative services deployed successfully"
     EOT
