@@ -34,6 +34,7 @@ import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
 import { existsSync, readdirSync, readFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
 import { initializeS3Sync, type S3Sync } from './s3-sync'
+import { initializePostgresBackup, type PostgresBackup } from './postgres-backup'
 import { fileURLToPath } from 'url'
 
 // Get monorepo root for template access
@@ -79,6 +80,7 @@ if (FAST_START_MODE) {
 logTiming('Setting up S3 sync (async)...')
 
 let s3Sync: S3Sync | null = null
+let postgresBackup: PostgresBackup | null = null
 
 // Initialize S3 sync in background (don't block server startup)
 ;(async () => {
@@ -93,6 +95,24 @@ let s3Sync: S3Sync | null = null
     }
   } catch (error) {
     console.error(`[project-runtime] S3 sync initialization failed:`, error)
+  }
+})()
+
+// Initialize PostgreSQL S3 backup in background (after postgres sidecar is ready)
+// This provides persistence for postgres data when using emptyDir volumes
+;(async () => {
+  // Wait a bit for postgres sidecar to start (it runs in the same pod)
+  await new Promise(resolve => setTimeout(resolve, 5000))
+  
+  try {
+    postgresBackup = await initializePostgresBackup()
+    if (postgresBackup) {
+      logTiming('PostgreSQL S3 backup initialized')
+    } else {
+      logTiming('PostgreSQL S3 backup not configured or postgres not detected')
+    }
+  } catch (error) {
+    console.error(`[project-runtime] PostgreSQL backup initialization failed:`, error)
   }
 })()
 
@@ -2416,6 +2436,17 @@ async function gracefulShutdown(signal: string) {
     ws.close(1001, 'Server shutting down')
   }
   lspConnections.clear()
+
+  // Run final postgres backup before shutdown (critical for data persistence)
+  if (postgresBackup) {
+    console.log(`[project-runtime] Running final PostgreSQL backup to S3...`)
+    try {
+      await postgresBackup.shutdown()
+      console.log(`[project-runtime] PostgreSQL backup completed`)
+    } catch (error) {
+      console.error(`[project-runtime] PostgreSQL final backup failed:`, error)
+    }
+  }
 
   // Upload any pending changes to S3 before shutdown
   if (s3Sync) {

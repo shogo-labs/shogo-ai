@@ -361,7 +361,7 @@ export class KnativeProjectManager {
       if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
     }
 
-    // Note: Project code PVC no longer created (using emptyDir + S3 sync)
+    // Note: Both project code and postgres now use emptyDir + S3 sync/backup
     // Cleanup legacy PVCs if they exist from older deployments
     try {
       await coreApi.deleteNamespacedPersistentVolumeClaim({
@@ -374,14 +374,15 @@ export class KnativeProjectManager {
       if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
     }
 
-    // Delete PostgreSQL data PVC
+    // Cleanup legacy PostgreSQL PVC if exists from older deployments
     try {
       await coreApi.deleteNamespacedPersistentVolumeClaim({
         name: `pvc-postgres-${projectId}`,
         namespace: this.namespace,
       })
-      console.log(`[KnativeProjectManager] Deleted PVC: pvc-postgres-${projectId}`)
+      console.log(`[KnativeProjectManager] Deleted legacy PVC: pvc-postgres-${projectId}`)
     } catch (error: any) {
+      // Ignore not found - expected for new projects using emptyDir + S3 backup
       if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
     }
   }
@@ -488,34 +489,20 @@ export class KnativeProjectManager {
   /**
    * Ensure project has PVCs for storage.
    * 
-   * Note: Project code/files now use emptyDir (ephemeral storage) for faster cold starts.
-   * Files are synced to/from S3 for persistence across restarts.
+   * Note: Both project code/files AND PostgreSQL data now use emptyDir (ephemeral storage).
+   * - Project files are synced to/from S3 for persistence
+   * - PostgreSQL data is backed up to S3 using pg_dump on shutdown and restored on startup
    * 
-   * Only creates:
-   * - pvc-postgres-{id}: For PostgreSQL data (persistent database storage)
+   * This approach avoids:
+   * - EBS Multi-Attach errors (EBS is ReadWriteOnce, causes issues with Knative scale-to-zero)
+   * - EFS permission issues (chown errors with postgres user)
+   * 
+   * No PVCs are created - everything uses emptyDir + S3 backup.
    */
   private async ensurePVC(projectId: string): Promise<void> {
-    const coreApi = getCoreApi()
-    // Use EFS storage class for PostgreSQL to avoid EBS Multi-Attach errors
-    // EFS supports ReadWriteMany, allowing multiple pods to attach simultaneously
-    const storageClass = process.env.POSTGRES_STORAGE_CLASS || "efs-sc"
-
-    // Project code now uses emptyDir + S3 sync for faster cold starts
-    // No PVC needed for project files
-
-    // Create PostgreSQL data PVC if postgres sidecar is enabled
-    // Database must persist across restarts
-    if (this.postgresEnabled) {
-      await this.createPVCIfNotExists(coreApi, {
-        name: `pvc-postgres-${projectId}`,
-        projectId,
-        component: "postgres-storage",
-        storageClass,
-        size: this.postgresStorageSize,
-        // EFS uses ReadWriteMany to support multi-attach (prevents EBS Multi-Attach errors)
-        accessMode: storageClass.includes("efs") ? "ReadWriteMany" : "ReadWriteOnce",
-      })
-    }
+    // No PVCs needed anymore - both project files and postgres use emptyDir + S3 sync/backup
+    // This method is kept for backwards compatibility and cleanup of legacy PVCs
+    console.log(`[KnativeProjectManager] No PVC creation needed for ${projectId} (using emptyDir + S3)`)
   }
 
   /**
@@ -593,6 +580,13 @@ export class KnativeProjectManager {
         name: "DATABASE_URL",
         value: `postgres://${this.postgresUser}:${this.postgresPassword}@localhost:5432/${this.postgresDatabase}`,
       })
+      // Add postgres credentials for backup script (pg_dump/psql)
+      env.push({ name: "POSTGRES_USER", value: this.postgresUser })
+      env.push({ name: "POSTGRES_PASSWORD", value: this.postgresPassword })
+      env.push({ name: "POSTGRES_DB", value: this.postgresDatabase })
+      // Enable postgres S3 backup (uses same S3 bucket as project files)
+      // Backup interval: 10 minutes (600000ms)
+      env.push({ name: "POSTGRES_BACKUP_INTERVAL", value: "600000" })
     }
 
     // Add S3 configuration if bucket is specified
@@ -705,11 +699,15 @@ export class KnativeProjectManager {
       },
     ]
 
-    // Add PostgreSQL data volume if enabled (must be persistent)
+    // Add PostgreSQL data volume if enabled
+    // Uses emptyDir + S3 backup pattern to avoid:
+    // - EBS Multi-Attach errors (EBS is ReadWriteOnce)
+    // - EFS permission issues (chown errors)
+    // Data is backed up to S3 using pg_dump and restored on startup
     if (this.postgresEnabled) {
       volumes.push({
         name: "postgres-data",
-        persistentVolumeClaim: { claimName: `pvc-postgres-${projectId}` },
+        emptyDir: { sizeLimit: this.postgresStorageSize },
       })
     }
 
