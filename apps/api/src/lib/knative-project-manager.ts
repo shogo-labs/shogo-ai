@@ -765,9 +765,26 @@ export function getKnativeProjectManager(): KnativeProjectManager {
 // =============================================================================
 
 /**
+ * Request deduplication cache for getProjectPodUrl.
+ * When multiple requests come in for the same project during cold start,
+ * they all share the same promise instead of each creating separate waits.
+ * This prevents redundant API calls and race conditions.
+ */
+const pendingPodRequests = new Map<string, {
+  promise: Promise<string>
+  startTime: number
+}>()
+
+// Clean up stale entries after 5 minutes
+const PENDING_REQUEST_CLEANUP_MS = 5 * 60 * 1000
+
+/**
  * Get the URL for a project pod.
  * In Kubernetes, creates the pod if it doesn't exist and waits for it to be ready.
  * In local dev, throws an error (use RuntimeManager instead).
+ * 
+ * This function deduplicates concurrent requests - if multiple requests come in
+ * for the same project while it's starting, they all share the same wait promise.
  */
 export async function getProjectPodUrl(projectId: string): Promise<string> {
   if (!isKubernetes()) {
@@ -776,32 +793,65 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
     return `http://localhost:${basePort}`
   }
 
+  // Check if there's already a pending request for this project
+  const pending = pendingPodRequests.get(projectId)
+  if (pending) {
+    const waitTime = Date.now() - pending.startTime
+    console.log(`[KnativeProjectManager] Joining existing wait for ${projectId} (already waiting ${waitTime}ms)`)
+    return pending.promise
+  }
+
   const totalStartTime = Date.now()
   console.log(`[KnativeProjectManager] getProjectPodUrl started for ${projectId}`)
   
-  const manager = getKnativeProjectManager()
-  const status = await manager.getStatus(projectId)
+  // Create the actual work promise
+  const workPromise = (async (): Promise<string> => {
+    try {
+      const manager = getKnativeProjectManager()
+      const status = await manager.getStatus(projectId)
 
-  if (!status.exists) {
-    // Create the project pod
-    console.log(`[KnativeProjectManager] Project ${projectId} does not exist, creating... (elapsed: ${Date.now() - totalStartTime}ms)`)
-    await manager.createProject(projectId)
-    // Wait for the pod to be ready before returning the URL
-    // This prevents "connection refused" errors when proxying immediately after creation
-    // Timeout: 180s to account for image pull (can take 60-90s for 1GB images)
-    console.log(`[KnativeProjectManager] Waiting for project ${projectId} to be ready... (elapsed: ${Date.now() - totalStartTime}ms)`)
-    await manager.waitForReady(projectId, 180000)
-  } else if (!status.ready) {
-    // Pod exists but isn't ready (cold start from scale-to-zero)
-    // Wait for it to become ready
-    // Timeout: 120s to account for image pull during cold starts
-    console.log(`[KnativeProjectManager] Project ${projectId} exists but not ready (cold start), waiting... (elapsed: ${Date.now() - totalStartTime}ms)`)
-    await manager.waitForReady(projectId, 120000)
-  } else {
-    console.log(`[KnativeProjectManager] Project ${projectId} already running (warm hit) (elapsed: ${Date.now() - totalStartTime}ms)`)
-  }
+      if (!status.exists) {
+        // Create the project pod
+        console.log(`[KnativeProjectManager] Project ${projectId} does not exist, creating... (elapsed: ${Date.now() - totalStartTime}ms)`)
+        await manager.createProject(projectId)
+        // Wait for the pod to be ready before returning the URL
+        // This prevents "connection refused" errors when proxying immediately after creation
+        // Timeout: 180s to account for image pull (can take 60-90s for 1GB images)
+        console.log(`[KnativeProjectManager] Waiting for project ${projectId} to be ready... (elapsed: ${Date.now() - totalStartTime}ms)`)
+        await manager.waitForReady(projectId, 180000)
+      } else if (!status.ready) {
+        // Pod exists but isn't ready (cold start from scale-to-zero)
+        // Wait for it to become ready
+        // Timeout: 120s to account for image pull during cold starts
+        console.log(`[KnativeProjectManager] Project ${projectId} exists but not ready (cold start), waiting... (elapsed: ${Date.now() - totalStartTime}ms)`)
+        await manager.waitForReady(projectId, 120000)
+      } else {
+        console.log(`[KnativeProjectManager] Project ${projectId} already running (warm hit) (elapsed: ${Date.now() - totalStartTime}ms)`)
+      }
 
-  const totalDuration = Date.now() - totalStartTime
-  console.log(`[KnativeProjectManager] getProjectPodUrl completed for ${projectId} in ${totalDuration}ms`)
-  return manager.getProjectPodUrl(projectId)
+      const totalDuration = Date.now() - totalStartTime
+      console.log(`[KnativeProjectManager] getProjectPodUrl completed for ${projectId} in ${totalDuration}ms`)
+      return manager.getProjectPodUrl(projectId)
+    } finally {
+      // Clean up the pending request when done (success or failure)
+      pendingPodRequests.delete(projectId)
+    }
+  })()
+
+  // Store the pending request so other callers can join
+  pendingPodRequests.set(projectId, {
+    promise: workPromise,
+    startTime: totalStartTime,
+  })
+
+  // Cleanup stale entries periodically (in case of memory leaks)
+  setTimeout(() => {
+    const entry = pendingPodRequests.get(projectId)
+    if (entry && Date.now() - entry.startTime > PENDING_REQUEST_CLEANUP_MS) {
+      console.log(`[KnativeProjectManager] Cleaning up stale pending request for ${projectId}`)
+      pendingPodRequests.delete(projectId)
+    }
+  }, PENDING_REQUEST_CLEANUP_MS)
+
+  return workPromise
 }

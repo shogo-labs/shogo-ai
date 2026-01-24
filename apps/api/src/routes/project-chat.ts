@@ -135,14 +135,30 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       }
 
       // Get project pod URL
+      // This will create the pod if needed and wait for it to be ready
       let podUrl: string
       try {
         podUrl = await getProjectUrl(projectId)
       } catch (err: any) {
         console.error(`[ProjectChat] Failed to get project URL:`, err)
+        // Return a structured error that the frontend can handle gracefully
+        // Include "starting" status so frontend knows to retry
+        const isTimeout = err.message?.includes('timeout') || err.message?.includes('Timeout')
+        const isStarting = err.message?.includes('not ready') || err.message?.includes('starting')
+        
         return c.json(
-          { error: { code: "pod_unavailable", message: "Project runtime unavailable" } },
-          503
+          { 
+            error: { 
+              code: isTimeout || isStarting ? "pod_starting" : "pod_unavailable", 
+              message: isTimeout 
+                ? "Project runtime is still starting. Please retry in a few seconds."
+                : isStarting
+                  ? "Project runtime is starting up. Please wait..."
+                  : err.message || "Project runtime unavailable",
+              retryable: true, // Tell frontend this is a temporary condition
+            } 
+          },
+          isTimeout || isStarting ? 503 : 503
         )
       }
 

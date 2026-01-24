@@ -1066,45 +1066,140 @@ app.post('/api/projects/:projectId/runtime/restart', async (c) => {
 })
 
 // Get project runtime status
+// This is a lightweight endpoint that doesn't create or wait for pods.
+// Frontend should poll this to check if the pod is ready before making other requests.
 app.get('/api/projects/:projectId/runtime/status', async (c) => {
-  const manager = getRuntimeManager()
-  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/runtime/status`
-  const newReq = new Request(url.toString(), { method: 'GET' })
-  return router.fetch(newReq)
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Get Knative service status without waiting
+    try {
+      const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
+      const manager = getKnativeProjectManager()
+      const status = await manager.getStatus(projectId)
+      
+      if (!status.exists) {
+        // Pod doesn't exist yet - return "not_found" (frontend should trigger creation)
+        return c.json({
+          projectId,
+          status: 'not_found',
+          message: 'Project runtime not created yet',
+          ready: false,
+        })
+      } else if (!status.ready) {
+        // Pod exists but is starting (cold start or initial creation)
+        return c.json({
+          projectId,
+          status: 'starting',
+          message: status.message || 'Project runtime is starting...',
+          ready: false,
+          replicas: status.replicas,
+        })
+      } else {
+        // Pod is ready
+        return c.json({
+          projectId,
+          status: 'running',
+          message: 'Project runtime is ready',
+          ready: true,
+          replicas: status.replicas,
+          url: status.url,
+        })
+      }
+    } catch (error: any) {
+      console.error('[Runtime] Failed to get project status:', error)
+      return c.json({
+        projectId,
+        status: 'error',
+        message: error.message || 'Failed to check project status',
+        ready: false,
+      }, 500)
+    }
+  } else {
+    // Local development: Use RuntimeManager
+    const manager = getRuntimeManager()
+    const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+    const url = new URL(c.req.url)
+    url.pathname = `/projects/${c.req.param('projectId')}/runtime/status`
+    const newReq = new Request(url.toString(), { method: 'GET' })
+    return router.fetch(newReq)
+  }
 })
 
 // Get project sandbox URL for iframe embedding
+// Query params:
+//   ?wait=true  - Wait for pod to be ready (default: true for backwards compatibility)
+//   ?wait=false - Return immediately with status, don't wait
 app.get('/api/projects/:projectId/sandbox/url', async (c) => {
   const projectId = c.req.param('projectId')
+  const shouldWait = c.req.query('wait') !== 'false' // Default to waiting for backwards compat
   
   if (isKubernetes()) {
     // In Kubernetes: Return a proxy URL that goes through the API
     // The preview proxy endpoint will forward requests to the project runtime pod
-    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+    const { getProjectPodUrl, getKnativeProjectManager } = await import('./lib/knative-project-manager')
     
+    // First check current status
+    const manager = getKnativeProjectManager()
+    const status = await manager.getStatus(projectId)
+    
+    // Build the proxy URL (same regardless of pod status)
+    const host = c.req.header('x-original-host') || c.req.header('host') || 'localhost'
+    const protocol = 'https'
+    const proxyUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
+    
+    // If pod is already running, return immediately
+    if (status.exists && status.ready) {
+      return c.json({
+        url: proxyUrl,
+        directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
+        status: 'running',
+        ready: true,
+      }, 200)
+    }
+    
+    // Pod doesn't exist or isn't ready
+    if (!shouldWait) {
+      // Caller requested non-blocking - return current status
+      // This triggers pod creation in the background if needed
+      if (!status.exists) {
+        // Start creation in background (don't await)
+        getProjectPodUrl(projectId).catch(err => {
+          console.error(`[Runtime] Background pod creation failed for ${projectId}:`, err)
+        })
+      }
+      
+      return c.json({
+        url: proxyUrl,
+        directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
+        status: status.exists ? 'starting' : 'creating',
+        ready: false,
+        message: status.exists 
+          ? 'Project runtime is starting, please poll /runtime/status until ready'
+          : 'Project runtime is being created, please poll /runtime/status until ready',
+      }, 202) // 202 Accepted - request accepted but processing not complete
+    }
+    
+    // Wait for pod to be ready (default behavior)
     try {
       // This will create the pod if it doesn't exist and wait for it to be ready
       await getProjectPodUrl(projectId)
-      
-      // Return the proxy URL - all requests to this URL will be proxied to the project pod
-      // Use X-Original-Host (set by nginx) if available, otherwise fall back to Host header
-      const host = c.req.header('x-original-host') || c.req.header('host') || 'localhost'
-      // In Kubernetes, always use HTTPS (Knative/ALB terminates TLS)
-      // x-forwarded-proto may not be preserved through all proxy layers
-      const protocol = 'https'
-      const proxyUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
       
       return c.json({
         url: proxyUrl,
         directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
+        ready: true,
       }, 200)
     } catch (error: any) {
       console.error('[Runtime] Failed to get project pod URL:', error)
       return c.json({
+        url: proxyUrl,
+        status: 'error',
+        ready: false,
         error: { code: 'pod_unavailable', message: error.message || 'Failed to start project runtime' }
       }, 503)
     }
