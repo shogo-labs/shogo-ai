@@ -76,6 +76,9 @@ COPY --from=builder /app/apps/api ./apps/api
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./
 
+# Copy prisma schema and migrations for runtime migrations
+COPY --from=builder /app/prisma ./prisma
+
 # Copy SDK examples folder for templates API
 COPY packages/sdk/examples ./packages/sdk/examples
 

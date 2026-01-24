@@ -11,5 +11,14 @@ if [ -n "$WORKSPACES_DIR" ]; then
   echo "Workspaces directory: $WORKSPACES_DIR"
 fi
 
+# Run Prisma migrations if DATABASE_URL is set
+if [ -n "$DATABASE_URL" ]; then
+  echo "Running Prisma migrations..."
+  cd /app
+  bunx prisma migrate deploy
+  cd /app/apps/api
+  echo "Migrations complete"
+fi
+
 # Execute the main command
 exec "$@"
