@@ -58,17 +58,16 @@ COPY packages/sdk/package.json ./sdk-package.json
 COPY packages/sdk/src ./sdk-src
 
 # Install dependencies for each template
-# We do this in parallel where possible and use --frozen-lockfile=false 
-# since templates don't have lockfiles committed
-RUN cd /templates/examples/todo-app && bun install --frozen-lockfile=false && \
-    cd /templates/examples/expense-tracker && bun install --frozen-lockfile=false && \
-    cd /templates/examples/crm && bun install --frozen-lockfile=false && \
-    cd /templates/examples/inventory && bun install --frozen-lockfile=false && \
-    cd /templates/examples/kanban && bun install --frozen-lockfile=false && \
-    cd /templates/examples/ai-chat && bun install --frozen-lockfile=false && \
-    cd /templates/examples/form-builder && bun install --frozen-lockfile=false && \
-    cd /templates/examples/feedback-form && bun install --frozen-lockfile=false && \
-    cd /templates/examples/booking-app && bun install --frozen-lockfile=false
+# Templates don't have lockfiles committed, so bun will generate them
+RUN cd /templates/examples/todo-app && bun install && \
+    cd /templates/examples/expense-tracker && bun install && \
+    cd /templates/examples/crm && bun install && \
+    cd /templates/examples/inventory && bun install && \
+    cd /templates/examples/kanban && bun install && \
+    cd /templates/examples/ai-chat && bun install && \
+    cd /templates/examples/form-builder && bun install && \
+    cd /templates/examples/feedback-form && bun install && \
+    cd /templates/examples/booking-app && bun install
 
 # Generate bun.lock files for each template (helps with faster subsequent installs)
 RUN for dir in /templates/examples/*/; do \
