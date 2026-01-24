@@ -83,6 +83,9 @@ let s3Sync: S3Sync | null = null
 let postgresBackup: PostgresBackup | null = null
 
 // Initialize S3 sync in background (don't block server startup)
+// Writes marker file when complete so background init can proceed
+const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
+
 ;(async () => {
   const s3StartTime = Date.now()
   try {
@@ -90,11 +93,20 @@ let postgresBackup: PostgresBackup | null = null
     if (s3Sync) {
       const s3Duration = Date.now() - s3StartTime
       logTiming(`S3 sync initialized (took ${s3Duration}ms)`)
+      
+      // Write marker file to signal background init that S3 restore is complete
+      // This allows background init to skip bun install if node_modules was restored
+      writeFileSync(S3_RESTORE_MARKER, `restored:${Date.now()}`)
+      logTiming('S3 restore marker written')
     } else {
       logTiming('S3 sync not configured (S3_WORKSPACES_BUCKET not set)')
+      // Still write marker so background init doesn't wait forever
+      writeFileSync(S3_RESTORE_MARKER, `skipped:${Date.now()}`)
     }
   } catch (error) {
     console.error(`[project-runtime] S3 sync initialization failed:`, error)
+    // Write marker even on error so background init doesn't hang
+    writeFileSync(S3_RESTORE_MARKER, `error:${Date.now()}`)
   }
 })()
 
@@ -1027,25 +1039,32 @@ app.post('/preview/restart', async (c) => {
         }, 503)
       }
       
-      // 4b. Run prisma generate
-      console.log('[project-runtime] ⏱️  Running prisma generate...')
-      const prismaGenProc = Bun.spawn(['bunx', 'prisma', 'generate'], {
-        cwd: PROJECT_DIR,
-        stdout: 'inherit',
-        stderr: 'inherit',
-      })
-      await prismaGenProc.exited
-      markStep('prismaGenerate')
+      // 4b. Run prisma generate (skip if Prisma client already exists from template)
+      const prismaClientExists = existsSync(join(PROJECT_DIR, 'node_modules', '.prisma', 'client', 'index.js'))
       
-      if (prismaGenProc.exitCode !== 0) {
-        console.error('[project-runtime] ❌ prisma generate failed with exit code:', prismaGenProc.exitCode)
-        const totalMs = Math.round(performance.now() - startTime)
-        return c.json({ 
-          success: false, 
-          error: `prisma generate failed with exit code ${prismaGenProc.exitCode}`,
-          hint: 'Check that the prisma schema is valid.',
-          timings: { steps: timings, totalMs } 
-        }, 500)
+      if (prismaClientExists) {
+        console.log('[project-runtime] ⚡ Prisma client already exists (pre-generated from template) - skipping prisma generate')
+        markStep('prismaGenerate (skipped - pre-generated)')
+      } else {
+        console.log('[project-runtime] ⏱️  Running prisma generate...')
+        const prismaGenProc = Bun.spawn(['bunx', 'prisma', 'generate'], {
+          cwd: PROJECT_DIR,
+          stdout: 'inherit',
+          stderr: 'inherit',
+        })
+        await prismaGenProc.exited
+        markStep('prismaGenerate')
+        
+        if (prismaGenProc.exitCode !== 0) {
+          console.error('[project-runtime] ❌ prisma generate failed with exit code:', prismaGenProc.exitCode)
+          const totalMs = Math.round(performance.now() - startTime)
+          return c.json({ 
+            success: false, 
+            error: `prisma generate failed with exit code ${prismaGenProc.exitCode}`,
+            hint: 'Check that the prisma schema is valid.',
+            timings: { steps: timings, totalMs } 
+          }, 500)
+        }
       }
       
       // 4c. Run prisma db push with --accept-data-loss flag for development
@@ -1079,20 +1098,38 @@ app.post('/preview/restart', async (c) => {
       console.log('[project-runtime] ✅ Database schema pushed successfully')
     }
     
-    // 5. Build the project
-    console.log('[project-runtime] ⏱️  Building project...')
-    const buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
-      cwd: PROJECT_DIR,
-      stdout: 'inherit',
-      stderr: 'inherit',
-    })
-    await buildProc.exited
-    markStep('viteBuild')
+    // 5. Build the project (skip if build artifacts already exist AND force=false)
+    // force=true is used when AI agent modifies code - must rebuild
+    // force=false (default) is used for template copy / S3 restore - can skip if pre-built
+    const url = new URL(c.req.url)
+    const forceRebuild = url.searchParams.get('force') === 'true'
     
-    if (buildProc.exitCode !== 0) {
-      console.error('[project-runtime] Build failed')
-      const totalMs = Math.round(performance.now() - startTime)
-      return c.json({ success: false, error: 'Build failed', timings: { steps: timings, totalMs } }, 500)
+    const nitroOutputExists = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
+    const viteDistExists = existsSync(join(PROJECT_DIR, 'dist', 'index.html'))
+    const buildExists = isTanStackStart ? nitroOutputExists : viteDistExists
+    
+    if (buildExists && !forceRebuild) {
+      console.log('[project-runtime] ⚡ Build output already exists (pre-built from template) - skipping vite build')
+      markStep('viteBuild (skipped - pre-built)')
+    } else {
+      if (forceRebuild && buildExists) {
+        console.log('[project-runtime] ⏱️  Rebuilding project (force=true, code was modified)...')
+      } else {
+        console.log('[project-runtime] ⏱️  Building project...')
+      }
+      const buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      await buildProc.exited
+      markStep('viteBuild')
+      
+      if (buildProc.exitCode !== 0) {
+        console.error('[project-runtime] Build failed')
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ success: false, error: 'Build failed', timings: { steps: timings, totalMs } }, 500)
+      }
     }
     
     // 6. Start Nitro server for TanStack Start

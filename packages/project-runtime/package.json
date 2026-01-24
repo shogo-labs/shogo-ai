@@ -17,6 +17,7 @@
     "ai": "^6.0.23",
     "ai-sdk-provider-claude-code": "^3.3.0",
     "hono": "^4.7.10",
+    "tar": "^7.4.3",
     "zod": "^3.24.4"
   },
   "devDependencies": {

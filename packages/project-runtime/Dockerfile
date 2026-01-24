@@ -1,14 +1,21 @@
+# syntax=docker/dockerfile:1.4
 # =============================================================================
-# Project Runtime Dockerfile (Optimized for Fast Cold Start)
+# Project Runtime Dockerfile (Optimized for Fast Cold Start + Fast Builds)
 # =============================================================================
 # Runs Claude Code agent + MCP + Vite in an isolated per-project pod.
 #
-# Optimizations:
-# - Pre-installed common dependencies (React, TanStack, Vite, Prisma)
-# - Faster health check interval
+# Build Optimizations (uses BuildKit):
+# - Layer caching: package.json changes → rebuild deps, source changes → deps cached
+# - BuildKit cache mounts: bun install cache persisted across builds
+# - Parallel builds: template-deps and builder stages can run in parallel
+#
+# Runtime Optimizations:
+# - Pre-installed template dependencies (no bun install on cold start)
+# - Pre-built templates (no vite build on cold start)
+# - S3 archive sync (single tar.gz instead of thousands of files)
 # - Deferred initialization (server starts before build completes)
 #
-# Build: docker build -t project-runtime -f packages/project-runtime/Dockerfile .
+# Build: DOCKER_BUILDKIT=1 docker build -t project-runtime -f packages/project-runtime/Dockerfile .
 # Run:   docker run -e PROJECT_ID=test -e ANTHROPIC_API_KEY=sk-... project-runtime
 # =============================================================================
 
@@ -20,60 +27,81 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-# Copy package.json files for dependency resolution
+# Copy package.json files for dependency resolution (cached layer)
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 
-# Install all dependencies
-RUN bun install
+# Install all dependencies (with BuildKit cache mount for faster rebuilds)
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install
 
-# Copy source code
+# Copy source code (this layer invalidates when source changes)
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 COPY packages/project-runtime ./packages/project-runtime
 
-# Build state-api (dependency)
+# Build packages
 WORKDIR /app/packages/state-api
 RUN bun run build
 
-# Build MCP package
 WORKDIR /app/packages/mcp
 RUN bun run build
 
 # =============================================================================
 # Pre-install ALL template dependencies (dramatically speeds up template.copy)
 # =============================================================================
-# Instead of a generic cache, we install each template's exact dependencies.
-# This allows template.copy to copy node_modules directly (~1-2s vs ~12s for bun install)
+# CACHING STRATEGY:
+# 1. Copy only package.json files first (dependency layer - cached if deps don't change)
+# 2. Install dependencies with BuildKit cache mount (reuses bun cache across builds)
+# 3. Copy source files (source layer - invalidated when code changes)
+# 4. Build templates
+#
+# This means: if only source code changes, dependency install is skipped entirely.
 # =============================================================================
 FROM oven/bun:1.2-alpine AS template-deps
 
 WORKDIR /templates
 
-# Copy all SDK examples (templates)
+# ---- LAYER 1: Copy package.json files only (for dependency caching) ----
+# This layer is cached as long as package.json files don't change
+COPY packages/sdk/examples/todo-app/package.json ./examples/todo-app/
+COPY packages/sdk/examples/expense-tracker/package.json ./examples/expense-tracker/
+COPY packages/sdk/examples/crm/package.json ./examples/crm/
+COPY packages/sdk/examples/inventory/package.json ./examples/inventory/
+COPY packages/sdk/examples/kanban/package.json ./examples/kanban/
+COPY packages/sdk/examples/ai-chat/package.json ./examples/ai-chat/
+COPY packages/sdk/examples/form-builder/package.json ./examples/form-builder/
+COPY packages/sdk/examples/feedback-form/package.json ./examples/feedback-form/
+COPY packages/sdk/examples/booking-app/package.json ./examples/booking-app/
+
+# ---- LAYER 2: Install dependencies (cached if package.json unchanged) ----
+# Using BuildKit cache mount for bun's global cache (speeds up repeated builds)
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    for template in todo-app expense-tracker crm inventory kanban ai-chat form-builder feedback-form booking-app; do \
+      echo "=== Installing deps: $template ===" && \
+      cd /templates/examples/$template && \
+      bun install && \
+      cd /templates; \
+    done
+
+# ---- LAYER 3: Copy source files ----
+# This layer invalidates when source code changes, but deps layer stays cached
 COPY packages/sdk/examples ./examples
-# Copy the SDK package itself (templates depend on @shogo-ai/sdk)
-COPY packages/sdk/package.json ./sdk-package.json
-COPY packages/sdk/src ./sdk-src
 
-# Install dependencies for each template
-# Templates don't have lockfiles committed, so bun will generate them
-RUN cd /templates/examples/todo-app && bun install && \
-    cd /templates/examples/expense-tracker && bun install && \
-    cd /templates/examples/crm && bun install && \
-    cd /templates/examples/inventory && bun install && \
-    cd /templates/examples/kanban && bun install && \
-    cd /templates/examples/ai-chat && bun install && \
-    cd /templates/examples/form-builder && bun install && \
-    cd /templates/examples/feedback-form && bun install && \
-    cd /templates/examples/booking-app && bun install
-
-# Generate bun.lock files for each template (helps with faster subsequent installs)
-RUN for dir in /templates/examples/*/; do \
-      if [ -f "$dir/package.json" ]; then \
-        echo "Generated lockfile for $(basename $dir)"; \
-      fi; \
+# ---- LAYER 4: Build templates (prisma generate + vite build) ----
+# Only runs when source changes, deps are already installed
+RUN for template in todo-app expense-tracker crm inventory kanban ai-chat form-builder feedback-form booking-app; do \
+      echo "=== Building: $template ===" && \
+      cd /templates/examples/$template && \
+      if [ -f "prisma/schema.prisma" ]; then \
+        bunx prisma generate 2>&1 || true; \
+      fi && \
+      if grep -q '"build"' package.json 2>/dev/null; then \
+        bun run build 2>&1 || echo "Build skipped for $template"; \
+      fi && \
+      echo "=== $template complete ===" && \
+      cd /templates; \
     done
 
 # =============================================================================
@@ -88,9 +116,10 @@ WORKDIR /app
 # - nodejs + npm: Claude Code CLI
 # - bash: Claude Code requires SHELL=/bin/bash
 # - git: for project operations
+# - tar: for S3 archive sync
 # - Chromium dependencies for Playwright E2E tests
 RUN apk add --no-cache \
-    curl nodejs npm bash git \
+    curl nodejs npm bash git tar gzip \
     # Playwright/Chromium dependencies
     chromium \
     nss \

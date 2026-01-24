@@ -356,7 +356,8 @@ export function RuntimePreviewPanel({
 
     try {
       console.log('[RuntimePreviewPanel] Triggering project rebuild...')
-      const response = await fetch(`/api/projects/${projectId}/runtime/restart`, {
+      // Force rebuild since code was modified by the agent
+      const response = await fetch(`/api/projects/${projectId}/runtime/restart?force=true`, {
         method: 'POST',
       })
 

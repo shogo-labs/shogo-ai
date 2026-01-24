@@ -18,9 +18,9 @@
   "dependencies": {
     "@prisma/client": "^6.0.0",
     "@shogo-ai/sdk": "^0.1.0",
-    "@tanstack/nitro-v2-vite-plugin": "^1.154.0",
-    "@tanstack/react-router": "^1.153.2",
-    "@tanstack/react-start": "^1.154.0",
+    "@tanstack/nitro-v2-vite-plugin": "1.154.7",
+    "@tanstack/react-router": "1.154.7",
+    "@tanstack/react-start": "1.154.7",
     "mobx": "^6.13.0",
     "mobx-react-lite": "^4.0.0",
     "react": "^19.0.0",

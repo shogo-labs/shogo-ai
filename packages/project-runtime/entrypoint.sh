@@ -125,6 +125,9 @@ fi
 # =============================================================================
 # Background initialization script (with timing)
 # =============================================================================
+# OPTIMIZED: When restored from S3 archive (includes node_modules),
+# we skip bun install and build - only run prisma db push for database setup.
+# =============================================================================
 log_timing "Creating background init script..."
 cat > /tmp/background-init.sh << 'BGSCRIPT'
 #!/bin/bash
@@ -132,6 +135,7 @@ set -e
 
 PROJECT_DIR="${PROJECT_DIR:-/app/project}"
 BUILD_STATUS_FILE="/tmp/build-status"
+S3_RESTORE_MARKER="/tmp/s3-restore-complete"
 
 # Timing function for background init
 BG_START_TIME=$(date +%s%3N)
@@ -146,14 +150,44 @@ bg_log "Background initialization started"
 
 cd "$PROJECT_DIR"
 
-# Step 1: Install dependencies (skip if pre-installed from template)
+# =============================================================================
+# Wait for S3 sync to complete (if configured)
+# =============================================================================
+if [ -n "$S3_WORKSPACES_BUCKET" ]; then
+  bg_log "Waiting for S3 sync to complete..."
+  WAIT_START=$(date +%s%3N)
+  
+  # Wait up to 30 seconds for S3 restore
+  for i in $(seq 1 60); do
+    if [ -f "$S3_RESTORE_MARKER" ]; then
+      WAIT_END=$(date +%s%3N)
+      bg_log "S3 sync complete (waited $((WAIT_END - WAIT_START))ms)"
+      break
+    fi
+    sleep 0.5
+  done
+  
+  if [ ! -f "$S3_RESTORE_MARKER" ]; then
+    bg_log "S3 sync did not complete in time, proceeding anyway..."
+  fi
+fi
+
+# =============================================================================
+# Check if this is a restored project (node_modules already present from S3)
+# =============================================================================
+RESTORED_FROM_S3=false
+if [ -d "node_modules/react" ] && [ -d "node_modules/vite" ]; then
+  RESTORED_FROM_S3=true
+  bg_log "⚡ Project restored from S3 archive (node_modules present)"
+fi
+
+# Step 1: Install dependencies (skip if restored from S3 or pre-installed)
 bg_log "Step 1: Checking dependencies..."
 STEP_START=$(date +%s%3N)
 
-# Check if node_modules exists and has key packages (pre-installed from template)
-if [ -d "node_modules/react" ] && [ -d "node_modules/vite" ]; then
+if [ "$RESTORED_FROM_S3" = true ]; then
   STEP_END=$(date +%s%3N)
-  bg_log "⚡ Dependencies pre-installed from template (took $((STEP_END - STEP_START))ms)"
+  bg_log "⚡ Dependencies already present from S3 archive (skipped install)"
 elif [ -d "node_modules" ] && [ -f "bun.lock" ]; then
   bg_log "Dependencies already installed (cached)"
 else
@@ -177,9 +211,10 @@ if grep -q "@tanstack/react-start" "$PROJECT_DIR/package.json" 2>/dev/null; then
 else
   bg_log "Plain Vite project detected"
   
-  # Generate vite config
-  PREVIEW_BASE="/api/projects/${PROJECT_ID}/preview/"
-  cat > "$PROJECT_DIR/vite.config.ts" << EOF
+  # Generate vite config (only if not restored from S3)
+  if [ "$RESTORED_FROM_S3" = false ]; then
+    PREVIEW_BASE="/api/projects/${PROJECT_ID}/preview/"
+    cat > "$PROJECT_DIR/vite.config.ts" << EOF
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -188,23 +223,54 @@ export default defineConfig({
   base: '${PREVIEW_BASE}',
 })
 EOF
+  fi
 fi
 
-# Step 3: Build
-bg_log "Step 3: Building project..."
+# Step 3: Build (skip if restored from S3 with existing build)
+bg_log "Step 3: Checking build status..."
 STEP_START=$(date +%s%3N)
-if bun --bun vite build 2>&1; then
-  STEP_END=$(date +%s%3N)
-  bg_log "Build completed (took $((STEP_END - STEP_START))ms)"
-else
-  bg_log "Build failed"
-  echo "failed:build" > "$BUILD_STATUS_FILE"
-  exit 1
+
+BUILD_EXISTS=false
+if [ "$IS_TANSTACK_START" = true ] && [ -f "$PROJECT_DIR/.output/server/index.mjs" ]; then
+  BUILD_EXISTS=true
+elif [ "$IS_TANSTACK_START" = false ] && [ -d "$PROJECT_DIR/dist" ]; then
+  BUILD_EXISTS=true
 fi
 
-# Step 4: Start Nitro server if TanStack Start
+if [ "$RESTORED_FROM_S3" = true ] && [ "$BUILD_EXISTS" = true ]; then
+  bg_log "⚡ Build already present from S3 archive (skipped build)"
+else
+  bg_log "Building project..."
+  if bun --bun vite build 2>&1; then
+    STEP_END=$(date +%s%3N)
+    bg_log "Build completed (took $((STEP_END - STEP_START))ms)"
+  else
+    bg_log "Build failed"
+    echo "failed:build" > "$BUILD_STATUS_FILE"
+    exit 1
+  fi
+fi
+
+# Step 4: Run Prisma db push (always needed to ensure database schema is in sync)
+if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
+  bg_log "Step 4: Running prisma db push..."
+  STEP_START=$(date +%s%3N)
+  
+  # Generate Prisma client first (fast, needed for types)
+  bunx prisma generate 2>&1 || true
+  
+  # Push schema to database
+  if bunx prisma db push --skip-generate 2>&1; then
+    STEP_END=$(date +%s%3N)
+    bg_log "Prisma db push completed (took $((STEP_END - STEP_START))ms)"
+  else
+    bg_log "Prisma db push failed (non-fatal)"
+  fi
+fi
+
+# Step 5: Start Nitro server if TanStack Start
 if [ "$IS_TANSTACK_START" = true ] && [ -f "$PROJECT_DIR/.output/server/index.mjs" ]; then
-  bg_log "Step 4: Starting TanStack Start server..."
+  bg_log "Step 5: Starting TanStack Start server..."
   STEP_START=$(date +%s%3N)
   PORT=3000 bun run "$PROJECT_DIR/.output/server/index.mjs" &
   
@@ -225,6 +291,9 @@ echo "ready" > "$BUILD_STATUS_FILE"
 TOTAL_END=$(date +%s%3N)
 bg_log "=================================================="
 bg_log "Initialization complete! Total time: $((TOTAL_END - BG_START_TIME))ms"
+if [ "$RESTORED_FROM_S3" = true ]; then
+  bg_log "⚡ FAST PATH: Restored from S3 archive"
+fi
 bg_log "=================================================="
 BGSCRIPT
 chmod +x /tmp/background-init.sh
