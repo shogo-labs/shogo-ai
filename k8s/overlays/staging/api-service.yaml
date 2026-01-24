@@ -1,6 +1,41 @@
 # =============================================================================
 # API Service - Staging Environment
 # =============================================================================
+
+# ServiceAccount for the API pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-service-account
+  namespace: shogo-staging-system
+---
+# ClusterRole for managing DomainMappings (for publish feature)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shogo-staging-api-domainmapping-manager
+rules:
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["domainmappings"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+# Bind the ClusterRole to the API service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shogo-staging-api-domainmapping-manager
+subjects:
+  - kind: ServiceAccount
+    name: api-service-account
+    namespace: shogo-staging-system
+roleRef:
+  kind: ClusterRole
+  name: shogo-staging-api-domainmapping-manager
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
@@ -16,7 +51,7 @@ spec:
         autoscaling.knative.dev/min-scale: "1"
         autoscaling.knative.dev/max-scale: "5"
     spec:
-      # Service account with permissions to create Knative services in workspaces namespace
+      # Service account with permissions to create Knative services and DomainMappings
       serviceAccountName: api-service-account
       containers:
         - name: api
@@ -38,6 +73,13 @@ spec:
               value: "shogo-staging-workspaces"
             - name: PROJECT_RUNTIME_IMAGE
               value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/project-runtime:staging-latest"
+            # Publishing configuration - namespace and domain for DomainMappings
+            # Note: PUBLISH_NAMESPACE must match where the "studio" service lives
+            # because DomainMappings must be in the same namespace as their target
+            - name: PUBLISH_NAMESPACE
+              value: "shogo-staging-system"
+            - name: PUBLISH_DOMAIN
+              value: "shogo.one"
             - name: BETTER_AUTH_URL
               value: "https://api-staging.shogo.ai"
             - name: ALLOWED_ORIGINS
