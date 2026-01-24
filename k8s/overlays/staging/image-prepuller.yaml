@@ -1,0 +1,91 @@
+# =============================================================================
+# Image Pre-Puller DaemonSet - Staging
+# =============================================================================
+# This DaemonSet ensures the project-runtime image is pre-pulled on all nodes.
+# It dramatically reduces cold start times by eliminating the 60+ second
+# image pull delay when a new project pod is scheduled.
+#
+# How it works:
+# 1. DaemonSet runs one pod on every node
+# 2. The pod uses the project-runtime image but just sleeps
+# 3. This causes the image to be pulled to every node
+# 4. When project pods start, the image is already cached locally
+#
+# Resource Usage: Minimal (just a sleeping container per node)
+# =============================================================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: image-prepuller
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/name: image-prepuller
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: infrastructure
+    environment: staging
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: image-prepuller
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 100%  # All pods can be unavailable during update
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: image-prepuller
+        app.kubernetes.io/part-of: shogo
+        environment: staging
+    spec:
+      # Run on all nodes including system nodes
+      tolerations:
+        - operator: Exists
+      # Low priority - don't block other workloads
+      priorityClassName: ""
+      containers:
+        # Pre-pull the project-runtime image
+        - name: project-runtime-prepull
+          # This image is replaced by kustomize overlay with the actual ECR image
+          image: shogo-project-runtime
+          imagePullPolicy: Always
+          # Just sleep - we only need this container to pull the image
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              memory: "1Mi"
+              cpu: "1m"
+            limits:
+              memory: "8Mi"
+              cpu: "10m"
+          # Security context - minimal permissions
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+        # Pre-pull the postgres image (used as sidecar in project pods)
+        - name: postgres-prepull
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              memory: "1Mi"
+              cpu: "1m"
+            limits:
+              memory: "8Mi"
+              cpu: "10m"
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      # Restart if container fails
+      restartPolicy: Always

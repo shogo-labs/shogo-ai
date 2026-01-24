@@ -16,7 +16,7 @@ resources:
   - web-service.yaml
   - workspace-services.yaml
   - alb-ingress.yaml  # AWS Application Load Balancer for HTTPS ingress
-  - ../../base/image-prepuller.yaml  # Pre-pull images on all nodes for faster cold starts
+  - image-prepuller.yaml  # Pre-pull images on all nodes for faster cold starts
 
 labels:
   - pairs:
