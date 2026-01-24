@@ -12,7 +12,7 @@ import { Loader2, Bell, CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useDomains } from "@/contexts/DomainProvider"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 import { NotificationItem } from "./NotificationItem"
 
 /**

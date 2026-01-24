@@ -80,7 +80,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useWorkspaceData } from "@/components/app/workspace"
 import { useDomains } from "@/contexts/DomainProvider"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
 import { PlanSelector } from "@/components/app/billing/PlanSelector"
 

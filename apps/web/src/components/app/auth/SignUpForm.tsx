@@ -12,7 +12,7 @@
 import { useState, type FormEvent } from "react"
 import { observer } from "mobx-react-lite"
 import { useDomains } from "@/contexts/DomainProvider"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"

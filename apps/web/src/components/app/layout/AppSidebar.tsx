@@ -84,7 +84,7 @@ import {
 } from "@/components/ui/popover"
 import { WorkspaceSwitcher } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 import { useCommandPaletteContext } from "./AppShell"
 import { useDomains } from "@/contexts/DomainProvider"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"

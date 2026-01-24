@@ -34,7 +34,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useWorkspaceData } from "@/components/app/workspace/hooks"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 import { cn } from "@/lib/utils"
 
 // Types

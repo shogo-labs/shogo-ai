@@ -40,7 +40,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { useDomains } from "@/contexts/DomainProvider"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 
 /**
  * Props for CreateWorkspaceModal component

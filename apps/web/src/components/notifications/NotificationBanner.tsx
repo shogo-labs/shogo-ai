@@ -16,7 +16,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { useDomains } from "@/contexts/DomainProvider"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 import { NotificationList } from "./NotificationList"
 
 /**

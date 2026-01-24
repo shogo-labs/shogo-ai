@@ -12,7 +12,7 @@ import { ArrowLeft, Building2, CheckCircle2, Info } from "lucide-react"
 
 import { useWorkspaceData } from "@/components/app/workspace/hooks"
 import { useBillingData } from "@/hooks/useBillingData"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"

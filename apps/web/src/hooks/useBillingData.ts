@@ -11,7 +11,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { useDomains } from "../contexts/DomainProvider"
-import { useSession } from "../auth/client"
+import { useSession } from "../contexts/SessionProvider"
 
 /**
  * Return type for useBillingData hook

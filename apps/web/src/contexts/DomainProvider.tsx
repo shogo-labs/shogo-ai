@@ -41,7 +41,7 @@
 import { createContext, useContext, useRef, useEffect, useMemo, useState, type ReactNode } from "react"
 import type { DomainResult } from "@shogo/state-api"
 import { useEnv } from "./EnvironmentContext"
-import { useSession } from "../auth/client"
+import { useSession } from "./SessionProvider"
 
 // ============================================================================
 // Types

@@ -31,7 +31,7 @@ import { TerminalPanel } from "./TerminalPanel"
 import { DatabasePanel } from "./DatabasePanel"
 import { TestPanel } from "./TestPanel"
 import { cn } from "@/lib/utils"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 import type { ViewportSize } from "./PreviewControls"
 
 const WORKSPACE_COMPOSITION_NAME = "workspace"

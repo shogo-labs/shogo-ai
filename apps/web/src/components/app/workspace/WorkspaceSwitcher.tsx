@@ -24,7 +24,7 @@ import { useNavigate } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { Plus, Settings, Users, ChevronDown, Check, Zap, ArrowLeft } from "lucide-react"
 import { useDomains } from "@/contexts/DomainProvider"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 
 import {
   DropdownMenu,

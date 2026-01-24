@@ -17,10 +17,10 @@ import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider, type EagerCollectionsConfig } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
+import { SessionProvider, useSessionContext } from './contexts/SessionProvider'
 import { SupabaseAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService, MemoryBackend } from '@shogo/state-api'
 import { APIPersistence } from './persistence/APIPersistence'
 import { Toaster } from '@/components/ui/toaster'
-import { useSession } from './auth/client'
 
 // BetterAuth configuration
 // Uses VITE_BETTER_AUTH_URL or falls back to current origin for same-origin API
@@ -100,10 +100,13 @@ const eagerCollections: EagerCollectionsConfig = {
   auth: [],
 }
 
-function App() {
-  // Track current user ID to force DomainProvider remount on user change
-  // This ensures stores are recreated with fresh data when switching users
-  const session = useSession()
+/**
+ * Inner app component that uses session context.
+ * Separated to ensure SessionProvider is available.
+ */
+function AppWithSession() {
+  // Use centralized session context (single source of truth)
+  const session = useSessionContext()
 
   // Use a ref to stabilize the key during transient loading states.
   // This prevents DomainProvider from remounting when Better Auth refetches
@@ -116,7 +119,7 @@ function App() {
   // without needing to remount DomainProvider.
   const lastKnownUserIdRef = useRef<string | null>(null)
 
-  const currentUserId = session.data?.user?.id
+  const currentUserId = session.userId
   if (currentUserId) {
     lastKnownUserIdRef.current = currentUserId
   }
@@ -130,14 +133,12 @@ function App() {
   const authKey = lastKnownUserIdRef.current ?? 'anonymous'
 
   return (
-    <NuqsAdapter>
-      <BrowserRouter>
-        <EnvironmentProvider env={env}>
-          <DomainProvider key={authKey} domains={domains} eagerCollections={eagerCollections}>
-            <SchemaLoadingGate>
-              <WavesmithMetaStoreProvider>
-                <AuthProvider authService={betterAuthService}>
-                  <Routes>
+    <EnvironmentProvider env={env}>
+      <DomainProvider key={authKey} domains={domains} eagerCollections={eagerCollections}>
+        <SchemaLoadingGate>
+          <WavesmithMetaStoreProvider>
+            <AuthProvider authService={betterAuthService}>
+              <Routes>
                   {/* Project view route - full screen without sidebar */}
                   <Route path="/projects/:projectId" element={
                     <AuthGate>
@@ -186,12 +187,26 @@ function App() {
                     {/* Templates */}
                     <Route path="templates" element={<TemplatesPage />} />
                   </Route>
-                  </Routes>
-                </AuthProvider>
-              </WavesmithMetaStoreProvider>
-            </SchemaLoadingGate>
-          </DomainProvider>
-        </EnvironmentProvider>
+                </Routes>
+            </AuthProvider>
+          </WavesmithMetaStoreProvider>
+        </SchemaLoadingGate>
+      </DomainProvider>
+    </EnvironmentProvider>
+  )
+}
+
+/**
+ * Root App component with providers.
+ * SessionProvider is at the top to enable centralized session management.
+ */
+function App() {
+  return (
+    <NuqsAdapter>
+      <BrowserRouter>
+        <SessionProvider>
+          <AppWithSession />
+        </SessionProvider>
         <Toaster />
       </BrowserRouter>
     </NuqsAdapter>

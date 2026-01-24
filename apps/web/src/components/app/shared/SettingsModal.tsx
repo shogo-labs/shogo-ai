@@ -72,7 +72,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useWorkspaceData } from "../workspace"
 import { useDomains } from "@/contexts/DomainProvider"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal } from "../workspace/members/InviteMemberModal"
 
 type TabId = "workspace" | "people" | "billing" | "account" | "integrations"

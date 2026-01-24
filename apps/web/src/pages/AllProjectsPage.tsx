@@ -71,7 +71,7 @@ import {
 import { useWorkspaceData, useWorkspaceNavigation } from "@/components/app/workspace/hooks"
 import { Label } from "@/components/ui/label"
 import { useDomains } from "@/contexts/DomainProvider"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 import { cn } from "@/lib/utils"
 
 // Types

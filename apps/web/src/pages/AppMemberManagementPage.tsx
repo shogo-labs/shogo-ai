@@ -14,7 +14,7 @@ import { useWorkspaceData } from "@/components/app/workspace/hooks"
 import { MemberList, InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useSession } from "@/auth/client"
+import { useSession } from "@/contexts/SessionProvider"
 
 /**
  * AppMemberManagementPage component
