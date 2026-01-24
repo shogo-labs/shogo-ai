@@ -299,8 +299,9 @@ resource "kubernetes_storage_class" "efs" {
     provisioningMode = "efs-ap"  # EFS Access Point mode
     fileSystemId     = module.efs.file_system_id
     directoryPerms   = "700"
-    gidRangeStart    = "1000"
-    gidRangeEnd      = "2000"
+    # PostgreSQL runs as UID/GID 999 - set access point to match
+    uid              = "999"
+    gid              = "999"
     basePath         = "/projects"
   }
 
