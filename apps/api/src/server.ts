@@ -1047,12 +1047,36 @@ app.post('/api/projects/:projectId/runtime/start', async (c) => {
 
 // Stop project runtime
 app.post('/api/projects/:projectId/runtime/stop', async (c) => {
-  const manager = getRuntimeManager()
-  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/runtime/stop`
-  const newReq = new Request(url.toString(), { method: 'POST' })
-  return router.fetch(newReq)
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Scale the project to 0 (or just return success since Knative auto-scales)
+    // Note: We don't actually stop the pod - Knative handles scaling to zero automatically
+    // This endpoint exists for compatibility with the frontend cleanup
+    try {
+      // Just return success - Knative will scale to zero automatically after idle timeout
+      return c.json({
+        success: true,
+        projectId,
+        status: 'scaling_down',
+        message: 'Project will scale to zero after idle timeout',
+      })
+    } catch (error: any) {
+      console.error('[Runtime] Stop error:', error)
+      return c.json(
+        { error: { code: 'stop_failed', message: error.message || 'Failed to stop runtime' } },
+        500
+      )
+    }
+  } else {
+    // Local development: Use RuntimeManager
+    const manager = getRuntimeManager()
+    const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+    const url = new URL(c.req.url)
+    url.pathname = `/projects/${projectId}/runtime/stop`
+    const newReq = new Request(url.toString(), { method: 'POST' })
+    return router.fetch(newReq)
+  }
 })
 
 // Restart project runtime (useful after template copy)
