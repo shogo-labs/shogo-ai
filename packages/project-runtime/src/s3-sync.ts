@@ -84,9 +84,9 @@ export class S3Sync {
       endpoint: config.endpoint || process.env.S3_ENDPOINT || undefined,
       region: config.region || process.env.S3_REGION || 'us-east-1',
       forcePathStyle: config.forcePathStyle ?? (process.env.S3_FORCE_PATH_STYLE === 'true'),
-      exclude: config.exclude || ['node_modules', '.git', '.DS_Store', '*.log'],
-      syncInterval: config.syncInterval ?? 60000, // 1 minute default
-      watchEnabled: config.watchEnabled ?? false,
+      exclude: config.exclude || ['node_modules', '.git', '.DS_Store', '*.log', 'dist', '.output', 'build'],
+      syncInterval: config.syncInterval ?? 30000, // 30 seconds default for faster sync
+      watchEnabled: config.watchEnabled ?? true, // Enable by default for emptyDir support
     }
 
     this.client = new S3Client({
@@ -465,6 +465,10 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
     return null
   }
 
+  // Enable file watching by default when S3 is configured
+  // This is critical for emptyDir volumes where files need to sync to S3 for persistence
+  const watchEnabled = process.env.S3_WATCH_ENABLED !== 'false' // Default to true
+
   return new S3Sync({
     bucket,
     prefix,
@@ -472,8 +476,8 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
     endpoint: process.env.S3_ENDPOINT,
     region: process.env.S3_REGION,
     forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
-    syncInterval: parseInt(process.env.S3_SYNC_INTERVAL || '60000', 10),
-    watchEnabled: process.env.S3_WATCH_ENABLED === 'true',
+    syncInterval: parseInt(process.env.S3_SYNC_INTERVAL || '30000', 10), // 30s default for faster sync
+    watchEnabled,
   })
 }
 

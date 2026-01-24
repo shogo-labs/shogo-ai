@@ -29,6 +29,12 @@ COPY packages/mcp ./packages/mcp
 COPY packages/project-runtime ./packages/project-runtime
 COPY apps/api ./apps/api
 
+# Copy prisma schema for generation
+COPY prisma ./prisma
+
+# Generate Prisma client (must be done before building apps)
+RUN bunx prisma generate
+
 # Build state-api first (dependency)
 WORKDIR /app/packages/state-api
 RUN bun run build

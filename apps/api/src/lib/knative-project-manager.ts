@@ -361,14 +361,16 @@ export class KnativeProjectManager {
       if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
     }
 
-    // Delete project code PVC
+    // Note: Project code PVC no longer created (using emptyDir + S3 sync)
+    // Cleanup legacy PVCs if they exist from older deployments
     try {
       await coreApi.deleteNamespacedPersistentVolumeClaim({
         name: `pvc-project-${projectId}`,
         namespace: this.namespace,
       })
-      console.log(`[KnativeProjectManager] Deleted PVC: pvc-project-${projectId}`)
+      console.log(`[KnativeProjectManager] Deleted legacy PVC: pvc-project-${projectId}`)
     } catch (error: any) {
+      // Ignore not found - expected for new projects using emptyDir
       if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
     }
 
@@ -485,24 +487,22 @@ export class KnativeProjectManager {
 
   /**
    * Ensure project has PVCs for storage.
-   * Creates two PVCs:
-   * 1. pvc-project-{id}: For project code/files
-   * 2. pvc-postgres-{id}: For PostgreSQL data (if postgres sidecar is enabled)
+   * 
+   * Note: Project code/files now use emptyDir (ephemeral storage) for faster cold starts.
+   * Files are synced to/from S3 for persistence across restarts.
+   * 
+   * Only creates:
+   * - pvc-postgres-{id}: For PostgreSQL data (persistent database storage)
    */
   private async ensurePVC(projectId: string): Promise<void> {
     const coreApi = getCoreApi()
     const storageClass = process.env.STORAGE_CLASS_NAME || "ebs-sc"
 
-    // Create project code PVC
-    await this.createPVCIfNotExists(coreApi, {
-      name: `pvc-project-${projectId}`,
-      projectId,
-      component: "project-storage",
-      storageClass,
-      size: "1Gi",
-    })
+    // Project code now uses emptyDir + S3 sync for faster cold starts
+    // No PVC needed for project files
 
     // Create PostgreSQL data PVC if postgres sidecar is enabled
+    // Database must persist across restarts
     if (this.postgresEnabled) {
       await this.createPVCIfNotExists(coreApi, {
         name: `pvc-postgres-${projectId}`,
@@ -591,9 +591,14 @@ export class KnativeProjectManager {
     }
 
     // Add S3 configuration if bucket is specified
+    // S3 sync is critical for emptyDir volumes - provides persistence across restarts
     if (this.s3WorkspacesBucket) {
       env.push({ name: "S3_WORKSPACES_BUCKET", value: this.s3WorkspacesBucket })
       env.push({ name: "S3_REGION", value: this.s3Region })
+      // Enable file watching for real-time sync (required for emptyDir persistence)
+      env.push({ name: "S3_WATCH_ENABLED", value: "true" })
+      // Sync every 30 seconds for faster backup
+      env.push({ name: "S3_SYNC_INTERVAL", value: "30000" })
       
       if (this.s3Endpoint) {
         env.push({ name: "S3_ENDPOINT", value: this.s3Endpoint })
@@ -686,14 +691,16 @@ export class KnativeProjectManager {
     }
 
     // Build volumes array
+    // Project data uses emptyDir for faster cold starts (~6s faster than EBS)
+    // Files are synced to/from S3 for persistence across restarts
     const volumes: any[] = [
       {
         name: "project-data",
-        persistentVolumeClaim: { claimName: `pvc-project-${projectId}` },
+        emptyDir: { sizeLimit: "2Gi" },
       },
     ]
 
-    // Add PostgreSQL data volume if enabled
+    // Add PostgreSQL data volume if enabled (must be persistent)
     if (this.postgresEnabled) {
       volumes.push({
         name: "postgres-data",

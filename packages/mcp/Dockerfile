@@ -25,7 +25,8 @@ COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 
 # Copy domain schemas (studio-core, platform-features, etc.)
-COPY .schemas ./.schemas
+# Schemas are located inside the mcp package
+COPY packages/mcp/.schemas ./.schemas
 
 # Build state-api first (dependency)
 WORKDIR /app/packages/state-api

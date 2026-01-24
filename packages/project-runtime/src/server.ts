@@ -11,6 +11,21 @@
  * The API server proxies chat requests here.
  */
 
+// =============================================================================
+// Startup Timing - Track cold start performance
+// =============================================================================
+const SERVER_START_TIME = Date.now()
+const ENTRYPOINT_START_TIME = process.env.STARTUP_TIME ? parseInt(process.env.STARTUP_TIME, 10) : SERVER_START_TIME
+
+function logTiming(message: string): void {
+  const now = Date.now()
+  const fromEntrypoint = ENTRYPOINT_START_TIME ? now - ENTRYPOINT_START_TIME : 0
+  const fromServer = now - SERVER_START_TIME
+  console.log(`[project-runtime] [+${fromEntrypoint}ms total, +${fromServer}ms server] ${message}`)
+}
+
+logTiming('Server module loading...')
+
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { streamText, tool, type CoreMessage } from 'ai'
@@ -31,6 +46,8 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 // Configuration
 // =============================================================================
 
+logTiming('Loading configuration...')
+
 const PROJECT_ID = process.env.PROJECT_ID
 const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
@@ -47,26 +64,32 @@ if (!PROJECT_ID) {
   process.exit(1)
 }
 
-console.log(`[project-runtime] Starting for project: ${PROJECT_ID}`)
+logTiming(`Configuration loaded for project: ${PROJECT_ID}`)
 console.log(`[project-runtime] Project directory: ${PROJECT_DIR}`)
 console.log(`[project-runtime] Schemas path: ${SCHEMAS_PATH}`)
 console.log(`[project-runtime] MCP server path: ${MCP_SERVER_PATH}`)
 if (FAST_START_MODE) {
-  console.log(`[project-runtime] Fast start mode enabled (build runs in background)`)
+  logTiming('Fast start mode enabled (build runs in background)')
 }
 
 // =============================================================================
 // S3 Sync Initialization
 // =============================================================================
 
+logTiming('Setting up S3 sync (async)...')
+
 let s3Sync: S3Sync | null = null
 
 // Initialize S3 sync in background (don't block server startup)
 ;(async () => {
+  const s3StartTime = Date.now()
   try {
     s3Sync = await initializeS3Sync(PROJECT_DIR)
     if (s3Sync) {
-      console.log(`[project-runtime] S3 sync initialized`)
+      const s3Duration = Date.now() - s3StartTime
+      logTiming(`S3 sync initialized (took ${s3Duration}ms)`)
+    } else {
+      logTiming('S3 sync not configured (S3_WORKSPACES_BUCKET not set)')
     }
   } catch (error) {
     console.error(`[project-runtime] S3 sync initialization failed:`, error)
@@ -441,24 +464,36 @@ function getBuildStatus(): { status: string; ready: boolean } {
 // Health check endpoint for Kubernetes probes
 // Always returns ok quickly - this is for liveness, not readiness
 app.get('/health', (c) => {
+  const uptimeMs = Date.now() - SERVER_START_TIME
   return c.json({
     status: 'ok',
     projectId: PROJECT_ID,
     projectDir: PROJECT_DIR,
     uptime: process.uptime(),
+    uptimeMs,
     fastStartMode: FAST_START_MODE,
+    coldStartMs: uptimeMs < 60000 ? uptimeMs : undefined, // Only show for first minute
   })
 })
 
 // Readiness check - returns 503 until build completes in fast start mode
+// Tracks timing to help diagnose cold start delays
+let firstReadyTime: number | null = null
+let readyCheckCount = 0
+
 app.get('/ready', (c) => {
+  readyCheckCount++
+  const uptimeMs = Date.now() - SERVER_START_TIME
   const projectDirExists = existsSync(PROJECT_DIR)
   
   if (!projectDirExists) {
+    console.log(`[project-runtime] [ready-check #${readyCheckCount}] [+${uptimeMs}ms] NOT READY: Project directory does not exist`)
     return c.json({
       status: 'not_ready',
       reason: 'Project directory does not exist',
       projectDir: PROJECT_DIR,
+      uptimeMs,
+      checkCount: readyCheckCount,
     }, 503)
   }
   
@@ -467,19 +502,31 @@ app.get('/ready', (c) => {
     const buildStatus = getBuildStatus()
     
     if (!buildStatus.ready) {
+      console.log(`[project-runtime] [ready-check #${readyCheckCount}] [+${uptimeMs}ms] NOT READY: ${buildStatus.status}`)
       return c.json({
         status: 'initializing',
         buildStatus: buildStatus.status,
         reason: 'Background initialization in progress',
         projectId: PROJECT_ID,
+        uptimeMs,
+        checkCount: readyCheckCount,
       }, 503)
     }
+  }
+  
+  // Track when we first became ready
+  if (!firstReadyTime) {
+    firstReadyTime = uptimeMs
+    logTiming(`READY! First ready after ${firstReadyTime}ms (${readyCheckCount} checks)`)
   }
   
   return c.json({
     status: 'ready',
     projectId: PROJECT_ID,
     projectDir: PROJECT_DIR,
+    uptimeMs,
+    firstReadyAfterMs: firstReadyTime,
+    checkCount: readyCheckCount,
   })
 })
 
@@ -2290,7 +2337,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 // Start Server
 // =============================================================================
 
-console.log(`[project-runtime] Starting server on port ${PORT}`)
+logTiming(`Starting HTTP server on port ${PORT}...`)
 
 // WebSocket handlers for LSP
 const websocketHandlers = {
@@ -2364,6 +2411,8 @@ function fetchHandler(request: Request, server: { upgrade: (req: Request, option
   // Forward all other requests to Hono
   return app.fetch(request)
 }
+
+logTiming('Server configuration complete, starting to accept connections')
 
 // Export default server configuration
 export default {

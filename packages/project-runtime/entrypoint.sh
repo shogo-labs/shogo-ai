@@ -13,17 +13,29 @@
 
 set -e
 
-echo "[entrypoint] =================================================="
-echo "[entrypoint] Project Runtime Starting (Fast Mode)"
-echo "[entrypoint] =================================================="
-echo "[entrypoint] PROJECT_ID: ${PROJECT_ID:-not set}"
-echo "[entrypoint] PROJECT_DIR: ${PROJECT_DIR:-/app/project}"
-echo "[entrypoint] NODE_ENV: ${NODE_ENV:-production}"
-echo "[entrypoint] =================================================="
+# =============================================================================
+# Startup timing - tracks elapsed time from container start
+# =============================================================================
+STARTUP_TIME=$(date +%s%3N)
+log_timing() {
+  local now=$(date +%s%3N)
+  local elapsed=$((now - STARTUP_TIME))
+  echo "[entrypoint] [+${elapsed}ms] $1"
+}
+
+log_timing "=================================================="
+log_timing "Project Runtime Starting (Fast Mode)"
+log_timing "=================================================="
+log_timing "PROJECT_ID: ${PROJECT_ID:-not set}"
+log_timing "PROJECT_DIR: ${PROJECT_DIR:-/app/project}"
+log_timing "NODE_ENV: ${NODE_ENV:-production}"
+log_timing "S3_WORKSPACES_BUCKET: ${S3_WORKSPACES_BUCKET:-not set}"
+log_timing "S3_WATCH_ENABLED: ${S3_WATCH_ENABLED:-true}"
+log_timing "=================================================="
 
 # Validate required environment
 if [ -z "$PROJECT_ID" ]; then
-  echo "[entrypoint] ERROR: PROJECT_ID environment variable is required"
+  log_timing "ERROR: PROJECT_ID environment variable is required"
   exit 1
 fi
 
@@ -34,16 +46,16 @@ export PROJECT_DIR
 # S3 sync configuration (handled by server.ts)
 # =============================================================================
 if [ -n "$S3_WORKSPACES_BUCKET" ] && [ -n "$PROJECT_ID" ]; then
-  echo "[entrypoint] S3 sync configured: $S3_WORKSPACES_BUCKET/$PROJECT_ID"
+  log_timing "S3 sync configured: $S3_WORKSPACES_BUCKET/$PROJECT_ID"
 else
-  echo "[entrypoint] S3 sync not configured"
+  log_timing "S3 sync not configured (emptyDir will be ephemeral)"
 fi
 
 # =============================================================================
 # Quick project initialization (just create minimal structure if needed)
 # =============================================================================
 if [ ! -f "$PROJECT_DIR/package.json" ]; then
-  echo "[entrypoint] Creating minimal project structure..."
+  log_timing "Creating minimal project structure..."
   mkdir -p "$PROJECT_DIR/src"
   
   cat > "$PROJECT_DIR/package.json" << 'EOF'
@@ -107,12 +119,13 @@ EOF
 </html>
 EOF
   
-  echo "[entrypoint] Minimal project created"
+  log_timing "Minimal project created"
 fi
 
 # =============================================================================
-# Background initialization script
+# Background initialization script (with timing)
 # =============================================================================
+log_timing "Creating background init script..."
 cat > /tmp/background-init.sh << 'BGSCRIPT'
 #!/bin/bash
 set -e
@@ -121,39 +134,51 @@ PROJECT_DIR="${PROJECT_DIR:-/app/project}"
 BUILD_STATUS_FILE="/tmp/build-status"
 TEMPLATE_CACHE="/template-cache/node_modules"
 
+# Timing function for background init
+BG_START_TIME=$(date +%s%3N)
+bg_log() {
+  local now=$(date +%s%3N)
+  local elapsed=$((now - BG_START_TIME))
+  echo "[bg-init] [+${elapsed}ms] $1"
+}
+
 echo "initializing" > "$BUILD_STATUS_FILE"
+bg_log "Background initialization started"
 
 cd "$PROJECT_DIR"
 
 # Step 1: Install dependencies (with cache optimization)
-echo "[bg-init] Installing dependencies..."
+bg_log "Step 1: Installing dependencies..."
+STEP_START=$(date +%s%3N)
 if [ -d "node_modules" ] && [ -f "bun.lock" ]; then
-  echo "[bg-init] Dependencies already installed"
+  bg_log "Dependencies already installed (cached)"
 else
   # Use pre-cached template dependencies if available
   # This dramatically speeds up install by using pre-downloaded packages
   if [ -d "$TEMPLATE_CACHE" ]; then
-    echo "[bg-init] Using pre-cached template dependencies..."
+    bg_log "Using pre-cached template dependencies..."
     # Copy cache to speed up bun install resolution
     cp -r "$TEMPLATE_CACHE" ./node_modules 2>/dev/null || true
   fi
   
   if bun install 2>&1; then
-    echo "[bg-init] Dependencies installed"
+    STEP_END=$(date +%s%3N)
+    bg_log "Dependencies installed (took $((STEP_END - STEP_START))ms)"
   else
-    echo "[bg-init] Dependency install failed"
+    bg_log "Dependency install failed"
     echo "failed:install" > "$BUILD_STATUS_FILE"
     exit 1
   fi
 fi
 
 # Step 2: Detect project type
+bg_log "Step 2: Detecting project type..."
 IS_TANSTACK_START=false
 if grep -q "@tanstack/react-start" "$PROJECT_DIR/package.json" 2>/dev/null; then
   IS_TANSTACK_START=true
-  echo "[bg-init] TanStack Start project detected"
+  bg_log "TanStack Start project detected"
 else
-  echo "[bg-init] Plain Vite project detected"
+  bg_log "Plain Vite project detected"
   
   # Generate vite config
   PREVIEW_BASE="/api/projects/${PROJECT_ID}/preview/"
@@ -169,44 +194,55 @@ EOF
 fi
 
 # Step 3: Build
-echo "[bg-init] Building project..."
+bg_log "Step 3: Building project..."
+STEP_START=$(date +%s%3N)
 if bun --bun vite build 2>&1; then
-  echo "[bg-init] Build completed"
+  STEP_END=$(date +%s%3N)
+  bg_log "Build completed (took $((STEP_END - STEP_START))ms)"
 else
-  echo "[bg-init] Build failed"
+  bg_log "Build failed"
   echo "failed:build" > "$BUILD_STATUS_FILE"
   exit 1
 fi
 
 # Step 4: Start Nitro server if TanStack Start
 if [ "$IS_TANSTACK_START" = true ] && [ -f "$PROJECT_DIR/.output/server/index.mjs" ]; then
-  echo "[bg-init] Starting TanStack Start server..."
+  bg_log "Step 4: Starting TanStack Start server..."
+  STEP_START=$(date +%s%3N)
   PORT=3000 bun run "$PROJECT_DIR/.output/server/index.mjs" &
   sleep 2
+  STEP_END=$(date +%s%3N)
+  bg_log "Nitro server started (took $((STEP_END - STEP_START))ms)"
 fi
 
 echo "ready" > "$BUILD_STATUS_FILE"
-echo "[bg-init] Initialization complete!"
+TOTAL_END=$(date +%s%3N)
+bg_log "=================================================="
+bg_log "Initialization complete! Total time: $((TOTAL_END - BG_START_TIME))ms"
+bg_log "=================================================="
 BGSCRIPT
 chmod +x /tmp/background-init.sh
 
 # =============================================================================
 # Start background initialization (non-blocking)
 # =============================================================================
-echo "[entrypoint] Starting background initialization..."
+log_timing "Starting background initialization..."
 /tmp/background-init.sh &
 BG_PID=$!
-echo "[entrypoint] Background init PID: $BG_PID"
+log_timing "Background init PID: $BG_PID"
 
 # =============================================================================
 # Start agent server IMMEDIATELY (fast health check)
 # =============================================================================
-echo "[entrypoint] Starting agent server (fast mode)..."
+log_timing "Starting agent server (fast mode)..."
 cd /app/packages/project-runtime
 
 # Export for server.ts
 export BUILD_STATUS_FILE="/tmp/build-status"
 export FAST_START_MODE=true
+export STARTUP_TIME="$STARTUP_TIME"
+
+log_timing "Launching bun server..."
 
 # Run the server - this blocks and keeps the container running
 exec bun run src/server.ts
