@@ -207,7 +207,16 @@ if [ "$IS_TANSTACK_START" = true ] && [ -f "$PROJECT_DIR/.output/server/index.mj
   bg_log "Step 4: Starting TanStack Start server..."
   STEP_START=$(date +%s%3N)
   PORT=3000 bun run "$PROJECT_DIR/.output/server/index.mjs" &
-  sleep 2
+  
+  # Wait for server to be ready (max 2s with exponential backoff)
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -sf http://localhost:3000/ > /dev/null 2>&1; then
+      bg_log "Nitro server ready after $i attempt(s)"
+      break
+    fi
+    sleep 0.$((i * 10))  # 0.1s, 0.2s, 0.3s, etc.
+  done
+  
   STEP_END=$(date +%s%3N)
   bg_log "Nitro server started (took $((STEP_END - STEP_START))ms)"
 fi

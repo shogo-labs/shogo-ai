@@ -857,18 +857,30 @@ app.post('/preview/restart', async (c) => {
         stderr: 'inherit',
       })
       
-      // Wait for server to start
-      await new Promise(resolve => setTimeout(resolve, 3000))
+      // Wait for server to be ready with exponential backoff (max ~2s total)
+      let serverReady = false
+      const maxAttempts = 10
+      const baseDelayMs = 100
+      
+      for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${NITRO_SERVER_PORT}/`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ⏱️  Nitro server ready after ${attempt} attempt(s)`)
+          }
+        } catch (e) {
+          // Server not ready yet, wait with exponential backoff
+          const delay = Math.min(baseDelayMs * attempt, 500)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
+      }
       markStep('startNitroServer')
       
-      // Check if running
-      try {
-        const healthCheck = await fetch(`http://localhost:${NITRO_SERVER_PORT}/`)
-        console.log(`[project-runtime] Nitro server health check: ${healthCheck.status}`)
-        markStep('nitroHealthCheck')
-      } catch (e) {
-        console.warn('[project-runtime] Nitro server may still be starting...')
-        markStep('nitroHealthCheck (failed)')
+      if (!serverReady) {
+        console.warn('[project-runtime] Nitro server may still be starting after health checks...')
       }
     }
     
