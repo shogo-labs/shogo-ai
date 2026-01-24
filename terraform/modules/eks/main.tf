@@ -301,7 +301,7 @@ resource "aws_eks_node_group" "main" {
   instance_types = var.node_instance_types
   capacity_type  = "ON_DEMAND"
 
-  # Use launch template to attach our security group
+  # Use launch template to attach our security group and configure disk size
   launch_template {
     id      = aws_launch_template.node_group.id
     version = aws_launch_template.node_group.latest_version
@@ -323,6 +323,13 @@ resource "aws_eks_node_group" "main" {
 
   tags = var.tags
 
+  # Force recreation when launch template changes to ensure nodes get new disk size
+  lifecycle {
+    replace_triggered_by = [
+      aws_launch_template.node_group.latest_version
+    ]
+  }
+
   depends_on = [
     aws_iam_role_policy_attachment.node_group_policies
   ]
@@ -342,7 +349,7 @@ resource "aws_eks_node_group" "medium" {
   instance_types = coalesce(var.secondary_node_instance_types, var.node_instance_types)
   capacity_type  = "ON_DEMAND"
 
-  # Use same launch template as primary node group
+  # Use same launch template as primary node group (includes 50GB disk)
   launch_template {
     id      = aws_launch_template.node_group.id
     version = aws_launch_template.node_group.latest_version
@@ -363,6 +370,13 @@ resource "aws_eks_node_group" "medium" {
   }
 
   tags = var.tags
+
+  # Force recreation when launch template changes to ensure nodes get new disk size
+  lifecycle {
+    replace_triggered_by = [
+      aws_launch_template.node_group.latest_version
+    ]
+  }
 
   depends_on = [
     aws_iam_role_policy_attachment.node_group_policies

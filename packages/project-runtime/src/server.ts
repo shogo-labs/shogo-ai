@@ -1166,22 +1166,61 @@ app.post('/preview/restart', async (c) => {
       console.log('[project-runtime] ✅ Database schema pushed successfully')
     }
     
-    // 5. Build the project (skip if build artifacts already exist AND force=false)
-    // force=true is used when AI agent modifies code - must rebuild
-    // force=false (default) is used for template copy / S3 restore - can skip if pre-built
+    // 5. Build the project (skip if build artifacts are up-to-date)
+    // Conditions to skip build:
+    //   - Build artifacts exist (dist/ or .output/)
+    //   - force=false (force=true always rebuilds)
+    //   - No source files are newer than the build artifacts
     const url = new URL(c.req.url)
     const forceRebuild = url.searchParams.get('force') === 'true'
     
-    const nitroOutputExists = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
-    const viteDistExists = existsSync(join(PROJECT_DIR, 'dist', 'index.html'))
+    const nitroOutputPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
+    const viteDistPath = join(PROJECT_DIR, 'dist', 'index.html')
+    const nitroOutputExists = existsSync(nitroOutputPath)
+    const viteDistExists = existsSync(viteDistPath)
     const buildExists = isTanStackStart ? nitroOutputExists : viteDistExists
     
+    // Check if source files have been modified since the last build
+    let sourceFilesModified = false
     if (buildExists && !forceRebuild) {
-      console.log('[project-runtime] ⚡ Build output already exists (pre-built from template) - skipping vite build')
-      markStep('viteBuild (skipped - pre-built)')
+      const buildPath = isTanStackStart ? nitroOutputPath : viteDistPath
+      const buildMtime = statSync(buildPath).mtimeMs
+      
+      // Check if any source files are newer than the build
+      const srcDir = join(PROJECT_DIR, 'src')
+      if (existsSync(srcDir)) {
+        const checkSourceFiles = (dir: string): boolean => {
+          try {
+            const entries = readdirSync(dir, { withFileTypes: true })
+            for (const entry of entries) {
+              const fullPath = join(dir, entry.name)
+              if (entry.isDirectory() && entry.name !== 'node_modules') {
+                if (checkSourceFiles(fullPath)) return true
+              } else if (entry.isFile() && /\.(tsx?|jsx?|css|scss|html|json)$/.test(entry.name)) {
+                const fileMtime = statSync(fullPath).mtimeMs
+                if (fileMtime > buildMtime) {
+                  console.log(`[project-runtime] Source file modified: ${fullPath} (${new Date(fileMtime).toISOString()} > ${new Date(buildMtime).toISOString()})`)
+                  return true
+                }
+              }
+            }
+          } catch {
+            // Ignore errors reading directories
+          }
+          return false
+        }
+        sourceFilesModified = checkSourceFiles(srcDir)
+      }
+    }
+    
+    if (buildExists && !forceRebuild && !sourceFilesModified) {
+      console.log('[project-runtime] ⚡ Build output already exists and up-to-date - skipping vite build')
+      markStep('viteBuild (skipped - up-to-date)')
     } else {
-      if (forceRebuild && buildExists) {
-        console.log('[project-runtime] ⏱️  Rebuilding project (force=true, code was modified)...')
+      if (sourceFilesModified) {
+        console.log('[project-runtime] ⏱️  Rebuilding project (source files modified)...')
+      } else if (forceRebuild && buildExists) {
+        console.log('[project-runtime] ⏱️  Rebuilding project (force=true)...')
       } else {
         console.log('[project-runtime] ⏱️  Building project...')
       }

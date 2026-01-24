@@ -322,6 +322,17 @@ jobs:
           echo "Waiting for mcp rollout..."
           kubectl wait --for=condition=ready ksvc/mcp-workspace -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
 
+      - name: Restart image prepuller
+        run: |
+          # Restart the image-prepuller DaemonSet to pull the new project-runtime image
+          # This ensures the new image is pre-pulled on all nodes for fast cold starts
+          echo "🔄 Restarting image-prepuller to pull new project-runtime image..."
+          kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} || echo "Image prepuller not found, skipping"
+          
+          # Wait for prepuller rollout (don't fail if it times out)
+          echo "⏳ Waiting for image-prepuller rollout..."
+          kubectl rollout status daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} --timeout=300s || echo "Prepuller rollout timeout (may still be pulling large image)"
+
       - name: Verify deployment
         run: |
           echo "=== Knative Services Status (${{ env.NS_SYSTEM }}) ==="
@@ -335,6 +346,9 @@ jobs:
           echo ""
           echo "=== Pods Status (${{ env.NS_SYSTEM }}) ==="
           kubectl get pods -n ${{ env.NS_SYSTEM }}
+          echo ""
+          echo "=== Image Prepuller Status ==="
+          kubectl get pods -n ${{ env.NS_SYSTEM }} -l app.kubernetes.io/name=image-prepuller -o wide
 
       - name: Summary
         run: |
