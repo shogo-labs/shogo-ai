@@ -15,19 +15,34 @@ import { cn } from "@/lib/utils"
 /**
  * Runtime status from API response
  */
-type RuntimeStatus = 'starting' | 'running' | 'stopping' | 'stopped' | 'error'
+type RuntimeStatus = 'not_found' | 'creating' | 'starting' | 'running' | 'stopping' | 'stopped' | 'error'
+
+/**
+ * Runtime status response from /runtime/status endpoint
+ */
+interface RuntimeStatusResponse {
+  projectId: string
+  status: RuntimeStatus
+  message?: string
+  ready: boolean
+  replicas?: number
+  url?: string
+}
 
 /**
  * Sandbox URL response from API
  */
 interface SandboxUrlResponse {
   url: string
-  directUrl: string
+  directUrl?: string
   sandbox: string
   status: RuntimeStatus
+  ready: boolean
+  message?: string
   error?: {
     code: string
     message: string
+    retryable?: boolean
   }
 }
 
@@ -54,6 +69,7 @@ export function RuntimePreviewPanel({
   const [sandboxUrl, setSandboxUrl] = useState<string | null>(null)
   const [sandboxAttributes, setSandboxAttributes] = useState<string>('')
   const [status, setStatus] = useState<RuntimeStatus>('stopped')
+  const [statusMessage, setStatusMessage] = useState<string>('Initializing...')
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [hmrConnected, setHmrConnected] = useState(false)
@@ -61,84 +77,177 @@ export function RuntimePreviewPanel({
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const retryCountRef = useRef(0)
-  const maxAutoRetries = 10
+  const maxAutoRetries = 60 // Allow up to 60 polls (3 minutes at 3s intervals)
   const autoRetryTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const statusPollIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
   /**
-   * Fetch sandbox URL from API, which starts the runtime if needed.
-   * Includes auto-retry for transient errors during project setup.
+   * Poll runtime status to check if pod is ready.
+   * This is lightweight and doesn't create/wait for pods.
    */
-  const fetchSandboxUrl = useCallback(async (isAutoRetry = false) => {
+  const pollRuntimeStatus = useCallback(async (): Promise<RuntimeStatusResponse | null> => {
+    try {
+      const response = await fetch(`/api/projects/${projectId}/runtime/status`)
+      if (!response.ok) {
+        return null
+      }
+      return await response.json()
+    } catch {
+      return null
+    }
+  }, [projectId])
+
+  /**
+   * Start the runtime initialization flow:
+   * 1. Check current status with lightweight /runtime/status
+   * 2. If not ready, trigger creation with /sandbox/url?wait=false and poll status
+   * 3. Once ready, get the full sandbox URL
+   */
+  const initializeRuntime = useCallback(async () => {
     setIsLoading(true)
-    if (!isAutoRetry) {
-      setError(null)
+    setError(null)
+    retryCountRef.current = 0
+
+    // Clear any existing poll interval
+    if (statusPollIntervalRef.current) {
+      clearInterval(statusPollIntervalRef.current)
+      statusPollIntervalRef.current = null
     }
 
+    try {
+      // Step 1: Check current status
+      const initialStatus = await pollRuntimeStatus()
+      
+      if (initialStatus?.ready) {
+        // Pod is already running - get sandbox URL immediately
+        setStatus('running')
+        setStatusMessage('Runtime ready')
+        await fetchSandboxUrlOnce()
+        return
+      }
+
+      // Step 2: Pod not ready - trigger creation (non-blocking)
+      setStatus(initialStatus?.status || 'creating')
+      setStatusMessage(initialStatus?.message || 'Creating project runtime...')
+      
+      // Trigger pod creation in background
+      fetch(`/api/projects/${projectId}/sandbox/url?wait=false`).catch(() => {})
+
+      // Step 3: Poll status until ready
+      let pollCount = 0
+      const maxPolls = maxAutoRetries
+      const pollInterval = 3000 // 3 seconds
+
+      const doPoll = async () => {
+        pollCount++
+        const status = await pollRuntimeStatus()
+
+        if (status?.ready) {
+          // Pod is ready - get sandbox URL
+          if (statusPollIntervalRef.current) {
+            clearInterval(statusPollIntervalRef.current)
+            statusPollIntervalRef.current = null
+          }
+          setStatus('running')
+          setStatusMessage('Runtime ready')
+          await fetchSandboxUrlOnce()
+          return
+        }
+
+        // Update status message
+        if (status) {
+          setStatus(status.status)
+          const progressMsg = getProgressMessage(status.status, pollCount)
+          setStatusMessage(status.message || progressMsg)
+        }
+
+        // Check if we've exceeded max polls
+        if (pollCount >= maxPolls) {
+          if (statusPollIntervalRef.current) {
+            clearInterval(statusPollIntervalRef.current)
+            statusPollIntervalRef.current = null
+          }
+          setError('Runtime startup timed out. Please try again.')
+          setIsLoading(false)
+        }
+      }
+
+      // Initial poll
+      await doPoll()
+
+      // Continue polling if not ready
+      if (!sandboxUrl) {
+        statusPollIntervalRef.current = setInterval(doPoll, pollInterval)
+      }
+
+    } catch (err: any) {
+      setError(err.message || 'Failed to initialize runtime')
+      setIsLoading(false)
+    }
+  }, [projectId, pollRuntimeStatus])
+
+  /**
+   * Get a user-friendly progress message based on status
+   */
+  const getProgressMessage = (status: RuntimeStatus, pollCount: number): string => {
+    const elapsed = pollCount * 3 // Approximate seconds
+    switch (status) {
+      case 'not_found':
+        return 'Creating project environment...'
+      case 'creating':
+        if (elapsed < 15) return 'Creating project pod...'
+        if (elapsed < 30) return 'Setting up environment...'
+        if (elapsed < 60) return 'Installing dependencies...'
+        return 'Almost ready...'
+      case 'starting':
+        if (elapsed < 30) return 'Starting runtime server...'
+        if (elapsed < 60) return 'Building project...'
+        return 'Finalizing startup...'
+      default:
+        return 'Preparing runtime...'
+    }
+  }
+
+  /**
+   * Fetch sandbox URL once (after runtime is ready).
+   * Uses the blocking version since we know the pod is ready.
+   */
+  const fetchSandboxUrlOnce = useCallback(async () => {
     try {
       const response = await fetch(`/api/projects/${projectId}/sandbox/url`)
       const data: SandboxUrlResponse = await response.json()
 
-      if (!response.ok) {
-        const errorCode = data.error?.code || ''
+      if (!response.ok || !data.ready) {
+        // Shouldn't happen if we polled correctly, but handle gracefully
         const errorMessage = data.error?.message || 'Failed to get sandbox URL'
-        
-        // Check if this is a transient error that should be auto-retried
-        const isTransientError = 
-          errorCode === 'pod_unavailable' ||
-          errorCode === 'project_not_found' ||
-          errorMessage.includes('not found') ||
-          errorMessage.includes('starting') ||
-          errorMessage.includes('unavailable') ||
-          response.status === 503 ||
-          response.status === 502
-
-        if (isTransientError && retryCountRef.current < maxAutoRetries) {
-          retryCountRef.current += 1
-          const delay = Math.min(1000 * retryCountRef.current, 5000) // Exponential backoff, max 5s
-          
-          // Only show loading state, don't set error for auto-retries
-          if (retryCountRef.current > 3) {
-            console.debug(`[RuntimePreviewPanel] Runtime not ready, auto-retrying (${retryCountRef.current}/${maxAutoRetries})...`)
+        if (data.error?.retryable) {
+          // Restart the polling loop
+          retryCountRef.current++
+          if (retryCountRef.current < 3) {
+            autoRetryTimeoutRef.current = setTimeout(() => {
+              initializeRuntime()
+            }, 2000)
+            return
           }
-          
-          autoRetryTimeoutRef.current = setTimeout(() => {
-            fetchSandboxUrl(true)
-          }, delay)
-          return
         }
-
         setError(errorMessage)
         return
       }
 
       setSandboxUrl(data.url)
       setSandboxAttributes(data.sandbox)
-      setStatus(data.status)
+      setStatus('running')
       retryCountRef.current = 0
 
     } catch (err: any) {
-      const errorMessage = err.message || 'Failed to connect to runtime'
-      
-      // Auto-retry network errors during setup
-      if (retryCountRef.current < maxAutoRetries) {
-        retryCountRef.current += 1
-        const delay = Math.min(1000 * retryCountRef.current, 5000)
-        
-        if (retryCountRef.current > 3) {
-          console.debug(`[RuntimePreviewPanel] Network error, auto-retrying (${retryCountRef.current}/${maxAutoRetries})...`)
-        }
-        
-        autoRetryTimeoutRef.current = setTimeout(() => {
-          fetchSandboxUrl(true)
-        }, delay)
-        return
-      }
-
-      setError(errorMessage)
+      setError(err.message || 'Failed to connect to runtime')
     } finally {
       setIsLoading(false)
     }
-  }, [projectId]) // Intentionally omit onError to prevent re-renders from inline callbacks
+  }, [projectId, initializeRuntime])
+
+  // Legacy function for backwards compatibility with retry button
+  const fetchSandboxUrl = initializeRuntime
 
   /**
    * Handle iframe load event.
@@ -200,16 +309,29 @@ export function RuntimePreviewPanel({
     }
   }, [sandboxUrl])
 
-  // Fetch sandbox URL on mount and when projectId changes
+  // Initialize runtime on mount and when projectId changes
   useEffect(() => {
     // Reset state
     retryCountRef.current = 0
     setError(null)
     setSandboxUrl(null)
+    setStatus('stopped')
+    setStatusMessage('Initializing...')
+    setIframeLoaded(false)
     
-    fetchSandboxUrl()
+    // Clear any existing intervals
+    if (statusPollIntervalRef.current) {
+      clearInterval(statusPollIntervalRef.current)
+      statusPollIntervalRef.current = null
+    }
+    if (autoRetryTimeoutRef.current) {
+      clearTimeout(autoRetryTimeoutRef.current)
+      autoRetryTimeoutRef.current = null
+    }
+    
+    initializeRuntime()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]) // Only depend on projectId, not fetchSandboxUrl
+  }, [projectId]) // Only depend on projectId, not initializeRuntime
 
   // Track previous refreshTrigger to detect changes
   const prevRefreshTriggerRef = useRef(refreshTrigger)
@@ -268,6 +390,10 @@ export function RuntimePreviewPanel({
       if (autoRetryTimeoutRef.current) {
         clearTimeout(autoRetryTimeoutRef.current)
       }
+      // Clear status poll interval
+      if (statusPollIntervalRef.current) {
+        clearInterval(statusPollIntervalRef.current)
+      }
       // Fire-and-forget stop request on unmount
       fetch(`/api/projects/${projectId}/runtime/stop`, { method: 'POST' })
         .catch(() => {}) // Ignore errors on unmount
@@ -303,17 +429,26 @@ export function RuntimePreviewPanel({
     )
   }
 
-  // Loading state
+  // Loading state - show detailed progress during cold start
   if (isLoading && !sandboxUrl) {
     return (
       <div className={cn(
         "flex flex-col items-center justify-center h-full w-full bg-muted/30",
         className
       )}>
-        <div className="flex flex-col items-center gap-4">
+        <div className="flex flex-col items-center gap-4 max-w-sm text-center">
           <Loader2 className="h-8 w-8 text-primary animate-spin" />
-          <div className="text-sm text-muted-foreground">
-            Starting project runtime...
+          <div>
+            <div className="text-sm font-medium text-foreground">
+              {statusMessage}
+            </div>
+            {status !== 'running' && status !== 'stopped' && (
+              <div className="text-xs text-muted-foreground mt-1">
+                {status === 'creating' || status === 'not_found' 
+                  ? 'This may take up to 30 seconds for new projects'
+                  : 'Warming up the server...'}
+              </div>
+            )}
           </div>
         </div>
       </div>
