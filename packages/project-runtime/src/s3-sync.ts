@@ -208,39 +208,67 @@ export class S3Sync {
       return
     }
 
+    // Check if directory exists before starting watcher
+    try {
+      const dirStat = require('fs').statSync(this.config.localDir)
+      if (!dirStat.isDirectory()) {
+        console.warn(`[S3Sync] Cannot start watcher: ${this.config.localDir} is not a directory`)
+        return
+      }
+    } catch (error: any) {
+      console.warn(`[S3Sync] Cannot start watcher: ${this.config.localDir} does not exist`)
+      return
+    }
+
     console.log(`[S3Sync] Starting file watcher on ${this.config.localDir}`)
 
-    this.watcher = watch(
-      this.config.localDir,
-      { recursive: true },
-      (eventType, filename) => {
-        if (!filename || this.shouldExclude(filename)) return
+    try {
+      this.watcher = watch(
+        this.config.localDir,
+        { recursive: true },
+        (eventType, filename) => {
+          try {
+            if (!filename || this.shouldExclude(filename)) return
 
-        const filePath = join(this.config.localDir, filename)
-        this.pendingUploads.add(filePath)
+            const filePath = join(this.config.localDir, filename)
+            this.pendingUploads.add(filePath)
 
-        // Debounce uploads
-        if (this.uploadDebounceTimer) {
-          clearTimeout(this.uploadDebounceTimer)
-        }
-
-        this.uploadDebounceTimer = setTimeout(async () => {
-          const files = Array.from(this.pendingUploads)
-          this.pendingUploads.clear()
-
-          for (const file of files) {
-            try {
-              const stats = await stat(file).catch(() => null)
-              if (stats?.isFile()) {
-                await this.uploadFile(file)
-              }
-            } catch (error) {
-              // File may have been deleted
+            // Debounce uploads
+            if (this.uploadDebounceTimer) {
+              clearTimeout(this.uploadDebounceTimer)
             }
+
+            this.uploadDebounceTimer = setTimeout(async () => {
+              const files = Array.from(this.pendingUploads)
+              this.pendingUploads.clear()
+
+              for (const file of files) {
+                try {
+                  const stats = await stat(file).catch(() => null)
+                  if (stats?.isFile()) {
+                    await this.uploadFile(file)
+                  }
+                } catch (error) {
+                  // File may have been deleted - ignore
+                }
+              }
+            }, 1000) // 1 second debounce
+          } catch (error: any) {
+            // Ignore errors in watcher callback - file may have been deleted
+            console.warn(`[S3Sync] Watcher callback error (ignored):`, error.message)
           }
-        }, 1000) // 1 second debounce
-      }
-    )
+        }
+      )
+      
+      // Handle watcher errors gracefully
+      this.watcher.on('error', (error: Error) => {
+        console.warn(`[S3Sync] File watcher error (continuing without watcher):`, error.message)
+        this.stopWatcher()
+      })
+    } catch (error: any) {
+      console.warn(`[S3Sync] Failed to start file watcher:`, error.message)
+      // Don't crash - continue without file watcher
+    }
   }
 
   /**
@@ -514,8 +542,15 @@ export async function initializeS3Sync(localDir: string): Promise<S3Sync | null>
   // Start periodic sync (upload changes)
   sync.startPeriodicSync()
 
-  // Start file watcher if enabled
-  sync.startWatcher()
+  // Only start file watcher if there are files to watch
+  // For new projects (0 files), the watcher will be started later after template.copy
+  // This prevents crashes when watching empty directories
+  if (downloadStats.downloaded > 0) {
+    sync.startWatcher()
+  } else {
+    console.log('[S3Sync] Skipping file watcher (no files downloaded - new project)')
+    console.log('[S3Sync] Watcher will be started after files are added')
+  }
 
   return sync
 }

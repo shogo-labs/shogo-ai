@@ -523,3 +523,13 @@ output "ebs_csi_driver_role_arn" {
   description = "IAM role ARN for EBS CSI driver"
   value       = aws_iam_role.ebs_csi_driver.arn
 }
+
+output "node_role_name" {
+  description = "IAM role name for EKS node group"
+  value       = aws_iam_role.node_group.name
+}
+
+output "node_role_arn" {
+  description = "IAM role ARN for EKS node group"
+  value       = aws_iam_role.node_group.arn
+}
