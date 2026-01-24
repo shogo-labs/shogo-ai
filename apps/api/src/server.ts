@@ -1079,12 +1079,57 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
   }
 })
 
-// Restart project runtime (useful after template copy)
+// Restart project runtime (useful after template copy or file changes)
+// In Kubernetes, this triggers a rebuild in the project-runtime pod
 app.post('/api/projects/:projectId/runtime/restart', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod's /preview/restart endpoint
+    // This triggers a rebuild (vite build) and restarts the preview server
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      
+      console.log(`[Runtime Restart] Proxying to project-runtime pod: ${podUrl}/preview/restart`)
+      
+      const response = await fetch(`${podUrl}/preview/restart`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+      
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error(`[Runtime Restart] Pod returned error:`, errorText)
+        return c.json({
+          success: false,
+          error: `Rebuild failed: ${response.status}`,
+          details: errorText,
+        }, response.status as any)
+      }
+      
+      const result = await response.json()
+      return c.json({
+        success: true,
+        projectId,
+        ...result,
+      })
+    } catch (err: any) {
+      console.error('[Runtime Restart] Error:', err)
+      return c.json({
+        success: false,
+        error: err.message || 'Failed to restart runtime',
+      }, 500)
+    }
+  }
+  
+  // Local development: use RuntimeManager
   const manager = getRuntimeManager()
   const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/runtime/restart`
+  url.pathname = `/projects/${projectId}/runtime/restart`
   const newReq = new Request(url.toString(), { method: 'POST' })
   return router.fetch(newReq)
 })

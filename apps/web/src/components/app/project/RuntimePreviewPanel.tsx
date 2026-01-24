@@ -335,35 +335,67 @@ export function RuntimePreviewPanel({
 
   // Track previous refreshTrigger to detect changes
   const prevRefreshTriggerRef = useRef(refreshTrigger)
+  const isRebuildingRef = useRef(false)
+
+  /**
+   * Trigger a rebuild of the project (vite build) and then reload the preview.
+   * This is needed because the preview serves static files from dist/,
+   * so file changes don't appear until a rebuild happens.
+   */
+  const triggerRebuild = useCallback(async () => {
+    if (isRebuildingRef.current) {
+      console.log('[RuntimePreviewPanel] Rebuild already in progress, skipping')
+      return
+    }
+
+    isRebuildingRef.current = true
+    setStatusMessage('Rebuilding project...')
+
+    try {
+      console.log('[RuntimePreviewPanel] Triggering project rebuild...')
+      const response = await fetch(`/api/projects/${projectId}/runtime/restart`, {
+        method: 'POST',
+      })
+
+      if (response.ok) {
+        const result = await response.json()
+        console.log('[RuntimePreviewPanel] Rebuild complete:', result)
+        
+        // Wait a moment for the server to be ready, then reload iframe
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        handleRefresh()
+      } else {
+        console.warn('[RuntimePreviewPanel] Rebuild failed, falling back to iframe refresh')
+        // Fallback: just refresh the iframe (might show stale content)
+        handleRefresh()
+      }
+    } catch (err) {
+      console.error('[RuntimePreviewPanel] Rebuild error:', err)
+      // Fallback: just refresh the iframe
+      handleRefresh()
+    } finally {
+      isRebuildingRef.current = false
+      setStatusMessage('')
+    }
+  }, [projectId, handleRefresh])
 
   // Auto-refresh when refreshTrigger changes (triggered by agent file modifications)
-  // task-preview-autorefresh-fix: Multi-stage refresh for reliability after template operations
+  // This triggers a full rebuild since the preview serves static files
   useEffect(() => {
     if (refreshTrigger !== prevRefreshTriggerRef.current && sandboxUrl) {
       prevRefreshTriggerRef.current = refreshTrigger
-      console.log('[RuntimePreviewPanel] Auto-refreshing preview due to file changes')
+      console.log('[RuntimePreviewPanel] Files changed, triggering rebuild...')
       
-      // Stage 1: Initial refresh after Vite detects changes (2s)
-      // This handles most file modifications
-      const timer1 = setTimeout(() => {
-        console.log('[RuntimePreviewPanel] Stage 1 refresh')
-        handleRefresh()
-      }, 2000)
-      
-      // Stage 2: Follow-up refresh for template_copy operations (5s)
-      // Template operations may cause Vite to rebuild which invalidates the first load
-      // This catches "Failed to fetch dynamically imported module" errors
-      const timer2 = setTimeout(() => {
-        console.log('[RuntimePreviewPanel] Stage 2 refresh (template fallback)')
-        handleRefresh()
-      }, 5000)
+      // Debounce: wait a moment for multiple file changes to settle
+      const timer = setTimeout(() => {
+        triggerRebuild()
+      }, 1500)
       
       return () => {
-        clearTimeout(timer1)
-        clearTimeout(timer2)
+        clearTimeout(timer)
       }
     }
-  }, [refreshTrigger, sandboxUrl, handleRefresh])
+  }, [refreshTrigger, sandboxUrl, triggerRebuild])
 
   // Listen for HMR status messages from iframe
   useEffect(() => {

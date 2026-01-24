@@ -307,9 +307,28 @@ export function publishRoutes() {
       try {
         await createDomainMapping(subdomain)
       } catch (err: any) {
-        console.error("[Publish] Failed to create DomainMapping:", err)
+        // Log detailed error for debugging
+        console.error("[Publish] Failed to create DomainMapping:", {
+          subdomain,
+          namespace: NAMESPACE,
+          baseDomain: BASE_DOMAIN,
+          error: err?.message,
+          statusCode: err?.response?.statusCode,
+          body: err?.response?.body,
+        })
+        
+        // Provide more specific error messages based on the Kubernetes API error
+        let message = "Failed to create domain mapping"
+        if (err?.response?.statusCode === 403) {
+          message = "Permission denied: API service account lacks RBAC permissions for DomainMappings"
+        } else if (err?.response?.statusCode === 404) {
+          message = `Namespace '${NAMESPACE}' or Knative Serving not found`
+        } else if (err?.message) {
+          message = `Domain mapping failed: ${err.message}`
+        }
+        
         return c.json(
-          { error: { code: "infrastructure_error", message: "Failed to create domain mapping" } },
+          { error: { code: "infrastructure_error", message } },
           500
         )
       }
