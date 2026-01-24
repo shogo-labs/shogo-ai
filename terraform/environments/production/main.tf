@@ -167,6 +167,7 @@ module "eks" {
   node_desired_size   = var.node_desired_size
   node_min_size       = var.node_min_size
   node_max_size       = var.node_max_size
+  node_disk_size      = 50  # GB - increased from 20GB default to handle large container images
 
   # Enable Karpenter for workspace autoscaling
   enable_karpenter = true

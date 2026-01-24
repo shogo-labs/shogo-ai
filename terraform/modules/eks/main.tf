@@ -61,6 +61,12 @@ variable "enable_secondary_node_group" {
   default     = false
 }
 
+variable "node_disk_size" {
+  description = "Disk size in GB for node group instances"
+  type        = number
+  default     = 50
+}
+
 variable "secondary_node_instance_types" {
   description = "Instance types for secondary node group (defaults to primary node_instance_types)"
   type        = list(string)
@@ -253,6 +259,18 @@ resource "aws_launch_template" "node_group" {
     aws_security_group.node.id,
     aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
   ]
+
+  # Root volume configuration
+  block_device_mappings {
+    device_name = "/dev/xvda"
+
+    ebs {
+      volume_size           = var.node_disk_size
+      volume_type           = "gp3"
+      delete_on_termination = true
+      encrypted             = true
+    }
+  }
 
   # Metadata options for IMDSv2 (recommended)
   metadata_options {
