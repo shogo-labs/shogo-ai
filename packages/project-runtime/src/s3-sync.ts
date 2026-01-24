@@ -483,6 +483,7 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
 
 /**
  * Initialize S3 sync: download files and start background sync.
+ * Returns null if S3 is not configured OR if initial download fails critically.
  */
 export async function initializeS3Sync(localDir: string): Promise<S3Sync | null> {
   const sync = createS3SyncFromEnv(localDir)
@@ -492,7 +493,23 @@ export async function initializeS3Sync(localDir: string): Promise<S3Sync | null>
   }
 
   // Download files from S3
-  await sync.downloadAll()
+  const downloadStats = await sync.downloadAll()
+  
+  // Check if download had critical errors (like access denied)
+  // If so, don't start the watcher - it could cause crashes on incomplete directories
+  const hasCriticalError = downloadStats.errors.some(err => 
+    err.includes('AccessDenied') || 
+    err.includes('NoSuchBucket') ||
+    err.includes('InvalidAccessKeyId') ||
+    err.includes('SignatureDoesNotMatch')
+  )
+  
+  if (hasCriticalError) {
+    console.warn('[S3Sync] Critical error during initial download - S3 sync disabled')
+    console.warn('[S3Sync] Errors:', downloadStats.errors)
+    // Don't start watcher or periodic sync - this would cause issues
+    return null
+  }
 
   // Start periodic sync (upload changes)
   sync.startPeriodicSync()
