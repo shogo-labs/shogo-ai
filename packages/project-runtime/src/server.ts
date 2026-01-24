@@ -737,7 +737,19 @@ let nitroProcess: ReturnType<typeof Bun.spawn> | null = null
  * 5. Start the Nitro server (for TanStack Start) or serve static files (plain Vite)
  */
 app.post('/preview/restart', async (c) => {
-  console.log(`[project-runtime] Restarting preview for project ${PROJECT_ID}...`)
+  const startTime = performance.now()
+  const timings: { step: string; durationMs: number }[] = []
+  let lastMark = startTime
+  
+  const markStep = (name: string) => {
+    const now = performance.now()
+    const duration = Math.round(now - lastMark)
+    timings.push({ step: name, durationMs: duration })
+    console.log(`[project-runtime] ⏱️  ${name}: ${duration}ms`)
+    lastMark = now
+  }
+  
+  console.log(`[project-runtime] ⏱️  Starting preview restart for project ${PROJECT_ID}...`)
   
   try {
     // 1. Kill existing Nitro server if running
@@ -746,75 +758,85 @@ app.post('/preview/restart', async (c) => {
       nitroProcess.kill()
       nitroProcess = null
     }
+    markStep('killExistingServer')
     
     // 2. Check if this is a TanStack Start project
     const packageJsonPath = join(PROJECT_DIR, 'package.json')
     if (!existsSync(packageJsonPath)) {
-      return c.json({ success: false, error: 'No package.json found' }, 400)
+      const totalMs = Math.round(performance.now() - startTime)
+      return c.json({ success: false, error: 'No package.json found', timings: { steps: timings, totalMs } }, 400)
     }
     
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
     isTanStackStart = !!deps['@tanstack/react-start']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
+    markStep('parsePackageJson')
     
     console.log(`[project-runtime] Project type: ${isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'}`)
     
     // 3. Install dependencies
-    console.log('[project-runtime] Installing dependencies...')
+    console.log('[project-runtime] ⏱️  Installing dependencies...')
     const installProc = Bun.spawn(['bun', 'install'], {
       cwd: PROJECT_DIR,
       stdout: 'inherit',
       stderr: 'inherit',
     })
     await installProc.exited
+    markStep('bunInstall')
     
     if (installProc.exitCode !== 0) {
       console.error('[project-runtime] Install failed')
-      return c.json({ success: false, error: 'Dependency installation failed' }, 500)
+      const totalMs = Math.round(performance.now() - startTime)
+      return c.json({ success: false, error: 'Dependency installation failed', timings: { steps: timings, totalMs } }, 500)
     }
     
     // 4. Run prisma generate and db push if prisma is present
     if (hasPrisma) {
-      console.log('[project-runtime] Running prisma generate...')
+      console.log('[project-runtime] ⏱️  Running prisma generate...')
       const prismaGenProc = Bun.spawn(['bunx', 'prisma', 'generate'], {
         cwd: PROJECT_DIR,
         stdout: 'inherit',
         stderr: 'inherit',
       })
       await prismaGenProc.exited
+      markStep('prismaGenerate')
       
-      console.log('[project-runtime] Running prisma db push...')
+      console.log('[project-runtime] ⏱️  Running prisma db push...')
       const prismaPushProc = Bun.spawn(['bunx', 'prisma', 'db', 'push'], {
         cwd: PROJECT_DIR,
         stdout: 'inherit',
         stderr: 'inherit',
       })
       await prismaPushProc.exited
+      markStep('prismaDbPush')
     }
     
     // 5. Build the project
-    console.log('[project-runtime] Building project...')
+    console.log('[project-runtime] ⏱️  Building project...')
     const buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
       cwd: PROJECT_DIR,
       stdout: 'inherit',
       stderr: 'inherit',
     })
     await buildProc.exited
+    markStep('viteBuild')
     
     if (buildProc.exitCode !== 0) {
       console.error('[project-runtime] Build failed')
-      return c.json({ success: false, error: 'Build failed' }, 500)
+      const totalMs = Math.round(performance.now() - startTime)
+      return c.json({ success: false, error: 'Build failed', timings: { steps: timings, totalMs } }, 500)
     }
     
     // 6. Start Nitro server for TanStack Start
     if (isTanStackStart) {
       const serverPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
       if (!existsSync(serverPath)) {
-        return c.json({ success: false, error: 'Nitro build output not found at .output/server/index.mjs' }, 500)
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ success: false, error: 'Nitro build output not found at .output/server/index.mjs', timings: { steps: timings, totalMs } }, 500)
       }
       
-      console.log(`[project-runtime] Starting Nitro server on port ${NITRO_SERVER_PORT}...`)
+      console.log(`[project-runtime] ⏱️  Starting Nitro server on port ${NITRO_SERVER_PORT}...`)
       nitroProcess = Bun.spawn(['bun', 'run', serverPath], {
         cwd: PROJECT_DIR,
         env: { ...process.env, PORT: String(NITRO_SERVER_PORT) },
@@ -824,25 +846,33 @@ app.post('/preview/restart', async (c) => {
       
       // Wait for server to start
       await new Promise(resolve => setTimeout(resolve, 3000))
+      markStep('startNitroServer')
       
       // Check if running
       try {
         const healthCheck = await fetch(`http://localhost:${NITRO_SERVER_PORT}/`)
         console.log(`[project-runtime] Nitro server health check: ${healthCheck.status}`)
+        markStep('nitroHealthCheck')
       } catch (e) {
         console.warn('[project-runtime] Nitro server may still be starting...')
+        markStep('nitroHealthCheck (failed)')
       }
     }
     
-    console.log('[project-runtime] Preview restart completed')
+    const totalMs = Math.round(performance.now() - startTime)
+    console.log(`[project-runtime] ⏱️  Preview restart completed in ${totalMs}ms`)
+    console.log(`[project-runtime] ⏱️  Timing breakdown: ${JSON.stringify(timings)}`)
+    
     return c.json({
       success: true,
       mode: isTanStackStart ? 'nitro' : 'static',
       port: isTanStackStart ? NITRO_SERVER_PORT : null,
+      timings: { steps: timings, totalMs },
     })
   } catch (error: any) {
-    console.error('[project-runtime] Preview restart error:', error)
-    return c.json({ success: false, error: error.message }, 500)
+    const totalMs = Math.round(performance.now() - startTime)
+    console.error(`[project-runtime] ⏱️  Preview restart error after ${totalMs}ms:`, error)
+    return c.json({ success: false, error: error.message, timings: { steps: timings, totalMs } }, 500)
   }
 })
 

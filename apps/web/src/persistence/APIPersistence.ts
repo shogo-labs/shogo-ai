@@ -3,6 +3,11 @@
  *
  * This replaces MCPPersistence to remove MCP dependency while keeping
  * the same IPersistenceService interface for the MST domain stores.
+ *
+ * OPTIMIZATION: Implements request deduplication to prevent API spam when
+ * multiple components call loadCollection() for the same resource simultaneously.
+ * In-flight requests are tracked and reused, with a short cache window (100ms)
+ * to handle rapid successive calls from React effects.
  */
 import type {
   IPersistenceService,
@@ -12,6 +17,10 @@ import type {
 
 // Base API URL - use relative path (proxied by nginx in k8s, Vite in dev)
 const API_BASE = import.meta.env.VITE_API_URL || ''
+
+// Deduplication cache duration in milliseconds
+// Short enough to always get fresh data, long enough to dedupe rapid calls
+const DEDUP_CACHE_MS = 100
 
 // Model name to route path mapping (kebab-case, plural)
 const MODEL_ROUTE_MAP: Record<string, string> = {
@@ -34,17 +43,71 @@ const MODEL_ROUTE_MAP: Record<string, string> = {
   ToolCallLog: 'tool-call-logs',
 }
 
+/**
+ * Cache entry for request deduplication
+ */
+interface CacheEntry {
+  promise: Promise<any>
+  timestamp: number
+}
+
 export class APIPersistence implements IPersistenceService {
   private userId: string | null = null
 
   /**
+   * In-flight request cache for deduplication.
+   * Key is the full endpoint URL, value is the pending promise and timestamp.
+   * This ensures multiple simultaneous calls to the same endpoint share one request.
+   */
+  private requestCache = new Map<string, CacheEntry>()
+
+  /**
    * Set the current user ID for user-scoped queries.
+   * Also clears the request cache when user changes to ensure fresh data.
    */
   setUserId(userId: string | null): void {
+    if (this.userId !== userId) {
+      this.requestCache.clear()
+    }
     this.userId = userId
   }
 
   // === Helper methods ===
+
+  /**
+   * Get a cached request if still valid, or undefined if expired/not found.
+   */
+  private getCachedRequest(cacheKey: string): Promise<any> | undefined {
+    const entry = this.requestCache.get(cacheKey)
+    if (!entry) return undefined
+
+    const age = Date.now() - entry.timestamp
+    if (age > DEDUP_CACHE_MS) {
+      // Cache expired, remove it
+      this.requestCache.delete(cacheKey)
+      return undefined
+    }
+
+    return entry.promise
+  }
+
+  /**
+   * Store a request promise in the cache for deduplication.
+   */
+  private cacheRequest(cacheKey: string, promise: Promise<any>): void {
+    this.requestCache.set(cacheKey, {
+      promise,
+      timestamp: Date.now(),
+    })
+
+    // Clean up after the dedup window expires
+    setTimeout(() => {
+      const entry = this.requestCache.get(cacheKey)
+      if (entry && Date.now() - entry.timestamp >= DEDUP_CACHE_MS) {
+        this.requestCache.delete(cacheKey)
+      }
+    }, DEDUP_CACHE_MS + 10)
+  }
 
   private async fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
     const response = await fetch(`${API_BASE}${url}`, {
@@ -94,6 +157,9 @@ export class APIPersistence implements IPersistenceService {
   /**
    * Load a collection via REST API.
    * Maps model names to API endpoints.
+   *
+   * OPTIMIZATION: Uses request deduplication to prevent API spam when multiple
+   * components call loadCollection() for the same resource simultaneously.
    */
   async loadCollection(ctx: PersistenceContext): Promise<any | null> {
     try {
@@ -103,22 +169,36 @@ export class APIPersistence implements IPersistenceService {
         return null
       }
 
-      const result = await this.fetchJson<{ ok: boolean; items?: any[] }>(endpoint)
-
-      if (!result?.ok || !result.items) {
-        return null
+      // Check for in-flight or recently cached request
+      const cachedPromise = this.getCachedRequest(endpoint)
+      if (cachedPromise) {
+        return cachedPromise
       }
 
-      // Transform array to items map (MST collection format)
-      // Also convert dates and nulls for MST compatibility
-      const items: Record<string, any> = {}
-      for (const item of result.items) {
-        if (item.id) {
-          items[item.id] = this.transformForMST(item)
+      // Create the actual fetch promise
+      const fetchPromise = (async () => {
+        const result = await this.fetchJson<{ ok: boolean; items?: any[] }>(endpoint)
+
+        if (!result?.ok || !result.items) {
+          return null
         }
-      }
 
-      return { items }
+        // Transform array to items map (MST collection format)
+        // Also convert dates and nulls for MST compatibility
+        const items: Record<string, any> = {}
+        for (const item of result.items) {
+          if (item.id) {
+            items[item.id] = this.transformForMST(item)
+          }
+        }
+
+        return { items }
+      })()
+
+      // Cache the promise for deduplication
+      this.cacheRequest(endpoint, fetchPromise)
+
+      return fetchPromise
     } catch (error: any) {
       console.error('[APIPersistence] loadCollection error:', error.message)
       return null

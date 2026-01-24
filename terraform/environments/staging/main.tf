@@ -494,6 +494,109 @@ resource "kubernetes_secret" "anthropic_credentials_workspaces" {
 }
 
 # -----------------------------------------------------------------------------
+# S3 Bucket for Workspace Files (emptyDir persistence)
+# -----------------------------------------------------------------------------
+# This bucket stores project files when using emptyDir volumes.
+# Files are synced to S3 for persistence across pod restarts.
+
+resource "aws_s3_bucket" "workspaces" {
+  bucket = "shogo-workspaces-${var.environment}"
+
+  tags = {
+    Name        = "shogo-workspaces-${var.environment}"
+    Environment = var.environment
+    Purpose     = "workspace-file-storage"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "workspaces" {
+  bucket = aws_s3_bucket.workspaces.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "workspaces" {
+  bucket = aws_s3_bucket.workspaces.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "workspaces" {
+  bucket = aws_s3_bucket.workspaces.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# Lifecycle rule: Delete old versions after 30 days
+resource "aws_s3_bucket_lifecycle_configuration" "workspaces" {
+  bucket = aws_s3_bucket.workspaces.id
+
+  rule {
+    id     = "cleanup-old-versions"
+    status = "Enabled"
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+}
+
+# IAM Policy for project-runtime pods to access S3
+resource "aws_iam_policy" "project_runtime_s3_access" {
+  name        = "shogo-project-runtime-s3-${var.environment}"
+  description = "Allow project-runtime pods to access S3 workspaces bucket"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.workspaces.arn,
+          "${aws_s3_bucket.workspaces.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+# Attach S3 policy to EKS node role (so project-runtime pods can access S3)
+resource "aws_iam_role_policy_attachment" "node_s3_access" {
+  policy_arn = aws_iam_policy.project_runtime_s3_access.arn
+  role       = module.eks.node_role_name
+}
+
+# S3 credentials secret for project pods (shogo-staging-workspaces namespace)
+resource "kubernetes_secret" "s3_credentials_workspaces" {
+  depends_on = [kubernetes_namespace.shogo_workspaces]
+
+  metadata {
+    name      = "s3-credentials"
+    namespace = "shogo-staging-workspaces"
+  }
+
+  data = {
+    "workspaces-bucket" = aws_s3_bucket.workspaces.id
+    "region"            = var.aws_region
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Storage Class for EBS CSI Driver (for project PVCs)
 # -----------------------------------------------------------------------------
 resource "kubernetes_storage_class" "ebs_sc" {
@@ -669,6 +772,11 @@ resource "null_resource" "knative_services" {
                     value: "${var.project_runtime_postgres_cpu_limit}"
                   - name: PROJECT_IDLE_TIMEOUT
                     value: "${var.project_runtime_idle_timeout}"
+                  # S3 configuration for workspace file persistence (emptyDir + S3 sync)
+                  - name: S3_WORKSPACES_BUCKET
+                    value: "${aws_s3_bucket.workspaces.id}"
+                  - name: S3_REGION
+                    value: "${var.aws_region}"
                 resources:
                   requests:
                     memory: "256Mi"
@@ -773,11 +881,70 @@ resource "null_resource" "knative_services" {
           apiVersion: serving.knative.dev/v1
       EOF
 
+      # Deploy Image Pre-Puller DaemonSet
+      # This ensures the project-runtime image is pre-pulled on all nodes
+      # to eliminate cold start image pull delays (60+ seconds)
+      cat <<EOF | kubectl apply -f -
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: image-prepuller
+        namespace: shogo-staging-workspaces
+        labels:
+          app.kubernetes.io/name: image-prepuller
+          app.kubernetes.io/part-of: shogo
+          environment: staging
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: image-prepuller
+        updateStrategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxUnavailable: "100%"
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: image-prepuller
+              app.kubernetes.io/part-of: shogo
+          spec:
+            tolerations:
+              - operator: Exists
+            containers:
+              - name: project-runtime-prepull
+                image: ${local.ecr_registry}/shogo/project-runtime:${local.image_tag}
+                imagePullPolicy: Always
+                command: ["sleep", "infinity"]
+                resources:
+                  requests:
+                    memory: "1Mi"
+                    cpu: "1m"
+                  limits:
+                    memory: "8Mi"
+                    cpu: "10m"
+              - name: postgres-prepull
+                image: postgres:16-alpine
+                imagePullPolicy: IfNotPresent
+                command: ["sleep", "infinity"]
+                resources:
+                  requests:
+                    memory: "1Mi"
+                    cpu: "1m"
+                  limits:
+                    memory: "8Mi"
+                    cpu: "10m"
+            restartPolicy: Always
+      EOF
+
       # Wait for services to be ready
       echo "Waiting for services to be ready..."
       kubectl wait --for=condition=ready ksvc/studio -n shogo-staging-system --timeout=300s || true
       kubectl wait --for=condition=ready ksvc/api -n shogo-staging-system --timeout=300s || true
       kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n shogo-staging-workspaces --timeout=300s || true
+      
+      # Wait for DaemonSet to be ready (images pre-pulled)
+      echo "Waiting for image pre-puller to be ready..."
+      kubectl rollout status daemonset/image-prepuller -n shogo-staging-workspaces --timeout=300s || true
       
       echo "Knative services deployed successfully"
     EOT

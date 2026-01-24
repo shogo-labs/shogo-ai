@@ -133,6 +133,31 @@ function getDefaultOutputDir(projectName: string): string {
 }
 
 /**
+ * Simple timing helper for performance instrumentation
+ */
+function createTimer() {
+  const start = performance.now()
+  const steps: { name: string; durationMs: number }[] = []
+  let lastMark = start
+  
+  return {
+    mark(name: string) {
+      const now = performance.now()
+      const duration = now - lastMark
+      steps.push({ name, durationMs: Math.round(duration) })
+      console.log(`[template.copy] ⏱️  ${name}: ${Math.round(duration)}ms`)
+      lastMark = now
+    },
+    total() {
+      return Math.round(performance.now() - start)
+    },
+    getSteps() {
+      return steps
+    }
+  }
+}
+
+/**
  * Execute template.copy
  */
 export async function executeTemplateCopy(
@@ -143,11 +168,16 @@ export async function executeTemplateCopy(
   files?: string[]
   template?: TemplateInfo
   error?: any
+  timings?: { steps: { name: string; durationMs: number }[]; totalMs: number }
 }> {
+  const timer = createTimer()
+  console.log(`[template.copy] ⏱️  Starting template copy for "${args.template}"...`)
+  
   try {
     // Find the template
     const templates = loadTemplates()
     const template = templates.find((t) => t.name === args.template)
+    timer.mark('loadTemplates')
 
     if (!template) {
       return {
@@ -163,6 +193,7 @@ export async function executeTemplateCopy(
     const projectDir = args.output
       ? resolve(args.output)
       : getDefaultOutputDir(args.name)
+    timer.mark('determineOutputDir')
 
     // In project context (PROJECT_ID set), always force overwrite
     // since we're copying into an existing project workspace
@@ -179,6 +210,7 @@ export async function executeTemplateCopy(
             code: "DIR_EXISTS",
             message: `Directory "${projectDir}" already exists and is not empty. Use force: true to overwrite.`,
           },
+          timings: { steps: timer.getSteps(), totalMs: timer.total() },
         }
       }
     }
@@ -201,6 +233,7 @@ export async function executeTemplateCopy(
           "src/lib/shogo.ts",
           "src/utils/*.ts",
         ],
+        timings: { steps: timer.getSteps(), totalMs: timer.total() },
       }
     }
 
@@ -226,6 +259,7 @@ export async function executeTemplateCopy(
         }
       }
     }
+    timer.mark('cleanConflictingFiles')
 
     // Exclusions - don't copy these
     const exclude = [
@@ -241,9 +275,11 @@ export async function executeTemplateCopy(
 
     // Copy template directory
     const copiedFiles = copyDir(template.path, projectDir, exclude)
+    timer.mark('copyTemplateFiles')
 
     // Update package.json with new name
     updatePackageJson(projectDir, args.name)
+    timer.mark('updatePackageJson')
 
     // Delete existing dev.db if copied (start fresh)
     const devDbPath = join(projectDir, "prisma", "dev.db")
@@ -273,23 +309,28 @@ export async function executeTemplateCopy(
       // Call the local runtime's restart endpoint (port 8080)
       // This will: install deps, run prisma, build the project, and start the Nitro/Vite server
       try {
-        console.log(`[template.copy] Triggering preview restart for project ${projectId}...`)
+        console.log(`[template.copy] ⏱️  Triggering preview restart for project ${projectId}...`)
         console.log(`[template.copy] This will run: bun install, prisma generate, prisma db push, vite build, and start server`)
         
         const restartResponse = await fetch(`http://localhost:8080/preview/restart`, {
           method: 'POST',
         })
+        timer.mark('previewRestartCall')
         
         if (restartResponse.ok) {
-          const restartResult = await restartResponse.json() as { mode: string; port: number | null }
+          const restartResult = await restartResponse.json() as { mode: string; port: number | null; timings?: any }
           response.setup = {
             success: true,
             steps: ['bun install', 'prisma generate', 'prisma db push', 'vite build', `start ${restartResult.mode} server`],
             message: `Template fully set up and running in ${restartResult.mode} mode`,
             mode: restartResult.mode,
             port: restartResult.port,
+            timings: restartResult.timings,
           }
-          console.log(`[template.copy] Setup complete: ${restartResult.mode} mode on port ${restartResult.port}`)
+          console.log(`[template.copy] ⏱️  Setup complete: ${restartResult.mode} mode on port ${restartResult.port}`)
+          if (restartResult.timings) {
+            console.log(`[template.copy] ⏱️  Restart timings: ${JSON.stringify(restartResult.timings)}`)
+          }
         } else {
           const errorData = await restartResponse.json().catch(() => ({})) as { error?: string }
           response.setup = {
@@ -304,6 +345,7 @@ export async function executeTemplateCopy(
           error: `Could not reach runtime server: ${restartError.message}`,
         }
         console.warn(`[template.copy] Setup error: ${restartError.message}`)
+        timer.mark('previewRestartCall (failed)')
       }
       
       response.message = response.setup?.success 
@@ -311,55 +353,64 @@ export async function executeTemplateCopy(
         : `Template copied but setup failed: ${response.setup?.error}. Try refreshing the preview.`
     } else if (!args.skipInstall) {
       // Local development (not in project context) - run install steps here
-      const installResults: { step: string; success: boolean; error?: string }[] = []
+      const installResults: { step: string; success: boolean; error?: string; durationMs?: number }[] = []
       
       // Step 1: bun install
       try {
-        console.log("[template.copy] Running bun install...")
+        console.log("[template.copy] ⏱️  Running bun install...")
+        const bunInstallStart = performance.now()
         execSync("bun install", {
           cwd: projectDir,
           stdio: "pipe",
           timeout: 120000,
         })
-        installResults.push({ step: "bun install", success: true })
-        console.log("[template.copy] bun install completed")
+        const bunInstallDuration = Math.round(performance.now() - bunInstallStart)
+        installResults.push({ step: "bun install", success: true, durationMs: bunInstallDuration })
+        console.log(`[template.copy] ⏱️  bun install completed in ${bunInstallDuration}ms`)
       } catch (error: any) {
         console.error("[template.copy] bun install failed:", error.message)
         installResults.push({ step: "bun install", success: false, error: error.message })
       }
+      timer.mark('bunInstall')
 
       // Step 2: prisma generate (only if bun install succeeded)
       if (installResults[0]?.success) {
         try {
-          console.log("[template.copy] Running prisma generate...")
+          console.log("[template.copy] ⏱️  Running prisma generate...")
+          const prismaGenStart = performance.now()
           execSync("bunx prisma generate", {
             cwd: projectDir,
             stdio: "pipe",
             timeout: 60000,
           })
-          installResults.push({ step: "prisma generate", success: true })
-          console.log("[template.copy] prisma generate completed")
+          const prismaGenDuration = Math.round(performance.now() - prismaGenStart)
+          installResults.push({ step: "prisma generate", success: true, durationMs: prismaGenDuration })
+          console.log(`[template.copy] ⏱️  prisma generate completed in ${prismaGenDuration}ms`)
         } catch (error: any) {
           console.error("[template.copy] prisma generate failed:", error.message)
           installResults.push({ step: "prisma generate", success: false, error: error.message })
         }
+        timer.mark('prismaGenerate')
       }
 
       // Step 3: prisma db push (only if previous steps succeeded)
       if (installResults.every(r => r.success)) {
         try {
-          console.log("[template.copy] Running prisma db push...")
+          console.log("[template.copy] ⏱️  Running prisma db push...")
+          const prismaPushStart = performance.now()
           execSync("bunx prisma db push", {
             cwd: projectDir,
             stdio: "pipe",
             timeout: 60000,
           })
-          installResults.push({ step: "prisma db push", success: true })
-          console.log("[template.copy] prisma db push completed")
+          const prismaPushDuration = Math.round(performance.now() - prismaPushStart)
+          installResults.push({ step: "prisma db push", success: true, durationMs: prismaPushDuration })
+          console.log(`[template.copy] ⏱️  prisma db push completed in ${prismaPushDuration}ms`)
         } catch (error: any) {
           console.error("[template.copy] prisma db push failed:", error.message)
           installResults.push({ step: "prisma db push", success: false, error: error.message })
         }
+        timer.mark('prismaDbPush')
       }
 
       response.install = {
@@ -373,14 +424,22 @@ export async function executeTemplateCopy(
         : `Template copied but some setup steps failed. Check the install results.`
     }
 
+    // Add timing information to response
+    const totalMs = timer.total()
+    response.timings = { steps: timer.getSteps(), totalMs }
+    console.log(`[template.copy] ⏱️  TOTAL: ${totalMs}ms`)
+
     return response
   } catch (error: any) {
+    const totalMs = timer.total()
+    console.log(`[template.copy] ⏱️  FAILED after ${totalMs}ms: ${error.message}`)
     return {
       ok: false,
       error: {
         code: "COPY_ERROR",
         message: error.message || "Failed to copy template",
       },
+      timings: { steps: timer.getSteps(), totalMs },
     }
   }
 }

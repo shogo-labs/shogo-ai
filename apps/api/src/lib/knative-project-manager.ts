@@ -788,13 +788,15 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
     await manager.createProject(projectId)
     // Wait for the pod to be ready before returning the URL
     // This prevents "connection refused" errors when proxying immediately after creation
+    // Timeout: 180s to account for image pull (can take 60-90s for 1GB images)
     console.log(`[KnativeProjectManager] Waiting for project ${projectId} to be ready... (elapsed: ${Date.now() - totalStartTime}ms)`)
-    await manager.waitForReady(projectId, 60000)
+    await manager.waitForReady(projectId, 180000)
   } else if (!status.ready) {
     // Pod exists but isn't ready (cold start from scale-to-zero)
     // Wait for it to become ready
+    // Timeout: 120s to account for image pull during cold starts
     console.log(`[KnativeProjectManager] Project ${projectId} exists but not ready (cold start), waiting... (elapsed: ${Date.now() - totalStartTime}ms)`)
-    await manager.waitForReady(projectId, 30000)
+    await manager.waitForReady(projectId, 120000)
   } else {
     console.log(`[KnativeProjectManager] Project ${projectId} already running (warm hit) (elapsed: ${Date.now() - totalStartTime}ms)`)
   }
