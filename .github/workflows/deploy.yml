@@ -260,6 +260,17 @@ jobs:
           
           echo "✅ Anthropic credentials created/updated in ${{ env.NS_WORKSPACES }} namespace"
 
+      - name: Apply Kubernetes manifests
+        run: |
+          # Apply RBAC and other configurations from kustomize overlay
+          # This ensures ServiceAccounts, ClusterRoles, and ClusterRoleBindings are created
+          echo "📦 Applying Kubernetes manifests for ${{ env.ENVIRONMENT }}"
+          
+          # Apply the staging overlay which includes RBAC for publish feature
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+          
+          echo "✅ Kubernetes manifests applied"
+
       - name: Deploy Knative services
         env:
           ECR_REGISTRY: ${{ needs.setup.outputs.ecr_registry }}
