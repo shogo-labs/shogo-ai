@@ -157,17 +157,16 @@ jobs:
     steps:
       - name: Free disk space (project-runtime only)
         if: matrix.image == 'project-runtime'
-        run: |
-          echo "=== Disk space before cleanup ==="
-          df -h
-          # Remove unnecessary tools to free up ~15GB for large Docker builds
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker image prune -af
-          echo "=== Disk space after cleanup ==="
-          df -h
+        uses: jlumbroso/free-disk-space@main
+        with:
+          # Frees ~31GB - keeps only what's needed for Docker builds
+          tool-cache: false      # Keep tool cache (node, etc)
+          android: true          # Remove Android SDK (~10GB)
+          dotnet: true           # Remove .NET (~2GB)
+          haskell: true          # Remove Haskell (~5GB)
+          large-packages: true   # Remove large apt packages (~5GB)
+          docker-images: true    # Remove pre-cached Docker images (~3GB)
+          swap-storage: true     # Remove swap (~4GB)
 
       - name: Checkout code
         uses: actions/checkout@v4
