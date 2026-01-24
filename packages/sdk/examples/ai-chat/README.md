@@ -12,7 +12,7 @@ A full-featured AI chatbot application built with the Vercel AI SDK and @shogo-a
 - 📝 **Multiple chats** with sidebar navigation
 - ⚡ **Real-time responses** with loading states
 - 🎨 **Dark theme UI** with responsive design
-- 🗃️ **SQLite database** with Prisma ORM
+- 🗃️ **PostgreSQL database** with Prisma ORM
 
 ## Quick Start
 
@@ -49,7 +49,7 @@ Without an API key, the app runs in "demo mode" and returns a message explaining
 - **Runtime**: Bun
 - **Framework**: TanStack Start + Vite
 - **UI**: React with custom CSS (dark theme)
-- **Database**: SQLite with Prisma
+- **Database**: PostgreSQL with Prisma
 - **AI**: Vercel AI SDK with OpenAI
 - **SDK**: @shogo-ai/sdk for database access
 

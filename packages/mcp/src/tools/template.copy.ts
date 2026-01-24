@@ -15,6 +15,9 @@ import {
   writeFileSync,
   copyFileSync,
   rmSync,
+  lstatSync,
+  readlinkSync,
+  symlinkSync,
 } from "fs"
 import { execSync } from "child_process"
 import { MONOREPO_ROOT } from "../paths"
@@ -40,6 +43,7 @@ type TemplateCopyParams = typeof Params.infer
 
 /**
  * Recursively copy directory, excluding certain paths
+ * Handles symlinks properly by recreating them instead of following them
  */
 function copyDir(
   src: string,
@@ -62,11 +66,30 @@ function copyDir(
       continue
     }
 
-    if (entry.isDirectory()) {
-      copyDir(srcPath, destPath, exclude, files)
-    } else {
-      copyFileSync(srcPath, destPath)
-      files.push(destPath)
+    try {
+      // Check if it's a symlink
+      const stat = lstatSync(srcPath)
+      
+      if (stat.isSymbolicLink()) {
+        // Copy symlink as symlink (don't follow it)
+        const linkTarget = readlinkSync(srcPath)
+        try {
+          symlinkSync(linkTarget, destPath)
+          files.push(destPath)
+        } catch (e: any) {
+          // Skip broken symlinks or symlinks that can't be created
+          if (e.code !== 'EEXIST') {
+            console.warn(`[template.copy] Skipping symlink ${entry.name}: ${e.message}`)
+          }
+        }
+      } else if (stat.isDirectory()) {
+        copyDir(srcPath, destPath, exclude, files)
+      } else {
+        copyFileSync(srcPath, destPath)
+        files.push(destPath)
+      }
+    } catch (e: any) {
+      console.warn(`[template.copy] Skipping ${entry.name}: ${e.message}`)
     }
   }
 
@@ -300,13 +323,25 @@ export async function executeTemplateCopy(
     const relativeFiles = copiedFiles.map((f) =>
       f.replace(projectDir + "/", "")
     )
+    
+    // Filter out node_modules files for the response (they're huge and not useful to report)
+    const sourceFiles = relativeFiles.filter((f) => !f.startsWith("node_modules/"))
+    const nodeModulesFileCount = relativeFiles.length - sourceFiles.length
+    timer.mark('filterFiles')
 
     // Build response with context-aware instructions
+    // Return summary instead of full file list to reduce response size
     const response: any = {
       ok: true,
       projectDir,
       template,
-      files: relativeFiles,
+      filesSummary: {
+        totalFilesCopied: relativeFiles.length,
+        sourceFiles: sourceFiles.length,
+        nodeModulesFiles: nodeModulesFileCount,
+        // Only include source files (not node_modules) in the list
+        files: sourceFiles,
+      },
     }
 
     // In project context, automatically rebuild and restart the preview server

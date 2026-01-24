@@ -1,7 +1,7 @@
 /**
  * LoginPage - Authentication form component
  *
- * Simple email-based auth using the SQLite database:
+ * Simple email-based auth using the PostgreSQL database:
  * - Sign up creates a user in the database
  * - Sign in verifies user exists
  * - MobX observer for reactive state
