@@ -1141,7 +1141,7 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Get Knative service status without waiting
+    // In Kubernetes: Get Knative service status AND verify with active health check
     try {
       const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
       const manager = getKnativeProjectManager()
@@ -1156,7 +1156,7 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
           ready: false,
         })
       } else if (!status.ready) {
-        // Pod exists but is starting (cold start or initial creation)
+        // Pod exists but Knative says it's not ready
         return c.json({
           projectId,
           status: 'starting',
@@ -1165,15 +1165,29 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
           replicas: status.replicas,
         })
       } else {
-        // Pod is ready
-        return c.json({
-          projectId,
-          status: 'running',
-          message: 'Project runtime is ready',
-          ready: true,
-          replicas: status.replicas,
-          url: status.url,
-        })
+        // Knative says ready - but verify with active health check
+        // This ensures the pod is actually responding before we tell frontend to load iframe
+        const healthy = await manager.healthCheck(projectId)
+        
+        if (healthy) {
+          return c.json({
+            projectId,
+            status: 'running',
+            message: 'Project runtime is ready',
+            ready: true,
+            replicas: status.replicas,
+            url: status.url,
+          })
+        } else {
+          // Knative says ready but health check failed - pod is still warming up
+          return c.json({
+            projectId,
+            status: 'starting',
+            message: 'Project runtime is warming up...',
+            ready: false,
+            replicas: status.replicas,
+          })
+        }
       }
     } catch (error: any) {
       console.error('[Runtime] Failed to get project status:', error)

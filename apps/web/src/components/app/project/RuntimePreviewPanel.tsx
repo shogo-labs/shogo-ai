@@ -74,6 +74,7 @@ export function RuntimePreviewPanel({
   const [error, setError] = useState<string | null>(null)
   const [hmrConnected, setHmrConnected] = useState(false)
   const [iframeLoaded, setIframeLoaded] = useState(false)
+  const [pollCount, setPollCount] = useState(0) // Track polls for progress bar
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const retryCountRef = useRef(0)
@@ -107,6 +108,7 @@ export function RuntimePreviewPanel({
     setIsLoading(true)
     setError(null)
     retryCountRef.current = 0
+    setPollCount(0) // Reset poll count for progress bar
 
     // Clear any existing poll interval
     if (statusPollIntervalRef.current) {
@@ -134,12 +136,13 @@ export function RuntimePreviewPanel({
       fetch(`/api/projects/${projectId}/sandbox/url?wait=false`).catch(() => {})
 
       // Step 3: Poll status until ready
-      let pollCount = 0
+      let currentPollCount = 0
       const maxPolls = maxAutoRetries
       const pollInterval = 3000 // 3 seconds
 
       const doPoll = async () => {
-        pollCount++
+        currentPollCount++
+        setPollCount(currentPollCount) // Update state for progress bar
         const status = await pollRuntimeStatus()
 
         if (status?.ready) {
@@ -157,12 +160,12 @@ export function RuntimePreviewPanel({
         // Update status message
         if (status) {
           setStatus(status.status)
-          const progressMsg = getProgressMessage(status.status, pollCount)
+          const progressMsg = getProgressMessage(status.status, currentPollCount)
           setStatusMessage(status.message || progressMsg)
         }
 
         // Check if we've exceeded max polls
-        if (pollCount >= maxPolls) {
+        if (currentPollCount >= maxPolls) {
           if (statusPollIntervalRef.current) {
             clearInterval(statusPollIntervalRef.current)
             statusPollIntervalRef.current = null
@@ -463,24 +466,57 @@ export function RuntimePreviewPanel({
 
   // Loading state - show detailed progress during cold start
   if (isLoading && !sandboxUrl) {
+    // Calculate estimated progress based on poll count (each poll is ~3 seconds)
+    // Progress: 10% base, +5% per poll, max 95%
+    const estimatedProgress = Math.min(95, pollCount * 5 + 10)
+    
     return (
       <div className={cn(
-        "flex flex-col items-center justify-center h-full w-full bg-muted/30",
+        "flex flex-col items-center justify-center h-full w-full bg-gradient-to-b from-background to-muted/30",
         className
       )}>
-        <div className="flex flex-col items-center gap-4 max-w-sm text-center">
-          <Loader2 className="h-8 w-8 text-primary animate-spin" />
-          <div>
-            <div className="text-sm font-medium text-foreground">
-              {statusMessage}
+        <div className="flex flex-col items-center gap-6 max-w-md text-center px-6">
+          {/* Animated rocket icon */}
+          <div className="relative">
+            <div className="absolute inset-0 bg-primary/20 rounded-full blur-xl animate-pulse" />
+            <div className="relative bg-gradient-to-br from-primary/10 to-primary/5 p-6 rounded-full border border-primary/20">
+              <svg 
+                className="h-12 w-12 text-primary animate-bounce" 
+                viewBox="0 0 24 24" 
+                fill="none" 
+                stroke="currentColor" 
+                strokeWidth="1.5"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.59 14.37a6 6 0 01-5.84 7.38v-4.8m5.84-2.58a14.98 14.98 0 006.16-12.12A14.98 14.98 0 009.631 8.41m5.96 5.96a14.926 14.926 0 01-5.841 2.58m-.119-8.54a6 6 0 00-7.381 5.84h4.8m2.581-5.84a14.927 14.927 0 00-2.58 5.84m2.699 2.7c-.103.021-.207.041-.311.06a15.09 15.09 0 01-2.448-2.448 14.9 14.9 0 01.06-.312m-2.24 2.39a4.493 4.493 0 00-1.757 4.306 4.493 4.493 0 004.306-1.758M16.5 9a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z" />
+              </svg>
             </div>
-            {status !== 'running' && status !== 'stopped' && (
-              <div className="text-xs text-muted-foreground mt-1">
-                {status === 'creating' || status === 'not_found' 
-                  ? 'This may take up to 30 seconds for new projects'
-                  : 'Warming up the server...'}
-              </div>
-            )}
+          </div>
+          
+          {/* Status text */}
+          <div className="space-y-2">
+            <h3 className="text-lg font-semibold text-foreground">
+              Starting your environment
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              {statusMessage}
+            </p>
+          </div>
+          
+          {/* Progress bar */}
+          <div className="w-full max-w-xs space-y-2">
+            <div className="h-2 bg-muted rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-gradient-to-r from-primary to-primary/80 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${estimatedProgress}%` }}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {status === 'creating' || status === 'not_found' 
+                ? 'First-time setup takes up to 30 seconds'
+                : status === 'starting'
+                ? 'Almost ready...'
+                : 'Preparing your workspace...'}
+            </p>
           </div>
         </div>
       </div>
