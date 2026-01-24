@@ -129,6 +129,7 @@ export function DatabasePanel({
           errorCode === 'pod_unavailable' ||
           errorMessage.includes('not found') ||
           errorMessage.includes('starting') ||
+          response.status === 504 ||  // Gateway Timeout - pod starting
           response.status === 503 ||
           response.status === 502
 

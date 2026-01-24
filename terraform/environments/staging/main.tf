@@ -252,6 +252,66 @@ module "elasticache" {
 }
 
 # -----------------------------------------------------------------------------
+# EFS (Elastic File System) for Project PostgreSQL Sidecars
+# -----------------------------------------------------------------------------
+# EFS supports multi-attach unlike EBS, preventing Multi-Attach errors
+# when project pods restart or scale. Used for PostgreSQL data persistence.
+module "efs" {
+  source = "../../modules/efs"
+
+  name   = "${var.project_name}-${var.environment}-projects"
+  vpc_id = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnet_ids
+  
+  # Allow access from all EKS security groups
+  security_group_ids = [
+    module.eks.cluster_security_group_id,
+    module.eks.node_security_group_id,
+    module.eks.eks_managed_security_group_id
+  ]
+
+  # Elastic throughput for variable workloads
+  throughput_mode  = "elastic"
+  performance_mode = "generalPurpose"
+
+  tags = {
+    Environment = var.environment
+    Purpose     = "project-postgres-data"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# EFS StorageClass for Kubernetes
+# -----------------------------------------------------------------------------
+# This StorageClass enables dynamic provisioning of EFS volumes
+# for project PostgreSQL sidecars
+resource "kubernetes_storage_class" "efs" {
+  metadata {
+    name = "efs-sc"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "false"
+    }
+  }
+
+  storage_provisioner = "efs.csi.aws.com"
+  
+  parameters = {
+    provisioningMode = "efs-ap"  # EFS Access Point mode
+    fileSystemId     = module.efs.file_system_id
+    directoryPerms   = "700"
+    gidRangeStart    = "1000"
+    gidRangeEnd      = "2000"
+    basePath         = "/projects"
+  }
+
+  reclaim_policy         = "Delete"
+  volume_binding_mode    = "Immediate"
+  allow_volume_expansion = true
+
+  depends_on = [module.efs]
+}
+
+# -----------------------------------------------------------------------------
 # VPC Endpoints (for private subnet access to AWS services)
 # Required for EKS nodes in private subnets to pull images from ECR
 # -----------------------------------------------------------------------------

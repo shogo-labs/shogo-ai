@@ -429,6 +429,55 @@ resource "aws_eks_addon" "ebs_csi_driver" {
 }
 
 # -----------------------------------------------------------------------------
+# EFS CSI Driver (for shared storage - supports multi-attach unlike EBS)
+# -----------------------------------------------------------------------------
+# IAM role for EFS CSI driver using IRSA (IAM Roles for Service Accounts)
+resource "aws_iam_role" "efs_csi_driver" {
+  name = "${var.cluster_name}-efs-csi-driver-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.cluster.arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringLike = {
+          "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+          "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:kube-system:efs-csi-*"
+        }
+      }
+    }]
+  })
+
+  tags = var.tags
+
+  depends_on = [aws_iam_openid_connect_provider.cluster]
+}
+
+resource "aws_iam_role_policy_attachment" "efs_csi_driver" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+  role       = aws_iam_role.efs_csi_driver.name
+}
+
+resource "aws_eks_addon" "efs_csi_driver" {
+  cluster_name             = aws_eks_cluster.main.name
+  addon_name               = "aws-efs-csi-driver"
+  service_account_role_arn = aws_iam_role.efs_csi_driver.arn
+
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [
+    aws_eks_node_group.main,
+    aws_iam_role_policy_attachment.efs_csi_driver,
+    aws_iam_openid_connect_provider.cluster
+  ]
+}
+
+# -----------------------------------------------------------------------------
 # OIDC Provider (for IAM Roles for Service Accounts)
 # -----------------------------------------------------------------------------
 data "tls_certificate" "cluster" {
@@ -522,6 +571,11 @@ output "oidc_provider_url" {
 output "ebs_csi_driver_role_arn" {
   description = "IAM role ARN for EBS CSI driver"
   value       = aws_iam_role.ebs_csi_driver.arn
+}
+
+output "efs_csi_driver_role_arn" {
+  description = "IAM role ARN for EFS CSI driver"
+  value       = aws_iam_role.efs_csi_driver.arn
 }
 
 output "node_role_name" {

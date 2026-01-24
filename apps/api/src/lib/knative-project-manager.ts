@@ -496,7 +496,9 @@ export class KnativeProjectManager {
    */
   private async ensurePVC(projectId: string): Promise<void> {
     const coreApi = getCoreApi()
-    const storageClass = process.env.STORAGE_CLASS_NAME || "ebs-sc"
+    // Use EFS storage class for PostgreSQL to avoid EBS Multi-Attach errors
+    // EFS supports ReadWriteMany, allowing multiple pods to attach simultaneously
+    const storageClass = process.env.POSTGRES_STORAGE_CLASS || "efs-sc"
 
     // Project code now uses emptyDir + S3 sync for faster cold starts
     // No PVC needed for project files
@@ -510,6 +512,8 @@ export class KnativeProjectManager {
         component: "postgres-storage",
         storageClass,
         size: this.postgresStorageSize,
+        // EFS uses ReadWriteMany to support multi-attach (prevents EBS Multi-Attach errors)
+        accessMode: storageClass.includes("efs") ? "ReadWriteMany" : "ReadWriteOnce",
       })
     }
   }
@@ -525,9 +529,10 @@ export class KnativeProjectManager {
       component: string
       storageClass: string
       size: string
+      accessMode?: string  // ReadWriteOnce (EBS) or ReadWriteMany (EFS)
     }
   ): Promise<void> {
-    const { name, projectId, component, storageClass, size } = options
+    const { name, projectId, component, storageClass, size, accessMode = "ReadWriteOnce" } = options
     const pvcStartTime = Date.now()
 
     try {
@@ -551,7 +556,7 @@ export class KnativeProjectManager {
         },
       },
       spec: {
-        accessModes: ["ReadWriteOnce"],
+        accessModes: [accessMode],
         storageClassName: storageClass,
         resources: {
           requests: { storage: size },
@@ -560,7 +565,7 @@ export class KnativeProjectManager {
     }
 
     await coreApi.createNamespacedPersistentVolumeClaim({ namespace: this.namespace, body: pvc })
-    console.log(`[KnativeProjectManager] Created PVC: ${name} (${Date.now() - pvcStartTime}ms)`)
+    console.log(`[KnativeProjectManager] Created PVC: ${name} with ${accessMode} (${Date.now() - pvcStartTime}ms)`)
   }
 
   /**
