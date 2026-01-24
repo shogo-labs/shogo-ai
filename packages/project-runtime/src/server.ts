@@ -1375,6 +1375,55 @@ app.get('/files', (c) => {
 })
 
 /**
+ * Get all built dist files for publishing.
+ * Returns files as base64-encoded content for S3 upload.
+ * Used by the publish API to upload built assets.
+ */
+app.get('/api/dist-files', (c) => {
+  try {
+    const distDir = join(PROJECT_DIR, 'dist')
+    
+    if (!existsSync(distDir)) {
+      return c.json({ 
+        error: { code: 'no_dist', message: 'No dist directory found. Run a build first.' } 
+      }, 404)
+    }
+    
+    const files: Array<{ path: string; content: string }> = []
+    
+    function readRecursive(dir: string, prefix: string = '') {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      
+      for (const entry of entries) {
+        const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
+        const fullPath = join(dir, entry.name)
+        
+        if (entry.isDirectory()) {
+          readRecursive(fullPath, relativePath)
+        } else {
+          // Read file and encode as base64
+          const content = readFileSync(fullPath)
+          files.push({
+            path: relativePath,
+            content: content.toString('base64'),
+          })
+        }
+      }
+    }
+    
+    readRecursive(distDir)
+    
+    console.log(`[project-runtime] Returning ${files.length} dist files for publishing`)
+    return c.json(files)
+  } catch (error: any) {
+    console.error('[project-runtime] Dist files error:', error)
+    return c.json({
+      error: { code: 'dist_error', message: error.message || 'Failed to read dist files' }
+    }, 500)
+  }
+})
+
+/**
  * Get content of a specific file.
  */
 app.get('/files/*', (c) => {

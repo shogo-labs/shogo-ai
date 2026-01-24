@@ -777,6 +777,13 @@ resource "null_resource" "knative_services" {
                     value: "${aws_s3_bucket.workspaces.id}"
                   - name: S3_REGION
                     value: "${var.aws_region}"
+                  # Publish configuration (S3 + CloudFront)
+                  - name: PUBLISH_BUCKET
+                    value: "shogo-published-apps-${var.environment}"
+                  - name: PUBLISH_CLOUDFRONT_ID
+                    value: ""
+                  - name: PUBLISH_DOMAIN
+                    value: "${var.publish_domain}"
                 resources:
                   requests:
                     memory: "256Mi"
@@ -948,6 +955,86 @@ resource "null_resource" "knative_services" {
       
       echo "Knative services deployed successfully"
     EOT
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Publish Hosting (S3 + CloudFront for published apps)
+# -----------------------------------------------------------------------------
+# This module creates the infrastructure for serving published static apps
+# at *.shogo.one via CloudFront CDN backed by S3.
+# -----------------------------------------------------------------------------
+
+module "publish_hosting" {
+  source = "../../modules/publish-hosting"
+
+  count = var.ssl_certificate_domain_publish != "" ? 1 : 0
+
+  environment         = var.environment
+  publish_domain      = var.publish_domain
+  acm_certificate_arn = data.aws_acm_certificate.ssl_publish[0].arn
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# IAM Policy for API to upload published apps to S3
+resource "aws_iam_policy" "api_publish_s3_access" {
+  count       = var.ssl_certificate_domain_publish != "" ? 1 : 0
+  name        = "shogo-api-publish-s3-${var.environment}"
+  description = "Allow API to upload published apps to S3"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          module.publish_hosting[0].bucket_arn,
+          "${module.publish_hosting[0].bucket_arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudfront:CreateInvalidation"
+        ]
+        Resource = [
+          module.publish_hosting[0].cloudfront_distribution_arn
+        ]
+      }
+    ]
+  })
+}
+
+# Attach publish S3 policy to EKS node role (so API pods can upload to S3)
+resource "aws_iam_role_policy_attachment" "node_publish_s3_access" {
+  count      = var.ssl_certificate_domain_publish != "" ? 1 : 0
+  policy_arn = aws_iam_policy.api_publish_s3_access[0].arn
+  role       = module.eks.node_role_name
+}
+
+# Kubernetes secret for publish configuration
+resource "kubernetes_secret" "publish_config" {
+  count      = var.ssl_certificate_domain_publish != "" ? 1 : 0
+  depends_on = [kubernetes_namespace.shogo_system]
+
+  metadata {
+    name      = "publish-config"
+    namespace = "shogo-staging-system"
+  }
+
+  data = {
+    "bucket-name"      = module.publish_hosting[0].bucket_name
+    "cloudfront-id"    = module.publish_hosting[0].cloudfront_distribution_id
+    "publish-domain"   = var.publish_domain
+    "region"           = var.aws_region
   }
 }
 

@@ -3,73 +3,34 @@
  *
  * Endpoints for publishing projects to subdomain.shogo.one URLs.
  * Platform lives at shogo.ai, published apps at shogo.one for isolation.
- * Creates Knative DomainMappings for routing.
+ * 
+ * Architecture:
+ *   1. Trigger build in project-runtime pod
+ *   2. Download built dist/ files from pod
+ *   3. Upload to S3 bucket
+ *   4. Invalidate CloudFront cache
+ *   5. Serve via CloudFront CDN at {subdomain}.shogo.one
  */
 
 import { Hono } from "hono"
-import * as k8s from "@kubernetes/client-node"
-import * as fs from "fs"
+import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3"
+import { CloudFrontClient, CreateInvalidationCommand } from "@aws-sdk/client-cloudfront"
 import { prisma } from "../lib/prisma"
+import { getProjectPodUrl } from "../lib/knative-project-manager"
 
-// Initialize Kubernetes client lazily (created on first use)
-let k8sCustomApi: k8s.CustomObjectsApi | null = null
+// S3 and CloudFront configuration
+const PUBLISH_BUCKET = process.env.PUBLISH_BUCKET || "shogo-published-apps-staging"
+const PUBLISH_CLOUDFRONT_ID = process.env.PUBLISH_CLOUDFRONT_ID || ""
+const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || "shogo.one"
+const AWS_REGION = process.env.S3_REGION || process.env.AWS_REGION || "us-east-1"
 
-function getK8sClient(): k8s.CustomObjectsApi {
-  if (k8sCustomApi) {
-    return k8sCustomApi
-  }
+// Initialize AWS clients
+const s3Client = new S3Client({ region: AWS_REGION })
+const cloudfrontClient = PUBLISH_CLOUDFRONT_ID ? new CloudFrontClient({ region: AWS_REGION }) : null
 
-  const kc = new k8s.KubeConfig()
-
-  // Try in-cluster config first (when running in Kubernetes)
-  const serviceAccountDir = "/var/run/secrets/kubernetes.io/serviceaccount"
-  const caPath = `${serviceAccountDir}/ca.crt`
-  const tokenPath = `${serviceAccountDir}/token`
-
-  if (fs.existsSync(caPath) && fs.existsSync(tokenPath)) {
-    // Manual in-cluster configuration
-    const ca = fs.readFileSync(caPath, "utf8")
-    const token = fs.readFileSync(tokenPath, "utf8")
-    const host = `https://${process.env.KUBERNETES_SERVICE_HOST}:${process.env.KUBERNETES_SERVICE_PORT}`
-
-    kc.loadFromOptions({
-      clusters: [
-        {
-          name: "in-cluster",
-          server: host,
-          caData: Buffer.from(ca).toString("base64"),
-          skipTLSVerify: true,
-        },
-      ],
-      users: [
-        {
-          name: "in-cluster",
-          token: token,
-        },
-      ],
-      contexts: [
-        {
-          name: "in-cluster",
-          cluster: "in-cluster",
-          user: "in-cluster",
-        },
-      ],
-      currentContext: "in-cluster",
-    })
-    console.log("[Publish] Loaded Kubernetes config from cluster (manual setup)")
-  } else {
-    // Fall back to default config for local development
-    try {
-      kc.loadFromDefault()
-      console.log("[Publish] Loaded Kubernetes config from default")
-    } catch (defaultError) {
-      console.error("[Publish] Failed to load any Kubernetes config:", defaultError)
-      throw new Error("Failed to initialize Kubernetes client")
-    }
-  }
-
-  k8sCustomApi = kc.makeApiClient(k8s.CustomObjectsApi)
-  return k8sCustomApi
+// Check if we're in Kubernetes (S3 publishing mode) or local dev
+function isKubernetes(): boolean {
+  return !!(process.env.KUBERNETES_SERVICE_HOST || process.env.PROJECT_NAMESPACE)
 }
 
 // Reserved subdomains that cannot be used
@@ -112,104 +73,164 @@ function validateSubdomain(subdomain: string): { valid: boolean; reason?: string
   return { valid: true }
 }
 
-// Knative DomainMapping constants
-const KNATIVE_GROUP = "serving.knative.dev"
-const KNATIVE_VERSION = "v1beta1"
-const DOMAIN_MAPPING_PLURAL = "domainmappings"
-const NAMESPACE = process.env.PUBLISH_NAMESPACE || "shogo-workspaces"
-const BASE_DOMAIN = process.env.PUBLISH_DOMAIN || "shogo.one"
+/**
+ * Get the MIME type for a file based on extension
+ */
+function getMimeType(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase()
+  const mimeTypes: Record<string, string> = {
+    'html': 'text/html',
+    'css': 'text/css',
+    'js': 'application/javascript',
+    'mjs': 'application/javascript',
+    'json': 'application/json',
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'gif': 'image/gif',
+    'svg': 'image/svg+xml',
+    'ico': 'image/x-icon',
+    'webp': 'image/webp',
+    'woff': 'font/woff',
+    'woff2': 'font/woff2',
+    'ttf': 'font/ttf',
+    'eot': 'application/vnd.ms-fontobject',
+    'txt': 'text/plain',
+    'xml': 'application/xml',
+    'map': 'application/json',
+  }
+  return mimeTypes[ext || ''] || 'application/octet-stream'
+}
 
 /**
- * Check if a DomainMapping exists in Knative
+ * Trigger a build in the project-runtime pod
  */
-async function domainMappingExists(subdomain: string): Promise<boolean> {
+async function triggerBuild(projectId: string): Promise<{ success: boolean; error?: string }> {
   try {
-    const client = getK8sClient()
-    await client.getNamespacedCustomObject({
-      group: KNATIVE_GROUP,
-      version: KNATIVE_VERSION,
-      namespace: NAMESPACE,
-      plural: DOMAIN_MAPPING_PLURAL,
-      name: `${subdomain}.${BASE_DOMAIN}`,
+    const podUrl = await getProjectPodUrl(projectId)
+    console.log(`[Publish] Triggering build for project ${projectId} at ${podUrl}`)
+    
+    const response = await fetch(`${podUrl}/preview/restart`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
     })
-    return true
-  } catch (error: any) {
-    if (error?.response?.statusCode === 404) {
-      return false
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      return { success: false, error: `Build failed: ${response.status} - ${errorText}` }
     }
-    console.warn("[Publish] Error checking DomainMapping:", error?.message || error)
-    return false
+    
+    const result = await response.json()
+    console.log(`[Publish] Build complete:`, result)
+    return { success: true }
+  } catch (err: any) {
+    console.error(`[Publish] Build error:`, err)
+    return { success: false, error: err.message || 'Build failed' }
   }
 }
 
 /**
- * Create a Knative DomainMapping
+ * Download dist/ files from the project-runtime pod
  */
-async function createDomainMapping(subdomain: string): Promise<void> {
-  const client = getK8sClient()
-  const domainMappingName = `${subdomain}.${BASE_DOMAIN}`
-  const domainMapping = {
-    apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
-    kind: "DomainMapping",
-    metadata: {
-      name: domainMappingName,
-      namespace: NAMESPACE,
-    },
-    spec: {
-      ref: {
-        name: "studio",
-        kind: "Service",
-        apiVersion: "serving.knative.dev/v1",
+async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>> {
+  const podUrl = await getProjectPodUrl(projectId)
+  const files = new Map<string, Buffer>()
+  
+  // Get the file list from the pod
+  console.log(`[Publish] Downloading dist files from ${podUrl}`)
+  
+  // The project-runtime should expose an endpoint to list/download dist files
+  // For now, we'll use a simple API that returns all files
+  const response = await fetch(`${podUrl}/api/dist-files`)
+  
+  if (!response.ok) {
+    throw new Error(`Failed to get dist files: ${response.status}`)
+  }
+  
+  const distFiles = await response.json() as Array<{ path: string; content: string }>
+  
+  for (const file of distFiles) {
+    // Content is base64 encoded
+    const buffer = Buffer.from(file.content, 'base64')
+    files.set(file.path, buffer)
+  }
+  
+  console.log(`[Publish] Downloaded ${files.size} files`)
+  return files
+}
+
+/**
+ * Upload files to S3 bucket under the subdomain prefix
+ */
+async function uploadToS3(subdomain: string, files: Map<string, Buffer>): Promise<void> {
+  console.log(`[Publish] Uploading ${files.size} files to S3 bucket ${PUBLISH_BUCKET}/${subdomain}/`)
+  
+  for (const [filePath, content] of files) {
+    const key = `${subdomain}/${filePath}`
+    const contentType = getMimeType(filePath)
+    
+    await s3Client.send(new PutObjectCommand({
+      Bucket: PUBLISH_BUCKET,
+      Key: key,
+      Body: content,
+      ContentType: contentType,
+      CacheControl: filePath === 'index.html' ? 'max-age=0, must-revalidate' : 'max-age=31536000, immutable',
+    }))
+  }
+  
+  console.log(`[Publish] Upload complete`)
+}
+
+/**
+ * Delete all files for a subdomain from S3
+ */
+async function deleteFromS3(subdomain: string): Promise<void> {
+  console.log(`[Publish] Deleting files for subdomain ${subdomain} from S3`)
+  
+  // List all objects with the subdomain prefix
+  const listResponse = await s3Client.send(new ListObjectsV2Command({
+    Bucket: PUBLISH_BUCKET,
+    Prefix: `${subdomain}/`,
+  }))
+  
+  if (!listResponse.Contents || listResponse.Contents.length === 0) {
+    console.log(`[Publish] No files found for subdomain ${subdomain}`)
+    return
+  }
+  
+  // Delete all objects
+  const objects = listResponse.Contents.map(obj => ({ Key: obj.Key! }))
+  await s3Client.send(new DeleteObjectsCommand({
+    Bucket: PUBLISH_BUCKET,
+    Delete: { Objects: objects },
+  }))
+  
+  console.log(`[Publish] Deleted ${objects.length} files`)
+}
+
+/**
+ * Invalidate CloudFront cache for a subdomain
+ */
+async function invalidateCloudFront(subdomain: string): Promise<void> {
+  if (!cloudfrontClient || !PUBLISH_CLOUDFRONT_ID) {
+    console.log(`[Publish] CloudFront not configured, skipping invalidation`)
+    return
+  }
+  
+  console.log(`[Publish] Invalidating CloudFront cache for ${subdomain}`)
+  
+  await cloudfrontClient.send(new CreateInvalidationCommand({
+    DistributionId: PUBLISH_CLOUDFRONT_ID,
+    InvalidationBatch: {
+      CallerReference: `${subdomain}-${Date.now()}`,
+      Paths: {
+        Quantity: 1,
+        Items: [`/${subdomain}/*`],
       },
     },
-  }
-
-  try {
-    await client.createNamespacedCustomObject({
-      group: KNATIVE_GROUP,
-      version: KNATIVE_VERSION,
-      namespace: NAMESPACE,
-      plural: DOMAIN_MAPPING_PLURAL,
-      body: domainMapping,
-    })
-    console.log(`[Publish] Created DomainMapping: ${domainMappingName}`)
-  } catch (error: any) {
-    if (error?.response?.statusCode === 409) {
-      await client.replaceNamespacedCustomObject({
-        group: KNATIVE_GROUP,
-        version: KNATIVE_VERSION,
-        namespace: NAMESPACE,
-        plural: DOMAIN_MAPPING_PLURAL,
-        name: domainMappingName,
-        body: domainMapping,
-      })
-      console.log(`[Publish] Updated existing DomainMapping: ${domainMappingName}`)
-    } else {
-      throw error
-    }
-  }
-}
-
-/**
- * Delete a Knative DomainMapping
- */
-async function deleteDomainMapping(subdomain: string): Promise<void> {
-  const domainMappingName = `${subdomain}.${BASE_DOMAIN}`
-  try {
-    const client = getK8sClient()
-    await client.deleteNamespacedCustomObject({
-      group: KNATIVE_GROUP,
-      version: KNATIVE_VERSION,
-      namespace: NAMESPACE,
-      plural: DOMAIN_MAPPING_PLURAL,
-      name: domainMappingName,
-    })
-    console.log(`[Publish] Deleted DomainMapping: ${domainMappingName}`)
-  } catch (error: any) {
-    if (error?.response?.statusCode !== 404) {
-      throw error
-    }
-  }
+  }))
+  
+  console.log(`[Publish] CloudFront invalidation created`)
 }
 
 /**
@@ -237,12 +258,6 @@ export function publishRoutes() {
       })
 
       if (existingProject) {
-        return c.json({ available: false, reason: "Subdomain is already in use" }, 200)
-      }
-
-      // Check if DomainMapping exists in Knative (edge case - orphaned mapping)
-      const mappingExists = await domainMappingExists(subdomain)
-      if (mappingExists) {
         return c.json({ available: false, reason: "Subdomain is already in use" }, 200)
       }
 
@@ -294,43 +309,62 @@ export function publishRoutes() {
         }
       }
 
-      // If project already has a different subdomain, clean up old DomainMapping
+      // If project already has a different subdomain, clean up old S3 files
       if (project.publishedSubdomain && project.publishedSubdomain !== subdomain) {
         try {
-          await deleteDomainMapping(project.publishedSubdomain)
+          await deleteFromS3(project.publishedSubdomain)
         } catch (err) {
-          console.warn("[Publish] Failed to delete old DomainMapping:", err)
+          console.warn("[Publish] Failed to delete old S3 files:", err)
         }
       }
 
-      // Create Knative DomainMapping
-      try {
-        await createDomainMapping(subdomain)
-      } catch (err: any) {
-        // Log detailed error for debugging
-        console.error("[Publish] Failed to create DomainMapping:", {
-          subdomain,
-          namespace: NAMESPACE,
-          baseDomain: BASE_DOMAIN,
-          error: err?.message,
-          statusCode: err?.response?.statusCode,
-          body: err?.response?.body,
-        })
-        
-        // Provide more specific error messages based on the Kubernetes API error
-        let message = "Failed to create domain mapping"
-        if (err?.response?.statusCode === 403) {
-          message = "Permission denied: API service account lacks RBAC permissions for DomainMappings"
-        } else if (err?.response?.statusCode === 404) {
-          message = `Namespace '${NAMESPACE}' or Knative Serving not found`
-        } else if (err?.message) {
-          message = `Domain mapping failed: ${err.message}`
+      // In Kubernetes: Build, download, and upload to S3
+      if (isKubernetes()) {
+        // Step 1: Trigger build
+        const buildResult = await triggerBuild(projectId)
+        if (!buildResult.success) {
+          return c.json({
+            error: { code: "build_failed", message: buildResult.error || "Build failed" }
+          }, 500)
         }
-        
-        return c.json(
-          { error: { code: "infrastructure_error", message } },
-          500
-        )
+
+        // Step 2: Download dist files
+        let files: Map<string, Buffer>
+        try {
+          files = await downloadDistFiles(projectId)
+        } catch (err: any) {
+          console.error("[Publish] Failed to download dist files:", err)
+          return c.json({
+            error: { code: "download_failed", message: err.message || "Failed to download build files" }
+          }, 500)
+        }
+
+        if (files.size === 0) {
+          return c.json({
+            error: { code: "no_files", message: "No files to publish - build may have failed" }
+          }, 400)
+        }
+
+        // Step 3: Upload to S3
+        try {
+          await uploadToS3(subdomain, files)
+        } catch (err: any) {
+          console.error("[Publish] Failed to upload to S3:", err)
+          return c.json({
+            error: { code: "upload_failed", message: err.message || "Failed to upload to S3" }
+          }, 500)
+        }
+
+        // Step 4: Invalidate CloudFront cache
+        try {
+          await invalidateCloudFront(subdomain)
+        } catch (err: any) {
+          console.warn("[Publish] CloudFront invalidation failed:", err)
+          // Don't fail the publish for this - it will eventually expire
+        }
+      } else {
+        // Local development: Just log and update database
+        console.log(`[Publish] Local mode - would publish to ${subdomain}.${PUBLISH_DOMAIN}`)
       }
 
       // Update project with publish info
@@ -348,7 +382,7 @@ export function publishRoutes() {
 
       return c.json(
         {
-          url: `https://${subdomain}.shogo.ai`,
+          url: `https://${subdomain}.${PUBLISH_DOMAIN}`,
           subdomain,
           publishedAt: publishedAt.getTime(),
           accessLevel,
@@ -379,14 +413,17 @@ export function publishRoutes() {
         return c.json({ error: { code: "not_published", message: "Project is not published" } }, 400)
       }
 
-      // Delete Knative DomainMapping
-      try {
-        await deleteDomainMapping(project.publishedSubdomain)
-      } catch (err) {
-        console.warn("[Publish] Failed to delete DomainMapping:", err)
+      // Delete files from S3
+      if (isKubernetes()) {
+        try {
+          await deleteFromS3(project.publishedSubdomain)
+          await invalidateCloudFront(project.publishedSubdomain)
+        } catch (err) {
+          console.warn("[Publish] Failed to delete from S3:", err)
+        }
       }
 
-      // Clear publish info from project (reset accessLevel to default)
+      // Clear publish info from project
       await prisma.project.update({
         where: { id: projectId },
         data: {
@@ -402,6 +439,64 @@ export function publishRoutes() {
     } catch (error: any) {
       console.error("[Publish] Unpublish error:", error)
       return c.json({ error: { code: "unpublish_failed", message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/republish - Republish with latest changes
+   */
+  router.post("/projects/:projectId/republish", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+      })
+      if (!project) {
+        return c.json({ error: { code: "project_not_found", message: "Project not found" } }, 404)
+      }
+
+      if (!project.publishedSubdomain) {
+        return c.json({ error: { code: "not_published", message: "Project is not published" } }, 400)
+      }
+
+      const subdomain = project.publishedSubdomain
+
+      if (isKubernetes()) {
+        // Rebuild and republish
+        const buildResult = await triggerBuild(projectId)
+        if (!buildResult.success) {
+          return c.json({
+            error: { code: "build_failed", message: buildResult.error || "Build failed" }
+          }, 500)
+        }
+
+        const files = await downloadDistFiles(projectId)
+        if (files.size === 0) {
+          return c.json({
+            error: { code: "no_files", message: "No files to publish" }
+          }, 400)
+        }
+
+        await uploadToS3(subdomain, files)
+        await invalidateCloudFront(subdomain)
+      }
+
+      // Update publishedAt timestamp
+      const publishedAt = new Date()
+      await prisma.project.update({
+        where: { id: projectId },
+        data: { publishedAt },
+      })
+
+      return c.json({
+        url: `https://${subdomain}.${PUBLISH_DOMAIN}`,
+        subdomain,
+        publishedAt: publishedAt.getTime(),
+      }, 200)
+    } catch (error: any) {
+      console.error("[Publish] Republish error:", error)
+      return c.json({ error: { code: "republish_failed", message: error.message } }, 500)
     }
   })
 
@@ -444,7 +539,7 @@ export function publishRoutes() {
 
       return c.json(
         {
-          url: `https://${project.publishedSubdomain}.shogo.ai`,
+          url: `https://${project.publishedSubdomain}.${PUBLISH_DOMAIN}`,
           subdomain: project.publishedSubdomain,
           publishedAt: project.publishedAt?.getTime(),
           accessLevel: updatedProject.accessLevel,
