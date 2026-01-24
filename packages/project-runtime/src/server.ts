@@ -32,7 +32,7 @@ import { streamText, tool, type CoreMessage } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
-import { existsSync, readdirSync, readFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
 import { initializeS3Sync, type S3Sync } from './s3-sync'
 import { initializePostgresBackup, type PostgresBackup } from './postgres-backup'
 import { fileURLToPath } from 'url'
@@ -171,6 +171,35 @@ function loadTemplates(): TemplateInfo[] {
 }
 
 /**
+ * Sanitize .env file to remove DATABASE_URL.
+ * In K8s, DATABASE_URL is provided via environment variable.
+ * Template .env files have local dev URLs that would override this.
+ */
+function sanitizeEnvFile(projectDir: string): void {
+  const envPath = resolve(projectDir, '.env')
+  if (!existsSync(envPath)) return
+
+  try {
+    const content = readFileSync(envPath, 'utf-8')
+    const lines = content.split('\n')
+    
+    // Filter out DATABASE_URL lines
+    const filteredLines = lines.filter(line => {
+      const trimmed = line.trim()
+      if (trimmed.startsWith('DATABASE_URL=') || trimmed.startsWith('DATABASE_URL =')) {
+        console.log(`[project-runtime] Removing DATABASE_URL from .env (will use environment variable)`)
+        return false
+      }
+      return true
+    })
+    
+    writeFileSync(envPath, filteredLines.join('\n'), 'utf-8')
+  } catch (err: any) {
+    console.warn(`[project-runtime] Warning: Could not sanitize .env file: ${err.message}`)
+  }
+}
+
+/**
  * Copy a template to the project directory
  */
 function copyTemplate(templateName: string, projectName: string): { ok: boolean; message?: string; error?: string; needsRestart?: boolean } {
@@ -193,6 +222,9 @@ function copyTemplate(templateName: string, projectName: string): { ok: boolean;
       recursive: true,
       filter: (src) => !src.includes('node_modules') && !src.includes('.git') && !src.includes('template.json'),
     })
+
+    // Sanitize .env file to remove DATABASE_URL (K8s provides it via env var)
+    sanitizeEnvFile(PROJECT_DIR)
 
     return {
       ok: true,
@@ -417,6 +449,90 @@ const claudeCode = createClaudeCode({
 })
 
 // =============================================================================
+// Stream Keep-Alive Utility
+// =============================================================================
+
+/**
+ * Wrap a ReadableStream with periodic keep-alive comments.
+ * This prevents HTTP/2 connections from being terminated by load balancers
+ * during long-running operations like template copying (45+ seconds).
+ * 
+ * SSE format keep-alive: ": keep-alive\n\n" (comment line, doesn't affect data)
+ * 
+ * @param stream - Original stream to wrap
+ * @param intervalMs - Interval between keep-alive messages (default 15s)
+ * @returns New stream with keep-alive messages injected
+ */
+function wrapStreamWithKeepalive(
+  stream: ReadableStream<Uint8Array>,
+  intervalMs: number = 15000
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  const keepAliveMessage = encoder.encode(': keep-alive\n\n')
+  
+  let keepAliveInterval: ReturnType<typeof setInterval> | null = null
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null
+  
+  const reader = stream.getReader()
+  
+  return new ReadableStream({
+    start(ctrl) {
+      controller = ctrl
+      
+      // Start keep-alive interval
+      keepAliveInterval = setInterval(() => {
+        try {
+          if (controller) {
+            controller.enqueue(keepAliveMessage)
+            console.log('[project-runtime] Sent keep-alive')
+          }
+        } catch {
+          // Stream closed, stop sending
+          if (keepAliveInterval) {
+            clearInterval(keepAliveInterval)
+            keepAliveInterval = null
+          }
+        }
+      }, intervalMs)
+    },
+    
+    async pull(ctrl) {
+      try {
+        const { done, value } = await reader.read()
+        
+        if (done) {
+          // Clean up and close
+          if (keepAliveInterval) {
+            clearInterval(keepAliveInterval)
+            keepAliveInterval = null
+          }
+          ctrl.close()
+          return
+        }
+        
+        ctrl.enqueue(value)
+      } catch (error) {
+        // Clean up on error
+        if (keepAliveInterval) {
+          clearInterval(keepAliveInterval)
+          keepAliveInterval = null
+        }
+        ctrl.error(error)
+      }
+    },
+    
+    cancel() {
+      // Clean up on cancel
+      if (keepAliveInterval) {
+        clearInterval(keepAliveInterval)
+        keepAliveInterval = null
+      }
+      reader.cancel()
+    },
+  })
+}
+
+// =============================================================================
 // Request Schemas
 // =============================================================================
 
@@ -638,9 +754,22 @@ You also have access to file operations (Read, Write, Edit, Glob, Grep, Bash) fo
       maxSteps: 10,
     })
     
-    // Return the AI SDK UI message stream response directly
+    // Return the AI SDK UI message stream response with keep-alive wrapper
     // This ensures compatibility with @ai-sdk/react's useChat hook (DefaultChatTransport)
-    return result.toUIMessageStreamResponse()
+    // The keep-alive wrapper prevents HTTP/2 connection termination during long tool calls
+    const response = result.toUIMessageStreamResponse()
+    
+    // Wrap the stream with keep-alive messages to prevent ALB/proxy timeouts
+    // This is critical for long-running operations like template.copy (45+ seconds)
+    if (response.body) {
+      const wrappedStream = wrapStreamWithKeepalive(response.body, 15000)
+      return new Response(wrappedStream, {
+        status: response.status,
+        headers: response.headers,
+      })
+    }
+    
+    return response
   } catch (error: any) {
     console.error('[project-runtime] Chat error:', error)
     return c.json({
@@ -748,13 +877,69 @@ let isTanStackStart = process.env.IS_TANSTACK_START === 'true'
 let nitroProcess: ReturnType<typeof Bun.spawn> | null = null
 
 /**
+ * Wait for PostgreSQL to be ready to accept connections.
+ * This is critical when using postgres sidecar - we need to wait for it to start
+ * before running prisma commands.
+ * 
+ * @param timeoutMs - Maximum time to wait (default 30s)
+ * @returns true if postgres is ready, false if timeout
+ */
+async function waitForPostgresReady(timeoutMs: number = 30000): Promise<boolean> {
+  const startTime = Date.now()
+  const checkInterval = 500
+  
+  console.log('[project-runtime] Waiting for PostgreSQL to be ready...')
+  
+  while (Date.now() - startTime < timeoutMs) {
+    try {
+      // Use pg_isready if available (postgres image includes it)
+      const proc = Bun.spawn(['pg_isready', '-h', 'localhost', '-p', '5432', '-q'], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      const exitCode = await proc.exited
+      
+      if (exitCode === 0) {
+        const elapsed = Date.now() - startTime
+        console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms`)
+        return true
+      }
+    } catch {
+      // pg_isready not available, try direct connection test
+      try {
+        const testProc = Bun.spawn(['bunx', 'prisma', 'db', 'execute', '--stdin', '--schema', join(PROJECT_DIR, 'prisma', 'schema.prisma')], {
+          cwd: PROJECT_DIR,
+          stdin: new Blob(['SELECT 1']),
+          stdout: 'pipe',
+          stderr: 'pipe',
+        })
+        const testExitCode = await testProc.exited
+        if (testExitCode === 0) {
+          const elapsed = Date.now() - startTime
+          console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms (via prisma test)`)
+          return true
+        }
+      } catch {
+        // Connection test failed, keep waiting
+      }
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, checkInterval))
+  }
+  
+  console.error(`[project-runtime] PostgreSQL not ready after ${timeoutMs}ms`)
+  return false
+}
+
+/**
  * Restart the preview server after template changes.
  * This will:
  * 1. Kill any existing Nitro server process
  * 2. Install dependencies
- * 3. Run prisma generate/push if needed
- * 4. Build with Vite (Nitro produces .output/server/index.mjs)
- * 5. Start the Nitro server (for TanStack Start) or serve static files (plain Vite)
+ * 3. Wait for PostgreSQL sidecar to be ready (if prisma is present)
+ * 4. Run prisma generate/push if needed
+ * 5. Build with Vite (Nitro produces .output/server/index.mjs)
+ * 6. Start the Nitro server (for TanStack Start) or serve static files (plain Vite)
  */
 app.post('/preview/restart', async (c) => {
   const startTime = performance.now()
@@ -826,6 +1011,23 @@ app.post('/preview/restart', async (c) => {
     
     // 4. Run prisma generate and db push if prisma is present
     if (hasPrisma) {
+      // 4a. Wait for PostgreSQL to be ready (critical for sidecar postgres)
+      // Without this wait, prisma db push fails silently because postgres isn't accepting connections
+      const postgresReady = await waitForPostgresReady(30000)
+      markStep('waitForPostgres')
+      
+      if (!postgresReady) {
+        console.error('[project-runtime] ❌ PostgreSQL not ready - cannot run prisma commands')
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ 
+          success: false, 
+          error: 'PostgreSQL database not ready. The postgres sidecar may still be starting.',
+          hint: 'Wait a few seconds and try again, or check pod logs for postgres container.',
+          timings: { steps: timings, totalMs } 
+        }, 503)
+      }
+      
+      // 4b. Run prisma generate
       console.log('[project-runtime] ⏱️  Running prisma generate...')
       const prismaGenProc = Bun.spawn(['bunx', 'prisma', 'generate'], {
         cwd: PROJECT_DIR,
@@ -835,14 +1037,46 @@ app.post('/preview/restart', async (c) => {
       await prismaGenProc.exited
       markStep('prismaGenerate')
       
+      if (prismaGenProc.exitCode !== 0) {
+        console.error('[project-runtime] ❌ prisma generate failed with exit code:', prismaGenProc.exitCode)
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ 
+          success: false, 
+          error: `prisma generate failed with exit code ${prismaGenProc.exitCode}`,
+          hint: 'Check that the prisma schema is valid.',
+          timings: { steps: timings, totalMs } 
+        }, 500)
+      }
+      
+      // 4c. Run prisma db push with --accept-data-loss flag for development
+      // This ensures tables are created even if there are schema changes
       console.log('[project-runtime] ⏱️  Running prisma db push...')
-      const prismaPushProc = Bun.spawn(['bunx', 'prisma', 'db', 'push'], {
+      const prismaPushProc = Bun.spawn(['bunx', 'prisma', 'db', 'push', '--accept-data-loss'], {
         cwd: PROJECT_DIR,
         stdout: 'inherit',
         stderr: 'inherit',
+        env: {
+          ...process.env,
+          // Ensure DATABASE_URL from environment takes precedence over .env file
+          DATABASE_URL: process.env.DATABASE_URL,
+        },
       })
       await prismaPushProc.exited
       markStep('prismaDbPush')
+      
+      if (prismaPushProc.exitCode !== 0) {
+        console.error('[project-runtime] ❌ prisma db push failed with exit code:', prismaPushProc.exitCode)
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ 
+          success: false, 
+          error: `prisma db push failed with exit code ${prismaPushProc.exitCode}`,
+          hint: 'Check database connection and schema compatibility. DATABASE_URL: ' + 
+                (process.env.DATABASE_URL ? '[set]' : '[not set]'),
+          timings: { steps: timings, totalMs } 
+        }, 500)
+      }
+      
+      console.log('[project-runtime] ✅ Database schema pushed successfully')
     }
     
     // 5. Build the project

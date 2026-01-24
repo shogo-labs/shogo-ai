@@ -109,6 +109,42 @@ function updatePackageJson(projectDir: string, projectName: string): void {
 }
 
 /**
+ * Update or remove .env file to ensure DATABASE_URL from environment takes precedence.
+ * 
+ * Templates have .env files with local dev DATABASE_URLs (e.g., postgres://localhost:5434/todo_app).
+ * In K8s, the DATABASE_URL is provided via environment variable (postgres://localhost:5432/project).
+ * 
+ * This function removes DATABASE_URL from the .env file so the environment variable is used.
+ * Other env vars (like ANTHROPIC_API_KEY) are preserved.
+ */
+function sanitizeEnvFile(projectDir: string): void {
+  const envPath = join(projectDir, ".env")
+  if (!existsSync(envPath)) return
+
+  try {
+    const content = readFileSync(envPath, "utf-8")
+    const lines = content.split('\n')
+    
+    // Filter out DATABASE_URL lines (can be multiple formats)
+    const filteredLines = lines.filter(line => {
+      const trimmed = line.trim()
+      // Skip DATABASE_URL definitions
+      if (trimmed.startsWith('DATABASE_URL=') || trimmed.startsWith('DATABASE_URL =')) {
+        console.log(`[template.copy] Removing DATABASE_URL from .env (will use environment variable)`)
+        return false
+      }
+      return true
+    })
+    
+    // Write back the filtered content
+    writeFileSync(envPath, filteredLines.join('\n'), "utf-8")
+    console.log(`[template.copy] Sanitized .env file - DATABASE_URL will come from environment`)
+  } catch (err: any) {
+    console.warn(`[template.copy] Warning: Could not sanitize .env file: ${err.message}`)
+  }
+}
+
+/**
  * Get default output directory for new projects
  * 
  * Priority:
@@ -312,6 +348,11 @@ export async function executeTemplateCopy(
     // Update package.json with new name
     updatePackageJson(projectDir, args.name)
     timer.mark('updatePackageJson')
+
+    // Sanitize .env file to remove DATABASE_URL (K8s provides it via env var)
+    // This prevents template's local dev DATABASE_URL from overriding the K8s one
+    sanitizeEnvFile(projectDir)
+    timer.mark('sanitizeEnvFile')
 
     // Delete existing dev.db if copied (start fresh)
     const devDbPath = join(projectDir, "prisma", "dev.db")
