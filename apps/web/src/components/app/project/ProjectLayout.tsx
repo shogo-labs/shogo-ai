@@ -111,6 +111,20 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
 
+  // Stable callbacks for panels to prevent unnecessary re-renders
+  const handleDatabaseError = useCallback((err: Error) => {
+    console.error('[ProjectLayout] Database error:', err)
+  }, [])
+  const handleDatabaseLoad = useCallback(() => {
+    console.log('[ProjectLayout] Prisma Studio loaded successfully')
+  }, [])
+  const handleRuntimeError = useCallback((err: Error) => {
+    console.error('[ProjectLayout] Runtime error:', err)
+  }, [])
+  const handleRuntimeLoad = useCallback(() => {
+    console.log('[ProjectLayout] Runtime loaded successfully')
+  }, [])
+
   // Project state
   // Use transition state if available (from homepage flow) to avoid loading flash
   const [project, setProject] = useState<any>(transitionState?.project ?? null)
@@ -713,13 +727,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   projectId={projectId || ''}
                   className="h-full"
                   refreshTrigger={codeRefreshTrigger}
-                  onError={(err) => {
-                    console.error('[ProjectLayout] Runtime error:', err)
-                    // Could show toast here
-                  }}
-                  onLoad={() => {
-                    console.log('[ProjectLayout] Runtime loaded successfully')
-                  }}
+                  onError={handleRuntimeError}
+                  onLoad={handleRuntimeLoad}
                 />
               </div>
               {/* Code Editor - stays mounted to preserve editor state */}
@@ -769,12 +778,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <DatabasePanel
                   projectId={projectId || ''}
                   className="h-full"
-                  onError={(err) => {
-                    console.error('[ProjectLayout] Database error:', err)
-                  }}
-                  onLoad={() => {
-                    console.log('[ProjectLayout] Prisma Studio loaded successfully')
-                  }}
+                  onError={handleDatabaseError}
+                  onLoad={handleDatabaseLoad}
                 />
               </div>
               {/* Test Panel - Playwright E2E test runner */}

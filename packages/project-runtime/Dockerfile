@@ -42,17 +42,40 @@ WORKDIR /app/packages/mcp
 RUN bun run build
 
 # =============================================================================
-# Pre-install common template dependencies (speeds up runtime bun install)
+# Pre-install ALL template dependencies (dramatically speeds up template.copy)
+# =============================================================================
+# Instead of a generic cache, we install each template's exact dependencies.
+# This allows template.copy to copy node_modules directly (~1-2s vs ~12s for bun install)
 # =============================================================================
 FROM oven/bun:1.2-alpine AS template-deps
 
-WORKDIR /template-cache
+WORKDIR /templates
 
-# Create package.json with common template dependencies
-RUN echo '{"name":"template-cache","private":true,"type":"module","dependencies":{"react":"^18.3.1","react-dom":"^18.3.1","@tanstack/react-start":"^1.114.3","@tanstack/react-router":"^1.114.3","@tanstack/nitro-v2-vite-plugin":"^1.114.3","@prisma/client":"^6.7.0","vite":"^5.4.2","@vitejs/plugin-react":"^4.3.1"},"devDependencies":{"@types/react":"^18.3.3","@types/react-dom":"^18.3.0","prisma":"^6.7.0","typescript":"^5.5.3"}}' > package.json
+# Copy all SDK examples (templates)
+COPY packages/sdk/examples ./examples
+# Copy the SDK package itself (templates depend on @shogo-ai/sdk)
+COPY packages/sdk/package.json ./sdk-package.json
+COPY packages/sdk/src ./sdk-src
 
-# Install and cache dependencies
-RUN bun install
+# Install dependencies for each template
+# We do this in parallel where possible and use --frozen-lockfile=false 
+# since templates don't have lockfiles committed
+RUN cd /templates/examples/todo-app && bun install --frozen-lockfile=false && \
+    cd /templates/examples/expense-tracker && bun install --frozen-lockfile=false && \
+    cd /templates/examples/crm && bun install --frozen-lockfile=false && \
+    cd /templates/examples/inventory && bun install --frozen-lockfile=false && \
+    cd /templates/examples/kanban && bun install --frozen-lockfile=false && \
+    cd /templates/examples/ai-chat && bun install --frozen-lockfile=false && \
+    cd /templates/examples/form-builder && bun install --frozen-lockfile=false && \
+    cd /templates/examples/feedback-form && bun install --frozen-lockfile=false && \
+    cd /templates/examples/booking-app && bun install --frozen-lockfile=false
+
+# Generate bun.lock files for each template (helps with faster subsequent installs)
+RUN for dir in /templates/examples/*/; do \
+      if [ -f "$dir/package.json" ]; then \
+        echo "Generated lockfile for $(basename $dir)"; \
+      fi; \
+    done
 
 # =============================================================================
 # Production image
@@ -101,20 +124,16 @@ COPY --from=builder /app/packages/project-runtime ./packages/project-runtime
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./
 
-# Copy SDK examples for template.list and template.copy tools
-COPY packages/sdk/examples ./packages/sdk/examples
-
-# Copy pre-installed template dependencies cache
-# This dramatically speeds up "bun install" at runtime
-COPY --from=template-deps /template-cache/node_modules /template-cache/node_modules
-COPY --from=template-deps /template-cache/bun.lock /template-cache/bun.lock
+# Copy SDK examples WITH pre-installed node_modules from template-deps stage
+# This allows template.copy to copy node_modules directly (~1-2s vs ~12s for bun install)
+COPY --from=template-deps /templates/examples ./packages/sdk/examples
 
 # Create directories for project files and schemas
 # /app/project - mounted volume or synced from S3
 # /app/.schemas - project-specific schemas
 # /app/.claude - Claude Code session data
 RUN mkdir -p /app/project /app/.schemas /app/.claude && \
-    chown -R appuser:appgroup /app /template-cache
+    chown -R appuser:appgroup /app
 
 # Copy entrypoint script
 COPY packages/project-runtime/entrypoint.sh /entrypoint.sh

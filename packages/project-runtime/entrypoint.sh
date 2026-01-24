@@ -132,7 +132,6 @@ set -e
 
 PROJECT_DIR="${PROJECT_DIR:-/app/project}"
 BUILD_STATUS_FILE="/tmp/build-status"
-TEMPLATE_CACHE="/template-cache/node_modules"
 
 # Timing function for background init
 BG_START_TIME=$(date +%s%3N)
@@ -147,20 +146,18 @@ bg_log "Background initialization started"
 
 cd "$PROJECT_DIR"
 
-# Step 1: Install dependencies (with cache optimization)
-bg_log "Step 1: Installing dependencies..."
+# Step 1: Install dependencies (skip if pre-installed from template)
+bg_log "Step 1: Checking dependencies..."
 STEP_START=$(date +%s%3N)
-if [ -d "node_modules" ] && [ -f "bun.lock" ]; then
+
+# Check if node_modules exists and has key packages (pre-installed from template)
+if [ -d "node_modules/react" ] && [ -d "node_modules/vite" ]; then
+  STEP_END=$(date +%s%3N)
+  bg_log "⚡ Dependencies pre-installed from template (took $((STEP_END - STEP_START))ms)"
+elif [ -d "node_modules" ] && [ -f "bun.lock" ]; then
   bg_log "Dependencies already installed (cached)"
 else
-  # Use pre-cached template dependencies if available
-  # This dramatically speeds up install by using pre-downloaded packages
-  if [ -d "$TEMPLATE_CACHE" ]; then
-    bg_log "Using pre-cached template dependencies..."
-    # Copy cache to speed up bun install resolution
-    cp -r "$TEMPLATE_CACHE" ./node_modules 2>/dev/null || true
-  fi
-  
+  bg_log "Installing dependencies..."
   if bun install 2>&1; then
     STEP_END=$(date +%s%3N)
     bg_log "Dependencies installed (took $((STEP_END - STEP_START))ms)"

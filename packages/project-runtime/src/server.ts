@@ -775,20 +775,33 @@ app.post('/preview/restart', async (c) => {
     
     console.log(`[project-runtime] Project type: ${isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'}`)
     
-    // 3. Install dependencies
-    console.log('[project-runtime] ⏱️  Installing dependencies...')
-    const installProc = Bun.spawn(['bun', 'install'], {
-      cwd: PROJECT_DIR,
-      stdout: 'inherit',
-      stderr: 'inherit',
-    })
-    await installProc.exited
-    markStep('bunInstall')
+    // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
+    const nodeModulesPath = join(PROJECT_DIR, 'node_modules')
+    const nodeModulesExists = existsSync(nodeModulesPath)
     
-    if (installProc.exitCode !== 0) {
-      console.error('[project-runtime] Install failed')
-      const totalMs = Math.round(performance.now() - startTime)
-      return c.json({ success: false, error: 'Dependency installation failed', timings: { steps: timings, totalMs } }, 500)
+    // Check if node_modules appears complete (has key packages)
+    const hasReact = existsSync(join(nodeModulesPath, 'react'))
+    const hasVite = existsSync(join(nodeModulesPath, 'vite'))
+    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite
+    
+    if (nodeModulesComplete) {
+      console.log('[project-runtime] ⚡ node_modules already exists (pre-installed from template) - skipping bun install')
+      markStep('bunInstall (skipped - pre-installed)')
+    } else {
+      console.log('[project-runtime] ⏱️  Installing dependencies...')
+      const installProc = Bun.spawn(['bun', 'install'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      await installProc.exited
+      markStep('bunInstall')
+      
+      if (installProc.exitCode !== 0) {
+        console.error('[project-runtime] Install failed')
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ success: false, error: 'Dependency installation failed', timings: { steps: timings, totalMs } }, 500)
+      }
     }
     
     // 4. Run prisma generate and db push if prisma is present

@@ -84,11 +84,23 @@ export function DatabasePanel({
   const maxAutoRetries = 10
   const autoRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Track if we've already determined there's no Prisma schema
+  // This prevents repeated API calls for projects without Prisma
+  const noPrismaSchemaRef = useRef(false)
+
   /**
    * Fetch Prisma Studio URL from API, which starts it if needed.
    * Includes auto-retry for transient errors during project setup.
+   * 
+   * NOTE: This callback intentionally omits onError from deps to prevent
+   * unnecessary re-renders when parent passes inline callbacks.
    */
   const fetchStudioUrl = useCallback(async (isAutoRetry = false) => {
+    // Skip if we already know there's no Prisma schema
+    if (noPrismaSchemaRef.current) {
+      return
+    }
+
     setIsLoading(true)
     if (!isAutoRetry) {
       setError(null)
@@ -101,6 +113,15 @@ export function DatabasePanel({
       if (!response.ok) {
         const errorCode = data.error?.code || ''
         const errorMessage = data.error?.message || 'Failed to start Prisma Studio'
+
+        // "No Prisma schema" is a permanent state - don't retry
+        if (errorMessage.includes('No Prisma schema') || errorCode === 'no_prisma_schema') {
+          noPrismaSchemaRef.current = true
+          setError(errorMessage)
+          setStatus('error')
+          setIsLoading(false)
+          return
+        }
 
         // Check if this is a transient error that should be auto-retried
         const isTransientError = 
@@ -131,7 +152,6 @@ export function DatabasePanel({
         // After max retries or non-transient error, show error state
         setError(errorMessage)
         setStatus('error')
-        onError?.(new Error(errorMessage))
         setIsLoading(false)
         return
       }
@@ -158,10 +178,9 @@ export function DatabasePanel({
 
       setError(errorMessage)
       setStatus('error')
-      onError?.(new Error(errorMessage))
       setIsLoading(false)
     }
-  }, [projectId, onError])
+  }, [projectId]) // Intentionally omit onError to prevent re-renders
 
   /**
    * Handle iframe load event.
@@ -207,10 +226,14 @@ export function DatabasePanel({
     }
   }, [studioUrl])
 
-  // Fetch studio URL on mount
+  // Fetch studio URL on mount and when projectId changes
   useEffect(() => {
-    // Reset retry count when projectId changes
+    // Reset state when projectId changes
     retryCountRef.current = 0
+    noPrismaSchemaRef.current = false
+    setError(null)
+    setStudioUrl(null)
+    
     fetchStudioUrl()
 
     // Cleanup: stop Prisma Studio and clear any pending retries when component unmounts
@@ -218,10 +241,15 @@ export function DatabasePanel({
       if (autoRetryTimeoutRef.current) {
         clearTimeout(autoRetryTimeoutRef.current)
       }
-      fetch(`/api/projects/${projectId}/database/stop`, { method: 'POST' })
-        .catch(() => {}) // Ignore errors on unmount
+      // Only call stop if we actually started something (had a URL)
+      // Don't call if there's no Prisma schema - nothing to stop
+      if (!noPrismaSchemaRef.current) {
+        fetch(`/api/projects/${projectId}/database/stop`, { method: 'POST' })
+          .catch(() => {}) // Ignore errors on unmount
+      }
     }
-  }, [fetchStudioUrl, projectId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]) // Only depend on projectId, not fetchStudioUrl
 
   // Error state - no Prisma schema
   if (error && error.includes('No Prisma schema')) {

@@ -108,7 +108,6 @@ export function RuntimePreviewPanel({
         }
 
         setError(errorMessage)
-        onError?.(new Error(errorMessage))
         return
       }
 
@@ -136,11 +135,10 @@ export function RuntimePreviewPanel({
       }
 
       setError(errorMessage)
-      onError?.(new Error(errorMessage))
     } finally {
       setIsLoading(false)
     }
-  }, [projectId, onError])
+  }, [projectId]) // Intentionally omit onError to prevent re-renders from inline callbacks
 
   /**
    * Handle iframe load event.
@@ -202,10 +200,16 @@ export function RuntimePreviewPanel({
     }
   }, [sandboxUrl])
 
-  // Fetch sandbox URL on mount
+  // Fetch sandbox URL on mount and when projectId changes
   useEffect(() => {
+    // Reset state
+    retryCountRef.current = 0
+    setError(null)
+    setSandboxUrl(null)
+    
     fetchSandboxUrl()
-  }, [fetchSandboxUrl])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]) // Only depend on projectId, not fetchSandboxUrl
 
   // Track previous refreshTrigger to detect changes
   const prevRefreshTriggerRef = useRef(refreshTrigger)

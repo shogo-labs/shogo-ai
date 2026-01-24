@@ -261,10 +261,15 @@ export async function executeTemplateCopy(
     }
     timer.mark('cleanConflictingFiles')
 
+    // Check if template has pre-installed node_modules (from Docker image)
+    const templateNodeModules = join(template.path, "node_modules")
+    const hasPreinstalledDeps = existsSync(templateNodeModules)
+    
     // Exclusions - don't copy these
+    // NOTE: If template has pre-installed node_modules, we INCLUDE it for faster setup
     const exclude = [
-      "node_modules",
-      "bun.lock",
+      ...(hasPreinstalledDeps ? [] : ["node_modules"]), // Copy node_modules if pre-installed
+      "bun.lock", // Always regenerate lockfile for the target environment
       ".git",
       "dev.db",
       "dev.db-journal",
@@ -272,6 +277,10 @@ export async function executeTemplateCopy(
       "test-results",
       "template.json",
     ]
+    
+    if (hasPreinstalledDeps) {
+      console.log(`[template.copy] ⚡ Template has pre-installed node_modules - will copy for faster setup`)
+    }
 
     // Copy template directory
     const copiedFiles = copyDir(template.path, projectDir, exclude)
