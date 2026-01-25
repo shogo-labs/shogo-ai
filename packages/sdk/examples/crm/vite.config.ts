@@ -10,6 +10,10 @@ export default defineConfig({
     host: '0.0.0.0',
     cors: true,
     headers: { 'X-Frame-Options': 'ALLOWALL' },
+    hmr: {
+      clientPort: 443,
+      protocol: 'wss',
+    },
   },
   plugins: [
     tsConfigPaths({

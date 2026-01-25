@@ -3588,10 +3588,15 @@ const websocketHandlers = {
     
     // Handle HMR WebSocket connections
     if (data?.type === 'hmr' && isDevMode && viteDevProcess) {
-      console.log(`[HMR WebSocket] Client connected, proxying to vite dev server`)
+      // Build the WebSocket URL for Vite dev server
+      // Use normalized path and preserve query params
+      const wsPath = data.path || '/'
+      const wsSearch = (data as any).search || ''
+      const viteWsUrl = `ws://localhost:${VITE_DEV_PORT}${wsPath}${wsSearch}`
+      
+      console.log(`[HMR WebSocket] Client connected, proxying to vite dev server at ${viteWsUrl}`)
       try {
         // Create connection to vite dev server
-        const viteWsUrl = `ws://localhost:${VITE_DEV_PORT}${data.path || '/'}`
         const viteWs = new WebSocket(viteWsUrl)
         
         viteWs.onopen = () => {
@@ -3716,11 +3721,26 @@ function fetchHandler(request: Request, server: { upgrade: (req: Request, option
   // Handle WebSocket upgrade for HMR when in dev mode
   // Vite HMR WebSocket connects to root or /@vite paths
   if (isDevMode && viteDevProcess && isWebSocketUpgrade) {
-    // For HMR, we need to proxy the WebSocket to the vite dev server
-    // Since Bun doesn't support WebSocket proxying directly, we'll configure
-    // vite to use a specific HMR port that's exposed directly
-    console.log(`[project-runtime] HMR WebSocket upgrade requested at ${url.pathname}`)
-    const success = server.upgrade(request, { data: { type: 'hmr', path: url.pathname } })
+    // Normalize the path - strip any /api/projects/.../preview/ prefix
+    // The browser might be connecting through a proxy path, but Vite expects root
+    let wsPath = url.pathname
+    const previewPathMatch = wsPath.match(/\/api\/projects\/[^/]+\/preview(.*)/)
+    if (previewPathMatch) {
+      wsPath = previewPathMatch[1] || '/'
+    }
+    // Also handle direct subdomain paths
+    if (wsPath === '' || wsPath === '/?') {
+      wsPath = '/'
+    }
+    
+    console.log(`[project-runtime] HMR WebSocket upgrade requested: ${url.pathname} -> normalized: ${wsPath}`)
+    const success = server.upgrade(request, { 
+      data: { 
+        type: 'hmr', 
+        path: wsPath,
+        search: url.search  // Preserve query params
+      } 
+    })
     if (success) {
       return undefined
     }

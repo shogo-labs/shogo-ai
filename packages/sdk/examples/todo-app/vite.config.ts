@@ -10,6 +10,12 @@ export default defineConfig({
     host: '0.0.0.0',
     cors: true,
     headers: { 'X-Frame-Options': 'ALLOWALL' },
+    hmr: {
+      // Let the client connect to the same host it loaded from (the proxy)
+      // The proxy will forward WebSocket connections to the Vite dev server
+      clientPort: 443,  // Use the HTTPS port since preview is served over HTTPS
+      protocol: 'wss',  // Use secure WebSocket since we're on HTTPS
+    },
   },
   plugins: [
     tsConfigPaths({

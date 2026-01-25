@@ -9,6 +9,10 @@ export default defineConfig({
     port: 5173,
     cors: true,
     headers: { 'X-Frame-Options': 'ALLOWALL' },
+    hmr: {
+      clientPort: 443,
+      protocol: 'wss',
+    },
   },
   build: {
     target: 'esnext',
