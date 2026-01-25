@@ -2139,6 +2139,12 @@ function handleFilesRequest(c: any): Response | null {
         return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
       }
       
+      // Check if path is a directory - cannot read directories as files
+      const stats = statSync(absolutePath)
+      if (stats.isDirectory()) {
+        return c.json({ error: { code: 'is_directory', message: 'Cannot read directory as file' } }, 400)
+      }
+      
       const content = readFileSync(absolutePath, 'utf-8')
       return c.json({ path: filePath, content })
     } catch (error: any) {
@@ -2557,7 +2563,7 @@ app.all('/*', async (c) => {
  */
 app.get('/files', (c) => {
   try {
-    const files: Array<{ path: string; size: number; isDirectory: boolean }> = []
+    const files: Array<{ path: string; name: string; type: 'file' | 'directory'; extension?: string; size?: number }> = []
     
     function listRecursive(dir: string, prefix: string = '') {
       const entries = readdirSync(dir, { withFileTypes: true })
@@ -2572,11 +2578,22 @@ app.get('/files', (c) => {
         const fullPath = `${dir}/${entry.name}`
         
         if (entry.isDirectory()) {
-          files.push({ path: relativePath, size: 0, isDirectory: true })
+          files.push({ 
+            path: relativePath, 
+            name: entry.name,
+            type: 'directory'
+          })
           listRecursive(fullPath, relativePath)
         } else {
           const stats = statSync(fullPath)
-          files.push({ path: relativePath, size: stats.size, isDirectory: false })
+          const ext = entry.name.includes('.') ? '.' + entry.name.split('.').pop() : undefined
+          files.push({ 
+            path: relativePath, 
+            name: entry.name,
+            type: 'file',
+            extension: ext,
+            size: stats.size 
+          })
         }
       }
     }
