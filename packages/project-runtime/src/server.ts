@@ -2221,7 +2221,15 @@ app.all('/*', async (c) => {
   }
   
   // === Subdomain access: serve app directly at root ===
-  const relativePath = c.req.path || '/'
+  let relativePath = c.req.path || '/'
+  
+  // Normalize path - strip /api/projects/.../preview/ prefix if present
+  // This happens when requests are proxied through the API server
+  // Without this, Vite dev server receives wrong paths like /api/projects/.../preview/node_modules/...
+  const previewPathMatch = relativePath.match(/\/api\/projects\/[^/]+\/preview(.*)/)
+  if (previewPathMatch) {
+    relativePath = previewPathMatch[1] || '/'
+  }
   
   // Auto-start dev mode if nothing is running
   // This makes dev mode the default without needing to call /preview/dev manually
