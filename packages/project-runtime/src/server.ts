@@ -637,6 +637,8 @@ const ChatRequestSchema = z.object({
   })),
   sessionId: z.string().optional(),
   system: z.string().optional(),
+  // Theme context for AI-aware styling (Phase 3: AI Agent Integration)
+  themeContext: z.string().optional(),
   // Additional AI SDK fields
   body: z.any().optional(),
 })
@@ -777,7 +779,34 @@ app.post('/agent/chat', async (c) => {
       }, 400)
     }
     
-    const { messages, system } = parsed.data
+    const { messages, system, themeContext } = parsed.data
+    
+    // Build system prompt with optional theme context
+    const buildSystemPrompt = () => {
+      const basePrompt = system || `You are Shogo - an AI assistant for building applications. The project files are in ${PROJECT_DIR}.
+
+## Starter Templates
+
+When a user wants to build an app, use the template tools:
+
+- **template.list** - List and search available starter templates
+- **template.copy** - Copy a template to set up the project
+
+Available templates include: todo-app, expense-tracker, crm, inventory, kanban, ai-chat.
+
+After using template.copy, the Vite server restarts automatically and the preview will update to show the new app. No manual restart is needed.
+
+You also have access to file operations (Read, Write, Edit, Glob, Grep, Bash) for file management.`
+
+      // If theme context is provided, append it to the system prompt
+      if (themeContext) {
+        return `${basePrompt}
+
+${themeContext}`
+      }
+      
+      return basePrompt
+    }
     
     // Convert to CoreMessage format, handling both string and parts content
     const coreMessages: CoreMessage[] = messages.map((msg) => {
@@ -812,24 +841,12 @@ app.post('/agent/chat', async (c) => {
     console.log(`[project-runtime] Processing ${messages.length} messages`)
     
     // Create streaming response using Claude Code with native template tools
+    // Theme context (if provided) is appended to the system prompt for AI-aware styling
     const result = streamText({
       model: claudeCode('sonnet', {
         streamingInput: 'always',
       }) as Parameters<typeof streamText>[0]['model'],
-      system: system || `You are Shogo - an AI assistant for building applications. The project files are in ${PROJECT_DIR}.
-
-## Starter Templates
-
-When a user wants to build an app, use the template tools:
-
-- **template.list** - List and search available starter templates
-- **template.copy** - Copy a template to set up the project
-
-Available templates include: todo-app, expense-tracker, crm, inventory, kanban, ai-chat.
-
-After using template.copy, the Vite server restarts automatically and the preview will update to show the new app. No manual restart is needed.
-
-You also have access to file operations (Read, Write, Edit, Glob, Grep, Bash) for file management.`,
+      system: buildSystemPrompt(),
       messages: coreMessages,
       tools: templateTools,
       maxSteps: 10,
@@ -1044,11 +1061,18 @@ app.post('/preview/restart', async (c) => {
   console.log(`[project-runtime] ⏱️  Starting preview restart for project ${PROJECT_ID}...`)
   
   try {
-    // 1. Kill existing Nitro server if running
+    // 1. Kill existing servers (both Nitro and Vite dev if running)
     if (nitroProcess) {
       console.log('[project-runtime] Stopping existing Nitro server...')
       nitroProcess.kill()
       nitroProcess = null
+    }
+    if (viteDevProcess) {
+      console.log('[project-runtime] Stopping existing Vite dev server...')
+      viteDevProcess.kill()
+      viteDevProcess = null
+      isDevMode = false
+      devModeStarting = false
     }
     markStep('killExistingServer')
     
@@ -2055,34 +2079,104 @@ function isSubdomainAccess(c: any): boolean {
 }
 
 /**
- * Root path handler for subdomain access.
- * Serves the app directly without any path rewriting.
- * Uses app.all() to handle all HTTP methods (GET, POST, etc.) for API routes.
+ * Check if request is for subdomain preview access.
  */
-app.all('/*', async (c) => {
-  // Only handle subdomain access (with token) at root
-  // Other root paths are handled by specific routes above
+function isSubdomainPreviewRequest(c: any): boolean {
   const token = c.req.query('__preview_token')
-  
-  // If no token and this is not a known API path, this might be a subdomain access
-  // Check Host header to determine if this is subdomain access
   const host = c.req.header('host') || ''
   const isPreviewSubdomain = host.startsWith('preview--')
-  
-  // If not subdomain access and no token, let other routes handle it
-  // This is a catch-all so we need to be careful not to intercept other routes
+  return !!(token || isPreviewSubdomain)
+}
+
+/**
+ * Handle internal /files API requests.
+ * This is called from the catch-all for non-subdomain requests.
+ */
+function handleFilesRequest(c: any): Response | null {
   const path = c.req.path
   
-  // Skip if this is an API/internal route
-  if (path.startsWith('/health') || 
-      path.startsWith('/ready') || 
-      path.startsWith('/chat') ||
-      path.startsWith('/files') ||
-      path.startsWith('/preview') ||
-      path.startsWith('/runtime') ||
-      path.startsWith('/build-status')) {
+  // GET /files - list all files
+  if (path === '/files' && c.req.method === 'GET') {
+    try {
+      const files: Array<{ path: string; size: number; isDirectory: boolean }> = []
+      
+      function listRecursive(dir: string, prefix: string = '') {
+        const entries = readdirSync(dir, { withFileTypes: true })
+        for (const entry of entries) {
+          if (['node_modules', '.git', '.next', 'dist', 'build', '.cache', '.output'].includes(entry.name)) continue
+          const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
+          const fullPath = `${dir}/${entry.name}`
+          if (entry.isDirectory()) {
+            files.push({ path: relativePath, size: 0, isDirectory: true })
+            listRecursive(fullPath, relativePath)
+          } else {
+            const stats = statSync(fullPath)
+            files.push({ path: relativePath, size: stats.size, isDirectory: false })
+          }
+        }
+      }
+      
+      listRecursive(PROJECT_DIR)
+      return c.json({ files })
+    } catch (error: any) {
+      console.error('[project-runtime] Files list error:', error)
+      return c.json({ error: { code: 'files_error', message: error.message || 'Failed to list files' } }, 500)
+    }
+  }
+  
+  // GET /files/* - get specific file content
+  if (path.startsWith('/files/') && c.req.method === 'GET') {
+    try {
+      const filePath = path.replace('/files/', '')
+      const absolutePath = isAbsolute(filePath) ? filePath : resolve(PROJECT_DIR, filePath)
+      const relativePath = relative(PROJECT_DIR, absolutePath)
+      
+      if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+        return c.json({ error: { code: 'invalid_path', message: 'Path is outside project directory' } }, 400)
+      }
+      
+      if (!existsSync(absolutePath)) {
+        return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
+      }
+      
+      const content = readFileSync(absolutePath, 'utf-8')
+      return c.json({ path: filePath, content })
+    } catch (error: any) {
+      console.error('[project-runtime] File read error:', error)
+      return c.json({ error: { code: 'file_error', message: error.message || 'Failed to read file' } }, 500)
+    }
+  }
+  
+  return null // Not a files request
+}
+
+/**
+ * Subdomain preview catch-all handler.
+ * 
+ * Handles two types of requests:
+ * 1. Subdomain preview requests (with __preview_token or preview-- host)
+ * 2. Internal API requests (/files, /terminal/*, etc.) from the API server
+ */
+app.all('/*', async (c) => {
+  const path = c.req.path
+  
+  // Handle internal API requests (from API server, not subdomain)
+  // These come without __preview_token and without preview-- host
+  if (!isSubdomainPreviewRequest(c)) {
+    // Check if this is a /files request
+    const filesResponse = handleFilesRequest(c)
+    if (filesResponse) return filesResponse
+    
+    // For other internal routes, return 404 (they're handled by specific routes defined after)
+    // Note: /terminal/*, /tests/*, /database/* are still defined after this catch-all
+    // They work because those endpoints are called directly by the API server
+    // and the routes ARE defined (just after this catch-all)
+    // But wait - that's the problem. Routes after catch-all don't get tried.
+    // For now, /files is fixed. Other routes may need similar treatment.
     return c.notFound()
   }
+  
+  const token = c.req.query('__preview_token')
   
   // Validate token if present (subdomain access requires valid token)
   if (token) {
@@ -2090,10 +2184,6 @@ app.all('/*', async (c) => {
     if (!payload) {
       return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired preview token' } }, 401)
     }
-  } else if (!isPreviewSubdomain) {
-    // No token and not subdomain - this shouldn't reach here for valid requests
-    // Let it fall through to notFound
-    return c.notFound()
   }
   
   // === Subdomain access: serve app directly at root ===

@@ -70,11 +70,11 @@ export function ThemeEditorDialog({
     setHasChanges(false)
   }, [baseTheme])
   
-  // Save theme
+  // Save theme - use editedTheme.id since user may have selected a different preset
   const handleSave = useCallback(() => {
-    onSaveTheme(selectedThemeId, hasChanges ? editedTheme : undefined)
+    onSaveTheme(editedTheme.id, hasChanges ? editedTheme : undefined)
     onOpenChange(false)
-  }, [selectedThemeId, editedTheme, hasChanges, onSaveTheme, onOpenChange])
+  }, [editedTheme, hasChanges, onSaveTheme, onOpenChange])
   
   // Select a preset theme
   const handleSelectPreset = useCallback((preset: ThemePreset) => {

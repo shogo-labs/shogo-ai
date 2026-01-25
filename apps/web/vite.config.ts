@@ -57,6 +57,17 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: apiProxyTarget,
           changeOrigin: true,
+          // When proxying to staging, rewrite origin header to match staging domain
+          // This allows auth to work when running frontend locally against staging API
+          configure: (proxy) => {
+            proxy.on('proxyReq', (proxyReq, req) => {
+              // If targeting staging, set origin to staging domain
+              if (apiProxyTarget.includes('staging.shogo.ai')) {
+                proxyReq.setHeader('origin', 'https://studio-staging.shogo.ai')
+                proxyReq.setHeader('referer', 'https://studio-staging.shogo.ai/')
+              }
+            })
+          },
         },
         '/mcp': {
           target: mcpProxyTarget,

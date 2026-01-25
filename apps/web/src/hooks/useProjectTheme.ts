@@ -134,16 +134,62 @@ export function useProjectTheme(options: UseProjectThemeOptions = {}): UseProjec
 /**
  * Get theme prompt context without using the hook
  * (useful for server-side or non-React contexts)
+ * 
+ * If no themeId is provided, reads from localStorage to get current selection
  */
 export function getThemePromptContext(themeId?: string): string {
-  const theme = themeId ? getThemeById(themeId) : null
-  return themeToPromptContext(theme ?? getDefaultTheme())
+  // If no themeId provided, try to load from localStorage
+  if (!themeId) {
+    const stored = loadThemeSelection()
+    if (stored) {
+      // If custom theme is stored, use it
+      if (stored.customConfig) {
+        return themeToPromptContext(stored.customConfig)
+      }
+      // Otherwise use the stored theme ID
+      const theme = getThemeById(stored.themeId)
+      if (theme) {
+        return themeToPromptContext(theme)
+      }
+    }
+  } else {
+    const theme = getThemeById(themeId)
+    if (theme) {
+      return themeToPromptContext(theme)
+    }
+  }
+  
+  // Fallback to default theme
+  return themeToPromptContext(getDefaultTheme())
 }
 
 /**
  * Get theme CSS without using the hook
+ * 
+ * If no themeId is provided, reads from localStorage to get current selection
  */
 export function getThemeCSS(themeId?: string): string {
-  const theme = themeId ? getThemeById(themeId) : null
-  return themeToCSS(theme ?? getDefaultTheme())
+  // If no themeId provided, try to load from localStorage
+  if (!themeId) {
+    const stored = loadThemeSelection()
+    if (stored) {
+      // If custom theme is stored, use it
+      if (stored.customConfig) {
+        return themeToCSS(stored.customConfig)
+      }
+      // Otherwise use the stored theme ID
+      const theme = getThemeById(stored.themeId)
+      if (theme) {
+        return themeToCSS(theme)
+      }
+    }
+  } else {
+    const theme = getThemeById(themeId)
+    if (theme) {
+      return themeToCSS(theme)
+    }
+  }
+  
+  // Fallback to default theme
+  return themeToCSS(getDefaultTheme())
 }

@@ -38,6 +38,7 @@ import { type ToolCallData, getToolCategory as getToolCategoryFromTools } from "
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { AlertCircle } from "lucide-react"
+import { getThemePromptContext } from "@/hooks/useProjectTheme"
 
 // ============================================================
 // Types
@@ -1725,7 +1726,11 @@ export const ChatPanel = observer(function ChatPanel({
       // - Second arg: options with body for server-side data
       // - ccSessionIdRef.current ensures fresh session ID value
       // credit-tracking: Include workspaceId and userId for credit deduction
+      // theme-integration: Include theme context for AI-aware styling
       try {
+        // Get current theme context for AI-aware code generation
+        const themeContext = getThemePromptContext()
+        
         await sendMessage(
           messagePayload,
           {
@@ -1736,6 +1741,7 @@ export const ChatPanel = observer(function ChatPanel({
               workspaceId,
               userId,
               projectId,
+              themeContext,
             },
           }
         )
