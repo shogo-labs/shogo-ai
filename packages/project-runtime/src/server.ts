@@ -370,9 +370,9 @@ Available templates:
         }
         
         try {
-          console.log(`[project-runtime] Rebuilding and restarting preview for project ${PROJECT_ID}...`)
-          // Call our local restart endpoint
-          const response = await fetch(`http://localhost:${PORT}/preview/restart`, {
+          console.log(`[project-runtime] Starting dev mode for project ${PROJECT_ID}...`)
+          // Call our local dev endpoint (uses vite dev server with HMR for instant updates)
+          const response = await fetch(`http://localhost:${PORT}/preview/dev`, {
             method: 'POST',
           })
           
@@ -960,6 +960,7 @@ let nitroProcess: ReturnType<typeof Bun.spawn> | null = null
 // Dev mode: use vite dev server with HMR instead of production builds
 let isDevMode = false
 let viteDevProcess: ReturnType<typeof Bun.spawn> | null = null
+let devModeStarting = false  // Track if dev mode is currently being started
 const VITE_DEV_PORT = parseInt(process.env.VITE_DEV_PORT || '3001', 10)
 
 /**
@@ -1348,6 +1349,7 @@ app.post('/preview/dev', async (c) => {
   }
   
   console.log(`[project-runtime] ⏱️  Starting dev mode for project ${PROJECT_ID}...`)
+  devModeStarting = true
   
   try {
     // 1. Kill existing processes
@@ -1506,6 +1508,7 @@ app.post('/preview/dev', async (c) => {
     
     // Set dev mode flag
     isDevMode = true
+    devModeStarting = false
     
     const totalMs = Math.round(performance.now() - startTime)
     console.log('[project-runtime] ════════════════════════════════════════')
@@ -1526,6 +1529,7 @@ app.post('/preview/dev', async (c) => {
       timings: { steps: timings, totalMs },
     })
   } catch (error: any) {
+    devModeStarting = false
     const totalMs = Math.round(performance.now() - startTime)
     console.error(`[project-runtime] ⏱️  Dev mode error after ${totalMs}ms:`, error)
     return c.json({ success: false, error: error.message, timings: { steps: timings, totalMs } }, 500)
@@ -2091,8 +2095,86 @@ app.all('/*', async (c) => {
   // === Subdomain access: serve app directly at root ===
   const relativePath = c.req.path || '/'
   
-  // In fast start mode, show loading page if build not ready
-  if (FAST_START_MODE) {
+  // Auto-start dev mode if nothing is running
+  // This makes dev mode the default without needing to call /preview/dev manually
+  if (!isDevMode && !viteDevProcess && !nitroProcess && !devModeStarting) {
+    console.log('[project-runtime] Auto-starting dev mode on first subdomain request...')
+    devModeStarting = true
+    
+    // Start dev mode in background (don't await - we'll show loading page)
+    fetch(`http://localhost:${PORT}/preview/dev`, { method: 'POST' })
+      .then(async (res) => {
+        if (res.ok) {
+          console.log('[project-runtime] Dev mode auto-started successfully')
+        } else {
+          console.error('[project-runtime] Dev mode auto-start failed:', await res.text())
+        }
+        devModeStarting = false
+      })
+      .catch((err) => {
+        console.error('[project-runtime] Dev mode auto-start error:', err)
+        devModeStarting = false
+      })
+  }
+  
+  // Show loading page while dev mode is starting
+  if (devModeStarting || (!isDevMode && !viteDevProcess && !nitroProcess)) {
+    return c.html(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Starting Dev Server...</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+    .container { text-align: center; padding: 2rem; }
+    .spinner {
+      width: 50px; height: 50px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 1s ease-in-out infinite;
+      margin: 0 auto 1.5rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p { opacity: 0.8; font-size: 0.9rem; }
+    .status { margin-top: 1rem; padding: 0.5rem 1rem; background: rgba(255,255,255,0.2); border-radius: 20px; font-size: 0.8rem; }
+  </style>
+  <script>
+    setInterval(async () => {
+      try {
+        const res = await fetch('/build-status');
+        const data = await res.json();
+        if (data.ready) location.reload();
+      } catch {}
+    }, 1000);
+  </script>
+</head>
+<body>
+  <div class="container">
+    <div class="spinner"></div>
+    <h1>Starting Dev Server</h1>
+    <p>Setting up Vite with HMR for instant updates...</p>
+    <div class="status">Initializing...</div>
+  </div>
+</body>
+</html>
+    `, 200)
+  }
+  
+  // In fast start mode, show loading page if build not ready (for production mode fallback)
+  if (FAST_START_MODE && !isDevMode) {
     const buildStatus = getBuildStatus()
     if (!buildStatus.ready) {
       return c.html(`
