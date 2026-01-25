@@ -21,7 +21,8 @@ metadata:
     alb.ingress.kubernetes.io/subnets: subnet-0bd7a56ff37bf29ff,subnet-0dcb3b37a5d61ace2,subnet-0ea1740135bdb4ecf
     
     # SSL/TLS Configuration - multiple certificates for SNI
-    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:097357356677:certificate/6608bdc0-2107-45ed-94f6-5cdd8a99a5e3,arn:aws:acm:us-east-1:097357356677:certificate/96fb6c6d-4921-410b-941e-2fb289faa8b8
+    # Certificates: *.shogo.ai (platform), *.shogo.one (published apps), *.staging.shogo.ai (preview subdomains)
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:097357356677:certificate/6608bdc0-2107-45ed-94f6-5cdd8a99a5e3,arn:aws:acm:us-east-1:097357356677:certificate/96fb6c6d-4921-410b-941e-2fb289faa8b8,arn:aws:acm:us-east-1:097357356677:certificate/9c4d0715-3989-45be-94ba-b5bb765db50c
     alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     
