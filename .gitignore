@@ -84,3 +84,5 @@ workspaces/
 
 /packages/sdk/examples/*/test-results
 /packages/sdk/examples/*/playwright-report
+/packages/sdk/examples/*/.output
+/packages/sdk/examples/*/.nitro

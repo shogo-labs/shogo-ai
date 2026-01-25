@@ -11,9 +11,7 @@ import {
 import { getSummary, type SummaryType } from '../utils/summary'
 
 export const Route = createFileRoute('/')({
-  // Access user from context (loaded in __root.tsx)
   loader: async ({ context }) => {
-    // If no user, return empty state for setup
     if (!context.user) {
       return {
         categories: [] as CategoryType[],
@@ -22,7 +20,6 @@ export const Route = createFileRoute('/')({
       }
     }
 
-    // Load all dashboard data in parallel for authenticated user
     const [categories, transactions, summary] = await Promise.all([
       getCategories({ data: { userId: context.user.id } }),
       getTransactions({ data: { userId: context.user.id } }),
@@ -39,7 +36,6 @@ function ExpenseTracker() {
   const { categories, transactions, summary } = Route.useLoaderData()
   const router = useRouter()
 
-  // Show setup form if no user exists
   if (!user) {
     return <SetupForm onComplete={() => router.invalidate()} />
   }
@@ -71,38 +67,40 @@ function SetupForm({ onComplete }: { onComplete: () => void }) {
   }
 
   return (
-    <div className="app">
-      <div className="setup-container">
-        <div className="setup-card">
-          <h1>Expense Tracker</h1>
-          <p>Track your income and expenses with ease.</p>
-          
-          <form onSubmit={handleSubmit} className="form">
-            <input
-              type="email"
-              placeholder="Email address"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              className="input"
-            />
-            <input
-              type="text"
-              placeholder="Name (optional)"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="input"
-            />
-            {error && <p className="error">{error}</p>}
-            <button type="submit" disabled={loading} className="btn btn-primary">
-              {loading ? 'Setting up...' : 'Get Started'}
-            </button>
-          </form>
+    <div className="min-h-screen flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-lg p-8 w-full max-w-md text-center">
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">Expense Tracker</h1>
+        <p className="text-gray-500 mb-6">Track your income and expenses with ease.</p>
+        
+        <form onSubmit={handleSubmit} className="space-y-3 text-left">
+          <input
+            type="email"
+            placeholder="Email address"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+          <input
+            type="text"
+            placeholder="Name (optional)"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+          {error && <p className="text-red-600 text-sm">{error}</p>}
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+          >
+            {loading ? 'Setting up...' : 'Get Started'}
+          </button>
+        </form>
 
-          <p className="setup-footer">
-            Built with TanStack Start + Prisma
-          </p>
-        </div>
+        <p className="mt-6 text-xs text-gray-400">
+          Built with TanStack Start + Prisma
+        </p>
       </div>
     </div>
   )
@@ -123,50 +121,39 @@ function Dashboard({
   const [showAddForm, setShowAddForm] = useState(false)
 
   return (
-    <div className="app">
-      <header className="header">
-        <h1>Expense Tracker</h1>
-        <div className="user-info">
-          <span>{user.name || user.email}</span>
-        </div>
+    <div className="max-w-4xl mx-auto p-6">
+      <header className="flex justify-between items-center mb-6 pb-4 border-b border-gray-200">
+        <h1 className="text-2xl font-bold text-gray-900">Expense Tracker</h1>
+        <span className="text-gray-500">{user.name || user.email}</span>
       </header>
 
       {/* Summary Cards */}
-      <div className="summary-grid">
-        <div className="summary-card" style={{ borderLeftColor: '#22C55E' }}>
-          <div className="card-label">Income</div>
-          <div className="card-value" style={{ color: '#22C55E' }}>
-            ${summary.totalIncome.toFixed(2)}
-          </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+        <div className="bg-white rounded-xl p-5 shadow-sm border-l-4 border-green-500">
+          <p className="text-sm text-gray-500 mb-1">Income</p>
+          <p className="text-2xl font-bold text-green-600">${summary.totalIncome.toFixed(2)}</p>
         </div>
-        <div className="summary-card" style={{ borderLeftColor: '#EF4444' }}>
-          <div className="card-label">Expenses</div>
-          <div className="card-value" style={{ color: '#EF4444' }}>
-            ${summary.totalExpenses.toFixed(2)}
-          </div>
+        <div className="bg-white rounded-xl p-5 shadow-sm border-l-4 border-red-500">
+          <p className="text-sm text-gray-500 mb-1">Expenses</p>
+          <p className="text-2xl font-bold text-red-600">${summary.totalExpenses.toFixed(2)}</p>
         </div>
-        <div className="summary-card" style={{ borderLeftColor: '#3B82F6' }}>
-          <div className="card-label">Balance</div>
-          <div
-            className="card-value"
-            style={{ color: summary.balance >= 0 ? '#22C55E' : '#EF4444' }}
-          >
+        <div className="bg-white rounded-xl p-5 shadow-sm border-l-4 border-blue-500">
+          <p className="text-sm text-gray-500 mb-1">Balance</p>
+          <p className={`text-2xl font-bold ${summary.balance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
             ${summary.balance.toFixed(2)}
-          </div>
+          </p>
         </div>
       </div>
 
       {/* Expenses by Category */}
       {summary.expensesByCategory && summary.expensesByCategory.length > 0 && (
-        <div className="section">
-          <h3>Expenses by Category</h3>
-          <div className="category-breakdown">
+        <div className="bg-white rounded-xl p-5 shadow-sm mb-6">
+          <h3 className="font-semibold text-gray-900 mb-4">Expenses by Category</h3>
+          <div className="space-y-2">
             {summary.expensesByCategory.map(({ category, total }) => (
-              <div key={category.id} className="category-row">
-                <span>
-                  {category.icon} {category.name}
-                </span>
-                <span style={{ color: category.color, fontWeight: 600 }}>
+              <div key={category.id} className="flex justify-between py-2 border-b border-gray-50 last:border-0">
+                <span className="text-gray-600">{category.icon} {category.name}</span>
+                <span className="font-semibold" style={{ color: category.color }}>
                   ${total.toFixed(2)}
                 </span>
               </div>
@@ -176,12 +163,12 @@ function Dashboard({
       )}
 
       {/* Transactions Section */}
-      <div className="section">
-        <div className="section-header">
-          <h3>Transactions</h3>
+      <div className="bg-white rounded-xl p-5 shadow-sm">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="font-semibold text-gray-900">Transactions</h3>
           <button
-            className="btn btn-primary"
             onClick={() => setShowAddForm(!showAddForm)}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
           >
             {showAddForm ? 'Cancel' : '+ Add Transaction'}
           </button>
@@ -199,9 +186,9 @@ function Dashboard({
         )}
 
         {/* Transaction List */}
-        <div className="transaction-list">
+        <div>
           {transactions.length === 0 ? (
-            <p className="empty">No transactions yet. Add one above!</p>
+            <p className="text-center text-gray-400 py-8">No transactions yet. Add one above!</p>
           ) : (
             transactions.map((tx) => (
               <TransactionItem
@@ -217,7 +204,7 @@ function Dashboard({
         </div>
       </div>
 
-      <footer style={{ textAlign: 'center', color: '#666', fontSize: '0.875rem', marginTop: '2rem' }}>
+      <footer className="text-center text-gray-400 text-sm mt-8">
         <p>Built with TanStack Start + Prisma Server Functions</p>
       </footer>
     </div>
@@ -267,33 +254,23 @@ function AddTransactionForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="form">
-      <div className="type-toggle">
+    <form onSubmit={handleSubmit} className="bg-gray-50 rounded-lg p-4 mb-4 space-y-3">
+      <div className="flex gap-2">
         <button
           type="button"
-          className="type-btn"
-          onClick={() => {
-            setType('expense')
-            setCategoryId('')
-          }}
-          style={{
-            backgroundColor: type === 'expense' ? '#EF4444' : '#f5f5f5',
-            color: type === 'expense' ? 'white' : '#666',
-          }}
+          onClick={() => { setType('expense'); setCategoryId('') }}
+          className={`flex-1 py-2 rounded-lg font-semibold transition-colors ${
+            type === 'expense' ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-600'
+          }`}
         >
           Expense
         </button>
         <button
           type="button"
-          className="type-btn"
-          onClick={() => {
-            setType('income')
-            setCategoryId('')
-          }}
-          style={{
-            backgroundColor: type === 'income' ? '#22C55E' : '#f5f5f5',
-            color: type === 'income' ? 'white' : '#666',
-          }}
+          onClick={() => { setType('income'); setCategoryId('') }}
+          className={`flex-1 py-2 rounded-lg font-semibold transition-colors ${
+            type === 'income' ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-600'
+          }`}
         >
           Income
         </button>
@@ -307,14 +284,14 @@ function AddTransactionForm({
         required
         min="0.01"
         step="0.01"
-        className="input"
+        className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
       />
 
       <select
         value={categoryId}
         onChange={(e) => setCategoryId(e.target.value)}
         required
-        className="input"
+        className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
       >
         <option value="">Select category</option>
         {filteredCategories.map((cat) => (
@@ -329,17 +306,21 @@ function AddTransactionForm({
         placeholder="Description (optional)"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
-        className="input"
+        className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
       />
 
       <input
         type="date"
         value={date}
         onChange={(e) => setDate(e.target.value)}
-        className="input"
+        className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
       />
 
-      <button type="submit" disabled={loading} className="btn btn-primary">
+      <button
+        type="submit"
+        disabled={loading}
+        className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+      >
         {loading ? 'Adding...' : 'Add Transaction'}
       </button>
     </form>
@@ -361,33 +342,20 @@ function TransactionItem({
   }
 
   return (
-    <div className="transaction-item">
-      <div className="tx-left">
-        <span className="tx-icon">{transaction.category?.icon ?? '📁'}</span>
-        <div className="tx-details">
-          <div className="tx-category">
-            {transaction.category?.name ?? 'Unknown'}
-          </div>
-          <div className="tx-desc">
-            {transaction.description || 'No description'}
-          </div>
-          <div className="tx-date">
-            {new Date(transaction.date).toLocaleDateString()}
-          </div>
-        </div>
+    <div className="flex items-center py-3 border-b border-gray-50 last:border-0 gap-3">
+      <span className="text-2xl">{transaction.category?.icon ?? '📁'}</span>
+      <div className="flex-1 min-w-0">
+        <p className="font-semibold text-gray-900">{transaction.category?.name ?? 'Unknown'}</p>
+        <p className="text-sm text-gray-500 truncate">{transaction.description || 'No description'}</p>
+        <p className="text-xs text-gray-400">{new Date(transaction.date).toLocaleDateString()}</p>
       </div>
-      <div
-        className="tx-amount"
-        style={{
-          color: transaction.type === 'income' ? '#22C55E' : '#EF4444',
-        }}
-      >
+      <p className={`text-lg font-bold ${transaction.type === 'income' ? 'text-green-600' : 'text-red-600'}`}>
         {transaction.type === 'income' ? '+' : '-'}${transaction.amount.toFixed(2)}
-      </div>
+      </p>
       <button
         onClick={handleDelete}
         disabled={deleting}
-        className="btn btn-danger"
+        className="px-2 py-1 text-gray-400 border border-gray-200 rounded hover:bg-gray-50 transition-colors disabled:opacity-50"
       >
         {deleting ? '...' : '×'}
       </button>

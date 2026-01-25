@@ -9,7 +9,7 @@
  */
 
 import { createFileRoute, useRouter } from '@tanstack/react-router'
-import { useState, useRef } from 'react'
+import { useState } from 'react'
 import { createUser, type UserType } from '../utils/user'
 import { getBoards, getBoard, createBoard, deleteBoard, type BoardType } from '../utils/boards'
 import { createColumn, updateColumn, deleteColumn } from '../utils/columns'
@@ -22,7 +22,6 @@ export const Route = createFileRoute('/')({
       return { boards: [], currentBoard: null }
     }
     const boards = await getBoards({ data: { userId: context.user.id } })
-    // Load first board by default
     const currentBoard = boards[0] 
       ? await getBoard({ data: { boardId: boards[0].id, userId: context.user.id } })
       : null
@@ -91,18 +90,18 @@ function SetupForm({ onComplete }: { onComplete: () => void }) {
   }
 
   return (
-    <div className="setup-container">
-      <div className="setup-card">
-        <h1>Kanban Board</h1>
-        <p>Built with <strong>@shogo-ai/sdk</strong></p>
+    <div className="min-h-screen flex items-center justify-center p-5">
+      <div className="bg-white rounded-xl shadow-lg p-10 w-full max-w-md text-center">
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">Kanban Board</h1>
+        <p className="text-gray-500 mb-6">Built with <strong>@shogo-ai/sdk</strong></p>
 
-        <form onSubmit={handleSubmit} className="setup-form">
+        <form onSubmit={handleSubmit} className="space-y-3 text-left">
           <input
             type="email"
             placeholder="Email address"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="input"
+            className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
             required
           />
           <input
@@ -110,10 +109,14 @@ function SetupForm({ onComplete }: { onComplete: () => void }) {
             placeholder="Name (optional)"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="input"
+            className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
           />
-          {error && <p className="error">{error}</p>}
-          <button type="submit" className="btn btn-primary" disabled={loading}>
+          {error && <p className="text-red-600 text-sm">{error}</p>}
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full px-4 py-3 bg-sky-600 text-white rounded-lg font-medium hover:bg-sky-700 transition-colors disabled:opacity-50"
+          >
             {loading ? 'Setting up...' : 'Get Started'}
           </button>
         </form>
@@ -157,43 +160,54 @@ function BoardSelector({
   }
 
   return (
-    <div className="board-list">
-      <h2>Your Boards</h2>
-      <div className="board-grid">
+    <div className="p-10 max-w-3xl mx-auto">
+      <h2 className="text-2xl font-bold text-white mb-5">Your Boards</h2>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {boards.map(board => (
           <div 
             key={board.id}
-            className="board-card"
-            style={{ borderColor: board.color }}
             onClick={() => onSelectBoard(board.id)}
+            className="bg-white rounded-lg p-4 cursor-pointer hover:-translate-y-0.5 hover:shadow-lg transition-all border-l-4"
+            style={{ borderColor: board.color }}
           >
-            <h3>{board.name}</h3>
+            <h3 className="font-semibold text-gray-900">{board.name}</h3>
           </div>
         ))}
         
         {showForm ? (
-          <div className="board-card" style={{ borderColor: '#dfe1e6' }}>
+          <div className="bg-white rounded-lg p-4 border-l-4 border-gray-300">
             <form onSubmit={handleCreateBoard}>
               <input
                 type="text"
                 placeholder="Board name"
                 value={newBoardName}
                 onChange={(e) => setNewBoardName(e.target.value)}
-                className="input"
+                className="w-full px-3 py-2 border border-gray-200 rounded text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
                 autoFocus
               />
-              <div className="form-actions" style={{ marginTop: 8 }}>
-                <button type="submit" className="btn btn-primary" disabled={loading}>
+              <div className="flex gap-2 mt-3">
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="px-4 py-2 bg-sky-600 text-white rounded text-sm font-medium hover:bg-sky-700 disabled:opacity-50"
+                >
                   Create
                 </button>
-                <button type="button" className="btn btn-secondary" onClick={() => setShowForm(false)}>
+                <button
+                  type="button"
+                  onClick={() => setShowForm(false)}
+                  className="px-4 py-2 text-gray-500 hover:text-gray-700 text-sm"
+                >
                   Cancel
                 </button>
               </div>
             </form>
           </div>
         ) : (
-          <div className="board-card new-board-card" onClick={() => setShowForm(true)}>
+          <div
+            onClick={() => setShowForm(true)}
+            className="bg-white/25 border-2 border-dashed border-white/50 rounded-lg p-4 flex items-center justify-center text-white font-medium cursor-pointer hover:bg-white/30 min-h-[100px]"
+          >
             + Create new board
           </div>
         )}
@@ -227,23 +241,19 @@ function KanbanBoard({
   }
 
   return (
-    <div>
-      <header className="header" style={{ background: board.color }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button className="btn-icon" onClick={onBack} style={{ color: 'white' }}>
-            ←
-          </button>
-          <h1>{board.name}</h1>
+    <div className="min-h-screen" style={{ backgroundColor: board.color }}>
+      <header className="bg-black/15 px-4 py-2 flex items-center justify-between text-white">
+        <div className="flex items-center gap-3">
+          <button onClick={onBack} className="p-2 hover:bg-white/10 rounded">←</button>
+          <h1 className="text-lg font-bold">{board.name}</h1>
         </div>
-        <div className="header-actions">
-          <button className="btn btn-ghost" style={{ color: 'white' }} onClick={handleDeleteBoard}>
-            Delete Board
-          </button>
-        </div>
+        <button onClick={handleDeleteBoard} className="px-3 py-1 text-sm hover:bg-white/10 rounded">
+          Delete Board
+        </button>
       </header>
 
-      <div className="board-container" style={{ background: board.color }}>
-        <div className="columns-wrapper">
+      <div className="p-4 overflow-x-auto h-[calc(100vh-52px)]">
+        <div className="flex gap-3 items-start h-full">
           {board.columns.map(column => (
             <Column
               key={column.id}
@@ -298,13 +308,7 @@ function Column({
 
   const handleAddCard = async () => {
     if (!newCardTitle.trim()) return
-    await createCard({ 
-      data: { 
-        title: newCardTitle, 
-        columnId: column.id, 
-        userId: user.id 
-      } 
-    })
+    await createCard({ data: { title: newCardTitle, columnId: column.id, userId: user.id } })
     setNewCardTitle('')
     setIsAddingCard(false)
     router.invalidate()
@@ -319,30 +323,22 @@ function Column({
   }
 
   const handleDeleteColumn = async () => {
-    if (column.cards.length > 0) {
-      if (!confirm(`Delete "${column.name}" and all ${column.cards.length} cards?`)) return
-    }
+    if (column.cards.length > 0 && !confirm(`Delete "${column.name}" and all ${column.cards.length} cards?`)) return
     await deleteColumn({ data: { id: column.id } })
     router.invalidate()
   }
 
   const handleDrop = async (position: number) => {
     if (!draggedCard) return
-    await moveCard({ 
-      data: { 
-        cardId: draggedCard.cardId, 
-        targetColumnId: column.id, 
-        targetPosition: position 
-      } 
-    })
+    await moveCard({ data: { cardId: draggedCard.cardId, targetColumnId: column.id, targetPosition: position } })
     setDraggedCard(null)
     setDropTarget(null)
     router.invalidate()
   }
 
   return (
-    <div className="column">
-      <div className="column-header">
+    <div className="bg-gray-200 rounded-xl w-72 min-w-72 max-h-[calc(100vh-100px)] flex flex-col">
+      <div className="p-3 flex justify-between items-center">
         {isEditing ? (
           <input
             type="text"
@@ -350,43 +346,40 @@ function Column({
             onChange={(e) => setColumnName(e.target.value)}
             onBlur={handleUpdateColumnName}
             onKeyDown={(e) => e.key === 'Enter' && handleUpdateColumnName()}
-            className="column-input"
+            className="flex-1 px-2 py-1 border-2 border-sky-500 rounded text-sm"
             autoFocus
           />
         ) : (
-          <span className="column-title" onClick={() => setIsEditing(true)}>
+          <span className="font-semibold text-sm text-gray-800 cursor-pointer" onClick={() => setIsEditing(true)}>
             {column.name}
           </span>
         )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span className="column-count">{column.cards.length}</span>
-          <button className="btn-icon" onClick={handleDeleteColumn}>×</button>
+        <div className="flex items-center gap-1">
+          <span className="bg-black/10 px-2 py-0.5 rounded-full text-xs text-gray-600">{column.cards.length}</span>
+          <button className="p-1 hover:bg-black/10 rounded text-gray-500" onClick={handleDeleteColumn}>×</button>
         </div>
       </div>
 
       <div 
-        className="column-cards"
+        className="px-2 pb-2 overflow-y-auto flex-1 flex flex-col gap-2"
         onDragOver={(e) => {
           e.preventDefault()
-          if (draggedCard && column.cards.length === 0) {
-            setDropTarget(0)
-          }
+          if (draggedCard && column.cards.length === 0) setDropTarget(0)
         }}
         onDragLeave={() => setDropTarget(null)}
         onDrop={() => dropTarget !== null && handleDrop(dropTarget)}
       >
         {column.cards.length === 0 && dropTarget === 0 && (
-          <div className="drop-zone active" />
+          <div className="min-h-[60px] border-2 border-dashed border-sky-500 bg-sky-500/20 rounded-lg" />
         )}
         
         {column.cards.map((card, index) => (
           <div key={card.id}>
             {dropTarget === index && draggedCard?.cardId !== card.id && (
-              <div className="drop-zone active" />
+              <div className="min-h-[60px] border-2 border-dashed border-sky-500 bg-sky-500/20 rounded-lg mb-2" />
             )}
             <Card
               card={card}
-              columnId={column.id}
               onDragStart={() => setDraggedCard({ cardId: card.id, columnId: column.id })}
               onDragEnd={() => setDraggedCard(null)}
               onDragOver={() => setDropTarget(index)}
@@ -394,20 +387,20 @@ function Column({
               isDragging={draggedCard?.cardId === card.id}
             />
             {index === column.cards.length - 1 && dropTarget === index + 1 && (
-              <div className="drop-zone active" />
+              <div className="min-h-[60px] border-2 border-dashed border-sky-500 bg-sky-500/20 rounded-lg mt-2" />
             )}
           </div>
         ))}
       </div>
 
-      <div className="add-card-form">
+      <div className="p-2">
         {isAddingCard ? (
           <div>
             <textarea
               placeholder="Enter a title for this card..."
               value={newCardTitle}
               onChange={(e) => setNewCardTitle(e.target.value)}
-              className="card-input"
+              className="w-full px-3 py-2 rounded-lg text-sm resize-none min-h-[60px] mb-2 focus:outline-none focus:ring-2 focus:ring-sky-500"
               autoFocus
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -416,17 +409,20 @@ function Column({
                 }
               }}
             />
-            <div className="form-actions">
-              <button className="btn btn-primary" onClick={handleAddCard}>
+            <div className="flex gap-2">
+              <button onClick={handleAddCard} className="px-4 py-2 bg-sky-600 text-white rounded text-sm font-medium hover:bg-sky-700">
                 Add Card
               </button>
-              <button className="btn btn-secondary" onClick={() => setIsAddingCard(false)}>
+              <button onClick={() => setIsAddingCard(false)} className="px-4 py-2 text-gray-500 text-sm hover:text-gray-700">
                 Cancel
               </button>
             </div>
           </div>
         ) : (
-          <button className="add-card-btn" onClick={() => setIsAddingCard(true)}>
+          <button
+            onClick={() => setIsAddingCard(true)}
+            className="w-full py-2 px-3 text-left text-gray-500 hover:bg-black/5 rounded-lg text-sm transition-colors"
+          >
             + Add a card
           </button>
         )}
@@ -441,7 +437,6 @@ function Column({
 
 function Card({
   card,
-  columnId,
   onDragStart,
   onDragEnd,
   onDragOver,
@@ -449,7 +444,6 @@ function Card({
   isDragging,
 }: {
   card: BoardType['columns'][0]['cards'][0]
-  columnId: string
   onDragStart: () => void
   onDragEnd: () => void
   onDragOver: () => void
@@ -460,33 +454,31 @@ function Card({
 
   return (
     <div
-      className={`card ${isDragging ? 'dragging' : ''}`}
+      className={`bg-white rounded-lg p-3 shadow-sm cursor-pointer hover:bg-gray-50 transition-all ${
+        isDragging ? 'opacity-50 rotate-3' : ''
+      }`}
       draggable
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
-      onDragOver={(e) => {
-        e.preventDefault()
-        onDragOver()
-      }}
+      onDragOver={(e) => { e.preventDefault(); onDragOver() }}
       onClick={onClick}
     >
       {card.labels.length > 0 && (
-        <div className="card-labels">
+        <div className="flex flex-wrap gap-1 mb-2">
           {card.labels.map(({ label }) => (
-            <div
-              key={label.id}
-              className="card-label"
-              style={{ background: label.color }}
-              title={label.name}
-            />
+            <div key={label.id} className="h-2 w-10 rounded" style={{ background: label.color }} title={label.name} />
           ))}
         </div>
       )}
-      <div className="card-title">{card.title}</div>
+      <div className="text-sm text-gray-800 break-words">{card.title}</div>
       {(card.dueDate || card.description) && (
-        <div className="card-meta">
+        <div className="flex gap-2 mt-2 text-xs text-gray-500">
           {card.dueDate && (
-            <span className={`card-due ${dueStatus}`}>
+            <span className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${
+              dueStatus === 'overdue' ? 'bg-red-100 text-red-700' :
+              dueStatus === 'soon' ? 'bg-yellow-100 text-yellow-700' :
+              'bg-gray-100'
+            }`}>
               📅 {formatDate(new Date(card.dueDate))}
             </span>
           )}
@@ -515,7 +507,7 @@ function AddColumn({ boardId }: { boardId: string }) {
   }
 
   return (
-    <div className="add-column">
+    <div className="bg-white/25 rounded-xl w-72 min-w-72 p-3">
       {isAdding ? (
         <div>
           <input
@@ -523,21 +515,21 @@ function AddColumn({ boardId }: { boardId: string }) {
             placeholder="Enter column name..."
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="column-input"
+            className="w-full px-3 py-2 rounded border-2 border-sky-500 text-sm mb-2 focus:outline-none"
             autoFocus
             onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
           />
-          <div className="form-actions">
-            <button className="btn btn-primary" onClick={handleAdd}>
+          <div className="flex gap-2">
+            <button onClick={handleAdd} className="px-4 py-2 bg-sky-600 text-white rounded text-sm font-medium hover:bg-sky-700">
               Add Column
             </button>
-            <button className="btn btn-secondary" onClick={() => setIsAdding(false)}>
+            <button onClick={() => setIsAdding(false)} className="px-4 py-2 text-gray-600 text-sm hover:text-gray-800">
               Cancel
             </button>
           </div>
         </div>
       ) : (
-        <button className="add-column-btn" onClick={() => setIsAdding(true)}>
+        <button onClick={() => setIsAdding(true)} className="w-full py-2 px-3 text-left text-white hover:bg-white/10 rounded-lg text-sm">
           + Add another column
         </button>
       )}
@@ -560,30 +552,17 @@ function CardModal({
 }) {
   const router = useRouter()
   
-  // Find card in board data
-  const card = board.columns
-    .flatMap(c => c.cards)
-    .find(c => c.id === cardId)
-  
+  const card = board.columns.flatMap(c => c.cards).find(c => c.id === cardId)
   if (!card) return null
 
   const [title, setTitle] = useState(card.title)
   const [description, setDescription] = useState(card.description || '')
-  const [dueDate, setDueDate] = useState(
-    card.dueDate ? new Date(card.dueDate).toISOString().split('T')[0] : ''
-  )
+  const [dueDate, setDueDate] = useState(card.dueDate ? new Date(card.dueDate).toISOString().split('T')[0] : '')
 
   const cardLabelIds = new Set(card.labels.map(l => l.label.id))
 
   const handleSave = async () => {
-    await updateCard({
-      data: {
-        id: cardId,
-        title,
-        description: description || undefined,
-        dueDate: dueDate || null,
-      }
-    })
+    await updateCard({ data: { id: cardId, title, description: description || undefined, dueDate: dueDate || null } })
     router.invalidate()
     onClose()
   }
@@ -605,30 +584,31 @@ function CardModal({
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <button className="modal-close" onClick={onClose}>×</button>
+    <div className="fixed inset-0 bg-black/50 flex items-start justify-center pt-12 px-4 overflow-y-auto z-50" onClick={onClose}>
+      <div className="bg-gray-100 rounded-lg w-full max-w-3xl relative mb-12" onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-3 right-3 text-2xl text-gray-500 hover:text-gray-700">×</button>
         
-        <div className="modal-header">
+        <div className="p-4 border-b border-gray-200">
           <input
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            className="modal-input"
-            style={{ fontSize: '1.25rem', fontWeight: 600, border: 'none', padding: 0 }}
+            className="text-xl font-semibold text-gray-900 bg-transparent border-none w-full focus:outline-none"
           />
         </div>
 
-        <div className="modal-body">
-          <div className="modal-section">
-            <h4>Labels</h4>
-            <div className="labels-list">
+        <div className="p-4 space-y-4">
+          <div>
+            <h4 className="text-xs uppercase text-gray-500 font-medium mb-2">Labels</h4>
+            <div className="flex flex-wrap gap-2">
               {board.labels.map(label => (
                 <div
                   key={label.id}
-                  className={`label-chip ${cardLabelIds.has(label.id) ? 'selected' : ''}`}
-                  style={{ background: label.color }}
                   onClick={() => handleToggleLabel(label.id)}
+                  className={`px-3 py-1 rounded text-sm text-white cursor-pointer ${
+                    cardLabelIds.has(label.id) ? 'ring-2 ring-gray-800' : ''
+                  }`}
+                  style={{ background: label.color }}
                 >
                   {label.name}
                 </div>
@@ -637,31 +617,31 @@ function CardModal({
             </div>
           </div>
 
-          <div className="modal-section">
-            <h4>Due Date</h4>
+          <div>
+            <h4 className="text-xs uppercase text-gray-500 font-medium mb-2">Due Date</h4>
             <input
               type="date"
               value={dueDate}
               onChange={(e) => setDueDate(e.target.value)}
-              className="modal-input"
+              className="w-full px-3 py-2 border border-gray-200 rounded text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
           </div>
 
-          <div className="modal-section">
-            <h4>Description</h4>
+          <div>
+            <h4 className="text-xs uppercase text-gray-500 font-medium mb-2">Description</h4>
             <textarea
               placeholder="Add a more detailed description..."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="modal-input"
+              className="w-full px-3 py-2 border border-gray-200 rounded text-sm min-h-[100px] resize-y focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
           </div>
 
-          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-            <button className="btn btn-primary" onClick={handleSave}>
+          <div className="flex gap-2 pt-2">
+            <button onClick={handleSave} className="px-4 py-2 bg-sky-600 text-white rounded text-sm font-medium hover:bg-sky-700">
               Save
             </button>
-            <button className="btn btn-danger" onClick={handleDelete}>
+            <button onClick={handleDelete} className="px-4 py-2 bg-red-500 text-white rounded text-sm font-medium hover:bg-red-600">
               Delete Card
             </button>
           </div>
@@ -692,9 +672,8 @@ function CreateLabelButton({ boardId, userId }: { boardId: string; userId: strin
   if (!isCreating) {
     return (
       <button 
-        className="label-chip" 
-        style={{ background: '#dfe1e6', color: '#172b4d' }}
         onClick={() => setIsCreating(true)}
+        className="px-3 py-1 rounded text-sm bg-gray-300 text-gray-700 hover:bg-gray-400"
       >
         + New
       </button>
@@ -702,34 +681,27 @@ function CreateLabelButton({ boardId, userId }: { boardId: string; userId: strin
   }
 
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+    <div className="flex gap-2 items-center">
       <input
         type="text"
         placeholder="Label name"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        className="modal-input"
-        style={{ width: 100 }}
+        className="w-24 px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
         autoFocus
       />
-      <div style={{ display: 'flex', gap: 4 }}>
+      <div className="flex gap-1">
         {LABEL_COLORS.map(c => (
           <div
             key={c}
-            style={{
-              width: 24,
-              height: 24,
-              borderRadius: 4,
-              background: c,
-              cursor: 'pointer',
-              border: c === color ? '2px solid #172b4d' : '2px solid transparent',
-            }}
+            className={`w-6 h-6 rounded cursor-pointer ${c === color ? 'ring-2 ring-gray-800' : ''}`}
+            style={{ background: c }}
             onClick={() => setColor(c)}
           />
         ))}
       </div>
-      <button className="btn btn-primary" onClick={handleCreate}>Add</button>
-      <button className="btn btn-secondary" onClick={() => setIsCreating(false)}>×</button>
+      <button onClick={handleCreate} className="px-3 py-1 bg-sky-600 text-white rounded text-sm">Add</button>
+      <button onClick={() => setIsCreating(false)} className="text-gray-500 hover:text-gray-700">×</button>
     </div>
   )
 }

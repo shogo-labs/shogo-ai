@@ -71,37 +71,43 @@ function SetupForm({ onComplete }: { onComplete: () => void }) {
   }
 
   return (
-    <article style={{ maxWidth: '400px', margin: '4rem auto' }}>
-      <header style={{ textAlign: 'center', marginBottom: '2rem' }}>
-        <h1>Feedback Form</h1>
-        <p>Collect customer feedback with <strong>@shogo-ai/sdk</strong></p>
-      </header>
+    <div className="max-w-md mx-auto mt-16">
+      <div className="text-center mb-8">
+        <h1 className="text-2xl font-bold text-gray-900">Feedback Form</h1>
+        <p className="text-gray-500 mt-2">Collect customer feedback with <strong>@shogo-ai/sdk</strong></p>
+      </div>
 
-      <form onSubmit={handleSubmit}>
+      <form onSubmit={handleSubmit} className="space-y-4">
         <input
           type="email"
           placeholder="Your email address"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
+          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <input
           type="text"
           placeholder="Your name (optional)"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
-        {error && <p style={{ color: '#e00', fontSize: '0.875rem' }}>{error}</p>}
-        <button type="submit" disabled={loading}>
+        {error && <p className="text-red-600 text-sm">{error}</p>}
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+        >
           {loading ? 'Setting up...' : 'Create Your Form'}
         </button>
       </form>
 
-      <footer style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.75rem', color: '#666' }}>
+      <div className="mt-8 text-center text-xs text-gray-400">
         <p>This is a pre-built feedback form template.</p>
         <p>For building custom forms, see the <strong>form-builder</strong> template.</p>
-      </footer>
-    </article>
+      </div>
+    </div>
   )
 }
 
@@ -144,34 +150,31 @@ function Dashboard({
     : `/form/${user.id}`
 
   return (
-    <article>
-      <header style={{ marginBottom: '2rem' }}>
-        <h1>Feedback Dashboard</h1>
-        <p style={{ color: '#666' }}>{user.name || user.email}</p>
+    <div>
+      <header className="mb-8">
+        <h1 className="text-2xl font-bold text-gray-900">Feedback Dashboard</h1>
+        <p className="text-gray-500">{user.name || user.email}</p>
         
         {/* Share form link */}
-        <div style={{ 
-          background: '#f0f9ff', 
-          padding: '1rem', 
-          borderRadius: '0.5rem',
-          marginTop: '1rem'
-        }}>
-          <p style={{ margin: '0 0 0.5rem', fontWeight: 500 }}>Share your feedback form:</p>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <div className="bg-blue-50 p-4 rounded-lg mt-4">
+          <p className="font-medium text-gray-900 mb-2">Share your feedback form:</p>
+          <div className="flex gap-2">
             <input 
               type="text" 
               value={formUrl} 
               readOnly 
-              style={{ flex: 1, marginBottom: 0 }}
+              className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
             />
             <button 
               onClick={() => navigator.clipboard.writeText(formUrl)}
-              style={{ marginBottom: 0 }}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
             >
               Copy
             </button>
             <Link to="/form/$userId" params={{ userId: user.id }}>
-              <button className="outline" style={{ marginBottom: 0 }}>Preview</button>
+              <button className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50">
+                Preview
+              </button>
             </Link>
           </div>
         </div>
@@ -179,116 +182,107 @@ function Dashboard({
 
       {/* Stats */}
       {stats && (
-        <div style={{ 
-          display: 'grid', 
-          gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', 
-          gap: '1rem',
-          marginBottom: '2rem'
-        }}>
-          <div className="stat-card">
-            <h3>{stats.total}</h3>
-            <p>Total</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
+          <div className="bg-gray-50 rounded-lg p-4 text-center">
+            <p className="text-3xl font-bold text-gray-900">{stats.total}</p>
+            <p className="text-sm text-gray-500">Total</p>
           </div>
-          <div className="stat-card">
-            <h3>{stats.unread}</h3>
-            <p>Unread</p>
+          <div className="bg-gray-50 rounded-lg p-4 text-center">
+            <p className="text-3xl font-bold text-gray-900">{stats.unread}</p>
+            <p className="text-sm text-gray-500">Unread</p>
           </div>
-          <div className="stat-card">
-            <h3>{stats.averageRating}</h3>
-            <p>Avg Rating</p>
+          <div className="bg-gray-50 rounded-lg p-4 text-center">
+            <p className="text-3xl font-bold text-gray-900">{stats.averageRating}</p>
+            <p className="text-sm text-gray-500">Avg Rating</p>
           </div>
-          <div className="stat-card">
-            <h3>{stats.recommendRate}%</h3>
-            <p>Would Recommend</p>
+          <div className="bg-gray-50 rounded-lg p-4 text-center">
+            <p className="text-3xl font-bold text-gray-900">{stats.recommendRate}%</p>
+            <p className="text-sm text-gray-500">Would Recommend</p>
           </div>
         </div>
       )}
 
       {/* Filter tabs */}
-      <div className="filter-tabs">
-        <button 
-          className={filter === 'all' ? 'active' : ''} 
-          onClick={() => setFilter('all')}
-        >
-          All ({submissions.length})
-        </button>
-        <button 
-          className={filter === 'unread' ? 'active' : ''} 
-          onClick={() => setFilter('unread')}
-        >
-          Unread ({submissions.filter(s => !s.isRead).length})
-        </button>
-        <button 
-          className={filter === 'starred' ? 'active' : ''} 
-          onClick={() => setFilter('starred')}
-        >
-          Starred ({submissions.filter(s => s.isStarred).length})
-        </button>
+      <div className="flex gap-2 mb-4">
+        {(['all', 'unread', 'starred'] as const).map((f) => (
+          <button 
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              filter === f 
+                ? 'bg-blue-600 text-white' 
+                : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            {f.charAt(0).toUpperCase() + f.slice(1)} ({
+              f === 'all' ? submissions.length :
+              f === 'unread' ? submissions.filter(s => !s.isRead).length :
+              submissions.filter(s => s.isStarred).length
+            })
+          </button>
+        ))}
       </div>
 
       {/* Submissions list */}
       {filteredSubmissions.length === 0 ? (
-        <p style={{ textAlign: 'center', color: '#666', padding: '2rem' }}>
+        <p className="text-center text-gray-400 py-8">
           {submissions.length === 0 
             ? 'No submissions yet. Share your form link to start collecting feedback!'
             : 'No submissions match the current filter.'}
         </p>
       ) : (
-        <div style={{ border: '1px solid #e5e7eb', borderRadius: '0.5rem' }}>
+        <div className="border border-gray-200 rounded-lg overflow-hidden">
           {filteredSubmissions.map((submission) => (
             <div 
               key={submission.id} 
-              className={`submission-item ${!submission.isRead ? 'unread' : ''}`}
+              className={`flex items-start gap-4 p-4 border-b border-gray-100 last:border-0 hover:bg-gray-50 transition-colors ${
+                !submission.isRead ? 'bg-blue-50 hover:bg-blue-100' : ''
+              }`}
             >
               {/* Star button */}
               <button
                 onClick={() => handleToggleStar(submission.id, !submission.isStarred)}
-                style={{ 
-                  background: 'none', 
-                  border: 'none', 
-                  cursor: 'pointer',
-                  fontSize: '1.25rem',
-                  color: submission.isStarred ? '#fbbf24' : '#d1d5db'
-                }}
+                className={`text-xl ${submission.isStarred ? 'text-yellow-400' : 'text-gray-300'} hover:text-yellow-500`}
               >
                 ★
               </button>
 
               {/* Content */}
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-                  <strong>{submission.name}</strong>
-                  <span className={`category-badge ${submission.category}`}>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <strong className="text-gray-900">{submission.name}</strong>
+                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                    submission.category === 'feedback' ? 'bg-blue-100 text-blue-800' :
+                    submission.category === 'bug' ? 'bg-red-100 text-red-800' :
+                    submission.category === 'feature' ? 'bg-green-100 text-green-800' :
+                    'bg-yellow-100 text-yellow-800'
+                  }`}>
                     {submission.category}
                   </span>
-                  <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
+                  <span className="text-gray-400 text-sm">
                     {'★'.repeat(submission.rating)}{'☆'.repeat(5 - submission.rating)}
                   </span>
                 </div>
-                <p style={{ margin: '0.25rem 0', color: '#4b5563' }}>
-                  {submission.message.length > 100 
-                    ? submission.message.slice(0, 100) + '...' 
-                    : submission.message}
+                <p className="text-gray-600 text-sm mb-1 line-clamp-2">
+                  {submission.message}
                 </p>
-                <p style={{ margin: 0, fontSize: '0.75rem', color: '#9ca3af' }}>
+                <p className="text-xs text-gray-400">
                   {submission.email} · {new Date(submission.createdAt).toLocaleDateString()}
                   {submission.wouldRecommend && ' · Would recommend'}
                 </p>
               </div>
 
               {/* Actions */}
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <div className="flex gap-2">
                 <button
-                  className="outline secondary"
-                  style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
                   onClick={() => handleMarkRead(submission.id, !submission.isRead)}
+                  className="px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-100"
                 >
                   {submission.isRead ? 'Mark Unread' : 'Mark Read'}
                 </button>
                 <button
-                  className="outline secondary"
-                  style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
                   onClick={() => handleDelete(submission.id)}
+                  className="px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-100"
                 >
                   Delete
                 </button>
@@ -298,11 +292,9 @@ function Dashboard({
         </div>
       )}
 
-      <footer style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.875rem', color: '#666' }}>
-        <p>
-          All operations use <code>shogo.db</code> (Prisma pass-through)
-        </p>
+      <footer className="mt-8 text-center text-sm text-gray-400">
+        <p>All operations use <code className="bg-gray-100 px-1 rounded">shogo.db</code> (Prisma pass-through)</p>
       </footer>
-    </article>
+    </div>
   )
 }

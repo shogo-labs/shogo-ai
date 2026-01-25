@@ -62,36 +62,42 @@ function SetupForm({ onComplete }: { onComplete: () => void }) {
   }
 
   return (
-    <article style={{ maxWidth: '400px', margin: '4rem auto' }}>
-      <header style={{ textAlign: 'center', marginBottom: '2rem' }}>
-        <h1>Booking App</h1>
-        <p>Appointment scheduling with <strong>@shogo-ai/sdk</strong></p>
-      </header>
+    <div className="max-w-md mx-auto mt-16">
+      <div className="text-center mb-8">
+        <h1 className="text-2xl font-bold text-gray-900">Booking App</h1>
+        <p className="text-gray-500 mt-2">Appointment scheduling with <strong>@shogo-ai/sdk</strong></p>
+      </div>
 
-      <form onSubmit={handleSubmit}>
+      <form onSubmit={handleSubmit} className="space-y-4">
         <input
           type="email"
           placeholder="Your email address"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
+          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <input
           type="text"
           placeholder="Your name / Business name"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
-        {error && <p style={{ color: '#e00', fontSize: '0.875rem' }}>{error}</p>}
-        <button type="submit" disabled={loading}>
+        {error && <p className="text-red-600 text-sm">{error}</p>}
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+        >
           {loading ? 'Setting up...' : 'Get Started'}
         </button>
       </form>
 
-      <footer style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.75rem', color: '#666' }}>
-        <p>Create services, set availability, and accept bookings.</p>
-      </footer>
-    </article>
+      <p className="mt-8 text-center text-xs text-gray-400">
+        Create services, set availability, and accept bookings.
+      </p>
+    </div>
   )
 }
 
@@ -118,54 +124,68 @@ function DashboardView({
     : null
 
   return (
-    <article>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+    <div>
+      <header className="flex justify-between items-center mb-6">
         <div>
-          <h1 style={{ marginBottom: '0.25rem' }}>Dashboard</h1>
-          <p style={{ color: '#666', margin: 0 }}>{user.name || user.email}</p>
+          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+          <p className="text-gray-500">{user.name || user.email}</p>
         </div>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <div className="flex gap-2">
           <Link to="/services">
-            <button className="outline">Services</button>
+            <button className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50">
+              Services
+            </button>
           </Link>
           <Link to="/availability">
-            <button className="outline">Availability</button>
+            <button className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50">
+              Availability
+            </button>
           </Link>
           <Link to="/bookings">
-            <button className="outline">All Bookings</button>
+            <button className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50">
+              All Bookings
+            </button>
           </Link>
         </div>
       </header>
 
       {/* Stats */}
       {stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '1.5rem' }}>
-          <div className="stat-card">
-            <h3>{stats.upcoming}</h3>
-            <p>Upcoming</p>
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          <div className="bg-gray-50 rounded-lg p-4 text-center">
+            <p className="text-3xl font-bold text-gray-900">{stats.upcoming}</p>
+            <p className="text-sm text-gray-500">Upcoming</p>
           </div>
-          <div className="stat-card">
-            <h3>{stats.today}</h3>
-            <p>Today</p>
+          <div className="bg-gray-50 rounded-lg p-4 text-center">
+            <p className="text-3xl font-bold text-gray-900">{stats.today}</p>
+            <p className="text-sm text-gray-500">Today</p>
           </div>
-          <div className="stat-card">
-            <h3>{stats.pending}</h3>
-            <p>Pending</p>
+          <div className="bg-gray-50 rounded-lg p-4 text-center">
+            <p className="text-3xl font-bold text-gray-900">{stats.pending}</p>
+            <p className="text-sm text-gray-500">Pending</p>
           </div>
-          <div className="stat-card">
-            <h3>{stats.total}</h3>
-            <p>Total</p>
+          <div className="bg-gray-50 rounded-lg p-4 text-center">
+            <p className="text-3xl font-bold text-gray-900">{stats.total}</p>
+            <p className="text-sm text-gray-500">Total</p>
           </div>
         </div>
       )}
 
       {/* Booking Link */}
       {bookingUrl && (
-        <div style={{ background: '#f0f9ff', padding: '1rem', borderRadius: '0.5rem', marginBottom: '1.5rem' }}>
-          <p style={{ margin: '0 0 0.5rem', fontWeight: 500 }}>Your booking page:</p>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <input type="text" value={bookingUrl} readOnly style={{ flex: 1, marginBottom: 0 }} />
-            <button onClick={() => navigator.clipboard.writeText(bookingUrl)} style={{ marginBottom: 0 }}>
+        <div className="bg-blue-50 p-4 rounded-lg mb-6">
+          <p className="font-medium text-gray-900 mb-2">Your booking page:</p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={bookingUrl}
+              readOnly
+              className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+            />
+            <button
+              onClick={() => navigator.clipboard.writeText(bookingUrl)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
+            >
               Copy
             </button>
           </div>
@@ -173,52 +193,55 @@ function DashboardView({
       )}
 
       {services.length === 0 && (
-        <div style={{ background: '#fef3c7', padding: '1rem', borderRadius: '0.5rem', marginBottom: '1.5rem' }}>
-          <p style={{ margin: 0 }}>
+        <div className="bg-yellow-50 border border-yellow-200 p-4 rounded-lg mb-6">
+          <p className="text-gray-800">
             <strong>Get started:</strong>{' '}
-            <Link to="/services">Create your first service</Link> and{' '}
-            <Link to="/availability">set your availability</Link> to start accepting bookings.
+            <Link to="/services" className="text-blue-600 hover:underline">Create your first service</Link> and{' '}
+            <Link to="/availability" className="text-blue-600 hover:underline">set your availability</Link> to start accepting bookings.
           </p>
         </div>
       )}
 
       {/* Recent Bookings */}
-      <h2>Recent Bookings</h2>
+      <h2 className="text-lg font-semibold text-gray-900 mb-4">Recent Bookings</h2>
       {bookings.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '2rem', color: '#666', background: '#f9fafb', borderRadius: '0.5rem' }}>
+        <div className="text-center py-8 bg-gray-50 rounded-lg text-gray-400">
           <p>No bookings yet.</p>
         </div>
       ) : (
-        <div style={{ border: '1px solid #e5e7eb', borderRadius: '0.5rem' }}>
+        <div className="border border-gray-200 rounded-lg overflow-hidden">
           {bookings.map((booking) => (
-            <div key={booking.id} className="booking-row">
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+            <div key={booking.id} className="flex items-center gap-4 p-4 border-b border-gray-100 last:border-0">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
                   {booking.service && (
-                    <span className="color-dot" style={{ backgroundColor: booking.service.color }} />
+                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: booking.service.color }} />
                   )}
-                  <strong>{booking.customerName}</strong>
-                  <span className={`status-badge status-${booking.status.toLowerCase()}`}>
+                  <strong className="text-gray-900">{booking.customerName}</strong>
+                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium uppercase ${
+                    booking.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' :
+                    booking.status === 'CONFIRMED' ? 'bg-green-100 text-green-800' :
+                    booking.status === 'COMPLETED' ? 'bg-blue-100 text-blue-800' :
+                    'bg-red-100 text-red-800'
+                  }`}>
                     {booking.status}
                   </span>
                 </div>
-                <p style={{ fontSize: '0.875rem', color: '#666', margin: 0 }}>
+                <p className="text-sm text-gray-500">
                   {booking.service?.name} · {new Date(booking.startTime).toLocaleString()}
                 </p>
               </div>
               {booking.status === 'PENDING' && (
-                <div style={{ display: 'flex', gap: '0.25rem' }}>
+                <div className="flex gap-1">
                   <button
-                    className="outline"
-                    style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
                     onClick={() => handleStatusChange(booking.id, 'CONFIRMED')}
+                    className="px-3 py-1 text-xs border border-gray-300 rounded-lg hover:bg-gray-50"
                   >
                     Confirm
                   </button>
                   <button
-                    className="outline secondary"
-                    style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
                     onClick={() => handleStatusChange(booking.id, 'CANCELLED')}
+                    className="px-3 py-1 text-xs border border-gray-300 rounded-lg hover:bg-gray-50"
                   >
                     Cancel
                   </button>
@@ -226,9 +249,8 @@ function DashboardView({
               )}
               {booking.status === 'CONFIRMED' && (
                 <button
-                  className="outline"
-                  style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
                   onClick={() => handleStatusChange(booking.id, 'COMPLETED')}
+                  className="px-3 py-1 text-xs border border-gray-300 rounded-lg hover:bg-gray-50"
                 >
                   Complete
                 </button>
@@ -238,9 +260,9 @@ function DashboardView({
         </div>
       )}
 
-      <footer style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.875rem', color: '#666' }}>
-        <p>All operations use <code>shogo.db</code> (Prisma pass-through)</p>
+      <footer className="mt-8 text-center text-sm text-gray-400">
+        <p>All operations use <code className="bg-gray-100 px-1 rounded">shogo.db</code> (Prisma pass-through)</p>
       </footer>
-    </article>
+    </div>
   )
 }

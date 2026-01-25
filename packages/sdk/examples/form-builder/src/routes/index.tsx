@@ -56,37 +56,43 @@ function SetupForm({ onComplete }: { onComplete: () => void }) {
   }
 
   return (
-    <article style={{ maxWidth: '400px', margin: '4rem auto' }}>
-      <header style={{ textAlign: 'center', marginBottom: '2rem' }}>
-        <h1>Form Builder</h1>
-        <p>Create custom forms with <strong>@shogo-ai/sdk</strong></p>
-      </header>
+    <div className="max-w-md mx-auto mt-16">
+      <div className="text-center mb-8">
+        <h1 className="text-2xl font-bold text-gray-900">Form Builder</h1>
+        <p className="text-gray-500 mt-2">Create custom forms with <strong>@shogo-ai/sdk</strong></p>
+      </div>
 
-      <form onSubmit={handleSubmit}>
+      <form onSubmit={handleSubmit} className="space-y-4">
         <input
           type="email"
           placeholder="Your email address"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
+          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <input
           type="text"
           placeholder="Your name (optional)"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
-        {error && <p style={{ color: '#e00', fontSize: '0.875rem' }}>{error}</p>}
-        <button type="submit" disabled={loading}>
+        {error && <p className="text-red-600 text-sm">{error}</p>}
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+        >
           {loading ? 'Setting up...' : 'Get Started'}
         </button>
       </form>
 
-      <footer style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.75rem', color: '#666' }}>
+      <div className="mt-8 text-center text-xs text-gray-400">
         <p>Build custom forms with dynamic fields.</p>
         <p>For a simple pre-built form, see <strong>feedback-form</strong>.</p>
-      </footer>
-    </article>
+      </div>
+    </div>
   )
 }
 
@@ -120,76 +126,83 @@ function FormsList({ user, forms }: { user: UserType; forms: FormType[] }) {
   }
 
   return (
-    <article>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+    <div>
+      <header className="flex justify-between items-center mb-6">
         <div>
-          <h1 style={{ marginBottom: '0.25rem' }}>Your Forms</h1>
-          <p style={{ color: '#666', margin: 0 }}>{user.name || user.email}</p>
+          <h1 className="text-2xl font-bold text-gray-900">Your Forms</h1>
+          <p className="text-gray-500">{user.name || user.email}</p>
         </div>
-        <button onClick={() => setShowCreate(!showCreate)}>
+        <button
+          onClick={() => setShowCreate(!showCreate)}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
+        >
           {showCreate ? 'Cancel' : '+ New Form'}
         </button>
       </header>
 
       {showCreate && (
-        <form onSubmit={handleCreate} style={{ marginBottom: '1.5rem' }} role="group">
+        <form onSubmit={handleCreate} className="flex gap-2 mb-6">
           <input
             type="text"
             placeholder="Form name (e.g., Contact Form, Survey)"
             value={newFormName}
             onChange={(e) => setNewFormName(e.target.value)}
             autoFocus
+            className="flex-1 px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
-          <button type="submit" disabled={creating || !newFormName.trim()}>
+          <button
+            type="submit"
+            disabled={creating || !newFormName.trim()}
+            className="px-6 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+          >
             {creating ? 'Creating...' : 'Create Form'}
           </button>
         </form>
       )}
 
       {forms.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '3rem', color: '#666' }}>
+        <div className="text-center py-12 text-gray-400">
           <p>No forms yet. Create your first form to get started!</p>
         </div>
       ) : (
-        <div>
+        <div className="space-y-4">
           {forms.map((form) => (
-            <div key={form.id} className="form-card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-                    <Link to="/forms/$formId" params={{ formId: form.id }} style={{ fontWeight: 600, fontSize: '1.1rem' }}>
+            <div key={form.id} className="bg-gray-50 border border-gray-200 rounded-lg p-4 hover:border-blue-400 transition-colors">
+              <div className="flex justify-between items-start">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Link to="/forms/$formId" params={{ formId: form.id }} className="font-semibold text-lg text-gray-900 hover:text-blue-600">
                       {form.name}
                     </Link>
-                    <span className={`status-badge ${form.isPublished ? 'published' : 'draft'}`}>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                      form.isPublished ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                    }`}>
                       {form.isPublished ? 'Published' : 'Draft'}
                     </span>
                   </div>
                   {form.description && (
-                    <p style={{ color: '#666', fontSize: '0.875rem', margin: '0.25rem 0' }}>
-                      {form.description}
-                    </p>
+                    <p className="text-gray-500 text-sm mb-1">{form.description}</p>
                   )}
-                  <p style={{ color: '#9ca3af', fontSize: '0.75rem', margin: '0.5rem 0 0' }}>
+                  <p className="text-xs text-gray-400">
                     {form._count?.submissions || 0} submissions · Created {new Date(form.createdAt).toLocaleDateString()}
                   </p>
                 </div>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <div className="flex gap-2">
                   <Link to="/forms/$formId" params={{ formId: form.id }}>
-                    <button className="outline" style={{ padding: '0.25rem 0.75rem', fontSize: '0.875rem' }}>
+                    <button className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors">
                       Edit
                     </button>
                   </Link>
                   {form.isPublished && (
                     <Link to="/f/$slug" params={{ slug: form.slug }}>
-                      <button className="outline secondary" style={{ padding: '0.25rem 0.75rem', fontSize: '0.875rem' }}>
+                      <button className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors">
                         View
                       </button>
                     </Link>
                   )}
                   <button
-                    className="outline secondary"
-                    style={{ padding: '0.25rem 0.75rem', fontSize: '0.875rem' }}
                     onClick={() => handleDelete(form.id)}
+                    className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
                   >
                     Delete
                   </button>
@@ -200,9 +213,9 @@ function FormsList({ user, forms }: { user: UserType; forms: FormType[] }) {
         </div>
       )}
 
-      <footer style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.875rem', color: '#666' }}>
-        <p>All operations use <code>shogo.db</code> (Prisma pass-through)</p>
+      <footer className="mt-8 text-center text-sm text-gray-400">
+        <p>All operations use <code className="bg-gray-100 px-1 rounded">shogo.db</code> (Prisma pass-through)</p>
       </footer>
-    </article>
+    </div>
   )
 }
