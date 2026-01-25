@@ -347,6 +347,11 @@ export class TodoStore {
 
   /** Update item with optimistic update */
   async update(id: string, input: TodoUpdateInput, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[TodoStore] update called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingUpdates.has(id)) return
 
@@ -384,6 +389,11 @@ export class TodoStore {
 
   /** Delete item with optimistic update */
   async delete(id: string, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[TodoStore] delete called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingDeletes.has(id)) return
 

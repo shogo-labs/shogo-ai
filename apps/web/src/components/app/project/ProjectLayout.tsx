@@ -16,7 +16,7 @@
 import { observer } from "mobx-react-lite"
 import { useEffect, useCallback, useState, useRef } from "react"
 import { useParams, useLocation } from "react-router-dom"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSchemaLoadingState } from "@/contexts/DomainProvider"
 import { ComposablePhaseView } from "@/components/rendering/composition/ComposablePhaseView"
 import { ComponentRegistryProvider } from "@/components/rendering"
 import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
@@ -188,8 +188,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
     setTransitionEndRect(null)
   }, [])
 
-  // Check if domains are ready
-  const domainsReady = !!studioCore?.projectCollection
+  // Check if domains are ready - must wait for schema loading on page refresh
+  const { schemasLoaded } = useSchemaLoadingState()
+  const domainsReady = schemasLoaded && !!studioCore?.projectCollection
 
   // Load project data with retry logic for schema loading and project creation race conditions
   useEffect(() => {

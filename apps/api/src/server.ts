@@ -1531,10 +1531,51 @@ app.get('/api/projects/:projectId/files/*', async (c) => {
 
 // Write file content
 app.put('/api/projects/:projectId/files/*', async (c) => {
-  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = filesRoutes({ workspacesDir })
   const projectId = c.req.param('projectId')
   const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/files/${filePath}`
+      
+      console.log(`[FilesProxy] Proxying file write to ${targetUrl}`)
+      
+      // Clone the body for proxying
+      const body = await c.req.text()
+      
+      const response = await fetch(targetUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': c.req.header('Content-Type') || 'application/json',
+        },
+        body: body,
+      })
+      
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[FilesProxy] Error writing file:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to write file' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Use local filesystem
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ workspacesDir })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${projectId}/files/${filePath}`
   const newReq = new Request(url.toString(), {
@@ -1675,6 +1716,68 @@ app.post('/api/projects/:projectId/terminal/exec', async (c) => {
     body: c.req.raw.body,
   })
   return router.fetch(newReq)
+})
+
+// =============================================================================
+// TypeScript Types Proxy - Proxy type definitions for Monaco ATA (avoids CORS)
+// =============================================================================
+
+/**
+ * Proxy requests to external CDNs to avoid CORS issues.
+ * Monaco's Automatic Type Acquisition (ATA) needs to fetch @types packages.
+ * 
+ * Usage: GET /api/types-proxy?url=<encoded-url>
+ * Example: /api/types-proxy?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fnpm%2F%40types%2Freact%2Findex.d.ts
+ */
+app.get('/api/types-proxy', async (c) => {
+  const targetUrl = c.req.query('url')
+  
+  if (!targetUrl) {
+    return c.json({ error: { code: 'missing_url', message: 'URL query parameter is required' } }, 400)
+  }
+  
+  // Validate URL is from allowed CDNs
+  const allowedHosts = ['cdn.jsdelivr.net', 'unpkg.com', 'esm.sh']
+  let parsedUrl: URL
+  try {
+    parsedUrl = new URL(targetUrl)
+  } catch {
+    return c.json({ error: { code: 'invalid_url', message: 'Invalid URL format' } }, 400)
+  }
+  
+  if (!allowedHosts.includes(parsedUrl.hostname)) {
+    return c.json({ error: { code: 'forbidden_host', message: `Host ${parsedUrl.hostname} is not allowed` } }, 403)
+  }
+  
+  console.log(`[TypesProxy] Proxying: ${targetUrl}`)
+  
+  try {
+    const response = await fetch(targetUrl, {
+      headers: {
+        'User-Agent': 'Shogo-Studio-TypesProxy/1.0',
+      },
+      signal: AbortSignal.timeout(10000), // 10 second timeout
+    })
+    
+    if (response.ok) {
+      const content = await response.text()
+      const contentType = response.headers.get('content-type') || 'text/plain'
+      
+      return c.text(content, 200, {
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=86400', // Cache for 24 hours
+      })
+    }
+    
+    return c.json({ 
+      error: { code: 'upstream_error', message: `Upstream returned ${response.status}` } 
+    }, response.status as any)
+  } catch (err: any) {
+    console.error(`[TypesProxy] Error fetching ${targetUrl}:`, err.message)
+    return c.json({ 
+      error: { code: 'fetch_error', message: err.message || 'Failed to fetch from CDN' } 
+    }, 502)
+  }
 })
 
 // =============================================================================

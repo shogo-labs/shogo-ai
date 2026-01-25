@@ -35,14 +35,18 @@ const fetchingTypes = new Set<string>()
 /** Set of packages that failed to fetch (to avoid retrying) */
 const failedTypes = new Set<string>()
 
-/** CDN URLs for fetching types - try multiple sources */
+/** 
+ * API proxy URL for fetching types - avoids CORS issues with CDNs
+ * Usage: /api/types-proxy?url=<encoded-url>
+ */
+const TYPE_PROXY_URL = '/api/types-proxy'
+
+/** CDN URLs for fetching types */
 const TYPE_CDN_URLS = [
-  // esm.sh provides bundled types
-  (pkg: string) => `https://esm.sh/${pkg}?bundle&target=esnext`,
+  // jsdelivr for @types packages (most reliable)
+  (pkg: string) => `https://cdn.jsdelivr.net/npm/@types/${pkg.replace('@', '').replace('/', '__')}/index.d.ts`,
   // unpkg for @types packages
   (pkg: string) => `https://unpkg.com/@types/${pkg.replace('@', '').replace('/', '__')}/index.d.ts`,
-  // jsdelivr as fallback
-  (pkg: string) => `https://cdn.jsdelivr.net/npm/@types/${pkg.replace('@', '').replace('/', '__')}/index.d.ts`,
 ]
 
 /**
@@ -79,8 +83,8 @@ function extractImports(code: string): string[] {
 }
 
 /**
- * Fetch type definitions for a package from CDN.
- * Tries multiple CDN sources and caches successful results.
+ * Fetch type definitions for a package via the API proxy (avoids CORS).
+ * Caches successful results.
  */
 async function fetchTypesForPackage(packageName: string): Promise<string | null> {
   // Check cache first
@@ -95,28 +99,26 @@ async function fetchTypesForPackage(packageName: string): Promise<string | null>
 
   fetchingTypes.add(packageName)
 
-  // Try fetching from unpkg @types first (most reliable for type definitions)
-  const typesPackageName = packageName.startsWith('@')
-    ? packageName.replace('@', '').replace('/', '__')
-    : packageName
+  // Helper to validate type definition content
+  const isValidTypes = (content: string) => 
+    content.includes('declare') || content.includes('export') || content.includes('interface')
 
-  const urls = [
-    `https://unpkg.com/@types/${typesPackageName}/index.d.ts`,
-    `https://cdn.jsdelivr.net/npm/@types/${typesPackageName}/index.d.ts`,
-  ]
-
-  for (const url of urls) {
+  // Try each CDN URL via the proxy
+  for (const urlFn of TYPE_CDN_URLS) {
     try {
-      const response = await fetch(url, { 
+      const cdnUrl = urlFn(packageName)
+      const proxyUrl = `${TYPE_PROXY_URL}?url=${encodeURIComponent(cdnUrl)}`
+      
+      const response = await fetch(proxyUrl, { 
         signal: AbortSignal.timeout(5000) // 5 second timeout
       })
+      
       if (response.ok) {
         const types = await response.text()
-        // Validate it looks like a type definition
-        if (types.includes('declare') || types.includes('export') || types.includes('interface')) {
+        if (isValidTypes(types)) {
           typeCache.set(packageName, types)
           fetchingTypes.delete(packageName)
-          console.log(`[ATA] Loaded types for ${packageName}`)
+          console.log(`[ATA] Loaded types for ${packageName} via proxy`)
           return types
         }
       }
@@ -306,10 +308,12 @@ export interface CodeEditorPanelProps {
 
 /**
  * Build a tree structure from flat file list.
+ * Handles deduplication when API returns both directories and their contents.
  */
 function buildFileTree(files: FileInfo[]): TreeNode[] {
   const root: TreeNode[] = []
   const directories: Map<string, TreeNode> = new Map()
+  const addedPaths = new Set<string>() // Track paths to prevent duplicates
 
   // Sort files: directories first, then alphabetically
   const sortedFiles = [...files].sort((a, b) => {
@@ -318,6 +322,9 @@ function buildFileTree(files: FileInfo[]): TreeNode[] {
   })
 
   for (const file of sortedFiles) {
+    // Skip if this exact path was already added (deduplication)
+    if (addedPaths.has(file.path)) continue
+    
     const parts = file.path.split('/')
     let currentPath = ''
     let currentLevel = root
@@ -328,17 +335,27 @@ function buildFileTree(files: FileInfo[]): TreeNode[] {
       currentPath = currentPath ? `${currentPath}/${part}` : part
 
       if (isLast) {
-        currentLevel.push({
-          name: part,
-          path: file.path,
-          type: file.type,
-          extension: file.extension,
-          children: file.type === 'directory' ? [] : undefined,
-          expanded: false,
-        })
-        if (file.type === 'directory') {
-          directories.set(file.path, currentLevel[currentLevel.length - 1])
+        // Check if a directory with this path was already created as an intermediate
+        const existingDir = directories.get(file.path)
+        if (existingDir) {
+          // Update the existing directory node with file info (extension, etc.)
+          existingDir.extension = file.extension
+        } else {
+          // Add new node
+          const newNode: TreeNode = {
+            name: part,
+            path: file.path,
+            type: file.type,
+            extension: file.extension,
+            children: file.type === 'directory' ? [] : undefined,
+            expanded: false,
+          }
+          currentLevel.push(newNode)
+          if (file.type === 'directory') {
+            directories.set(file.path, newNode)
+          }
         }
+        addedPaths.add(file.path)
       } else {
         let dir = directories.get(currentPath)
         if (!dir) {
@@ -351,6 +368,7 @@ function buildFileTree(files: FileInfo[]): TreeNode[] {
           }
           currentLevel.push(dir)
           directories.set(currentPath, dir)
+          addedPaths.add(currentPath) // Mark intermediate directories as added too
         }
         currentLevel = dir.children!
       }
@@ -362,8 +380,9 @@ function buildFileTree(files: FileInfo[]): TreeNode[] {
 
 /**
  * Get Monaco language from file extension.
+ * Accepts either an extension (e.g., ".tsx") or a full file path.
  */
-function getMonacoLanguage(extension?: string): string {
+function getMonacoLanguage(extensionOrPath?: string): string {
   // Note: Monaco's tokenizer uses 'typescript' for both .ts and .tsx files
   // The TypeScript language service handles JSX based on the file extension in the path prop
   const languageMap: Record<string, string> = {
@@ -387,7 +406,20 @@ function getMonacoLanguage(extension?: string): string {
     '.bash': 'shell',
     '.env': 'plaintext',
   }
-  return extension ? languageMap[extension] || 'plaintext' : 'plaintext'
+  
+  if (!extensionOrPath) return 'plaintext'
+  
+  // If it's already an extension (starts with .), use it directly
+  if (extensionOrPath.startsWith('.')) {
+    return languageMap[extensionOrPath] || 'plaintext'
+  }
+  
+  // Extract extension from file path
+  const lastDot = extensionOrPath.lastIndexOf('.')
+  if (lastDot === -1) return 'plaintext'
+  
+  const ext = extensionOrPath.slice(lastDot)
+  return languageMap[ext] || 'plaintext'
 }
 
 /**
@@ -787,10 +819,11 @@ export function CodeEditorPanel({
   }, [selectedFile, fileContent, lspConnected])
 
   // Get current file extension for language detection
+  // Use file's extension if available, otherwise extract from the file path
   const currentExtension = selectedFile
     ? files.find(f => f.path === selectedFile)?.extension
     : undefined
-  const language = getMonacoLanguage(currentExtension)
+  const language = getMonacoLanguage(currentExtension || selectedFile || undefined)
 
   return (
     <div className={cn(

@@ -619,10 +619,18 @@ export const ChatPanel = observer(function ChatPanel({
   // Find or create chat session for feature and phase (task-cpbi-005)
   // Session is uniquely identified by (featureId, phase) tuple
   // If chatSessionId prop is provided, use it directly (for session picker integration)
+  // fix-chat-history: Also load session data from API when chatSessionId is provided
   useEffect(() => {
-    // If explicit chatSessionId is provided, use it directly
+    // If explicit chatSessionId is provided, use it directly and load from API
     if (chatSessionId !== undefined) {
       setCurrentSessionId(chatSessionId)
+      // Load the session data from API if not already in MST
+      // This ensures session metadata is available for display
+      if (chatSessionId && !studioChat.chatSessionCollection.get(chatSessionId)) {
+        console.log('[ChatPanel] Loading session from API:', chatSessionId)
+        studioChat.chatSessionCollection.loadAll({ id: chatSessionId })
+          .catch((err: any) => console.warn('[ChatPanel] Failed to load session:', err))
+      }
       return
     }
 
@@ -641,7 +649,15 @@ export const ChatPanel = observer(function ChatPanel({
 
     // Use async IIFE for await support in useEffect
     const loadOrCreateSession = async () => {
-      // Find existing session for this feature AND phase
+      // First, try to load sessions from API to ensure we have fresh data
+      // This handles the case where session exists in DB but not in MST
+      try {
+        await studioChat.chatSessionCollection.loadAll({ contextId: featureId })
+      } catch (err) {
+        console.warn('[ChatPanel] Failed to load sessions for feature:', err)
+      }
+
+      // Find existing session for this feature AND phase (now checking fresh data)
       const existingSession = studioChat.chatSessionCollection.findByFeatureAndPhase?.(featureId, phase)
       if (existingSession) {
         setCurrentSessionId(existingSession.id)
@@ -1489,17 +1505,23 @@ export const ChatPanel = observer(function ChatPanel({
     prevIsStreamingRef.current = isStreaming
   }, [isStreaming])
 
-  // Effect 1: Trigger data loading for chat messages
-  // query().toArray() syncs remote data to MST, MobX reactivity handles the rest
-  // Uses loading guard to prevent duplicate queries
+  // Effect 1: Trigger data loading for chat messages from API
+  // loadAll() calls APIPersistence which fetches from REST API with sessionId filter
+  // MobX reactivity then updates persistedMessagesFromMobX which syncs to AI SDK
+  // fix-chat-history: Use loadAll with sessionId filter to load messages from API
   useEffect(() => {
     if (currentSessionId && !isLoadingMessagesRef.current) {
       isLoadingMessagesRef.current = true
-      studioChat.chatMessageCollection.query().toArray()
-        .catch(err => console.error('[ChatPanel] Failed to load messages:', err))
+      console.log('[ChatPanel] Loading messages for session:', currentSessionId)
+      studioChat.chatMessageCollection.loadAll({ sessionId: currentSessionId })
+        .then((result: any) => {
+          const count = result?.items ? Object.keys(result.items).length : 0
+          console.log('[ChatPanel] Loaded', count, 'messages for session:', currentSessionId)
+        })
+        .catch((err: any) => console.error('[ChatPanel] Failed to load messages:', err))
         .finally(() => { isLoadingMessagesRef.current = false })
     }
-  }, [currentSessionId])
+  }, [currentSessionId, studioChat])
 
   // feat-chat-tool-interleaving: Track if we've received messages with parts (tool calls)
   // Once we have parts from streaming, we shouldn't overwrite with persisted data
