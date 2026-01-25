@@ -240,10 +240,15 @@ fi
 if [ "$RESTORED_FROM_S3" = true ] && [ "$BUILD_EXISTS" = true ]; then
   bg_log "⚡ Build already present from S3 archive (skipped build)"
 else
-  bg_log "Building project..."
+  bg_log "════════════════════════════════════════"
+  bg_log "🔨 VITE BUILD STARTING..."
+  bg_log "════════════════════════════════════════"
   if bun --bun vite build 2>&1; then
     STEP_END=$(date +%s%3N)
-    bg_log "Build completed (took $((STEP_END - STEP_START))ms)"
+    BUILD_DURATION=$((STEP_END - STEP_START))
+    bg_log "════════════════════════════════════════"
+    bg_log "✅ VITE BUILD COMPLETED: ${BUILD_DURATION}ms ($(echo "scale=2; $BUILD_DURATION/1000" | bc)s)"
+    bg_log "════════════════════════════════════════"
   else
     bg_log "Build failed"
     echo "failed:build" > "$BUILD_STATUS_FILE"

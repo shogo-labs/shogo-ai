@@ -1225,12 +1225,20 @@ app.post('/preview/restart', async (c) => {
       } else {
         console.log('[project-runtime] ⏱️  Building project...')
       }
+      console.log('[project-runtime] ════════════════════════════════════════')
+      console.log('[project-runtime] 🔨 VITE BUILD STARTING...')
+      console.log('[project-runtime] ════════════════════════════════════════')
+      const buildStartTime = performance.now()
       const buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
         cwd: PROJECT_DIR,
         stdout: 'inherit',
         stderr: 'inherit',
       })
       await buildProc.exited
+      const buildDuration = Math.round(performance.now() - buildStartTime)
+      console.log('[project-runtime] ════════════════════════════════════════')
+      console.log(`[project-runtime] ✅ VITE BUILD COMPLETED: ${buildDuration}ms (${(buildDuration / 1000).toFixed(2)}s)`)
+      console.log('[project-runtime] ════════════════════════════════════════')
       markStep('viteBuild')
       
       if (buildProc.exitCode !== 0) {
@@ -1284,8 +1292,14 @@ app.post('/preview/restart', async (c) => {
     }
     
     const totalMs = Math.round(performance.now() - startTime)
-    console.log(`[project-runtime] ⏱️  Preview restart completed in ${totalMs}ms`)
-    console.log(`[project-runtime] ⏱️  Timing breakdown: ${JSON.stringify(timings)}`)
+    console.log('[project-runtime] ════════════════════════════════════════')
+    console.log(`[project-runtime] 🎉 PREVIEW RESTART COMPLETED: ${totalMs}ms (${(totalMs / 1000).toFixed(2)}s)`)
+    console.log('[project-runtime] ════════════════════════════════════════')
+    console.log('[project-runtime] ⏱️  Timing breakdown:')
+    for (const { step, durationMs } of timings) {
+      console.log(`[project-runtime]    • ${step}: ${durationMs}ms`)
+    }
+    console.log('[project-runtime] ════════════════════════════════════════')
     
     return c.json({
       success: true,

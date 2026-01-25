@@ -8,4 +8,9 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
   },
+  build: {
+    // Optimizations for faster builds
+    target: 'esnext',    // Skip transpilation (modern browsers only)
+    minify: false,       // Skip minification for preview builds
+  },
 })

@@ -20,4 +20,9 @@ export default defineConfig({
     nitroV2Plugin({ preset: 'bun' }),
     react(),
   ],
+  build: {
+    // Optimizations for faster builds
+    target: 'esnext',    // Skip transpilation (modern browsers only)
+    minify: false,       // Skip minification for preview builds
+  },
 })
