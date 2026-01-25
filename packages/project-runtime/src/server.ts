@@ -1768,8 +1768,9 @@ function isSubdomainAccess(c: any): boolean {
 /**
  * Root path handler for subdomain access.
  * Serves the app directly without any path rewriting.
+ * Uses app.all() to handle all HTTP methods (GET, POST, etc.) for API routes.
  */
-app.get('/*', async (c) => {
+app.all('/*', async (c) => {
   // Only handle subdomain access (with token) at root
   // Other root paths are handled by specific routes above
   const token = c.req.query('__preview_token')
@@ -1871,29 +1872,70 @@ app.get('/*', async (c) => {
   // TanStack Start: proxy to the running server
   if (isTanStackStart) {
     const targetUrl = `http://localhost:${NITRO_SERVER_PORT}${relativePath}`
-    console.log(`[project-runtime] Subdomain: proxying to TanStack at ${targetUrl}`)
+    const method = c.req.method
+    console.log(`[project-runtime] Subdomain: proxying ${method} to TanStack at ${targetUrl}`)
     
     try {
-      const response = await fetch(targetUrl, {
-        method: c.req.method,
-        headers: {
-          'Host': `localhost:${NITRO_SERVER_PORT}`,
-          'Accept': c.req.header('Accept') || '*/*',
-          'Accept-Encoding': c.req.header('Accept-Encoding') || '',
-        },
-      })
+      // Build headers for the proxy request
+      const proxyHeaders: Record<string, string> = {
+        'Host': `localhost:${NITRO_SERVER_PORT}`,
+        'Accept': c.req.header('Accept') || '*/*',
+        'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+      }
       
-      const contentType = response.headers.get('Content-Type') || 'text/html'
+      // Forward Content-Type for POST/PUT/PATCH requests
+      const contentType = c.req.header('Content-Type')
+      if (contentType) {
+        proxyHeaders['Content-Type'] = contentType
+      }
+      
+      // Forward cookies for auth
+      const cookies = c.req.header('Cookie')
+      if (cookies) {
+        proxyHeaders['Cookie'] = cookies
+      }
+      
+      // Build fetch options
+      const fetchOptions: RequestInit = {
+        method,
+        headers: proxyHeaders,
+      }
+      
+      // Forward request body for POST/PUT/PATCH
+      if (method !== 'GET' && method !== 'HEAD') {
+        try {
+          const bodyBuffer = await c.req.arrayBuffer()
+          if (bodyBuffer.byteLength > 0) {
+            fetchOptions.body = bodyBuffer
+          }
+        } catch {
+          // No body or couldn't read body - that's ok
+        }
+      }
+      
+      const response = await fetch(targetUrl, fetchOptions)
+      
+      const responseContentType = response.headers.get('Content-Type') || 'text/html'
       const body = await response.arrayBuffer()
+      
+      // Build response headers
+      const responseHeaders: Record<string, string> = {
+        'Content-Type': responseContentType,
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Credentials': 'true',
+      }
+      
+      // Forward Set-Cookie headers for auth
+      const setCookie = response.headers.get('Set-Cookie')
+      if (setCookie) {
+        responseHeaders['Set-Cookie'] = setCookie
+      }
       
       // No rewriting needed for subdomain access - serve directly!
       return new Response(body, {
         status: response.status,
-        headers: {
-          'Content-Type': contentType,
-          'Cache-Control': 'no-cache',
-          'Access-Control-Allow-Origin': '*',
-        },
+        headers: responseHeaders,
       })
     } catch (error: any) {
       console.error('[project-runtime] Subdomain TanStack proxy error:', error)
