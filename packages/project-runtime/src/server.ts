@@ -796,6 +796,34 @@ Available templates include: todo-app, expense-tracker, crm, inventory, kanban, 
 
 After using template.copy, the Vite server restarts automatically and the preview will update to show the new app. No manual restart is needed.
 
+## Styling with Tailwind CSS v4
+
+This project uses **Tailwind CSS v4** via CDN. When building UI:
+
+1. **Use Tailwind utility classes directly** - All standard Tailwind classes work (e.g., \`bg-blue-500\`, \`text-white\`, \`p-4\`, \`flex\`, \`grid\`).
+
+2. **For custom themes**, add a \`<style type="text/tailwindcss">\` block in your HTML/JSX with the \`@theme\` directive:
+\`\`\`html
+<style type="text/tailwindcss">
+  @theme {
+    --color-primary: #6b5cff;
+    --color-secondary: #ff6b5c;
+    --font-display: "Inter", system-ui, sans-serif;
+  }
+</style>
+\`\`\`
+
+3. **Important v4 changes from v3**:
+   - No \`tailwind.config.js\` needed for basic usage
+   - Custom colors defined with \`@theme\` use \`--color-*\` prefix
+   - Use \`@theme\` instead of extending the config
+   - The CDN script is: \`https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4\`
+
+4. **Do NOT use**:
+   - \`@tailwind base/components/utilities\` directives (v3 syntax)
+   - \`tailwindcss\` as a PostCSS plugin (use \`@tailwindcss/postcss\` for build setups)
+   - \`@apply\` directive (not supported in CDN mode)
+
 You also have access to file operations (Read, Write, Edit, Glob, Grep, Bash) for file management.`
 
       // If theme context is provided, append it to the system prompt

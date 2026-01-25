@@ -16,7 +16,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       { title: 'CRM - TanStack Start' },
     ],
     scripts: [
-      { src: 'https://cdn.tailwindcss.com' },
+      { src: 'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4' },
     ],
   }),
   // Load user at root level - available to all child routes via context

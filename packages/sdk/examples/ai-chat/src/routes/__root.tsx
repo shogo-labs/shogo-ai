@@ -22,7 +22,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap' },
     ],
     scripts: [
-      { src: 'https://cdn.tailwindcss.com' },
+      { src: 'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4' },
     ],
   }),
   beforeLoad: async () => {

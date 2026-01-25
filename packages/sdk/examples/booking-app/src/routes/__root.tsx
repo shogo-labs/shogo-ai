@@ -16,7 +16,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       { title: 'Booking App - Shogo SDK Example' },
     ],
     scripts: [
-      { src: 'https://cdn.tailwindcss.com' },
+      { src: 'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4' },
     ],
   }),
   beforeLoad: async () => {

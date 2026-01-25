@@ -24,7 +24,7 @@ export const Route = createRootRoute({
       { title: 'Todo App - Shogo SDK Example' },
     ],
     scripts: [
-      { src: 'https://cdn.tailwindcss.com' },
+      { src: 'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4' },
     ],
   }),
   component: RootComponent,
