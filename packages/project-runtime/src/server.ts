@@ -1471,6 +1471,9 @@ app.post('/preview/dev', async (c) => {
     console.log('[project-runtime] ════════════════════════════════════════')
     
     // Start vite dev server - served directly on subdomain for proper HMR
+    // In Kubernetes (staging/prod), set SHOGO_RUNTIME to use wss:// on port 443 for HMR
+    // Locally, let Vite auto-detect the WebSocket settings
+    const isKubernetes = !!process.env.KUBERNETES_SERVICE_HOST
     viteDevProcess = Bun.spawn(['bun', '--bun', 'vite', 'dev', '--port', String(VITE_DEV_PORT), '--host', '0.0.0.0'], {
       cwd: PROJECT_DIR,
       stdout: 'inherit',
@@ -1478,6 +1481,7 @@ app.post('/preview/dev', async (c) => {
       env: {
         ...process.env,
         PORT: String(VITE_DEV_PORT),
+        ...(isKubernetes && { SHOGO_RUNTIME: 'true' }),  // Signal to vite config to use production HMR settings
       },
     })
     
