@@ -320,30 +320,68 @@ export async function executeTemplateCopy(
     }
     timer.mark('cleanConflictingFiles')
 
-    // Check if template has pre-installed node_modules (from Docker image)
-    const templateNodeModules = join(template.path, "node_modules")
-    const hasPreinstalledDeps = existsSync(templateNodeModules)
+    // Check if this is an archived template (tar.gz)
+    const isArchive = template.isArchive || template.path.endsWith('.tar.gz')
+    let copiedFiles: string[] = []
     
-    // Exclusions - don't copy these
-    // NOTE: If template has pre-installed node_modules, we INCLUDE it for faster setup
-    const exclude = [
-      ...(hasPreinstalledDeps ? [] : ["node_modules"]), // Copy node_modules if pre-installed
-      "bun.lock", // Always regenerate lockfile for the target environment
-      ".git",
-      "dev.db",
-      "dev.db-journal",
-      "playwright-report",
-      "test-results",
-      "template.json",
-    ]
-    
-    if (hasPreinstalledDeps) {
-      console.log(`[template.copy] ⚡ Template has pre-installed node_modules - will copy for faster setup`)
-    }
+    if (isArchive) {
+      // Extract tar.gz archive directly to project directory
+      // Archives contain pre-installed node_modules and .output for instant setup
+      console.log(`[template.copy] ⚡ Extracting template archive: ${template.path}`)
+      const startTime = performance.now()
+      
+      try {
+        // Use tar to extract, stripping the top-level directory
+        execSync(`tar -xzf "${template.path}" --strip-components=1 -C "${projectDir}"`, {
+          stdio: 'pipe',
+          timeout: 120000,
+        })
+        const extractTime = Math.round(performance.now() - startTime)
+        console.log(`[template.copy] ⚡ Template extracted in ${extractTime}ms (with node_modules + .output)`)
+        
+        // List extracted files (just top-level for summary)
+        if (existsSync(projectDir)) {
+          copiedFiles = readdirSync(projectDir, { recursive: true })
+            .map(f => String(f))
+            .filter(f => !f.startsWith('node_modules/'))
+        }
+      } catch (tarError: any) {
+        return {
+          ok: false,
+          error: {
+            code: "EXTRACT_ERROR",
+            message: `Failed to extract template archive: ${tarError.message}`,
+          },
+          timings: { steps: timer.getSteps(), totalMs: timer.total() },
+        }
+      }
+      timer.mark('extractTemplateArchive')
+    } else {
+      // Check if template has pre-installed node_modules (from Docker image)
+      const templateNodeModules = join(template.path, "node_modules")
+      const hasPreinstalledDeps = existsSync(templateNodeModules)
+      
+      // Exclusions - don't copy these
+      // NOTE: If template has pre-installed node_modules, we INCLUDE it for faster setup
+      const exclude = [
+        ...(hasPreinstalledDeps ? [] : ["node_modules"]), // Copy node_modules if pre-installed
+        "bun.lock", // Always regenerate lockfile for the target environment
+        ".git",
+        "dev.db",
+        "dev.db-journal",
+        "playwright-report",
+        "test-results",
+        "template.json",
+      ]
+      
+      if (hasPreinstalledDeps) {
+        console.log(`[template.copy] ⚡ Template has pre-installed node_modules - will copy for faster setup`)
+      }
 
-    // Copy template directory
-    const copiedFiles = copyDir(template.path, projectDir, exclude)
-    timer.mark('copyTemplateFiles')
+      // Copy template directory
+      copiedFiles = copyDir(template.path, projectDir, exclude)
+      timer.mark('copyTemplateFiles')
+    }
 
     // Update package.json with new name
     updatePackageJson(projectDir, args.name)
