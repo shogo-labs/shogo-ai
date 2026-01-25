@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react'
 // - In production (HTTPS): use wss:// on port 443 via proxy
 // - Locally: let Vite auto-detect (ws:// on dev server port)
 const isProduction = process.env.NODE_ENV === 'production' || process.env.SHOGO_RUNTIME === 'true'
-const hmrConfig = isProduction ? { clientPort: 443, protocol: 'wss' as const } : undefined
+const hmrConfig = isProduction ? { clientPort: 443, protocol: 'wss' as const, path: '/' } : undefined
 
 // https://vite.dev/config/
 export default defineConfig({

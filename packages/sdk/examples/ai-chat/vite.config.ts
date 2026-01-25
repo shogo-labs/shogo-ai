@@ -8,7 +8,7 @@ import { nitroV2Plugin } from '@tanstack/nitro-v2-vite-plugin'
 // - In production (HTTPS): use wss:// on port 443 via proxy
 // - Locally: let Vite auto-detect (ws:// on dev server port)
 const isProduction = process.env.NODE_ENV === 'production' || process.env.SHOGO_RUNTIME === 'true'
-const hmrConfig = isProduction ? { clientPort: 443, protocol: 'wss' as const } : undefined
+const hmrConfig = isProduction ? { clientPort: 443, protocol: 'wss' as const, path: '/' } : undefined
 
 export default defineConfig({
   server: {
