@@ -567,6 +567,20 @@ resource "kubernetes_secret" "anthropic_credentials_workspaces" {
   }
 }
 
+# Preview secrets for project pods (JWT validation)
+resource "kubernetes_secret" "preview_secrets_workspaces" {
+  depends_on = [kubernetes_namespace.shogo_workspaces]
+
+  metadata {
+    name      = "preview-secrets"
+    namespace = "shogo-staging-workspaces"
+  }
+
+  data = {
+    BETTER_AUTH_SECRET = var.better_auth_secret
+  }
+}
+
 # -----------------------------------------------------------------------------
 # S3 Bucket for Workspace Files (emptyDir persistence)
 # -----------------------------------------------------------------------------

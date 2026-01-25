@@ -703,7 +703,7 @@ export class KnativeProjectManager {
       {
         name: "BETTER_AUTH_SECRET",
         valueFrom: {
-          secretKeyRef: { name: "api-secrets", key: "BETTER_AUTH_SECRET" },
+          secretKeyRef: { name: "preview-secrets", key: "BETTER_AUTH_SECRET" },
         },
       },
     ]
