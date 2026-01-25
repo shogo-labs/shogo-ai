@@ -1632,6 +1632,41 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
       console.log(`[TerminalProxy] Proxying commands list to ${targetUrl}`)
       
       const response = await fetch(targetUrl)
+      
+      // Handle non-OK responses with proper JSON errors
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // If response is JSON, pass it through
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        // Non-JSON error (like Knative 503) - return proper JSON
+        const errorCode = response.status === 503 ? 'service_starting' 
+          : response.status === 502 ? 'service_unavailable' : 'upstream_error'
+        
+        // Only log non-503 errors (503 is expected during pod startup)
+        if (response.status !== 503) {
+          console.error(`[TerminalProxy] Upstream error ${response.status}`)
+        }
+        
+        const headers = new Headers({ 'Content-Type': 'application/json' })
+        if (response.status === 503) {
+          headers.set('Retry-After', '5') // Tell clients to retry after 5 seconds
+        }
+        
+        return c.json({
+          error: { code: errorCode, message: `Terminal service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
@@ -1644,6 +1679,17 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
         headers: responseHeaders,
       })
     } catch (error: any) {
+      // Check if error is pod not ready vs actual failure
+      const isPodNotReady = error.message?.includes('not ready') || 
+        error.message?.includes('not found') ||
+        error.message?.includes('starting')
+      
+      if (isPodNotReady) {
+        return c.json({
+          error: { code: 'service_starting', message: 'Project runtime is starting...' }
+        }, 503)
+      }
+      
       console.error('[TerminalProxy] Error:', error)
       return c.json({
         error: { code: 'proxy_error', message: error.message || 'Failed to get terminal commands' }
@@ -1798,6 +1844,41 @@ app.get('/api/projects/:projectId/tests/list', async (c) => {
       console.log(`[TestsProxy] Proxying tests list to ${targetUrl}`)
       
       const response = await fetch(targetUrl)
+      
+      // Handle non-OK responses with proper JSON errors
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // If response is JSON, pass it through
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        // Non-JSON error (like Knative 503) - return proper JSON
+        const errorCode = response.status === 503 ? 'service_starting' 
+          : response.status === 502 ? 'service_unavailable' : 'upstream_error'
+        
+        // Only log non-503 errors (503 is expected during pod startup)
+        if (response.status !== 503) {
+          console.error(`[TestsProxy] Upstream error ${response.status}`)
+        }
+        
+        const headers = new Headers({ 'Content-Type': 'application/json' })
+        if (response.status === 503) {
+          headers.set('Retry-After', '5') // Tell clients to retry after 5 seconds
+        }
+        
+        return c.json({
+          error: { code: errorCode, message: `Tests service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
@@ -1809,6 +1890,17 @@ app.get('/api/projects/:projectId/tests/list', async (c) => {
         headers: responseHeaders,
       })
     } catch (error: any) {
+      // Check if error is pod not ready vs actual failure
+      const isPodNotReady = error.message?.includes('not ready') || 
+        error.message?.includes('not found') ||
+        error.message?.includes('starting')
+      
+      if (isPodNotReady) {
+        return c.json({
+          error: { code: 'service_starting', message: 'Project runtime is starting...' }
+        }, 503)
+      }
+      
       console.error(`[TestsProxy] Error proxying tests list:`, error)
       return c.json({
         error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }

@@ -15,7 +15,7 @@
  * Note: This hook triggers MCP reload when userId/workspaceId changes.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useDomains } from "../../../../contexts/DomainProvider"
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation"
 import { useSession } from "../../../../auth/client"
@@ -164,6 +164,34 @@ export function useWorkspaceData(): WorkspaceDataState {
   // User ID from session (stable reference for dependency tracking)
   const userId = session?.user?.id
 
+  // Track previous userId to detect user change (sign-up, sign-in, sign-out)
+  const prevUserIdRef = useRef<string | null | undefined>(undefined)
+
+  // Clear cached data when user changes to prevent stale workspace access errors
+  // This handles the race condition during sign-up where old workspace data
+  // may still be cached when the new user's session is established
+  useEffect(() => {
+    const prevUserId = prevUserIdRef.current
+
+    // Skip on initial mount (prevUserId is undefined)
+    if (prevUserId !== undefined && prevUserId !== userId) {
+      // User has changed - clear all cached workspace data
+      console.log("[useWorkspaceData] User changed, clearing cached data")
+      
+      // Reset auto-select state for the new user
+      autoSelectState.selectedSlug = null
+      autoSelectState.forUserId = null
+      autoSelectState.timestamp = 0
+
+      // Clear workspace slug from URL to prevent accessing old user's workspace
+      if (workspaceSlug) {
+        setWorkspaceSlug(null)
+      }
+    }
+
+    prevUserIdRef.current = userId
+  }, [userId, workspaceSlug, setWorkspaceSlug])
+
   // Reload workspaces from API when user changes or refetch is triggered
   useEffect(() => {
     const loadWorkspaces = async () => {
@@ -293,6 +321,14 @@ export function useWorkspaceData(): WorkspaceDataState {
         return
       }
 
+      // Guard: Skip if workspace is not in current user's workspaces list
+      // This prevents access denied errors during user transition
+      if (workspaces.length > 0 && !workspaces.some((ws: any) => ws.id === currentWorkspace.id)) {
+        console.log("[useWorkspaceData] Skipping project load - workspace not in user's list")
+        setIsLoadingProjects(false)
+        return
+      }
+
       try {
         setIsLoadingProjects(true)
         // Use the persistence layer (APIPersistence -> v2 API routes)
@@ -305,7 +341,7 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
 
     loadProjects()
-  }, [currentWorkspace?.id, studioCore, projectsRefetchCounter])
+  }, [currentWorkspace?.id, studioCore, projectsRefetchCounter, workspaces])
 
   // Function to trigger a refetch of projects
   const refetchProjects = useCallback(() => {
@@ -316,6 +352,14 @@ export function useWorkspaceData(): WorkspaceDataState {
   useEffect(() => {
     const loadFolders = async () => {
       if (!currentWorkspace?.id || !studioCore?.folderCollection) {
+        setIsLoadingFolders(false)
+        return
+      }
+
+      // Guard: Skip if workspace is not in current user's workspaces list
+      // This prevents access denied errors during user transition
+      if (workspaces.length > 0 && !workspaces.some((ws: any) => ws.id === currentWorkspace.id)) {
+        console.log("[useWorkspaceData] Skipping folder load - workspace not in user's list")
         setIsLoadingFolders(false)
         return
       }
@@ -332,7 +376,7 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
 
     loadFolders()
-  }, [currentWorkspace?.id, studioCore, foldersRefetchCounter])
+  }, [currentWorkspace?.id, studioCore, foldersRefetchCounter, workspaces])
 
   // Function to trigger a refetch of folders
   const refetchFolders = useCallback(() => {

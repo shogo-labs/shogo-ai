@@ -274,8 +274,33 @@ export const ProjectLayout = observer(function ProjectLayout() {
       }))
     : []
 
+  // Helper to get/set last used chat session from localStorage (fallback for URL navigation loss)
+  const getLastSessionFromStorage = useCallback((pid: string): string | null => {
+    try {
+      return localStorage.getItem(`shogo:lastChatSession:${pid}`)
+    } catch {
+      return null
+    }
+  }, [])
+
+  const setLastSessionInStorage = useCallback((pid: string, sessionId: string) => {
+    try {
+      localStorage.setItem(`shogo:lastChatSession:${pid}`, sessionId)
+    } catch {
+      // Ignore storage errors
+    }
+  }, [])
+
+  // Persist current chat session to localStorage when it changes
+  useEffect(() => {
+    if (projectId && chatSessionId) {
+      setLastSessionInStorage(projectId, chatSessionId)
+    }
+  }, [projectId, chatSessionId, setLastSessionInStorage])
+
   // Auto-select last chat session or create one if none exists
   // This runs when the project loads and there's no session in the URL
+  // Priority: URL param > transition state > localStorage > most recent > create new
   useEffect(() => {
     if (!projectId || !studioChat?.chatSessionCollection || chatSessionId) {
       // Already have a session selected, or not ready yet
@@ -298,11 +323,34 @@ export const ProjectLayout = observer(function ProjectLayout() {
         if (cancelled) return
 
         if (existingSessions.length > 0) {
-          // Sort by lastActiveAt descending and select the most recent
+          // Priority 1: Check transition state for session ID (from homepage navigation)
+          const transitionSessionId = transitionState?.chatSessionId
+          if (transitionSessionId) {
+            const transitionSession = existingSessions.find((s: any) => s.id === transitionSessionId)
+            if (transitionSession) {
+              console.log("[ProjectLayout] Restoring session from transition state:", transitionSessionId)
+              await setChatSessionId(transitionSessionId)
+              return
+            }
+          }
+
+          // Priority 2: Check localStorage for last used session
+          const lastSessionId = getLastSessionFromStorage(projectId)
+          if (lastSessionId) {
+            const lastSession = existingSessions.find((s: any) => s.id === lastSessionId)
+            if (lastSession) {
+              console.log("[ProjectLayout] Restoring session from localStorage:", lastSessionId)
+              await setChatSessionId(lastSessionId)
+              return
+            }
+          }
+
+          // Priority 3: Sort by lastActiveAt descending and select the most recent
           const sortedSessions = [...existingSessions].sort(
             (a: any, b: any) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0)
           )
           const mostRecent = sortedSessions[0]
+          console.log("[ProjectLayout] Selecting most recent session:", mostRecent.id)
           await setChatSessionId(mostRecent.id)
         } else {
           // No existing sessions - create a new one
@@ -311,6 +359,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
             contextType: "project",
             contextId: projectId,
           })
+          console.log("[ProjectLayout] Created new session:", newSession.id)
           await setChatSessionId(newSession.id)
         }
       } catch (err: any) {
@@ -333,7 +382,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
     return () => {
       cancelled = true
     }
-  }, [projectId, studioChat, chatSessionId, setChatSessionId])
+  }, [projectId, studioChat, chatSessionId, setChatSessionId, transitionState?.chatSessionId, getLastSessionFromStorage])
 
   // Session handlers
   const handleSelectSession = useCallback(

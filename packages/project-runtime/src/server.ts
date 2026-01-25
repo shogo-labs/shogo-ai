@@ -1096,7 +1096,8 @@ app.post('/preview/restart', async (c) => {
       nitroProcess = null
     }
     if (viteDevProcess) {
-      console.log('[project-runtime] Stopping existing Vite dev server...')
+      // Note: Killing vite will cause exit code 143 (SIGTERM) - this is expected
+      console.log('[project-runtime] Stopping existing Vite dev server (exit code 143 is expected)...')
       viteDevProcess.kill()
       viteDevProcess = null
       isDevMode = false
@@ -1411,7 +1412,8 @@ app.post('/preview/dev', async (c) => {
       nitroProcess = null
     }
     if (viteDevProcess) {
-      console.log('[project-runtime] Stopping existing Vite dev server...')
+      // Note: Killing vite will cause exit code 143 (SIGTERM) - this is expected
+      console.log('[project-runtime] Stopping existing Vite dev server (exit code 143 is expected)...')
       viteDevProcess.kill()
       viteDevProcess = null
     }
@@ -1594,10 +1596,12 @@ app.post('/preview/dev', async (c) => {
 
 /**
  * Stop dev mode and switch back to production build mode
+ * Note: When the vite process is killed, it may log "exited with code 143" (SIGTERM).
+ * This is expected behavior during restart/stop and not an error.
  */
 app.post('/preview/dev/stop', async (c) => {
   if (viteDevProcess) {
-    console.log('[project-runtime] Stopping Vite dev server...')
+    console.log('[project-runtime] Stopping Vite dev server (SIGTERM exit is expected)...')
     viteDevProcess.kill()
     viteDevProcess = null
     isDevMode = false
