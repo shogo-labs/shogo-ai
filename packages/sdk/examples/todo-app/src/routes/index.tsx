@@ -10,6 +10,7 @@
 import { createFileRoute, useRouter } from '@tanstack/react-router'
 import { useState, useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
+import { runInAction } from 'mobx'
 import { useStores, type TodoType, type UserType } from '../stores'
 import { getCurrentUser, createUser } from '../utils/user'
 import { getTodoList } from '../generated/server-functions'
@@ -27,8 +28,11 @@ export const Route = createFileRoute('/')({
 })
 
 function TodoApp() {
-  const { user, todos: initialTodos } = Route.useLoaderData()
+  const { user, todos } = Route.useLoaderData()
   const router = useRouter()
+  
+  // Safety fallback for initialTodos - ensure it's always an array
+  const initialTodos = Array.isArray(todos) ? todos : []
 
   if (!user) {
     return <SetupForm onComplete={() => router.invalidate()} />
@@ -123,10 +127,12 @@ const TodoList = observer(function TodoList({
 
   // Initialize store with server data on first render
   useEffect(() => {
-    if (!initialized) {
-      for (const todo of initialTodos) {
-        store.todo.items.set(todo.id, todo)
-      }
+    if (!initialized && initialTodos.length > 0) {
+      runInAction(() => {
+        for (const todo of initialTodos) {
+          store.todo.items.set(todo.id, todo)
+        }
+      })
       setInitialized(true)
     }
   }, [initialized, initialTodos, store.todo])
