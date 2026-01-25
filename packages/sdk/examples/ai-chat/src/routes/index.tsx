@@ -16,16 +16,24 @@ export const Route = createFileRoute('/')({
     if (!context.user) {
       return { chats: [] as ChatType[] }
     }
-    const chats = await getChats({ data: { userId: context.user.id } })
-    return { chats }
+    try {
+      const chats = await getChats({ data: { userId: context.user.id } })
+      return { chats: chats || [] }
+    } catch (err) {
+      console.error('Failed to load chats:', err)
+      return { chats: [] as ChatType[] }
+    }
   },
   component: AIChat,
 })
 
 function AIChat() {
   const { user } = Route.useRouteContext()
-  const { chats: initialChats } = Route.useLoaderData()
+  const loaderData = Route.useLoaderData()
   const router = useRouter()
+  
+  // Ensure chats is always an array
+  const initialChats = Array.isArray(loaderData?.chats) ? loaderData.chats : []
 
   if (!user) {
     return <AuthPage onComplete={() => router.invalidate()} />
@@ -134,7 +142,8 @@ const Icons = {
 
 function ChatApp({ user, initialChats }: { user: UserType; initialChats: ChatType[] }) {
   const router = useRouter()
-  const [chats, setChats] = useState(initialChats)
+  // Ensure initialChats is always an array to prevent map errors
+  const [chats, setChats] = useState(Array.isArray(initialChats) ? initialChats : [])
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [messages, setMessages] = useState<MessageType[]>([])
   const [input, setInput] = useState('')
@@ -523,7 +532,10 @@ function Message({ message, isLoading }: { message: MessageType; isLoading?: boo
 }
 
 function MessageContent({ content }: { content: string }) {
-  // Handle code blocks
+  // Handle code blocks - guard against undefined content
+  if (!content) {
+    return null
+  }
   const parts = content.split(/(```[\s\S]*?```)/g)
   
   return (
