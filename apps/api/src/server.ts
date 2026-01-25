@@ -1921,6 +1921,31 @@ app.post('/api/projects/:projectId/database/start', async (c) => {
       console.log(`[DatabaseProxy] Proxying start to ${targetUrl}`)
       
       const response = await fetch(targetUrl, { method: 'POST' })
+      
+      // Handle non-OK responses with proper JSON errors
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // If response is JSON, pass it through
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        // Non-JSON error (like Knative 503) - return proper JSON
+        const errorCode = response.status === 503 ? 'pod_starting' 
+          : response.status === 502 ? 'pod_unavailable' : 'upstream_error'
+        
+        return c.json({
+          error: { code: errorCode, message: `Database service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
@@ -1963,6 +1988,31 @@ app.post('/api/projects/:projectId/database/stop', async (c) => {
       console.log(`[DatabaseProxy] Proxying stop to ${targetUrl}`)
       
       const response = await fetch(targetUrl, { method: 'POST' })
+      
+      // Handle non-OK responses with proper JSON errors
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // If response is JSON, pass it through
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        // Non-JSON error (like Knative 503) - return proper JSON
+        const errorCode = response.status === 503 ? 'pod_starting' 
+          : response.status === 502 ? 'pod_unavailable' : 'upstream_error'
+        
+        return c.json({
+          error: { code: errorCode, message: `Database service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
@@ -2005,6 +2055,32 @@ app.get('/api/projects/:projectId/database/status', async (c) => {
       console.log(`[DatabaseProxy] Proxying status to ${targetUrl}`)
       
       const response = await fetch(targetUrl)
+      
+      // Handle non-OK responses with proper JSON errors
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // If response is JSON, pass it through
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        // Non-JSON error (like Knative 503) - return proper JSON
+        const errorCode = response.status === 503 ? 'pod_starting' 
+          : response.status === 502 ? 'pod_unavailable' : 'upstream_error'
+        
+        return c.json({
+          status: 'error',
+          error: { code: errorCode, message: `Database service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
@@ -2047,6 +2123,61 @@ app.get('/api/projects/:projectId/database/url', async (c) => {
       console.log(`[DatabaseProxy] Proxying URL request to ${targetUrl}`)
       
       const response = await fetch(targetUrl)
+      
+      // Handle non-OK responses before trying to parse JSON
+      // Knative returns 503 with HTML/text when pod is starting
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // Try to parse JSON error response from project-runtime
+        if (contentType.includes('application/json')) {
+          try {
+            const errorData = await response.json()
+            return c.json(errorData, response.status as any)
+          } catch {
+            // Fall through to text handling
+          }
+        }
+        
+        // Non-JSON error response (like Knative 503)
+        let errorMessage = `Upstream returned ${response.status}`
+        try {
+          const errorText = await response.text()
+          // Truncate long HTML error pages
+          errorMessage = errorText.slice(0, 200) || errorMessage
+        } catch {
+          // Ignore text read errors
+        }
+        
+        // Map common status codes to appropriate error codes
+        const errorCode = response.status === 503 ? 'pod_starting' 
+          : response.status === 502 ? 'pod_unavailable'
+          : response.status === 504 ? 'pod_timeout'
+          : 'upstream_error'
+        
+        // Only log non-503 errors (503 is expected during pod startup)
+        if (response.status !== 503) {
+          console.error(`[DatabaseProxy] Upstream error ${response.status}: ${errorMessage}`)
+        }
+        
+        return c.json({
+          status: 'error',
+          url: null,
+          error: { code: errorCode, message: errorMessage }
+        }, response.status as any)
+      }
+      
+      // Verify response is JSON before parsing
+      const contentType = response.headers.get('content-type') || ''
+      if (!contentType.includes('application/json')) {
+        console.error(`[DatabaseProxy] Unexpected content-type: ${contentType}`)
+        return c.json({
+          status: 'error',
+          url: null,
+          error: { code: 'invalid_response', message: `Unexpected content-type: ${contentType}` }
+        }, 502)
+      }
+      
       const data = await response.json()
       
       // Transform 'proxy' URL to actual proxy path through API
@@ -2058,6 +2189,8 @@ app.get('/api/projects/:projectId/database/url', async (c) => {
     } catch (error: any) {
       console.error('[DatabaseProxy] Error:', error)
       return c.json({
+        status: 'error',
+        url: null,
         error: { code: 'proxy_error', message: error.message || 'Failed to get database URL' }
       }, 502)
     }
