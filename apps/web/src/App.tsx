@@ -13,6 +13,7 @@ import { StarredProjectsPage } from './pages/StarredProjectsPage'
 import { SharedWithMePage } from './pages/SharedWithMePage'
 import { TemplatesPage } from './pages/TemplatesPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { MonacoTestPage } from './pages/MonacoTestPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { DomainProvider, type EagerCollectionsConfig } from './contexts/DomainProvider'
@@ -139,6 +140,9 @@ function AppWithSession() {
           <WavesmithMetaStoreProvider>
             <AuthProvider authService={betterAuthService}>
               <Routes>
+                  {/* Monaco Test Page - accessible without auth for debugging */}
+                  <Route path="/monaco-test" element={<MonacoTestPage />} />
+
                   {/* Project view route - full screen without sidebar */}
                   <Route path="/projects/:projectId" element={
                     <AuthGate>
