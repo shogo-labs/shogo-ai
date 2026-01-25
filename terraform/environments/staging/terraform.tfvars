@@ -36,6 +36,10 @@ ssl_certificate_domain = "*.shogo.ai"  # ACM certificate for platform (Amazon-is
 publish_domain                 = "shogo.one"
 ssl_certificate_domain_publish = "*.shogo.one"  # ACM certificate for published apps
 
+# Preview Subdomains (*.staging.shogo.ai)
+# Project preview iframes served at preview--{id}.staging.shogo.ai
+ssl_certificate_domain_preview = "*.staging.shogo.ai"  # ACM certificate for preview subdomains
+
 # Application Secrets
 better_auth_secret = "shogo-staging-secret-key-must-be-at-least-32-characters-long"
 

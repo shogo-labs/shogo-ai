@@ -35,6 +35,7 @@ import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
 import { existsSync, readdirSync, readFileSync, writeFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
 import { initializeS3Sync, type S3Sync } from './s3-sync'
 import { initializePostgresBackup, type PostgresBackup } from './postgres-backup'
+import { verifyPreviewToken, type PreviewTokenPayload } from './preview-token'
 import { fileURLToPath } from 'url'
 
 // Get monorepo root for template access
@@ -1725,6 +1726,271 @@ app.get('/preview/*', async (c) => {
 // Handle base /preview path (redirect to /preview/)
 app.get('/preview', (c) => {
   return c.redirect('/preview/')
+})
+
+// =============================================================================
+// Subdomain Preview Routes - Direct access via preview--{projectId}--{env}.{domain}
+// =============================================================================
+// When accessed via subdomain, serve the app at root (/) instead of /preview/
+// This eliminates the need for path rewriting and makes dynamic imports work correctly.
+// Authentication is via __preview_token query parameter (JWT).
+
+/**
+ * Validate preview token middleware for subdomain access.
+ * Called when __preview_token is present in query string.
+ */
+async function validateSubdomainAccess(token: string): Promise<PreviewTokenPayload | null> {
+  if (!token) {
+    return null
+  }
+  
+  const payload = await verifyPreviewToken(token)
+  if (!payload) {
+    return null
+  }
+  
+  // Verify the token is for this project
+  if (payload.projectId !== PROJECT_ID) {
+    console.log(`[project-runtime] Token project ID mismatch: expected ${PROJECT_ID}, got ${payload.projectId}`)
+    return null
+  }
+  
+  return payload
+}
+
+/**
+ * Helper to check if request is from subdomain access (has __preview_token)
+ */
+function isSubdomainAccess(c: any): boolean {
+  return !!c.req.query('__preview_token')
+}
+
+/**
+ * Root path handler for subdomain access.
+ * Serves the app directly without any path rewriting.
+ */
+app.get('/*', async (c) => {
+  // Only handle subdomain access (with token) at root
+  // Other root paths are handled by specific routes above
+  const token = c.req.query('__preview_token')
+  
+  // If no token and this is not a known API path, this might be a subdomain access
+  // Check Host header to determine if this is subdomain access
+  const host = c.req.header('host') || ''
+  const isPreviewSubdomain = host.startsWith('preview--')
+  
+  // If not subdomain access and no token, let other routes handle it
+  // This is a catch-all so we need to be careful not to intercept other routes
+  const path = c.req.path
+  
+  // Skip if this is an API/internal route
+  if (path.startsWith('/health') || 
+      path.startsWith('/ready') || 
+      path.startsWith('/chat') ||
+      path.startsWith('/files') ||
+      path.startsWith('/preview') ||
+      path.startsWith('/runtime') ||
+      path.startsWith('/build-status')) {
+    return c.notFound()
+  }
+  
+  // Validate token if present (subdomain access requires valid token)
+  if (token) {
+    const payload = await validateSubdomainAccess(token)
+    if (!payload) {
+      return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired preview token' } }, 401)
+    }
+  } else if (!isPreviewSubdomain) {
+    // No token and not subdomain - this shouldn't reach here for valid requests
+    // Let it fall through to notFound
+    return c.notFound()
+  }
+  
+  // === Subdomain access: serve app directly at root ===
+  const relativePath = c.req.path || '/'
+  
+  // In fast start mode, show loading page if build not ready
+  if (FAST_START_MODE) {
+    const buildStatus = getBuildStatus()
+    if (!buildStatus.ready) {
+      return c.html(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loading Preview...</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+    .container { text-align: center; padding: 2rem; }
+    .spinner {
+      width: 50px; height: 50px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 1s ease-in-out infinite;
+      margin: 0 auto 1.5rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p { opacity: 0.8; font-size: 0.9rem; }
+    .status { margin-top: 1rem; padding: 0.5rem 1rem; background: rgba(255,255,255,0.2); border-radius: 20px; font-size: 0.8rem; }
+  </style>
+  <script>
+    setInterval(async () => {
+      try {
+        const res = await fetch('/build-status');
+        const data = await res.json();
+        if (data.ready) location.reload();
+      } catch {}
+    }, 2000);
+  </script>
+</head>
+<body>
+  <div class="container">
+    <div class="spinner"></div>
+    <h1>Building Your App</h1>
+    <p>Installing dependencies and compiling...</p>
+    <div class="status">${buildStatus.status}</div>
+  </div>
+</body>
+</html>
+      `, 200)
+    }
+  }
+  
+  // TanStack Start: proxy to the running server
+  if (isTanStackStart) {
+    const targetUrl = `http://localhost:${NITRO_SERVER_PORT}${relativePath}`
+    console.log(`[project-runtime] Subdomain: proxying to TanStack at ${targetUrl}`)
+    
+    try {
+      const response = await fetch(targetUrl, {
+        method: c.req.method,
+        headers: {
+          'Host': `localhost:${NITRO_SERVER_PORT}`,
+          'Accept': c.req.header('Accept') || '*/*',
+          'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+        },
+      })
+      
+      const contentType = response.headers.get('Content-Type') || 'text/html'
+      const body = await response.arrayBuffer()
+      
+      // No rewriting needed for subdomain access - serve directly!
+      return new Response(body, {
+        status: response.status,
+        headers: {
+          'Content-Type': contentType,
+          'Cache-Control': 'no-cache',
+          'Access-Control-Allow-Origin': '*',
+        },
+      })
+    } catch (error: any) {
+      console.error('[project-runtime] Subdomain TanStack proxy error:', error)
+      return c.html(`
+        <html>
+          <body style="font-family: system-ui; padding: 2rem;">
+            <h1>Preview Loading...</h1>
+            <p>The server is starting up. Please wait a moment and refresh.</p>
+            <script>setTimeout(() => location.reload(), 3000)</script>
+          </body>
+        </html>
+      `, 503)
+    }
+  }
+  
+  // Plain Vite: serve static files from dist/
+  let filePath = relativePath
+  if (filePath.startsWith('/')) {
+    filePath = filePath.substring(1)
+  }
+  if (filePath === '' || filePath === '/') {
+    filePath = 'index.html'
+  }
+  
+  const absolutePath = join(DIST_DIR, filePath)
+  console.log(`[project-runtime] Subdomain: serving static ${filePath} from ${absolutePath}`)
+  
+  try {
+    // Security: prevent path traversal
+    if (!absolutePath.startsWith(DIST_DIR)) {
+      return c.text('Forbidden', 403)
+    }
+    
+    // Check if file exists
+    if (!existsSync(absolutePath)) {
+      // For SPA routing: if file not found and not an asset, serve index.html
+      const ext = filePath.substring(filePath.lastIndexOf('.'))
+      if (!MIME_TYPES[ext.toLowerCase()]) {
+        const indexPath = join(DIST_DIR, 'index.html')
+        if (existsSync(indexPath)) {
+          const content = readFileSync(indexPath)
+          return new Response(content, {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/html',
+              'Content-Length': String(content.length),
+              'Cache-Control': 'no-cache',
+              'Access-Control-Allow-Origin': '*',
+            },
+          })
+        }
+      }
+      return c.text('Not Found', 404)
+    }
+    
+    // Check if it's a directory
+    const stats = statSync(absolutePath)
+    if (stats.isDirectory()) {
+      const indexPath = join(absolutePath, 'index.html')
+      if (existsSync(indexPath)) {
+        const content = readFileSync(indexPath)
+        return new Response(content, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/html',
+            'Content-Length': String(content.length),
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*',
+          },
+        })
+      }
+      return c.text('Not Found', 404)
+    }
+    
+    // Read and serve the file (no rewriting needed for subdomain access!)
+    const content = readFileSync(absolutePath)
+    const mimeType = getMimeType(absolutePath)
+    
+    // Set cache headers (long cache for hashed assets)
+    const isHashedAsset = /\.[a-f0-9]{8,}\.(js|css|woff2?|ttf|png|jpg|svg)$/i.test(filePath)
+    const cacheControl = isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache'
+    
+    return new Response(content, {
+      status: 200,
+      headers: {
+        'Content-Type': mimeType,
+        'Content-Length': String(content.length),
+        'Cache-Control': cacheControl,
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Subdomain static serve error:', error)
+    return c.json({
+      error: { code: 'static_serve_error', message: error.message || 'Failed to serve file' }
+    }, 500)
+  }
 })
 
 // =============================================================================

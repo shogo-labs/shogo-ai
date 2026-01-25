@@ -132,6 +132,12 @@ variable "ssl_certificate_domain_publish" {
   default     = ""
 }
 
+variable "ssl_certificate_domain_preview" {
+  description = "Domain name to look up ACM certificate for preview subdomains (e.g., *.staging.shogo.ai)"
+  type        = string
+  default     = ""
+}
+
 # -----------------------------------------------------------------------------
 # Application Configuration
 # -----------------------------------------------------------------------------

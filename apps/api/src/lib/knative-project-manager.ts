@@ -28,6 +28,16 @@ const PROJECT_RUNTIME_IMAGE = process.env.PROJECT_RUNTIME_IMAGE || "ghcr.io/shog
 const KNATIVE_GROUP = "serving.knative.dev"
 const KNATIVE_VERSION = "v1"
 
+// Preview subdomain configuration
+// Format varies by environment:
+//   Staging:    preview--{projectId}.staging.shogo.ai  (requires *.staging.shogo.ai cert)
+//   Production: preview--{projectId}.shogo.ai         (uses existing *.shogo.ai cert)
+// 
+// This keeps subdomains clean and allows different certs per environment.
+const PREVIEW_BASE_DOMAIN = process.env.PREVIEW_BASE_DOMAIN || "shogo.ai"
+const PREVIEW_ENVIRONMENT = process.env.PREVIEW_ENVIRONMENT || process.env.ENVIRONMENT || "staging"
+const IS_PRODUCTION = PREVIEW_ENVIRONMENT === "production" || PREVIEW_ENVIRONMENT === "prod"
+
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
@@ -96,6 +106,30 @@ export interface ProjectPodStatus {
   createdAt?: string
   /** Time when the service was last updated */
   updatedAt?: string
+  /** Preview subdomain URL (when DomainMapping exists) */
+  previewUrl?: string
+}
+
+/**
+ * Build the preview subdomain for a project.
+ * Format varies by environment:
+ *   Staging:    preview--{projectId}.staging.shogo.ai
+ *   Production: preview--{projectId}.shogo.ai
+ */
+export function getPreviewSubdomain(projectId: string): string {
+  if (IS_PRODUCTION) {
+    // Production: preview--{id}.shogo.ai
+    return `preview--${projectId}.${PREVIEW_BASE_DOMAIN}`
+  }
+  // Non-production (staging, dev, etc.): preview--{id}.{env}.shogo.ai
+  return `preview--${projectId}.${PREVIEW_ENVIRONMENT}.${PREVIEW_BASE_DOMAIN}`
+}
+
+/**
+ * Get the full preview URL for a project (with https://)
+ */
+export function getPreviewUrl(projectId: string): string {
+  return `https://${getPreviewSubdomain(projectId)}`
 }
 
 export interface ProjectPodInfo {
@@ -238,6 +272,84 @@ export class KnativeProjectManager {
   }
 
   /**
+   * Create a DomainMapping for the project's preview subdomain.
+   * Maps preview--{projectId}--{env}.{domain} to the Knative Service.
+   */
+  async createPreviewDomainMapping(projectId: string): Promise<void> {
+    const domainName = getPreviewSubdomain(projectId)
+    const serviceName = `project-${projectId}`
+    
+    console.log(`[KnativeProjectManager] Creating DomainMapping: ${domainName} -> ${serviceName}`)
+    
+    const api = getCustomApi()
+    
+    const domainMapping = {
+      apiVersion: `${KNATIVE_GROUP}/v1beta1`,
+      kind: "DomainMapping",
+      metadata: {
+        name: domainName,
+        namespace: this.namespace,
+        labels: {
+          "app.kubernetes.io/part-of": "shogo",
+          "shogo.io/project": projectId,
+          "shogo.io/component": "preview-domain",
+        },
+      },
+      spec: {
+        ref: {
+          name: serviceName,
+          kind: "Service",
+          apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
+        },
+      },
+    }
+    
+    try {
+      await api.createNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: "v1beta1",
+        namespace: this.namespace,
+        plural: "domainmappings",
+        body: domainMapping,
+      })
+      console.log(`[KnativeProjectManager] Created DomainMapping: ${domainName}`)
+    } catch (error: any) {
+      // Handle race condition: if DomainMapping already exists, that's fine
+      const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code
+      if (statusCode === 409 || error?.message?.includes('already exists') || error?.body?.reason === 'AlreadyExists') {
+        console.log(`[KnativeProjectManager] DomainMapping ${domainName} already exists`)
+      } else {
+        console.error(`[KnativeProjectManager] Failed to create DomainMapping ${domainName}:`, error)
+        throw error
+      }
+    }
+  }
+
+  /**
+   * Delete a project's preview DomainMapping.
+   */
+  async deletePreviewDomainMapping(projectId: string): Promise<void> {
+    const domainName = getPreviewSubdomain(projectId)
+    const api = getCustomApi()
+    
+    try {
+      await api.deleteNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: "v1beta1",
+        namespace: this.namespace,
+        plural: "domainmappings",
+        name: domainName,
+      })
+      console.log(`[KnativeProjectManager] Deleted DomainMapping: ${domainName}`)
+    } catch (error: any) {
+      if (error?.code !== 404 && error?.response?.statusCode !== 404) {
+        console.error(`[KnativeProjectManager] Failed to delete DomainMapping ${domainName}:`, error)
+        throw error
+      }
+    }
+  }
+
+  /**
    * List all project pods in the namespace.
    */
   async listProjects(): Promise<ProjectPodInfo[]> {
@@ -334,11 +446,19 @@ export class KnativeProjectManager {
       }
     }
     
+    // Create DomainMapping for preview subdomain (non-blocking, log errors but don't fail)
+    try {
+      await this.createPreviewDomainMapping(projectId)
+    } catch (error: any) {
+      console.error(`[KnativeProjectManager] Failed to create preview DomainMapping for ${projectId}:`, error.message)
+      // Don't fail project creation - DomainMapping is a nice-to-have
+    }
+    
     return this.getProjectPodUrl(projectId)
   }
 
   /**
-   * Delete a project's Knative Service and PVCs.
+   * Delete a project's Knative Service, DomainMapping, and PVCs.
    * Removes both the project code PVC and PostgreSQL data PVC.
    */
   async deleteProject(projectId: string): Promise<void> {
@@ -346,6 +466,14 @@ export class KnativeProjectManager {
 
     const api = getCustomApi()
     const coreApi = getCoreApi()
+
+    // Delete preview DomainMapping first
+    try {
+      await this.deletePreviewDomainMapping(projectId)
+    } catch (error: any) {
+      console.error(`[KnativeProjectManager] Failed to delete preview DomainMapping for ${projectId}:`, error.message)
+      // Continue with service deletion even if DomainMapping fails
+    }
 
     // Delete Knative Service
     try {
@@ -569,6 +697,13 @@ export class KnativeProjectManager {
         name: "ANTHROPIC_API_KEY",
         valueFrom: {
           secretKeyRef: { name: "anthropic-credentials", key: "api-key" },
+        },
+      },
+      // Auth secret for validating preview JWT tokens
+      {
+        name: "BETTER_AUTH_SECRET",
+        valueFrom: {
+          secretKeyRef: { name: "api-secrets", key: "BETTER_AUTH_SECRET" },
         },
       },
     ]

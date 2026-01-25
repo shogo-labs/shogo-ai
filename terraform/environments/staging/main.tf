@@ -118,6 +118,16 @@ data "aws_acm_certificate" "ssl_publish" {
   types       = ["AMAZON_ISSUED"]
 }
 
+# Tertiary certificate for preview subdomains (*.staging.shogo.ai)
+# Required for subdomain-based preview URLs: preview--{projectId}.staging.shogo.ai
+data "aws_acm_certificate" "ssl_preview" {
+  count       = var.ssl_certificate_domain_preview != "" ? 1 : 0
+  domain      = var.ssl_certificate_domain_preview
+  statuses    = ["ISSUED"]
+  most_recent = true
+  types       = ["AMAZON_ISSUED"]
+}
+
 # -----------------------------------------------------------------------------
 # VPC Module
 # -----------------------------------------------------------------------------
@@ -444,6 +454,8 @@ module "knative" {
   ssl_certificate_arn = var.ssl_certificate_domain != "" ? data.aws_acm_certificate.ssl[0].arn : ""
   # Secondary: *.shogo.one for published apps (SNI routing)
   ssl_certificate_arn_publish = var.ssl_certificate_domain_publish != "" ? data.aws_acm_certificate.ssl_publish[0].arn : ""
+  # Tertiary: *.staging.shogo.ai for preview subdomains (SNI routing)
+  ssl_certificate_arn_preview = var.ssl_certificate_domain_preview != "" ? data.aws_acm_certificate.ssl_preview[0].arn : ""
 
   # ECR registry - skip tag resolution (avoids auth issues with Knative controller)
   ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"

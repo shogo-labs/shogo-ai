@@ -50,6 +50,12 @@ variable "ssl_certificate_arn_publish" {
   default     = ""
 }
 
+variable "ssl_certificate_arn_preview" {
+  description = "Tertiary ACM certificate ARN for preview subdomains (e.g., *.staging.shogo.ai)"
+  type        = string
+  default     = ""
+}
+
 # -----------------------------------------------------------------------------
 # Knative Serving Installation via kubectl
 # -----------------------------------------------------------------------------
@@ -102,8 +108,9 @@ resource "null_resource" "kourier" {
 # Uses AWS Load Balancer Controller for ALB with SNI multi-certificate support
 # -----------------------------------------------------------------------------
 locals {
-  # Combine certificate ARNs if both are provided (comma-separated for ALB SNI)
-  ssl_certs = compact([var.ssl_certificate_arn, var.ssl_certificate_arn_publish])
+  # Combine certificate ARNs if provided (comma-separated for ALB SNI)
+  # Supports: primary (*.shogo.ai), publish (*.shogo.one), preview (*.staging.shogo.ai)
+  ssl_certs = compact([var.ssl_certificate_arn, var.ssl_certificate_arn_publish, var.ssl_certificate_arn_preview])
   ssl_cert_annotation = join(",", local.ssl_certs)
   has_ssl = length(local.ssl_certs) > 0
 }

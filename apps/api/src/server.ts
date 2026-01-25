@@ -1213,32 +1213,53 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
 // Query params:
 //   ?wait=true  - Wait for pod to be ready (default: true for backwards compatibility)
 //   ?wait=false - Return immediately with status, don't wait
+//   ?mode=subdomain - Return subdomain-based preview URL (new, recommended)
+//   ?mode=proxy - Return proxy-based preview URL (legacy, default for backwards compat)
 app.get('/api/projects/:projectId/sandbox/url', async (c) => {
   const projectId = c.req.param('projectId')
   const shouldWait = c.req.query('wait') !== 'false' // Default to waiting for backwards compat
+  const previewMode = c.req.query('mode') || 'subdomain' // Default to subdomain mode
   
   if (isKubernetes()) {
-    // In Kubernetes: Return a proxy URL that goes through the API
-    // The preview proxy endpoint will forward requests to the project runtime pod
-    const { getProjectPodUrl, getKnativeProjectManager } = await import('./lib/knative-project-manager')
+    // In Kubernetes: Return preview URL based on mode
+    const { getProjectPodUrl, getKnativeProjectManager, getPreviewUrl } = await import('./lib/knative-project-manager')
+    const { generatePreviewToken } = await import('./lib/preview-token')
     
     // First check current status
     const manager = getKnativeProjectManager()
     const status = await manager.getStatus(projectId)
     
-    // Build the proxy URL (same regardless of pod status)
+    // Build the preview URL based on mode
     const host = c.req.header('x-original-host') || c.req.header('host') || 'localhost'
     const protocol = 'https'
-    const proxyUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
+    
+    // Generate preview token (valid for 1 hour)
+    const previewToken = await generatePreviewToken(projectId)
+    
+    let previewUrl: string
+    let legacyProxyUrl: string
+    
+    if (previewMode === 'subdomain') {
+      // New subdomain-based preview (recommended)
+      // Format: https://preview--{projectId}--{env}.{domain}/?__preview_token=...
+      previewUrl = `${getPreviewUrl(projectId)}/?__preview_token=${previewToken}`
+      legacyProxyUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
+    } else {
+      // Legacy proxy-based preview (fallback)
+      previewUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
+      legacyProxyUrl = previewUrl
+    }
     
     // If pod is already running, return immediately
     if (status.exists && status.ready) {
       return c.json({
-        url: proxyUrl,
+        url: previewUrl,
+        proxyUrl: legacyProxyUrl, // Backwards compat - legacy proxy URL
         directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
         ready: true,
+        mode: previewMode,
       }, 200)
     }
     
@@ -1254,11 +1275,13 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       }
       
       return c.json({
-        url: proxyUrl,
+        url: previewUrl,
+        proxyUrl: legacyProxyUrl,
         directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: status.exists ? 'starting' : 'creating',
         ready: false,
+        mode: previewMode,
         message: status.exists 
           ? 'Project runtime is starting, please poll /runtime/status until ready'
           : 'Project runtime is being created, please poll /runtime/status until ready',
@@ -1271,18 +1294,22 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       await getProjectPodUrl(projectId)
       
       return c.json({
-        url: proxyUrl,
+        url: previewUrl,
+        proxyUrl: legacyProxyUrl,
         directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
         ready: true,
+        mode: previewMode,
       }, 200)
     } catch (error: any) {
       console.error('[Runtime] Failed to get project pod URL:', error)
       return c.json({
-        url: proxyUrl,
+        url: previewUrl,
+        proxyUrl: legacyProxyUrl,
         status: 'error',
         ready: false,
+        mode: previewMode,
         error: { code: 'pod_unavailable', message: error.message || 'Failed to start project runtime' }
       }, 503)
     }
