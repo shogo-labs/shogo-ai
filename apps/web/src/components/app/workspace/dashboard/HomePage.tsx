@@ -24,6 +24,8 @@ import { ChatPanel } from "@/components/app/chat/ChatPanel"
 import { TemplateCard, formatTemplateName } from "./TemplateCard"
 import { TemplatePreviewModal } from "./TemplatePreviewModal"
 import { useTemplates } from "@/hooks/useTemplates"
+import { useProjectTheme } from "@/hooks/useProjectTheme"
+import { ThemeEditorDialog } from "@/components/app/shared/ThemeEditorDialog"
 
 /** Transition phases for HomePage to Workspace animation */
 export type TransitionPhase = 'idle' | 'commit' | 'dissolve' | 'transform' | 'emerge' | 'settle' | 'complete'
@@ -72,6 +74,15 @@ export const HomePage = observer(function HomePage({
 
   // Templates state - use shared hook with deduplication
   const { templates, isLoading: isLoadingTemplates } = useTemplates()
+  
+  // Theme selection state
+  const { 
+    currentThemeId, 
+    selectTheme, 
+  } = useProjectTheme()
+  
+  // Theme editor dialog state (for "Create new" button)
+  const [isThemeEditorOpen, setIsThemeEditorOpen] = useState(false)
   
   // Template preview modal state
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateMetadata | null>(null)
@@ -215,6 +226,9 @@ export const HomePage = observer(function HomePage({
             onCompactSubmit={onPromptSubmit}
             compactValue={prompt}
             onCompactValueChange={setPrompt}
+            selectedThemeId={currentThemeId}
+            onSelectTheme={selectTheme}
+            onCreateTheme={() => setIsThemeEditorOpen(true)}
           />
         </div>
 
@@ -293,6 +307,17 @@ export const HomePage = observer(function HomePage({
         onOpenChange={setIsModalOpen}
         onUseTemplate={handleUseTemplate}
         isLoading={loadingTemplate !== null}
+      />
+      
+      {/* Theme Editor Dialog */}
+      <ThemeEditorDialog
+        open={isThemeEditorOpen}
+        onOpenChange={setIsThemeEditorOpen}
+        selectedThemeId={currentThemeId}
+        onSaveTheme={(themeId) => {
+          selectTheme(themeId)
+          setIsThemeEditorOpen(false)
+        }}
       />
     </div>
   )

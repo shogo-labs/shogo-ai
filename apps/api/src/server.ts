@@ -1242,7 +1242,9 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     if (previewMode === 'subdomain') {
       // New subdomain-based preview (recommended)
       // Format: https://preview--{projectId}--{env}.{domain}/?__preview_token=...
-      previewUrl = `${getPreviewUrl(projectId)}/?__preview_token=${previewToken}`
+      const subdomainBaseUrl = getPreviewUrl(projectId)
+      console.log(`[sandbox/url] getPreviewUrl(${projectId}) = ${subdomainBaseUrl}`)
+      previewUrl = `${subdomainBaseUrl}/?__preview_token=${previewToken}`
       legacyProxyUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
     } else {
       // Legacy proxy-based preview (fallback)
@@ -1250,8 +1252,14 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       legacyProxyUrl = previewUrl
     }
     
+    console.log(`[sandbox/url] projectId=${projectId} mode=${previewMode} host=${host}`)
+    console.log(`[sandbox/url] previewUrl=${previewUrl}`)
+    console.log(`[sandbox/url] legacyProxyUrl=${legacyProxyUrl}`)
+    console.log(`[sandbox/url] status: exists=${status.exists} ready=${status.ready}`)
+    
     // If pod is already running, return immediately
     if (status.exists && status.ready) {
+      console.log(`[sandbox/url] Returning ready response with url=${previewUrl}`)
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl, // Backwards compat - legacy proxy URL
@@ -1274,6 +1282,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         })
       }
       
+      console.log(`[sandbox/url] Returning non-blocking response (wait=false) with url=${previewUrl}`)
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl,
@@ -1293,6 +1302,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       // This will create the pod if it doesn't exist and wait for it to be ready
       await getProjectPodUrl(projectId)
       
+      console.log(`[sandbox/url] Returning waited response with url=${previewUrl}`)
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl,
@@ -1304,6 +1314,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       }, 200)
     } catch (error: any) {
       console.error('[Runtime] Failed to get project pod URL:', error)
+      console.log(`[sandbox/url] Returning error response with url=${previewUrl}`)
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl,

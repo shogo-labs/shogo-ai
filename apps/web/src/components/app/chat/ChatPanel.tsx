@@ -162,6 +162,12 @@ export interface ChatPanelProps {
   onCompactValueChange?: (value: string) => void
   /** Callback when agent modifies files (Write, Edit, StrReplace tools) - for code panel refresh */
   onFilesChanged?: (paths: string[]) => void
+  /** Currently selected theme ID (for compact mode) */
+  selectedThemeId?: string
+  /** Callback when theme is selected (for compact mode) */
+  onSelectTheme?: (themeId: string) => void
+  /** Callback when "Create new theme" is clicked (for compact mode) */
+  onCreateTheme?: () => void
 }
 
 // ============================================================
@@ -565,6 +571,9 @@ export const ChatPanel = observer(function ChatPanel({
   compactValue,
   onCompactValueChange,
   onFilesChanged,
+  selectedThemeId,
+  onSelectTheme,
+  onCreateTheme,
 }: ChatPanelProps) {
   // Access domains for chat persistence and smart refresh
   const { studioChat, platformFeatures, componentBuilder } = useDomains<{
@@ -1868,6 +1877,9 @@ export const ChatPanel = observer(function ChatPanel({
         value={compactValue}
         onChange={onCompactValueChange}
         className={className}
+        selectedThemeId={selectedThemeId}
+        onSelectTheme={onSelectTheme}
+        onCreateTheme={onCreateTheme}
       />
     )
   }

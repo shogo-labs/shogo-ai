@@ -9,6 +9,11 @@
 export { UserMenu } from "./UserMenu"
 export { ThemeToggle } from "./ThemeToggle"
 export { AdvancedModeToggle } from "./AdvancedModeToggle"
+
+// Theme selection components
+export { ThemeSwatch } from "./ThemeSwatch"
+export { ThemeSelector } from "./ThemeSelector"
+export { ThemeEditorDialog } from "./ThemeEditorDialog"
 export { SplashScreen } from "./SplashScreen"
 export { CommandPalette, useCommandPalette } from "./CommandPalette"
 export { SettingsModal, SettingsModalProvider, useSettingsModal } from "./SettingsModal"

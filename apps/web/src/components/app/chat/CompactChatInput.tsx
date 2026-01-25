@@ -13,7 +13,8 @@ import { useState, useRef, useCallback, forwardRef } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Paperclip, Palette, MessageSquare, Send, Loader2 } from "lucide-react"
+import { Paperclip, MessageSquare, Send, Loader2 } from "lucide-react"
+import { ThemeSelector } from "@/components/app/shared/ThemeSelector"
 
 export interface CompactChatInputProps {
   /** Callback when user submits a prompt */
@@ -30,6 +31,12 @@ export interface CompactChatInputProps {
   value?: string
   /** Callback when textarea value changes */
   onChange?: (value: string) => void
+  /** Currently selected theme ID */
+  selectedThemeId?: string
+  /** Callback when theme is selected */
+  onSelectTheme?: (themeId: string) => void
+  /** Callback when "Create new theme" is clicked */
+  onCreateTheme?: () => void
 }
 
 export const CompactChatInput = forwardRef<HTMLDivElement, CompactChatInputProps>(
@@ -42,6 +49,9 @@ export const CompactChatInput = forwardRef<HTMLDivElement, CompactChatInputProps
       className,
       value: controlledValue,
       onChange: controlledOnChange,
+      selectedThemeId = "default",
+      onSelectTheme,
+      onCreateTheme,
     },
     ref
   ) {
@@ -100,16 +110,13 @@ export const CompactChatInput = forwardRef<HTMLDivElement, CompactChatInputProps
                 <Paperclip className="h-4 w-4" />
                 <span className="hidden sm:inline text-xs">Attach</span>
               </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-8 gap-1.5 text-muted-foreground hover:text-foreground"
+              <ThemeSelector
+                selectedThemeId={selectedThemeId}
+                onSelectTheme={onSelectTheme ?? (() => {})}
+                onCreateNew={onCreateTheme}
                 disabled={disabled || isLoading}
-              >
-                <Palette className="h-4 w-4" />
-                <span className="hidden sm:inline text-xs">Theme</span>
-              </Button>
+                variant="compact"
+              />
             </div>
 
             <div className="flex items-center gap-2">

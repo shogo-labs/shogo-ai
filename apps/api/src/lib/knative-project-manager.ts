@@ -38,6 +38,9 @@ const PREVIEW_BASE_DOMAIN = process.env.PREVIEW_BASE_DOMAIN || "shogo.ai"
 const PREVIEW_ENVIRONMENT = process.env.PREVIEW_ENVIRONMENT || process.env.ENVIRONMENT || "staging"
 const IS_PRODUCTION = PREVIEW_ENVIRONMENT === "production" || PREVIEW_ENVIRONMENT === "prod"
 
+// Log preview configuration on module load
+console.log(`[knative-project-manager] Preview config: PREVIEW_BASE_DOMAIN=${PREVIEW_BASE_DOMAIN}, PREVIEW_ENVIRONMENT=${PREVIEW_ENVIRONMENT}, IS_PRODUCTION=${IS_PRODUCTION}`)
+
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
