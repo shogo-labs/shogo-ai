@@ -953,9 +953,14 @@ app.post('/sync/download', async (c) => {
 const DIST_DIR = join(PROJECT_DIR, 'dist')
 const NITRO_SERVER_PORT = parseInt(process.env.NITRO_SERVER_PORT || '3000', 10)
 
-// Track current preview mode and Nitro server process
+// Track current preview mode and server processes
 let isTanStackStart = process.env.IS_TANSTACK_START === 'true'
 let nitroProcess: ReturnType<typeof Bun.spawn> | null = null
+
+// Dev mode: use vite dev server with HMR instead of production builds
+let isDevMode = false
+let viteDevProcess: ReturnType<typeof Bun.spawn> | null = null
+const VITE_DEV_PORT = parseInt(process.env.VITE_DEV_PORT || '3001', 10)
 
 /**
  * Wait for PostgreSQL to be ready to accept connections.
@@ -1314,6 +1319,233 @@ app.post('/preview/restart', async (c) => {
   }
 })
 
+/**
+ * Start Vite Dev Server with HMR
+ * 
+ * This provides instant updates via Hot Module Replacement instead of rebuilding.
+ * Much faster for iterative development:
+ * - First start: ~1-2s
+ * - Subsequent updates: instant (HMR)
+ * 
+ * Steps:
+ * 1. Kill any existing build/nitro/vite processes
+ * 2. Check if this is a TanStack Start project
+ * 3. Install dependencies if needed
+ * 4. Run prisma generate/push if needed
+ * 5. Start vite dev server
+ */
+app.post('/preview/dev', async (c) => {
+  const startTime = performance.now()
+  const timings: { step: string; durationMs: number }[] = []
+  let lastMark = startTime
+  
+  const markStep = (name: string) => {
+    const now = performance.now()
+    const duration = Math.round(now - lastMark)
+    timings.push({ step: name, durationMs: duration })
+    console.log(`[project-runtime] ⏱️  ${name}: ${duration}ms`)
+    lastMark = now
+  }
+  
+  console.log(`[project-runtime] ⏱️  Starting dev mode for project ${PROJECT_ID}...`)
+  
+  try {
+    // 1. Kill existing processes
+    if (nitroProcess) {
+      console.log('[project-runtime] Stopping existing Nitro server...')
+      nitroProcess.kill()
+      nitroProcess = null
+    }
+    if (viteDevProcess) {
+      console.log('[project-runtime] Stopping existing Vite dev server...')
+      viteDevProcess.kill()
+      viteDevProcess = null
+    }
+    markStep('killExistingServers')
+    
+    // 2. Check if this is a TanStack Start project
+    const packageJsonPath = join(PROJECT_DIR, 'package.json')
+    if (!existsSync(packageJsonPath)) {
+      const totalMs = Math.round(performance.now() - startTime)
+      return c.json({ success: false, error: 'No package.json found', timings: { steps: timings, totalMs } }, 400)
+    }
+    
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
+    const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
+    isTanStackStart = !!deps['@tanstack/react-start']
+    const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
+    markStep('parsePackageJson')
+    
+    console.log(`[project-runtime] Project type: ${isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'}`)
+    
+    // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
+    const nodeModulesPath = join(PROJECT_DIR, 'node_modules')
+    const nodeModulesExists = existsSync(nodeModulesPath)
+    const hasReact = existsSync(join(nodeModulesPath, 'react'))
+    const hasVite = existsSync(join(nodeModulesPath, 'vite'))
+    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite
+    
+    if (nodeModulesComplete) {
+      console.log('[project-runtime] ⚡ node_modules already exists - skipping bun install')
+      markStep('bunInstall (skipped)')
+    } else {
+      console.log('[project-runtime] ⏱️  Installing dependencies...')
+      const installProc = Bun.spawn(['bun', 'install'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      await installProc.exited
+      markStep('bunInstall')
+      
+      if (installProc.exitCode !== 0) {
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ success: false, error: 'Dependency installation failed', timings: { steps: timings, totalMs } }, 500)
+      }
+    }
+    
+    // 4. Run prisma generate and db push if prisma is present
+    if (hasPrisma) {
+      const postgresReady = await waitForPostgresReady(30000)
+      markStep('waitForPostgres')
+      
+      if (!postgresReady) {
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ 
+          success: false, 
+          error: 'PostgreSQL database not ready',
+          timings: { steps: timings, totalMs } 
+        }, 503)
+      }
+      
+      const prismaClientExists = existsSync(join(PROJECT_DIR, 'node_modules', '.prisma', 'client', 'index.js'))
+      
+      if (prismaClientExists) {
+        console.log('[project-runtime] ⚡ Prisma client already exists - skipping prisma generate')
+        markStep('prismaGenerate (skipped)')
+      } else {
+        console.log('[project-runtime] ⏱️  Running prisma generate...')
+        const prismaGenProc = Bun.spawn(['bunx', 'prisma', 'generate'], {
+          cwd: PROJECT_DIR,
+          stdout: 'inherit',
+          stderr: 'inherit',
+        })
+        await prismaGenProc.exited
+        markStep('prismaGenerate')
+        
+        if (prismaGenProc.exitCode !== 0) {
+          const totalMs = Math.round(performance.now() - startTime)
+          return c.json({ 
+            success: false, 
+            error: `prisma generate failed`,
+            timings: { steps: timings, totalMs } 
+          }, 500)
+        }
+      }
+      
+      console.log('[project-runtime] ⏱️  Running prisma db push...')
+      const prismaPushProc = Bun.spawn(['bunx', 'prisma', 'db', 'push', '--accept-data-loss'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+        env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL },
+      })
+      await prismaPushProc.exited
+      markStep('prismaDbPush')
+      
+      if (prismaPushProc.exitCode !== 0) {
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ 
+          success: false, 
+          error: `prisma db push failed`,
+          timings: { steps: timings, totalMs } 
+        }, 500)
+      }
+    }
+    
+    // 5. Start Vite dev server with HMR
+    console.log('[project-runtime] ════════════════════════════════════════')
+    console.log(`[project-runtime] 🚀 STARTING VITE DEV SERVER ON PORT ${VITE_DEV_PORT}...`)
+    console.log('[project-runtime] ════════════════════════════════════════')
+    
+    // Start vite dev server - served directly on subdomain for proper HMR
+    viteDevProcess = Bun.spawn(['bun', '--bun', 'vite', 'dev', '--port', String(VITE_DEV_PORT), '--host', '0.0.0.0'], {
+      cwd: PROJECT_DIR,
+      stdout: 'inherit',
+      stderr: 'inherit',
+      env: {
+        ...process.env,
+        PORT: String(VITE_DEV_PORT),
+      },
+    })
+    
+    // Wait for Vite dev server to be ready
+    let serverReady = false
+    const maxAttempts = 20
+    const baseDelayMs = 200
+    
+    for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+      try {
+        const healthCheck = await fetch(`http://localhost:${VITE_DEV_PORT}/`, {
+          signal: AbortSignal.timeout(500),
+        })
+        if (healthCheck.ok || healthCheck.status < 500) {
+          serverReady = true
+          console.log(`[project-runtime] ✅ Vite dev server ready after ${attempt} attempt(s)`)
+        }
+      } catch (e) {
+        const delay = Math.min(baseDelayMs * attempt, 500)
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
+    }
+    markStep('startViteDevServer')
+    
+    if (!serverReady) {
+      console.warn('[project-runtime] ⚠️  Vite dev server may still be starting...')
+    }
+    
+    // Set dev mode flag
+    isDevMode = true
+    
+    const totalMs = Math.round(performance.now() - startTime)
+    console.log('[project-runtime] ════════════════════════════════════════')
+    console.log(`[project-runtime] 🎉 DEV MODE STARTED: ${totalMs}ms (${(totalMs / 1000).toFixed(2)}s)`)
+    console.log('[project-runtime] ════════════════════════════════════════')
+    console.log('[project-runtime] ⏱️  Timing breakdown:')
+    for (const { step, durationMs } of timings) {
+      console.log(`[project-runtime]    • ${step}: ${durationMs}ms`)
+    }
+    console.log('[project-runtime] ════════════════════════════════════════')
+    console.log('[project-runtime] 🔥 HMR is now active - changes will update instantly!')
+    
+    return c.json({
+      success: true,
+      mode: 'dev',
+      port: VITE_DEV_PORT,
+      hmr: true,
+      timings: { steps: timings, totalMs },
+    })
+  } catch (error: any) {
+    const totalMs = Math.round(performance.now() - startTime)
+    console.error(`[project-runtime] ⏱️  Dev mode error after ${totalMs}ms:`, error)
+    return c.json({ success: false, error: error.message, timings: { steps: timings, totalMs } }, 500)
+  }
+})
+
+/**
+ * Stop dev mode and switch back to production build mode
+ */
+app.post('/preview/dev/stop', async (c) => {
+  if (viteDevProcess) {
+    console.log('[project-runtime] Stopping Vite dev server...')
+    viteDevProcess.kill()
+    viteDevProcess = null
+    isDevMode = false
+    return c.json({ success: true, message: 'Dev mode stopped' })
+  }
+  return c.json({ success: true, message: 'Dev mode was not running' })
+})
+
 console.log(`[project-runtime] Preview mode: ${isTanStackStart ? 'TanStack Start (proxy)' : 'Static files'}`)
 
 /**
@@ -1380,11 +1612,23 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   html = html.replace(/<link([^>]*)\s+href="\/src\/([^"]+)"([^>]*)>/gi, 
     `<link$1 href="${basePath}src/$2"$3>`)
   
+  // Rewrite Vite dev server paths (/@vite, /@react-refresh, /@tanstack-start, /@id, /node_modules)
+  html = html.replace(/<link([^>]*)\s+href="\/@([^"]+)"([^>]*)>/gi, 
+    `<link$1 href="${basePath}@$2"$3>`)
+  
   // Rewrite absolute paths in script tags
   html = html.replace(/<script([^>]*)\s+src="\/assets\/([^"]+)"([^>]*)>/gi, 
     `<script$1 src="${basePath}assets/$2"$3>`)
   html = html.replace(/<script([^>]*)\s+src="\/src\/([^"]+)"([^>]*)>/gi, 
     `<script$1 src="${basePath}src/$2"$3>`)
+  
+  // Rewrite Vite dev server script paths
+  html = html.replace(/<script([^>]*)\s+src="\/@([^"]+)"([^>]*)>/gi, 
+    `<script$1 src="${basePath}@$2"$3>`)
+  
+  // Rewrite inline script imports for Vite dev paths
+  html = html.replace(/from\s+["']\/@([^"']+)["']/gi, `from "${basePath}@$1"`)
+  html = html.replace(/import\s*\(\s*["']\/@([^"']+)["']\s*\)/gi, `import("${basePath}@$1")`)
   
   // Check if already has a base tag
   if (html.includes('<base')) {
@@ -1402,12 +1646,18 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
 (function() {
   var proxyBase = ${JSON.stringify(basePath)};
   
+  // Helper to check if URL needs rewriting
+  function needsRewrite(url) {
+    return url.startsWith('/assets/') || url.startsWith('/src/') || 
+           url.startsWith('/@') || url.startsWith('/node_modules/');
+  }
+  
   // Store original fetch
   var originalFetch = window.fetch;
   window.fetch = function(url, options) {
     if (typeof url === 'string') {
-      // Rewrite absolute /assets/ paths to use proxy base
-      if (url.startsWith('/assets/') || url.startsWith('/src/')) {
+      // Rewrite absolute paths to use proxy base
+      if (needsRewrite(url)) {
         url = proxyBase + url.substring(1);
       }
       // Fix any http:// to https:// if current page is https
@@ -1423,7 +1673,7 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   XMLHttpRequest.prototype.open = function(method, url) {
     var args = Array.prototype.slice.call(arguments, 2);
     if (typeof url === 'string') {
-      if (url.startsWith('/assets/') || url.startsWith('/src/')) {
+      if (needsRewrite(url)) {
         url = proxyBase + url.substring(1);
       }
       if (window.location.protocol === 'https:' && url.startsWith('http://')) {
@@ -1533,6 +1783,23 @@ app.get('/preview/*', async (c) => {
 </html>
       `, 200)
     }
+  }
+  
+  // Dev mode: redirect to subdomain for proper HMR support
+  // The /preview/ endpoint doesn't support HMR well due to path rewriting issues
+  // For dev mode, use subdomain access which proxies directly to vite dev server
+  if (isDevMode && viteDevProcess) {
+    return c.html(`
+      <html>
+        <body style="font-family: system-ui; padding: 2rem; text-align: center;">
+          <h1>Dev Mode Active</h1>
+          <p>For HMR support, access the preview via subdomain.</p>
+          <p style="color: #666; font-size: 0.9em;">
+            The /preview/ path doesn't support HMR. Use the preview subdomain for instant updates.
+          </p>
+        </body>
+      </html>
+    `, 200)
   }
   
   // TanStack Start: proxy to the running server
@@ -1880,6 +2147,61 @@ app.all('/*', async (c) => {
 </body>
 </html>
       `, 200)
+    }
+  }
+  
+  // Dev mode: proxy directly to Vite dev server (HMR works out of the box)
+  if (isDevMode && viteDevProcess) {
+    const targetUrl = `http://localhost:${VITE_DEV_PORT}${relativePath}`
+    const method = c.req.method
+    console.log(`[project-runtime] Subdomain: proxying ${method} to Vite dev at ${targetUrl}`)
+    
+    try {
+      const proxyHeaders: Record<string, string> = {
+        'Host': `localhost:${VITE_DEV_PORT}`,
+        'Accept': c.req.header('Accept') || '*/*',
+        'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+      }
+      
+      const contentType = c.req.header('Content-Type')
+      if (contentType) proxyHeaders['Content-Type'] = contentType
+      
+      const cookies = c.req.header('Cookie')
+      if (cookies) proxyHeaders['Cookie'] = cookies
+      
+      const fetchOptions: RequestInit = { method, headers: proxyHeaders }
+      
+      if (method !== 'GET' && method !== 'HEAD') {
+        try {
+          const bodyBuffer = await c.req.arrayBuffer()
+          if (bodyBuffer.byteLength > 0) fetchOptions.body = bodyBuffer
+        } catch {}
+      }
+      
+      const response = await fetch(targetUrl, fetchOptions)
+      const responseContentType = response.headers.get('Content-Type') || 'text/html'
+      const body = await response.arrayBuffer()
+      
+      return new Response(body, {
+        status: response.status,
+        headers: {
+          'Content-Type': responseContentType,
+          'Cache-Control': 'no-cache',
+          'Access-Control-Allow-Origin': '*',
+          'X-Frame-Options': 'ALLOWALL',
+        },
+      })
+    } catch (error: any) {
+      console.error('[project-runtime] Subdomain Vite dev proxy error:', error)
+      return c.html(`
+        <html>
+          <body style="font-family: system-ui; padding: 2rem;">
+            <h1>Dev Server Starting...</h1>
+            <p>Please wait...</p>
+            <script>setTimeout(() => location.reload(), 2000)</script>
+          </body>
+        </html>
+      `, 503)
     }
   }
   
@@ -3174,9 +3496,53 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
 logTiming(`Starting HTTP server on port ${PORT}...`)
 
-// WebSocket handlers for LSP
+// Track HMR WebSocket connections for proxying to vite dev server
+const hmrConnections = new Map<ServerWebSocket<unknown>, WebSocket>()
+
+// WebSocket handlers for LSP and HMR
 const websocketHandlers = {
   async open(ws: ServerWebSocket<unknown>) {
+    const data = (ws as any).data as { type?: string; path?: string } | undefined
+    
+    // Handle HMR WebSocket connections
+    if (data?.type === 'hmr' && isDevMode && viteDevProcess) {
+      console.log(`[HMR WebSocket] Client connected, proxying to vite dev server`)
+      try {
+        // Create connection to vite dev server
+        const viteWsUrl = `ws://localhost:${VITE_DEV_PORT}${data.path || '/'}`
+        const viteWs = new WebSocket(viteWsUrl)
+        
+        viteWs.onopen = () => {
+          console.log('[HMR WebSocket] Connected to vite dev server')
+        }
+        
+        viteWs.onmessage = (event) => {
+          // Forward messages from vite to client
+          if (ws.readyState === 1) {
+            ws.send(typeof event.data === 'string' ? event.data : JSON.stringify(event.data))
+          }
+        }
+        
+        viteWs.onerror = (error) => {
+          console.error('[HMR WebSocket] Vite connection error:', error)
+        }
+        
+        viteWs.onclose = () => {
+          console.log('[HMR WebSocket] Vite connection closed')
+          hmrConnections.delete(ws)
+          ws.close()
+        }
+        
+        hmrConnections.set(ws, viteWs)
+        return
+      } catch (error) {
+        console.error('[HMR WebSocket] Failed to connect to vite dev server:', error)
+        ws.close(1011, 'Failed to connect to vite dev server')
+        return
+      }
+    }
+    
+    // Handle LSP WebSocket connections
     console.log('[LSP WebSocket] Client connected')
     lspConnections.add(ws)
 
@@ -3204,6 +3570,17 @@ const websocketHandlers = {
   },
   
   message(ws: ServerWebSocket<unknown>, message: string | Buffer) {
+    // Handle HMR messages
+    const viteWs = hmrConnections.get(ws)
+    if (viteWs) {
+      // Forward message to vite dev server
+      if (viteWs.readyState === WebSocket.OPEN) {
+        viteWs.send(typeof message === 'string' ? message : message.toString())
+      }
+      return
+    }
+    
+    // Handle LSP messages
     try {
       const msg = JSON.parse(typeof message === 'string' ? message : message.toString())
       const lspServer = (ws as any).__lspServer
@@ -3218,6 +3595,16 @@ const websocketHandlers = {
   },
   
   close(ws: ServerWebSocket<unknown>, code: number, reason: string) {
+    // Handle HMR close
+    const viteWs = hmrConnections.get(ws)
+    if (viteWs) {
+      console.log('[HMR WebSocket] Client disconnected:', code, reason)
+      viteWs.close()
+      hmrConnections.delete(ws)
+      return
+    }
+    
+    // Handle LSP close
     console.log('[LSP WebSocket] Client disconnected:', code, reason)
     lspConnections.delete(ws)
     
@@ -3232,15 +3619,30 @@ const websocketHandlers = {
 // Create a wrapper fetch function that handles WebSocket upgrades
 function fetchHandler(request: Request, server: { upgrade: (req: Request, options?: { data?: unknown }) => boolean }) {
   const url = new URL(request.url)
+  const isWebSocketUpgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket'
   
   // Handle WebSocket upgrade for /lsp endpoint
-  if (url.pathname === '/lsp' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+  if (url.pathname === '/lsp' && isWebSocketUpgrade) {
     const success = server.upgrade(request)
     if (success) {
       // Return undefined to signal Bun that the upgrade was handled
       return undefined
     }
     return new Response('WebSocket upgrade failed', { status: 500 })
+  }
+  
+  // Handle WebSocket upgrade for HMR when in dev mode
+  // Vite HMR WebSocket connects to root or /@vite paths
+  if (isDevMode && viteDevProcess && isWebSocketUpgrade) {
+    // For HMR, we need to proxy the WebSocket to the vite dev server
+    // Since Bun doesn't support WebSocket proxying directly, we'll configure
+    // vite to use a specific HMR port that's exposed directly
+    console.log(`[project-runtime] HMR WebSocket upgrade requested at ${url.pathname}`)
+    const success = server.upgrade(request, { data: { type: 'hmr', path: url.pathname } })
+    if (success) {
+      return undefined
+    }
+    return new Response('HMR WebSocket upgrade failed', { status: 500 })
   }
   
   // Forward all other requests to Hono

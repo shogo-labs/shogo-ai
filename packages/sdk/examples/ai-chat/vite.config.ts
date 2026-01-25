@@ -7,6 +7,9 @@ import { nitroV2Plugin } from '@tanstack/nitro-v2-vite-plugin'
 export default defineConfig({
   server: {
     port: 3005,
+    host: '0.0.0.0',
+    cors: true,
+    headers: { 'X-Frame-Options': 'ALLOWALL' },
   },
   plugins: [
     tsConfigPaths({
@@ -21,8 +24,7 @@ export default defineConfig({
     react(),
   ],
   build: {
-    // Optimizations for faster builds
-    target: 'esnext',    // Skip transpilation (modern browsers only)
-    minify: false,       // Skip minification for preview builds
+    target: 'esnext',
+    minify: false,
   },
 })

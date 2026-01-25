@@ -7,10 +7,11 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
+    cors: true,
+    headers: { 'X-Frame-Options': 'ALLOWALL' },
   },
   build: {
-    // Optimizations for faster builds
-    target: 'esnext',    // Skip transpilation (modern browsers only)
-    minify: false,       // Skip minification for preview builds
+    target: 'esnext',
+    minify: false,
   },
 })
