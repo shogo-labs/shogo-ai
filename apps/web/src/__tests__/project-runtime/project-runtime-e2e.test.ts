@@ -230,7 +230,7 @@ test.describe("Project Runtime API Health", () => {
     expect(response.ok()).toBe(true)
 
     const body = await response.json()
-    expect(body.status).toBe("ok")
+    expect(body.ok).toBe(true)
   })
 
   test("MCP endpoint is accessible", async ({ request }) => {

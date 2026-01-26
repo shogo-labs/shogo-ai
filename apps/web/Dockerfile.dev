@@ -3,14 +3,14 @@
 # =============================================================================
 # For hot reloading during development with Vite HMR.
 # Source code is mounted as a volume.
-# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 # =============================================================================
 
 FROM oven/bun:1.2-alpine
 
 WORKDIR /app
 
-# Install curl for healthchecks (optional for web)
+# Install curl for healthchecks
 RUN apk add --no-cache curl
 
 # Copy workspace root files
@@ -30,20 +30,27 @@ COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 COPY apps/web ./apps/web
 
+# Copy scripts directory (needed for list-skills.ts in dev command)
+COPY scripts ./scripts
+
+# Copy .claude/skills directory (needed for list-skills.ts)
+COPY .claude/skills ./.claude/skills
+
 # Environment defaults
 ENV NODE_ENV=development
+ENV VITE_PORT=5173
 ENV VITE_API_URL=http://localhost:8002
 ENV VITE_MCP_URL=http://localhost:3100
 ENV VITE_BETTER_AUTH_URL=http://localhost:8002
 ENV VITE_WORKSPACE=workspace
 
-# Expose Vite dev server port
-EXPOSE 3000
+# Expose Vite dev server port (5173 = standard Vite port for e2e test compatibility)
+EXPOSE 5173
 
 # Health check for Vite dev server
-HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -sf http://localhost:3000 -o /dev/null || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 \
+  CMD curl -sf http://localhost:5173 -o /dev/null || exit 1
 
-# Run Vite dev server
+# Run Vite dev server on port 5173
 WORKDIR /app/apps/web
-CMD ["bun", "run", "dev", "--host", "0.0.0.0", "--port", "3000"]
+CMD ["bun", "run", "dev", "--host", "0.0.0.0", "--port", "5173"]
