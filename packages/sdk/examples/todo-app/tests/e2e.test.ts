@@ -150,15 +150,18 @@ test.describe('Todo App - Shogo SDK Example', () => {
   test('should show todo stats', async ({ page }) => {
     await ensureTodoListView(page, 'stats')
 
-    // Add two todos
-    await addTodo(page, 'Stats todo 1')
-    await addTodo(page, 'Stats todo 2')
+    // Add two todos with unique names
+    const timestamp = Date.now()
+    const todo1 = `Stats A ${timestamp}`
+    const todo2 = `Stats B ${timestamp}`
+    await addTodo(page, todo1)
+    await addTodo(page, todo2)
 
     // Check stats (at least 2 pending now - there may be more from other tests)
     await expect(page.getByText(/\d+ pending/)).toBeVisible()
 
     // Toggle one
-    const firstTodo = page.locator('li').filter({ hasText: 'Stats todo 1' })
+    const firstTodo = page.locator('li').filter({ hasText: todo1 })
     await firstTodo.getByRole('checkbox').click()
 
     // Stats should show completed
