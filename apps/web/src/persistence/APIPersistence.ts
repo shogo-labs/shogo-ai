@@ -215,7 +215,7 @@ export class APIPersistence implements IPersistenceService {
   private transformForMST(obj: any): any {
     if (!obj || typeof obj !== 'object') return obj
     
-    const dateFields = ['createdAt', 'updatedAt', 'expiresAt', 'publishedAt', 'readAt', 'emailSentAt']
+    const dateFields = ['createdAt', 'updatedAt', 'expiresAt', 'publishedAt', 'readAt', 'emailSentAt', 'lastActiveAt']
     // Fields that are FK references (e.g., workspaceId -> workspace as MST reference)
     const referenceFields = ['workspaceId', 'projectId', 'folderId', 'parentId', 'userId']
     // Fields that should be treated as references (MST expects just an ID, not an object)
@@ -304,6 +304,50 @@ export class APIPersistence implements IPersistenceService {
   }
 
   /**
+   * Transform MST snapshot for API compatibility:
+   * - Convert timestamps (numbers) to ISO date strings for DateTime fields
+   * - Convert reference fields back to ID fields (e.g., workspace -> workspaceId)
+   */
+  private transformForAPI(obj: any): any {
+    if (!obj || typeof obj !== 'object') return obj
+    
+    const dateFields = ['createdAt', 'updatedAt', 'expiresAt', 'publishedAt', 'readAt', 'emailSentAt', 'lastActiveAt']
+    // MST reference fields that need to be converted to *Id fields for API
+    const referenceFields = ['workspace', 'project', 'folder', 'parent', 'user', 'session', 'chatSession']
+    const result: Record<string, any> = {}
+    
+    for (const [key, value] of Object.entries(obj)) {
+      // Skip undefined values
+      if (value === undefined) {
+        continue
+      }
+      
+      // Convert timestamps to ISO date strings for DateTime fields
+      if (dateFields.includes(key) && typeof value === 'number') {
+        result[key] = new Date(value).toISOString()
+      }
+      // Convert MST reference fields to *Id fields for API
+      // (e.g., session: "uuid" -> sessionId: "uuid")
+      else if (referenceFields.includes(key) && typeof value === 'string') {
+        // Keep the original reference field for convenience
+        result[key] = value
+        // Also add the *Id version for Prisma compatibility
+        result[`${key}Id`] = value
+      }
+      // Recursively transform nested objects
+      else if (value && typeof value === 'object' && !Array.isArray(value)) {
+        result[key] = this.transformForAPI(value)
+      }
+      // Keep arrays and other values as-is
+      else {
+        result[key] = value
+      }
+    }
+    
+    return result
+  }
+
+  /**
    * Save a single entity via REST API.
    * Determines whether to create or update based on existence.
    */
@@ -316,17 +360,20 @@ export class APIPersistence implements IPersistenceService {
         throw new Error(`No endpoint for model: ${ctx.modelName}`)
       }
 
+      // Transform MST snapshot to API-compatible format
+      const apiData = this.transformForAPI(snapshot)
+
       if (existing) {
         // Update existing entity
         await this.fetchJson(`${baseEndpoint}/${ctx.entityId}`, {
           method: 'PATCH',
-          body: JSON.stringify(snapshot),
+          body: JSON.stringify(apiData),
         })
       } else {
         // Create new entity
         await this.fetchJson(baseEndpoint, {
           method: 'POST',
-          body: JSON.stringify({ ...snapshot, id: ctx.entityId }),
+          body: JSON.stringify({ ...apiData, id: ctx.entityId }),
         })
       }
     } catch (error: any) {

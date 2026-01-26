@@ -315,12 +315,20 @@ export const ProjectLayout = observer(function ProjectLayout() {
       if (cancelled) return
 
       try {
-        // Query database directly for existing sessions (in-memory may not be loaded yet)
-        const existingSessions = await studioChat.chatSessionCollection
-          .query({ contextId: projectId })
-          .toArray()
+        // IMPORTANT: Load chat sessions from backend first!
+        // The in-memory collection may be empty after navigation.
+        // loadAll fetches sessions from the API and populates the MobX store.
+        if (studioChat.chatSessionCollection.loadAll) {
+          console.log("[ProjectLayout] Loading chat sessions from backend for project:", projectId)
+          await studioChat.chatSessionCollection.loadAll({ contextId: projectId })
+        }
 
         if (cancelled) return
+
+        // Now use findByContext which searches in-memory (now populated)
+        const existingSessions = studioChat.chatSessionCollection.findByContext?.(projectId) ?? []
+        
+        console.log("[ProjectLayout] Found", existingSessions.length, "existing sessions for project:", projectId)
 
         if (existingSessions.length > 0) {
           // Priority 1: Check transition state for session ID (from homepage navigation)
@@ -343,6 +351,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
               await setChatSessionId(lastSessionId)
               return
             }
+            console.log("[ProjectLayout] localStorage session not found in existing sessions:", lastSessionId)
           }
 
           // Priority 3: Sort by lastActiveAt descending and select the most recent
