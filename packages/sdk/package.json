@@ -1,6 +1,6 @@
 {
   "name": "@shogo/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Shogo Platform SDK - Zero-boilerplate auth, database, and state management for TanStack Start apps",
   "type": "module",
   "main": "dist/index.cjs",

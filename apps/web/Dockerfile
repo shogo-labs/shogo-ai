@@ -31,6 +31,7 @@ COPY tsconfig.base.json ./
 # Copy package.json files for dependency resolution
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
+COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 
 # Install all dependencies
@@ -39,6 +40,7 @@ RUN bun install
 # Copy source code (including mcp for raw imports in WavesmithMetaDemo)
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
+COPY packages/sdk ./packages/sdk
 COPY apps/web ./apps/web
 
 # Copy scripts directory (needed for list-skills.ts)
@@ -47,7 +49,11 @@ COPY scripts ./scripts
 # Copy .claude/skills directory (needed for list-skills.ts)
 COPY .claude/skills ./.claude/skills
 
-# Build state-api first (dependency)
+# Build SDK first (dependency)
+WORKDIR /app/packages/sdk
+RUN bun run build
+
+# Build state-api (dependency)
 WORKDIR /app/packages/state-api
 RUN bun run build
 
