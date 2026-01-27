@@ -88,6 +88,7 @@ import { useSession } from "@/contexts/SessionProvider"
 import { useCommandPaletteContext } from "./AppShell"
 import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
+import { useDomainActions } from "@/generated/domain-actions"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { LogOut, User, Sun, Moon, Monitor } from "lucide-react"
 
@@ -435,9 +436,9 @@ interface InboxPopoverProps {
 }
 
 const InboxPopover = observer(function InboxPopover({ collapsed, onInvitationAccepted }: InboxPopoverProps) {
-  // Use SDK store for data loading, legacy domains for actions (acceptInvitation, etc.)
+  // Use SDK store and domain actions
   const store = useSDKDomain() as IDomainStore
-  const { studioCore } = useDomains()
+  const actions = useDomainActions()
   const { data: session } = useSession()
   const userEmail = session?.user?.email
   const userId = session?.user?.id
@@ -492,13 +493,13 @@ const InboxPopover = observer(function InboxPopover({ collapsed, onInvitationAcc
     }
   }, [isOpen, loadInvitations])
 
-  // Handle accepting an invitation
+  // Handle accepting an invitation - using SDK domain actions
   const handleAccept = async (invitation: PendingInvitation) => {
-    if (!studioCore || !userId) return
+    if (!userId) return
 
     setProcessingId(invitation.id)
     try {
-      await studioCore.acceptInvitation(invitation.id, userId)
+      await actions.acceptInvitation(invitation.id, userId)
       // Remove from local state
       setInvitations((prev) => prev.filter((i) => i.id !== invitation.id))
       // Notify parent to refresh workspaces
@@ -510,13 +511,13 @@ const InboxPopover = observer(function InboxPopover({ collapsed, onInvitationAcc
     }
   }
 
-  // Handle declining an invitation
+  // Handle declining an invitation - using SDK domain actions
   const handleDecline = async (invitation: PendingInvitation) => {
-    if (!studioCore || !userId) return
+    if (!userId) return
 
     setProcessingId(invitation.id)
     try {
-      await studioCore.declineInvitation(invitation.id, userId)
+      await actions.declineInvitation(invitation.id)
       // Remove from local state
       setInvitations((prev) => prev.filter((i) => i.id !== invitation.id))
     } catch (err) {
@@ -668,9 +669,10 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
   const { setWorkspaceSlug, setFolderId } = useWorkspaceNavigation()
   const { workspaces, currentWorkspace, projects, folders, isLoading, refetchFolders, refetchWorkspaces } = useWorkspaceData()
   const { openCommandPalette } = useCommandPaletteContext()
-  // Use SDK for data, legacy domains for actions (createFolder, etc.) and auth
+  // Use SDK store and domain actions
   const store = useSDKDomain() as IDomainStore
-  const { studioCore, auth } = useDomains()
+  const actions = useDomainActions()
+  const { auth } = useDomains() // auth stays with legacy for now
 
   // Sidebar collapse state - persisted to localStorage
   const [internalCollapsed, setInternalCollapsed] = useState(() => {
@@ -751,11 +753,11 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
     navigate(`/projects?folder=${folderId}`)
   }
 
-  // Handle create folder
+  // Handle create folder - using SDK domain actions
   const handleCreateFolder = async () => {
-    if (!newFolderName.trim() || !currentWorkspace?.id || !studioCore) return
+    if (!newFolderName.trim() || !currentWorkspace?.id) return
     try {
-      await studioCore.createFolder(newFolderName.trim(), currentWorkspace.id, undefined)
+      await actions.createFolder(newFolderName.trim(), currentWorkspace.id, null)
       setCreateFolderOpen(false)
       setNewFolderName("")
       refetchFolders()
@@ -764,11 +766,11 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
     }
   }
 
-  // Handle rename folder
+  // Handle rename folder - using SDK domain actions
   const handleRenameFolder = async () => {
-    if (!renameFolderName.trim() || !folderToRename || !studioCore) return
+    if (!renameFolderName.trim() || !folderToRename) return
     try {
-      await studioCore.updateFolder(folderToRename.id, { name: renameFolderName.trim() })
+      await actions.updateFolder(folderToRename.id, { name: renameFolderName.trim() })
       setFolderToRename(null)
       setRenameFolderName("")
       refetchFolders()
@@ -777,11 +779,11 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
     }
   }
 
-  // Handle delete folder
+  // Handle delete folder - using SDK domain actions
   const handleDeleteFolder = async () => {
-    if (!folderToDelete || !studioCore) return
+    if (!folderToDelete) return
     try {
-      await studioCore.deleteFolder(folderToDelete.id)
+      await actions.deleteFolder(folderToDelete.id)
       setFolderToDelete(null)
       refetchFolders()
     } catch (error) {

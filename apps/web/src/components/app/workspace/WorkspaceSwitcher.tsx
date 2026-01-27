@@ -23,9 +23,10 @@ import { useState, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { Plus, Settings, Users, ChevronDown, Check, Zap, ArrowLeft } from "lucide-react"
-import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
+import { useSDKDomain } from "@/contexts/DomainProvider"
 import { useSession } from "@/contexts/SessionProvider"
 import type { IDomainStore } from "@/generated/domain"
+import { useDomainActions } from "@/generated/domain-actions"
 
 import {
   DropdownMenu,
@@ -88,9 +89,9 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
   isLoading = false,
 }: WorkspaceSwitcherProps) {
   const navigate = useNavigate()
-  // Use SDK for data queries, legacy domain for actions (createWorkspace)
+  // Use SDK store and domain actions
   const store = useSDKDomain() as IDomainStore
-  const { studioCore } = useDomains()
+  const actions = useDomainActions()
   const { data: session } = useSession()
   const [isOpen, setIsOpen] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
@@ -103,10 +104,13 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
     if (!userId) {
       throw new Error("You must be logged in to create a workspace")
     }
-    const workspace = await studioCore.createWorkspace(name, undefined, userId)
+    const workspace = await actions.createWorkspace(name, undefined, userId)
     // Switch to the new workspace
-    onWorkspaceChange(workspace.slug)
-    return workspace.id
+    if (workspace) {
+      onWorkspaceChange(workspace.slug)
+      return workspace.id
+    }
+    throw new Error("Failed to create workspace")
   }, [studioCore, session?.user?.id, onWorkspaceChange])
 
   // Get subscription for current workspace from SDK store

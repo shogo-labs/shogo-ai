@@ -20,9 +20,7 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { useDomains } from "@/contexts/DomainProvider"
-// Note: This component uses legacy domain methods (markNotificationRead, acceptInvitation, declineInvitation)
-// SDK migration pending for these action methods
+import { useDomainActions } from "@/generated/domain-actions"
 import { useSession } from "@/contexts/SessionProvider"
 import type { Notification } from "./NotificationList"
 
@@ -83,7 +81,7 @@ export const NotificationItem = observer(function NotificationItem({
   notification,
   onAction,
 }: NotificationItemProps) {
-  const { studioCore } = useDomains()
+  const actions = useDomainActions()
   const { data: session } = useSession()
   const userId = session?.user?.id
 
@@ -94,13 +92,13 @@ export const NotificationItem = observer(function NotificationItem({
   const isUnread = notification.isUnread
 
   /**
-   * Mark notification as read
+   * Mark notification as read - using SDK domain actions
    */
   const handleMarkRead = async () => {
-    if (!studioCore || !isUnread) return
+    if (!isUnread) return
 
     try {
-      await studioCore.markNotificationRead(notification.id)
+      await actions.markNotificationRead(notification.id)
       onAction?.()
     } catch (error) {
       console.error("[NotificationItem] Failed to mark as read:", error)
@@ -108,10 +106,10 @@ export const NotificationItem = observer(function NotificationItem({
   }
 
   /**
-   * Accept invitation (for invitation_pending notifications)
+   * Accept invitation (for invitation_pending notifications) - using SDK domain actions
    */
   const handleAcceptInvitation = async () => {
-    if (!studioCore || !userId) return
+    if (!userId) return
 
     const invitationId = notification.metadata?.invitationId
     if (!invitationId) return
@@ -120,8 +118,8 @@ export const NotificationItem = observer(function NotificationItem({
     setProcessingAction("accept")
 
     try {
-      await studioCore.acceptInvitation(invitationId, userId)
-      await studioCore.markNotificationRead(notification.id)
+      await actions.acceptInvitation(invitationId, userId)
+      await actions.markNotificationRead(notification.id)
       onAction?.()
     } catch (error: any) {
       console.error("[NotificationItem] Failed to accept invitation:", error)
@@ -132,11 +130,9 @@ export const NotificationItem = observer(function NotificationItem({
   }
 
   /**
-   * Decline invitation (for invitation_pending notifications)
+   * Decline invitation (for invitation_pending notifications) - using SDK domain actions
    */
   const handleDeclineInvitation = async () => {
-    if (!studioCore) return
-
     const invitationId = notification.metadata?.invitationId
     if (!invitationId) return
 
@@ -144,8 +140,8 @@ export const NotificationItem = observer(function NotificationItem({
     setProcessingAction("decline")
 
     try {
-      await studioCore.declineInvitation(invitationId)
-      await studioCore.markNotificationRead(notification.id)
+      await actions.declineInvitation(invitationId)
+      await actions.markNotificationRead(notification.id)
       onAction?.()
     } catch (error: any) {
       console.error("[NotificationItem] Failed to decline invitation:", error)

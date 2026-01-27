@@ -34,8 +34,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
-import { useDomains } from "@/contexts/DomainProvider"
-// Note: Uses legacy domain method studioCore.createProject() - SDK migration pending for action methods
+import { useDomainActions } from "@/generated/domain-actions"
 import { useSession } from "@/contexts/SessionProvider"
 
 /**
@@ -59,8 +58,8 @@ export interface CreateProjectModalProps {
  * Uses shadcn Dialog with form validation, loading, and error states.
  */
 export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess }: CreateProjectModalProps) {
-  // Get studioCore domain for creating projects
-  const { studioCore } = useDomains()
+  // Get SDK domain actions
+  const actions = useDomainActions()
 
   // Get current user session
   const { data: session } = useSession()
@@ -98,8 +97,8 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
     setError(null)
 
     try {
-      // Use domain action to create project
-      const newProject = await studioCore.createProject(
+      // Use SDK domain action to create project
+      const newProject = await actions.createProject(
         name.trim(),
         workspaceId,
         description.trim() || undefined,

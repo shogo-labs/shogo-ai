@@ -59,6 +59,7 @@ import { useWorkspaceData, useWorkspaceNavigation, useDeleteFeature } from "./ho
 import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
 import { useSession } from "@/contexts/SessionProvider"
 import type { IDomainStore } from "@/generated/domain"
+import { useDomainActions } from "@/generated/domain-actions"
 import { usePhaseNavigation } from "../stepper/hooks/usePhaseNavigation"
 import { useFeaturePolling } from "@/hooks/useFeaturePolling"
 import { useToast } from "@/hooks/use-toast"
@@ -164,9 +165,10 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // Get navigation state for conditional rendering
   const { featureId, projectId, setFeatureId, setProjectId, clearFeature } = useWorkspaceNavigation()
   
-  // Get SDK store for data queries, legacy domains for action methods (createProject, etc.)
+  // Get SDK store and domain actions
   const store = useSDKDomain() as IDomainStore
-  const { studioCore, platformFeatures, studioChat } = useDomains()
+  const actions = useDomainActions()
+  const { auth } = useDomains() // auth stays with legacy for now
 
   // Get sidebar collapse control for homepage transition animation
   const { collapseSidebar } = useSidebarCollapseContext()
@@ -341,8 +343,8 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       return
     }
 
-    if (!studioCore || !studioChat) {
-      console.error("[WorkspaceLayout] Cannot create from prompt: domains not available")
+    if (!store) {
+      console.error("[WorkspaceLayout] Cannot create from prompt: store not available")
       return
     }
 
@@ -352,19 +354,19 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       // 1. Generate a project name from the prompt using AI
       const projectName = await generateProjectNameFromPrompt(prompt)
 
-      // 2. Create the project
-      const newProject = await studioCore.createProject(
+      // 2. Create the project using SDK domain actions
+      const newProject = await actions.createProject(
         projectName,
         workspaceId,
         prompt, // Use the full prompt as description
         userId
       )
 
-      // 3. Create a chat session for this project
-      const chatSession = await studioChat.createChatSession({
+      // 3. Create a chat session for this project using SDK domain actions
+      const chatSession = await actions.createChatSession({
         inferredName: `Chat - ${projectName}`,
         contextType: "project",
-        contextId: newProject.id,
+        contextId: newProject?.id,
       })
 
       // 4. Store navigation data for the transition callback
@@ -386,7 +388,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
     } finally {
       setIsCreatingFromPrompt(false)
     }
-  }, [session?.user?.id, currentWorkspace?.id, studioCore, studioChat, refetchProjects, startTransition])
+  }, [session?.user?.id, currentWorkspace?.id, store, actions, refetchProjects, startTransition])
 
   /**
    * Handle template selection from home page
@@ -401,28 +403,28 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
       return
     }
 
-    if (!studioCore || !studioChat) {
-      console.error("[WorkspaceLayout] Cannot create from template: domains not available")
+    if (!store) {
+      console.error("[WorkspaceLayout] Cannot create from template: store not available")
       return
     }
 
     setLoadingTemplate(templateName)
 
     try {
-      // 1. Create the project with the template display name
+      // 1. Create the project with the template display name using SDK domain actions
       const projectName = `My ${displayName}`
-      const newProject = await studioCore.createProject(
+      const newProject = await actions.createProject(
         projectName,
         workspaceId,
         `Created from ${displayName} template`,
         userId
       )
 
-      // 2. Create a chat session for this project
-      const chatSession = await studioChat.createChatSession({
+      // 2. Create a chat session for this project using SDK domain actions
+      const chatSession = await actions.createChatSession({
         inferredName: `Chat - ${projectName}`,
         contextType: "project",
-        contextId: newProject.id,
+        contextId: newProject?.id,
       })
 
       // 3. Trigger refetch so the project shows in the sidebar
@@ -453,7 +455,7 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
     } finally {
       setLoadingTemplate(null)
     }
-  }, [session?.user?.id, currentWorkspace?.id, studioCore, studioChat, refetchProjects, navigate])
+  }, [session?.user?.id, currentWorkspace?.id, store, actions, refetchProjects, navigate])
 
   // Determine if we're on the home view (no project selected)
   const isHomeView = !currentProject && !projectId
