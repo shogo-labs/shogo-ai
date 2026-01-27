@@ -246,11 +246,22 @@ export function useWorkspaceData(): WorkspaceDataState {
     return workspaces.map((ws: any) => ws.id).sort().join(",")
   }, [workspaces])
 
-  // Find current workspace by slug - memoize to prevent unnecessary recalculations
-  const currentWorkspace = useMemo(() => {
+  // Get current workspace ID by slug - use ID to avoid holding stale MST node references
+  const currentWorkspaceId = useMemo(() => {
     if (!workspaceSlug || workspaces.length === 0) return undefined
-    return workspaces.find((ws: any) => ws.slug === workspaceSlug)
+    const ws = workspaces.find((ws: any) => ws.slug === workspaceSlug)
+    return ws?.id
   }, [workspaceSlug, workspaceIdsKey, workspaces.length])
+
+  // Look up current workspace fresh from store (avoids detached node errors)
+  const currentWorkspace = useMemo(() => {
+    if (!currentWorkspaceId || !store?.workspaceCollection) return undefined
+    try {
+      return store.workspaceCollection.get(currentWorkspaceId)
+    } catch {
+      return undefined
+    }
+  }, [currentWorkspaceId, store, isLoadingWorkspaces])
 
   // Auto-select first workspace when user has workspaces but none is selected OR current selection is invalid
   // This ensures the user lands on a workspace after signup/login
@@ -307,10 +318,10 @@ export function useWorkspaceData(): WorkspaceDataState {
 
   // Get current user's role in the current workspace from memberCollection
   let currentWorkspaceRole: "owner" | "admin" | "member" | "viewer" | undefined = undefined
-  if (userId && currentWorkspace?.id && store?.memberCollection) {
+  if (userId && currentWorkspaceId && store?.memberCollection) {
     try {
       const userMembers = store.memberCollection.all.filter(m => m.userId === userId)
-      const wsMember = userMembers.find((m: any) => m.workspaceId === currentWorkspace.id)
+      const wsMember = userMembers.find((m: any) => m.workspaceId === currentWorkspaceId)
       if (wsMember) {
         currentWorkspaceRole = wsMember.role as "owner" | "admin" | "member" | "viewer"
       }
@@ -322,14 +333,14 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Reload projects from API when workspace changes or refetch is triggered
   useEffect(() => {
     const loadProjects = async () => {
-      if (!currentWorkspace?.id || !store?.projectCollection) {
+      if (!currentWorkspaceId || !store?.projectCollection) {
         setIsLoadingProjects(false)
         return
       }
 
       // Guard: Skip if workspace is not in current user's workspaces list
       // This prevents access denied errors during user transition
-      if (workspaces.length > 0 && !workspaces.some((ws: any) => ws.id === currentWorkspace.id)) {
+      if (workspaces.length > 0 && !workspaces.some((ws: any) => ws.id === currentWorkspaceId)) {
         console.log("[useWorkspaceData] Skipping project load - workspace not in user's list")
         setIsLoadingProjects(false)
         return
@@ -338,7 +349,7 @@ export function useWorkspaceData(): WorkspaceDataState {
       try {
         setIsLoadingProjects(true)
         // Use SDK collection (v2 API routes)
-        await store.projectCollection.loadAll({ workspaceId: currentWorkspace.id })
+        await store.projectCollection.loadAll({ workspaceId: currentWorkspaceId })
       } catch (error) {
         console.error("[useWorkspaceData] Error loading projects:", error)
       } finally {
@@ -347,7 +358,7 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
 
     loadProjects()
-  }, [currentWorkspace?.id, store, projectsRefetchCounter, workspaces])
+  }, [currentWorkspaceId, store, projectsRefetchCounter, workspaces])
 
   // Function to trigger a refetch of projects
   const refetchProjects = useCallback(() => {
@@ -357,14 +368,14 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Reload folders from API when workspace changes or refetch is triggered
   useEffect(() => {
     const loadFolders = async () => {
-      if (!currentWorkspace?.id || !store?.folderCollection) {
+      if (!currentWorkspaceId || !store?.folderCollection) {
         setIsLoadingFolders(false)
         return
       }
 
       // Guard: Skip if workspace is not in current user's workspaces list
       // This prevents access denied errors during user transition
-      if (workspaces.length > 0 && !workspaces.some((ws: any) => ws.id === currentWorkspace.id)) {
+      if (workspaces.length > 0 && !workspaces.some((ws: any) => ws.id === currentWorkspaceId)) {
         console.log("[useWorkspaceData] Skipping folder load - workspace not in user's list")
         setIsLoadingFolders(false)
         return
@@ -373,7 +384,7 @@ export function useWorkspaceData(): WorkspaceDataState {
       try {
         setIsLoadingFolders(true)
         // Use SDK collection (v2 API routes)
-        await store.folderCollection.loadAll({ workspaceId: currentWorkspace.id })
+        await store.folderCollection.loadAll({ workspaceId: currentWorkspaceId })
       } catch (error) {
         console.error("[useWorkspaceData] Error loading folders:", error)
       } finally {
@@ -382,7 +393,7 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
 
     loadFolders()
-  }, [currentWorkspace?.id, store, foldersRefetchCounter, workspaces])
+  }, [currentWorkspaceId, store, foldersRefetchCounter, workspaces])
 
   // Function to trigger a refetch of folders
   const refetchFolders = useCallback(() => {
@@ -418,9 +429,9 @@ export function useWorkspaceData(): WorkspaceDataState {
 
   // Get folders for current workspace from SDK
   let folders: any[] = []
-  if (currentWorkspace?.id && store?.folderCollection) {
+  if (currentWorkspaceId && store?.folderCollection) {
     try {
-      folders = store.folderCollection.all.filter(f => f.workspaceId === currentWorkspace.id)
+      folders = store.folderCollection.all.filter(f => f.workspaceId === currentWorkspaceId)
     } catch {
       folders = []
     }
@@ -453,9 +464,9 @@ export function useWorkspaceData(): WorkspaceDataState {
 
   // Get projects for current workspace from SDK
   let projects: any[] = []
-  if (currentWorkspace?.id && store?.projectCollection) {
+  if (currentWorkspaceId && store?.projectCollection) {
     try {
-      projects = store.projectCollection.all.filter(p => p.workspaceId === currentWorkspace.id)
+      projects = store.projectCollection.all.filter(p => p.workspaceId === currentWorkspaceId)
     } catch {
       projects = []
     }

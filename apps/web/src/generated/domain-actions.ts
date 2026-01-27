@@ -94,10 +94,10 @@ export function createDomainActions(store: IDomainStore) {
         name,
         workspaceId,
         description,
-        ownerId: userId,
+        createdBy: userId,
         tier: "starter",
-        status: "active",
-        accessLevel: "private",
+        status: "draft",
+        accessLevel: "anyone",
         schemas: [],
       })
 

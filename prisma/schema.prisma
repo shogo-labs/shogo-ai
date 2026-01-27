@@ -416,7 +416,7 @@ model ChatSession {
   phase               String?
   claudeCodeSessionId String?
   createdAt           DateTime    @default(now())
-  lastActiveAt        DateTime    @default(now())
+  updatedAt           DateTime    @default(now()) @updatedAt
 
   // Relations - contextId can reference FeatureSession or Project
   project         Project?       @relation(fields: [contextId], references: [id], onDelete: Cascade)

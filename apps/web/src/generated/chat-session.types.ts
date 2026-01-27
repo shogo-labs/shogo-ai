@@ -15,7 +15,7 @@ export interface ChatSessionType {
   phase?: string
   claudeCodeSessionId?: string
   createdAt: Date
-  lastActiveAt: Date
+  updatedAt: Date
 }
 
 export interface ChatSessionCreateInput {
@@ -25,7 +25,6 @@ export interface ChatSessionCreateInput {
   contextId?: string
   phase?: string
   claudeCodeSessionId?: string
-  lastActiveAt?: Date
 }
 
 export interface ChatSessionUpdateInput {
@@ -35,5 +34,4 @@ export interface ChatSessionUpdateInput {
   contextId?: string
   phase?: string
   claudeCodeSessionId?: string
-  lastActiveAt?: Date
 }
