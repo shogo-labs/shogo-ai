@@ -2,23 +2,24 @@
  * useWorkspaceData Hook
  * Task: task-2-2-002
  *
- * Combines URL state with MCP domain queries to provide workspace data.
- * Uses useWorkspaceNavigation() + domain queries to derive the complete workspace context.
+ * Combines URL state with SDK domain queries to provide workspace data.
+ * Uses useWorkspaceNavigation() + SDK store to derive the complete workspace context.
  *
  * Per design decision design-2-2-data-flow:
- * - Components receive derived data, don't call domains directly
- * - workspaces fetched from MCP (studioCore.workspaceCollection)
- * - projects fetched from MCP (studioCore.projectCollection)
- * - features from MCP (platformFeatures.featureSessionCollection)
+ * - Components receive derived data, don't call stores directly
+ * - workspaces fetched from SDK (store.workspaceCollection)
+ * - projects fetched from SDK (store.projectCollection)
+ * - features from SDK (store.featureSessionCollection)
  * - features grouped by StatusToPhase map into featuresByPhase
  *
- * Note: This hook triggers MCP reload when userId/workspaceId changes.
+ * Note: This hook triggers API reload when userId/workspaceId changes.
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
-import { useDomains } from "../../../../contexts/DomainProvider"
+import { useSDKDomain } from "../../../../contexts/DomainProvider"
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation"
 import { useSession } from "../../../../auth/client"
+import type { IDomainStore } from "../../../../generated/domain"
 
 /**
  * Global auto-selection state to prevent multiple hook instances from
@@ -119,8 +120,7 @@ export interface WorkspaceDataState {
  * Combines:
  * - useWorkspaceNavigation() for URL state (workspace slug, project ID, feature ID)
  * - useSession() for auth state
- * - API calls for workspaces (/api/me/workspaces)
- * - useDomains() for projects and features (studioCore, platformFeatures)
+ * - useSDKDomain() for all data (workspaces, projects, features, etc.)
  *
  * @example
  * ```tsx
@@ -148,8 +148,8 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Get auth session from Better Auth
   const { data: session, isPending: isSessionLoading } = useSession()
 
-  // Get domains for workspaces, projects, and features
-  const { studioCore, platformFeatures } = useDomains()
+  // Get SDK domain store (replaces state-api domains)
+  const store = useSDKDomain() as IDomainStore
 
   // State for tracking loading and refetch
   const [isLoadingWorkspaces, setIsLoadingWorkspaces] = useState(true)
@@ -195,17 +195,17 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Reload workspaces from API when user changes or refetch is triggered
   useEffect(() => {
     const loadWorkspaces = async () => {
-      if (!userId || !studioCore?.workspaceCollection) {
+      if (!userId || !store?.workspaceCollection) {
         setIsLoadingWorkspaces(false)
         return
       }
 
       try {
         setIsLoadingWorkspaces(true)
-        // Use the persistence layer (APIPersistence -> v2 API routes)
+        // Use the SDK collections (APIPersistence -> v2 API routes)
         // Load workspaces first (filtered by user), then members
-        await studioCore.workspaceCollection.loadAll({ userId })
-        await studioCore.memberCollection.loadAll({ userId })
+        await store.workspaceCollection.loadAll({ userId })
+        await store.memberCollection.loadAll({ userId })
       } catch (error) {
         console.error("[useWorkspaceData] Error loading workspaces:", error)
       } finally {
@@ -214,25 +214,31 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
 
     loadWorkspaces()
-  }, [userId, studioCore, workspacesRefetchCounter])
+  }, [userId, store, workspacesRefetchCounter])
 
   // Function to trigger a refetch of workspaces
   const refetchWorkspaces = useCallback(() => {
     setWorkspacesRefetchCounter((c) => c + 1)
   }, [])
 
-  // Get workspaces for the current user from MCP
+  // Get workspaces for the current user from SDK
+  // Uses memberCollection to find workspaces where user is a member
   // Include isLoadingWorkspaces in dependencies so it recomputes when loading completes
   const workspaces: any[] = useMemo(() => {
-    if (!userId || !studioCore?.workspaceCollection) {
+    if (!userId || !store?.workspaceCollection || !store?.memberCollection) {
       return []
     }
     try {
-      return studioCore.workspaceCollection.findByMembership(userId)
+      // Get all members for this user
+      const userMembers = store.memberCollection.all.filter(m => m.userId === userId)
+      // Get workspace IDs from memberships
+      const workspaceIds = new Set(userMembers.map(m => m.workspaceId))
+      // Filter workspaces to those the user is a member of
+      return store.workspaceCollection.all.filter(w => workspaceIds.has(w.id))
     } catch {
       return []
     }
-  }, [userId, studioCore, workspacesRefetchCounter, isLoadingWorkspaces])
+  }, [userId, store, workspacesRefetchCounter, isLoadingWorkspaces])
 
   // Create a stable string representation of workspace IDs for dependency tracking
   // This ensures the effect runs when workspaces actually change (when IDs change)
@@ -240,11 +246,22 @@ export function useWorkspaceData(): WorkspaceDataState {
     return workspaces.map((ws: any) => ws.id).sort().join(",")
   }, [workspaces])
 
-  // Find current workspace by slug - memoize to prevent unnecessary recalculations
-  const currentWorkspace = useMemo(() => {
+  // Get current workspace ID by slug - use ID to avoid holding stale MST node references
+  const currentWorkspaceId = useMemo(() => {
     if (!workspaceSlug || workspaces.length === 0) return undefined
-    return workspaces.find((ws: any) => ws.slug === workspaceSlug)
+    const ws = workspaces.find((ws: any) => ws.slug === workspaceSlug)
+    return ws?.id
   }, [workspaceSlug, workspaceIdsKey, workspaces.length])
+
+  // Look up current workspace fresh from store (avoids detached node errors)
+  const currentWorkspace = useMemo(() => {
+    if (!currentWorkspaceId || !store?.workspaceCollection) return undefined
+    try {
+      return store.workspaceCollection.get(currentWorkspaceId)
+    } catch {
+      return undefined
+    }
+  }, [currentWorkspaceId, store, isLoadingWorkspaces])
 
   // Auto-select first workspace when user has workspaces but none is selected OR current selection is invalid
   // This ensures the user lands on a workspace after signup/login
@@ -301,10 +318,10 @@ export function useWorkspaceData(): WorkspaceDataState {
 
   // Get current user's role in the current workspace from memberCollection
   let currentWorkspaceRole: "owner" | "admin" | "member" | "viewer" | undefined = undefined
-  if (userId && currentWorkspace?.id && studioCore?.memberCollection) {
+  if (userId && currentWorkspaceId && store?.memberCollection) {
     try {
-      const userMembers = studioCore.memberCollection.findByUserId(userId)
-      const wsMember = userMembers.find((m: any) => m.workspace?.id === currentWorkspace.id)
+      const userMembers = store.memberCollection.all.filter(m => m.userId === userId)
+      const wsMember = userMembers.find((m: any) => m.workspaceId === currentWorkspaceId)
       if (wsMember) {
         currentWorkspaceRole = wsMember.role as "owner" | "admin" | "member" | "viewer"
       }
@@ -316,14 +333,14 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Reload projects from API when workspace changes or refetch is triggered
   useEffect(() => {
     const loadProjects = async () => {
-      if (!currentWorkspace?.id || !studioCore?.projectCollection) {
+      if (!currentWorkspaceId || !store?.projectCollection) {
         setIsLoadingProjects(false)
         return
       }
 
       // Guard: Skip if workspace is not in current user's workspaces list
       // This prevents access denied errors during user transition
-      if (workspaces.length > 0 && !workspaces.some((ws: any) => ws.id === currentWorkspace.id)) {
+      if (workspaces.length > 0 && !workspaces.some((ws: any) => ws.id === currentWorkspaceId)) {
         console.log("[useWorkspaceData] Skipping project load - workspace not in user's list")
         setIsLoadingProjects(false)
         return
@@ -331,8 +348,8 @@ export function useWorkspaceData(): WorkspaceDataState {
 
       try {
         setIsLoadingProjects(true)
-        // Use the persistence layer (APIPersistence -> v2 API routes)
-        await studioCore.projectCollection.loadAll({ workspaceId: currentWorkspace.id })
+        // Use SDK collection (v2 API routes)
+        await store.projectCollection.loadAll({ workspaceId: currentWorkspaceId })
       } catch (error) {
         console.error("[useWorkspaceData] Error loading projects:", error)
       } finally {
@@ -341,7 +358,7 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
 
     loadProjects()
-  }, [currentWorkspace?.id, studioCore, projectsRefetchCounter, workspaces])
+  }, [currentWorkspaceId, store, projectsRefetchCounter, workspaces])
 
   // Function to trigger a refetch of projects
   const refetchProjects = useCallback(() => {
@@ -351,14 +368,14 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Reload folders from API when workspace changes or refetch is triggered
   useEffect(() => {
     const loadFolders = async () => {
-      if (!currentWorkspace?.id || !studioCore?.folderCollection) {
+      if (!currentWorkspaceId || !store?.folderCollection) {
         setIsLoadingFolders(false)
         return
       }
 
       // Guard: Skip if workspace is not in current user's workspaces list
       // This prevents access denied errors during user transition
-      if (workspaces.length > 0 && !workspaces.some((ws: any) => ws.id === currentWorkspace.id)) {
+      if (workspaces.length > 0 && !workspaces.some((ws: any) => ws.id === currentWorkspaceId)) {
         console.log("[useWorkspaceData] Skipping folder load - workspace not in user's list")
         setIsLoadingFolders(false)
         return
@@ -366,8 +383,8 @@ export function useWorkspaceData(): WorkspaceDataState {
 
       try {
         setIsLoadingFolders(true)
-        // Use the persistence layer (APIPersistence -> v2 API routes)
-        await studioCore.folderCollection.loadAll({ workspaceId: currentWorkspace.id })
+        // Use SDK collection (v2 API routes)
+        await store.folderCollection.loadAll({ workspaceId: currentWorkspaceId })
       } catch (error) {
         console.error("[useWorkspaceData] Error loading folders:", error)
       } finally {
@@ -376,7 +393,7 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
 
     loadFolders()
-  }, [currentWorkspace?.id, studioCore, foldersRefetchCounter, workspaces])
+  }, [currentWorkspaceId, store, foldersRefetchCounter, workspaces])
 
   // Function to trigger a refetch of folders
   const refetchFolders = useCallback(() => {
@@ -386,15 +403,15 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Reload starred projects from API when user changes or refetch is triggered
   useEffect(() => {
     const loadStarred = async () => {
-      if (!userId || !studioCore?.starredProjectCollection) {
+      if (!userId || !store?.starredProjectCollection) {
         setIsLoadingStarred(false)
         return
       }
 
       try {
         setIsLoadingStarred(true)
-        // Use the persistence layer (APIPersistence -> v2 API routes)
-        await studioCore.starredProjectCollection.loadAll({ userId })
+        // Use SDK collection (v2 API routes)
+        await store.starredProjectCollection.loadAll({ userId })
       } catch (error) {
         console.error("[useWorkspaceData] Error loading starred projects:", error)
       } finally {
@@ -403,18 +420,18 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
 
     loadStarred()
-  }, [userId, studioCore, starredRefetchCounter])
+  }, [userId, store, starredRefetchCounter])
 
   // Function to trigger a refetch of starred projects
   const refetchStarredProjects = useCallback(() => {
     setStarredRefetchCounter((c) => c + 1)
   }, [])
 
-  // Get folders for current workspace from MCP
+  // Get folders for current workspace from SDK
   let folders: any[] = []
-  if (currentWorkspace?.id && studioCore?.folderCollection) {
+  if (currentWorkspaceId && store?.folderCollection) {
     try {
-      folders = studioCore.folderCollection.findByWorkspace(currentWorkspace.id)
+      folders = store.folderCollection.all.filter(f => f.workspaceId === currentWorkspaceId)
     } catch {
       folders = []
     }
@@ -424,20 +441,32 @@ export function useWorkspaceData(): WorkspaceDataState {
   const currentFolder = folderId ? folders.find((f: any) => f.id === folderId) : undefined
 
   // Get breadcrumb path to current folder (ancestor chain)
+  // Implements getAncestors by traversing parentId references
   let folderBreadcrumbs: any[] = []
-  if (currentFolder && studioCore?.folderCollection) {
+  if (currentFolder && store?.folderCollection) {
     try {
-      folderBreadcrumbs = studioCore.folderCollection.getAncestors(currentFolder.id)
+      const ancestors: any[] = []
+      let current = currentFolder
+      while (current?.parentId) {
+        const parent = store.folderCollection.get(current.parentId)
+        if (parent) {
+          ancestors.unshift(parent) // Add to beginning for root-first order
+          current = parent
+        } else {
+          break
+        }
+      }
+      folderBreadcrumbs = ancestors
     } catch {
       folderBreadcrumbs = []
     }
   }
 
-  // Get projects for current workspace from MCP
+  // Get projects for current workspace from SDK
   let projects: any[] = []
-  if (currentWorkspace?.id && studioCore?.projectCollection) {
+  if (currentWorkspaceId && store?.projectCollection) {
     try {
-      projects = studioCore.projectCollection.findByWorkspace(currentWorkspace.id)
+      projects = store.projectCollection.all.filter(p => p.workspaceId === currentWorkspaceId)
     } catch {
       projects = []
     }
@@ -449,9 +478,9 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Get starred project IDs for the current user
   let starredProjectIds = new Set<string>()
   let starredProjectEntries: any[] = []
-  if (userId && studioCore?.starredProjectCollection) {
+  if (userId && store?.starredProjectCollection) {
     try {
-      starredProjectEntries = studioCore.starredProjectCollection.findByUser(userId)
+      starredProjectEntries = store.starredProjectCollection.all.filter(s => s.userId === userId)
       starredProjectIds = new Set(starredProjectEntries.map((s: any) => s.projectId))
     } catch {
       starredProjectIds = new Set()
@@ -461,9 +490,9 @@ export function useWorkspaceData(): WorkspaceDataState {
 
   // Get all projects across all workspaces to build starred projects list
   let allProjects: any[] = []
-  if (studioCore?.projectCollection) {
+  if (store?.projectCollection) {
     try {
-      allProjects = studioCore.projectCollection.all()
+      allProjects = store.projectCollection.all
     } catch {
       allProjects = []
     }
@@ -486,11 +515,11 @@ export function useWorkspaceData(): WorkspaceDataState {
 
   // Get shared workspaces (where user is member but NOT owner)
   let sharedWorkspaces: any[] = []
-  if (userId && studioCore?.memberCollection && workspaces.length > 0) {
+  if (userId && store?.memberCollection && workspaces.length > 0) {
     try {
-      const userMembers = studioCore.memberCollection.findByUserId(userId)
+      const userMembers = store.memberCollection.all.filter(m => m.userId === userId)
       sharedWorkspaces = workspaces.filter((ws: any) => {
-        const membership = userMembers.find((m: any) => m.workspace?.id === ws.id)
+        const membership = userMembers.find((m: any) => m.workspaceId === ws.id)
         return membership && membership.role !== "owner"
       })
     } catch {
@@ -510,27 +539,45 @@ export function useWorkspaceData(): WorkspaceDataState {
   }, [starredProjectIds])
 
   // Helper function to toggle star status
+  // Implements toggleStarProject using SDK collection create/delete
   const toggleStarProject = useCallback(async (projectId: string, workspaceId: string): Promise<boolean> => {
-    if (!userId || !studioCore) {
+    if (!userId || !store?.starredProjectCollection) {
       return false
     }
     try {
-      const result = await studioCore.toggleStarProject(userId, projectId, workspaceId)
+      const isCurrentlyStarred = starredProjectIds.has(projectId)
+      
+      if (isCurrentlyStarred) {
+        // Find and delete the starred project entry
+        const entry = store.starredProjectCollection.all.find(
+          s => s.userId === userId && s.projectId === projectId
+        )
+        if (entry) {
+          await store.starredProjectCollection.delete(entry.id)
+        }
+      } else {
+        // Create new starred project entry
+        await store.starredProjectCollection.create({
+          userId,
+          projectId,
+          workspaceId,
+        })
+      }
+      
       // Trigger refetch to update the UI
       refetchStarredProjects()
-      return result
+      return !isCurrentlyStarred
     } catch (error) {
       console.error("[useWorkspaceData] Error toggling star:", error)
       return starredProjectIds.has(projectId)
     }
-  }, [userId, studioCore, starredProjectIds, refetchStarredProjects])
+  }, [userId, store, starredProjectIds, refetchStarredProjects])
 
-  // Get features for current project
-  // Per finding-2-2-005: featureSessionCollection.findByProject(projectId)
+  // Get features for current project from SDK
   let features: any[] = []
-  if (projectId && platformFeatures?.featureSessionCollection) {
+  if (projectId && store?.featureSessionCollection) {
     try {
-      features = platformFeatures.featureSessionCollection.findByProject(projectId)
+      features = store.featureSessionCollection.all.filter(f => f.projectId === projectId)
     } catch {
       features = []
     }

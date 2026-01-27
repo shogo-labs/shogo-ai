@@ -1,17 +1,18 @@
 /**
  * useBillingData Hook
  *
- * Provides billing data from the billing domain store including:
+ * Provides billing data from the SDK domain store including:
  * - Subscriptions (Stripe subscription status per workspace)
  * - Credit Ledgers (credit balance tracking)
  * - Usage Events (credit usage history)
  *
- * Uses the API persistence layer via collection.loadAll() methods.
+ * Uses the SDK collections via collection.loadAll() methods.
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react"
-import { useDomains } from "../contexts/DomainProvider"
+import { useSDKDomain } from "../contexts/DomainProvider"
 import { useSession } from "../contexts/SessionProvider"
+import type { IDomainStore } from "../generated/domain"
 
 /**
  * Return type for useBillingData hook
@@ -64,7 +65,7 @@ export interface BillingDataState {
  */
 export function useBillingData(workspaceId: string | undefined): BillingDataState {
   const { data: session } = useSession()
-  const { billing } = useDomains()
+  const store = useSDKDomain() as IDomainStore
 
   // Loading states
   const [isLoadingSubscription, setIsLoadingSubscription] = useState(false)
@@ -82,7 +83,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
   // Load subscription data
   useEffect(() => {
     const loadSubscription = async () => {
-      if (!workspaceId || !billing?.subscriptionCollection) {
+      if (!workspaceId || !store?.subscriptionCollection) {
         setIsLoadingSubscription(false)
         return
       }
@@ -90,7 +91,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
       try {
         setIsLoadingSubscription(true)
         setError(null)
-        await billing.subscriptionCollection.loadAll({ workspaceId })
+        await store.subscriptionCollection.loadAll({ workspaceId })
       } catch (err) {
         console.error("[useBillingData] Error loading subscription:", err)
         setError(err instanceof Error ? err : new Error("Failed to load subscription"))
@@ -100,19 +101,19 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     }
 
     loadSubscription()
-  }, [workspaceId, billing, subscriptionRefetchCounter])
+  }, [workspaceId, store, subscriptionRefetchCounter])
 
   // Load credit ledger data
   useEffect(() => {
     const loadCreditLedger = async () => {
-      if (!workspaceId || !billing?.creditLedgerCollection) {
+      if (!workspaceId || !store?.creditLedgerCollection) {
         setIsLoadingCreditLedger(false)
         return
       }
 
       try {
         setIsLoadingCreditLedger(true)
-        await billing.creditLedgerCollection.loadAll({ workspaceId })
+        await store.creditLedgerCollection.loadAll({ workspaceId })
       } catch (err) {
         console.error("[useBillingData] Error loading credit ledger:", err)
         setError(err instanceof Error ? err : new Error("Failed to load credit ledger"))
@@ -122,19 +123,19 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     }
 
     loadCreditLedger()
-  }, [workspaceId, billing, creditLedgerRefetchCounter])
+  }, [workspaceId, store, creditLedgerRefetchCounter])
 
   // Load usage events
   useEffect(() => {
     const loadUsageEvents = async () => {
-      if (!workspaceId || !billing?.usageEventCollection) {
+      if (!workspaceId || !store?.usageEventCollection) {
         setIsLoadingUsageEvents(false)
         return
       }
 
       try {
         setIsLoadingUsageEvents(true)
-        await billing.usageEventCollection.loadAll({ workspaceId })
+        await store.usageEventCollection.loadAll({ workspaceId })
       } catch (err) {
         console.error("[useBillingData] Error loading usage events:", err)
         setError(err instanceof Error ? err : new Error("Failed to load usage events"))
@@ -144,7 +145,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     }
 
     loadUsageEvents()
-  }, [workspaceId, billing, usageEventsRefetchCounter])
+  }, [workspaceId, store, usageEventsRefetchCounter])
 
   // Refetch callbacks
   const refetchSubscription = useCallback(() => {
@@ -161,24 +162,24 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
 
   // Get subscription for workspace
   const subscription = useMemo(() => {
-    if (!workspaceId || !billing?.subscriptionCollection) return undefined
+    if (!workspaceId || !store?.subscriptionCollection) return undefined
     try {
-      const subs = billing.subscriptionCollection.findByWorkspace(workspaceId)
+      const subs = store.subscriptionCollection.all.filter((s: any) => s.workspaceId === workspaceId)
       return subs[0] // Return the first (and typically only) subscription
     } catch {
       return undefined
     }
-  }, [workspaceId, billing, isLoadingSubscription])
+  }, [workspaceId, store, isLoadingSubscription])
 
   // Get credit ledger for workspace
   const creditLedger = useMemo(() => {
-    if (!workspaceId || !billing?.creditLedgerCollection) return undefined
+    if (!workspaceId || !store?.creditLedgerCollection) return undefined
     try {
-      return billing.creditLedgerCollection.findByWorkspace(workspaceId)
+      return store.creditLedgerCollection.all.find((cl: any) => cl.workspaceId === workspaceId)
     } catch {
       return undefined
     }
-  }, [workspaceId, billing, isLoadingCreditLedger])
+  }, [workspaceId, store, isLoadingCreditLedger])
 
   // Get effective balance (computed view from domain)
   const effectiveBalance = useMemo(() => {
@@ -190,15 +191,18 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     }
   }, [creditLedger])
 
-  // Get recent usage events
+  // Get recent usage events (last 50, sorted by createdAt desc)
   const usageEvents = useMemo(() => {
-    if (!workspaceId || !billing?.usageEventCollection) return []
+    if (!workspaceId || !store?.usageEventCollection) return []
     try {
-      return billing.usageEventCollection.recentForWorkspace(workspaceId, 50)
+      return store.usageEventCollection.all
+        .filter((e: any) => e.workspaceId === workspaceId)
+        .sort((a: any, b: any) => b.createdAt - a.createdAt)
+        .slice(0, 50)
     } catch {
       return []
     }
-  }, [workspaceId, billing, isLoadingUsageEvents])
+  }, [workspaceId, store, isLoadingUsageEvents])
 
   // Computed helpers
   const hasActiveSubscription = subscription?.isActive ?? false

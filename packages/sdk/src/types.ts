@@ -143,3 +143,55 @@ export interface ShogoResponse<T = unknown> {
   status: number
   headers: Headers
 }
+
+// ============================================================================
+// Route Hook Types (for generated routes)
+// ============================================================================
+
+/**
+ * Context passed to route hooks
+ */
+export interface RouteHookContext<TBody = any> {
+  /** Request body (for create/update) */
+  body: TBody
+  /** URL parameters */
+  params: Record<string, string>
+  /** Query parameters */
+  query: Record<string, string>
+  /** Authenticated user ID (if available) */
+  userId?: string
+  /** Prisma client instance */
+  prisma: any
+}
+
+/**
+ * Result from a hook that can modify or reject the operation
+ */
+export interface HookResult<T = any> {
+  /** If false, operation is rejected with error */
+  ok: boolean
+  /** Error to return if ok is false */
+  error?: { code: string; message: string }
+  /** Modified data to use instead of original */
+  data?: T
+}
+
+// ============================================================================
+// SDK Environment Types (for MST stores)
+// ============================================================================
+
+import type { HttpClient } from './http/client.js'
+
+/**
+ * Environment interface for SDK MST stores.
+ * Inject this when creating the store.
+ */
+export interface ISDKEnvironment {
+  /** HTTP client for API calls */
+  http: HttpClient
+  /** Optional context for authorization */
+  context?: {
+    userId?: string
+    workspaceId?: string
+  }
+}

@@ -6,15 +6,15 @@
  */
 
 import { Hono } from "hono"
-import { PrismaClient } from "@prisma/client"
+import { PrismaClient } from "./prisma/client"
 import type { ModelHooks, RouteHookContext, HookResult, CustomRoute } from "@shogo/state-api/generators"
 
-// Prisma client instance (injected or created)
+// Prisma client instance (must be injected via setPrisma)
 let prismaInstance: PrismaClient | null = null
 
 function getPrisma(): PrismaClient {
   if (!prismaInstance) {
-    prismaInstance = new PrismaClient()
+    throw new Error("PrismaClient not initialized. Call setPrisma(client) before using routes.")
   }
   return prismaInstance
 }

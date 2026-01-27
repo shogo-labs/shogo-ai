@@ -7,7 +7,7 @@
 import { createFileRoute, useRouter, Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { getBookings, updateBookingStatus, type BookingType } from '../utils/bookings'
-import type { BookingStatus } from '@prisma/client'
+import type { BookingStatus } from '../generated/prisma/client'
 
 export const Route = createFileRoute('/bookings')({
   loader: async ({ context }) => {

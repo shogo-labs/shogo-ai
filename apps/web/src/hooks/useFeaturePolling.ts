@@ -2,27 +2,22 @@
  * useFeaturePolling - Hook for polling domain data
  *
  * Refreshes selected feature data at configurable intervals (default 25 seconds).
- * Uses domain collections via useDomains() and triggers MST collection refresh
- * via query().toArray() pattern which auto-syncs from remote via syncFromRemote.
+ * Uses SDK collections via collection.loadAll() methods.
  *
- * Supports polling multiple domains (platformFeatures, componentBuilder, etc.)
+ * Note: Currently only supports featureSessionCollection from SDK.
+ * Other collections (requirements, findings, etc.) are loaded via legacy domains.
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { useDomains } from "../contexts/DomainProvider"
+import { useSDKDomain } from "../contexts/DomainProvider"
+import type { IDomainStore } from "../generated/domain"
 
 /**
- * Default collections to poll from platformFeatures domain.
- * Each collection has a query() method that returns data from the backend
- * and auto-syncs to MST via the remote executor's syncFromRemote callback.
+ * Collections available in SDK for polling.
+ * Only featureSessionCollection is currently generated.
  */
-const PLATFORM_FEATURES_COLLECTIONS = [
+const SDK_FEATURE_COLLECTIONS = [
   "featureSessionCollection",
-  "requirementCollection",
-  "analysisFindingCollection",
-  "designDecisionCollection",
-  "implementationTaskCollection",
-  "testSpecificationCollection",
 ] as const
 
 /** Supported domain names for polling */
@@ -82,9 +77,8 @@ export function useFeaturePolling({
   const [lastRefresh, setLastRefresh] = useState<number | null>(null)
   const [error, setError] = useState<Error | null>(null)
 
-  // Access all domains from DomainProvider
-  // Using `any` type to match codebase pattern and avoid DomainsMap constraint issues
-  const domains = useDomains<{ platformFeatures: any; componentBuilder: any }>()
+  // Access SDK domain store
+  const store = useSDKDomain() as IDomainStore
 
   // Use ref to track if component is mounted (for cleanup safety)
   const isMountedRef = useRef(true)
@@ -94,7 +88,7 @@ export function useFeaturePolling({
    * @param showIndicator - Whether to show the visual polling indicator
    */
   const doRefresh = useCallback(async (showIndicator: boolean) => {
-    if (!featureId) {
+    if (!featureId || !store) {
       return
     }
 
@@ -107,28 +101,12 @@ export function useFeaturePolling({
     try {
       const refreshPromises: Promise<void>[] = []
 
-      // Iterate over each domain to sync
-      for (const domainName of domainsToSync) {
-        const domain = domains[domainName]
-        if (!domain) continue
-
-        if (domainName === "platformFeatures") {
-          // Use predefined list for platformFeatures (feature-specific collections)
-          for (const collectionName of PLATFORM_FEATURES_COLLECTIONS) {
-            const collection = domain[collectionName]
-            if (collection?.query && typeof collection.query === "function") {
-              refreshPromises.push(collection.query().toArray())
-            }
-          }
-        } else {
-          // For other domains (componentBuilder), poll all collections dynamically
-          const collectionNames = Object.keys(domain).filter(k => k.endsWith("Collection"))
-          for (const collectionName of collectionNames) {
-            const collection = domain[collectionName]
-            if (collection?.query && typeof collection.query === "function") {
-              refreshPromises.push(collection.query().toArray())
-            }
-          }
+      // Poll SDK collections that exist
+      for (const collectionName of SDK_FEATURE_COLLECTIONS) {
+        const collection = (store as any)[collectionName]
+        if (collection?.loadAll && typeof collection.loadAll === "function") {
+          // Load feature session data filtered by project (featureId is often used as projectId filter)
+          refreshPromises.push(collection.loadAll({ projectId: featureId }))
         }
       }
 
@@ -151,7 +129,7 @@ export function useFeaturePolling({
         setIsPolling(false)
       }
     }
-  }, [featureId, domains, domainsToSync])
+  }, [featureId, store])
 
   /**
    * Public refresh function - silent by default (no visual indicator)

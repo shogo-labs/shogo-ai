@@ -35,7 +35,8 @@ import { AppSidebar } from "./AppSidebar"
 import { BindingEditorPanel } from "./BindingEditorPanel"
 import { ComponentRegistryProvider } from "@/components/rendering"
 import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
+import type { IDomainStore } from "@/generated/domain"
 import { CommandPalette, useCommandPalette, SettingsModalProvider } from "../shared"
 import { useWorkspaceNavigation } from "../workspace/hooks"
 import { useToast } from "@/hooks/use-toast"
@@ -94,7 +95,8 @@ export function useSidebarCollapseContext() {
  */
 export const AppShell = observer(function AppShell() {
   // Access componentBuilder domain from DomainProvider
-  const { componentBuilder, studioCore } = useDomains()
+  const { componentBuilder } = useDomains()
+  const store = useSDKDomain() as IDomainStore
   const { setWorkspaceSlug, projectId } = useWorkspaceNavigation()
   const [searchParams, setSearchParams] = useSearchParams()
   const { toast } = useToast()
@@ -128,7 +130,7 @@ export const AppShell = observer(function AppShell() {
 
     if (workspaceId && checkoutStatus) {
       // Find workspace by ID and get its slug
-      const workspace = studioCore?.workspaceCollection?.all()?.find(
+      const workspace = store?.workspaceCollection?.all?.find(
         (w: any) => w.id === workspaceId
       )
 
@@ -164,7 +166,7 @@ export const AppShell = observer(function AppShell() {
       searchParams.delete("session_id")
       setSearchParams(searchParams, { replace: true })
     }
-  }, [searchParams, setSearchParams, studioCore, setWorkspaceSlug, toast])
+  }, [searchParams, setSearchParams, store, setWorkspaceSlug, toast])
   
   // Context value for sharing with sidebar
   const commandPaletteContextValue = {

@@ -16,11 +16,14 @@ import { SettingsPage } from './pages/SettingsPage'
 import { MonacoTestPage } from './pages/MonacoTestPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
-import { DomainProvider, type EagerCollectionsConfig } from './contexts/DomainProvider'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { SessionProvider, useSessionContext } from './contexts/SessionProvider'
 import { SupabaseAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService, MemoryBackend } from '@shogo/state-api'
 import { APIPersistence } from './persistence/APIPersistence'
+// SDK-based provider for new/migrated code
+import { SDKDomainProvider as SDKProvider } from './contexts/SDKDomainProvider'
+// Legacy provider for backward compatibility
+import { LegacyDomainProvider, type EagerCollectionsConfig } from './contexts/LegacyDomainProvider'
 import { Toaster } from '@/components/ui/toaster'
 
 // BetterAuth configuration
@@ -64,39 +67,20 @@ const domains = {
 /**
  * OPTIMIZATION: Only load essential collections on startup.
  * This reduces initial MCP calls from ~130 to ~20.
- *
- * Essential collections for initial render:
- * - studioCore: workspace/member/project/folder (sidebar, workspace switcher)
- * - componentBuilder: rendererBinding (component registry)
- * - billing: subscription (upgrade CTA)
- * - platformFeatures: featureSession (feature list if project selected)
- *
- * Deferred collections (empty array = don't load on mount):
- * - teams, multiTenancy, chat, studioChat, auth (not used on landing page)
- * - studioCore: starredProject, invitation (load on demand)
  */
 const eagerCollections: EagerCollectionsConfig = {
-  // Essential for initial render
   studioCore: [
     'workspaceCollection',
     'memberCollection',
     'projectCollection',
     'folderCollection',
-    // Deferred: starredProjectCollection, invitationCollection
   ],
-  // compositionCollection and layoutTemplateCollection are needed for ComposablePhaseView
-  // to render workspace layouts (e.g., when AI calls set_workspace)
   componentBuilder: ['rendererBindingCollection', 'compositionCollection', 'layoutTemplateCollection'],
   billing: ['subscriptionCollection', 'creditLedgerCollection'],
   platformFeatures: ['featureSessionCollection'],
-
-  // Deferred - don't load on mount (empty array)
-  // These collections are loaded on-demand when the user navigates to relevant views
   teams: [],
   multiTenancy: [],
   chat: [],
-  // studioChat: Lazy load chat data only when entering a project/chat view
-  // This avoids loading potentially large chat history on every page load
   studioChat: [],
   auth: [],
 }
@@ -104,20 +88,18 @@ const eagerCollections: EagerCollectionsConfig = {
 /**
  * Inner app component that uses session context.
  * Separated to ensure SessionProvider is available.
+ *
+ * Uses both providers during migration:
+ * - LegacyDomainProvider: state-api domains with domain-specific queries
+ * - SDKProvider: SDK-generated stores for new code
  */
 function AppWithSession() {
   // Use centralized session context (single source of truth)
   const session = useSessionContext()
 
   // Use a ref to stabilize the key during transient loading states.
-  // This prevents DomainProvider from remounting when Better Auth refetches
+  // This prevents providers from remounting when Better Auth refetches
   // the session (e.g., on tab focus), which would cause an unwanted logout.
-  //
-  // IMPORTANT: We ONLY update the ref when we see a valid user ID.
-  // We NEVER clear the ref based on session becoming null - that could be
-  // a transient state during refetch. The ref only resets on page refresh.
-  // If the user actually logs out, AuthGate handles showing the login page
-  // without needing to remount DomainProvider.
   const lastKnownUserIdRef = useRef<string | null>(null)
 
   const currentUserId = session.userId
@@ -135,11 +117,14 @@ function AppWithSession() {
 
   return (
     <EnvironmentProvider env={env}>
-      <DomainProvider key={authKey} domains={domains} eagerCollections={eagerCollections}>
-        <SchemaLoadingGate>
-          <WavesmithMetaStoreProvider>
-            <AuthProvider authService={betterAuthService}>
-              <Routes>
+      {/* Legacy provider for existing code using useDomains() */}
+      <LegacyDomainProvider key={authKey} domains={domains} eagerCollections={eagerCollections}>
+        {/* SDK provider for new code using useSDKDomain() */}
+        <SDKProvider key={`sdk-${authKey}`}>
+          <SchemaLoadingGate>
+            <WavesmithMetaStoreProvider>
+              <AuthProvider authService={betterAuthService}>
+                <Routes>
                   {/* Monaco Test Page - accessible without auth for debugging */}
                   <Route path="/monaco-test" element={<MonacoTestPage />} />
 
@@ -192,10 +177,11 @@ function AppWithSession() {
                     <Route path="templates" element={<TemplatesPage />} />
                   </Route>
                 </Routes>
-            </AuthProvider>
-          </WavesmithMetaStoreProvider>
-        </SchemaLoadingGate>
-      </DomainProvider>
+              </AuthProvider>
+            </WavesmithMetaStoreProvider>
+          </SchemaLoadingGate>
+        </SDKProvider>
+      </LegacyDomainProvider>
     </EnvironmentProvider>
   )
 }
