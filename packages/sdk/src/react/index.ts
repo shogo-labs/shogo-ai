@@ -1,8 +1,15 @@
 /**
- * Shogo SDK React Bindings
+ * Shogo SDK React Components
  *
- * React hooks and providers for domain stores.
+ * React components and hooks for MST stores.
  */
 
-export { ShogoProvider, useShogoContext } from './provider'
-export { useStore, useStoreSelector } from './hooks'
+export {
+  DomainProvider,
+  useDomain,
+  useCollection,
+  useDomainReady,
+  withDomain,
+  type DomainProviderProps,
+  type DomainProviderConfig,
+} from './DomainProvider.js'

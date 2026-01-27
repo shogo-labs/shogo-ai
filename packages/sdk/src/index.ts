@@ -98,3 +98,23 @@ export type {
 
 // MST Environment type (for generated MST stores)
 export type { ISDKEnvironment } from './types.js'
+
+// Persistence (for MST stores)
+export {
+  APIPersistence,
+  type APIPersistenceConfig,
+  type PersistenceContext,
+  type EntityContext,
+  type IPersistenceService,
+} from './persistence/index.js'
+
+// React components and hooks
+export {
+  DomainProvider,
+  useDomain,
+  useCollection,
+  useDomainReady,
+  withDomain,
+  type DomainProviderProps,
+  type DomainProviderConfig,
+} from './react/index.js'
