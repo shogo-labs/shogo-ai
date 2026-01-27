@@ -159,6 +159,7 @@ const EMBEDDED_TEMPLATES: TemplateInfo[] = [
   { name: 'form-builder', description: 'Build custom forms and collect responses', path: 'form-builder', complexity: 'intermediate', tags: ['forms', 'surveys'], features: ['form-builder', 'responses'], useCases: ['surveys', 'data collection'], models: ['Form', 'Field', 'Response', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
   { name: 'feedback-form', description: 'Collect user feedback', path: 'feedback-form', complexity: 'beginner', tags: ['feedback', 'forms'], features: ['feedback', 'ratings'], useCases: ['user feedback'], models: ['Feedback', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
   { name: 'booking-app', description: 'Schedule appointments', path: 'booking-app', complexity: 'intermediate', tags: ['scheduling', 'appointments'], features: ['calendar', 'bookings', 'availability'], useCases: ['appointment scheduling'], models: ['Booking', 'TimeSlot', 'Service', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+  { name: 'expo-app', description: 'Mobile app with Expo and React Native', path: 'expo-app', complexity: 'beginner', tags: ['mobile', 'expo', 'react-native'], features: ['CRUD', 'mobile', 'expo-router'], useCases: ['mobile todo app', 'cross-platform app'], models: ['Todo', 'User'], techStack: { frontend: 'React Native', backend: 'Hono', database: 'PostgreSQL', bundler: 'Metro' } },
 ]
 
 /**
@@ -1000,13 +1001,17 @@ const NITRO_SERVER_PORT = parseInt(process.env.NITRO_SERVER_PORT || '3000', 10)
 
 // Track current preview mode and server processes
 let isTanStackStart = process.env.IS_TANSTACK_START === 'true'
+let isExpo = process.env.IS_EXPO === 'true'
 let nitroProcess: ReturnType<typeof Bun.spawn> | null = null
+let expoServerProcess: ReturnType<typeof Bun.spawn> | null = null
 
 // Dev mode: use vite dev server with HMR instead of production builds
 let isDevMode = false
 let viteDevProcess: ReturnType<typeof Bun.spawn> | null = null
+let expoDevProcess: ReturnType<typeof Bun.spawn> | null = null
 let devModeStarting = false  // Track if dev mode is currently being started
 const VITE_DEV_PORT = parseInt(process.env.VITE_DEV_PORT || '3001', 10)
+const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '3000', 10)
 
 /**
  * Wait for PostgreSQL to be ready to accept connections.
@@ -1089,11 +1094,16 @@ app.post('/preview/restart', async (c) => {
   console.log(`[project-runtime] ⏱️  Starting preview restart for project ${PROJECT_ID}...`)
   
   try {
-    // 1. Kill existing servers (both Nitro and Vite dev if running)
+    // 1. Kill existing servers (Nitro, Vite dev, Expo if running)
     if (nitroProcess) {
       console.log('[project-runtime] Stopping existing Nitro server...')
       nitroProcess.kill()
       nitroProcess = null
+    }
+    if (expoServerProcess) {
+      console.log('[project-runtime] Stopping existing Expo server...')
+      expoServerProcess.kill()
+      expoServerProcess = null
     }
     if (viteDevProcess) {
       // Note: Killing vite will cause exit code 143 (SIGTERM) - this is expected
@@ -1102,6 +1112,11 @@ app.post('/preview/restart', async (c) => {
       viteDevProcess = null
       isDevMode = false
       devModeStarting = false
+    }
+    if (expoDevProcess) {
+      console.log('[project-runtime] Stopping existing Expo dev server...')
+      expoDevProcess.kill()
+      expoDevProcess = null
     }
     markStep('killExistingServer')
     
@@ -1115,10 +1130,12 @@ app.post('/preview/restart', async (c) => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
     isTanStackStart = !!deps['@tanstack/react-start']
+    isExpo = !!deps['expo']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
     markStep('parsePackageJson')
-    
-    console.log(`[project-runtime] Project type: ${isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'}`)
+
+    const projectType = isExpo ? 'Expo (React Native)' : isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'
+    console.log(`[project-runtime] Project type: ${projectType}`)
     
     // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
     const nodeModulesPath = join(PROJECT_DIR, 'node_modules')
@@ -1236,9 +1253,12 @@ app.post('/preview/restart', async (c) => {
     
     const nitroOutputPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
     const viteDistPath = join(PROJECT_DIR, 'dist', 'index.html')
+    const expoDistPath = join(PROJECT_DIR, 'dist', 'index.html')
+    const expoServerPath = join(PROJECT_DIR, 'server.ts')
     const nitroOutputExists = existsSync(nitroOutputPath)
     const viteDistExists = existsSync(viteDistPath)
-    const buildExists = isTanStackStart ? nitroOutputExists : viteDistExists
+    const expoDistExists = existsSync(expoDistPath) && existsSync(expoServerPath) && isExpo
+    const buildExists = isExpo ? expoDistExists : isTanStackStart ? nitroOutputExists : viteDistExists
     
     // Check if source files have been modified since the last build
     let sourceFilesModified = false
@@ -1285,20 +1305,31 @@ app.post('/preview/restart', async (c) => {
         console.log('[project-runtime] ⏱️  Building project...')
       }
       console.log('[project-runtime] ════════════════════════════════════════')
-      console.log('[project-runtime] 🔨 VITE BUILD STARTING...')
+      console.log(`[project-runtime] 🔨 ${isExpo ? 'EXPO' : 'VITE'} BUILD STARTING...`)
       console.log('[project-runtime] ════════════════════════════════════════')
       const buildStartTime = performance.now()
-      const buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
-        cwd: PROJECT_DIR,
-        stdout: 'inherit',
-        stderr: 'inherit',
-      })
+
+      let buildProc: ReturnType<typeof Bun.spawn>
+      if (isExpo) {
+        // For Expo: export web build to dist/
+        buildProc = Bun.spawn(['bunx', 'expo', 'export', '--platform', 'web', '--output-dir', 'dist'], {
+          cwd: PROJECT_DIR,
+          stdout: 'inherit',
+          stderr: 'inherit',
+        })
+      } else {
+        buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
+          cwd: PROJECT_DIR,
+          stdout: 'inherit',
+          stderr: 'inherit',
+        })
+      }
       await buildProc.exited
       const buildDuration = Math.round(performance.now() - buildStartTime)
       console.log('[project-runtime] ════════════════════════════════════════')
-      console.log(`[project-runtime] ✅ VITE BUILD COMPLETED: ${buildDuration}ms (${(buildDuration / 1000).toFixed(2)}s)`)
+      console.log(`[project-runtime] ✅ ${isExpo ? 'EXPO' : 'VITE'} BUILD COMPLETED: ${buildDuration}ms (${(buildDuration / 1000).toFixed(2)}s)`)
       console.log('[project-runtime] ════════════════════════════════════════')
-      markStep('viteBuild')
+      markStep(isExpo ? 'expoBuild' : 'viteBuild')
       
       if (buildProc.exitCode !== 0) {
         console.error('[project-runtime] Build failed')
@@ -1307,14 +1338,53 @@ app.post('/preview/restart', async (c) => {
       }
     }
     
-    // 6. Start Nitro server for TanStack Start
-    if (isTanStackStart) {
+    // 6. Start Nitro server for TanStack Start or Hono server for Expo
+    if (isExpo) {
+      const serverPath = join(PROJECT_DIR, 'server.ts')
+      if (!existsSync(serverPath)) {
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ success: false, error: 'Expo server.ts not found', timings: { steps: timings, totalMs } }, 500)
+      }
+
+      console.log(`[project-runtime] ⏱️  Starting Expo Hono server on port ${EXPO_SERVER_PORT}...`)
+      expoServerProcess = Bun.spawn(['bun', 'run', serverPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(EXPO_SERVER_PORT) },
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+
+      // Wait for server to be ready with exponential backoff
+      let serverReady = false
+      const maxAttempts = 10
+      const baseDelayMs = 100
+
+      for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${EXPO_SERVER_PORT}/`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ⏱️  Expo Hono server ready after ${attempt} attempt(s)`)
+          }
+        } catch (e) {
+          const delay = Math.min(baseDelayMs * attempt, 500)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
+      }
+      markStep('startExpoServer')
+
+      if (!serverReady) {
+        console.warn('[project-runtime] Expo Hono server may still be starting after health checks...')
+      }
+    } else if (isTanStackStart) {
       const serverPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
       if (!existsSync(serverPath)) {
         const totalMs = Math.round(performance.now() - startTime)
         return c.json({ success: false, error: 'Nitro build output not found at .output/server/index.mjs', timings: { steps: timings, totalMs } }, 500)
       }
-      
+
       console.log(`[project-runtime] ⏱️  Starting Nitro server on port ${NITRO_SERVER_PORT}...`)
       nitroProcess = Bun.spawn(['bun', 'run', serverPath], {
         cwd: PROJECT_DIR,
@@ -1322,12 +1392,12 @@ app.post('/preview/restart', async (c) => {
         stdout: 'inherit',
         stderr: 'inherit',
       })
-      
+
       // Wait for server to be ready with exponential backoff (max ~2s total)
       let serverReady = false
       const maxAttempts = 10
       const baseDelayMs = 100
-      
+
       for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
         try {
           const healthCheck = await fetch(`http://localhost:${NITRO_SERVER_PORT}/`, {
@@ -1344,12 +1414,12 @@ app.post('/preview/restart', async (c) => {
         }
       }
       markStep('startNitroServer')
-      
+
       if (!serverReady) {
         console.warn('[project-runtime] Nitro server may still be starting after health checks...')
       }
     }
-    
+
     const totalMs = Math.round(performance.now() - startTime)
     console.log('[project-runtime] ════════════════════════════════════════')
     console.log(`[project-runtime] 🎉 PREVIEW RESTART COMPLETED: ${totalMs}ms (${(totalMs / 1000).toFixed(2)}s)`)
@@ -1359,11 +1429,14 @@ app.post('/preview/restart', async (c) => {
       console.log(`[project-runtime]    • ${step}: ${durationMs}ms`)
     }
     console.log('[project-runtime] ════════════════════════════════════════')
-    
+
+    const mode = isExpo ? 'expo' : isTanStackStart ? 'nitro' : 'static'
+    const port = isExpo ? EXPO_SERVER_PORT : isTanStackStart ? NITRO_SERVER_PORT : null
+
     return c.json({
       success: true,
-      mode: isTanStackStart ? 'nitro' : 'static',
-      port: isTanStackStart ? NITRO_SERVER_PORT : null,
+      mode,
+      port,
       timings: { steps: timings, totalMs },
     })
   } catch (error: any) {
@@ -1411,11 +1484,21 @@ app.post('/preview/dev', async (c) => {
       nitroProcess.kill()
       nitroProcess = null
     }
+    if (expoServerProcess) {
+      console.log('[project-runtime] Stopping existing Expo server...')
+      expoServerProcess.kill()
+      expoServerProcess = null
+    }
     if (viteDevProcess) {
       // Note: Killing vite will cause exit code 143 (SIGTERM) - this is expected
       console.log('[project-runtime] Stopping existing Vite dev server (exit code 143 is expected)...')
       viteDevProcess.kill()
       viteDevProcess = null
+    }
+    if (expoDevProcess) {
+      console.log('[project-runtime] Stopping existing Expo dev server...')
+      expoDevProcess.kill()
+      expoDevProcess = null
     }
     markStep('killExistingServers')
     
@@ -1429,10 +1512,12 @@ app.post('/preview/dev', async (c) => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
     isTanStackStart = !!deps['@tanstack/react-start']
+    isExpo = !!deps['expo']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
     markStep('parsePackageJson')
-    
-    console.log(`[project-runtime] Project type: ${isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'}`)
+
+    const projectType = isExpo ? 'Expo (React Native)' : isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'
+    console.log(`[project-runtime] Project type: ${projectType}`)
     
     // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
     const nodeModulesPath = join(PROJECT_DIR, 'node_modules')
@@ -1519,55 +1604,111 @@ app.post('/preview/dev', async (c) => {
       }
     }
     
-    // 5. Start Vite dev server with HMR
-    console.log('[project-runtime] ════════════════════════════════════════')
-    console.log(`[project-runtime] 🚀 STARTING VITE DEV SERVER ON PORT ${VITE_DEV_PORT}...`)
-    console.log('[project-runtime] ════════════════════════════════════════')
-    
-    // Start vite dev server - served directly on subdomain for proper HMR
-    // In Kubernetes (staging/prod), set SHOGO_RUNTIME to use wss:// on port 443 for HMR
-    // Locally, let Vite auto-detect the WebSocket settings
+    // 5. Start dev server (Expo Metro or Vite) with HMR
     const isKubernetes = !!process.env.KUBERNETES_SERVICE_HOST
-    viteDevProcess = Bun.spawn(['bun', '--bun', 'vite', 'dev', '--port', String(VITE_DEV_PORT), '--host', '0.0.0.0'], {
-      cwd: PROJECT_DIR,
-      stdout: 'inherit',
-      stderr: 'inherit',
-      env: {
-        ...process.env,
-        PORT: String(VITE_DEV_PORT),
-        ...(isKubernetes && { SHOGO_RUNTIME: 'true' }),  // Signal to vite config to use production HMR settings
-      },
-    })
-    
-    // Wait for Vite dev server to be ready
+    let serverPort: number
     let serverReady = false
     const maxAttempts = 20
     const baseDelayMs = 200
-    
-    for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
-      try {
-        const healthCheck = await fetch(`http://localhost:${VITE_DEV_PORT}/`, {
-          signal: AbortSignal.timeout(500),
-        })
-        if (healthCheck.ok || healthCheck.status < 500) {
-          serverReady = true
-          console.log(`[project-runtime] ✅ Vite dev server ready after ${attempt} attempt(s)`)
-        }
-      } catch (e) {
-        const delay = Math.min(baseDelayMs * attempt, 500)
-        await new Promise(resolve => setTimeout(resolve, delay))
+
+    if (isExpo) {
+      // For Expo: run the Hono server directly (it serves dist/ or can proxy to Metro)
+      // For now, use production build + Hono server for simpler dev experience
+      console.log('[project-runtime] ════════════════════════════════════════')
+      console.log(`[project-runtime] 🚀 STARTING EXPO SERVER ON PORT ${EXPO_SERVER_PORT}...`)
+      console.log('[project-runtime] ════════════════════════════════════════')
+
+      const serverPath = join(PROJECT_DIR, 'server.ts')
+      if (!existsSync(serverPath)) {
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ success: false, error: 'Expo server.ts not found', timings: { steps: timings, totalMs } }, 500)
       }
+
+      // First build the Expo web app
+      console.log('[project-runtime] Building Expo web app...')
+      const buildProc = Bun.spawn(['bunx', 'expo', 'export', '--platform', 'web', '--output-dir', 'dist'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      await buildProc.exited
+
+      if (buildProc.exitCode !== 0) {
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ success: false, error: 'Expo build failed', timings: { steps: timings, totalMs } }, 500)
+      }
+      markStep('expoBuild')
+
+      // Start the Hono server
+      expoServerProcess = Bun.spawn(['bun', 'run', serverPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(EXPO_SERVER_PORT) },
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      serverPort = EXPO_SERVER_PORT
+
+      for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${EXPO_SERVER_PORT}/`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ✅ Expo Hono server ready after ${attempt} attempt(s)`)
+          }
+        } catch (e) {
+          const delay = Math.min(baseDelayMs * attempt, 500)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
+      }
+      markStep('startExpoServer')
+    } else {
+      console.log('[project-runtime] ════════════════════════════════════════')
+      console.log(`[project-runtime] 🚀 STARTING VITE DEV SERVER ON PORT ${VITE_DEV_PORT}...`)
+      console.log('[project-runtime] ════════════════════════════════════════')
+
+      // Start vite dev server - served directly on subdomain for proper HMR
+      // In Kubernetes (staging/prod), set SHOGO_RUNTIME to use wss:// on port 443 for HMR
+      // Locally, let Vite auto-detect the WebSocket settings
+      viteDevProcess = Bun.spawn(['bun', '--bun', 'vite', 'dev', '--port', String(VITE_DEV_PORT), '--host', '0.0.0.0'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+        env: {
+          ...process.env,
+          PORT: String(VITE_DEV_PORT),
+          ...(isKubernetes && { SHOGO_RUNTIME: 'true' }),  // Signal to vite config to use production HMR settings
+        },
+      })
+      serverPort = VITE_DEV_PORT
+
+      // Wait for Vite dev server to be ready
+      for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${VITE_DEV_PORT}/`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ✅ Vite dev server ready after ${attempt} attempt(s)`)
+          }
+        } catch (e) {
+          const delay = Math.min(baseDelayMs * attempt, 500)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
+      }
+      markStep('startViteDevServer')
     }
-    markStep('startViteDevServer')
-    
+
     if (!serverReady) {
-      console.warn('[project-runtime] ⚠️  Vite dev server may still be starting...')
+      console.warn(`[project-runtime] ⚠️  ${isExpo ? 'Expo' : 'Vite'} dev server may still be starting...`)
     }
-    
+
     // Set dev mode flag
     isDevMode = true
     devModeStarting = false
-    
+
     const totalMs = Math.round(performance.now() - startTime)
     console.log('[project-runtime] ════════════════════════════════════════')
     console.log(`[project-runtime] 🎉 DEV MODE STARTED: ${totalMs}ms (${(totalMs / 1000).toFixed(2)}s)`)
@@ -1577,13 +1718,15 @@ app.post('/preview/dev', async (c) => {
       console.log(`[project-runtime]    • ${step}: ${durationMs}ms`)
     }
     console.log('[project-runtime] ════════════════════════════════════════')
-    console.log('[project-runtime] 🔥 HMR is now active - changes will update instantly!')
-    
+    if (!isExpo) {
+      console.log('[project-runtime] 🔥 HMR is now active - changes will update instantly!')
+    }
+
     return c.json({
       success: true,
-      mode: 'dev',
-      port: VITE_DEV_PORT,
-      hmr: true,
+      mode: isExpo ? 'expo' : 'dev',
+      port: serverPort,
+      hmr: !isExpo,
       timings: { steps: timings, totalMs },
     })
   } catch (error: any) {
@@ -1607,10 +1750,25 @@ app.post('/preview/dev/stop', async (c) => {
     isDevMode = false
     return c.json({ success: true, message: 'Dev mode stopped' })
   }
+  if (expoDevProcess) {
+    console.log('[project-runtime] Stopping Expo dev server...')
+    expoDevProcess.kill()
+    expoDevProcess = null
+    isDevMode = false
+    return c.json({ success: true, message: 'Expo dev mode stopped' })
+  }
+  if (expoServerProcess) {
+    console.log('[project-runtime] Stopping Expo Hono server...')
+    expoServerProcess.kill()
+    expoServerProcess = null
+    isDevMode = false
+    return c.json({ success: true, message: 'Expo server stopped' })
+  }
   return c.json({ success: true, message: 'Dev mode was not running' })
 })
 
-console.log(`[project-runtime] Preview mode: ${isTanStackStart ? 'TanStack Start (proxy)' : 'Static files'}`)
+const previewMode = isExpo ? 'Expo (Hono server)' : isTanStackStart ? 'TanStack Start (proxy)' : 'Static files'
+console.log(`[project-runtime] Preview mode: ${previewMode}`)
 
 /**
  * MIME type mapping for static files (used for plain Vite projects)
