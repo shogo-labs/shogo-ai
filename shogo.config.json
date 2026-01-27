@@ -1,0 +1,31 @@
+{
+  "schema": "./prisma/schema.prisma",
+  "models": [
+    "Workspace",
+    "Project",
+    "Folder",
+    "Member",
+    "Invitation",
+    "StarredProject",
+    "Notification",
+    "BillingAccount",
+    "Subscription",
+    "CreditLedger",
+    "UsageEvent",
+    "ChatSession",
+    "ChatMessage",
+    "ToolCallLog"
+  ],
+  "outputs": [
+    {
+      "dir": "./apps/api/src/generated",
+      "generate": ["routes", "hooks"],
+      "perModel": true
+    },
+    {
+      "dir": "./apps/web/src/generated",
+      "generate": ["types", "mst"],
+      "perModel": true
+    }
+  ]
+}

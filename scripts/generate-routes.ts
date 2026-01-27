@@ -1,9 +1,16 @@
 #!/usr/bin/env bun
 /**
- * Generate API routes from Prisma schema
- * 
- * Usage: bun run scripts/generate-routes.ts
+ * @deprecated Use `bun run generate:routes` or `shogo generate` instead.
+ *
+ * This script has been replaced by the SDK's unified generator.
+ * See shogo.config.json for configuration.
+ *
+ * Old usage: bun run scripts/generate-routes.ts
+ * New usage: bun run packages/sdk/bin/shogo.ts generate
  */
+
+console.warn('⚠️  DEPRECATED: Use `bun run generate:routes` instead')
+console.warn('   This script will be removed in a future version.\n')
 
 import { prismaToRoutesCode } from "../packages/state-api/src/generators/prisma-routes"
 import { writeFileSync } from "fs"

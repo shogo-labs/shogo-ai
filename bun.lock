@@ -154,7 +154,8 @@
         "shogo": "./bin/shogo.ts",
       },
       "dependencies": {
-        "mobx": "^6.13.0",
+        "mobx": "^6.15.0",
+        "mobx-state-tree": "^7.0.2",
       },
       "devDependencies": {
         "@playwright/test": "^1.40.0",
@@ -1797,7 +1798,7 @@
 
     "mobx-react-lite": ["mobx-react-lite@4.1.1", "", { "dependencies": { "use-sync-external-store": "^1.4.0" }, "peerDependencies": { "mobx": "^6.9.0", "react": "^16.8.0 || ^17 || ^18 || ^19" } }, "sha512-iUxiMpsvNraCKXU+yPotsOncNNmyeS2B5DKL+TL6Tar/xm+wwNJAubJmtRSeAoYawdZqwv8Z/+5nPRHeQxTiXg=="],
 
-    "mobx-state-tree": ["mobx-state-tree@6.0.1", "", { "peerDependencies": { "mobx": "^6.3.0" } }, "sha512-ZmC90+aaZj4Tvwz/G8kihAcZzejiHfkaIrwyneH7ACoZwWY2Gw5SP1mPPPQbVehsXJ8/OhDT4cPUvvzy//+Qog=="],
+    "mobx-state-tree": ["mobx-state-tree@7.0.2", "", { "dependencies": { "ts-essentials": "^9.4.1" }, "peerDependencies": { "mobx": "^6.3.0" } }, "sha512-Qmqgo2Ho1/JRTquo0EWw0ZA/k4wTUNPMIBg98ALGN1V/0Gupic7dg4GDYUhNbiLsYHpp48VgpaCDpDIKV+jNkQ=="],
 
     "monaco-editor": ["monaco-editor@0.55.1", "", { "dependencies": { "dompurify": "3.2.7", "marked": "14.0.0" } }, "sha512-jz4x+TJNFHwHtwuV9vA9rMujcZRb0CEilTEwG2rRSpe/A7Jdkuj8xPKttCgOh+v/lkHy7HsZ64oj+q3xoAFl9A=="],
 
@@ -2133,6 +2134,8 @@
 
     "trough": ["trough@2.2.0", "", {}, "sha512-tmMpK00BjZiUyVyvrBK7knerNgmgvcV/KLVyuma/SC+TQN167GrMRciANTz09+k3zW8L8t60jWO1GpfkZdjTaw=="],
 
+    "ts-essentials": ["ts-essentials@9.4.2", "", { "peerDependencies": { "typescript": ">=4.1.0" }, "optionalPeers": ["typescript"] }, "sha512-mB/cDhOvD7pg3YCLk2rOtejHjjdSi9in/IBYE13S+8WA5FBSraYf4V/ws55uvs0IvQ/l0wBOlXy5yBNZ9Bl8ZQ=="],
+
     "ts-interface-checker": ["ts-interface-checker@0.1.13", "", {}, "sha512-Y/arvbn+rrz3JCKl9C4kVNfTfSm2/mEp5FSz5EsZSANGPSlQrpRI5M4PKF+mJnE52jOO90PnPSc3Ur3bTQw0gA=="],
 
     "tslib": ["tslib@2.8.1", "", {}, "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="],
@@ -2384,6 +2387,10 @@
     "@shogo/mcp/ai-sdk-provider-claude-code": ["ai-sdk-provider-claude-code@2.3.0", "", { "dependencies": { "@ai-sdk/provider": "2.0.0", "@ai-sdk/provider-utils": "3.0.9", "@anthropic-ai/claude-agent-sdk": "^0.1.59" }, "peerDependencies": { "zod": "^3.0.0 || ^4.0.0" } }, "sha512-iUP1v4DUPITgW3I4hSF3tCVBTv2q9F6CKR96Y1lOYqQUjjeZunv2MqImnCsIBvDdmCLu/Qj8+iVAmNaaN4iqTg=="],
 
     "@shogo/project-runtime/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+
+    "@shogo/state-api/mobx-state-tree": ["mobx-state-tree@6.0.1", "", { "peerDependencies": { "mobx": "^6.3.0" } }, "sha512-ZmC90+aaZj4Tvwz/G8kihAcZzejiHfkaIrwyneH7ACoZwWY2Gw5SP1mPPPQbVehsXJ8/OhDT4cPUvvzy//+Qog=="],
+
+    "@shogo/web/mobx-state-tree": ["mobx-state-tree@6.0.1", "", { "peerDependencies": { "mobx": "^6.3.0" } }, "sha512-ZmC90+aaZj4Tvwz/G8kihAcZzejiHfkaIrwyneH7ACoZwWY2Gw5SP1mPPPQbVehsXJ8/OhDT4cPUvvzy//+Qog=="],
 
     "@tailwindcss/oxide-wasm32-wasi/@emnapi/core": ["@emnapi/core@1.8.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.1.0", "tslib": "^2.4.0" }, "bundled": true }, "sha512-AvT9QFpxK0Zd8J0jopedNm+w/2fIzvtPKPjqyw9jwvBaReTTqPBk9Hixaz7KbjimP+QNz605/XnjFcDAL2pqBg=="],
 
