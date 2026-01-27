@@ -9,7 +9,7 @@
 
 import { createClient, type ShogoClient } from '@shogo-ai/sdk'
 import { prisma } from './db'
-import type { PrismaClient } from '@prisma/client'
+import type { PrismaClient } from '../generated/prisma/client'
 
 // Determine API URL based on environment
 const getApiUrl = () => {

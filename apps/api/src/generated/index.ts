@@ -5,7 +5,7 @@
  */
 
 import { Hono } from "hono"
-import { PrismaClient } from "@prisma/client"
+import { PrismaClient } from "./prisma/client"
 
 // Route imports
 import { createUserRoutes, setPrisma as setPrismaUser, setUserHooks } from "./user.routes"
@@ -43,41 +43,95 @@ import { chatMessageHooks } from "./chat-message.hooks"
 import { toolCallLogHooks } from "./tool-call-log.hooks"
 import { featureSessionHooks } from "./feature-session.hooks"
 
-// Re-export individual routes
-export * from "./user.routes"
-export * from "./workspace.routes"
-export * from "./project.routes"
-export * from "./starred-project.routes"
-export * from "./member.routes"
-export * from "./billing-account.routes"
-export * from "./invitation.routes"
-export * from "./folder.routes"
-export * from "./notification.routes"
-export * from "./subscription.routes"
-export * from "./credit-ledger.routes"
-export * from "./usage-event.routes"
-export * from "./chat-session.routes"
-export * from "./chat-message.routes"
-export * from "./tool-call-log.routes"
-export * from "./feature-session.routes"
+// Re-export route creators and setters
+export {
+  createUserRoutes,
+  setPrismaUser,
+  setUserHooks,
+  createWorkspaceRoutes,
+  setPrismaWorkspace,
+  setWorkspaceHooks,
+  createProjectRoutes,
+  setPrismaProject,
+  setProjectHooks,
+  createStarredProjectRoutes,
+  setPrismaStarredProject,
+  setStarredProjectHooks,
+  createMemberRoutes,
+  setPrismaMember,
+  setMemberHooks,
+  createBillingAccountRoutes,
+  setPrismaBillingAccount,
+  setBillingAccountHooks,
+  createInvitationRoutes,
+  setPrismaInvitation,
+  setInvitationHooks,
+  createFolderRoutes,
+  setPrismaFolder,
+  setFolderHooks,
+  createNotificationRoutes,
+  setPrismaNotification,
+  setNotificationHooks,
+  createSubscriptionRoutes,
+  setPrismaSubscription,
+  setSubscriptionHooks,
+  createCreditLedgerRoutes,
+  setPrismaCreditLedger,
+  setCreditLedgerHooks,
+  createUsageEventRoutes,
+  setPrismaUsageEvent,
+  setUsageEventHooks,
+  createChatSessionRoutes,
+  setPrismaChatSession,
+  setChatSessionHooks,
+  createChatMessageRoutes,
+  setPrismaChatMessage,
+  setChatMessageHooks,
+  createToolCallLogRoutes,
+  setPrismaToolCallLog,
+  setToolCallLogHooks,
+  createFeatureSessionRoutes,
+  setPrismaFeatureSession,
+  setFeatureSessionHooks
+}
 
-// Re-export hooks
-export * from "./user.hooks"
-export * from "./workspace.hooks"
-export * from "./project.hooks"
-export * from "./starred-project.hooks"
-export * from "./member.hooks"
-export * from "./billing-account.hooks"
-export * from "./invitation.hooks"
-export * from "./folder.hooks"
-export * from "./notification.hooks"
-export * from "./subscription.hooks"
-export * from "./credit-ledger.hooks"
-export * from "./usage-event.hooks"
-export * from "./chat-session.hooks"
-export * from "./chat-message.hooks"
-export * from "./tool-call-log.hooks"
-export * from "./feature-session.hooks"
+// Re-export hooks (model-specific)
+export {
+  userHooks,
+  workspaceHooks,
+  projectHooks,
+  starredProjectHooks,
+  memberHooks,
+  billingAccountHooks,
+  invitationHooks,
+  folderHooks,
+  notificationHooks,
+  subscriptionHooks,
+  creditLedgerHooks,
+  usageEventHooks,
+  chatSessionHooks,
+  chatMessageHooks,
+  toolCallLogHooks,
+  featureSessionHooks
+}
+
+// Re-export hook types
+export type { UserHooks } from "./user.hooks"
+export type { WorkspaceHooks } from "./workspace.hooks"
+export type { ProjectHooks } from "./project.hooks"
+export type { StarredProjectHooks } from "./starred-project.hooks"
+export type { MemberHooks } from "./member.hooks"
+export type { BillingAccountHooks } from "./billing-account.hooks"
+export type { InvitationHooks } from "./invitation.hooks"
+export type { FolderHooks } from "./folder.hooks"
+export type { NotificationHooks } from "./notification.hooks"
+export type { SubscriptionHooks } from "./subscription.hooks"
+export type { CreditLedgerHooks } from "./credit-ledger.hooks"
+export type { UsageEventHooks } from "./usage-event.hooks"
+export type { ChatSessionHooks } from "./chat-session.hooks"
+export type { ChatMessageHooks } from "./chat-message.hooks"
+export type { ToolCallLogHooks } from "./tool-call-log.hooks"
+export type { FeatureSessionHooks } from "./feature-session.hooks"
 
 /**
  * Create all routes and mount them on a single Hono app

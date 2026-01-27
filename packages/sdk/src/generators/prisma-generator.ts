@@ -91,13 +91,32 @@ export interface PrismaDMMF {
 
 /**
  * Parse Prisma schema file to DMMF
+ * 
+ * Note: Prisma 7 uses prisma.config.ts for datasource URL.
+ * We pass the config path to getDMMF for proper parsing.
  */
 export async function parsePrismaSchema(schemaPath: string): Promise<PrismaDMMF> {
   const { getDMMF } = await import('@prisma/internals')
-  const { readFileSync } = await import('fs')
+  const { readFileSync, existsSync } = await import('fs')
+  const { dirname, join, resolve } = await import('path')
   
   const schemaString = readFileSync(schemaPath, 'utf-8')
-  return await getDMMF({ datamodel: schemaString }) as unknown as PrismaDMMF
+  const schemaDir = dirname(schemaPath)
+  const projectRoot = resolve(schemaDir, '..')
+  
+  // Check for prisma.config.ts in the schema's parent directory (project root)
+  const possibleConfigPaths = [
+    join(projectRoot, 'prisma.config.ts'),
+    join(schemaDir, 'prisma.config.ts'),
+  ]
+  
+  const configPath = possibleConfigPaths.find(p => existsSync(p))
+  
+  // getDMMF in Prisma 7 requires the config path for datasource URL
+  return await getDMMF({ 
+    datamodel: schemaString,
+    ...(configPath && { prismaConfigPath: configPath }),
+  }) as unknown as PrismaDMMF
 }
 
 /**

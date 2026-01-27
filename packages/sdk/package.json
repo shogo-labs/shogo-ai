@@ -47,7 +47,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.40.0",
-    "@prisma/internals": "^6.0.0",
+    "@prisma/internals": "^7.3.0",
     "@types/react": "^19.0.0",
     "react": "^19.0.0",
     "tsup": "^8.0.0",

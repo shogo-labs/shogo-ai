@@ -87,7 +87,7 @@ export function generateModelRoutes(
     ' */',
     '',
     'import { Hono } from "hono"',
-    'import { PrismaClient } from "@prisma/client"',
+    'import { PrismaClient } from "./prisma/client"',
     `import type { ${modelName}Hooks } from "./${toFileName(modelName)}.hooks"`,
     '',
     '// Prisma client instance (injected)',
@@ -343,12 +343,23 @@ export function generateModelHooks(model: PrismaModel): GeneratedHooksFile {
     ' * This file is safe to edit - it will not be overwritten.',
     ' */',
     '',
-    'import type { RouteHookContext, HookResult } from "@shogo/sdk"',
+    '/**',
+    ' * Result from a hook that can modify or reject the operation',
+    ' */',
+    'export interface HookResult<T = any> {',
+    '  ok: boolean',
+    '  error?: { code: string; message: string }',
+    '  data?: T',
+    '}',
     '',
     '/**',
     ` * Hook context with Prisma client`,
     ' */',
-    'export interface HookContext extends RouteHookContext {',
+    'export interface HookContext {',
+    '  body: any',
+    '  params: Record<string, string>',
+    '  query: Record<string, string>',
+    '  userId?: string',
     '  prisma: any',
     '}',
     '',
@@ -430,7 +441,7 @@ export function generateRoutesIndex(models: PrismaModel[]): string {
     ' */',
     '',
     'import { Hono } from "hono"',
-    'import { PrismaClient } from "@prisma/client"',
+    'import { PrismaClient } from "./prisma/client"',
     '',
     '// Route imports',
   ]
@@ -450,19 +461,35 @@ export function generateRoutesIndex(models: PrismaModel[]): string {
   }
 
   lines.push('')
-  lines.push('// Re-export individual routes')
-
+  lines.push('// Re-export route creators and setters')
+  lines.push('export {')
+  
+  const routeExports: string[] = []
   for (const model of models) {
-    const fileName = toFileName(model.name)
-    lines.push(`export * from "./${fileName}.routes"`)
+    routeExports.push(`  create${model.name}Routes`)
+    routeExports.push(`  setPrisma${model.name}`)
+    routeExports.push(`  set${model.name}Hooks`)
   }
+  lines.push(routeExports.join(',\n'))
+  lines.push('}')
 
   lines.push('')
-  lines.push('// Re-export hooks')
+  lines.push('// Re-export hooks (model-specific)')
+  lines.push('export {')
+  
+  const hookExports: string[] = []
+  for (const model of models) {
+    const hookVarName = toCamelCase(model.name) + 'Hooks'
+    hookExports.push(`  ${hookVarName}`)
+  }
+  lines.push(hookExports.join(',\n'))
+  lines.push('}')
 
+  lines.push('')
+  lines.push('// Re-export hook types')
   for (const model of models) {
     const fileName = toFileName(model.name)
-    lines.push(`export * from "./${fileName}.hooks"`)
+    lines.push(`export type { ${model.name}Hooks } from "./${fileName}.hooks"`)
   }
 
   lines.push('')

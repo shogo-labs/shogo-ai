@@ -5,7 +5,7 @@
  */
 
 import { Hono } from "hono"
-import { PrismaClient } from "@prisma/client"
+import { PrismaClient } from "./prisma/client"
 import type { InvitationHooks } from "./invitation.hooks"
 
 // Prisma client instance (injected)

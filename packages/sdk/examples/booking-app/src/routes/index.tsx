@@ -9,7 +9,7 @@ import { useState } from 'react'
 import { createUser, type UserType } from '../utils/user'
 import { getBookingStats, getBookings, updateBookingStatus, type BookingType, type BookingStats } from '../utils/bookings'
 import { getServices, type ServiceType } from '../utils/services'
-import type { BookingStatus } from '@prisma/client'
+import type { BookingStatus } from '../generated/prisma/client'
 
 export const Route = createFileRoute('/')({
   loader: async ({ context }) => {

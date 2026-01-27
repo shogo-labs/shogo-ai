@@ -5,12 +5,23 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
-import type { RouteHookContext, HookResult } from "@shogo/sdk"
+/**
+ * Result from a hook that can modify or reject the operation
+ */
+export interface HookResult<T = any> {
+  ok: boolean
+  error?: { code: string; message: string }
+  data?: T
+}
 
 /**
  * Hook context with Prisma client
  */
-export interface HookContext extends RouteHookContext {
+export interface HookContext {
+  body: any
+  params: Record<string, string>
+  query: Record<string, string>
+  userId?: string
   prisma: any
 }
 
