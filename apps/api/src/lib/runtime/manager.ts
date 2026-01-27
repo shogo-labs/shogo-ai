@@ -477,7 +477,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   async stop(projectId: string): Promise<void> {
     const runtime = this.runtimes.get(projectId)
     if (!runtime) {
-      throw new Error(`No runtime found for project ${projectId}`)
+      // Idempotent: succeed silently if not running
+      return
     }
 
     this.stopHealthCheck(projectId)

@@ -186,10 +186,8 @@ export function databaseRoutes(config: DatabaseRoutesConfig) {
 
     const instance = studioInstances.get(projectId)
     if (!instance) {
-      return c.json(
-        { error: { code: "not_running", message: "Prisma Studio is not running" } },
-        404
-      )
+      // Return success even if not running (idempotent)
+      return c.json({ success: true, message: "Prisma Studio is not running" }, 200)
     }
 
     console.log(`[Database] Stopping Prisma Studio for ${projectId}`)
@@ -213,12 +211,13 @@ export function databaseRoutes(config: DatabaseRoutesConfig) {
     const projectId = c.req.param("projectId")
     const projectDir = join(workspacesDir, projectId)
 
-    // Verify project exists
+    // If project directory doesn't exist yet, return not initialized status
     if (!existsSync(projectDir)) {
-      return c.json(
-        { error: { code: "project_not_found", message: "Project not found" } },
-        404
-      )
+      return c.json({
+        status: 'not_initialized',
+        hasPrisma: false,
+        message: 'Project directory not yet initialized'
+      }, 200)
     }
 
     // Check if Prisma schema exists
@@ -251,12 +250,13 @@ export function databaseRoutes(config: DatabaseRoutesConfig) {
     const projectId = c.req.param("projectId")
     const projectDir = join(workspacesDir, projectId)
 
-    // Verify project exists
+    // If project directory doesn't exist yet, return status indicating not ready
     if (!existsSync(projectDir)) {
-      return c.json(
-        { error: { code: "project_not_found", message: "Project not found" } },
-        404
-      )
+      return c.json({
+        url: null,
+        status: 'not_initialized',
+        message: 'Project directory not yet initialized. Start the project runtime first.'
+      }, 200)
     }
 
     // Check if Prisma schema exists

@@ -164,12 +164,15 @@ export function testsRoutes(config: TestsRoutesConfig) {
     const projectId = c.req.param("projectId")
     const projectDir = join(workspacesDir, projectId)
 
-    // Verify project exists
+    // If project directory doesn't exist yet, return empty list
+    // (directory is created when runtime starts)
     if (!existsSync(projectDir)) {
-      return c.json(
-        { error: { code: "project_not_found", message: "Project not found" } },
-        404
-      )
+      return c.json({
+        ok: true,
+        files: [],
+        hasTests: false,
+        message: "Project directory not yet initialized"
+      })
     }
 
     // Look for test files in common locations

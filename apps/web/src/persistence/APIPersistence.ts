@@ -326,13 +326,13 @@ export class APIPersistence implements IPersistenceService {
       if (dateFields.includes(key) && typeof value === 'number') {
         result[key] = new Date(value).toISOString()
       }
-      // Convert MST reference fields to *Id fields for API
+      // Convert MST reference fields to *Id fields for Prisma API
       // (e.g., session: "uuid" -> sessionId: "uuid")
+      // Only send the *Id field - Prisma doesn't accept the relation field as a string
       else if (referenceFields.includes(key) && typeof value === 'string') {
-        // Keep the original reference field for convenience
-        result[key] = value
-        // Also add the *Id version for Prisma compatibility
+        // Add the *Id version for Prisma compatibility (scalar foreign key)
         result[`${key}Id`] = value
+        // Don't include the original reference field - Prisma expects it as a relation object
       }
       // Recursively transform nested objects
       else if (value && typeof value === 'object' && !Array.isArray(value)) {
