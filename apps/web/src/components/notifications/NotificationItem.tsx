@@ -21,6 +21,8 @@ import {
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { useDomains } from "@/contexts/DomainProvider"
+// Note: This component uses legacy domain methods (markNotificationRead, acceptInvitation, declineInvitation)
+// SDK migration pending for these action methods
 import { useSession } from "@/contexts/SessionProvider"
 import type { Notification } from "./NotificationList"
 

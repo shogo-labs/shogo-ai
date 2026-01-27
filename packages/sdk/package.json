@@ -1,5 +1,5 @@
 {
-  "name": "@shogo-ai/sdk",
+  "name": "@shogo/sdk",
   "version": "0.2.0",
   "description": "Shogo Platform SDK - Zero-boilerplate auth, database, and state management for TanStack Start apps",
   "type": "module",

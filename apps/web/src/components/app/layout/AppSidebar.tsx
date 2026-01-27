@@ -86,7 +86,8 @@ import { WorkspaceSwitcher } from "../workspace"
 import { useWorkspaceNavigation, useWorkspaceData } from "../workspace"
 import { useSession } from "@/contexts/SessionProvider"
 import { useCommandPaletteContext } from "./AppShell"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
+import type { IDomainStore } from "@/generated/domain"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { LogOut, User, Sun, Moon, Monitor } from "lucide-react"
 
@@ -434,6 +435,8 @@ interface InboxPopoverProps {
 }
 
 const InboxPopover = observer(function InboxPopover({ collapsed, onInvitationAccepted }: InboxPopoverProps) {
+  // Use SDK store for data loading, legacy domains for actions (acceptInvitation, etc.)
+  const store = useSDKDomain() as IDomainStore
   const { studioCore } = useDomains()
   const { data: session } = useSession()
   const userEmail = session?.user?.email
@@ -446,19 +449,19 @@ const InboxPopover = observer(function InboxPopover({ collapsed, onInvitationAcc
 
   // Load invitations when popover opens
   const loadInvitations = useCallback(async () => {
-    if (!studioCore?.invitationCollection || !userEmail) {
+    if (!store?.invitationCollection || !userEmail) {
       setIsLoading(false)
       return
     }
 
     setIsLoading(true)
     try {
-      // Load invitations from backend
-      await studioCore.invitationCollection.query().toArray()
-      await studioCore.workspaceCollection.query().toArray()
+      // Load invitations from backend using SDK
+      await store.invitationCollection.loadAll({ email: userEmail })
+      await store.workspaceCollection.loadAll({})
 
-      // Get invitations for current user's email
-      const userInvitations = studioCore.invitationCollection.findByEmail(userEmail)
+      // Get invitations for current user's email from SDK collection
+      const userInvitations = store.invitationCollection.all.filter((i: any) => i.email === userEmail)
       const pending = userInvitations.filter((i: any) => i.status === "pending")
 
       setInvitations(pending.map((i: any) => ({
@@ -466,16 +469,16 @@ const InboxPopover = observer(function InboxPopover({ collapsed, onInvitationAcc
         email: i.email,
         role: i.role,
         expiresAt: i.expiresAt,
-        isExpired: i.isExpired || Date.now() > i.expiresAt,
-        workspace: i.workspace ? { id: i.workspace.id, name: i.workspace.name } : undefined,
-        project: i.project ? { id: i.project.id, name: i.project.name } : undefined,
+        isExpired: Date.now() > i.expiresAt,
+        workspace: i.workspaceId ? store.workspaceCollection.get(i.workspaceId) : undefined,
+        project: i.projectId ? store.projectCollection.get(i.projectId) : undefined,
       })))
     } catch (err) {
       console.error("[InboxPopover] Failed to load invitations:", err)
     } finally {
       setIsLoading(false)
     }
-  }, [userEmail, studioCore])
+  }, [userEmail, store])
 
   // Load invitations on mount and when popover opens
   useEffect(() => {
@@ -665,7 +668,9 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
   const { setWorkspaceSlug, setFolderId } = useWorkspaceNavigation()
   const { workspaces, currentWorkspace, projects, folders, isLoading, refetchFolders, refetchWorkspaces } = useWorkspaceData()
   const { openCommandPalette } = useCommandPaletteContext()
-  const { studioCore, billing, auth } = useDomains()
+  // Use SDK for data, legacy domains for actions (createFolder, etc.) and auth
+  const store = useSDKDomain() as IDomainStore
+  const { studioCore, auth } = useDomains()
 
   // Sidebar collapse state - persisted to localStorage
   const [internalCollapsed, setInternalCollapsed] = useState(() => {
@@ -696,18 +701,18 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
   const [newFolderName, setNewFolderName] = useState("")
   const [renameFolderName, setRenameFolderName] = useState("")
 
-  // Get active subscription for current workspace from billing domain
+  // Get active subscription for current workspace from SDK store
   // Uses MST observer pattern - component re-renders when billing data changes
   const getActiveSubscription = useCallback((workspaceId: string | undefined) => {
-    if (!workspaceId || !billing?.subscriptionCollection) return null
+    if (!workspaceId || !store?.subscriptionCollection) return null
     try {
-      const subscriptions = billing.subscriptionCollection.findByWorkspace(workspaceId)
+      const subscriptions = store.subscriptionCollection.all.filter((s: any) => s.workspaceId === workspaceId)
       // Find active or trialing subscription
       return subscriptions.find((s: any) => s.status === 'active' || s.status === 'trialing') || null
     } catch {
       return null
     }
-  }, [billing])
+  }, [store])
 
   const subscription = getActiveSubscription(currentWorkspace?.id)
 

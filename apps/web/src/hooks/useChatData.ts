@@ -1,17 +1,18 @@
 /**
  * useChatData Hook
  *
- * Provides chat data from the studioChat domain store including:
+ * Provides chat data from the SDK domain store including:
  * - Chat Sessions (AI conversation sessions)
  * - Chat Messages (messages within sessions)
  * - Tool Call Logs (tool execution history)
  *
- * Uses the API persistence layer via collection.loadAll() methods.
+ * Uses the SDK collections via collection.loadAll() methods.
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react"
-import { useDomains } from "../contexts/DomainProvider"
+import { useSDKDomain } from "../contexts/DomainProvider"
 import { useSession } from "../contexts/SessionProvider"
+import type { IDomainStore } from "../generated/domain"
 
 /**
  * Return type for useChatData hook
@@ -95,7 +96,7 @@ export function useChatData(options: UseChatDataOptions = {}): ChatDataState {
   const effectiveContextId = contextId || projectId
 
   const { data: session } = useSession()
-  const { studioChat } = useDomains()
+  const store = useSDKDomain() as IDomainStore
 
   // State
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>()
@@ -112,7 +113,7 @@ export function useChatData(options: UseChatDataOptions = {}): ChatDataState {
   // Load chat sessions
   useEffect(() => {
     const loadSessions = async () => {
-      if (!studioChat?.chatSessionCollection) {
+      if (!store?.chatSessionCollection) {
         setIsLoadingSessions(false)
         return
       }
@@ -127,7 +128,7 @@ export function useChatData(options: UseChatDataOptions = {}): ChatDataState {
         if (effectiveContextId) filter.contextId = effectiveContextId
         if (projectId) filter.projectId = projectId
 
-        await studioChat.chatSessionCollection.loadAll(filter)
+        await store.chatSessionCollection.loadAll(filter)
       } catch (err) {
         console.error("[useChatData] Error loading sessions:", err)
         setError(err instanceof Error ? err : new Error("Failed to load chat sessions"))
@@ -137,19 +138,19 @@ export function useChatData(options: UseChatDataOptions = {}): ChatDataState {
     }
 
     loadSessions()
-  }, [studioChat, contextType, effectiveContextId, projectId, sessionsRefetchCounter])
+  }, [store, contextType, effectiveContextId, projectId, sessionsRefetchCounter])
 
   // Load messages for current session
   useEffect(() => {
     const loadMessages = async () => {
-      if (!currentSessionId || !studioChat?.chatMessageCollection) {
+      if (!currentSessionId || !store?.chatMessageCollection) {
         setIsLoadingMessages(false)
         return
       }
 
       try {
         setIsLoadingMessages(true)
-        await studioChat.chatMessageCollection.loadAll({ sessionId: currentSessionId })
+        await store.chatMessageCollection.loadAll({ sessionId: currentSessionId })
       } catch (err) {
         console.error("[useChatData] Error loading messages:", err)
         setError(err instanceof Error ? err : new Error("Failed to load messages"))
@@ -159,24 +160,24 @@ export function useChatData(options: UseChatDataOptions = {}): ChatDataState {
     }
 
     loadMessages()
-  }, [currentSessionId, studioChat, messagesRefetchCounter])
+  }, [currentSessionId, store, messagesRefetchCounter])
 
   // Load tool calls for current session
   useEffect(() => {
     const loadToolCalls = async () => {
-      if (!currentSessionId || !studioChat?.toolCallLogCollection) {
+      if (!currentSessionId || !store?.toolCallLogCollection) {
         return
       }
 
       try {
-        await studioChat.toolCallLogCollection.loadAll({ chatSessionId: currentSessionId })
+        await store.toolCallLogCollection.loadAll({ chatSessionId: currentSessionId })
       } catch (err) {
         console.error("[useChatData] Error loading tool calls:", err)
       }
     }
 
     loadToolCalls()
-  }, [currentSessionId, studioChat])
+  }, [currentSessionId, store])
 
   // Refetch callbacks
   const refetchSessions = useCallback(() => {
@@ -189,60 +190,60 @@ export function useChatData(options: UseChatDataOptions = {}): ChatDataState {
 
   // Get sessions based on context filters
   const sessions = useMemo(() => {
-    if (!studioChat?.chatSessionCollection) return []
+    if (!store?.chatSessionCollection) return []
     try {
+      const allSessions = store.chatSessionCollection.all
       if (contextType && effectiveContextId) {
-        return studioChat.chatSessionCollection.findByContext(effectiveContextId)
+        return allSessions.filter((s: any) => s.contextId === effectiveContextId)
       } else if (contextType) {
-        return studioChat.chatSessionCollection.findByContextType(contextType)
+        return allSessions.filter((s: any) => s.contextType === contextType)
       }
-      return studioChat.chatSessionCollection.all()
+      return allSessions
     } catch {
       return []
     }
-  }, [studioChat, contextType, effectiveContextId, isLoadingSessions])
+  }, [store, contextType, effectiveContextId, isLoadingSessions])
 
   // Get current session
   const currentSession = useMemo(() => {
-    if (!currentSessionId || !studioChat?.chatSessionCollection) return undefined
+    if (!currentSessionId || !store?.chatSessionCollection) return undefined
     try {
-      return studioChat.chatSessionCollection.get(currentSessionId)
+      return store.chatSessionCollection.get(currentSessionId)
     } catch {
       return undefined
     }
-  }, [currentSessionId, studioChat, isLoadingSessions])
+  }, [currentSessionId, store, isLoadingSessions])
 
   // Get messages for current session
   const messages = useMemo(() => {
-    if (!currentSessionId || !studioChat?.chatMessageCollection) return []
+    if (!currentSessionId || !store?.chatMessageCollection) return []
     try {
-      return studioChat.chatMessageCollection.findBySession(currentSessionId)
+      return store.chatMessageCollection.all.filter((m: any) => m.sessionId === currentSessionId)
     } catch {
       return []
     }
-  }, [currentSessionId, studioChat, isLoadingMessages])
+  }, [currentSessionId, store, isLoadingMessages])
 
   // Get tool calls for current session
   const toolCalls = useMemo(() => {
-    if (!currentSessionId || !studioChat?.toolCallLogCollection) return []
+    if (!currentSessionId || !store?.toolCallLogCollection) return []
     try {
-      return studioChat.toolCallLogCollection
-        .all()
-        .filter((tc: any) => tc.chatSession?.id === currentSessionId)
+      return store.toolCallLogCollection.all
+        .filter((tc: any) => tc.chatSessionId === currentSessionId)
     } catch {
       return []
     }
-  }, [currentSessionId, studioChat])
+  }, [currentSessionId, store])
 
   // Total message count
   const totalMessageCount = useMemo(() => {
-    if (!studioChat?.chatMessageCollection) return 0
+    if (!store?.chatMessageCollection) return 0
     try {
-      return studioChat.chatMessageCollection.all().length
+      return store.chatMessageCollection.all.length
     } catch {
       return 0
     }
-  }, [studioChat, isLoadingMessages])
+  }, [store, isLoadingMessages])
 
   // Create a new session
   const createSession = useCallback(async (data: {
@@ -252,13 +253,15 @@ export function useChatData(options: UseChatDataOptions = {}): ChatDataState {
     contextId?: string
     phase?: string
   }) => {
-    if (!studioChat) throw new Error("Chat domain not available")
+    if (!store?.chatSessionCollection) throw new Error("Chat store not available")
     
-    const newSession = await studioChat.createChatSession(data)
-    setCurrentSessionId(newSession.id)
+    const newSession = await store.chatSessionCollection.create(data)
+    if (newSession) {
+      setCurrentSessionId(newSession.id)
+    }
     refetchSessions()
     return newSession
-  }, [studioChat, refetchSessions])
+  }, [store, refetchSessions])
 
   // Add a message to current session
   const addMessage = useCallback(async (data: {
@@ -267,16 +270,16 @@ export function useChatData(options: UseChatDataOptions = {}): ChatDataState {
     imageData?: string
     parts?: string
   }) => {
-    if (!studioChat) throw new Error("Chat domain not available")
+    if (!store?.chatMessageCollection) throw new Error("Chat store not available")
     if (!currentSessionId) throw new Error("No current session selected")
 
-    const message = await studioChat.addMessage({
+    const message = await store.chatMessageCollection.create({
       sessionId: currentSessionId,
       ...data,
     })
     refetchMessages()
     return message
-  }, [studioChat, currentSessionId, refetchMessages])
+  }, [store, currentSessionId, refetchMessages])
 
   const isLoading = isLoadingSessions || isLoadingMessages
 

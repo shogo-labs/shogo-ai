@@ -9,6 +9,7 @@ import { types, Instance, SnapshotIn, SnapshotOut } from "mobx-state-tree"
 import type { HttpClient } from "@shogo/sdk"
 
 // Collection imports
+import { UserCollection, type IUserCollection } from "./user.collection"
 import { WorkspaceCollection, type IWorkspaceCollection } from "./workspace.collection"
 import { ProjectCollection, type IProjectCollection } from "./project.collection"
 import { StarredProjectCollection, type IStarredProjectCollection } from "./starred-project.collection"
@@ -23,8 +24,10 @@ import { UsageEventCollection, type IUsageEventCollection } from "./usage-event.
 import { ChatSessionCollection, type IChatSessionCollection } from "./chat-session.collection"
 import { ChatMessageCollection, type IChatMessageCollection } from "./chat-message.collection"
 import { ToolCallLogCollection, type IToolCallLogCollection } from "./tool-call-log.collection"
+import { FeatureSessionCollection, type IFeatureSessionCollection } from "./feature-session.collection"
 
 // Model imports (for type re-exports)
+export { UserModel, type IUser, type IUserSnapshotIn, type IUserSnapshotOut } from "./user.model"
 export { WorkspaceModel, type IWorkspace, type IWorkspaceSnapshotIn, type IWorkspaceSnapshotOut } from "./workspace.model"
 export { ProjectModel, type IProject, type IProjectSnapshotIn, type IProjectSnapshotOut } from "./project.model"
 export { StarredProjectModel, type IStarredProject, type IStarredProjectSnapshotIn, type IStarredProjectSnapshotOut } from "./starred-project.model"
@@ -39,8 +42,10 @@ export { UsageEventModel, type IUsageEvent, type IUsageEventSnapshotIn, type IUs
 export { ChatSessionModel, type IChatSession, type IChatSessionSnapshotIn, type IChatSessionSnapshotOut } from "./chat-session.model"
 export { ChatMessageModel, type IChatMessage, type IChatMessageSnapshotIn, type IChatMessageSnapshotOut } from "./chat-message.model"
 export { ToolCallLogModel, type IToolCallLog, type IToolCallLogSnapshotIn, type IToolCallLogSnapshotOut } from "./tool-call-log.model"
+export { FeatureSessionModel, type IFeatureSession, type IFeatureSessionSnapshotIn, type IFeatureSessionSnapshotOut } from "./feature-session.model"
 
 // Collection type re-exports
+export { UserCollection, type IUserCollection }
 export { WorkspaceCollection, type IWorkspaceCollection }
 export { ProjectCollection, type IProjectCollection }
 export { StarredProjectCollection, type IStarredProjectCollection }
@@ -55,6 +60,7 @@ export { UsageEventCollection, type IUsageEventCollection }
 export { ChatSessionCollection, type IChatSessionCollection }
 export { ChatMessageCollection, type IChatMessageCollection }
 export { ToolCallLogCollection, type IToolCallLogCollection }
+export { FeatureSessionCollection, type IFeatureSessionCollection }
 
 // ============================================================================
 // SDK Environment Type
@@ -83,6 +89,7 @@ export interface ISDKEnvironment {
  */
 export const DomainStore = types
   .model("DomainStore", {
+    userCollection: types.optional(UserCollection, { items: {} }),
     workspaceCollection: types.optional(WorkspaceCollection, { items: {} }),
     projectCollection: types.optional(ProjectCollection, { items: {} }),
     starredProjectCollection: types.optional(StarredProjectCollection, { items: {} }),
@@ -97,12 +104,14 @@ export const DomainStore = types
     chatSessionCollection: types.optional(ChatSessionCollection, { items: {} }),
     chatMessageCollection: types.optional(ChatMessageCollection, { items: {} }),
     toolCallLogCollection: types.optional(ToolCallLogCollection, { items: {} }),
+    featureSessionCollection: types.optional(FeatureSessionCollection, { items: {} }),
   })
 
   .views(self => ({
     /** Get all collection names */
     get collectionNames(): string[] {
       return [
+        "userCollection",
         "workspaceCollection",
         "projectCollection",
         "starredProjectCollection",
@@ -117,6 +126,7 @@ export const DomainStore = types
         "chatSessionCollection",
         "chatMessageCollection",
         "toolCallLogCollection",
+        "featureSessionCollection",
       ]
     },
   }))
@@ -124,6 +134,7 @@ export const DomainStore = types
   .actions(self => ({
     /** Clear all collections */
     clearAll() {
+      self.userCollection.clear()
       self.workspaceCollection.clear()
       self.projectCollection.clear()
       self.starredProjectCollection.clear()
@@ -138,10 +149,12 @@ export const DomainStore = types
       self.chatSessionCollection.clear()
       self.chatMessageCollection.clear()
       self.toolCallLogCollection.clear()
+      self.featureSessionCollection.clear()
     },
 
     /** Clear all errors */
     clearAllErrors() {
+      self.userCollection.clearError()
       self.workspaceCollection.clearError()
       self.projectCollection.clearError()
       self.starredProjectCollection.clearError()
@@ -156,6 +169,7 @@ export const DomainStore = types
       self.chatSessionCollection.clearError()
       self.chatMessageCollection.clearError()
       self.toolCallLogCollection.clearError()
+      self.featureSessionCollection.clearError()
     },
   }))
 

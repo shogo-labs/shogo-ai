@@ -67,6 +67,7 @@
         "@radix-ui/react-switch": "^1.2.6",
         "@radix-ui/react-tabs": "^1.1.13",
         "@radix-ui/react-toast": "^1.2.15",
+        "@shogo/sdk": "workspace:*",
         "@shogo/state-api": "workspace:*",
         "@supabase/supabase-js": "^2.86.2",
         "@xyflow/react": "^12.10.0",
@@ -148,7 +149,7 @@
       },
     },
     "packages/sdk": {
-      "name": "@shogo-ai/sdk",
+      "name": "@shogo/sdk",
       "version": "0.2.0",
       "bin": {
         "shogo": "./bin/shogo.ts",
@@ -804,13 +805,13 @@
 
     "@shikijs/vscode-textmate": ["@shikijs/vscode-textmate@10.0.2", "", {}, "sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg=="],
 
-    "@shogo-ai/sdk": ["@shogo-ai/sdk@workspace:packages/sdk"],
-
     "@shogo/api": ["@shogo/api@workspace:apps/api"],
 
     "@shogo/mcp": ["@shogo/mcp@workspace:packages/mcp"],
 
     "@shogo/project-runtime": ["@shogo/project-runtime@workspace:packages/project-runtime"],
+
+    "@shogo/sdk": ["@shogo/sdk@workspace:packages/sdk"],
 
     "@shogo/state-api": ["@shogo/state-api@workspace:packages/state-api"],
 

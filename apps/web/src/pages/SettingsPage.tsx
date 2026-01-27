@@ -79,7 +79,8 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { useWorkspaceData } from "@/components/app/workspace"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
+import type { IDomainStore } from "@/generated/domain"
 import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
 import { PlanSelector } from "@/components/app/billing/PlanSelector"
@@ -1061,13 +1062,13 @@ function PeopleTab() {
 // ============================================================================
 function BillingTab() {
   const { currentWorkspace } = useWorkspaceData()
-  const { billing } = useDomains()
+  const store = useSDKDomain() as IDomainStore
 
-  // Get subscription for current workspace
+  // Get subscription for current workspace from SDK store
   const getActiveSubscription = (workspaceId: string) => {
-    if (!billing?.subscriptionCollection) return null
+    if (!store?.subscriptionCollection) return null
     try {
-      const subscriptions = billing.subscriptionCollection.findByWorkspace(workspaceId)
+      const subscriptions = store.subscriptionCollection.all.filter((s: any) => s.workspaceId === workspaceId)
       return subscriptions.find((s: any) => s.status === 'active' || s.status === 'trialing') || null
     } catch {
       return null

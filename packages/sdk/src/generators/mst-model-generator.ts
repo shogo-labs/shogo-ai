@@ -91,10 +91,15 @@ function wrapOptional(mstType: string, field: PrismaField): string {
 
 /**
  * Generate MST model file for a single Prisma model
+ *
+ * @param model - The Prisma model to generate
+ * @param allModels - All Prisma models (for reference resolution)
+ * @param includedModelNames - Set of model names included in config (only import these)
  */
 export function generateMSTModel(
   model: PrismaModel,
-  allModels: PrismaModel[]
+  allModels: PrismaModel[],
+  includedModelNames?: Set<string>
 ): GeneratedMSTModelFile {
   const modelName = model.name
   const fileName = `${toFileName(modelName)}.model.ts`
@@ -103,10 +108,15 @@ export function generateMSTModel(
   const relationFields = getRelationFields(model)
   
   // Find which models we need to import for references
+  // Only include models that are in the configuration
   const referencedModels = new Set<string>()
+  const includedRelationFields: PrismaField[] = []
+
   for (const field of relationFields) {
-    if (field.type !== modelName) { // Don't import self
+    const isIncluded = !includedModelNames || includedModelNames.has(field.type)
+    if (field.type !== modelName && isIncluded) {
       referencedModels.add(field.type)
+      includedRelationFields.push(field)
     }
   }
 
@@ -121,6 +131,7 @@ export function generateMSTModel(
   ]
 
   // Import referenced models (using late() for circular refs)
+  // Only import models that are in the configuration
   if (referencedModels.size > 0) {
     lines.push('')
     lines.push('// Referenced models (use types.late() to avoid circular imports)')
@@ -153,8 +164,8 @@ export function generateMSTModel(
     }
   }
 
-  // Add relation fields as references
-  for (const field of relationFields) {
+  // Add relation fields as references (only for included models)
+  for (const field of includedRelationFields) {
     const mstType = mapPrismaToMSTType(field)
     if (field.isList) {
       lines.push(`    ${field.name}: types.optional(${mstType}, []),`)
@@ -223,9 +234,19 @@ function getDefaultValue(field: PrismaField): string {
 
 /**
  * Generate MST models for all Prisma models
+ *
+ * @param models - Prisma models to generate (already filtered to config)
+ * @param allModels - All Prisma models (for reference resolution)
  */
-export function generateMSTModels(models: PrismaModel[]): GeneratedMSTModelFile[] {
+export function generateMSTModels(
+  models: PrismaModel[],
+  allModels?: PrismaModel[]
+): GeneratedMSTModelFile[] {
+  // Create a set of included model names for reference filtering
+  const includedModelNames = new Set(models.map(m => m.name))
+  const modelsForReference = allModels ?? models
+
   return models
     .filter(model => getIdField(model)) // Only models with @id
-    .map(model => generateMSTModel(model, models))
+    .map(model => generateMSTModel(model, modelsForReference, includedModelNames))
 }

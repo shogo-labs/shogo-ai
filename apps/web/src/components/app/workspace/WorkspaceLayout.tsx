@@ -56,8 +56,9 @@ import { useState, useCallback, useEffect, useRef, useMemo } from "react"
 import { Outlet, useNavigate } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { useWorkspaceData, useWorkspaceNavigation, useDeleteFeature } from "./hooks"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
 import { useSession } from "@/contexts/SessionProvider"
+import type { IDomainStore } from "@/generated/domain"
 import { usePhaseNavigation } from "../stepper/hooks/usePhaseNavigation"
 import { useFeaturePolling } from "@/hooks/useFeaturePolling"
 import { useToast } from "@/hooks/use-toast"
@@ -163,7 +164,8 @@ export const WorkspaceLayout = observer(function WorkspaceLayout() {
   // Get navigation state for conditional rendering
   const { featureId, projectId, setFeatureId, setProjectId, clearFeature } = useWorkspaceNavigation()
   
-  // Get domains for creating projects, features, and chat sessions
+  // Get SDK store for data queries, legacy domains for action methods (createProject, etc.)
+  const store = useSDKDomain() as IDomainStore
   const { studioCore, platformFeatures, studioChat } = useDomains()
 
   // Get sidebar collapse control for homepage transition animation

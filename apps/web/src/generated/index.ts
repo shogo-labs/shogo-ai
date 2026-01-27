@@ -5,6 +5,7 @@
  */
 
 // Re-export all types
+export * from "./user.types"
 export * from "./workspace.types"
 export * from "./project.types"
 export * from "./starred-project.types"
@@ -19,6 +20,7 @@ export * from "./usage-event.types"
 export * from "./chat-session.types"
 export * from "./chat-message.types"
 export * from "./tool-call-log.types"
+export * from "./feature-session.types"
 
 /**
  * MST Domain Exports

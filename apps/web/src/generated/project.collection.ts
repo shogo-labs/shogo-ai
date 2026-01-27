@@ -304,24 +304,25 @@ export const ProjectCollection = types
  * Transform API response for MST compatibility:
  * - Convert ISO date strings to timestamps
  * - Handle null -> undefined for optional fields
+ * - Convert nested relation objects to just IDs for safeReference
  */
 function transformForMST(obj: any): any {
   if (!obj || typeof obj !== "object") return obj
 
   const dateFields = ["createdAt", "updatedAt", "expiresAt", "publishedAt", "readAt", "emailSentAt", "lastActiveAt"]
+  const relationFields = ["user", "workspace", "project", "folder", "member", "billingAccount", "session", "chatSession"]
   const result: Record<string, any> = {}
 
   for (const [key, value] of Object.entries(obj)) {
-    // Skip null values (MST uses undefined)
     if (value === null) continue
-
-    // Convert date strings to timestamps
     if (dateFields.includes(key) && typeof value === "string") {
       result[key] = new Date(value).getTime()
     }
-    // Recursively transform nested objects
+    else if (relationFields.includes(key) && value && typeof value === "object" && !Array.isArray(value) && value.id) {
+      result[key] = value.id
+    }
     else if (value && typeof value === "object" && !Array.isArray(value)) {
-      result[key] = transformForMST(value)
+      if (value.id) result[key] = value.id
     }
     else {
       result[key] = value

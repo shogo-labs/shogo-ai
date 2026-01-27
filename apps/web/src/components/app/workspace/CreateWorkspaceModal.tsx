@@ -40,6 +40,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { useDomains } from "@/contexts/DomainProvider"
+// Note: Uses legacy domain method studioCore.createWorkspace() - SDK migration pending for action methods
 import { useSession } from "@/contexts/SessionProvider"
 
 /**

@@ -80,11 +80,12 @@ export class OptimisticStore<T extends { id: string }> {
     this.http = config.http
     this.endpoint = config.endpoint
     this.transform = config.transform ?? ((x) => x as T)
+    // Mark non-observable properties to avoid MobX tracking them
     makeAutoObservable(this, {
       http: false,
       endpoint: false,
       transform: false,
-    })
+    } as any)
   }
 
   // ==========================================================================
@@ -208,13 +209,13 @@ export class OptimisticStore<T extends { id: string }> {
     const tempId = `temp-${crypto.randomUUID()}`
     const now = new Date()
 
-    // Create optimistic item
+    // Create optimistic item with temp ID and timestamps
     const optimistic = {
-      id: tempId,
       ...input,
+      id: tempId,
       createdAt: now,
       updatedAt: now,
-    } as T
+    } as unknown as T
 
     // Optimistic: add immediately
     runInAction(() => {

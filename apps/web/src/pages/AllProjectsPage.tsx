@@ -70,7 +70,8 @@ import {
 } from "@/components/ui/dialog"
 import { useWorkspaceData, useWorkspaceNavigation } from "@/components/app/workspace/hooks"
 import { Label } from "@/components/ui/label"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
+import type { IDomainStore } from "@/generated/domain"
 import { useSession } from "@/contexts/SessionProvider"
 import { cn } from "@/lib/utils"
 

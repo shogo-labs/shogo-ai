@@ -11,7 +11,8 @@ import { Loader2, Bell, CheckCircle } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
+import type { IDomainStore } from "@/generated/domain"
 import { useSession } from "@/contexts/SessionProvider"
 import { NotificationItem } from "./NotificationItem"
 
@@ -47,6 +48,8 @@ export interface NotificationListProps {
 export const NotificationList = observer(function NotificationList({
   onClose,
 }: NotificationListProps) {
+  // Use SDK for data loading, legacy domain for action methods
+  const store = useSDKDomain() as IDomainStore
   const { studioCore } = useDomains()
   const { data: session } = useSession()
   const userId = session?.user?.id
@@ -64,11 +67,11 @@ export const NotificationList = observer(function NotificationList({
     }
 
     try {
-      // Load all notifications
-      await studioCore.notificationCollection.query().toArray()
+      // Load notifications using SDK
+      await store.notificationCollection.loadAll({ userId })
 
-      // Get notifications for current user
-      const userNotifications = studioCore.notificationCollection.forUser(userId) || []
+      // Get notifications for current user from SDK collection
+      const userNotifications = store.notificationCollection.all.filter((n: any) => n.userId === userId)
 
       // Sort by createdAt descending (newest first)
       const sorted = [...userNotifications].sort((a, b) => b.createdAt - a.createdAt)

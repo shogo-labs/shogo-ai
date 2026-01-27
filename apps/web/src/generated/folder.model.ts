@@ -24,8 +24,6 @@ export const FolderModel = types
     createdAt: types.number,
     updatedAt: types.number,
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
-    parent: types.safeReference(types.late(() => FolderModel)),
-    children: types.optional(types.array(types.safeReference(types.late(() => FolderModel))), []),
     projects: types.optional(types.array(types.safeReference(types.late(() => ProjectModel))), []),
   })
   .views(self => ({

@@ -1,6 +1,7 @@
 {
   "schema": "./prisma/schema.prisma",
   "models": [
+    "User",
     "Workspace",
     "Project",
     "Folder",
@@ -14,7 +15,8 @@
     "UsageEvent",
     "ChatSession",
     "ChatMessage",
-    "ToolCallLog"
+    "ToolCallLog",
+    "FeatureSession"
   ],
   "outputs": [
     {

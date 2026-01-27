@@ -19,15 +19,17 @@ export const MemberModel = types
   .model("Member", {
     id: types.identifier,
     userId: types.string,
-    role: types.enumeration("MemberRole", [/* enum values */]),
+    role: types.enumeration("MemberRole", ["owner", "admin", "member", "viewer"]),
     workspaceId: types.optional(types.string, ""),
     projectId: types.optional(types.string, ""),
     isBillingAdmin: types.boolean,
     createdAt: types.number,
     updatedAt: types.number,
-    user: types.safeReference(types.late(() => UserModel)),
-    workspace: types.safeReference(types.late(() => WorkspaceModel)),
-    project: types.safeReference(types.late(() => ProjectModel)),
+    // Note: safeReference expects just an ID string, not a nested object
+    // The API may return nested objects; they should be flattened by the persistence layer
+    user: types.maybeNull(types.safeReference(types.late(() => UserModel))),
+    workspace: types.maybeNull(types.safeReference(types.late(() => WorkspaceModel))),
+    project: types.maybeNull(types.safeReference(types.late(() => ProjectModel))),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

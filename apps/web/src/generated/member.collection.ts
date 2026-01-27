@@ -304,11 +304,14 @@ export const MemberCollection = types
  * Transform API response for MST compatibility:
  * - Convert ISO date strings to timestamps
  * - Handle null -> undefined for optional fields
+ * - Convert nested relation objects to just IDs for safeReference
  */
 function transformForMST(obj: any): any {
   if (!obj || typeof obj !== "object") return obj
 
   const dateFields = ["createdAt", "updatedAt", "expiresAt", "publishedAt", "readAt", "emailSentAt", "lastActiveAt"]
+  // These are relation fields that should be converted from { id: ... } to just the id string
+  const relationFields = ["user", "workspace", "project", "folder", "member"]
   const result: Record<string, any> = {}
 
   for (const [key, value] of Object.entries(obj)) {
@@ -319,9 +322,17 @@ function transformForMST(obj: any): any {
     if (dateFields.includes(key) && typeof value === "string") {
       result[key] = new Date(value).getTime()
     }
-    // Recursively transform nested objects
+    // For relation fields that are objects with an id, extract just the id for safeReference
+    else if (relationFields.includes(key) && value && typeof value === "object" && !Array.isArray(value) && value.id) {
+      result[key] = value.id
+    }
+    // Skip nested objects that aren't relations (don't recursively transform)
     else if (value && typeof value === "object" && !Array.isArray(value)) {
-      result[key] = transformForMST(value)
+      // Only include if it has an id field (for safeReference compatibility)
+      if (value.id) {
+        result[key] = value.id
+      }
+      // Otherwise skip the nested object entirely
     }
     else {
       result[key] = value

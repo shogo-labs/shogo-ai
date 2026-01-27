@@ -23,8 +23,9 @@ import { useState, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { Plus, Settings, Users, ChevronDown, Check, Zap, ArrowLeft } from "lucide-react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
 import { useSession } from "@/contexts/SessionProvider"
+import type { IDomainStore } from "@/generated/domain"
 
 import {
   DropdownMenu,
@@ -87,7 +88,9 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
   isLoading = false,
 }: WorkspaceSwitcherProps) {
   const navigate = useNavigate()
-  const { studioCore, billing } = useDomains()
+  // Use SDK for data queries, legacy domain for actions (createWorkspace)
+  const store = useSDKDomain() as IDomainStore
+  const { studioCore } = useDomains()
   const { data: session } = useSession()
   const [isOpen, setIsOpen] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
@@ -106,18 +109,18 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
     return workspace.id
   }, [studioCore, session?.user?.id, onWorkspaceChange])
 
-  // Get subscription for current workspace from billing domain
+  // Get subscription for current workspace from SDK store
   // Uses MST observer pattern - component re-renders when billing data changes
   const getActiveSubscription = useCallback((workspaceId: string) => {
-    if (!billing?.subscriptionCollection) return null
+    if (!store?.subscriptionCollection) return null
     try {
-      const subscriptions = billing.subscriptionCollection.findByWorkspace(workspaceId)
+      const subscriptions = store.subscriptionCollection.all.filter((s: any) => s.workspaceId === workspaceId)
       // Find active or trialing subscription
       return subscriptions.find((s: any) => s.status === 'active' || s.status === 'trialing') || null
     } catch {
       return null
     }
-  }, [billing])
+  }, [store])
 
   const subscription = currentWorkspace ? getActiveSubscription(currentWorkspace.id) : null
 
@@ -135,9 +138,9 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
     return "Free"
   }, [getActiveSubscription])
 
-  // Get actual credit values from billing domain
+  // Get actual credit values from SDK store
   const creditLedger = currentWorkspace
-    ? billing?.creditLedgerCollection?.findByWorkspace?.(currentWorkspace.id)
+    ? store?.creditLedgerCollection?.all.find((cl: any) => cl.workspaceId === currentWorkspace.id)
     : null
   const effectiveBalance = creditLedger?.effectiveBalance
 

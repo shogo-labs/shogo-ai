@@ -8,6 +8,7 @@ import { Hono } from "hono"
 import { PrismaClient } from "@prisma/client"
 
 // Route imports
+import { createUserRoutes, setPrisma as setPrismaUser, setUserHooks } from "./user.routes"
 import { createWorkspaceRoutes, setPrisma as setPrismaWorkspace, setWorkspaceHooks } from "./workspace.routes"
 import { createProjectRoutes, setPrisma as setPrismaProject, setProjectHooks } from "./project.routes"
 import { createStarredProjectRoutes, setPrisma as setPrismaStarredProject, setStarredProjectHooks } from "./starred-project.routes"
@@ -22,8 +23,10 @@ import { createUsageEventRoutes, setPrisma as setPrismaUsageEvent, setUsageEvent
 import { createChatSessionRoutes, setPrisma as setPrismaChatSession, setChatSessionHooks } from "./chat-session.routes"
 import { createChatMessageRoutes, setPrisma as setPrismaChatMessage, setChatMessageHooks } from "./chat-message.routes"
 import { createToolCallLogRoutes, setPrisma as setPrismaToolCallLog, setToolCallLogHooks } from "./tool-call-log.routes"
+import { createFeatureSessionRoutes, setPrisma as setPrismaFeatureSession, setFeatureSessionHooks } from "./feature-session.routes"
 
 // Hook imports
+import { userHooks } from "./user.hooks"
 import { workspaceHooks } from "./workspace.hooks"
 import { projectHooks } from "./project.hooks"
 import { starredProjectHooks } from "./starred-project.hooks"
@@ -38,8 +41,10 @@ import { usageEventHooks } from "./usage-event.hooks"
 import { chatSessionHooks } from "./chat-session.hooks"
 import { chatMessageHooks } from "./chat-message.hooks"
 import { toolCallLogHooks } from "./tool-call-log.hooks"
+import { featureSessionHooks } from "./feature-session.hooks"
 
 // Re-export individual routes
+export * from "./user.routes"
 export * from "./workspace.routes"
 export * from "./project.routes"
 export * from "./starred-project.routes"
@@ -54,8 +59,10 @@ export * from "./usage-event.routes"
 export * from "./chat-session.routes"
 export * from "./chat-message.routes"
 export * from "./tool-call-log.routes"
+export * from "./feature-session.routes"
 
 // Re-export hooks
+export * from "./user.hooks"
 export * from "./workspace.hooks"
 export * from "./project.hooks"
 export * from "./starred-project.hooks"
@@ -70,6 +77,7 @@ export * from "./usage-event.hooks"
 export * from "./chat-session.hooks"
 export * from "./chat-message.hooks"
 export * from "./tool-call-log.hooks"
+export * from "./feature-session.hooks"
 
 /**
  * Create all routes and mount them on a single Hono app
@@ -78,6 +86,7 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
   const app = new Hono()
 
   // Set Prisma client for all routes
+  setPrismaUser(prisma)
   setPrismaWorkspace(prisma)
   setPrismaProject(prisma)
   setPrismaStarredProject(prisma)
@@ -92,8 +101,10 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
   setPrismaChatSession(prisma)
   setPrismaChatMessage(prisma)
   setPrismaToolCallLog(prisma)
+  setPrismaFeatureSession(prisma)
 
   // Set hooks for all routes
+  setUserHooks(userHooks)
   setWorkspaceHooks(workspaceHooks)
   setProjectHooks(projectHooks)
   setStarredProjectHooks(starredProjectHooks)
@@ -108,8 +119,10 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
   setChatSessionHooks(chatSessionHooks)
   setChatMessageHooks(chatMessageHooks)
   setToolCallLogHooks(toolCallLogHooks)
+  setFeatureSessionHooks(featureSessionHooks)
 
   // Mount routes
+  app.route("/users", createUserRoutes())
   app.route("/workspaces", createWorkspaceRoutes())
   app.route("/projects", createProjectRoutes())
   app.route("/starred-projects", createStarredProjectRoutes())
@@ -124,6 +137,7 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
   app.route("/chat-sessions", createChatSessionRoutes())
   app.route("/chat-messages", createChatMessageRoutes())
   app.route("/tool-call-logs", createToolCallLogRoutes())
+  app.route("/feature-sessions", createFeatureSessionRoutes())
 
   return app
 }
