@@ -339,6 +339,9 @@ export function RuntimePreviewPanel({
   // Track previous refreshTrigger to detect changes
   const prevRefreshTriggerRef = useRef(refreshTrigger)
   const isRebuildingRef = useRef(false)
+  // Track if a refresh was requested while sandboxUrl wasn't ready
+  // This handles the case where template.copy completes before runtime is ready
+  const pendingRefreshRef = useRef(false)
 
   /**
    * Trigger a rebuild of the project (vite build) and then reload the preview.

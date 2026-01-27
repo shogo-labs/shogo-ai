@@ -21,7 +21,8 @@
 
 import { useEffect, useRef } from "react"
 import { observer } from "mobx-react-lite"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
+import type { IDomainStore } from "@/generated/domain"
 import { SplashScreen } from "../shared/SplashScreen"
 import { LoginPage } from "../auth/LoginPage"
 
@@ -41,7 +42,8 @@ interface AuthGateProps {
  * auth state changes from the betterAuthDomain store.
  */
 export const AuthGate = observer(function AuthGate({ children }: AuthGateProps) {
-  const { auth, studioCore } = useDomains()
+  const { auth } = useDomains()
+  const store = useSDKDomain() as IDomainStore
   const hasCheckedInvitations = useRef(false)
 
   // Initialize auth on mount - checks for existing session
@@ -50,23 +52,21 @@ export const AuthGate = observer(function AuthGate({ children }: AuthGateProps) 
   }, [auth])
 
   // Check for pending invitations after user authenticates
-  // This runs once per session to create notifications for any pending invitations
+  // This runs once per session to load invitations for the user
   useEffect(() => {
     if (auth.isAuthenticated && auth.currentUser && !hasCheckedInvitations.current) {
       hasCheckedInvitations.current = true
 
-      // Check pending invitations and create notifications
+      // Load pending invitations for this user's email
       // This is fire-and-forget - errors are logged but don't block auth
-      if (studioCore?.checkPendingInvitationsOnLogin) {
-        studioCore.checkPendingInvitationsOnLogin(
-          auth.currentUser.id,
-          auth.currentUser.email
-        ).catch((error: any) => {
-          console.error("[AuthGate] Failed to check pending invitations:", error)
-        })
+      if (store?.invitationCollection) {
+        store.invitationCollection.loadAll({ email: auth.currentUser.email })
+          .catch((error: any) => {
+            console.error("[AuthGate] Failed to load pending invitations:", error)
+          })
       }
     }
-  }, [auth.isAuthenticated, auth.currentUser, studioCore])
+  }, [auth.isAuthenticated, auth.currentUser, store])
 
   // Show splash screen during initial auth check
   // This only shows when loading AND there's no current user

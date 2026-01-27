@@ -79,7 +79,9 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { useWorkspaceData } from "@/components/app/workspace"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
+import type { IDomainStore } from "@/generated/domain"
+import { useDomainActions } from "@/generated/domain-actions"
 import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
 import { PlanSelector } from "@/components/app/billing/PlanSelector"
@@ -151,7 +153,7 @@ function NavItem({
 // ============================================================================
 function ProjectSettingsTab() {
   const { currentProject, currentWorkspace } = useWorkspaceData()
-  const { studioCore } = useDomains()
+  const actions = useDomainActions()
   const { data: session } = useSession()
 
   const [name, setName] = useState(currentProject?.name || "")
@@ -163,12 +165,11 @@ function ProjectSettingsTab() {
   }, [currentProject?.name])
 
   const handleSave = async () => {
-    if (!currentProject?.id || !studioCore) return
+    if (!currentProject?.id) return
     setIsSaving(true)
     try {
-      await studioCore.projectCollection?.updateOne(currentProject.id, {
+      await actions.updateProject(currentProject.id, {
         name: name.trim(),
-        updatedAt: Date.now(),
       })
     } finally {
       setIsSaving(false)
@@ -460,7 +461,8 @@ function KnowledgeTab() {
 function WorkspaceSettingsTab({ onClose }: { onClose?: () => void }) {
   const navigate = useNavigate()
   const { currentWorkspace, workspaces } = useWorkspaceData()
-  const { studioCore } = useDomains()
+  const store = useSDKDomain() as IDomainStore
+  const actions = useDomainActions()
   const { data: session } = useSession()
   const [name, setName] = useState(currentWorkspace?.name || "")
   const [isSaving, setIsSaving] = useState(false)
@@ -476,7 +478,7 @@ function WorkspaceSettingsTab({ onClose }: { onClose?: () => void }) {
 
   const currentUserId = session?.user?.id
   const members = currentWorkspace?.id
-    ? studioCore?.memberCollection?.findForResource("workspace", currentWorkspace.id) || []
+    ? store?.memberCollection?.all.filter((m: any) => m.workspaceId === currentWorkspace.id && !m.projectId) || []
     : []
   const currentUserMember = members.find((m: any) => m.userId === currentUserId)
   const isOwner = currentUserMember?.role === "owner"
@@ -501,9 +503,8 @@ function WorkspaceSettingsTab({ onClose }: { onClose?: () => void }) {
     setSaveStatus("idle")
 
     try {
-      await studioCore?.workspaceCollection?.updateOne(currentWorkspace.id, {
+      await actions.updateWorkspace(currentWorkspace.id, {
         name: name.trim(),
-        updatedAt: Date.now(),
       })
 
       setSaveStatus("saved")
@@ -517,17 +518,12 @@ function WorkspaceSettingsTab({ onClose }: { onClose?: () => void }) {
   }
 
   const handleDeleteWorkspace = async () => {
-    if (!currentWorkspace?.id || !isDeleteConfirmed || !studioCore) return
+    if (!currentWorkspace?.id || !isDeleteConfirmed) return
 
     setIsDeleting(true)
 
     try {
-      const workspaceMembers = studioCore.memberCollection.findForResource("workspace", currentWorkspace.id)
-      for (const member of workspaceMembers) {
-        await studioCore.memberCollection.deleteOne(member.id)
-      }
-
-      await studioCore.workspaceCollection.deleteOne(currentWorkspace.id)
+      await actions.deleteWorkspaceWithMembers(currentWorkspace.id)
 
       setIsDeleteDialogOpen(false)
       onClose?.()
@@ -716,7 +712,8 @@ interface Member {
 
 function PeopleTab() {
   const { currentWorkspace } = useWorkspaceData()
-  const { studioCore } = useDomains()
+  const store = useSDKDomain() as IDomainStore
+  const actions = useDomainActions()
   const { data: session } = useSession()
   const currentUserId = session?.user?.id || ""
   const currentUserName = session?.user?.name || "User"
@@ -738,15 +735,17 @@ function PeopleTab() {
   const canManageMembers = currentUserLevel >= RoleLevels.admin
 
   const loadMembers = useCallback(async () => {
-    if (!studioCore?.memberCollection || !currentWorkspace?.id) {
+    if (!store?.memberCollection || !currentWorkspace?.id) {
       setIsLoading(false)
       return
     }
 
     setIsLoading(true)
     try {
-      await studioCore.memberCollection.query().toArray()
-      const workspaceMembers = studioCore.memberCollection.findForResource("workspace", currentWorkspace.id)
+      await store.memberCollection.loadAll({ workspaceId: currentWorkspace.id })
+      const workspaceMembers = store.memberCollection.all.filter(
+        (m: any) => m.workspaceId === currentWorkspace.id && !m.projectId
+      )
       setMembers(workspaceMembers.map((m: any) => ({
         id: m.id,
         userId: m.userId,
@@ -759,7 +758,7 @@ function PeopleTab() {
     } finally {
       setIsLoading(false)
     }
-  }, [studioCore, currentWorkspace?.id])
+  }, [store, currentWorkspace?.id])
 
   useEffect(() => {
     loadMembers()
@@ -789,10 +788,9 @@ function PeopleTab() {
   }
 
   const handleRoleChange = async (memberId: string, newRole: string) => {
-    if (!studioCore) return
     setUpdatingMemberId(memberId)
     try {
-      await studioCore.updateMemberRole(memberId, newRole, currentUserId)
+      await actions.updateMemberRole(memberId, newRole as any, currentUserId)
       await loadMembers()
     } catch (err) {
       console.error("[PeopleTab] Failed to update role:", err)
@@ -802,10 +800,10 @@ function PeopleTab() {
   }
 
   const handleRemoveMember = async () => {
-    if (!memberToRemove || !studioCore) return
+    if (!memberToRemove) return
     setIsRemoving(true)
     try {
-      await studioCore.removeMember(memberToRemove.id, currentUserId)
+      await actions.removeMember(memberToRemove.id, currentUserId)
       setMembers(prev => prev.filter(m => m.id !== memberToRemove.id))
       setMemberToRemove(null)
     } catch (err) {
@@ -1061,13 +1059,13 @@ function PeopleTab() {
 // ============================================================================
 function BillingTab() {
   const { currentWorkspace } = useWorkspaceData()
-  const { billing } = useDomains()
+  const store = useSDKDomain() as IDomainStore
 
-  // Get subscription for current workspace
+  // Get subscription for current workspace from SDK store
   const getActiveSubscription = (workspaceId: string) => {
-    if (!billing?.subscriptionCollection) return null
+    if (!store?.subscriptionCollection) return null
     try {
-      const subscriptions = billing.subscriptionCollection.findByWorkspace(workspaceId)
+      const subscriptions = store.subscriptionCollection.all.filter((s: any) => s.workspaceId === workspaceId)
       return subscriptions.find((s: any) => s.status === 'active' || s.status === 'trialing') || null
     } catch {
       return null

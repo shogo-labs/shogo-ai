@@ -69,7 +69,52 @@ export class RuntimeManager implements IRuntimeManager {
   }
 
   /**
+   * Check if a port is actually in use by attempting to connect to it.
+   * This helps detect stale processes from previous API server instances.
+   */
+  private async isPortInUse(port: number): Promise<boolean> {
+    try {
+      const response = await fetch(`http://localhost:${port}/`, {
+        method: 'HEAD',
+        signal: AbortSignal.timeout(500),
+      })
+      return true // Port responded
+    } catch {
+      return false // Port not responding
+    }
+  }
+
+  /**
    * Allocate next available port starting from basePort.
+   * Checks both internal tracking AND actual port availability to handle
+   * stale processes from previous API server instances (e.g., after hot reload).
+   */
+  private async allocatePortAsync(): Promise<number> {
+    const { basePort, maxRuntimes } = this.config
+    for (let offset = 0; offset < maxRuntimes; offset++) {
+      const port = basePort + offset
+      if (!this.usedPorts.has(port)) {
+        // Also check if agent port (port + 1000) is actually free
+        const agentPort = port + 1000
+        const viteInUse = await this.isPortInUse(port)
+        const agentInUse = await this.isPortInUse(agentPort)
+        
+        if (!viteInUse && !agentInUse) {
+          this.usedPorts.add(port)
+          return port
+        } else {
+          // Port is in use by stale process - skip it and mark as used
+          console.warn(`[RuntimeManager] Port ${port} or ${agentPort} is in use by stale process, skipping`)
+          this.usedPorts.add(port)
+        }
+      }
+    }
+    throw new Error(`Maximum runtimes (${maxRuntimes}) reached or all ports occupied by stale processes. Cannot allocate port.`)
+  }
+
+  /**
+   * Allocate next available port starting from basePort.
+   * @deprecated Use allocatePortAsync for proper stale process detection
    */
   private allocatePort(): number {
     const { basePort, maxRuntimes } = this.config
@@ -280,8 +325,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     // Ensure project directory exists with dependencies
     const projectDir = await this.ensureProjectDirectory(projectId)
 
-    // Allocate ports
-    const port = this.allocatePort()
+    // Allocate ports (async to check for stale processes)
+    const port = await this.allocatePortAsync()
     const agentPort = port + 1000
     const url = this.buildUrl(projectId, port)
     const startedAt = Date.now()
@@ -300,18 +345,28 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     this.runtimes.set(projectId, runtime)
 
     try {
+      // Build Vite environment - override DATABASE_URL with projects database if available
+      // This ensures project runtimes connect to the isolated projects database, not the platform database
+      const viteEnv: Record<string, string> = {
+        ...process.env as Record<string, string>,
+        PROJECT_ID: projectId,
+        VITE_PROJECT_ID: projectId,
+        VITE_PORT: String(port),
+        PORT: String(port),
+      }
+      
+      // Override DATABASE_URL with PROJECTS_DATABASE_URL to isolate project data
+      if (process.env.PROJECTS_DATABASE_URL) {
+        viteEnv.DATABASE_URL = process.env.PROJECTS_DATABASE_URL
+        console.log(`[RuntimeManager] Vite using projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
+      }
+
       // Spawn Vite dev server
       const proc = spawn('bun', ['run', 'dev', '--port', String(port), '--host', '0.0.0.0'], {
         cwd: projectDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,
-        env: {
-          ...process.env,
-          PROJECT_ID: projectId,
-          VITE_PROJECT_ID: projectId,
-          VITE_PORT: String(port),
-          PORT: String(port),
-        },
+        env: viteEnv,
       })
 
       runtime.process = proc
@@ -423,6 +478,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
   /**
    * Wait for Vite server to be ready.
+   * Accepts any HTTP response (including 500) as "server is ready" because:
+   * - Vite returns 500 when the app has runtime errors (e.g., missing DATABASE_URL)
+   * - The server is still functional and can serve the error page
    */
   private async waitForReady(projectId: string, port: number, timeoutMs: number): Promise<void> {
     const startTime = Date.now()
@@ -434,11 +492,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           method: 'HEAD',
           signal: AbortSignal.timeout(1000),
         })
-        if (response.ok || response.status === 404) {
-          return
-        }
+        // Accept any response - server is running even if app has errors
+        // This includes 200, 404, 500, etc.
+        return
       } catch {
-        // Server not ready yet
+        // Server not ready yet (connection refused, timeout, etc.)
       }
       await new Promise((resolve) => setTimeout(resolve, checkInterval))
     }
@@ -447,7 +505,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   }
 
   /**
-   * Wait for the agent server to be ready.
+   * Wait for the agent server to be ready and verify it's for the correct project.
+   * This prevents routing to stale agent processes from other projects (e.g., after hot reload).
    */
   private async waitForAgentReady(projectId: string, port: number, _timeoutMs: number): Promise<void> {
     const MAX_RETRIES = 50
@@ -460,10 +519,22 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           signal: AbortSignal.timeout(2000),
         })
         if (response.ok) {
+          // Verify the agent is for the correct project (prevents stale agent routing)
+          const data = await response.json() as { projectId?: string }
+          if (data.projectId && data.projectId !== projectId) {
+            // Stale agent from another project - this can happen after hot reload
+            // The old agent process is still running on this port
+            console.error(`[RuntimeManager] Port ${port} has stale agent for project ${data.projectId}, expected ${projectId}`)
+            throw new Error(`Port ${port} is occupied by agent for different project (${data.projectId}). Kill the old process or use a different port.`)
+          }
           return
         }
-      } catch {
-        // Server not ready yet
+      } catch (err: any) {
+        // If it's a project mismatch error, don't retry - fail immediately
+        if (err.message?.includes('occupied by agent for different project')) {
+          throw err
+        }
+        // Server not ready yet - continue retrying
       }
 
       if (attempt < MAX_RETRIES) {

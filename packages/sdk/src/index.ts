@@ -5,33 +5,26 @@
  *
  * Features:
  * - Authentication (email/password, OAuth)
- * - Database (Prisma pass-through)
- * - Code generation (server functions, domain stores)
- * - React bindings (hooks, providers)
+ * - OptimisticStore for CRUD with optimistic updates
+ * - Code generation (routes, types, stores)
+ * - HTTP client with request deduplication
  *
  * @example
  * ```typescript
- * import { PrismaClient } from '@prisma/client'
- * import { createClient } from '@shogo-ai/sdk'
+ * import { createClient, OptimisticStore } from '@shogo/sdk'
  *
- * const prisma = new PrismaClient()
- *
- * const shogo = createClient({
+ * const client = createClient({
  *   apiUrl: 'http://localhost:3000',
- *   db: prisma,
  * })
  *
  * // Auth
- * await shogo.auth.signUp({ email: 'user@example.com', password: 'secret' })
- * await shogo.auth.signIn({ email: 'user@example.com', password: 'secret' })
- *
- * // Database - direct Prisma pass-through
- * const todos = await shogo.db.todo.findMany({ where: { completed: false } })
+ * await client.auth.signUp({ email: 'user@example.com', password: 'secret' })
+ * await client.auth.signIn({ email: 'user@example.com', password: 'secret' })
  * ```
  *
  * @example Code Generation
  * ```bash
- * # Generate server functions and domain stores from Prisma schema
+ * # Generate routes, types, and stores from Prisma schema
  * npx shogo generate
  * ```
  */
@@ -45,6 +38,16 @@ export {
 
 // Auth module
 export { ShogoAuth } from './auth/index.js'
+
+// HTTP client
+export { HttpClient, type HttpClientConfig } from './http/client.js'
+
+// Stores
+export {
+  OptimisticStore,
+  type OptimisticStoreConfig,
+  type StoreState,
+} from './stores/index.js'
 
 // Storage adapters
 export {
@@ -86,3 +89,32 @@ export type {
   RequestOptions,
   ShogoResponse,
 } from './types.js'
+
+// Route hook types (for generated routes)
+export type {
+  RouteHookContext,
+  HookResult,
+} from './types.js'
+
+// MST Environment type (for generated MST stores)
+export type { ISDKEnvironment } from './types.js'
+
+// Persistence (for MST stores)
+export {
+  APIPersistence,
+  type APIPersistenceConfig,
+  type PersistenceContext,
+  type EntityContext,
+  type IPersistenceService,
+} from './persistence/index.js'
+
+// React components and hooks
+export {
+  DomainProvider,
+  useDomain,
+  useCollection,
+  useDomainReady,
+  withDomain,
+  type DomainProviderProps,
+  type DomainProviderConfig,
+} from './react/index.js'

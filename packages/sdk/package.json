@@ -1,5 +1,5 @@
 {
-  "name": "@shogo-ai/sdk",
+  "name": "@shogo/sdk",
   "version": "0.2.0",
   "description": "Shogo Platform SDK - Zero-boilerplate auth, database, and state management for TanStack Start apps",
   "type": "module",
@@ -42,11 +42,12 @@
     "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
-    "mobx": "^6.13.0"
+    "mobx": "^6.15.0",
+    "mobx-state-tree": "^7.0.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.40.0",
-    "@prisma/internals": "^6.0.0",
+    "@prisma/internals": "^7.3.0",
     "@types/react": "^19.0.0",
     "react": "^19.0.0",
     "tsup": "^8.0.0",

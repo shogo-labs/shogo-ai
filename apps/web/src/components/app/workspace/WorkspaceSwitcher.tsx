@@ -23,8 +23,10 @@ import { useState, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { Plus, Settings, Users, ChevronDown, Check, Zap, ArrowLeft } from "lucide-react"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useSDKDomain } from "@/contexts/DomainProvider"
 import { useSession } from "@/contexts/SessionProvider"
+import type { IDomainStore } from "@/generated/domain"
+import { useDomainActions } from "@/generated/domain-actions"
 
 import {
   DropdownMenu,
@@ -87,7 +89,9 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
   isLoading = false,
 }: WorkspaceSwitcherProps) {
   const navigate = useNavigate()
-  const { studioCore, billing } = useDomains()
+  // Use SDK store and domain actions
+  const store = useSDKDomain() as IDomainStore
+  const actions = useDomainActions()
   const { data: session } = useSession()
   const [isOpen, setIsOpen] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
@@ -100,24 +104,27 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
     if (!userId) {
       throw new Error("You must be logged in to create a workspace")
     }
-    const workspace = await studioCore.createWorkspace(name, undefined, userId)
+    const workspace = await actions.createWorkspace(name, undefined, userId)
     // Switch to the new workspace
-    onWorkspaceChange(workspace.slug)
-    return workspace.id
-  }, [studioCore, session?.user?.id, onWorkspaceChange])
+    if (workspace) {
+      onWorkspaceChange(workspace.slug)
+      return workspace.id
+    }
+    throw new Error("Failed to create workspace")
+  }, [actions, session?.user?.id, onWorkspaceChange])
 
-  // Get subscription for current workspace from billing domain
+  // Get subscription for current workspace from SDK store
   // Uses MST observer pattern - component re-renders when billing data changes
   const getActiveSubscription = useCallback((workspaceId: string) => {
-    if (!billing?.subscriptionCollection) return null
+    if (!store?.subscriptionCollection) return null
     try {
-      const subscriptions = billing.subscriptionCollection.findByWorkspace(workspaceId)
+      const subscriptions = store.subscriptionCollection.all.filter((s: any) => s.workspaceId === workspaceId)
       // Find active or trialing subscription
       return subscriptions.find((s: any) => s.status === 'active' || s.status === 'trialing') || null
     } catch {
       return null
     }
-  }, [billing])
+  }, [store])
 
   const subscription = currentWorkspace ? getActiveSubscription(currentWorkspace.id) : null
 
@@ -135,9 +142,9 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
     return "Free"
   }, [getActiveSubscription])
 
-  // Get actual credit values from billing domain
+  // Get actual credit values from SDK store
   const creditLedger = currentWorkspace
-    ? billing?.creditLedgerCollection?.findByWorkspace?.(currentWorkspace.id)
+    ? store?.creditLedgerCollection?.all.find((cl: any) => cl.workspaceId === currentWorkspace.id)
     : null
   const effectiveBalance = creditLedger?.effectiveBalance
 

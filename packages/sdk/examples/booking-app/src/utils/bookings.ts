@@ -10,7 +10,7 @@
 
 import { createServerFn } from '@tanstack/react-start'
 import { shogo } from '../lib/shogo'
-import type { BookingStatus } from '@prisma/client'
+import type { BookingStatus } from '../generated/prisma/client'
 
 export type BookingType = {
   id: string

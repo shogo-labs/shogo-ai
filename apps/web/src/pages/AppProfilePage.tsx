@@ -8,7 +8,8 @@ import { observer } from "mobx-react-lite"
 import { Link } from "react-router-dom"
 import { ArrowLeft, User, Building2, Mail, Calendar, CreditCard, Zap, TrendingUp, Settings } from "lucide-react"
 
-import { useDomains } from "@/contexts/DomainProvider"
+import { useSDKDomain, useDomains } from "@/contexts/DomainProvider"
+import type { IDomainStore } from "@/generated/domain"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -23,7 +24,8 @@ import { useWorkspaceNavigation } from "@/components/app/workspace"
  * User profile page showing user info, workspace memberships, and billing.
  */
 export const AppProfilePage = observer(function AppProfilePage() {
-  const { auth, studioCore, billing } = useDomains()
+  const { auth, billing } = useDomains()
+  const store = useSDKDomain() as IDomainStore
   const { openSettings } = useSettingsModal()
   const { setWorkspaceSlug } = useWorkspaceNavigation()
 
@@ -31,13 +33,14 @@ export const AppProfilePage = observer(function AppProfilePage() {
   const isLoading = auth.isLoading
 
   // Get user's workspaces via their memberships
-  const userWorkspaces = currentUser
-    ? studioCore.workspaceCollection.findByMembership(currentUser.id)
-    : []
-
-  // Get membership details for role display
   const userMemberships = currentUser
-    ? studioCore.memberCollection.findByUserId(currentUser.id)
+    ? store.memberCollection?.all?.filter((m: any) => m.userId === currentUser.id) || []
+    : []
+  
+  // Get workspaces the user is a member of
+  const userWorkspaceIds = userMemberships.map((m: any) => m.workspaceId)
+  const userWorkspaces = currentUser
+    ? store.workspaceCollection?.all?.filter((w: any) => userWorkspaceIds.includes(w.id)) || []
     : []
 
   // Helper to get role for a workspace
