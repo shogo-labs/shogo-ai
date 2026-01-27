@@ -33,7 +33,8 @@ COPY apps/api ./apps/api
 COPY prisma ./prisma
 
 # Generate Prisma client (must be done before building apps)
-RUN bunx prisma generate
+# Use local prisma from node_modules to ensure correct version (v6)
+RUN ./node_modules/.bin/prisma generate
 
 # Build state-api first (dependency)
 WORKDIR /app/packages/state-api
