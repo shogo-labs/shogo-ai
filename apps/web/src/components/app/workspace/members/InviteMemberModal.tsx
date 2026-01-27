@@ -28,7 +28,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useSDKDomain } from "@/contexts/DomainProvider"
+import { useDomainActions } from "@/generated/domain-actions"
+import type { IDomainStore } from "@/generated/domain"
 import { useSession } from "@/contexts/SessionProvider"
 
 /**
@@ -71,8 +73,9 @@ export function InviteMemberModal({
   workspaceId,
   onSuccess,
 }: InviteMemberModalProps) {
-  // Get studioCore domain
-  const { studioCore } = useDomains()
+  // Get SDK store and actions
+  const store = useSDKDomain() as IDomainStore
+  const actions = useDomainActions()
 
   // Get current user for invitedBy field
   const { data: session } = useSession()
@@ -106,7 +109,7 @@ export function InviteMemberModal({
    * Handle form submission
    */
   const handleSubmit = async () => {
-    if (!isValid || isSubmitting || !studioCore || !currentUserId) return
+    if (!isValid || isSubmitting || !store || !actions || !currentUserId) return
 
     // Validate email format
     if (!isValidEmail) {
@@ -119,30 +122,24 @@ export function InviteMemberModal({
 
     try {
       // Check for existing pending invitation
-      await studioCore.invitationCollection.query().toArray()
-      await studioCore.workspaceCollection.query().toArray()
+      await store.invitationCollection.loadAll({ workspaceId })
 
-      const existingInvitations = studioCore.invitationCollection.findByEmail(email)
+      const existingInvitations = store.invitationCollection.all.filter(
+        (i: any) => i.email === email
+      )
       const pendingForWorkspace = existingInvitations.find(
-        (i: any) => i.status === "pending" && i.workspace?.id === workspaceId
+        (i: any) => i.status === "pending" && i.workspaceId === workspaceId
       )
 
       if (pendingForWorkspace) {
         throw new Error("Invitation already pending for this email")
       }
 
-      // Create invitation with 7-day expiry
-      const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000
-
-      await studioCore.invitationCollection.insertOne({
-        id: crypto.randomUUID(),
+      // Create invitation via SDK action
+      await actions.sendInvitation({
         email,
-        role,
-        workspace: workspaceId,  // Reference field, not workspaceId
-        status: "pending",
-        invitedBy: currentUserId,
-        expiresAt,
-        createdAt: Date.now(),
+        role: role as any,
+        workspaceId,
       })
 
       // Reset form

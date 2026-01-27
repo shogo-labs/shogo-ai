@@ -15,7 +15,9 @@ import { Loader2, Check, X, Building2, Clock, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useSDKDomain } from "@/contexts/DomainProvider"
+import { useDomainActions } from "@/generated/domain-actions"
+import type { IDomainStore } from "@/generated/domain"
 import { useSession } from "@/contexts/SessionProvider"
 
 /**
@@ -77,8 +79,9 @@ function formatTimeRemaining(expiresAt: number): string {
  * Uses MCP domain for data operations.
  */
 export function MyInvitationsView({ onInvitationResponse }: MyInvitationsViewProps) {
-  // Get studioCore domain
-  const { studioCore } = useDomains()
+  // Get SDK store and actions
+  const store = useSDKDomain() as IDomainStore
+  const actions = useDomainActions()
 
   // Get current user
   const { data: session } = useSession()
@@ -94,10 +97,10 @@ export function MyInvitationsView({ onInvitationResponse }: MyInvitationsViewPro
   const [processingId, setProcessingId] = useState<string | null>(null)
 
   /**
-   * Load invitations from MCP domain
+   * Load invitations from SDK store
    */
   const loadInvitations = useCallback(async () => {
-    if (!studioCore?.invitationCollection || !userEmail) {
+    if (!store?.invitationCollection || !userEmail) {
       setIsLoading(false)
       return
     }
@@ -106,32 +109,40 @@ export function MyInvitationsView({ onInvitationResponse }: MyInvitationsViewPro
     setError(null)
 
     try {
-      // Load invitations and workspaces from backend
-      await studioCore.invitationCollection.query().toArray()
-      await studioCore.workspaceCollection.query().toArray()
+      // Load invitations from backend
+      await store.invitationCollection.loadAll({ email: userEmail })
+      await store.workspaceCollection.loadAll({})
 
       // Get invitations for current user's email
-      const userInvitations = studioCore.invitationCollection.findByEmail(userEmail)
+      const userInvitations = store.invitationCollection.all.filter(
+        (i: any) => i.email === userEmail
+      )
       const pending = userInvitations.filter((i: any) => i.status === "pending")
 
-      setInvitations(pending.map((i: any) => ({
-        id: i.id,
-        email: i.email,
-        role: i.role,
-        status: i.status,
-        expiresAt: i.expiresAt,
-        createdAt: i.createdAt,
-        isExpired: i.isExpired || Date.now() > i.expiresAt,
-        workspace: i.workspace ? { id: i.workspace.id, name: i.workspace.name } : undefined,
-        project: i.project ? { id: i.project.id, name: i.project.name } : undefined,
-      })))
+      // Get workspace details for each invitation
+      setInvitations(pending.map((i: any) => {
+        const workspace = i.workspaceId 
+          ? store.workspaceCollection.get(i.workspaceId)
+          : undefined
+        return {
+          id: i.id,
+          email: i.email,
+          role: i.role,
+          status: i.status,
+          expiresAt: i.expiresAt,
+          createdAt: i.createdAt,
+          isExpired: i.isExpired || Date.now() > i.expiresAt,
+          workspace: workspace ? { id: workspace.id, name: workspace.name } : undefined,
+          project: undefined, // Project invitations handled separately
+        }
+      }))
     } catch (err) {
       console.error("[MyInvitationsView] Failed to load invitations:", err)
       setError(err instanceof Error ? err.message : "Failed to load invitations")
     } finally {
       setIsLoading(false)
     }
-  }, [userEmail, studioCore])
+  }, [userEmail, store])
 
   // Load invitations on mount
   useEffect(() => {
@@ -142,13 +153,13 @@ export function MyInvitationsView({ onInvitationResponse }: MyInvitationsViewPro
    * Handle accepting an invitation
    */
   const handleAccept = async (invitation: MyInvitation) => {
-    if (!studioCore || !userId) return
+    if (!actions || !userId) return
 
     setProcessingId(invitation.id)
     setError(null)
 
     try {
-      await studioCore.acceptInvitation(invitation.id, userId)
+      await actions.acceptInvitation(invitation.id, userId)
 
       // Remove from local state
       setInvitations((prev) => prev.filter((i) => i.id !== invitation.id))
@@ -165,13 +176,13 @@ export function MyInvitationsView({ onInvitationResponse }: MyInvitationsViewPro
    * Handle declining an invitation
    */
   const handleDecline = async (invitation: MyInvitation) => {
-    if (!studioCore || !userId) return
+    if (!actions || !userId) return
 
     setProcessingId(invitation.id)
     setError(null)
 
     try {
-      await studioCore.declineInvitation(invitation.id, userId)
+      await actions.declineInvitation(invitation.id)
 
       // Remove from local state
       setInvitations((prev) => prev.filter((i) => i.id !== invitation.id))

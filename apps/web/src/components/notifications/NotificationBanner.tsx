@@ -15,7 +15,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
+import type { IDomainStore } from "@/generated/domain"
 import { useSession } from "@/contexts/SessionProvider"
 import { NotificationList } from "./NotificationList"
 
@@ -26,15 +27,15 @@ import { NotificationList } from "./NotificationList"
  * Clicking opens a popover with the notification list.
  */
 export const NotificationBanner = observer(function NotificationBanner() {
-  const { studioCore } = useDomains()
+  const store = useSDKDomain() as IDomainStore
   const { data: session } = useSession()
   const userId = session?.user?.id
 
   const [isOpen, setIsOpen] = useState(false)
 
-  // Get unread count from domain
-  const unreadCount = userId
-    ? studioCore?.notificationCollection?.unreadCountForUser?.(userId) ?? 0
+  // Get unread count from SDK collection
+  const unreadCount = userId && store?.notificationCollection
+    ? store.notificationCollection.all.filter((n: any) => n.userId === userId && !n.readAt).length
     : 0
 
   return (

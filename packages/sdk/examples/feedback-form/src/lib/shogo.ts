@@ -9,7 +9,7 @@
 
 import { createClient, type ShogoClient } from '@shogo-ai/sdk'
 import { prisma } from './db'
-import type { PrismaClient } from '@prisma/client'
+import type { PrismaClient } from '../generated/prisma/client'
 
 // Create the Shogo client with Prisma pass-through
 export const shogo: ShogoClient<PrismaClient> = createClient({

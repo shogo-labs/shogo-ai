@@ -174,14 +174,32 @@ interface PrismaDMMF {
 
 /**
  * Parse Prisma schema
+ * 
+ * Note: Prisma 7 uses prisma.config.ts for datasource URL.
+ * We pass the config path to getDMMF for proper parsing.
  */
 async function parsePrismaSchema(config: PrismaRoutesConfig): Promise<PrismaDMMF> {
   const { getDMMF } = await import("@prisma/internals")
   
   if (config.schemaPath) {
-    const { readFileSync } = await import("fs")
+    const { readFileSync, existsSync } = await import("fs")
+    const { dirname, join, resolve } = await import("path")
+    
     const schemaString = readFileSync(config.schemaPath, "utf-8")
-    return await getDMMF({ datamodel: schemaString }) as unknown as PrismaDMMF
+    const schemaDir = dirname(config.schemaPath)
+    const projectRoot = resolve(schemaDir, '..')
+    
+    // Check for prisma.config.ts in the schema's parent directory (project root)
+    const possibleConfigPaths = [
+      join(projectRoot, 'prisma.config.ts'),
+      join(schemaDir, 'prisma.config.ts'),
+    ]
+    const configPath = possibleConfigPaths.find(p => existsSync(p))
+    
+    return await getDMMF({ 
+      datamodel: schemaString,
+      ...(configPath && { prismaConfigPath: configPath }),
+    }) as unknown as PrismaDMMF
   } else if (config.schemaString) {
     return await getDMMF({ datamodel: config.schemaString }) as unknown as PrismaDMMF
   } else {
@@ -250,15 +268,15 @@ function generateRoutesCode(
     ' */',
     '',
     'import { Hono } from "hono"',
-    'import { PrismaClient } from "@prisma/client"',
+    'import { PrismaClient } from "./prisma/client"',
     'import type { ModelHooks, RouteHookContext, HookResult, CustomRoute } from "@shogo/state-api/generators"',
     '',
-    '// Prisma client instance (injected or created)',
+    '// Prisma client instance (must be injected via setPrisma)',
     'let prismaInstance: PrismaClient | null = null',
     '',
     'function getPrisma(): PrismaClient {',
     '  if (!prismaInstance) {',
-    '    prismaInstance = new PrismaClient()',
+    '    throw new Error("PrismaClient not initialized. Call setPrisma(client) before using routes.")',
     '  }',
     '  return prismaInstance',
     '}',

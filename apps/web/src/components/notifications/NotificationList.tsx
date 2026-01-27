@@ -11,7 +11,9 @@ import { Loader2, Bell, CheckCircle } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useSDKDomain } from "@/contexts/DomainProvider"
+import { useDomainActions } from "@/generated/domain-actions"
+import type { IDomainStore } from "@/generated/domain"
 import { useSession } from "@/contexts/SessionProvider"
 import { NotificationItem } from "./NotificationItem"
 
@@ -47,7 +49,9 @@ export interface NotificationListProps {
 export const NotificationList = observer(function NotificationList({
   onClose,
 }: NotificationListProps) {
-  const { studioCore } = useDomains()
+  // Use SDK store for data loading, actions for mutations
+  const store = useSDKDomain() as IDomainStore
+  const actions = useDomainActions()
   const { data: session } = useSession()
   const userId = session?.user?.id
 
@@ -58,17 +62,17 @@ export const NotificationList = observer(function NotificationList({
    * Load notifications from domain
    */
   const loadNotifications = useCallback(async () => {
-    if (!userId || !studioCore) {
+    if (!userId || !store) {
       setIsLoading(false)
       return
     }
 
     try {
-      // Load all notifications
-      await studioCore.notificationCollection.query().toArray()
+      // Load notifications using SDK
+      await store.notificationCollection.loadAll({ userId })
 
-      // Get notifications for current user
-      const userNotifications = studioCore.notificationCollection.forUser(userId) || []
+      // Get notifications for current user from SDK collection
+      const userNotifications = store.notificationCollection.all.filter((n: any) => n.userId === userId)
 
       // Sort by createdAt descending (newest first)
       const sorted = [...userNotifications].sort((a, b) => b.createdAt - a.createdAt)
@@ -79,7 +83,7 @@ export const NotificationList = observer(function NotificationList({
     } finally {
       setIsLoading(false)
     }
-  }, [userId, studioCore])
+  }, [userId, store])
 
   useEffect(() => {
     loadNotifications()
@@ -89,12 +93,12 @@ export const NotificationList = observer(function NotificationList({
    * Mark all notifications as read
    */
   const handleMarkAllRead = async () => {
-    if (!studioCore) return
+    if (!actions) return
 
     try {
       const unread = notifications.filter((n) => n.isUnread)
       for (const notification of unread) {
-        await studioCore.markNotificationRead(notification.id)
+        await actions.markNotificationRead(notification.id)
       }
       await loadNotifications()
     } catch (error) {

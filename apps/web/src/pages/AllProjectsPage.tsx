@@ -70,7 +70,9 @@ import {
 } from "@/components/ui/dialog"
 import { useWorkspaceData, useWorkspaceNavigation } from "@/components/app/workspace/hooks"
 import { Label } from "@/components/ui/label"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useSDKDomain } from "@/contexts/DomainProvider"
+import type { IDomainStore } from "@/generated/domain"
+import { useDomainActions } from "@/generated/domain-actions"
 import { useSession } from "@/contexts/SessionProvider"
 import { cn } from "@/lib/utils"
 
@@ -125,7 +127,7 @@ function getPlaceholderGradient(name: string): string {
 export const AllProjectsPage = observer(function AllProjectsPage() {
   const navigate = useNavigate()
   const { data: session } = useSession()
-  const { studioCore } = useDomains()
+  const actions = useDomainActions()
   const { currentWorkspace, projects, folders, currentFolder, folderBreadcrumbs, refetchProjects, refetchFolders, starredProjectIds, toggleStarProject: toggleStar } = useWorkspaceData()
   const { folderId, setFolderId, clearFolder } = useWorkspaceNavigation()
 
@@ -263,12 +265,12 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   }, [currentWorkspace?.id, toggleStar])
 
   const handleRename = useCallback(async () => {
-    if (!projectToRename || !newName.trim() || !studioCore) return
+    if (!projectToRename || !newName.trim()) return
     
     setIsRenaming(true)
     try {
-      // Update the project name via the domain
-      await studioCore.updateProject(projectToRename.id, { name: newName.trim() })
+      // Update the project name via SDK domain actions
+      await actions.updateProject(projectToRename.id, { name: newName.trim() })
       refetchProjects()
       setRenameDialogOpen(false)
       setProjectToRename(null)
@@ -278,14 +280,14 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
     } finally {
       setIsRenaming(false)
     }
-  }, [projectToRename, newName, studioCore, refetchProjects])
+  }, [projectToRename, newName, actions, refetchProjects])
 
   const handleDelete = useCallback(async () => {
-    if (!projectToDelete || !studioCore) return
+    if (!projectToDelete) return
     
     setIsDeleting(true)
     try {
-      await studioCore.deleteProject(projectToDelete.id)
+      await actions.deleteProject(projectToDelete.id)
       refetchProjects()
       setDeleteDialogOpen(false)
       setProjectToDelete(null)
@@ -294,7 +296,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
     } finally {
       setIsDeleting(false)
     }
-  }, [projectToDelete, studioCore, refetchProjects])
+  }, [projectToDelete, actions, refetchProjects])
 
   const openRenameDialog = (project: Project, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -311,15 +313,14 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
 
   // Folder handlers
   const handleCreateFolder = useCallback(async () => {
-    if (!newFolderName.trim() || !studioCore || !currentWorkspace?.id || !session?.user?.id) return
+    if (!newFolderName.trim() || !currentWorkspace?.id) return
 
     setIsCreatingFolder(true)
     try {
-      await studioCore.createFolder(
+      await actions.createFolder(
         newFolderName.trim(),
         currentWorkspace.id,
-        folderId || null,
-        session.user.id
+        folderId || null
       )
       refetchFolders()
       setCreateFolderDialogOpen(false)
@@ -329,14 +330,14 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
     } finally {
       setIsCreatingFolder(false)
     }
-  }, [newFolderName, studioCore, currentWorkspace?.id, session?.user?.id, folderId, refetchFolders])
+  }, [newFolderName, actions, currentWorkspace?.id, folderId, refetchFolders])
 
   const handleRenameFolder = useCallback(async () => {
-    if (!folderToRename || !renameFolderName.trim() || !studioCore) return
+    if (!folderToRename || !renameFolderName.trim()) return
 
     setIsRenamingFolder(true)
     try {
-      await studioCore.updateFolder(folderToRename.id, { name: renameFolderName.trim() })
+      await actions.updateFolder(folderToRename.id, { name: renameFolderName.trim() })
       refetchFolders()
       setRenameFolderDialogOpen(false)
       setFolderToRename(null)
@@ -346,14 +347,14 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
     } finally {
       setIsRenamingFolder(false)
     }
-  }, [folderToRename, renameFolderName, studioCore, refetchFolders])
+  }, [folderToRename, renameFolderName, actions, refetchFolders])
 
   const handleDeleteFolder = useCallback(async () => {
-    if (!folderToDelete || !studioCore) return
+    if (!folderToDelete) return
 
     setIsDeletingFolder(true)
     try {
-      await studioCore.deleteFolder(folderToDelete.id)
+      await actions.deleteFolder(folderToDelete.id)
       refetchFolders()
       refetchProjects() // Projects may have moved
       setDeleteFolderDialogOpen(false)
@@ -363,14 +364,14 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
     } finally {
       setIsDeletingFolder(false)
     }
-  }, [folderToDelete, studioCore, refetchFolders, refetchProjects])
+  }, [folderToDelete, actions, refetchFolders, refetchProjects])
 
   const handleMoveProjectToFolder = useCallback(async () => {
-    if (!projectToMove || !studioCore) return
+    if (!projectToMove) return
 
     setIsMovingProject(true)
     try {
-      await studioCore.moveProjectToFolder(projectToMove.id, targetFolderId)
+      await actions.moveProjectToFolder(projectToMove.id, targetFolderId)
       refetchProjects()
       setMoveProjectDialogOpen(false)
       setProjectToMove(null)
@@ -380,7 +381,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
     } finally {
       setIsMovingProject(false)
     }
-  }, [projectToMove, targetFolderId, studioCore, refetchProjects])
+  }, [projectToMove, targetFolderId, actions, refetchProjects])
 
   const openRenameFolderDialog = (folder: Folder, e: React.MouseEvent) => {
     e.stopPropagation()

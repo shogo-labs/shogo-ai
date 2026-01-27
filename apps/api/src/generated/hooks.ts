@@ -689,7 +689,7 @@ const chatSessionHooks: ModelHooks = {
         include: {
           project: true,
         },
-        orderBy: { lastActiveAt: 'desc' },
+        orderBy: { updatedAt: 'desc' },
       },
     }
   },
@@ -743,12 +743,13 @@ const chatMessageHooks: ModelHooks = {
   },
 
   /**
-   * Update session lastActiveAt when message is created
+   * Update session updatedAt when message is created
+   * Note: updatedAt has @updatedAt so it auto-updates, but we call update to trigger it
    */
   afterCreate: async (message, ctx) => {
     await ctx.prisma.chatSession.update({
       where: { id: message.sessionId },
-      data: { lastActiveAt: new Date() },
+      data: { updatedAt: new Date() },
     })
   },
 }

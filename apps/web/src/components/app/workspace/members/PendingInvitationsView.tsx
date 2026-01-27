@@ -25,7 +25,9 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useSDKDomain } from "@/contexts/DomainProvider"
+import { useDomainActions } from "@/generated/domain-actions"
+import type { IDomainStore } from "@/generated/domain"
 import { useSession } from "@/contexts/SessionProvider"
 
 /**
@@ -98,8 +100,9 @@ export function PendingInvitationsView({
   orgId,
   onInvitationsChange,
 }: PendingInvitationsViewProps) {
-  // Get studioCore domain
-  const { studioCore } = useDomains()
+  // Get SDK store and actions
+  const store = useSDKDomain() as IDomainStore
+  const actions = useDomainActions()
 
   // Get current user for cancel action
   const { data: session } = useSession()
@@ -115,10 +118,10 @@ export function PendingInvitationsView({
   const [isCancelling, setIsCancelling] = useState(false)
 
   /**
-   * Load invitations from MCP domain
+   * Load invitations from SDK store
    */
   const loadInvitations = useCallback(async () => {
-    if (!studioCore?.invitationCollection) {
+    if (!store?.invitationCollection) {
       setIsLoading(false)
       return
     }
@@ -128,11 +131,12 @@ export function PendingInvitationsView({
 
     try {
       // Load invitations from backend
-      await studioCore.invitationCollection.query().toArray()
-      await studioCore.workspaceCollection.query().toArray()
+      await store.invitationCollection.loadAll({ workspaceId: orgId })
 
       // Get invitations for this workspace
-      const orgInvitations = studioCore.invitationCollection.findForResource("workspace", orgId)
+      const orgInvitations = store.invitationCollection.all.filter(
+        (i: any) => i.workspaceId === orgId
+      )
       const pending = orgInvitations.filter((i: any) => i.status === "pending")
 
       setInvitations(pending.map((i: any) => ({
@@ -150,7 +154,7 @@ export function PendingInvitationsView({
     } finally {
       setIsLoading(false)
     }
-  }, [orgId, studioCore])
+  }, [orgId, store])
 
   // Load invitations on mount and orgId change
   useEffect(() => {
@@ -161,12 +165,12 @@ export function PendingInvitationsView({
    * Handle invitation cancellation
    */
   const handleCancelInvitation = async () => {
-    if (!invitationToCancel || !studioCore || !currentUserId) return
+    if (!invitationToCancel || !actions || !currentUserId) return
 
     setIsCancelling(true)
 
     try {
-      await studioCore.cancelInvitation(invitationToCancel.id, currentUserId)
+      await actions.cancelInvitation(invitationToCancel.id)
 
       // Update local state
       setInvitations((prev) => prev.filter((i) => i.id !== invitationToCancel.id))

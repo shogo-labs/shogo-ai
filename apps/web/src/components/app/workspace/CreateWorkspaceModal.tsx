@@ -39,7 +39,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomainActions } from "@/generated/domain-actions"
 import { useSession } from "@/contexts/SessionProvider"
 
 /**
@@ -61,8 +61,8 @@ export interface CreateWorkspaceModalProps {
  * Uses shadcn Dialog with form validation, loading, and error states.
  */
 export function CreateWorkspaceModal({ open, onOpenChange, onSuccess }: CreateWorkspaceModalProps) {
-  // Get studioCore domain for creating workspaces
-  const { studioCore } = useDomains()
+  // Get SDK domain actions
+  const actions = useDomainActions()
 
   // Get current user session
   const { data: session } = useSession()
@@ -95,8 +95,8 @@ export function CreateWorkspaceModal({ open, onOpenChange, onSuccess }: CreateWo
     setError(null)
 
     try {
-      // Use domain action to create workspace with owner membership
-      await studioCore.createWorkspace(
+      // Use SDK domain action to create workspace with owner membership
+      await actions.createWorkspace(
         name.trim(),
         description.trim() || undefined,
         userId

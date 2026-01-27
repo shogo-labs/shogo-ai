@@ -10,12 +10,12 @@
 // - better-auth: User, Session, Account, Verification
 
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
+  output   = "../apps/api/src/generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 // =============================================================================
@@ -416,6 +416,7 @@ model ChatSession {
   phase               String?
   claudeCodeSessionId String?
   createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @default(now()) @updatedAt
   lastActiveAt        DateTime    @default(now())
 
   // Relations - contextId can reference FeatureSession or Project
