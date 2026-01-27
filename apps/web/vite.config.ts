@@ -49,10 +49,14 @@ export default defineConfig(({ mode }) => {
       strictPort: true, // Fail if port is in use instead of auto-incrementing
       host: true, // Listen on all addresses (needed for Docker)
       // HMR config for Docker - client connects to host machine
+      // When VITE_HMR_HOST is set (Docker), configure HMR to use that host
+      // Otherwise, use default (works for native dev)
       hmr: hmrHost ? {
         host: hmrHost,
         port: hmrPort || VITE_PORT,
-      } : undefined,
+        protocol: 'ws',
+        clientPort: hmrPort || VITE_PORT,
+      } : true,
       proxy: {
         '/api': {
           target: apiProxyTarget,

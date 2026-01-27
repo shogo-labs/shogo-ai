@@ -154,9 +154,8 @@ const TodoList = observer(function TodoList({
     try {
       await store.todo.create({
         title: newTitle.trim(),
-        userId: user.id,
         completed: false,
-      })
+      }, user.id)
       setNewTitle('')
     } catch {
       // Error is handled by the store
@@ -165,7 +164,7 @@ const TodoList = observer(function TodoList({
 
   const handleToggle = async (todo: TodoType) => {
     try {
-      await store.todo.update(todo.id, { completed: !todo.completed })
+      await store.todo.update(todo.id, { completed: !todo.completed }, user.id)
     } catch {
       // Error is handled by the store
     }
@@ -173,7 +172,7 @@ const TodoList = observer(function TodoList({
 
   const handleDelete = async (id: string) => {
     try {
-      await store.todo.delete(id)
+      await store.todo.delete(id, user.id)
     } catch {
       // Error is handled by the store
     }

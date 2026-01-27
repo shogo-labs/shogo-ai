@@ -10,8 +10,10 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test:e2e": "npx playwright test",
+    "test:e2e:docker": "DOCKER_E2E=true npx playwright test",
     "test:e2e:ui": "npx playwright test --ui",
-    "test:e2e:headed": "npx playwright test --headed"
+    "test:e2e:headed": "npx playwright test --headed",
+    "test:e2e:docker:headed": "DOCKER_E2E=true npx playwright test --headed"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.23",

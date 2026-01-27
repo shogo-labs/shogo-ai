@@ -142,13 +142,8 @@ export function terminalRoutes(config: TerminalRoutesConfig) {
     const projectId = c.req.param("projectId")
     const projectDir = join(workspacesDir, projectId)
 
-    // Verify project exists
-    if (!existsSync(projectDir)) {
-      return c.json(
-        { error: { code: "project_not_found", message: "Project not found" } },
-        404
-      )
-    }
+    // If project directory doesn't exist yet, still return available commands
+    // (the commands are generic, not project-specific)
 
     // Return available commands grouped by category
     const commandsByCategory = PRESET_COMMANDS.reduce((acc, cmd) => {

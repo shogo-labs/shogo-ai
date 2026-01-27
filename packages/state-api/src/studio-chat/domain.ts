@@ -235,7 +235,7 @@ export const studioChatDomain = domain({
          * - feature/project require contextId
          * - general must not have contextId
          *
-         * Uses async insertOne for backend persistence.
+         * Uses insertOne for local MST update + saveOne for API persistence.
          */
         async createChatSession(data: {
           name?: string
@@ -262,7 +262,8 @@ export const studioChatDomain = domain({
           }
 
           const now = Date.now()
-          return await self.chatSessionCollection.insertOne({
+          // Insert into local MST store (via MemoryBackend)
+          const session = await self.chatSessionCollection.insertOne({
             id: uuidv4(),
             name: data.name,
             inferredName: data.inferredName,
@@ -272,12 +273,15 @@ export const studioChatDomain = domain({
             createdAt: now,
             lastActiveAt: now,
           })
+          // Persist to API (via APIPersistence)
+          await self.chatSessionCollection.saveOne(session.id)
+          return session
         },
 
         /**
          * Add a message to a session and update lastActiveAt.
          *
-         * Uses async insertOne for backend persistence.
+         * Uses insertOne for local MST update + saveOne for API persistence.
          */
         async addMessage(data: {
           sessionId: string
@@ -293,13 +297,15 @@ export const studioChatDomain = domain({
 
           const now = Date.now()
 
-          // Update session's lastActiveAt using updateOne for backend persistence
+          // Update session's lastActiveAt in local MST (via MemoryBackend)
           await self.chatSessionCollection.updateOne(data.sessionId, {
             lastActiveAt: now,
           })
+          // Persist session update to API
+          await self.chatSessionCollection.saveOne(data.sessionId)
 
-          // Create the message using insertOne for backend persistence
-          return await self.chatMessageCollection.insertOne({
+          // Create the message in local MST (via MemoryBackend)
+          const message = await self.chatMessageCollection.insertOne({
             id: uuidv4(),
             session: data.sessionId,
             role: data.role,
@@ -308,12 +314,15 @@ export const studioChatDomain = domain({
             parts: data.parts,
             createdAt: now,
           })
+          // Persist message to API
+          await self.chatMessageCollection.saveOne(message.id)
+          return message
         },
 
         /**
          * Record a tool call for a session.
          *
-         * Uses async insertOne for backend persistence.
+         * Uses insertOne for local MST update + saveOne for API persistence.
          */
         async recordToolCall(data: {
           sessionId: string
@@ -329,7 +338,8 @@ export const studioChatDomain = domain({
             throw new Error(`ChatSession with id '${data.sessionId}' not found`)
           }
 
-          return await self.toolCallLogCollection.insertOne({
+          // Insert into local MST store (via MemoryBackend)
+          const toolCall = await self.toolCallLogCollection.insertOne({
             id: uuidv4(),
             chatSession: data.sessionId,
             messageId: data.messageId,
@@ -340,6 +350,9 @@ export const studioChatDomain = domain({
             duration: data.duration,
             createdAt: Date.now(),
           })
+          // Persist to API (via APIPersistence)
+          await self.toolCallLogCollection.saveOne(toolCall.id)
+          return toolCall
         },
       })),
   },

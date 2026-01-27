@@ -2,15 +2,25 @@
 # Shogo API Server - Development Dockerfile
 # =============================================================================
 # For hot reloading during development. Source code is mounted as a volume.
-# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Features:
+# - Hot reloading via bun --watch
+# - RuntimeManager for project previews (spawns Vite processes)
+# - Prisma migrations on startup
+# - Claude Code CLI for AI agent capabilities
 # =============================================================================
 
 FROM oven/bun:1.2-alpine
 
 WORKDIR /app
 
-# Install curl for healthchecks, Node.js for Claude Code CLI, and bash for shell
-RUN apk add --no-cache curl nodejs npm bash
+# Install system dependencies:
+# - curl: healthchecks
+# - nodejs npm: Claude Code CLI
+# - bash: shell for Claude Code
+# - git: for Claude Code agent operations
+RUN apk add --no-cache curl nodejs npm bash git
 
 # Install Claude Code CLI globally (required for ai-sdk-provider-claude-code)
 RUN npm install -g @anthropic-ai/claude-code
@@ -22,6 +32,9 @@ ENV SHELL=/bin/bash
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
+# Copy Prisma schema (needed for migrations)
+COPY prisma ./prisma
+
 # Copy package.json files for dependency resolution
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
@@ -31,31 +44,40 @@ COPY apps/api/package.json ./apps/api/
 # Install all dependencies
 RUN bun install
 
+# Generate Prisma client
+RUN bunx prisma generate
+
 # Copy source code (will be overridden by volume mounts in dev mode)
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 COPY packages/project-runtime ./packages/project-runtime
 COPY apps/api ./apps/api
 
+# Copy .schemas for MCP and RuntimeManager
+COPY .schemas ./.schemas
+
 # Copy entrypoint script to a location that won't be overwritten by volume mount
 COPY apps/api/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Create workspaces directory and .claude directory
-RUN mkdir -p /app/workspaces /app/.claude && \
-    chmod 777 /app /app/.claude /app/workspaces
+# Create required directories with proper permissions
+RUN mkdir -p /app/workspaces /app/.claude /app/.schemas && \
+    chmod 777 /app /app/.claude /app/workspaces /app/.schemas
 
 # Environment defaults
 ENV NODE_ENV=development
 ENV API_PORT=8002
 ENV HOME=/app
+ENV WORKSPACES_DIR=/app/workspaces
+ENV RUNTIME_BASE_PORT=5200
+ENV RUNTIME_DOMAIN_SUFFIX=localhost
 
-# Expose API port and Vite runtime ports
+# Expose API port and Vite runtime ports for project previews
 EXPOSE 8002
-EXPOSE 5200-5209
+EXPOSE 5200-5219
 
 # Health check
-HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5 \
   CMD curl -sf http://localhost:${API_PORT}/api/health || exit 1
 
 # Run API server with watch mode (overridden in docker-compose.dev.yml)

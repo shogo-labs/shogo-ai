@@ -77,6 +77,7 @@ export default defineConfig({
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
+    /* Docker dev environment runs on 5173 (standard Vite port) */
     baseURL: process.env.WEB_URL || 'http://localhost:5173',
     /* Always capture traces for replay in the UI */
     trace: 'on',
@@ -84,6 +85,11 @@ export default defineConfig({
     screenshot: 'on',
     /* Capture video on failure */
     video: 'retain-on-failure',
+  },
+
+  /* Global timeout for expect assertions */
+  expect: {
+    timeout: 10000,
   },
 
   /* Configure projects for major browsers */
@@ -95,20 +101,21 @@ export default defineConfig({
   ],
 
   /* Run your local dev server, API server, and MCP server before starting the tests */
-  /* Note: MCP and API are assumed to be running via Docker when WEB_URL points to Docker web service */
-  /* Skip server startup for remote environments (staging/production) */
-  webServer: (process.env.WEB_URL?.includes('3001') || process.env.WEB_URL?.includes('shogo.ai')) ? [
-    // When using Docker web service (port 3001), assume MCP and API are also running in Docker
-    // Only start local dev server if needed
-    {
-      command: 'bun run dev',
-      url: 'http://localhost:5173',
-      reuseExistingServer: true,
-      timeout: 120 * 1000,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    },
-  ] : [
+  /* 
+   * Test Environment Detection:
+   * 1. DOCKER_E2E=true - Docker environment is running (reuse existing servers)
+   * 2. WEB_URL contains 'shogo.ai' - Remote environment (staging/production)
+   * 3. Default - Start all servers locally
+   *
+   * For Docker development:
+   *   1. Run: bun run docker:dev:start
+   *   2. Run: DOCKER_E2E=true bun run test:e2e
+   */
+  webServer: (process.env.DOCKER_E2E === 'true' || process.env.WEB_URL?.includes('shogo.ai')) ? 
+    // Docker or remote environment: assume all services are already running
+    undefined
+    : [
+    // Native development: start all servers
     {
       command: 'cd ../../ && DATABASE_URL="${DATABASE_URL:-postgres://shogo:shogo_dev@localhost:5432/shogo}" bun run mcp:http',
       url: 'http://localhost:3100/mcp',
