@@ -13,13 +13,15 @@ import { Loader2 } from "lucide-react"
 import { TemplateCard, formatTemplateName } from "@/components/app/workspace/dashboard/TemplateCard"
 import { TemplatePreviewModal } from "@/components/app/workspace/dashboard/TemplatePreviewModal"
 import { useNavigate } from "react-router-dom"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomainActions } from "@/generated/domain-actions"
+import { useSession } from "@/contexts/SessionProvider"
 import { useWorkspaceData } from "@/components/app/workspace/hooks"
 import { useTemplates, type TemplateMetadata } from "@/hooks/useTemplates"
 
 export const TemplatesPage = observer(function TemplatesPage() {
   const navigate = useNavigate()
-  const { studioCore } = useDomains()
+  const actions = useDomainActions()
+  const { data: session } = useSession()
   const { currentWorkspace, refetchProjects } = useWorkspaceData()
 
   // Templates state - use shared hook with deduplication
@@ -36,8 +38,9 @@ export const TemplatesPage = observer(function TemplatesPage() {
   }
 
   const handleUseTemplate = async (template: TemplateMetadata) => {
-    if (!studioCore || !currentWorkspace?.id) {
-      console.error("[TemplatesPage] No studioCore or workspace")
+    const userId = session?.user?.id
+    if (!userId || !currentWorkspace?.id) {
+      console.error("[TemplatesPage] No user session or workspace")
       return
     }
 
@@ -46,7 +49,7 @@ export const TemplatesPage = observer(function TemplatesPage() {
     try {
       // Create project with template name
       const displayName = formatTemplateName(template.name)
-      const project = await studioCore.createProject(displayName, currentWorkspace.id)
+      const project = await actions.createProject(displayName, currentWorkspace.id, undefined, userId)
       
       if (project?.id) {
         refetchProjects()

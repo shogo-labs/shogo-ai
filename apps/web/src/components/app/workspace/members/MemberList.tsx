@@ -32,7 +32,9 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useSDKDomain } from "@/contexts/DomainProvider"
+import { useDomainActions } from "@/generated/domain-actions"
+import type { IDomainStore } from "@/generated/domain"
 
 /**
  * Member data from MCP domain
@@ -86,8 +88,9 @@ const roleBadgeVariant: Record<string, "default" | "secondary" | "outline"> = {
  * Uses MCP domain for data operations.
  */
 export function MemberList({ orgId, currentUserId, currentUserRole, onMembersChange }: MemberListProps) {
-  // Get studioCore domain
-  const { studioCore } = useDomains()
+  // Get SDK store and actions
+  const store = useSDKDomain() as IDomainStore
+  const actions = useDomainActions()
 
   // Data state
   const [members, setMembers] = useState<Member[]>([])
@@ -104,10 +107,10 @@ export function MemberList({ orgId, currentUserId, currentUserRole, onMembersCha
   const canManageMembers = currentUserLevel >= RoleLevels.admin
 
   /**
-   * Load members from MCP domain
+   * Load members from SDK store
    */
   const loadMembers = useCallback(async () => {
-    if (!studioCore?.memberCollection) {
+    if (!store?.memberCollection) {
       setIsLoading(false)
       return
     }
@@ -117,10 +120,12 @@ export function MemberList({ orgId, currentUserId, currentUserRole, onMembersCha
 
     try {
       // Load members from backend
-      await studioCore.memberCollection.query().toArray()
+      await store.memberCollection.loadAll({ workspaceId: orgId })
 
-      // Get members for this organization
-      const orgMembers = studioCore.memberCollection.findForResource("organization", orgId)
+      // Get members for this organization/workspace
+      const orgMembers = store.memberCollection.all.filter(
+        (m: any) => m.workspaceId === orgId
+      )
 
       setMembers(orgMembers.map((m: any) => ({
         id: m.id,
@@ -135,7 +140,7 @@ export function MemberList({ orgId, currentUserId, currentUserRole, onMembersCha
     } finally {
       setIsLoading(false)
     }
-  }, [orgId, studioCore])
+  }, [orgId, store])
 
   // Load members on mount and orgId change
   useEffect(() => {
@@ -146,13 +151,13 @@ export function MemberList({ orgId, currentUserId, currentUserRole, onMembersCha
    * Handle role change for a member
    */
   const handleRoleChange = async (memberId: string, newRole: string) => {
-    if (!studioCore) return
+    if (!actions) return
 
     setUpdatingMemberId(memberId)
     setError(null)
 
     try {
-      await studioCore.updateMemberRole(memberId, newRole, currentUserId)
+      await actions.updateMemberRole(memberId, newRole as any, currentUserId)
 
       // Reload members to get updated data
       await loadMembers()
@@ -169,13 +174,13 @@ export function MemberList({ orgId, currentUserId, currentUserRole, onMembersCha
    * Handle member removal
    */
   const handleRemoveMember = async () => {
-    if (!memberToRemove || !studioCore) return
+    if (!memberToRemove || !actions) return
 
     setIsRemoving(true)
     setError(null)
 
     try {
-      await studioCore.removeMember(memberToRemove.id, currentUserId)
+      await actions.removeMember(memberToRemove.id, currentUserId)
 
       // Update local state
       setMembers((prev) => prev.filter((m) => m.id !== memberToRemove.id))

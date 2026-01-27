@@ -71,7 +71,9 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { useWorkspaceData } from "../workspace"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useSDKDomain, useDomains } from "@/contexts/DomainProvider"
+import { useDomainActions } from "@/generated/domain-actions"
+import type { IDomainStore } from "@/generated/domain"
 import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal } from "../workspace/members/InviteMemberModal"
 
@@ -118,7 +120,8 @@ function TabItem({ id, label, icon: Icon, active, onClick, badge }: TabItemProps
 function WorkspaceTab({ onClose }: { onClose?: () => void }) {
   const navigate = useNavigate()
   const { currentWorkspace, workspaces } = useWorkspaceData()
-  const { studioCore } = useDomains()
+  const store = useSDKDomain() as IDomainStore
+  const actions = useDomainActions()
   const { data: session } = useSession()
   const [name, setName] = useState(currentWorkspace?.name || "")
   const [isSaving, setIsSaving] = useState(false)
@@ -136,7 +139,7 @@ function WorkspaceTab({ onClose }: { onClose?: () => void }) {
   // Check if user is the owner of this workspace
   const currentUserId = session?.user?.id
   const members = currentWorkspace?.id 
-    ? studioCore?.memberCollection?.findForResource("workspace", currentWorkspace.id) || []
+    ? store?.memberCollection?.all?.filter((m: any) => m.workspaceId === currentWorkspace.id) || []
     : []
   const currentUserMember = members.find((m: any) => m.userId === currentUserId)
   const isOwner = currentUserMember?.role === "owner"
@@ -163,10 +166,9 @@ function WorkspaceTab({ onClose }: { onClose?: () => void }) {
     setSaveStatus("idle")
     
     try {
-      // Update workspace name via MCP store.update
-      await studioCore?.workspaceCollection?.updateOne(currentWorkspace.id, {
+      // Update workspace name via SDK actions
+      await actions?.updateWorkspace(currentWorkspace.id, {
         name: name.trim(),
-        updatedAt: Date.now(),
       })
       
       setSaveStatus("saved")
@@ -181,19 +183,13 @@ function WorkspaceTab({ onClose }: { onClose?: () => void }) {
   }
 
   const handleDeleteWorkspace = async () => {
-    if (!currentWorkspace?.id || !isDeleteConfirmed || !studioCore) return
+    if (!currentWorkspace?.id || !isDeleteConfirmed || !actions) return
     
     setIsDeleting(true)
     
     try {
-      // Delete all members of the workspace first
-      const workspaceMembers = studioCore.memberCollection.findForResource("workspace", currentWorkspace.id)
-      for (const member of workspaceMembers) {
-        await studioCore.memberCollection.deleteOne(member.id)
-      }
-      
-      // Delete the workspace
-      await studioCore.workspaceCollection.deleteOne(currentWorkspace.id)
+      // Delete workspace with all members via SDK action
+      await actions.deleteWorkspaceWithMembers(currentWorkspace.id)
       
       // Close the dialog and modal
       setIsDeleteDialogOpen(false)
@@ -393,7 +389,8 @@ interface Member {
 // People Tab - Full member management
 function PeopleTab() {
   const { currentWorkspace } = useWorkspaceData()
-  const { studioCore } = useDomains()
+  const store = useSDKDomain() as IDomainStore
+  const actions = useDomainActions()
   const { data: session } = useSession()
   const currentUserId = session?.user?.id || ""
   const currentUserName = session?.user?.name || "User"
@@ -418,15 +415,15 @@ function PeopleTab() {
 
   // Load members
   const loadMembers = useCallback(async () => {
-    if (!studioCore?.memberCollection || !currentWorkspace?.id) {
+    if (!store?.memberCollection || !currentWorkspace?.id) {
       setIsLoading(false)
       return
     }
 
     setIsLoading(true)
     try {
-      await studioCore.memberCollection.query().toArray()
-      const workspaceMembers = studioCore.memberCollection.findForResource("workspace", currentWorkspace.id)
+      await store.memberCollection.loadAll({ workspaceId: currentWorkspace.id })
+      const workspaceMembers = store.memberCollection.all.filter((m: any) => m.workspaceId === currentWorkspace.id)
       setMembers(workspaceMembers.map((m: any) => ({
         id: m.id,
         userId: m.userId,
@@ -439,7 +436,7 @@ function PeopleTab() {
     } finally {
       setIsLoading(false)
     }
-  }, [studioCore, currentWorkspace?.id])
+  }, [store, currentWorkspace?.id])
 
   useEffect(() => {
     loadMembers()
@@ -473,10 +470,10 @@ function PeopleTab() {
 
   // Handle role change
   const handleRoleChange = async (memberId: string, newRole: string) => {
-    if (!studioCore) return
+    if (!actions) return
     setUpdatingMemberId(memberId)
     try {
-      await studioCore.updateMemberRole(memberId, newRole, currentUserId)
+      await actions.updateMemberRole(memberId, newRole as any, currentUserId)
       await loadMembers()
     } catch (err) {
       console.error("[PeopleTab] Failed to update role:", err)
@@ -487,10 +484,10 @@ function PeopleTab() {
 
   // Handle member removal
   const handleRemoveMember = async () => {
-    if (!memberToRemove || !studioCore) return
+    if (!memberToRemove || !actions) return
     setIsRemoving(true)
     try {
-      await studioCore.removeMember(memberToRemove.id, currentUserId)
+      await actions.removeMember(memberToRemove.id, currentUserId)
       setMembers(prev => prev.filter(m => m.id !== memberToRemove.id))
       setMemberToRemove(null)
     } catch (err) {

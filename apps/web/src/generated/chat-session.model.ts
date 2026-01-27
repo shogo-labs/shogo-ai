@@ -26,6 +26,7 @@ export const ChatSessionModel = types
     claudeCodeSessionId: types.optional(types.string, ""),
     createdAt: types.number,
     updatedAt: types.number,
+    lastActiveAt: types.number,
     project: types.safeReference(types.late(() => ProjectModel)),
     messages: types.optional(types.array(types.safeReference(types.late(() => ChatMessageModel))), []),
     toolCallLogs: types.optional(types.array(types.safeReference(types.late(() => ToolCallLogModel))), []),

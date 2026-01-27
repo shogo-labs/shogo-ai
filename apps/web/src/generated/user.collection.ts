@@ -112,6 +112,7 @@ export const UserCollection = types
 
       /**
        * Load all items from API
+       * Uses merge strategy to preserve existing MST node references
        */
       loadAll: flow(function* (filter?: Record<string, any>) {
         self.isLoading = true
@@ -125,11 +126,29 @@ export const UserCollection = types
           const response = yield env.http.get<{ ok: boolean; items?: any[] }>(url)
 
           if (response.data?.ok && response.data.items) {
-            self.items.clear()
+            // Use merge strategy to preserve existing node references
+            const newIds = new Set<string>()
+
             for (const item of response.data.items) {
-              // Transform dates to timestamps for MST
               const transformed = transformForMST(item)
-              self.items.put(transformed)
+              const id = transformed.id
+              newIds.add(id)
+
+              const existing = self.items.get(id)
+              if (existing) {
+                // Update existing item in place (preserves node reference)
+                applySnapshot(existing, transformed)
+              } else {
+                // Add new item
+                self.items.put(transformed)
+              }
+            }
+
+            // Remove items that are no longer in the response
+            for (const id of self.items.keys()) {
+              if (!newIds.has(id)) {
+                self.items.delete(id)
+              }
             }
           }
 

@@ -111,7 +111,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
       return workspace.id
     }
     throw new Error("Failed to create workspace")
-  }, [studioCore, session?.user?.id, onWorkspaceChange])
+  }, [actions, session?.user?.id, onWorkspaceChange])
 
   // Get subscription for current workspace from SDK store
   // Uses MST observer pattern - component re-renders when billing data changes

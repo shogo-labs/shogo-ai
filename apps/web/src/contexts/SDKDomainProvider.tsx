@@ -44,6 +44,78 @@ import {
 const API_BASE_URL = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : '')
 
 // ============================================================================
+// Module-level store management
+// ============================================================================
+
+// Store instances at module level to avoid recreating during render
+let moduleHttpClient: HttpClient | null = null
+let moduleStore: IDomainStore | null = null
+let moduleFacades: SDKDomainFacades | null = null
+let moduleUserId: string | null = null
+
+/**
+ * Initialize or get the store. This is called outside of render to avoid
+ * MST initialization issues during React's render phase.
+ */
+function getOrCreateStore(userId: string | null): {
+  http: HttpClient
+  store: IDomainStore
+  facades: SDKDomainFacades
+} {
+  // If user hasn't changed and we have a store, return it
+  if (moduleStore !== null && moduleUserId === userId) {
+    return {
+      http: moduleHttpClient!,
+      store: moduleStore,
+      facades: moduleFacades!,
+    }
+  }
+
+  // User changed - clear collections instead of recreating the store
+  // This preserves the store instance and avoids detached node errors
+  if (moduleStore !== null && moduleUserId !== userId) {
+    moduleUserId = userId
+    // Clear all collections - this removes items but keeps the store structure
+    moduleStore.clearAll()
+    return {
+      http: moduleHttpClient!,
+      store: moduleStore,
+      facades: moduleFacades!,
+    }
+  }
+
+  // First-time initialization
+  moduleUserId = userId
+
+  // Create HttpClient with credentials for cookie-based auth
+  moduleHttpClient = new HttpClient({
+    baseUrl: API_BASE_URL,
+    getToken: () => null, // Token is handled via cookies/session
+    defaultHeaders: {
+      'Content-Type': 'application/json',
+    },
+  })
+
+  // Create environment
+  const env: ISDKEnvironment = {
+    http: moduleHttpClient,
+    context: userId ? { userId } : undefined,
+  }
+
+  // Create domain store
+  moduleStore = createDomainStore(env)
+
+  // Create facades for backward compatibility
+  moduleFacades = createDomainFacades(moduleStore)
+
+  return {
+    http: moduleHttpClient,
+    store: moduleStore,
+    facades: moduleFacades,
+  }
+}
+
+// ============================================================================
 // Domain Facades (Backward Compatibility)
 // ============================================================================
 
@@ -113,50 +185,35 @@ export interface SDKDomainProviderProps {
  * Provider for SDK-generated MST stores.
  *
  * Creates an HttpClient and domain store, providing them to all children.
- * Recreates the store when the user changes (via session).
+ * Clears collections (instead of recreating store) when user changes.
  * Provides backward-compatible facades for existing useDomains() code.
  */
 export function SDKDomainProvider({ children }: SDKDomainProviderProps) {
   const session = useSession()
-  const httpRef = useRef<HttpClient | null>(null)
-  const storeRef = useRef<IDomainStore | null>(null)
-  const facadesRef = useRef<SDKDomainFacades | null>(null)
-  const userIdRef = useRef<string | null>(null)
   const [isReady, setIsReady] = useState(false)
+  const prevUserIdRef = useRef<string | null | undefined>(undefined)
 
   // Get current user ID
   const currentUserId = session.data?.user?.id ?? null
 
-  // Create or recreate when user changes
-  if (httpRef.current === null || userIdRef.current !== currentUserId) {
-    userIdRef.current = currentUserId
+  // Get or create the store instance (module-level, stable across renders)
+  // This is safe because it doesn't create new observables during render -
+  // it either returns existing ones or initializes them once at module level
+  const { http, store, facades } = getOrCreateStore(currentUserId)
 
-    // Reset singleton if user changes
-    if (storeRef.current !== null) {
-      resetDomainStore()
+  // Handle user changes by clearing collections in an effect (not during render)
+  useEffect(() => {
+    const prevUserId = prevUserIdRef.current
+
+    // Skip on initial mount
+    if (prevUserId !== undefined && prevUserId !== currentUserId) {
+      // User changed - collections are already cleared by getOrCreateStore
+      // but we log it here for debugging
+      console.log('[SDKDomainProvider] User changed, collections cleared')
     }
 
-    // Create HttpClient with credentials for cookie-based auth
-    httpRef.current = new HttpClient({
-      baseUrl: API_BASE_URL,
-      getToken: () => null, // Token is handled via cookies/session
-      defaultHeaders: {
-        'Content-Type': 'application/json',
-      },
-    })
-
-    // Create environment
-    const env: ISDKEnvironment = {
-      http: httpRef.current,
-      context: currentUserId ? { userId: currentUserId } : undefined,
-    }
-
-    // Create domain store
-    storeRef.current = createDomainStore(env)
-
-    // Create facades for backward compatibility
-    facadesRef.current = createDomainFacades(storeRef.current)
-  }
+    prevUserIdRef.current = currentUserId
+  }, [currentUserId])
 
   // Mark as ready on mount
   useEffect(() => {
@@ -165,15 +222,15 @@ export function SDKDomainProvider({ children }: SDKDomainProviderProps) {
 
   const contextValue = useMemo<SDKDomainContextValue>(
     () => ({
-      store: storeRef.current!,
-      facades: facadesRef.current!,
-      http: httpRef.current!,
+      store,
+      facades,
+      http,
       isReady,
       // For SchemaLoadingGate compatibility
       schemasLoading: false,
       schemasLoaded: isReady,
     }),
-    [isReady]
+    [store, facades, http, isReady]
   )
 
   return (
@@ -305,4 +362,20 @@ export function useChatSessionCollection() {
 /** Hook to access the chat message collection */
 export function useChatMessageCollection() {
   return useSDKDomain().chatMessageCollection
+}
+
+// ============================================================================
+// Testing Utilities
+// ============================================================================
+
+/**
+ * Reset the module-level store (for testing purposes only).
+ * This completely recreates the store on the next getOrCreateStore call.
+ */
+export function resetSDKDomainStore(): void {
+  moduleHttpClient = null
+  moduleStore = null
+  moduleFacades = null
+  moduleUserId = null
+  resetDomainStore()
 }
