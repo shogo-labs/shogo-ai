@@ -19,7 +19,7 @@ export const ToolCallLogModel = types
     chatSessionId: types.string,
     messageId: types.string,
     toolName: types.string,
-    status: types.enumeration("ToolCallStatus", [/* enum values */]),
+    status: types.enumeration("ToolCallStatus", ["streaming", "executing", "complete", "error"]),
     args: types.optional(types.frozen(), {}),
     result: types.optional(types.frozen(), {}),
     duration: types.optional(types.number, 0),

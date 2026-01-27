@@ -25,11 +25,9 @@ export const MemberModel = types
     isBillingAdmin: types.boolean,
     createdAt: types.number,
     updatedAt: types.number,
-    // Note: safeReference expects just an ID string, not a nested object
-    // The API may return nested objects; they should be flattened by the persistence layer
-    user: types.maybeNull(types.safeReference(types.late(() => UserModel))),
-    workspace: types.maybeNull(types.safeReference(types.late(() => WorkspaceModel))),
-    project: types.maybeNull(types.safeReference(types.late(() => ProjectModel))),
+    user: types.safeReference(types.late(() => UserModel)),
+    workspace: types.safeReference(types.late(() => WorkspaceModel)),
+    project: types.safeReference(types.late(() => ProjectModel)),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

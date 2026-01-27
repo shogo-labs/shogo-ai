@@ -17,7 +17,7 @@ export const NotificationModel = types
   .model("Notification", {
     id: types.identifier,
     userId: types.string,
-    type: types.enumeration("NotificationType", [/* enum values */]),
+    type: types.enumeration("NotificationType", ["invitation_pending", "invitation_accepted", "member_joined", "member_left", "workspace_updated"]),
     title: types.string,
     message: types.string,
     metadata: types.optional(types.frozen(), {}),

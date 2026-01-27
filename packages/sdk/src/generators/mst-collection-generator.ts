@@ -8,8 +8,8 @@
  * - Persistable, Queryable, Authorizable mixins
  */
 
-import type { PrismaModel } from './prisma-generator'
-import { toCamelCase, getIdField } from './prisma-generator'
+import type { PrismaModel, PrismaField } from './prisma-generator'
+import { toCamelCase, getIdField, getRelationFields } from './prisma-generator'
 
 // ============================================================================
 // Types
@@ -59,6 +59,10 @@ export function generateMSTCollection(model: PrismaModel): GeneratedMSTCollectio
   const modelLower = toCamelCase(modelName)
   const fileName = `${toFileName(modelName)}.collection.ts`
   const routePath = toRoutePath(modelName)
+
+  // Get relation field names for transformForMST
+  const relationFields = getRelationFields(model)
+  const relationFieldNames = relationFields.map(f => f.name)
 
   const lines: string[] = [
     '/**',
@@ -363,9 +367,13 @@ export function generateMSTCollection(model: PrismaModel): GeneratedMSTCollectio
     '// Helpers',
     '// ============================================================================',
     '',
+    `// Relation fields that expect IDs (safeReference)`,
+    `const relationFields = ${JSON.stringify(relationFieldNames)}`,
+    '',
     '/**',
     ' * Transform API response for MST compatibility:',
     ' * - Convert ISO date strings to timestamps',
+    ' * - Extract IDs from nested relation objects (for safeReference)',
     ' * - Handle null -> undefined for optional fields',
     ' */',
     'function transformForMST(obj: any): any {',
@@ -382,9 +390,23 @@ export function generateMSTCollection(model: PrismaModel): GeneratedMSTCollectio
     '    if (dateFields.includes(key) && typeof value === "string") {',
     '      result[key] = new Date(value).getTime()',
     '    }',
-    '    // Recursively transform nested objects',
+    '    // For relation fields, extract only the ID (for safeReference)',
+    '    else if (relationFields.includes(key) && value && typeof value === "object" && !Array.isArray(value) && value.id) {',
+    '      result[key] = value.id',
+    '    }',
+    '    // For array relation fields, extract IDs',
+    '    else if (relationFields.includes(key) && Array.isArray(value)) {',
+    '      result[key] = value.map((item: any) => (item && typeof item === "object" && item.id) ? item.id : item)',
+    '    }',
+    '    // Skip nested objects that are not relations (they might be JSON fields)',
     '    else if (value && typeof value === "object" && !Array.isArray(value)) {',
-    '      result[key] = transformForMST(value)',
+    '      // Only include if it has an id (likely a reference) or is a plain data object',
+    '      if (value.id && !relationFields.includes(key)) {',
+    '        result[key] = value // Keep as-is for JSON fields',
+    '      } else if (!value.id) {',
+    '        result[key] = value // Keep plain objects (like metadata)',
+    '      }',
+    '      // If it has an id but is a relation field, we already handled it above',
     '    }',
     '    else {',
     '      result[key] = value',

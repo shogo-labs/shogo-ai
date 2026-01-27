@@ -17,7 +17,7 @@ export const ChatMessageModel = types
   .model("ChatMessage", {
     id: types.identifier,
     sessionId: types.string,
-    role: types.enumeration("ChatRole", [/* enum values */]),
+    role: types.enumeration("ChatRole", ["user", "assistant"]),
     content: types.string,
     imageData: types.optional(types.string, ""),
     parts: types.optional(types.string, ""),

@@ -21,6 +21,11 @@ export interface GeneratedMSTModelFile {
   code: string
 }
 
+export interface PrismaEnum {
+  name: string
+  values: { name: string }[]
+}
+
 // ============================================================================
 // Utilities
 // ============================================================================
@@ -35,10 +40,20 @@ function toFileName(name: string): string {
 /**
  * Map Prisma type to MST type
  */
-function mapPrismaToMSTType(field: PrismaField): string {
+function mapPrismaToMSTType(field: PrismaField, enums: PrismaEnum[]): string {
   // Handle enums
   if (field.kind === 'enum') {
-    return `types.enumeration("${field.type}", [/* enum values */])`
+    // Find the enum definition to get actual values
+    const enumDef = enums.find(e => e.name === field.type)
+    const enumType = (enumDef && enumDef.values.length > 0)
+      ? `types.enumeration("${field.type}", [${enumDef.values.map(v => `"${v.name}"`).join(', ')}])`
+      : `types.string`
+    
+    // Handle array of enums
+    if (field.isList) {
+      return `types.array(${enumType})`
+    }
+    return enumType
   }
 
   // Handle relations (references to other models)
@@ -50,26 +65,41 @@ function mapPrismaToMSTType(field: PrismaField): string {
   }
 
   // Handle scalars
+  let baseType: string
   switch (field.type) {
     case 'String':
-      return 'types.string'
+      baseType = 'types.string'
+      break
     case 'Int':
     case 'Float':
     case 'Decimal':
-      return 'types.number'
+      baseType = 'types.number'
+      break
     case 'Boolean':
-      return 'types.boolean'
+      baseType = 'types.boolean'
+      break
     case 'DateTime':
-      return 'types.number' // Store as timestamp
+      baseType = 'types.number' // Store as timestamp
+      break
     case 'Json':
-      return 'types.frozen()'
+      baseType = 'types.frozen()'
+      break
     case 'BigInt':
-      return 'types.string' // BigInt as string for JSON compatibility
+      baseType = 'types.string' // BigInt as string for JSON compatibility
+      break
     case 'Bytes':
-      return 'types.string' // Base64 encoded
+      baseType = 'types.string' // Base64 encoded
+      break
     default:
-      return 'types.frozen()'
+      baseType = 'types.frozen()'
   }
+
+  // Handle arrays of scalars
+  if (field.isList) {
+    return `types.array(${baseType})`
+  }
+
+  return baseType
 }
 
 /**
@@ -94,11 +124,13 @@ function wrapOptional(mstType: string, field: PrismaField): string {
  *
  * @param model - The Prisma model to generate
  * @param allModels - All Prisma models (for reference resolution)
+ * @param enums - All Prisma enums (for enum field values)
  * @param includedModelNames - Set of model names included in config (only import these)
  */
 export function generateMSTModel(
   model: PrismaModel,
   allModels: PrismaModel[],
+  enums: PrismaEnum[],
   includedModelNames?: Set<string>
 ): GeneratedMSTModelFile {
   const modelName = model.name
@@ -153,12 +185,21 @@ export function generateMSTModel(
 
   // Add scalar fields
   for (const field of scalarFields) {
-    const mstType = mapPrismaToMSTType(field)
+    const mstType = mapPrismaToMSTType(field, enums)
     const wrappedType = wrapOptional(mstType, field)
     
-    // Add default value for optional fields
-    if (!field.isRequired && !field.isId) {
-      lines.push(`    ${field.name}: types.optional(${mstType}, ${getDefaultValue(field)}),`)
+    // Handle array fields - always use types.optional with [] default
+    if (field.isList) {
+      lines.push(`    ${field.name}: types.optional(${mstType}, []),`)
+    }
+    // Handle non-array optional fields
+    else if (!field.isRequired && !field.isId) {
+      // For optional enums, use maybeNull instead of optional with undefined
+      if (field.kind === 'enum') {
+        lines.push(`    ${field.name}: types.maybeNull(${mstType}),`)
+      } else {
+        lines.push(`    ${field.name}: types.optional(${mstType}, ${getDefaultValue(field)}),`)
+      }
     } else {
       lines.push(`    ${field.name}: ${wrappedType},`)
     }
@@ -166,7 +207,7 @@ export function generateMSTModel(
 
   // Add relation fields as references (only for included models)
   for (const field of includedRelationFields) {
-    const mstType = mapPrismaToMSTType(field)
+    const mstType = mapPrismaToMSTType(field, enums)
     if (field.isList) {
       lines.push(`    ${field.name}: types.optional(${mstType}, []),`)
     } else if (!field.isRequired) {
@@ -237,10 +278,12 @@ function getDefaultValue(field: PrismaField): string {
  *
  * @param models - Prisma models to generate (already filtered to config)
  * @param allModels - All Prisma models (for reference resolution)
+ * @param enums - All Prisma enums (for enum field values)
  */
 export function generateMSTModels(
   models: PrismaModel[],
-  allModels?: PrismaModel[]
+  allModels?: PrismaModel[],
+  enums: PrismaEnum[] = []
 ): GeneratedMSTModelFile[] {
   // Create a set of included model names for reference filtering
   const includedModelNames = new Set(models.map(m => m.name))
@@ -248,5 +291,5 @@ export function generateMSTModels(
 
   return models
     .filter(model => getIdField(model)) // Only models with @id
-    .map(model => generateMSTModel(model, modelsForReference, includedModelNames))
+    .map(model => generateMSTModel(model, modelsForReference, enums, includedModelNames))
 }

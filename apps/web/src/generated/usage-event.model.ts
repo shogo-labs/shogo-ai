@@ -23,7 +23,7 @@ export const UsageEventModel = types
     actionType: types.string,
     actionMetadata: types.optional(types.frozen(), {}),
     creditCost: types.number,
-    creditSource: types.enumeration("CreditSource", [/* enum values */]),
+    creditSource: types.enumeration("CreditSource", ["daily", "monthly"]),
     balanceBefore: types.number,
     balanceAfter: types.number,
     createdAt: types.number,

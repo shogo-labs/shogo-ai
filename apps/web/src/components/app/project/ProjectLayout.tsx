@@ -16,7 +16,9 @@
 import { observer } from "mobx-react-lite"
 import { useEffect, useCallback, useState, useRef } from "react"
 import { useParams, useLocation } from "react-router-dom"
-import { useDomains, useSchemaLoadingState } from "@/contexts/DomainProvider"
+import { useDomains, useSchemaLoadingState, useSDKDomain, useSDKReady } from "@/contexts/DomainProvider"
+import type { IDomainStore } from "@/generated/domain"
+import { useDomainActions } from "@/generated/domain-actions"
 import { ComposablePhaseView } from "@/components/rendering/composition/ComposablePhaseView"
 import { ComponentRegistryProvider } from "@/components/rendering"
 import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
@@ -67,11 +69,16 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Extract state passed from homepage transition (for instant render + warm-start)
   const transitionState = location.state as TransitionLocationState | null
 
-  const { platformFeatures, componentBuilder, studioChat, studioCore, billing } = useDomains<{
+  // Use SDK store for data loading
+  const store = useSDKDomain() as IDomainStore
+  const sdkReady = useSDKReady()
+  const actions = useDomainActions()
+
+  // Legacy domains for componentBuilder (rendering) and platformFeatures
+  const { platformFeatures, componentBuilder, studioChat, billing } = useDomains<{
     platformFeatures: any
     componentBuilder: any
     studioChat: any
-    studioCore: any
     billing: any
   }>()
 
@@ -188,11 +195,10 @@ export const ProjectLayout = observer(function ProjectLayout() {
     setTransitionEndRect(null)
   }, [])
 
-  // Check if domains are ready - must wait for schema loading on page refresh
-  const { schemasLoaded } = useSchemaLoadingState()
-  const domainsReady = schemasLoaded && !!studioCore?.projectCollection
+  // Check if SDK domains are ready
+  const domainsReady = sdkReady && !!store?.projectCollection
 
-  // Load project data with retry logic for schema loading and project creation race conditions
+  // Load project data using SDK store with retry logic
   useEffect(() => {
     if (!projectId || !domainsReady) {
       return
@@ -207,12 +213,13 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
       setIsLoading(true)
       try {
-        // Load the project
-        const proj = await studioCore.projectCollection.query()
-          .where({ id: projectId })
-          .first()
+        // Load the project from SDK store
+        await store.projectCollection.loadAll({ id: projectId })
 
         if (cancelled) return
+
+        // Find the project in the loaded data
+        const proj = store.projectCollection.all.find((p: any) => p.id === projectId)
 
         if (proj) {
           setProject(proj)
@@ -257,16 +264,16 @@ export const ProjectLayout = observer(function ProjectLayout() {
     return () => {
       cancelled = true
     }
-  }, [projectId, domainsReady, studioCore])
+  }, [projectId, domainsReady, store])
 
   // Get workspace composition for observability
   const workspaceComposition = componentBuilder?.compositionCollection?.findByName?.(
     WORKSPACE_COMPOSITION_NAME
   )
 
-  // Get chat sessions for this project (synchronous - uses in-memory data)
+  // Get chat sessions for this project (synchronous - uses in-memory data from SDK store)
   const projectChatSessions: ChatSessionItem[] = projectId
-    ? (studioChat?.chatSessionCollection?.findByContext?.(projectId) ?? []).map((s: any) => ({
+    ? (store?.chatSessionCollection?.all.filter((s: any) => s.contextId === projectId) ?? []).map((s: any) => ({
         id: s.id,
         name: s.name || s.inferredName,
         messageCount: s.messageCount ?? 0,
@@ -302,7 +309,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // This runs when the project loads and there's no session in the URL
   // Priority: URL param > transition state > localStorage > most recent > create new
   useEffect(() => {
-    if (!projectId || !studioChat?.chatSessionCollection || chatSessionId) {
+    if (!projectId || !store?.chatSessionCollection || chatSessionId) {
       // Already have a session selected, or not ready yet
       return
     }
@@ -318,15 +325,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
         // IMPORTANT: Load chat sessions from backend first!
         // The in-memory collection may be empty after navigation.
         // loadAll fetches sessions from the API and populates the MobX store.
-        if (studioChat.chatSessionCollection.loadAll) {
-          console.log("[ProjectLayout] Loading chat sessions from backend for project:", projectId)
-          await studioChat.chatSessionCollection.loadAll({ contextId: projectId })
-        }
+        console.log("[ProjectLayout] Loading chat sessions from backend for project:", projectId)
+        await store.chatSessionCollection.loadAll({ contextId: projectId })
 
         if (cancelled) return
 
-        // Now use findByContext which searches in-memory (now populated)
-        const existingSessions = studioChat.chatSessionCollection.findByContext?.(projectId) ?? []
+        // Filter sessions for this project
+        const existingSessions = store.chatSessionCollection.all.filter(
+          (s: any) => s.contextId === projectId
+        )
         
         console.log("[ProjectLayout] Found", existingSessions.length, "existing sessions for project:", projectId)
 
@@ -362,14 +369,16 @@ export const ProjectLayout = observer(function ProjectLayout() {
           console.log("[ProjectLayout] Selecting most recent session:", mostRecent.id)
           await setChatSessionId(mostRecent.id)
         } else {
-          // No existing sessions - create a new one
-          const newSession = await studioChat.createChatSession({
+          // No existing sessions - create a new one using SDK domain actions
+          const newSession = await actions.createChatSession({
             inferredName: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
             contextType: "project",
             contextId: projectId,
           })
-          console.log("[ProjectLayout] Created new session:", newSession.id)
-          await setChatSessionId(newSession.id)
+          console.log("[ProjectLayout] Created new session:", newSession?.id)
+          if (newSession?.id) {
+            await setChatSessionId(newSession.id)
+          }
         }
       } catch (err: any) {
         if (cancelled) return
@@ -391,7 +400,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
     return () => {
       cancelled = true
     }
-  }, [projectId, studioChat, chatSessionId, setChatSessionId, transitionState?.chatSessionId, getLastSessionFromStorage])
+  }, [projectId, store, chatSessionId, setChatSessionId, transitionState?.chatSessionId, getLastSessionFromStorage, actions])
 
   // Session handlers
   const handleSelectSession = useCallback(
@@ -402,14 +411,16 @@ export const ProjectLayout = observer(function ProjectLayout() {
   )
 
   const handleCreateSession = useCallback(async () => {
-    if (!studioChat || !projectId) return
-    const newSession = await studioChat.createChatSession({
+    if (!projectId) return
+    const newSession = await actions.createChatSession({
       inferredName: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
       contextType: "project",
       contextId: projectId,
     })
-    await setChatSessionId(newSession.id)
-  }, [studioChat, projectId, setChatSessionId])
+    if (newSession?.id) {
+      await setChatSessionId(newSession.id)
+    }
+  }, [projectId, setChatSessionId, actions])
 
   const handleChatSessionChange = useCallback(
     async (sessionId: string) => {
@@ -420,25 +431,23 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
   const handleRenameSession = useCallback(
     async (sessionId: string, newName: string) => {
-      if (!studioChat?.chatSessionCollection) return
-      await studioChat.chatSessionCollection.updateOne(sessionId, {
+      if (!store?.chatSessionCollection) return
+      await store.chatSessionCollection.update(sessionId, {
         name: newName,
       })
     },
-    [studioChat]
+    [store]
   )
 
-  // Project rename handler
+  // Project rename handler - using SDK domain actions
   const handleRenameProject = useCallback(
     async (newName: string) => {
-      if (!studioCore?.projectCollection || !projectId) return
-      await studioCore.projectCollection.updateOne(projectId, {
-        name: newName,
-      })
+      if (!projectId) return
+      await actions.updateProject(projectId, { name: newName })
       // Update local state
       setProject((prev: any) => prev ? { ...prev, name: newName } : prev)
     },
-    [studioCore, projectId]
+    [projectId, actions]
   )
 
   // Chat sessions toggle handler (triggered by history icon)
@@ -579,9 +588,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
     ? (typeof project.workspace === 'string' ? project.workspace : project.workspace?.id)
     : null
 
-  // Get credits from billing domain
+  // Get credits from SDK store
   const creditLedger = workspaceId
-    ? billing?.creditLedgerCollection?.findByWorkspace?.(workspaceId)
+    ? store?.creditLedgerCollection?.all.find((l: any) => l.workspaceId === workspaceId)
     : null
   const effectiveBalance = creditLedger?.effectiveBalance
   const creditsRemaining = effectiveBalance?.total ?? 5

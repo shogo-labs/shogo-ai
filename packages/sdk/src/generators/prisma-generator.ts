@@ -261,8 +261,8 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       // Generate MST (MobX-State-Tree)
       if (output.generate.includes('mst')) {
         if (perModel) {
-          // Generate MST models
-          const mstModelFiles = generateMSTModels(models)
+          // Generate MST models (pass enums for proper enum value generation)
+          const mstModelFiles = generateMSTModels(models, models, enums)
           for (const modelFile of mstModelFiles) {
             files.push({
               path: `${dir}/${modelFile.fileName}`,

@@ -20,7 +20,7 @@ export const ChatSessionModel = types
     id: types.identifier,
     name: types.optional(types.string, ""),
     inferredName: types.string,
-    contextType: types.enumeration("ContextType", [/* enum values */]),
+    contextType: types.enumeration("ContextType", ["feature", "project", "general"]),
     contextId: types.optional(types.string, ""),
     phase: types.optional(types.string, ""),
     claudeCodeSessionId: types.optional(types.string, ""),

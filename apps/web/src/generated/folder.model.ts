@@ -19,7 +19,7 @@ export const FolderModel = types
     id: types.identifier,
     name: types.string,
     workspaceId: types.string,
-    parentId: types.maybeNull(types.string),
+    parentId: types.optional(types.string, ""),
     createdBy: types.optional(types.string, ""),
     createdAt: types.number,
     updatedAt: types.number,
