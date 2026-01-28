@@ -27,7 +27,7 @@ export const WorkspaceModel = types
     slug: types.string,
     description: types.optional(types.string, ""),
     ssoSettings: types.optional(types.frozen(), {}),
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     projects: types.optional(types.array(types.safeReference(types.late(() => ProjectModel))), []),
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),

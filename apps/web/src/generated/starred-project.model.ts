@@ -19,7 +19,7 @@ export const StarredProjectModel = types
     userId: types.string,
     projectId: types.string,
     workspaceId: types.string,
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     user: types.safeReference(types.late(() => UserModel)),
   })
   .views(self => ({

@@ -23,7 +23,7 @@ export const CreditLedgerModel = types
     anniversaryDay: types.number,
     lastDailyReset: types.number,
     lastMonthlyReset: types.number,
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
   })

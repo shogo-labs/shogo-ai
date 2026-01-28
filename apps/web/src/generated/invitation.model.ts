@@ -26,7 +26,7 @@ export const InvitationModel = types
     emailError: types.optional(types.string, ""),
     invitedBy: types.optional(types.string, ""),
     expiresAt: types.number,
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
   })

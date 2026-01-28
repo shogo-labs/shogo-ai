@@ -51,25 +51,12 @@ export interface ChatSessionHooks {
  * Default ChatSession hooks (customize as needed)
  */
 export const chatSessionHooks: ChatSessionHooks = {
-  beforeList: async (ctx) => {
-    const where: Record<string, any> = {}
-
-    // Filter by contextId if provided
-    if (ctx.query.contextId) {
-      where.contextId = ctx.query.contextId
-    }
-
-    // Filter by contextType if provided
-    if (ctx.query.contextType) {
-      where.contextType = ctx.query.contextType
-    }
-
-    // Filter by projectId (alias for contextId when contextType is "project")
-    if (ctx.query.projectId) {
-      where.contextId = ctx.query.projectId
-      where.contextType = "project"
-    }
-
-    return { ok: true, data: { where } }
-  },
+  // beforeList: async (ctx) => {
+  //   // Filter by user membership
+  //   return { ok: true, data: { where: { userId: ctx.userId } } }
+  // },
+  // beforeCreate: async (input, ctx) => {
+  //   // Set userId on create
+  //   return { ok: true, data: { ...input, userId: ctx.userId } }
+  // },
 }

@@ -24,7 +24,7 @@ export const FeatureSessionModel = types
     initialAssessment: types.optional(types.frozen(), {}),
     featureArchetype: types.maybeNull(types.enumeration("FeatureArchetype", ["service", "domain", "infrastructure", "hybrid"])),
     applicablePatterns: types.optional(types.array(types.string), []),
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     projectId: types.optional(types.string, ""),
     project: types.safeReference(types.late(() => ProjectModel)),

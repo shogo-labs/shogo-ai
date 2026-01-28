@@ -25,7 +25,7 @@ export const SubscriptionModel = types
     currentPeriodStart: types.number,
     currentPeriodEnd: types.number,
     cancelAtPeriodEnd: types.boolean,
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
   })

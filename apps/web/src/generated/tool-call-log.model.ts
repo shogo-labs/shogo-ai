@@ -23,7 +23,7 @@ export const ToolCallLogModel = types
     args: types.optional(types.frozen(), {}),
     result: types.optional(types.frozen(), {}),
     duration: types.optional(types.number, 0),
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     chatSession: types.safeReference(types.late(() => ChatSessionModel)),
   })
   .views(self => ({

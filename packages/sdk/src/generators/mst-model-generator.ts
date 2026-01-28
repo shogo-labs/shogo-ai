@@ -192,6 +192,11 @@ export function generateMSTModel(
     if (field.isList) {
       lines.push(`    ${field.name}: types.optional(${mstType}, []),`)
     }
+    // Handle DateTime fields with database defaults (e.g., @default(now()))
+    // These should be optional since the server provides the real value
+    else if (field.type === 'DateTime' && field.hasDefaultValue && !field.isId) {
+      lines.push(`    ${field.name}: types.optional(${mstType}, 0),`)
+    }
     // Handle non-array optional fields
     else if (!field.isRequired && !field.isId) {
       // For optional enums, use maybeNull instead of optional with undefined

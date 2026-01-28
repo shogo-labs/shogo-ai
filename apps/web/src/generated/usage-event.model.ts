@@ -26,7 +26,7 @@ export const UsageEventModel = types
     creditSource: types.enumeration("CreditSource", ["daily", "monthly"]),
     balanceBefore: types.number,
     balanceAfter: types.number,
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
     project: types.safeReference(types.late(() => ProjectModel)),
   })
