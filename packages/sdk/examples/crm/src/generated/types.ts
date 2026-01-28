@@ -12,7 +12,7 @@
 export interface UserType {
   id: string
   email: string
-  name?: string
+  name: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -21,12 +21,12 @@ export interface ContactType {
   id: string
   firstName: string
   lastName: string
-  email?: string
-  phone?: string
-  title?: string
+  email: string | null
+  phone: string | null
+  title: string | null
   status: string
-  source?: string
-  companyId?: string
+  source: string | null
+  companyId: string | null
   userId: string
   createdAt: Date
   updatedAt: Date
@@ -35,10 +35,10 @@ export interface ContactType {
 export interface CompanyType {
   id: string
   name: string
-  website?: string
-  industry?: string
-  size?: string
-  address?: string
+  website: string | null
+  industry: string | null
+  size: string | null
+  address: string | null
   userId: string
   createdAt: Date
   updatedAt: Date
@@ -76,7 +76,7 @@ export interface DealType {
   stage: string
   contactId: string
   userId: string
-  closedAt?: Date
+  closedAt: Date | null
   createdAt: Date
   updatedAt: Date
 }
@@ -87,53 +87,53 @@ export interface DealType {
 
 export interface UserCreateInput {
   email: string
-  name?: string
+  name?: string | null
 }
 
 export interface UserUpdateInput {
   email?: string
-  name?: string
+  name?: string | null
 }
 
 export interface ContactCreateInput {
   firstName: string
   lastName: string
-  email?: string
-  phone?: string
-  title?: string
+  email?: string | null
+  phone?: string | null
+  title?: string | null
   status?: string
-  source?: string
-  companyId?: string
+  source?: string | null
+  companyId?: string | null
   userId: string
 }
 
 export interface ContactUpdateInput {
   firstName?: string
   lastName?: string
-  email?: string
-  phone?: string
-  title?: string
+  email?: string | null
+  phone?: string | null
+  title?: string | null
   status?: string
-  source?: string
-  companyId?: string
+  source?: string | null
+  companyId?: string | null
   userId?: string
 }
 
 export interface CompanyCreateInput {
   name: string
-  website?: string
-  industry?: string
-  size?: string
-  address?: string
+  website?: string | null
+  industry?: string | null
+  size?: string | null
+  address?: string | null
   userId: string
 }
 
 export interface CompanyUpdateInput {
   name?: string
-  website?: string
-  industry?: string
-  size?: string
-  address?: string
+  website?: string | null
+  industry?: string | null
+  size?: string | null
+  address?: string | null
   userId?: string
 }
 
@@ -179,7 +179,7 @@ export interface DealCreateInput {
   stage?: string
   contactId: string
   userId: string
-  closedAt?: Date
+  closedAt?: Date | null
 }
 
 export interface DealUpdateInput {
@@ -188,7 +188,7 @@ export interface DealUpdateInput {
   stage?: string
   contactId?: string
   userId?: string
-  closedAt?: Date
+  closedAt?: Date | null
 }
 
 // ============================================================================

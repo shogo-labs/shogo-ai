@@ -12,7 +12,7 @@
 export interface UserType {
   id: string
   email: string
-  password?: string
+  password: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -40,12 +40,12 @@ export interface MessageType {
 
 export interface UserCreateInput {
   email: string
-  password?: string
+  password?: string | null
 }
 
 export interface UserUpdateInput {
   email?: string
-  password?: string
+  password?: string | null
 }
 
 export interface ChatCreateInput {

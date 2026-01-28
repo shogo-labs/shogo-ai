@@ -12,7 +12,7 @@
 export interface UserType {
   id: string
   email: string
-  name?: string
+  name: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -30,9 +30,9 @@ export interface CategoryType {
 export interface SupplierType {
   id: string
   name: string
-  email?: string
-  phone?: string
-  address?: string
+  email: string | null
+  phone: string | null
+  address: string | null
   userId: string
   createdAt: Date
   updatedAt: Date
@@ -42,13 +42,13 @@ export interface ProductType {
   id: string
   name: string
   sku: string
-  description?: string
+  description: string | null
   price: number
   cost: number
   quantity: number
   minQuantity: number
   categoryId: string
-  supplierId?: string
+  supplierId: string | null
   userId: string
   createdAt: Date
   updatedAt: Date
@@ -58,7 +58,7 @@ export interface StockMovementType {
   id: string
   type: string
   quantity: number
-  reason?: string
+  reason: string | null
   productId: string
   userId: string
   createdAt: Date
@@ -70,12 +70,12 @@ export interface StockMovementType {
 
 export interface UserCreateInput {
   email: string
-  name?: string
+  name?: string | null
 }
 
 export interface UserUpdateInput {
   email?: string
-  name?: string
+  name?: string | null
 }
 
 export interface CategoryCreateInput {
@@ -94,50 +94,50 @@ export interface CategoryUpdateInput {
 
 export interface SupplierCreateInput {
   name: string
-  email?: string
-  phone?: string
-  address?: string
+  email?: string | null
+  phone?: string | null
+  address?: string | null
   userId: string
 }
 
 export interface SupplierUpdateInput {
   name?: string
-  email?: string
-  phone?: string
-  address?: string
+  email?: string | null
+  phone?: string | null
+  address?: string | null
   userId?: string
 }
 
 export interface ProductCreateInput {
   name: string
   sku: string
-  description?: string
+  description?: string | null
   price?: number
   cost?: number
   quantity?: number
   minQuantity?: number
   categoryId: string
-  supplierId?: string
+  supplierId?: string | null
   userId: string
 }
 
 export interface ProductUpdateInput {
   name?: string
   sku?: string
-  description?: string
+  description?: string | null
   price?: number
   cost?: number
   quantity?: number
   minQuantity?: number
   categoryId?: string
-  supplierId?: string
+  supplierId?: string | null
   userId?: string
 }
 
 export interface StockMovementCreateInput {
   type: string
   quantity: number
-  reason?: string
+  reason?: string | null
   productId: string
   userId: string
 }
@@ -145,7 +145,7 @@ export interface StockMovementCreateInput {
 export interface StockMovementUpdateInput {
   type?: string
   quantity?: number
-  reason?: string
+  reason?: string | null
   productId?: string
   userId?: string
 }

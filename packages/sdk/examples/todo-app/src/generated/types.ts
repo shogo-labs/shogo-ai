@@ -12,7 +12,7 @@
 export interface UserType {
   id: string
   email: string
-  name?: string
+  name: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -32,12 +32,12 @@ export interface TodoType {
 
 export interface UserCreateInput {
   email: string
-  name?: string
+  name?: string | null
 }
 
 export interface UserUpdateInput {
   email?: string
-  name?: string
+  name?: string | null
 }
 
 export interface TodoCreateInput {
