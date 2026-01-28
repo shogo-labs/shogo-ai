@@ -616,14 +616,17 @@ export async function executeTemplateCopy(
     if (isProjectContext) {
       const projectId = process.env.PROJECT_ID
       response.projectId = projectId
-      
-      // Call the local runtime's restart endpoint (port 8080)
+
+      // Call the local runtime's restart endpoint
+      // RUNTIME_PORT is set by project-runtime when spawning MCP (defaults to 8080 in K8s)
+      const runtimePort = process.env.RUNTIME_PORT || '8080'
+
       // This will: install deps, run prisma, build the project, and start the Nitro/Vite server
       try {
-        console.log(`[template.copy] ⏱️  Triggering preview restart for project ${projectId}...`)
+        console.log(`[template.copy] ⏱️  Triggering preview restart for project ${projectId} on port ${runtimePort}...`)
         console.log(`[template.copy] This will run: bun install, prisma generate, prisma db push, vite build, and start server`)
-        
-        const restartResponse = await fetch(`http://localhost:8080/preview/restart`, {
+
+        const restartResponse = await fetch(`http://localhost:${runtimePort}/preview/restart`, {
           method: 'POST',
         })
         timer.mark('previewRestartCall')

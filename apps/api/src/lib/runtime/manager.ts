@@ -6,7 +6,7 @@
  */
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
-import { existsSync, cpSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import type {
@@ -361,8 +361,25 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         console.log(`[RuntimeManager] Vite using projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
       }
 
-      // Spawn Vite dev server
-      const proc = spawn('bun', ['run', 'dev', '--port', String(port), '--host', '0.0.0.0'], {
+      // Detect if this is an Expo project (Expo doesn't accept --host 0.0.0.0)
+      let isExpoProject = false
+      try {
+        const pkgJsonPath = join(projectDir, 'package.json')
+        if (existsSync(pkgJsonPath)) {
+          const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
+          isExpoProject = !!(pkgJson.dependencies?.expo || pkgJson.devDependencies?.expo)
+        }
+      } catch {
+        // Ignore parse errors, assume not Expo
+      }
+
+      // Build spawn args - Expo only accepts 'lan', 'tunnel', or 'localhost' for --host
+      const devArgs = isExpoProject
+        ? ['run', 'dev']  // Expo uses PORT env var, doesn't accept --host 0.0.0.0
+        : ['run', 'dev', '--port', String(port), '--host', '0.0.0.0']
+
+      // Spawn dev server
+      const proc = spawn('bun', devArgs, {
         cwd: projectDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,

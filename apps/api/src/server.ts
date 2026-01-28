@@ -11,7 +11,7 @@ import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-pr
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join, extname, relative, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
-import { readdir, stat } from 'fs/promises'
+import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { auth } from './auth'
 import { PERSONA_PROMPTS, isAgentPersona, type AgentPersona } from './prompts/persona-prompts'
 import { getPriceId } from './config/stripe-prices'

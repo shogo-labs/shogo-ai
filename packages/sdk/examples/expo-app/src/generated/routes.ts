@@ -6,7 +6,7 @@
  */
 
 import { Hono } from "hono"
-import { PrismaClient } from "@prisma/client"
+import type { PrismaClient } from "./prisma/client"
 import type { ModelHooks, RouteHookContext, HookResult } from "./route-types"
 
 // Prisma client instance (injected or created)

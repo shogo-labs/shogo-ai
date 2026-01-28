@@ -480,6 +480,7 @@ const claudeCode = createClaudeCode({
           SCHEMAS_PATH,
           PROJECT_ID: PROJECT_ID!,
           PROJECT_DIR,  // Critical: template.copy needs this to copy to the right location
+          RUNTIME_PORT: String(PORT),  // Port for calling /preview/restart from template.copy
           NODE_ENV: process.env.NODE_ENV || 'production',
           // Forward S3 configuration for schema persistence
           S3_ENDPOINT: process.env.S3_ENDPOINT || '',
@@ -1829,24 +1830,32 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   // Rewrite absolute paths in link tags (modulepreload, stylesheet, etc.)
   // This is critical because <link rel="modulepreload" href="/assets/..."> is fetched
   // by the browser before any JavaScript runs, so the script patch doesn't help
-  html = html.replace(/<link([^>]*)\s+href="\/assets\/([^"]+)"([^>]*)>/gi, 
+  html = html.replace(/<link([^>]*)\s+href="\/assets\/([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}assets/$2"$3>`)
-  html = html.replace(/<link([^>]*)\s+href="\/src\/([^"]+)"([^>]*)>/gi, 
+  html = html.replace(/<link([^>]*)\s+href="\/src\/([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}src/$2"$3>`)
-  
+
   // Rewrite Vite dev server paths (/@vite, /@react-refresh, /@tanstack-start, /@id, /node_modules)
-  html = html.replace(/<link([^>]*)\s+href="\/@([^"]+)"([^>]*)>/gi, 
+  html = html.replace(/<link([^>]*)\s+href="\/@([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}@$2"$3>`)
-  
+
+  // Rewrite Expo paths (/_expo/static/js/...)
+  html = html.replace(/<link([^>]*)\s+href="\/_expo\/([^"]+)"([^>]*)>/gi,
+    `<link$1 href="${basePath}_expo/$2"$3>`)
+
   // Rewrite absolute paths in script tags
-  html = html.replace(/<script([^>]*)\s+src="\/assets\/([^"]+)"([^>]*)>/gi, 
+  html = html.replace(/<script([^>]*)\s+src="\/assets\/([^"]+)"([^>]*)>/gi,
     `<script$1 src="${basePath}assets/$2"$3>`)
-  html = html.replace(/<script([^>]*)\s+src="\/src\/([^"]+)"([^>]*)>/gi, 
+  html = html.replace(/<script([^>]*)\s+src="\/src\/([^"]+)"([^>]*)>/gi,
     `<script$1 src="${basePath}src/$2"$3>`)
-  
+
   // Rewrite Vite dev server script paths
-  html = html.replace(/<script([^>]*)\s+src="\/@([^"]+)"([^>]*)>/gi, 
+  html = html.replace(/<script([^>]*)\s+src="\/@([^"]+)"([^>]*)>/gi,
     `<script$1 src="${basePath}@$2"$3>`)
+
+  // Rewrite Expo script paths (/_expo/static/js/...)
+  html = html.replace(/<script([^>]*)\s+src="\/_expo\/([^"]+)"([^>]*)>/gi,
+    `<script$1 src="${basePath}_expo/$2"$3>`)
   
   // Rewrite inline script imports for Vite dev paths
   html = html.replace(/from\s+["']\/@([^"']+)["']/gi, `from "${basePath}@$1"`)
@@ -1870,8 +1879,9 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   
   // Helper to check if URL needs rewriting
   function needsRewrite(url) {
-    return url.startsWith('/assets/') || url.startsWith('/src/') || 
-           url.startsWith('/@') || url.startsWith('/node_modules/');
+    return url.startsWith('/assets/') || url.startsWith('/src/') ||
+           url.startsWith('/@') || url.startsWith('/node_modules/') ||
+           url.startsWith('/_expo/');
   }
   
   // Store original fetch
@@ -2103,7 +2113,84 @@ app.get('/preview/*', async (c) => {
       `, 503)
     }
   }
-  
+
+  // Expo: proxy to the Expo Hono server (serves both API routes and static files)
+  if (isExpo && expoServerProcess) {
+    const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
+    console.log(`[project-runtime] Proxying preview to Expo Hono server: ${targetUrl}`)
+
+    try {
+      const response = await fetch(targetUrl, {
+        method: c.req.method,
+        headers: {
+          'Host': `localhost:${EXPO_SERVER_PORT}`,
+          'Accept': c.req.header('Accept') || '*/*',
+          'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+        },
+      })
+
+      // Get response body
+      const contentType = response.headers.get('Content-Type') || 'text/html'
+      const body = await response.arrayBuffer()
+
+      // Rewrite HTML responses to fix asset paths when accessed through proxy
+      if (contentType.includes('text/html')) {
+        const html = new TextDecoder().decode(body)
+        const rewrittenHtml = rewritePreviewHtml(html, externalBasePath)
+        return new Response(rewrittenHtml, {
+          status: response.status,
+          headers: {
+            'Content-Type': contentType,
+            'Content-Length': String(Buffer.byteLength(rewrittenHtml)),
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*',
+          },
+        })
+      }
+
+      // Rewrite JavaScript responses to fix dynamic import paths
+      if (contentType.includes('javascript') || contentType.includes('application/javascript')) {
+        let js = new TextDecoder().decode(body)
+        js = js.replace(/import\(["']\/assets\//g, `import("${externalBasePath}assets/`)
+        js = js.replace(/import\(["']\/src\//g, `import("${externalBasePath}src/`)
+        js = js.replace(/"\/assets\//g, `"${externalBasePath}assets/`)
+        js = js.replace(/'\/assets\//g, `'${externalBasePath}assets/`)
+        js = js.replace(/"\/src\//g, `"${externalBasePath}src/`)
+        js = js.replace(/'\/src\//g, `'${externalBasePath}src/`)
+        return new Response(js, {
+          status: response.status,
+          headers: {
+            'Content-Type': contentType,
+            'Content-Length': String(Buffer.byteLength(js)),
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*',
+          },
+        })
+      }
+
+      return new Response(body, {
+        status: response.status,
+        headers: {
+          'Content-Type': contentType,
+          'Cache-Control': 'no-cache',
+          'Access-Control-Allow-Origin': '*',
+        },
+      })
+    } catch (error: any) {
+      console.error('[project-runtime] Expo proxy error:', error)
+      return c.html(`
+        <html>
+          <body style="font-family: system-ui; padding: 2rem;">
+            <h1>Preview Loading...</h1>
+            <p>The Expo server is starting up. Please wait a moment and refresh.</p>
+            <p style="color: #666; font-size: 0.9em;">Error: ${error.message}</p>
+            <script>setTimeout(() => location.reload(), 3000)</script>
+          </body>
+        </html>
+      `, 503)
+    }
+  }
+
   // Plain Vite: serve static files from dist/
   let filePath = relativePath
   if (filePath.startsWith('/')) {
@@ -2112,9 +2199,9 @@ app.get('/preview/*', async (c) => {
   if (filePath === '' || filePath === '/') {
     filePath = 'index.html'
   }
-  
+
   const absolutePath = join(DIST_DIR, filePath)
-  
+
   console.log(`[project-runtime] Serving static preview: ${filePath} from ${absolutePath}`)
   
   // Helper to serve HTML with rewriting for proxy support
@@ -2666,7 +2753,89 @@ app.all('/*', async (c) => {
       `, 503)
     }
   }
-  
+
+  // Expo: proxy to the Expo Hono server (serves both API routes and static files)
+  if (isExpo && expoServerProcess) {
+    const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
+    const method = c.req.method
+    console.log(`[project-runtime] Subdomain: proxying ${method} to Expo Hono server at ${targetUrl}`)
+
+    try {
+      // Build headers for the proxy request
+      const proxyHeaders: Record<string, string> = {
+        'Host': `localhost:${EXPO_SERVER_PORT}`,
+        'Accept': c.req.header('Accept') || '*/*',
+        'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+      }
+
+      // Forward Content-Type for POST/PUT/PATCH requests
+      const contentType = c.req.header('Content-Type')
+      if (contentType) {
+        proxyHeaders['Content-Type'] = contentType
+      }
+
+      // Forward cookies for auth
+      const cookies = c.req.header('Cookie')
+      if (cookies) {
+        proxyHeaders['Cookie'] = cookies
+      }
+
+      // Build fetch options
+      const fetchOptions: RequestInit = {
+        method,
+        headers: proxyHeaders,
+      }
+
+      // Forward request body for POST/PUT/PATCH
+      if (method !== 'GET' && method !== 'HEAD') {
+        try {
+          const bodyBuffer = await c.req.arrayBuffer()
+          if (bodyBuffer.byteLength > 0) {
+            fetchOptions.body = bodyBuffer
+          }
+        } catch {
+          // No body or couldn't read body - that's ok
+        }
+      }
+
+      const response = await fetch(targetUrl, fetchOptions)
+
+      const responseContentType = response.headers.get('Content-Type') || 'text/html'
+      const body = await response.arrayBuffer()
+
+      // Build response headers
+      const responseHeaders: Record<string, string> = {
+        'Content-Type': responseContentType,
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Credentials': 'true',
+      }
+
+      // Forward Set-Cookie headers for auth
+      const setCookie = response.headers.get('Set-Cookie')
+      if (setCookie) {
+        responseHeaders['Set-Cookie'] = setCookie
+      }
+
+      // No rewriting needed for subdomain access - serve directly!
+      return new Response(body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[project-runtime] Subdomain Expo proxy error:', error)
+      return c.html(`
+        <html>
+          <body style="font-family: system-ui; padding: 2rem;">
+            <h1>Preview Loading...</h1>
+            <p>The Expo server is starting up. Please wait a moment and refresh.</p>
+            <script>setTimeout(() => location.reload(), 3000)</script>
+          </body>
+        </html>
+      `, 503)
+    }
+  }
+
   // Plain Vite: serve static files from dist/
   let filePath = relativePath
   if (filePath.startsWith('/')) {
@@ -2675,7 +2844,7 @@ app.all('/*', async (c) => {
   if (filePath === '' || filePath === '/') {
     filePath = 'index.html'
   }
-  
+
   const absolutePath = join(DIST_DIR, filePath)
   console.log(`[project-runtime] Subdomain: serving static ${filePath} from ${absolutePath}`)
   

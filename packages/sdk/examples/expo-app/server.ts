@@ -10,9 +10,8 @@ import { Hono } from 'hono'
 import { serveStatic } from 'hono/bun'
 import { cors } from 'hono/cors'
 import { createGeneratedRoutes } from './src/generated/routes'
-import { PrismaClient } from '@prisma/client'
+import { prisma } from './src/lib/db'
 
-const prisma = new PrismaClient()
 const app = new Hono()
 
 // Enable CORS for mobile app requests

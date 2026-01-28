@@ -75,6 +75,5 @@ export {
 // Legacy exports (for backward compatibility)
 export { generateServerFunctions } from './server-functions'
 export { generateDomainStore } from './domain-store'
-export { generateTypes } from './types-generator'
 export { generateApiClient } from './api-client'
 export { generateApiDomainStore } from './api-domain-store'
