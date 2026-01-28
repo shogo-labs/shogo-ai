@@ -28,7 +28,7 @@ export const ProjectModel = types
     status: types.enumeration("ProjectStatus", ["draft", "active", "archived"]),
     schemas: types.optional(types.array(types.string), []),
     createdBy: types.optional(types.string, ""),
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     folderId: types.optional(types.string, ""),
     publishedSubdomain: types.optional(types.string, ""),

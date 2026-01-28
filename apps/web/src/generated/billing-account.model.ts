@@ -20,7 +20,7 @@ export const BillingAccountModel = types
     stripeCustomerId: types.optional(types.string, ""),
     taxId: types.optional(types.string, ""),
     creditsBalance: types.number,
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
   })

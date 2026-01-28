@@ -18,7 +18,7 @@
     "mcp:http": "bun run packages/mcp/src/server-http.ts",
     "mcp:stdio": "bun run packages/mcp/src/server.ts",
     "mcp:dev": "bun run --cwd packages/mcp dev",
-    "dev": "concurrently -n mcp,api,web -c blue,green,magenta \"bun run mcp:http\" \"bun run api:dev\" \"bun run web:dev\"",
+    "dev:all": "concurrently -n mcp,api,web -c blue,green,magenta \"bun run mcp:http\" \"bun run api:dev\" \"bun run web:dev\"",
     "dev:start": "./scripts/docker-dev-start.sh",
     "dev:infra": "./scripts/docker-dev-start.sh --infra",
     "dev:clean": "./scripts/docker-dev-start.sh --clean",

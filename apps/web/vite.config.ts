@@ -95,7 +95,9 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
-      outDir: path.resolve(__dirname, 'dist'),
+      // Use relative path for outDir - vite-plugin-monaco-editor has a bug
+      // where it concatenates absolute paths incorrectly with path.join()
+      outDir: 'dist',
       emptyOutDir: true,
     },
   }

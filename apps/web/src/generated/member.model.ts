@@ -23,7 +23,7 @@ export const MemberModel = types
     workspaceId: types.optional(types.string, ""),
     projectId: types.optional(types.string, ""),
     isBillingAdmin: types.boolean,
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     user: types.safeReference(types.late(() => UserModel)),
     workspace: types.safeReference(types.late(() => WorkspaceModel)),

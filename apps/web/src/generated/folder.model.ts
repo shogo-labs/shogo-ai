@@ -21,7 +21,7 @@ export const FolderModel = types
     workspaceId: types.string,
     parentId: types.optional(types.string, ""),
     createdBy: types.optional(types.string, ""),
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
     projects: types.optional(types.array(types.safeReference(types.late(() => ProjectModel))), []),

@@ -23,7 +23,7 @@ export const NotificationModel = types
     metadata: types.optional(types.frozen(), {}),
     actionUrl: types.optional(types.string, ""),
     readAt: types.optional(types.number, 0),
-    createdAt: types.number,
+    createdAt: types.optional(types.number, 0),
     user: types.safeReference(types.late(() => UserModel)),
   })
   .views(self => ({

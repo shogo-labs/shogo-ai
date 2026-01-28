@@ -7,6 +7,7 @@ import {
 import * as React from 'react'
 import { getCurrentUser } from '../utils/user'
 import type { RouterContext } from '../router'
+import '../styles.css'
 
 export const Route = createRootRouteWithContext<RouterContext>()({
   head: () => ({
@@ -20,9 +21,6 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
       { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossOrigin: 'anonymous' },
       { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap' },
-    ],
-    scripts: [
-      { src: 'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4' },
     ],
   }),
   beforeLoad: async () => {
@@ -38,7 +36,7 @@ function RootComponent() {
       <head>
         <HeadContent />
       </head>
-      <body className="bg-gray-900 text-gray-100 font-sans">
+      <body>
         <Outlet />
         <Scripts />
       </body>

@@ -12,7 +12,7 @@
 export interface UserType {
   id: string
   email: string
-  name?: string
+  name: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -20,7 +20,7 @@ export interface UserType {
 export interface FormType {
   id: string
   name: string
-  description?: string
+  description: string | null
   slug: string
   isPublished: boolean
   isAcceptingResponses: boolean
@@ -37,11 +37,11 @@ export interface FieldType {
   formId: string
   type: string
   label: string
-  placeholder?: string
-  helpText?: string
+  placeholder: string | null
+  helpText: string | null
   position: number
   isRequired: boolean
-  options?: string
+  options: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -49,7 +49,7 @@ export interface FieldType {
 export interface SubmissionType {
   id: string
   formId: string
-  respondentEmail?: string
+  respondentEmail: string | null
   isRead: boolean
   createdAt: Date
   updatedAt: Date
@@ -69,17 +69,17 @@ export interface ResponseType {
 
 export interface UserCreateInput {
   email: string
-  name?: string
+  name?: string | null
 }
 
 export interface UserUpdateInput {
   email?: string
-  name?: string
+  name?: string | null
 }
 
 export interface FormCreateInput {
   name: string
-  description?: string
+  description?: string | null
   slug: string
   isPublished?: boolean
   isAcceptingResponses?: boolean
@@ -91,7 +91,7 @@ export interface FormCreateInput {
 
 export interface FormUpdateInput {
   name?: string
-  description?: string
+  description?: string | null
   slug?: string
   isPublished?: boolean
   isAcceptingResponses?: boolean
@@ -105,33 +105,33 @@ export interface FieldCreateInput {
   formId: string
   type: string
   label: string
-  placeholder?: string
-  helpText?: string
+  placeholder?: string | null
+  helpText?: string | null
   position?: number
   isRequired?: boolean
-  options?: string
+  options?: string | null
 }
 
 export interface FieldUpdateInput {
   formId?: string
   type?: string
   label?: string
-  placeholder?: string
-  helpText?: string
+  placeholder?: string | null
+  helpText?: string | null
   position?: number
   isRequired?: boolean
-  options?: string
+  options?: string | null
 }
 
 export interface SubmissionCreateInput {
   formId: string
-  respondentEmail?: string
+  respondentEmail?: string | null
   isRead?: boolean
 }
 
 export interface SubmissionUpdateInput {
   formId?: string
-  respondentEmail?: string
+  respondentEmail?: string | null
   isRead?: boolean
 }
 

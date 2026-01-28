@@ -18,7 +18,7 @@ export type BookingStatus = 'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'COMPLETED'
 export interface UserType {
   id: string
   email: string
-  name?: string
+  name: string | null
   timezone: string
   createdAt: Date
   updatedAt: Date
@@ -28,7 +28,7 @@ export interface ServiceType {
   id: string
   userId: string
   name: string
-  description?: string
+  description: string | null
   duration: number
   price: number
   currency: string
@@ -58,8 +58,8 @@ export interface BookingType {
   endTime: Date
   customerName: string
   customerEmail: string
-  customerPhone?: string
-  notes?: string
+  customerPhone: string | null
+  notes: string | null
   confirmationCode: string
   createdAt: Date
   updatedAt: Date
@@ -71,20 +71,20 @@ export interface BookingType {
 
 export interface UserCreateInput {
   email: string
-  name?: string
+  name?: string | null
   timezone?: string
 }
 
 export interface UserUpdateInput {
   email?: string
-  name?: string
+  name?: string | null
   timezone?: string
 }
 
 export interface ServiceCreateInput {
   userId: string
   name: string
-  description?: string
+  description?: string | null
   duration?: number
   price?: number
   currency?: string
@@ -95,7 +95,7 @@ export interface ServiceCreateInput {
 export interface ServiceUpdateInput {
   userId?: string
   name?: string
-  description?: string
+  description?: string | null
   duration?: number
   price?: number
   currency?: string
@@ -127,8 +127,8 @@ export interface BookingCreateInput {
   endTime: Date
   customerName: string
   customerEmail: string
-  customerPhone?: string
-  notes?: string
+  customerPhone?: string | null
+  notes?: string | null
   confirmationCode: string
 }
 
@@ -140,8 +140,8 @@ export interface BookingUpdateInput {
   endTime?: Date
   customerName?: string
   customerEmail?: string
-  customerPhone?: string
-  notes?: string
+  customerPhone?: string | null
+  notes?: string | null
   confirmationCode?: string
 }
 
