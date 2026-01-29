@@ -107,6 +107,8 @@ RUN for template in todo-app expense-tracker crm inventory kanban ai-chat form-b
 # ---- LAYER 5: Create tar.gz archives and delete uncompressed templates ----
 # This dramatically reduces image size (compressed vs uncompressed node_modules)
 # template.copy extracts from these archives for fast cold starts
+# Note: We use rm -rf instead of rmdir because the examples/ dir may contain
+# templates not in our list (e.g., expo-app for mobile) that we don't ship
 RUN mkdir -p /templates/archives && \
     for template in todo-app expense-tracker crm inventory kanban ai-chat form-builder feedback-form booking-app; do \
       echo "=== Archiving: $template ===" && \
@@ -115,7 +117,7 @@ RUN mkdir -p /templates/archives && \
       rm -rf /templates/examples/$template && \
       echo "=== $template archived ($(du -h /templates/archives/${template}.tar.gz | cut -f1)) ===" ; \
     done && \
-    rmdir /templates/examples
+    rm -rf /templates/examples
 
 # =============================================================================
 # Production image
