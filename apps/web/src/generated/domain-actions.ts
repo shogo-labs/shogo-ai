@@ -266,6 +266,29 @@ export function createDomainActions(store: IDomainStore) {
       return store.chatMessageCollection.create(data)
     },
 
+    /**
+     * Record a tool call log
+     */
+    recordToolCall: async (data: {
+      sessionId: string
+      toolName: string
+      status: "streaming" | "executing" | "complete" | "error"
+      args?: unknown
+      result?: unknown
+      duration?: number
+      messageId?: string
+    }) => {
+      return store.toolCallLogCollection.create({
+        chatSessionId: data.sessionId,
+        toolName: data.toolName,
+        status: data.status,
+        args: data.args ? JSON.stringify(data.args) : undefined,
+        result: data.result !== undefined ? JSON.stringify(data.result) : undefined,
+        duration: data.duration,
+        messageId: data.messageId,
+      })
+    },
+
     // =========================================================================
     // Member Actions
     // =========================================================================

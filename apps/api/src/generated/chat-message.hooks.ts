@@ -51,12 +51,28 @@ export interface ChatMessageHooks {
  * Default ChatMessage hooks (customize as needed)
  */
 export const chatMessageHooks: ChatMessageHooks = {
-  // beforeList: async (ctx) => {
-  //   // Filter by user membership
-  //   return { ok: true, data: { where: { userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  /**
+   * Filter chat messages by sessionId query parameter.
+   * The frontend calls /api/v2/chat-messages?sessionId=xxx to load messages for a chat session.
+   * 
+   * IMPORTANT: We explicitly set include: undefined to prevent Prisma from returning
+   * the session relation as a nested object. The frontend MST model expects session
+   * to be a reference (just an ID), not a full object.
+   */
+  beforeList: async (ctx) => {
+    const where: any = {}
+    
+    // Support filtering by sessionId (required for chat history loading)
+    if (ctx.query.sessionId) {
+      where.sessionId = ctx.query.sessionId
+    }
+    
+    // Support filtering by id (for loading specific messages)
+    if (ctx.query.id) {
+      where.id = ctx.query.id
+    }
+    
+    // Explicitly exclude relations - MST expects references (IDs), not nested objects
+    return { ok: true, data: { where, include: undefined } }
+  },
 }

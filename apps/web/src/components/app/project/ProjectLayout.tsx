@@ -19,7 +19,6 @@ import { useParams, useLocation } from "react-router-dom"
 import { useDomains, useSchemaLoadingState, useSDKDomain, useSDKReady } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
-import { ComposablePhaseView } from "@/components/rendering/composition/ComposablePhaseView"
 import { ComponentRegistryProvider } from "@/components/rendering"
 import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
 import { ChatPanel } from "../chat/ChatPanel"
@@ -35,8 +34,6 @@ import { TestPanel } from "./TestPanel"
 import { cn } from "@/lib/utils"
 import { useSession } from "@/contexts/SessionProvider"
 import type { ViewportSize } from "./PreviewControls"
-
-const WORKSPACE_COMPOSITION_NAME = "workspace"
 
 // Default chat panel width in px
 const DEFAULT_CHAT_WIDTH = 480
@@ -112,8 +109,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
   const [currentRoute, setCurrentRoute] = useState("/")
 
-  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'workspace' (ComposablePhaseView), 'terminal' (TerminalPanel), 'database' (DatabasePanel), or 'tests' (TestPanel)
-  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'workspace' | 'terminal' | 'database' | 'tests'>('runtime')
+  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'terminal' (TerminalPanel), 'database' (DatabasePanel), or 'tests' (TestPanel)
+  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'terminal' | 'database' | 'tests'>('runtime')
 
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
@@ -269,11 +266,6 @@ export const ProjectLayout = observer(function ProjectLayout() {
       cancelled = true
     }
   }, [projectId, domainsReady, store, session?.user?.id])
-
-  // Get workspace composition for observability
-  const workspaceComposition = componentBuilder?.compositionCollection?.findByName?.(
-    WORKSPACE_COMPOSITION_NAME
-  )
 
   // Get chat sessions for this project (synchronous - uses in-memory data from SDK store)
   const projectChatSessions: ChatSessionItem[] = projectId
@@ -743,17 +735,6 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 Code
               </button>
               <button
-                onClick={() => setPreviewMode('workspace')}
-                className={cn(
-                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
-                  previewMode === 'workspace'
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                )}
-              >
-                Workspace
-              </button>
-              <button
                 onClick={() => setPreviewMode('terminal')}
                 className={cn(
                   "px-3 py-1 text-xs font-medium rounded-md transition-colors",
@@ -812,17 +793,6 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   projectId={projectId || ''}
                   className="h-full"
                   refreshTrigger={codeRefreshTrigger}
-                />
-              </div>
-              {/* Workspace View - stays mounted for consistency */}
-              <div className={cn(
-                "absolute inset-0",
-                previewMode !== 'workspace' && "invisible pointer-events-none"
-              )}>
-                <ComposablePhaseView
-                  phaseName={WORKSPACE_COMPOSITION_NAME}
-                  feature={project}
-                  className="h-full"
                 />
               </div>
               {/* Terminal Panel - stays mounted for output persistence */}

@@ -9,7 +9,7 @@
  * - useChat from @ai-sdk/react with /api/chat endpoint
  * - Persists user messages optimistically before sending
  * - Persists assistant messages in onFinish callback
- * - Records tool calls via studioChat.recordToolCall
+ * - Records tool calls via actions.recordToolCall
  * - Auto-creates ChatSession if none exists for feature
  * - Collapse/expand with manual resize
  * - localStorage persistence for collapse state and width
@@ -21,7 +21,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { observer } from "mobx-react-lite"
 import { useChat, type Message } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
-import { useDomains } from "@/contexts/DomainProvider"
+import { useDomains, useSDKDomains } from "@/contexts/DomainProvider"
+import { useDomainActions } from "@/generated/domain-actions"
 import { cn } from "@/lib/utils"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
@@ -576,9 +577,14 @@ export const ChatPanel = observer(function ChatPanel({
   onSelectTheme,
   onCreateTheme,
 }: ChatPanelProps) {
-  // Access domains for chat persistence and smart refresh
-  const { studioChat, platformFeatures, componentBuilder } = useDomains<{
-    studioChat: any
+  // Access SDK domains for chat persistence (SDK-generated stores)
+  const { studioChat } = useSDKDomains()
+  
+  // Access domain actions for creating sessions, messages, etc.
+  const actions = useDomainActions()
+  
+  // Access legacy domains for features and composition (not yet migrated to SDK)
+  const { platformFeatures, componentBuilder } = useDomains<{
     platformFeatures: any
     componentBuilder: any
   }>()
@@ -658,7 +664,13 @@ export const ChatPanel = observer(function ChatPanel({
       }
 
       // Find existing session for this feature AND phase (now checking fresh data)
-      const existingSession = studioChat.chatSessionCollection.findByFeatureAndPhase?.(featureId, phase)
+      // SDK collection uses .all property with filter
+      const existingSession = studioChat.chatSessionCollection.all.find(
+        (s: any) =>
+          s.contextType === "feature" &&
+          s.contextId === featureId &&
+          (phase == null ? s.phase == null : s.phase === phase)
+      )
       if (existingSession) {
         setCurrentSessionId(existingSession.id)
         onChatSessionChange?.(existingSession.id)
@@ -671,7 +683,7 @@ export const ChatPanel = observer(function ChatPanel({
       try {
         if (phase) {
           // Auto-create session with phase (async per task-cpbi-002)
-          const newSession = await studioChat.createChatSession({
+          const newSession = await actions.createChatSession({
             inferredName: `${featureName || featureId} - ${phase}`,
             contextType: "feature",
             contextId: featureId,
@@ -681,7 +693,7 @@ export const ChatPanel = observer(function ChatPanel({
           onChatSessionChange?.(newSession.id)
         } else {
           // No phase provided, create session without phase
-          const newSession = await studioChat.createChatSession({
+          const newSession = await actions.createChatSession({
             inferredName: featureName || `Chat for ${featureId}`,
             contextType: "feature",
             contextId: featureId,
@@ -708,7 +720,9 @@ export const ChatPanel = observer(function ChatPanel({
   // This is read during render, so MobX tracks it and triggers re-render when data changes
   // Used for syncing persisted messages to AI SDK state
   const persistedMessagesFromMobX = currentSessionId
-    ? studioChat.chatMessageCollection.findBySession?.(currentSessionId) ?? []
+    ? studioChat.chatMessageCollection.all
+        .filter((msg: any) => msg.sessionId === currentSessionId)
+        .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
     : []
 
   // Loading guard ref to prevent duplicate message queries
@@ -1152,7 +1166,7 @@ export const ChatPanel = observer(function ChatPanel({
         // CRITICAL: Update ref BEFORE async operations to prevent race condition
         ccSessionIdRef.current = newCcSessionId
         try {
-          await studioChat.chatSessionCollection.updateOne(currentSessionId, {
+          await studioChat.chatSessionCollection.update(currentSessionId, {
             claudeCodeSessionId: newCcSessionId,
           })
           // Update state after successful persistence (for React re-render)
@@ -1174,7 +1188,7 @@ export const ChatPanel = observer(function ChatPanel({
         const partsJson = hasToolCalls(message)
           ? serializeParts((message as any).parts)
           : undefined
-        studioChat.addMessage({
+        actions.addMessage({
           sessionId: currentSessionId,
           role: "assistant",
           content: extractTextContent(message),
@@ -1191,7 +1205,7 @@ export const ChatPanel = observer(function ChatPanel({
           const safeArgs = toolCall.args ?? {}
           const safeResult = toolCall.result !== undefined ? toolCall.result : null
           
-          studioChat.recordToolCall({
+          actions.recordToolCall({
             sessionId: currentSessionId,
             toolName: toolCall.toolName,
             status: toolCall.state === "output-available" ? "complete" :
@@ -1352,8 +1366,7 @@ export const ChatPanel = observer(function ChatPanel({
           setCcSessionId(sessionData.ccSessionId)
           // Persist to session if available
           if (currentSessionId) {
-            studioChat.chatSessionCollection.updateOne({
-              id: currentSessionId,
+            studioChat.chatSessionCollection.update(currentSessionId, {
               claudeCodeSessionId: sessionData.ccSessionId,
             }).catch((error) => {
               console.error('[ChatPanel:Session] Failed to persist session ID:', error)
@@ -1515,7 +1528,8 @@ export const ChatPanel = observer(function ChatPanel({
       console.log('[ChatPanel] Loading messages for session:', currentSessionId)
       studioChat.chatMessageCollection.loadAll({ sessionId: currentSessionId })
         .then((result: any) => {
-          const count = result?.items ? Object.keys(result.items).length : 0
+          // SDK collection returns array directly
+          const count = Array.isArray(result) ? result.length : 0
           console.log('[ChatPanel] Loaded', count, 'messages for session:', currentSessionId)
         })
         .catch((err: any) => console.error('[ChatPanel] Failed to load messages:', err))
@@ -1719,7 +1733,7 @@ export const ChatPanel = observer(function ChatPanel({
 
       // Persist user message to local store (fire-and-forget)
       // task-chatpanel-sendmessage: Include imageData when present
-      studioChat.addMessage({
+      actions.addMessage({
         sessionId: currentSessionId,
         role: "user",
         content: trimmedContent,

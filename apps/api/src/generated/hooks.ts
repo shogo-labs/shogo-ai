@@ -719,6 +719,10 @@ const chatSessionHooks: ModelHooks = {
 const chatMessageHooks: ModelHooks = {
   /**
    * Filter messages by sessionId
+   * 
+   * NOTE: We intentionally do NOT include the session relation because the frontend
+   * MST model expects 'session' to be a reference (just an ID string), not a nested object.
+   * Including the full session object causes MST type errors on hydration.
    */
   beforeList: async (ctx) => {
     const sessionId = ctx.query.sessionId
@@ -736,7 +740,7 @@ const chatMessageHooks: ModelHooks = {
       ok: true,
       data: {
         where: { sessionId },
-        include: { session: true },
+        // Explicitly no include - MST expects session as ID reference, not nested object
         orderBy: { createdAt: 'asc' },
       },
     }

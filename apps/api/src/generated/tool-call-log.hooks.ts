@@ -51,12 +51,27 @@ export interface ToolCallLogHooks {
  * Default ToolCallLog hooks (customize as needed)
  */
 export const toolCallLogHooks: ToolCallLogHooks = {
-  // beforeList: async (ctx) => {
-  //   // Filter by user membership
-  //   return { ok: true, data: { where: { userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  /**
+   * Filter tool call logs by chatSessionId or messageId query parameters.
+   */
+  beforeList: async (ctx) => {
+    const where: any = {}
+    
+    // Support filtering by chatSessionId
+    if (ctx.query.chatSessionId) {
+      where.chatSessionId = ctx.query.chatSessionId
+    }
+    
+    // Support filtering by messageId
+    if (ctx.query.messageId) {
+      where.messageId = ctx.query.messageId
+    }
+    
+    // Support filtering by id
+    if (ctx.query.id) {
+      where.id = ctx.query.id
+    }
+    
+    return { ok: true, data: { where } }
+  },
 }
