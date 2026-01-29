@@ -1232,7 +1232,7 @@ app.post('/preview/restart', async (c) => {
         markStep('prismaGenerate (skipped - pre-generated)')
       } else {
         console.log('[project-runtime] ⏱️  Running prisma generate...')
-        const prismaGenProc = Bun.spawn(['bunx', 'prisma', 'generate'], {
+        const prismaGenProc = Bun.spawn(['bun', '--bun', 'x', 'prisma', 'generate'], {
           cwd: PROJECT_DIR,
           stdout: 'inherit',
           stderr: 'inherit',
@@ -1242,6 +1242,10 @@ app.post('/preview/restart', async (c) => {
         
         if (prismaGenProc.exitCode !== 0) {
           console.error('[project-runtime] ❌ prisma generate failed with exit code:', prismaGenProc.exitCode)
+          // Track failure for circuit breaker (shared with auto-start)
+          devModeFailureCount++
+          devModeLastFailure = Date.now()
+          devModeError = `prisma generate failed with exit code ${prismaGenProc.exitCode}`
           const totalMs = Math.round(performance.now() - startTime)
           return c.json({ 
             success: false, 
@@ -1255,7 +1259,7 @@ app.post('/preview/restart', async (c) => {
       // 4c. Run prisma db push with --accept-data-loss flag for development
       // This ensures tables are created even if there are schema changes
       console.log('[project-runtime] ⏱️  Running prisma db push...')
-      const prismaPushProc = Bun.spawn(['bunx', 'prisma', 'db', 'push', '--accept-data-loss'], {
+      const prismaPushProc = Bun.spawn(['bun', '--bun', 'x', 'prisma', 'db', 'push', '--accept-data-loss'], {
         cwd: PROJECT_DIR,
         stdout: 'inherit',
         stderr: 'inherit',
@@ -1270,6 +1274,10 @@ app.post('/preview/restart', async (c) => {
       
       if (prismaPushProc.exitCode !== 0) {
         console.error('[project-runtime] ❌ prisma db push failed with exit code:', prismaPushProc.exitCode)
+        // Track failure for circuit breaker (shared with auto-start)
+        devModeFailureCount++
+        devModeLastFailure = Date.now()
+        devModeError = `prisma db push failed with exit code ${prismaPushProc.exitCode}`
         const totalMs = Math.round(performance.now() - startTime)
         return c.json({ 
           success: false, 
@@ -1610,7 +1618,7 @@ app.post('/preview/dev', async (c) => {
         markStep('prismaGenerate (skipped)')
       } else {
         console.log('[project-runtime] ⏱️  Running prisma generate...')
-        const prismaGenProc = Bun.spawn(['bunx', 'prisma', 'generate'], {
+        const prismaGenProc = Bun.spawn(['bun', '--bun', 'x', 'prisma', 'generate'], {
           cwd: PROJECT_DIR,
           stdout: 'inherit',
           stderr: 'inherit',
@@ -1630,7 +1638,7 @@ app.post('/preview/dev', async (c) => {
       }
       
       console.log('[project-runtime] ⏱️  Running prisma db push...')
-      const prismaPushProc = Bun.spawn(['bunx', 'prisma', 'db', 'push', '--accept-data-loss'], {
+      const prismaPushProc = Bun.spawn(['bun', '--bun', 'x', 'prisma', 'db', 'push', '--accept-data-loss'], {
         cwd: PROJECT_DIR,
         stdout: 'inherit',
         stderr: 'inherit',
@@ -3257,12 +3265,12 @@ const PRESET_COMMANDS: PresetCommand[] = [
  */
 const COMMAND_MAP: Record<string, { command: string; timeout: number }> = {
   'bun-install': { command: 'bun install', timeout: 120000 },
-  'prisma-generate': { command: 'bunx prisma generate', timeout: 60000 },
-  'prisma-push': { command: 'bunx prisma db push', timeout: 60000 },
-  'prisma-reset': { command: 'bunx prisma db push --force-reset', timeout: 30000 },
-  'prisma-migrate': { command: 'bunx prisma migrate dev --name auto', timeout: 60000 },
-  'playwright-test': { command: 'bunx playwright test', timeout: 180000 },
-  'typecheck': { command: 'bunx tsc --noEmit', timeout: 60000 },
+  'prisma-generate': { command: 'bun --bun x prisma generate', timeout: 60000 },
+  'prisma-push': { command: 'bun --bun x prisma db push', timeout: 60000 },
+  'prisma-reset': { command: 'bun --bun x prisma db push --force-reset', timeout: 30000 },
+  'prisma-migrate': { command: 'bun --bun x prisma migrate dev --name auto', timeout: 60000 },
+  'playwright-test': { command: 'bun --bun x playwright test', timeout: 180000 },
+  'typecheck': { command: 'bun --bun x tsc --noEmit', timeout: 60000 },
   'build': { command: 'bun run build', timeout: 120000 },
 }
 
@@ -3814,7 +3822,7 @@ async function ensurePrismaStudioRunning(): Promise<{ ok: boolean; error?: strin
   console.log(`[project-runtime] Starting Prisma Studio on port ${PRISMA_STUDIO_PORT}...`)
   
   try {
-    prismaStudioProcess = Bun.spawn(['bunx', 'prisma', 'studio', '--port', String(PRISMA_STUDIO_PORT), '--browser', 'none'], {
+    prismaStudioProcess = Bun.spawn(['bun', '--bun', 'x', 'prisma', 'studio', '--port', String(PRISMA_STUDIO_PORT), '--browser', 'none'], {
       cwd: PROJECT_DIR,
       env: { ...process.env },
       stdout: 'inherit',

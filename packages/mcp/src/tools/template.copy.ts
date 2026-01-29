@@ -591,9 +591,22 @@ export async function executeTemplateCopy(
       f.replace(projectDir + "/", "")
     )
     
-    // Filter out node_modules files for the response (they're huge and not useful to report)
-    const sourceFiles = relativeFiles.filter((f) => !f.startsWith("node_modules/"))
-    const nodeModulesFileCount = relativeFiles.length - sourceFiles.length
+    // Paths to exclude from the response (build artifacts, caches, generated files)
+    // These are included in archives for fast cold start but aren't useful for LLM to see
+    const excludeFromResponse = [
+      'node_modules/',      // Top-level deps
+      'dist/',              // Vite build output
+      '.output/',           // Nitro/Vinxi server output (includes nested node_modules)
+      '.nitro/',            // Nitro types/config
+      '.tanstack/',         // TanStack temp files
+      'bun.lock',           // Lock file
+      '.gitignore',         // Git ignore
+    ]
+    
+    // Filter to only meaningful source files for the LLM
+    const sourceFiles = relativeFiles.filter((f) => 
+      !excludeFromResponse.some(exclude => f.startsWith(exclude) || f === exclude.replace('/', ''))
+    )
     timer.mark('filterFiles')
 
     // Build response with context-aware instructions
@@ -604,9 +617,7 @@ export async function executeTemplateCopy(
       template,
       filesSummary: {
         totalFilesCopied: relativeFiles.length,
-        sourceFiles: sourceFiles.length,
-        nodeModulesFiles: nodeModulesFileCount,
-        // Only include source files (not node_modules) in the list
+        // Only include meaningful source files in the response (not build artifacts)
         files: sourceFiles,
       },
     }
