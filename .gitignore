@@ -89,3 +89,6 @@ workspaces/
 
 # Vite/TanStack generated timestamp files (bust Docker cache)
 app.config.timestamp*.js
+
+# Chat export logs (auto-generated agent outputs)
+shogo-chats/

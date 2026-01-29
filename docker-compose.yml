@@ -305,10 +305,10 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
       args:
-        # Build args use external ports (baked into frontend bundle)
-        VITE_API_URL: http://localhost:${API_PORT:-8002}
-        VITE_MCP_URL: http://localhost:${MCP_PORT:-3100}
-        VITE_BETTER_AUTH_URL: http://localhost:${API_PORT:-8002}
+        # Build args use WEB_PORT so requests go through nginx (same-origin for cookies)
+        VITE_API_URL: http://localhost:${WEB_PORT:-3000}
+        VITE_MCP_URL: http://localhost:${WEB_PORT:-3000}
+        VITE_BETTER_AUTH_URL: http://localhost:${WEB_PORT:-3000}
         VITE_WORKSPACE: workspace
     ports:
       - "${WEB_PORT:-3333}:80"

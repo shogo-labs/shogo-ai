@@ -1,11 +1,8 @@
 /**
  * Shogo SDK Generators
  *
- * Generate code from Prisma schema:
- * - Hono routes (per-model)
- * - TypeScript types (per-model)
- * - OptimisticStore instances (per-model)
- * - MST models and collections (per-model)
+ * Generate server functions, domain stores, and types from Prisma schema.
+ * Supports both TanStack Start (server functions) and Expo (HTTP API).
  */
 
 // Main generator
@@ -78,3 +75,5 @@ export {
 // Legacy exports (for backward compatibility)
 export { generateServerFunctions } from './server-functions'
 export { generateDomainStore } from './domain-store'
+export { generateApiClient } from './api-client'
+export { generateApiDomainStore } from './api-domain-store'

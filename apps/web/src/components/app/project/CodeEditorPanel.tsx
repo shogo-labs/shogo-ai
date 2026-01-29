@@ -583,7 +583,8 @@ export function CodeEditorPanel({
   }, [files, expandedDirs])
 
   // Load file list from filesystem API (synced with Vite/Preview)
-  const loadFiles = useCallback(async () => {
+  // autoSelect: only auto-select a file on initial load, not on refresh
+  const loadFiles = useCallback(async (autoSelect = true) => {
     setIsLoadingFiles(true)
     setFilesError(null)
 
@@ -599,13 +600,15 @@ export function CodeEditorPanel({
       setFiles(data.files || [])
       setExpandedDirs(new Set(['src']))
 
-      // Auto-select App.tsx or first file
-      const appFile = data.files?.find((f: FileInfo) =>
-        f.type === 'file' && f.path.endsWith('App.tsx')
-      )
-      const firstFile = appFile || data.files?.find((f: FileInfo) => f.type === 'file')
-      if (firstFile) {
-        setSelectedFile(firstFile.path)
+      // Auto-select App.tsx or first file (only on initial load)
+      if (autoSelect) {
+        const appFile = data.files?.find((f: FileInfo) =>
+          f.type === 'file' && f.path.endsWith('App.tsx')
+        )
+        const firstFile = appFile || data.files?.find((f: FileInfo) => f.type === 'file')
+        if (firstFile) {
+          setSelectedFile(firstFile.path)
+        }
       }
     } catch (err: any) {
       setFilesError(err.message || 'Failed to load files')
@@ -658,16 +661,22 @@ export function CodeEditorPanel({
   }, [loadFiles])
 
   // Refresh files when refreshTrigger changes (agent made file modifications)
+  // Use a ref to track selectedFile so we don't re-run when user clicks a file
+  const selectedFileRef = useRef(selectedFile)
+  selectedFileRef.current = selectedFile
+
   useEffect(() => {
     if (refreshTrigger !== undefined && refreshTrigger > 0) {
       console.log('[CodeEditorPanel] 🔄 Refresh triggered by agent file modifications')
-      loadFiles()
-      // Also reload the currently selected file content
-      if (selectedFile) {
-        loadFileContent(selectedFile)
+      // Pass false to prevent auto-selecting a file on refresh (preserves user selection)
+      loadFiles(false)
+      // Also reload the currently selected file content (using ref to avoid dependency)
+      if (selectedFileRef.current) {
+        loadFileContent(selectedFileRef.current)
       }
     }
-  }, [refreshTrigger, loadFiles, loadFileContent, selectedFile])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedFile tracked via ref
+  }, [refreshTrigger, loadFiles, loadFileContent])
 
   // Load content when file is selected
   useEffect(() => {
@@ -847,7 +856,7 @@ export function CodeEditorPanel({
             Explorer
           </span>
           <button
-            onClick={loadFiles}
+            onClick={() => loadFiles(false)}
             className={cn(
               "p-1 rounded transition-colors",
               isDarkMode ? "hover:bg-[#3c3c3c]" : "hover:bg-gray-200"

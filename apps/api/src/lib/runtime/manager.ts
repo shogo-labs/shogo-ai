@@ -6,7 +6,7 @@
  */
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
-import { existsSync, cpSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import type {
@@ -361,13 +361,111 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         console.log(`[RuntimeManager] Vite using projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
       }
 
-      // Spawn Vite dev server
-      const proc = spawn('bun', ['run', 'dev', '--port', String(port), '--host', '0.0.0.0'], {
-        cwd: projectDir,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: false,
-        env: viteEnv,
-      })
+      // Detect if this is an Expo project (Expo doesn't accept --host 0.0.0.0)
+      let isExpoProject = false
+      try {
+        const pkgJsonPath = join(projectDir, 'package.json')
+        if (existsSync(pkgJsonPath)) {
+          const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
+          isExpoProject = !!(pkgJson.dependencies?.expo || pkgJson.devDependencies?.expo)
+        }
+      } catch {
+        // Ignore parse errors, assume not Expo
+      }
+
+      // Build spawn args - Expo only accepts 'lan', 'tunnel', or 'localhost' for --host
+      // For Expo projects, we need to run the Hono server (which serves both static files AND API routes)
+      // instead of the Expo Metro bundler (which only serves frontend with no API)
+      let proc: ReturnType<typeof spawn>
+
+      if (isExpoProject) {
+        // For Expo: Install deps, build, then run Hono server
+        console.log(`[RuntimeManager] Installing dependencies for Expo project ${projectId}...`)
+        const installProc = spawn('bun', ['install'], {
+          cwd: projectDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: viteEnv,
+        })
+
+        // Wait for install to complete
+        await new Promise<void>((resolve, reject) => {
+          installProc.on('exit', (code) => {
+            if (code === 0) {
+              console.log(`[RuntimeManager] Dependencies installed for ${projectId}`)
+              resolve()
+            } else {
+              reject(new Error(`bun install failed with code ${code}`))
+            }
+          })
+          installProc.on('error', reject)
+          installProc.stderr?.on('data', (data) => {
+            console.error(`[RuntimeManager] bun install stderr: ${data.toString()}`)
+          })
+        })
+
+        // Run Prisma generate and db push
+        console.log(`[RuntimeManager] Setting up database for ${projectId}...`)
+        const prismaGenProc = spawn('bunx', ['prisma', 'generate'], {
+          cwd: projectDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: viteEnv,
+        })
+        await new Promise<void>((resolve) => {
+          prismaGenProc.on('exit', () => resolve())
+          prismaGenProc.on('error', () => resolve()) // Continue even if fails
+        })
+
+        const prismaPushProc = spawn('bunx', ['prisma', 'db', 'push', '--accept-data-loss'], {
+          cwd: projectDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: viteEnv,
+        })
+        await new Promise<void>((resolve) => {
+          prismaPushProc.on('exit', () => resolve())
+          prismaPushProc.on('error', () => resolve()) // Continue even if fails
+        })
+
+        console.log(`[RuntimeManager] Building Expo project ${projectId}...`)
+        const buildProc = spawn('bun', ['run', 'build'], {
+          cwd: projectDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: viteEnv,
+        })
+
+        // Wait for build to complete
+        await new Promise<void>((resolve, reject) => {
+          buildProc.on('exit', (code) => {
+            if (code === 0) {
+              console.log(`[RuntimeManager] Expo build completed for ${projectId}`)
+              resolve()
+            } else {
+              reject(new Error(`Expo build failed with code ${code}`))
+            }
+          })
+          buildProc.on('error', reject)
+          buildProc.stderr?.on('data', (data) => {
+            console.error(`[RuntimeManager] Expo build stderr: ${data.toString()}`)
+          })
+        })
+
+        // Start Hono server (serves static files from dist/ AND API routes)
+        console.log(`[RuntimeManager] Starting Expo Hono server for ${projectId} on port ${port}`)
+        proc = spawn('bun', ['run', 'start'], {
+          cwd: projectDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: false,
+          env: { ...viteEnv, PORT: String(port) },
+        })
+      } else {
+        // For non-Expo: Run Vite dev server
+        const devArgs = ['run', 'dev', '--port', String(port), '--host', '0.0.0.0']
+        proc = spawn('bun', devArgs, {
+          cwd: projectDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: false,
+          env: viteEnv,
+        })
+      }
 
       runtime.process = proc
 
