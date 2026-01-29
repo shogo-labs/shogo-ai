@@ -313,7 +313,7 @@ export interface CodeEditorPanelProps {
 function buildFileTree(files: FileInfo[]): TreeNode[] {
   const root: TreeNode[] = []
   const directories: Map<string, TreeNode> = new Map()
-  const addedPaths = new Set<string>() // Track paths to prevent duplicates
+  const nodesByPath: Map<string, TreeNode> = new Map() // Track all nodes by path
 
   // Sort files: directories first, then alphabetically
   const sortedFiles = [...files].sort((a, b) => {
@@ -323,7 +323,7 @@ function buildFileTree(files: FileInfo[]): TreeNode[] {
 
   for (const file of sortedFiles) {
     // Skip if this exact path was already added (deduplication)
-    if (addedPaths.has(file.path)) continue
+    if (nodesByPath.has(file.path)) continue
     
     const parts = file.path.split('/')
     let currentPath = ''
@@ -351,24 +351,36 @@ function buildFileTree(files: FileInfo[]): TreeNode[] {
             expanded: false,
           }
           currentLevel.push(newNode)
+          nodesByPath.set(file.path, newNode)
           if (file.type === 'directory') {
             directories.set(file.path, newNode)
           }
         }
-        addedPaths.add(file.path)
       } else {
         let dir = directories.get(currentPath)
         if (!dir) {
-          dir = {
-            name: part,
-            path: currentPath,
-            type: 'directory',
-            children: [],
-            expanded: true,
+          // Check if a file node with this path already exists - convert it to directory
+          const existingNode = nodesByPath.get(currentPath)
+          if (existingNode) {
+            // Convert existing file node to directory
+            existingNode.type = 'directory'
+            existingNode.children = existingNode.children || []
+            existingNode.expanded = true
+            dir = existingNode
+            directories.set(currentPath, dir)
+          } else {
+            // Create new intermediate directory
+            dir = {
+              name: part,
+              path: currentPath,
+              type: 'directory',
+              children: [],
+              expanded: true,
+            }
+            currentLevel.push(dir)
+            directories.set(currentPath, dir)
+            nodesByPath.set(currentPath, dir)
           }
-          currentLevel.push(dir)
-          directories.set(currentPath, dir)
-          addedPaths.add(currentPath) // Mark intermediate directories as added too
         }
         currentLevel = dir.children!
       }

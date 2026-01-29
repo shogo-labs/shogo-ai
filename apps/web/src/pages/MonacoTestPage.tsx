@@ -143,10 +143,21 @@ export function MonacoTestPage() {
     
     try {
       // Check TypeScript worker by creating a model and requesting diagnostics
+      // Use a unique URI to avoid conflicts with React Strict Mode double-renders
+      const testUri = monaco.Uri.parse(`file:///test-worker-${Date.now()}.ts`)
+      
+      // Clean up any existing test models first
+      const existingModels = monaco.editor.getModels()
+      existingModels.forEach(model => {
+        if (model.uri.path.startsWith('/test-worker-')) {
+          model.dispose()
+        }
+      })
+      
       const testModel = monaco.editor.createModel(
         'const x: string = 123;', // This should produce a type error
         'typescript',
-        monaco.Uri.parse('file:///test-worker.ts')
+        testUri
       )
 
       // Get TypeScript worker - use type assertion for the deprecated API
