@@ -19,6 +19,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  type ViewStyle,
 } from 'react-native'
 import { Stack, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
@@ -377,12 +378,19 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 24,
     margin: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-  },
+    ...Platform.select({
+      web: {
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+        elevation: 4,
+      },
+    }),
+  } as ViewStyle,
   title: {
     fontSize: 24,
     fontWeight: 'bold',
@@ -507,12 +515,19 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 12,
     marginBottom: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
+    ...Platform.select({
+      web: {
+        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.05,
+        shadowRadius: 2,
+        elevation: 1,
+      },
+    }),
+  } as ViewStyle,
   todoItemPending: {
     opacity: 0.6,
   },

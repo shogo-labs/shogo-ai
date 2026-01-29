@@ -11,8 +11,15 @@ import Constants from 'expo-constants'
 
 // Get the API URL - in web this is relative, in native it's the server URL
 const getApiUrl = (): string => {
-  // In web mode, use relative URL
+  // In web mode, detect base path for preview proxy support
   if (typeof window !== 'undefined') {
+    // Check if running under a base path (e.g., /preview/)
+    // This handles the runtime proxy which serves the app at /preview/*
+    const pathname = window.location.pathname
+    const previewMatch = pathname.match(/^(\/preview)\/?/)
+    if (previewMatch) {
+      return `${previewMatch[1]}/api`
+    }
     return '/api'
   }
 

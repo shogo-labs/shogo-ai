@@ -200,7 +200,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
   // Load project data using SDK store with retry logic
   useEffect(() => {
-    if (!projectId || !domainsReady) {
+    if (!projectId || !domainsReady || !session?.user?.id) {
       return
     }
 
@@ -213,6 +213,10 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
       setIsLoading(true)
       try {
+        // Load workspaces first to ensure safeReference can resolve
+        // This prevents MST reference errors when loading projects directly
+        await store.workspaceCollection.loadAll({ userId: session.user.id })
+
         // Load the project from SDK store
         await store.projectCollection.loadAll({ id: projectId })
 
@@ -264,7 +268,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
     return () => {
       cancelled = true
     }
-  }, [projectId, domainsReady, store])
+  }, [projectId, domainsReady, store, session?.user?.id])
 
   // Get workspace composition for observability
   const workspaceComposition = componentBuilder?.compositionCollection?.findByName?.(
