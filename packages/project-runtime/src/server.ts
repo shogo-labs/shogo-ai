@@ -1186,7 +1186,14 @@ app.post('/preview/restart', async (c) => {
     const hasVite = existsSync(join(nodeModulesPath, 'vite'))
     const nodeModulesComplete = nodeModulesExists && hasReact && hasVite
     
-    if (nodeModulesComplete) {
+    // Check if package.json has overrides - if so, we MUST run bun install to apply them
+    // This is critical for templates using rolldown-vite via "overrides": { "vite": "npm:rolldown-vite@latest" }
+    const hasOverrides = !!(packageJson.overrides || packageJson.resolutions)
+    if (hasOverrides) {
+      console.log('[project-runtime] Package has overrides/resolutions - will run bun install to apply them')
+    }
+    
+    if (nodeModulesComplete && !hasOverrides) {
       console.log('[project-runtime] ⚡ node_modules already exists (pre-installed from template) - skipping bun install')
       markStep('bunInstall (skipped - pre-installed)')
     } else {
@@ -1576,7 +1583,14 @@ app.post('/preview/dev', async (c) => {
     const hasVite = existsSync(join(nodeModulesPath, 'vite'))
     const nodeModulesComplete = nodeModulesExists && hasReact && hasVite
     
-    if (nodeModulesComplete) {
+    // Check if package.json has overrides - if so, we MUST run bun install to apply them
+    // This is critical for templates using rolldown-vite via "overrides": { "vite": "npm:rolldown-vite@latest" }
+    const hasOverrides = !!(packageJson.overrides || packageJson.resolutions)
+    if (hasOverrides) {
+      console.log('[project-runtime] Package has overrides/resolutions - will run bun install to apply them')
+    }
+    
+    if (nodeModulesComplete && !hasOverrides) {
       console.log('[project-runtime] ⚡ node_modules already exists - skipping bun install')
       markStep('bunInstall (skipped)')
     } else {
