@@ -754,11 +754,29 @@ app.get('/ready', (c) => {
 // Build status endpoint - shows detailed initialization progress
 app.get('/build-status', (c) => {
   const buildStatus = getBuildStatus()
+  const isInBackoff = devModeFailureCount >= DEV_MODE_MAX_FAILURES && 
+    devModeLastFailure && (Date.now() - devModeLastFailure < DEV_MODE_BACKOFF_MS)
+  
   return c.json({
     projectId: PROJECT_ID,
     fastStartMode: FAST_START_MODE,
     ...buildStatus,
     uptime: process.uptime(),
+    devMode: {
+      active: isDevMode,
+      starting: devModeStarting,
+      failureCount: devModeFailureCount,
+      error: devModeError,
+      inBackoff: isInBackoff,
+    },
+    // Provide a user-friendly message
+    message: devModeError && isInBackoff 
+      ? `Error: ${devModeError}` 
+      : devModeStarting 
+        ? 'Starting dev server...' 
+        : buildStatus.ready 
+          ? 'Ready' 
+          : 'Initializing...',
   })
 })
 
@@ -1014,8 +1032,54 @@ let devModeStarting = false  // Track if dev mode is currently being started
 const VITE_DEV_PORT = parseInt(process.env.VITE_DEV_PORT || '3001', 10)
 const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '3000', 10)
 
+// Circuit breaker state for dev mode auto-start
+let devModeFailureCount = 0
+let devModeLastFailure: number | null = null
+let devModeError: string | null = null
+const DEV_MODE_MAX_FAILURES = 3
+const DEV_MODE_BACKOFF_MS = 60000  // 1 minute backoff after max failures
+
+/**
+ * Check if a TCP port is accepting connections.
+ * Uses Bun's native TCP socket support for reliability.
+ */
+async function checkTcpPort(host: string, port: number, timeoutMs: number = 1000): Promise<boolean> {
+  return new Promise((resolve) => {
+    let resolved = false
+    const resolveOnce = (value: boolean) => {
+      if (!resolved) {
+        resolved = true
+        resolve(value)
+      }
+    }
+    
+    Bun.connect({
+      hostname: host,
+      port: port,
+      socket: {
+        open(socket) {
+          socket.end()
+          resolveOnce(true)
+        },
+        data() {},
+        close() {},
+        error() {
+          resolveOnce(false)
+        },
+        connectError() {
+          resolveOnce(false)
+        },
+      },
+    }).catch(() => resolveOnce(false))
+    
+    // Timeout fallback
+    setTimeout(() => resolveOnce(false), timeoutMs)
+  })
+}
+
 /**
  * Wait for PostgreSQL to be ready to accept connections.
+ * Uses direct TCP socket connection for reliability - no external tools needed.
  * This is critical when using postgres sidecar - we need to wait for it to start
  * before running prisma commands.
  * 
@@ -1029,37 +1093,12 @@ async function waitForPostgresReady(timeoutMs: number = 30000): Promise<boolean>
   console.log('[project-runtime] Waiting for PostgreSQL to be ready...')
   
   while (Date.now() - startTime < timeoutMs) {
-    try {
-      // Use pg_isready if available (postgres image includes it)
-      const proc = Bun.spawn(['pg_isready', '-h', 'localhost', '-p', '5432', '-q'], {
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      const exitCode = await proc.exited
-      
-      if (exitCode === 0) {
-        const elapsed = Date.now() - startTime
-        console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms`)
-        return true
-      }
-    } catch {
-      // pg_isready not available, try direct connection test
-      try {
-        const testProc = Bun.spawn(['bunx', 'prisma', 'db', 'execute', '--stdin', '--schema', join(PROJECT_DIR, 'prisma', 'schema.prisma')], {
-          cwd: PROJECT_DIR,
-          stdin: new Blob(['SELECT 1']),
-          stdout: 'pipe',
-          stderr: 'pipe',
-        })
-        const testExitCode = await testProc.exited
-        if (testExitCode === 0) {
-          const elapsed = Date.now() - startTime
-          console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms (via prisma test)`)
-          return true
-        }
-      } catch {
-        // Connection test failed, keep waiting
-      }
+    // Direct TCP connection check - most reliable method
+    const isReady = await checkTcpPort('localhost', 5432, 1000)
+    if (isReady) {
+      const elapsed = Date.now() - startTime
+      console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms (TCP check)`)
+      return true
     }
     
     await new Promise(resolve => setTimeout(resolve, checkInterval))
@@ -1506,18 +1545,20 @@ app.post('/preview/dev', async (c) => {
     // 2. Check if this is a TanStack Start project
     const packageJsonPath = join(PROJECT_DIR, 'package.json')
     if (!existsSync(packageJsonPath)) {
+      devModeStarting = false  // Reset flag on failure
       const totalMs = Math.round(performance.now() - startTime)
       return c.json({ success: false, error: 'No package.json found', timings: { steps: timings, totalMs } }, 400)
     }
     
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
-    isTanStackStart = !!deps['@tanstack/react-start']
-    isExpo = !!deps['expo']
+    // Use local variables first, only update globals after successful start
+    const detectedTanStackStart = !!deps['@tanstack/react-start']
+    const detectedExpo = !!deps['expo']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
     markStep('parsePackageJson')
 
-    const projectType = isExpo ? 'Expo (React Native)' : isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'
+    const projectType = detectedExpo ? 'Expo (React Native)' : detectedTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'
     console.log(`[project-runtime] Project type: ${projectType}`)
     
     // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
@@ -1541,6 +1582,7 @@ app.post('/preview/dev', async (c) => {
       markStep('bunInstall')
       
       if (installProc.exitCode !== 0) {
+        devModeStarting = false  // Reset flag on failure
         const totalMs = Math.round(performance.now() - startTime)
         return c.json({ success: false, error: 'Dependency installation failed', timings: { steps: timings, totalMs } }, 500)
       }
@@ -1552,6 +1594,7 @@ app.post('/preview/dev', async (c) => {
       markStep('waitForPostgres')
       
       if (!postgresReady) {
+        devModeStarting = false  // Reset flag on failure
         const totalMs = Math.round(performance.now() - startTime)
         return c.json({ 
           success: false, 
@@ -1576,6 +1619,7 @@ app.post('/preview/dev', async (c) => {
         markStep('prismaGenerate')
         
         if (prismaGenProc.exitCode !== 0) {
+          devModeStarting = false  // Reset flag on failure
           const totalMs = Math.round(performance.now() - startTime)
           return c.json({ 
             success: false, 
@@ -1596,6 +1640,7 @@ app.post('/preview/dev', async (c) => {
       markStep('prismaDbPush')
       
       if (prismaPushProc.exitCode !== 0) {
+        devModeStarting = false  // Reset flag on failure
         const totalMs = Math.round(performance.now() - startTime)
         return c.json({ 
           success: false, 
@@ -1612,7 +1657,7 @@ app.post('/preview/dev', async (c) => {
     const maxAttempts = 20
     const baseDelayMs = 200
 
-    if (isExpo) {
+    if (detectedExpo) {
       // For Expo: run the Hono server directly (it serves dist/ or can proxy to Metro)
       // For now, use production build + Hono server for simpler dev experience
       console.log('[project-runtime] ════════════════════════════════════════')
@@ -1621,6 +1666,7 @@ app.post('/preview/dev', async (c) => {
 
       const serverPath = join(PROJECT_DIR, 'server.ts')
       if (!existsSync(serverPath)) {
+        devModeStarting = false  // Reset flag on failure
         const totalMs = Math.round(performance.now() - startTime)
         return c.json({ success: false, error: 'Expo server.ts not found', timings: { steps: timings, totalMs } }, 500)
       }
@@ -1635,6 +1681,7 @@ app.post('/preview/dev', async (c) => {
       await buildProc.exited
 
       if (buildProc.exitCode !== 0) {
+        devModeStarting = false  // Reset flag on failure
         const totalMs = Math.round(performance.now() - startTime)
         return c.json({ success: false, error: 'Expo build failed', timings: { steps: timings, totalMs } }, 500)
       }
@@ -1703,10 +1750,13 @@ app.post('/preview/dev', async (c) => {
     }
 
     if (!serverReady) {
-      console.warn(`[project-runtime] ⚠️  ${isExpo ? 'Expo' : 'Vite'} dev server may still be starting...`)
+      console.warn(`[project-runtime] ⚠️  ${detectedExpo ? 'Expo' : 'Vite'} dev server may still be starting...`)
     }
 
-    // Set dev mode flag
+    // Only update globals after successful start
+    // This prevents state inconsistency when dev mode fails to start
+    isTanStackStart = detectedTanStackStart
+    isExpo = detectedExpo
     isDevMode = true
     devModeStarting = false
 
@@ -1719,15 +1769,15 @@ app.post('/preview/dev', async (c) => {
       console.log(`[project-runtime]    • ${step}: ${durationMs}ms`)
     }
     console.log('[project-runtime] ════════════════════════════════════════')
-    if (!isExpo) {
+    if (!detectedExpo) {
       console.log('[project-runtime] 🔥 HMR is now active - changes will update instantly!')
     }
 
     return c.json({
       success: true,
-      mode: isExpo ? 'expo' : 'dev',
+      mode: detectedExpo ? 'expo' : 'dev',
       port: serverPort,
-      hmr: !isExpo,
+      hmr: !detectedExpo,
       timings: { steps: timings, totalMs },
     })
   } catch (error: any) {
@@ -2480,9 +2530,96 @@ app.all('/*', async (c) => {
     relativePath = previewPathMatch[1] || '/'
   }
   
+  // Check if dev mode has failed too many times (circuit breaker)
+  const isInBackoff = devModeFailureCount >= DEV_MODE_MAX_FAILURES && 
+    devModeLastFailure && (Date.now() - devModeLastFailure < DEV_MODE_BACKOFF_MS)
+  
+  // Show error page if dev mode has repeatedly failed
+  if (devModeError && isInBackoff) {
+    const retryInSeconds = Math.ceil((DEV_MODE_BACKOFF_MS - (Date.now() - (devModeLastFailure || 0))) / 1000)
+    return c.html(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dev Server Error</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+    .container { text-align: center; padding: 2rem; max-width: 500px; }
+    .icon { font-size: 3rem; margin-bottom: 1rem; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p { opacity: 0.9; font-size: 0.95rem; margin-bottom: 1rem; }
+    .error-box { 
+      background: rgba(0,0,0,0.2); 
+      padding: 1rem; 
+      border-radius: 8px; 
+      font-family: monospace; 
+      font-size: 0.85rem; 
+      text-align: left;
+      margin-bottom: 1rem;
+      word-break: break-word;
+    }
+    .retry-info { opacity: 0.8; font-size: 0.85rem; }
+    .btn {
+      display: inline-block;
+      margin-top: 1rem;
+      padding: 0.75rem 1.5rem;
+      background: rgba(255,255,255,0.2);
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 0.9rem;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .btn:hover { background: rgba(255,255,255,0.3); }
+  </style>
+  <script>
+    let retrySeconds = ${retryInSeconds};
+    const updateTimer = () => {
+      const el = document.getElementById('timer');
+      if (el) el.textContent = retrySeconds + 's';
+      if (retrySeconds <= 0) location.reload();
+      retrySeconds--;
+    };
+    setInterval(updateTimer, 1000);
+    updateTimer();
+  </script>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">⚠️</div>
+    <h1>Dev Server Failed to Start</h1>
+    <p>The development server encountered an error after multiple attempts.</p>
+    <div class="error-box">${devModeError}</div>
+    <p class="retry-info">Auto-retry in <span id="timer">${retryInSeconds}s</span></p>
+    <a href="/" class="btn" onclick="location.reload(); return false;">Retry Now</a>
+  </div>
+</body>
+</html>
+    `, 503)
+  }
+  
+  // Reset circuit breaker if backoff period has passed
+  if (!isInBackoff && devModeFailureCount >= DEV_MODE_MAX_FAILURES) {
+    console.log('[project-runtime] Circuit breaker reset - backoff period passed')
+    devModeFailureCount = 0
+    devModeError = null
+  }
+  
   // Auto-start dev mode if nothing is running
   // This makes dev mode the default without needing to call /preview/dev manually
-  if (!isDevMode && !viteDevProcess && !nitroProcess && !devModeStarting) {
+  if (!isDevMode && !viteDevProcess && !nitroProcess && !devModeStarting && !isInBackoff) {
     console.log('[project-runtime] Auto-starting dev mode on first subdomain request...')
     devModeStarting = true
     
@@ -2491,19 +2628,34 @@ app.all('/*', async (c) => {
       .then(async (res) => {
         if (res.ok) {
           console.log('[project-runtime] Dev mode auto-started successfully')
+          // Reset failure tracking on success
+          devModeFailureCount = 0
+          devModeError = null
         } else {
-          console.error('[project-runtime] Dev mode auto-start failed:', await res.text())
+          const errorText = await res.text()
+          console.error('[project-runtime] Dev mode auto-start failed:', errorText)
+          devModeFailureCount++
+          devModeLastFailure = Date.now()
+          try {
+            const errorJson = JSON.parse(errorText)
+            devModeError = errorJson.error || 'Unknown error'
+          } catch {
+            devModeError = errorText.substring(0, 200)
+          }
         }
         devModeStarting = false
       })
       .catch((err) => {
         console.error('[project-runtime] Dev mode auto-start error:', err)
+        devModeFailureCount++
+        devModeLastFailure = Date.now()
+        devModeError = err.message || 'Connection error'
         devModeStarting = false
       })
   }
   
   // Show loading page while dev mode is starting
-  if (devModeStarting || (!isDevMode && !viteDevProcess && !nitroProcess)) {
+  if (devModeStarting || (!isDevMode && !viteDevProcess && !nitroProcess && !isInBackoff)) {
     return c.html(`
 <!DOCTYPE html>
 <html lang="en">
@@ -2535,14 +2687,22 @@ app.all('/*', async (c) => {
     h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
     p { opacity: 0.8; font-size: 0.9rem; }
     .status { margin-top: 1rem; padding: 0.5rem 1rem; background: rgba(255,255,255,0.2); border-radius: 20px; font-size: 0.8rem; }
+    .attempt { margin-top: 0.5rem; opacity: 0.7; font-size: 0.75rem; }
   </style>
   <script>
+    let attempts = 0;
+    const maxAttempts = 60; // 60 seconds max
     setInterval(async () => {
+      attempts++;
       try {
         const res = await fetch('/build-status');
         const data = await res.json();
+        document.querySelector('.status').textContent = data.message || 'Initializing...';
         if (data.ready) location.reload();
+        if (data.error) location.reload(); // Reload to show error page
       } catch {}
+      document.querySelector('.attempt').textContent = 'Attempt ' + attempts + '/' + maxAttempts;
+      if (attempts >= maxAttempts) location.reload(); // Force reload to check for error state
     }, 1000);
   </script>
 </head>
@@ -2552,6 +2712,7 @@ app.all('/*', async (c) => {
     <h1>Starting Dev Server</h1>
     <p>Setting up Vite with HMR for instant updates...</p>
     <div class="status">Initializing...</div>
+    <div class="attempt">Starting...</div>
   </div>
 </body>
 </html>
