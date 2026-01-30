@@ -272,6 +272,8 @@ export type ProjectWhereInput = {
   featureSessions?: Prisma.FeatureSessionListRelationFilter
   chatSessions?: Prisma.ChatSessionListRelationFilter
   usageEvents?: Prisma.UsageEventListRelationFilter
+  checkpoints?: Prisma.ProjectCheckpointListRelationFilter
+  githubConnection?: Prisma.XOR<Prisma.GitHubConnectionNullableScalarRelationFilter, Prisma.GitHubConnectionWhereInput> | null
 }
 
 export type ProjectOrderByWithRelationInput = {
@@ -297,6 +299,8 @@ export type ProjectOrderByWithRelationInput = {
   featureSessions?: Prisma.FeatureSessionOrderByRelationAggregateInput
   chatSessions?: Prisma.ChatSessionOrderByRelationAggregateInput
   usageEvents?: Prisma.UsageEventOrderByRelationAggregateInput
+  checkpoints?: Prisma.ProjectCheckpointOrderByRelationAggregateInput
+  githubConnection?: Prisma.GitHubConnectionOrderByWithRelationInput
 }
 
 export type ProjectWhereUniqueInput = Prisma.AtLeast<{
@@ -325,6 +329,8 @@ export type ProjectWhereUniqueInput = Prisma.AtLeast<{
   featureSessions?: Prisma.FeatureSessionListRelationFilter
   chatSessions?: Prisma.ChatSessionListRelationFilter
   usageEvents?: Prisma.UsageEventListRelationFilter
+  checkpoints?: Prisma.ProjectCheckpointListRelationFilter
+  githubConnection?: Prisma.XOR<Prisma.GitHubConnectionNullableScalarRelationFilter, Prisma.GitHubConnectionWhereInput> | null
 }, "id" | "publishedSubdomain">
 
 export type ProjectOrderByWithAggregationInput = {
@@ -392,6 +398,8 @@ export type ProjectCreateInput = {
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateInput = {
@@ -415,6 +423,8 @@ export type ProjectUncheckedCreateInput = {
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUpdateInput = {
@@ -438,6 +448,8 @@ export type ProjectUpdateInput = {
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateInput = {
@@ -461,6 +473,8 @@ export type ProjectUncheckedUpdateInput = {
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateManyInput = {
@@ -591,6 +605,11 @@ export type ProjectMinOrderByAggregateInput = {
   siteDescription?: Prisma.SortOrder
 }
 
+export type ProjectScalarRelationFilter = {
+  is?: Prisma.ProjectWhereInput
+  isNot?: Prisma.ProjectWhereInput
+}
+
 export type ProjectNullableScalarRelationFilter = {
   is?: Prisma.ProjectWhereInput | null
   isNot?: Prisma.ProjectWhereInput | null
@@ -657,6 +676,34 @@ export type ProjectUpdateschemasInput = {
 
 export type EnumAccessLevelFieldUpdateOperationsInput = {
   set?: $Enums.AccessLevel
+}
+
+export type ProjectCreateNestedOneWithoutCheckpointsInput = {
+  create?: Prisma.XOR<Prisma.ProjectCreateWithoutCheckpointsInput, Prisma.ProjectUncheckedCreateWithoutCheckpointsInput>
+  connectOrCreate?: Prisma.ProjectCreateOrConnectWithoutCheckpointsInput
+  connect?: Prisma.ProjectWhereUniqueInput
+}
+
+export type ProjectUpdateOneRequiredWithoutCheckpointsNestedInput = {
+  create?: Prisma.XOR<Prisma.ProjectCreateWithoutCheckpointsInput, Prisma.ProjectUncheckedCreateWithoutCheckpointsInput>
+  connectOrCreate?: Prisma.ProjectCreateOrConnectWithoutCheckpointsInput
+  upsert?: Prisma.ProjectUpsertWithoutCheckpointsInput
+  connect?: Prisma.ProjectWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.ProjectUpdateToOneWithWhereWithoutCheckpointsInput, Prisma.ProjectUpdateWithoutCheckpointsInput>, Prisma.ProjectUncheckedUpdateWithoutCheckpointsInput>
+}
+
+export type ProjectCreateNestedOneWithoutGithubConnectionInput = {
+  create?: Prisma.XOR<Prisma.ProjectCreateWithoutGithubConnectionInput, Prisma.ProjectUncheckedCreateWithoutGithubConnectionInput>
+  connectOrCreate?: Prisma.ProjectCreateOrConnectWithoutGithubConnectionInput
+  connect?: Prisma.ProjectWhereUniqueInput
+}
+
+export type ProjectUpdateOneRequiredWithoutGithubConnectionNestedInput = {
+  create?: Prisma.XOR<Prisma.ProjectCreateWithoutGithubConnectionInput, Prisma.ProjectUncheckedCreateWithoutGithubConnectionInput>
+  connectOrCreate?: Prisma.ProjectCreateOrConnectWithoutGithubConnectionInput
+  upsert?: Prisma.ProjectUpsertWithoutGithubConnectionInput
+  connect?: Prisma.ProjectWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.ProjectUpdateToOneWithWhereWithoutGithubConnectionInput, Prisma.ProjectUpdateWithoutGithubConnectionInput>, Prisma.ProjectUncheckedUpdateWithoutGithubConnectionInput>
 }
 
 export type ProjectCreateNestedOneWithoutMembersInput = {
@@ -785,6 +832,8 @@ export type ProjectCreateWithoutWorkspaceInput = {
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutWorkspaceInput = {
@@ -807,6 +856,8 @@ export type ProjectUncheckedCreateWithoutWorkspaceInput = {
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutWorkspaceInput = {
@@ -857,6 +908,230 @@ export type ProjectScalarWhereInput = {
   siteDescription?: Prisma.StringNullableFilter<"Project"> | string | null
 }
 
+export type ProjectCreateWithoutCheckpointsInput = {
+  id?: string
+  name: string
+  description?: string | null
+  tier?: $Enums.ProjectTier
+  status?: $Enums.ProjectStatus
+  schemas?: Prisma.ProjectCreateschemasInput | string[]
+  createdBy?: string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  publishedSubdomain?: string | null
+  publishedAt?: Date | string | null
+  accessLevel?: $Enums.AccessLevel
+  siteTitle?: string | null
+  siteDescription?: string | null
+  workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
+  folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
+  members?: Prisma.MemberCreateNestedManyWithoutProjectInput
+  featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
+  chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
+  usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
+}
+
+export type ProjectUncheckedCreateWithoutCheckpointsInput = {
+  id?: string
+  name: string
+  description?: string | null
+  workspaceId: string
+  tier?: $Enums.ProjectTier
+  status?: $Enums.ProjectStatus
+  schemas?: Prisma.ProjectCreateschemasInput | string[]
+  createdBy?: string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  folderId?: string | null
+  publishedSubdomain?: string | null
+  publishedAt?: Date | string | null
+  accessLevel?: $Enums.AccessLevel
+  siteTitle?: string | null
+  siteDescription?: string | null
+  members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
+  featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
+  chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
+  usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
+}
+
+export type ProjectCreateOrConnectWithoutCheckpointsInput = {
+  where: Prisma.ProjectWhereUniqueInput
+  create: Prisma.XOR<Prisma.ProjectCreateWithoutCheckpointsInput, Prisma.ProjectUncheckedCreateWithoutCheckpointsInput>
+}
+
+export type ProjectUpsertWithoutCheckpointsInput = {
+  update: Prisma.XOR<Prisma.ProjectUpdateWithoutCheckpointsInput, Prisma.ProjectUncheckedUpdateWithoutCheckpointsInput>
+  create: Prisma.XOR<Prisma.ProjectCreateWithoutCheckpointsInput, Prisma.ProjectUncheckedCreateWithoutCheckpointsInput>
+  where?: Prisma.ProjectWhereInput
+}
+
+export type ProjectUpdateToOneWithWhereWithoutCheckpointsInput = {
+  where?: Prisma.ProjectWhereInput
+  data: Prisma.XOR<Prisma.ProjectUpdateWithoutCheckpointsInput, Prisma.ProjectUncheckedUpdateWithoutCheckpointsInput>
+}
+
+export type ProjectUpdateWithoutCheckpointsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  tier?: Prisma.EnumProjectTierFieldUpdateOperationsInput | $Enums.ProjectTier
+  status?: Prisma.EnumProjectStatusFieldUpdateOperationsInput | $Enums.ProjectStatus
+  schemas?: Prisma.ProjectUpdateschemasInput | string[]
+  createdBy?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  publishedSubdomain?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
+  siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
+  folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
+  members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
+  featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
+  chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
+  usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
+}
+
+export type ProjectUncheckedUpdateWithoutCheckpointsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  workspaceId?: Prisma.StringFieldUpdateOperationsInput | string
+  tier?: Prisma.EnumProjectTierFieldUpdateOperationsInput | $Enums.ProjectTier
+  status?: Prisma.EnumProjectStatusFieldUpdateOperationsInput | $Enums.ProjectStatus
+  schemas?: Prisma.ProjectUpdateschemasInput | string[]
+  createdBy?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  folderId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  publishedSubdomain?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
+  siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
+  featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
+  chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
+  usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
+}
+
+export type ProjectCreateWithoutGithubConnectionInput = {
+  id?: string
+  name: string
+  description?: string | null
+  tier?: $Enums.ProjectTier
+  status?: $Enums.ProjectStatus
+  schemas?: Prisma.ProjectCreateschemasInput | string[]
+  createdBy?: string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  publishedSubdomain?: string | null
+  publishedAt?: Date | string | null
+  accessLevel?: $Enums.AccessLevel
+  siteTitle?: string | null
+  siteDescription?: string | null
+  workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
+  folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
+  members?: Prisma.MemberCreateNestedManyWithoutProjectInput
+  featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
+  chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
+  usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
+}
+
+export type ProjectUncheckedCreateWithoutGithubConnectionInput = {
+  id?: string
+  name: string
+  description?: string | null
+  workspaceId: string
+  tier?: $Enums.ProjectTier
+  status?: $Enums.ProjectStatus
+  schemas?: Prisma.ProjectCreateschemasInput | string[]
+  createdBy?: string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  folderId?: string | null
+  publishedSubdomain?: string | null
+  publishedAt?: Date | string | null
+  accessLevel?: $Enums.AccessLevel
+  siteTitle?: string | null
+  siteDescription?: string | null
+  members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
+  featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
+  chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
+  usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
+}
+
+export type ProjectCreateOrConnectWithoutGithubConnectionInput = {
+  where: Prisma.ProjectWhereUniqueInput
+  create: Prisma.XOR<Prisma.ProjectCreateWithoutGithubConnectionInput, Prisma.ProjectUncheckedCreateWithoutGithubConnectionInput>
+}
+
+export type ProjectUpsertWithoutGithubConnectionInput = {
+  update: Prisma.XOR<Prisma.ProjectUpdateWithoutGithubConnectionInput, Prisma.ProjectUncheckedUpdateWithoutGithubConnectionInput>
+  create: Prisma.XOR<Prisma.ProjectCreateWithoutGithubConnectionInput, Prisma.ProjectUncheckedCreateWithoutGithubConnectionInput>
+  where?: Prisma.ProjectWhereInput
+}
+
+export type ProjectUpdateToOneWithWhereWithoutGithubConnectionInput = {
+  where?: Prisma.ProjectWhereInput
+  data: Prisma.XOR<Prisma.ProjectUpdateWithoutGithubConnectionInput, Prisma.ProjectUncheckedUpdateWithoutGithubConnectionInput>
+}
+
+export type ProjectUpdateWithoutGithubConnectionInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  tier?: Prisma.EnumProjectTierFieldUpdateOperationsInput | $Enums.ProjectTier
+  status?: Prisma.EnumProjectStatusFieldUpdateOperationsInput | $Enums.ProjectStatus
+  schemas?: Prisma.ProjectUpdateschemasInput | string[]
+  createdBy?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  publishedSubdomain?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
+  siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
+  folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
+  members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
+  featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
+  chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
+  usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
+}
+
+export type ProjectUncheckedUpdateWithoutGithubConnectionInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  workspaceId?: Prisma.StringFieldUpdateOperationsInput | string
+  tier?: Prisma.EnumProjectTierFieldUpdateOperationsInput | $Enums.ProjectTier
+  status?: Prisma.EnumProjectStatusFieldUpdateOperationsInput | $Enums.ProjectStatus
+  schemas?: Prisma.ProjectUpdateschemasInput | string[]
+  createdBy?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  folderId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  publishedSubdomain?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
+  siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
+  featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
+  chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
+  usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
+}
+
 export type ProjectCreateWithoutMembersInput = {
   id?: string
   name: string
@@ -877,6 +1152,8 @@ export type ProjectCreateWithoutMembersInput = {
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutMembersInput = {
@@ -899,6 +1176,8 @@ export type ProjectUncheckedCreateWithoutMembersInput = {
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutMembersInput = {
@@ -937,6 +1216,8 @@ export type ProjectUpdateWithoutMembersInput = {
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutMembersInput = {
@@ -959,6 +1240,8 @@ export type ProjectUncheckedUpdateWithoutMembersInput = {
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateWithoutFolderInput = {
@@ -981,6 +1264,8 @@ export type ProjectCreateWithoutFolderInput = {
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutFolderInput = {
@@ -1003,6 +1288,8 @@ export type ProjectUncheckedCreateWithoutFolderInput = {
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutFolderInput = {
@@ -1051,6 +1338,8 @@ export type ProjectCreateWithoutUsageEventsInput = {
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutUsageEventsInput = {
@@ -1073,6 +1362,8 @@ export type ProjectUncheckedCreateWithoutUsageEventsInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutUsageEventsInput = {
@@ -1111,6 +1402,8 @@ export type ProjectUpdateWithoutUsageEventsInput = {
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutUsageEventsInput = {
@@ -1133,6 +1426,8 @@ export type ProjectUncheckedUpdateWithoutUsageEventsInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateWithoutChatSessionsInput = {
@@ -1155,6 +1450,8 @@ export type ProjectCreateWithoutChatSessionsInput = {
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutChatSessionsInput = {
@@ -1177,6 +1474,8 @@ export type ProjectUncheckedCreateWithoutChatSessionsInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutChatSessionsInput = {
@@ -1215,6 +1514,8 @@ export type ProjectUpdateWithoutChatSessionsInput = {
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutChatSessionsInput = {
@@ -1237,6 +1538,8 @@ export type ProjectUncheckedUpdateWithoutChatSessionsInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateWithoutFeatureSessionsInput = {
@@ -1259,6 +1562,8 @@ export type ProjectCreateWithoutFeatureSessionsInput = {
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutFeatureSessionsInput = {
@@ -1281,6 +1586,8 @@ export type ProjectUncheckedCreateWithoutFeatureSessionsInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutFeatureSessionsInput = {
@@ -1319,6 +1626,8 @@ export type ProjectUpdateWithoutFeatureSessionsInput = {
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutFeatureSessionsInput = {
@@ -1341,6 +1650,8 @@ export type ProjectUncheckedUpdateWithoutFeatureSessionsInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateManyWorkspaceInput = {
@@ -1381,6 +1692,8 @@ export type ProjectUpdateWithoutWorkspaceInput = {
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutWorkspaceInput = {
@@ -1403,6 +1716,8 @@ export type ProjectUncheckedUpdateWithoutWorkspaceInput = {
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateManyWithoutWorkspaceInput = {
@@ -1461,6 +1776,8 @@ export type ProjectUpdateWithoutFolderInput = {
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutFolderInput = {
@@ -1483,6 +1800,8 @@ export type ProjectUncheckedUpdateWithoutFolderInput = {
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateManyWithoutFolderInput = {
@@ -1513,6 +1832,7 @@ export type ProjectCountOutputType = {
   featureSessions: number
   chatSessions: number
   usageEvents: number
+  checkpoints: number
 }
 
 export type ProjectCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
@@ -1520,6 +1840,7 @@ export type ProjectCountOutputTypeSelect<ExtArgs extends runtime.Types.Extension
   featureSessions?: boolean | ProjectCountOutputTypeCountFeatureSessionsArgs
   chatSessions?: boolean | ProjectCountOutputTypeCountChatSessionsArgs
   usageEvents?: boolean | ProjectCountOutputTypeCountUsageEventsArgs
+  checkpoints?: boolean | ProjectCountOutputTypeCountCheckpointsArgs
 }
 
 /**
@@ -1560,6 +1881,13 @@ export type ProjectCountOutputTypeCountUsageEventsArgs<ExtArgs extends runtime.T
   where?: Prisma.UsageEventWhereInput
 }
 
+/**
+ * ProjectCountOutputType without action
+ */
+export type ProjectCountOutputTypeCountCheckpointsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  where?: Prisma.ProjectCheckpointWhereInput
+}
+
 
 export type ProjectSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
   id?: boolean
@@ -1584,6 +1912,8 @@ export type ProjectSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs 
   featureSessions?: boolean | Prisma.Project$featureSessionsArgs<ExtArgs>
   chatSessions?: boolean | Prisma.Project$chatSessionsArgs<ExtArgs>
   usageEvents?: boolean | Prisma.Project$usageEventsArgs<ExtArgs>
+  checkpoints?: boolean | Prisma.Project$checkpointsArgs<ExtArgs>
+  githubConnection?: boolean | Prisma.Project$githubConnectionArgs<ExtArgs>
   _count?: boolean | Prisma.ProjectCountOutputTypeDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["project"]>
 
@@ -1656,6 +1986,8 @@ export type ProjectInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs
   featureSessions?: boolean | Prisma.Project$featureSessionsArgs<ExtArgs>
   chatSessions?: boolean | Prisma.Project$chatSessionsArgs<ExtArgs>
   usageEvents?: boolean | Prisma.Project$usageEventsArgs<ExtArgs>
+  checkpoints?: boolean | Prisma.Project$checkpointsArgs<ExtArgs>
+  githubConnection?: boolean | Prisma.Project$githubConnectionArgs<ExtArgs>
   _count?: boolean | Prisma.ProjectCountOutputTypeDefaultArgs<ExtArgs>
 }
 export type ProjectIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
@@ -1676,6 +2008,8 @@ export type $ProjectPayload<ExtArgs extends runtime.Types.Extensions.InternalArg
     featureSessions: Prisma.$FeatureSessionPayload<ExtArgs>[]
     chatSessions: Prisma.$ChatSessionPayload<ExtArgs>[]
     usageEvents: Prisma.$UsageEventPayload<ExtArgs>[]
+    checkpoints: Prisma.$ProjectCheckpointPayload<ExtArgs>[]
+    githubConnection: Prisma.$GitHubConnectionPayload<ExtArgs> | null
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
@@ -2094,6 +2428,8 @@ export interface Prisma__ProjectClient<T, Null = never, ExtArgs extends runtime.
   featureSessions<T extends Prisma.Project$featureSessionsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$featureSessionsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$FeatureSessionPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   chatSessions<T extends Prisma.Project$chatSessionsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$chatSessionsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$ChatSessionPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   usageEvents<T extends Prisma.Project$usageEventsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$usageEventsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$UsageEventPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
+  checkpoints<T extends Prisma.Project$checkpointsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$checkpointsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$ProjectCheckpointPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
+  githubConnection<T extends Prisma.Project$githubConnectionArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$githubConnectionArgs<ExtArgs>>): Prisma.Prisma__GitHubConnectionClient<runtime.Types.Result.GetResult<Prisma.$GitHubConnectionPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -2647,6 +2983,49 @@ export type Project$usageEventsArgs<ExtArgs extends runtime.Types.Extensions.Int
   take?: number
   skip?: number
   distinct?: Prisma.UsageEventScalarFieldEnum | Prisma.UsageEventScalarFieldEnum[]
+}
+
+/**
+ * Project.checkpoints
+ */
+export type Project$checkpointsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the ProjectCheckpoint
+   */
+  select?: Prisma.ProjectCheckpointSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the ProjectCheckpoint
+   */
+  omit?: Prisma.ProjectCheckpointOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.ProjectCheckpointInclude<ExtArgs> | null
+  where?: Prisma.ProjectCheckpointWhereInput
+  orderBy?: Prisma.ProjectCheckpointOrderByWithRelationInput | Prisma.ProjectCheckpointOrderByWithRelationInput[]
+  cursor?: Prisma.ProjectCheckpointWhereUniqueInput
+  take?: number
+  skip?: number
+  distinct?: Prisma.ProjectCheckpointScalarFieldEnum | Prisma.ProjectCheckpointScalarFieldEnum[]
+}
+
+/**
+ * Project.githubConnection
+ */
+export type Project$githubConnectionArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the GitHubConnection
+   */
+  select?: Prisma.GitHubConnectionSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the GitHubConnection
+   */
+  omit?: Prisma.GitHubConnectionOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.GitHubConnectionInclude<ExtArgs> | null
+  where?: Prisma.GitHubConnectionWhereInput
 }
 
 /**

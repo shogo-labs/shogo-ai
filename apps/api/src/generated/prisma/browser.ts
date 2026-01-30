@@ -48,6 +48,16 @@ export type Workspace = Prisma.WorkspaceModel
  */
 export type Project = Prisma.ProjectModel
 /**
+ * Model ProjectCheckpoint
+ * 
+ */
+export type ProjectCheckpoint = Prisma.ProjectCheckpointModel
+/**
+ * Model GitHubConnection
+ * 
+ */
+export type GitHubConnection = Prisma.GitHubConnectionModel
+/**
  * Model StarredProject
  * 
  */

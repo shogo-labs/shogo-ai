@@ -57,6 +57,8 @@ export const ModelName = {
   Verification: 'Verification',
   Workspace: 'Workspace',
   Project: 'Project',
+  ProjectCheckpoint: 'ProjectCheckpoint',
+  GitHubConnection: 'GitHubConnection',
   StarredProject: 'StarredProject',
   Member: 'Member',
   BillingAccount: 'BillingAccount',
@@ -196,6 +198,47 @@ export const ProjectScalarFieldEnum = {
 } as const
 
 export type ProjectScalarFieldEnum = (typeof ProjectScalarFieldEnum)[keyof typeof ProjectScalarFieldEnum]
+
+
+export const ProjectCheckpointScalarFieldEnum = {
+  id: 'id',
+  projectId: 'projectId',
+  name: 'name',
+  description: 'description',
+  commitSha: 'commitSha',
+  commitMessage: 'commitMessage',
+  branch: 'branch',
+  includesDb: 'includesDb',
+  filesChanged: 'filesChanged',
+  additions: 'additions',
+  deletions: 'deletions',
+  isAutomatic: 'isAutomatic',
+  createdBy: 'createdBy',
+  createdAt: 'createdAt'
+} as const
+
+export type ProjectCheckpointScalarFieldEnum = (typeof ProjectCheckpointScalarFieldEnum)[keyof typeof ProjectCheckpointScalarFieldEnum]
+
+
+export const GitHubConnectionScalarFieldEnum = {
+  id: 'id',
+  projectId: 'projectId',
+  repoOwner: 'repoOwner',
+  repoName: 'repoName',
+  repoFullName: 'repoFullName',
+  defaultBranch: 'defaultBranch',
+  installationId: 'installationId',
+  repoId: 'repoId',
+  isPrivate: 'isPrivate',
+  syncEnabled: 'syncEnabled',
+  lastPushAt: 'lastPushAt',
+  lastPullAt: 'lastPullAt',
+  lastSyncError: 'lastSyncError',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type GitHubConnectionScalarFieldEnum = (typeof GitHubConnectionScalarFieldEnum)[keyof typeof GitHubConnectionScalarFieldEnum]
 
 
 export const StarredProjectScalarFieldEnum = {

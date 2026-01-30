@@ -531,14 +531,6 @@ export type CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput = {
   deleteMany?: Prisma.CreditLedgerScalarWhereInput | Prisma.CreditLedgerScalarWhereInput[]
 }
 
-export type IntFieldUpdateOperationsInput = {
-  set?: number
-  increment?: number
-  decrement?: number
-  multiply?: number
-  divide?: number
-}
-
 export type CreditLedgerCreateWithoutWorkspaceInput = {
   id?: string
   monthlyCredits?: number

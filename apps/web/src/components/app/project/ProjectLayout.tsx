@@ -31,6 +31,7 @@ import { CodeEditorPanel } from "./CodeEditorPanel"
 import { TerminalPanel } from "./TerminalPanel"
 import { DatabasePanel } from "./DatabasePanel"
 import { TestPanel } from "./TestPanel"
+import { HistoryPanel } from "./HistoryPanel"
 import { cn } from "@/lib/utils"
 import { useSession } from "@/contexts/SessionProvider"
 import type { ViewportSize } from "./PreviewControls"
@@ -109,8 +110,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
   const [currentRoute, setCurrentRoute] = useState("/")
 
-  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'terminal' (TerminalPanel), 'database' (DatabasePanel), or 'tests' (TestPanel)
-  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'terminal' | 'database' | 'tests'>('runtime')
+  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'terminal' (TerminalPanel), 'database' (DatabasePanel), 'tests' (TestPanel), or 'history' (HistoryPanel)
+  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'terminal' | 'database' | 'tests' | 'history'>('runtime')
 
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
@@ -767,6 +768,17 @@ export const ProjectLayout = observer(function ProjectLayout() {
               >
                 Tests
               </button>
+              <button
+                onClick={() => setPreviewMode('history')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'history'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                History
+              </button>
             </div>
 
             {/* Preview Frame with border - all panels stay mounted for state persistence */}
@@ -832,6 +844,24 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <TestPanel
                   projectId={projectId || ''}
                   className="h-full"
+                />
+              </div>
+              {/* History Panel - Version control checkpoints */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'history' && "invisible pointer-events-none"
+              )}>
+                <HistoryPanel
+                  projectId={projectId || ''}
+                  className="h-full"
+                  onCheckpointCreated={() => {
+                    // Refresh code editor and preview after checkpoint
+                    setCodeRefreshTrigger(prev => prev + 1)
+                  }}
+                  onRollbackComplete={() => {
+                    // Refresh code editor and preview after rollback
+                    setCodeRefreshTrigger(prev => prev + 1)
+                  }}
                 />
               </div>
             </div>

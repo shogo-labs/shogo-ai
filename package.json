@@ -46,6 +46,8 @@
     "screenshots:templates": "bun run scripts/capture-template-screenshots.ts"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10",
+    "jsonwebtoken": "^9.0.3",
     "playwright": "^1.57.0",
     "prisma": "^7.3.0",
     "turbo": "^2.6.3",

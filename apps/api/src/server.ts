@@ -25,6 +25,8 @@ import { projectAdminRoutes } from './routes/project-admin'
 import { terminalRoutes } from './routes/terminal'
 import { testsRoutes } from './routes/tests'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
+import { checkpointRoutes } from './routes/checkpoints'
+import { githubRoutes } from './routes/github'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
 import { createRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
@@ -2515,6 +2517,20 @@ app.all('/api/projects/:projectId/database/proxy/*', async (c) => {
     return c.json({ error: 'Failed to proxy to Prisma Studio' }, 502)
   }
 })
+
+// =============================================================================
+// Checkpoint Routes (version control for projects)
+// =============================================================================
+
+const workspacesDirResolved = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+
+// Mount checkpoint routes
+const checkpointRouter = checkpointRoutes({ workspacesDir: workspacesDirResolved })
+app.route('/api', checkpointRouter)
+
+// Mount GitHub routes
+const githubRouter = githubRoutes({ workspacesDir: workspacesDirResolved })
+app.route('/api', githubRouter)
 
 // =============================================================================
 // Project Chat Proxy Routes (pod-per-project architecture)

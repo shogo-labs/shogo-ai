@@ -483,14 +483,6 @@ export type EnumToolCallStatusFieldUpdateOperationsInput = {
   set?: $Enums.ToolCallStatus
 }
 
-export type NullableIntFieldUpdateOperationsInput = {
-  set?: number | null
-  increment?: number
-  decrement?: number
-  multiply?: number
-  divide?: number
-}
-
 export type ToolCallLogCreateWithoutChatSessionInput = {
   id?: string
   messageId: string

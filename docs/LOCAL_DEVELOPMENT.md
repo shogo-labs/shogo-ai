@@ -230,6 +230,21 @@ The Vite dev server proxies `/api` requests to the API server. If you see 404 er
 | `MCP_PORT` | `3100` | MCP server port |
 | `WORKSPACES_DIR` | `./workspaces` | Project workspaces directory |
 
+### GitHub App Integration (Optional)
+
+To enable GitHub sync for project checkpoints:
+
+| Variable | Description |
+|----------|-------------|
+| `GITHUB_APP_ID` | GitHub App ID (from app settings) |
+| `GITHUB_APP_PRIVATE_KEY` | GitHub App private key (PEM format, newlines as `\n`) |
+| `GITHUB_APP_CLIENT_ID` | GitHub App OAuth client ID |
+| `GITHUB_APP_CLIENT_SECRET` | GitHub App OAuth client secret |
+| `GITHUB_APP_WEBHOOK_SECRET` | Webhook secret for signature verification |
+| `GITHUB_APP_SLUG` | App slug for installation URL (default: `shogo-ai`) |
+
+See [GitHub App Setup](#github-app-setup) for instructions on creating a GitHub App.
+
 ## Stopping Everything
 
 ```bash

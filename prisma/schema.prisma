@@ -138,12 +138,14 @@ model Project {
   siteDescription    String?
 
   // Relations
-  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  folder          Folder?          @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  members         Member[]
-  featureSessions FeatureSession[]
-  chatSessions    ChatSession[]
-  usageEvents     UsageEvent[]
+  workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder           Folder?            @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  members          Member[]
+  featureSessions  FeatureSession[]
+  chatSessions     ChatSession[]
+  usageEvents      UsageEvent[]
+  checkpoints      ProjectCheckpoint[]
+  githubConnection GitHubConnection?
 
   @@index([workspaceId])
   @@index([folderId])
@@ -167,6 +169,59 @@ enum AccessLevel {
   anyone
   authenticated
   private
+}
+
+// =============================================================================
+// VERSION CONTROL (Checkpoints & GitHub Integration)
+// =============================================================================
+
+model ProjectCheckpoint {
+  id            String          @id @default(uuid())
+  projectId     String
+  name          String?         // User-provided name like "Before auth changes"
+  description   String?
+  commitSha     String          // Git commit SHA
+  commitMessage String
+  branch        String          @default("main")
+  includesDb    Boolean         @default(false)
+  filesChanged  Int             @default(0)
+  additions     Int             @default(0)
+  deletions     Int             @default(0)
+  isAutomatic   Boolean         @default(false) // Auto-checkpoint from AI operations
+  createdBy     String?
+  createdAt     DateTime        @default(now())
+
+  // Relations
+  project       Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([commitSha])
+  @@map("project_checkpoints")
+}
+
+model GitHubConnection {
+  id              String    @id @default(uuid())
+  projectId       String    @unique
+  repoOwner       String
+  repoName        String
+  repoFullName    String    // owner/repo for convenience
+  defaultBranch   String    @default("main")
+  installationId  Int?      // GitHub App installation ID
+  repoId          Int?      // GitHub repository ID
+  isPrivate       Boolean   @default(true)
+  syncEnabled     Boolean   @default(true)
+  lastPushAt      DateTime?
+  lastPullAt      DateTime?
+  lastSyncError   String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([installationId])
+  @@index([repoFullName])
+  @@map("github_connections")
 }
 
 model StarredProject {
