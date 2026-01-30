@@ -120,8 +120,32 @@ export interface EvalResult {
     endTime: number
     durationMs: number
   }
+  /** Performance metrics */
+  metrics: EvalMetrics
   /** Any errors encountered */
   errors?: string[]
+}
+
+/**
+ * Performance metrics for an eval run
+ */
+export interface EvalMetrics {
+  /** Total number of tool calls */
+  toolCallCount: number
+  /** Number of agent steps/turns */
+  stepCount: number
+  /** Token usage (if available from provider) */
+  tokens: {
+    input: number
+    output: number
+    total: number
+  }
+  /** Time metrics in milliseconds */
+  timing: {
+    totalMs: number
+    firstToolCallMs: number | null
+    avgToolCallMs: number | null
+  }
 }
 
 /**

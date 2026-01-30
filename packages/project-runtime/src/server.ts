@@ -874,6 +874,43 @@ Only use Read, Write, Edit, Bash for:
 - Specific changes user requests
 - Building something with NO matching template (after explaining)
 
+## Schema Modifications (IMPORTANT)
+
+When adding/modifying data fields (e.g., "add a priority field", "add role to User"):
+
+1. **ALWAYS modify \`prisma/schema.prisma\`** - This is the source of truth for data models
+2. **NEVER directly edit files in \`src/generated/\`** - These are auto-generated from the schema
+3. **After schema changes, ALWAYS run**: \`DATABASE_URL="file:./dev.db" bunx prisma generate && bunx prisma db push\`
+4. **Then update the UI** in \`src/routes/\` or \`src/components/\` to use the new fields
+
+### Example: Adding a "priority" field to Todo
+
+1. Edit \`prisma/schema.prisma\`:
+   \`\`\`prisma
+   enum Priority {
+     LOW
+     MEDIUM
+     HIGH
+   }
+   
+   model Todo {
+     ...
+     priority Priority @default(MEDIUM)
+   }
+   \`\`\`
+
+2. Run: \`DATABASE_URL="file:./dev.db" bunx prisma generate && bunx prisma db push\`
+
+3. Update UI in \`src/routes/index.tsx\` to display/edit priority
+
+### Files You Should NEVER Edit Directly
+
+- \`src/generated/prisma/*\` - Auto-generated Prisma client
+- \`src/generated/types.ts\` - Auto-generated TypeScript types
+- \`src/generated/*.ts\` - All generated files
+
+These files are regenerated from \`prisma/schema.prisma\`. Editing them directly will be overwritten.
+
 ## Styling with Tailwind CSS v4
 
 This project uses **Tailwind CSS v4** via CDN. When building UI:
@@ -941,8 +978,10 @@ ${themeContext}`
     
     // Create streaming response using Claude Code with native template tools
     // Theme context (if provided) is appended to the system prompt for AI-aware styling
+    // Model can be configured via AGENT_MODEL env var: haiku, sonnet, opus (default: sonnet)
+    const modelName = (process.env.AGENT_MODEL || 'sonnet') as 'haiku' | 'sonnet' | 'opus'
     const result = streamText({
-      model: claudeCode('sonnet', {
+      model: claudeCode(modelName, {
         streamingInput: 'always',
       }) as Parameters<typeof streamText>[0]['model'],
       system: buildSystemPrompt(),

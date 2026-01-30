@@ -12,6 +12,7 @@ import type {
   CategorySummary,
   CriterionResult,
   ToolCall,
+  EvalMetrics,
 } from './types'
 import { evaluateToolCorrectness, extractSelectedTemplate } from './validators'
 
@@ -58,6 +59,12 @@ export async function runEval(
   let responseText = ''
   let toolCalls: ToolCall[] = []
   let errors: string[] = []
+  let parsedMetrics = {
+    stepCount: 0,
+    toolCallTimestamps: [] as number[],
+    inputTokens: 0,
+    outputTokens: 0,
+  }
 
   try {
     if (mockResponse) {
@@ -69,12 +76,61 @@ export async function runEval(
       const response = await callAgent(eval_, cfg)
       responseText = response.text
       toolCalls = response.toolCalls
+      parsedMetrics = response.metrics
     }
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error))
   }
 
   const endTime = Date.now()
+  const durationMs = endTime - startTime
+
+  // Calculate timing metrics
+  const firstToolCallMs = parsedMetrics.toolCallTimestamps.length > 0 
+    ? parsedMetrics.toolCallTimestamps[0] 
+    : null
+  
+  let avgToolCallMs: number | null = null
+  if (parsedMetrics.toolCallTimestamps.length > 1) {
+    const intervals: number[] = []
+    for (let i = 1; i < parsedMetrics.toolCallTimestamps.length; i++) {
+      intervals.push(parsedMetrics.toolCallTimestamps[i] - parsedMetrics.toolCallTimestamps[i - 1])
+    }
+    avgToolCallMs = intervals.reduce((a, b) => a + b, 0) / intervals.length
+  }
+
+  // Estimate tokens if not provided by API
+  // Claude uses ~4 chars per token on average for English text
+  // Input: prompt + tool results, Output: response + tool calls
+  let inputTokens = parsedMetrics.inputTokens
+  let outputTokens = parsedMetrics.outputTokens
+  
+  if (inputTokens === 0 && outputTokens === 0) {
+    // Estimate based on content
+    const inputChars = eval_.input.length + 
+      toolCalls.reduce((sum, tc) => sum + JSON.stringify(tc.result || '').length, 0)
+    const outputChars = responseText.length + 
+      toolCalls.reduce((sum, tc) => sum + JSON.stringify(tc.params).length, 0)
+    
+    inputTokens = Math.round(inputChars / 4)
+    outputTokens = Math.round(outputChars / 4)
+  }
+
+  // Build metrics object
+  const metrics: EvalMetrics = {
+    toolCallCount: toolCalls.length,
+    stepCount: parsedMetrics.stepCount,
+    tokens: {
+      input: inputTokens,
+      output: outputTokens,
+      total: inputTokens + outputTokens,
+    },
+    timing: {
+      totalMs: durationMs,
+      firstToolCallMs,
+      avgToolCallMs,
+    },
+  }
 
   // Debug: log tool calls if verbose
   if (cfg.verbose) {
@@ -104,8 +160,9 @@ export async function runEval(
     timing: {
       startTime,
       endTime,
-      durationMs: endTime - startTime,
+      durationMs,
     },
+    metrics,
     errors: errors.length > 0 ? errors : undefined,
   }
 
@@ -254,7 +311,7 @@ function calculateCategorySummary(
 async function callAgent(
   eval_: AgentEval,
   config: Required<EvalRunnerConfig>
-): Promise<{ text: string; toolCalls: ToolCall[] }> {
+): Promise<ParsedAgentResponse> {
   // Build messages array
   const messages = []
 
@@ -317,17 +374,35 @@ async function callAgent(
  * - finish: Stream completed
  * - [DONE]: SSE stream end marker
  */
+/**
+ * Parsed response from agent streaming
+ */
+interface ParsedAgentResponse {
+  text: string
+  toolCalls: ToolCall[]
+  metrics: {
+    stepCount: number
+    toolCallTimestamps: number[]
+    inputTokens: number
+    outputTokens: number
+  }
+}
+
 async function parseAgentStreamingResponse(
   response: Response,
   controller: AbortController,
   verbose: boolean = false
-): Promise<{ text: string; toolCalls: ToolCall[] }> {
+): Promise<ParsedAgentResponse> {
   const toolCalls: ToolCall[] = []
   const toolInputs: Record<string, string> = {}
   const toolNames: Record<string, string> = {}
   let responseText = ''
   let stepCount = 0
   let lastLogTime = Date.now()
+  const startTime = Date.now()
+  const toolCallTimestamps: number[] = []
+  let inputTokens = 0
+  let outputTokens = 0
   const LOG_INTERVAL_MS = 5000 // Log progress every 5 seconds
 
   const reader = response.body?.getReader()
@@ -366,7 +441,11 @@ async function parseAgentStreamingResponse(
         // Check for end of stream
         if (dataStr === '[DONE]') {
           if (verbose) console.log(`    [Stream] Received [DONE]`)
-          return { text: responseText, toolCalls }
+          return { 
+            text: responseText, 
+            toolCalls,
+            metrics: { stepCount, toolCallTimestamps, inputTokens, outputTokens }
+          }
         }
 
         // Skip keepalive/empty data
@@ -386,6 +465,14 @@ async function parseAgentStreamingResponse(
               logProgress(`Step ${stepCount} finished`)
               break
               
+            // Token usage (AI SDK provides this in finish events)
+            case 'finish':
+              if (data.usage) {
+                inputTokens += data.usage.promptTokens || data.usage.inputTokens || 0
+                outputTokens += data.usage.completionTokens || data.usage.outputTokens || 0
+              }
+              break
+              
             // Text handling
             case 'text-delta':
               responseText += data.delta || ''
@@ -398,6 +485,7 @@ async function parseAgentStreamingResponse(
             case 'tool-input-start':
               toolInputs[data.toolCallId] = ''
               toolNames[data.toolCallId] = data.toolName || 'unknown'
+              toolCallTimestamps.push(Date.now() - startTime)
               logProgress(`Tool started: ${data.toolName}`)
               break
               
@@ -434,6 +522,7 @@ async function parseAgentStreamingResponse(
                 toolCalls.push({
                   name: normalizedName,
                   params: input,
+                  timestamp: Date.now(),
                 })
               }
               // Virtual tools execute format (used by some agents)
@@ -443,6 +532,7 @@ async function parseAgentStreamingResponse(
                     toolCalls.push({
                       name: `${op.domain}.${op.action}`,
                       params: op.data || {},
+                      timestamp: Date.now(),
                     })
                   }
                 }
@@ -452,6 +542,7 @@ async function parseAgentStreamingResponse(
                 toolCalls.push({
                   name: toolName,
                   params: input,
+                  timestamp: Date.now(),
                 })
               }
               break
@@ -478,6 +569,7 @@ async function parseAgentStreamingResponse(
                 name: data.name,
                 params: data.params || {},
                 result: data.result,
+                timestamp: Date.now(),
               })
               break
           }
@@ -496,7 +588,11 @@ async function parseAgentStreamingResponse(
     reader.releaseLock()
   }
 
-  return { text: responseText, toolCalls }
+  return { 
+    text: responseText, 
+    toolCalls,
+    metrics: { stepCount, toolCallTimestamps, inputTokens, outputTokens }
+  }
 }
 
 /**
@@ -547,15 +643,15 @@ function checkAntiPattern(
 export function formatEvalReport(suiteResult: EvalSuiteResult): string {
   const lines: string[] = []
 
-  lines.push(`\n${'='.repeat(60)}`)
+  lines.push(`\n${'='.repeat(70)}`)
   lines.push(`EVAL SUITE: ${suiteResult.name}`)
-  lines.push(`${'='.repeat(60)}`)
+  lines.push(`${'='.repeat(70)}`)
   lines.push(`Run at: ${suiteResult.timestamp.toISOString()}`)
   lines.push('')
 
   // Summary
   lines.push('SUMMARY')
-  lines.push('-'.repeat(40))
+  lines.push('-'.repeat(50))
   lines.push(`Total:       ${suiteResult.summary.total}`)
   lines.push(`Passed:      ${suiteResult.summary.passed}`)
   lines.push(`Failed:      ${suiteResult.summary.failed}`)
@@ -563,9 +659,27 @@ export function formatEvalReport(suiteResult: EvalSuiteResult): string {
   lines.push(`Avg Score:   ${suiteResult.summary.averageScore.toFixed(1)}`)
   lines.push('')
 
+  // Aggregate metrics
+  const totalToolCalls = suiteResult.results.reduce((sum, r) => sum + r.metrics.toolCallCount, 0)
+  const totalTokens = suiteResult.results.reduce((sum, r) => sum + r.metrics.tokens.total, 0)
+  const totalTime = suiteResult.results.reduce((sum, r) => sum + r.metrics.timing.totalMs, 0)
+  const avgToolCalls = totalToolCalls / suiteResult.results.length
+  const avgTokens = totalTokens / suiteResult.results.length
+  const avgTime = totalTime / suiteResult.results.length
+
+  lines.push('AGGREGATE METRICS')
+  lines.push('-'.repeat(50))
+  lines.push(`Total Tool Calls:    ${totalToolCalls}`)
+  lines.push(`Avg Tool Calls:      ${avgToolCalls.toFixed(1)} per eval`)
+  lines.push(`Total Tokens:        ${totalTokens > 0 ? totalTokens.toLocaleString() : 'N/A'}`)
+  lines.push(`Avg Tokens:          ${totalTokens > 0 ? avgTokens.toFixed(0) : 'N/A'} per eval`)
+  lines.push(`Total Time:          ${(totalTime / 1000).toFixed(1)}s`)
+  lines.push(`Avg Time:            ${(avgTime / 1000).toFixed(1)}s per eval`)
+  lines.push('')
+
   // By category
   lines.push('BY CATEGORY')
-  lines.push('-'.repeat(40))
+  lines.push('-'.repeat(50))
   for (const [category, summary] of Object.entries(suiteResult.byCategory)) {
     if (summary.total > 0) {
       lines.push(
@@ -575,13 +689,21 @@ export function formatEvalReport(suiteResult: EvalSuiteResult): string {
   }
   lines.push('')
 
-  // Individual results
+  // Individual results with metrics
   lines.push('INDIVIDUAL RESULTS')
-  lines.push('-'.repeat(40))
+  lines.push('-'.repeat(50))
+  lines.push('Name'.padEnd(35) + 'Score'.padEnd(12) + 'Tools'.padEnd(8) + 'Tokens'.padEnd(10) + 'Time')
+  lines.push('-'.repeat(70))
+  
   for (const result of suiteResult.results) {
     const status = result.passed ? '✓' : '✗'
     const score = `${result.score}/${result.maxScore}`
-    lines.push(`${status} ${result.eval.name.padEnd(35)} ${score}`)
+    const tools = result.metrics.toolCallCount.toString()
+    const tokens = result.metrics.tokens.total > 0 ? result.metrics.tokens.total.toLocaleString() : 'N/A'
+    const time = `${(result.metrics.timing.totalMs / 1000).toFixed(1)}s`
+    
+    const name = `${status} ${result.eval.name}`.slice(0, 34)
+    lines.push(`${name.padEnd(35)}${score.padEnd(12)}${tools.padEnd(8)}${tokens.padEnd(10)}${time}`)
 
     if (!result.passed && result.triggeredAntiPatterns.length > 0) {
       lines.push(`    Anti-patterns: ${result.triggeredAntiPatterns.join(', ')}`)
@@ -593,7 +715,7 @@ export function formatEvalReport(suiteResult: EvalSuiteResult): string {
   }
 
   lines.push('')
-  lines.push('='.repeat(60))
+  lines.push('='.repeat(70))
 
   return lines.join('\n')
 }

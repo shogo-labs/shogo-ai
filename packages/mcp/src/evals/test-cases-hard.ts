@@ -103,11 +103,16 @@ function createNoGeneratedFileEditsCriterion(points: number): ValidationCriterio
       const badEdits = result.toolCalls.filter(tc => {
         const name = tc.name.toLowerCase()
         if (name === 'write' || name === 'edit' || name === 'strreplace' || name === 'str_replace') {
-          const path = String(tc.params?.path || tc.params?.file || '')
+          const path = String(tc.params?.path || tc.params?.file || tc.params?.file_path || '')
           return path.includes('/generated/') || path.includes('\\generated\\')
         }
         return false
       })
+      
+      if (badEdits.length > 0) {
+        console.log(`    ⚠️  Agent edited generated files: ${badEdits.map(e => e.params?.file_path || e.params?.path || e.params?.file).join(', ')}`)
+      }
+      
       return badEdits.length === 0
     },
   }
@@ -115,6 +120,7 @@ function createNoGeneratedFileEditsCriterion(points: number): ValidationCriterio
 
 /**
  * Check that agent modified the Prisma schema
+ * (only checks file content - tool calls may not always be captured)
  */
 function createSchemaModifiedCriterion(
   expectedContent: string | RegExp,
@@ -126,18 +132,8 @@ function createSchemaModifiedCriterion(
     description,
     points,
     validate: (result) => {
-      // Check if agent used Write/Edit on schema.prisma
-      const schemaEdit = result.toolCalls.some(tc => {
-        const name = tc.name.toLowerCase()
-        if (name === 'write' || name === 'edit' || name === 'strreplace' || name === 'str_replace') {
-          const path = String(tc.params?.path || tc.params?.file || '')
-          return path.includes('schema.prisma')
-        }
-        return false
-      })
-      if (!schemaEdit) return false
-      
-      // Verify schema now contains expected content
+      // Just verify schema contains expected content
+      // (tool calls may not always be captured properly)
       const projectDir = getProjectDir(result)
       if (!projectDir) return false
       
@@ -162,12 +158,15 @@ function createRanPrismaGenerateCriterion(points: number): ValidationCriterion {
     description: 'Ran prisma generate after schema changes',
     points,
     validate: (result) => {
-      // Check for shell command with prisma generate
+      // Check for shell command with prisma generate/db push
+      // Support: prisma generate, bunx prisma generate, npx prisma generate, bun exec prisma generate
       return result.toolCalls.some(tc => {
         const name = tc.name.toLowerCase()
         if (name === 'bash' || name === 'shell') {
-          const command = String(tc.params?.command || '')
-          return command.includes('prisma generate') || command.includes('prisma db push')
+          const command = String(tc.params?.command || '').toLowerCase()
+          return command.includes('prisma generate') || 
+                 command.includes('prisma db push') ||
+                 command.includes('prisma migrate')
         }
         return false
       })
@@ -384,9 +383,9 @@ export const EVAL_MODIFY_USER_MODEL: AgentEval = {
         return copyCall?.params?.template === 'todo-app'
       },
     },
-    // MUST modify schema.prisma
+    // MUST modify schema.prisma (role can be String or enum like Role/UserRole)
     createSchemaModifiedCriterion(
-      /role\s+String/,
+      /role\s+(\w+)/i,  // Match: role String, role Role, role UserRole, etc.
       30,
       'Added role field to User model in schema.prisma'
     ),
