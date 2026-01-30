@@ -11,6 +11,7 @@
  * - git: Local git operations
  * - checkpoint: Project state snapshots and rollback
  * - github: GitHub App integration
+ * - email: Transactional email (SMTP/SES via SDK)
  */
 
 export * as workspaceService from './workspace.service';
@@ -21,6 +22,7 @@ export * as chatService from './chat.service';
 export * as gitService from './git.service';
 export * as checkpointService from './checkpoint.service';
 export * as githubService from './github.service';
+export * as emailService from './email.service';
 
 // Re-export Prisma client for direct use when needed
 export { prisma } from '../lib/prisma';

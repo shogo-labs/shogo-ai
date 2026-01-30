@@ -118,3 +118,18 @@ export {
   type DomainProviderProps,
   type DomainProviderConfig,
 } from './react/index.js'
+
+// Database adapters (PostgreSQL/SQLite auto-detection)
+export {
+  createPrismaClient,
+  createPrismaClientSync,
+  createDatabaseAdapter,
+  createAdapterSync,
+  detectProvider,
+  isTestMode,
+  isPostgres,
+  getTestDatabaseUrl,
+  getCurrentProvider,
+  type DatabaseProvider,
+  type DatabaseAdapterConfig,
+} from './db/index.js'

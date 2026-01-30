@@ -1,5 +1,5 @@
 {
-  "name": "@shogo-ai/sdk",
+  "name": "@shogo/sdk",
   "version": "0.1.0",
   "description": "Shogo Platform SDK - Zero-boilerplate auth and database for Shogo apps",
   "type": "module",
@@ -11,6 +11,31 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./db": {
+      "types": "./dist/db/index.d.ts",
+      "import": "./dist/db/index.js",
+      "require": "./dist/db/index.cjs"
+    },
+    "./email": {
+      "types": "./dist/email/index.d.ts",
+      "import": "./dist/email/index.js",
+      "require": "./dist/email/index.cjs"
+    },
+    "./email/server": {
+      "types": "./dist/email/server.d.ts",
+      "import": "./dist/email/server.js",
+      "require": "./dist/email/server.cjs"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js",
+      "require": "./dist/react/index.cjs"
+    },
+    "./generators": {
+      "types": "./dist/generators/index.d.ts",
+      "import": "./dist/generators/index.js",
+      "require": "./dist/generators/index.cjs"
     }
   },
   "files": [
@@ -29,11 +54,33 @@
   },
   "dependencies": {},
   "devDependencies": {
+    "@aws-sdk/client-ses": "^3.700.0",
     "@playwright/test": "^1.40.0",
+    "@types/nodemailer": "^6.4.17",
+    "nodemailer": "^6.9.16",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0"
   },
-  "peerDependencies": {},
+  "peerDependencies": {
+    "nodemailer": ">=6.0.0",
+    "@aws-sdk/client-ses": ">=3.0.0",
+    "@prisma/adapter-pg": "^7.3.0",
+    "@prisma/adapter-libsql": ""
+  },
+  "peerDependenciesMeta": {
+    "nodemailer": {
+      "optional": true
+    },
+    "@aws-sdk/client-ses": {
+      "optional": true
+    },
+    "@prisma/adapter-pg": {
+      "optional": true
+    },
+    "@prisma/adapter-libsql": {
+      "optional": true
+    }
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -43,6 +90,9 @@
     "typescript",
     "auth",
     "database",
+    "email",
+    "smtp",
+    "ses",
     "mcp"
   ],
   "author": "Shogo Team",

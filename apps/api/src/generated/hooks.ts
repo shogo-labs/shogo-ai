@@ -7,6 +7,7 @@
 
 import type { RouteHooksConfig } from "./routes"
 import type { ModelHooks, RouteHookContext, HookResult } from "@shogo/state-api/generators"
+import { sendInvitationEmail } from "../services/email.service"
 
 // ============================================================================
 // Workspace Hooks
@@ -417,6 +418,53 @@ const invitationHooks: ModelHooks = {
     }
 
     return { ok: true, data: input }
+  },
+
+  /**
+   * Send invitation email after creating
+   */
+  afterCreate: async (invitation, ctx) => {
+    // Get workspace and inviter details
+    const [workspace, inviter] = await Promise.all([
+      ctx.prisma.workspace.findUnique({
+        where: { id: invitation.workspaceId },
+        select: { name: true },
+      }),
+      invitation.invitedBy
+        ? ctx.prisma.user.findUnique({
+            where: { id: invitation.invitedBy },
+            select: { name: true, email: true },
+          })
+        : null,
+    ])
+
+    if (!workspace) {
+      console.warn(`[Invitation] Workspace ${invitation.workspaceId} not found, skipping email`)
+      return
+    }
+
+    // Build accept URL
+    const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+    const acceptUrl = `${baseUrl}/invitations/${invitation.id}/accept`
+
+    // Send the email (non-blocking - don't fail the invitation if email fails)
+    const emailResult = await sendInvitationEmail({
+      to: invitation.email,
+      inviterName: inviter?.name || inviter?.email || 'A team member',
+      workspaceName: workspace.name,
+      role: invitation.role,
+      acceptUrl,
+    })
+
+    // Update invitation with email status
+    await ctx.prisma.invitation.update({
+      where: { id: invitation.id },
+      data: {
+        emailStatus: emailResult.success ? 'sent' : 'failed',
+        emailSentAt: emailResult.success ? new Date() : null,
+        emailError: emailResult.error || null,
+      },
+    })
   },
 
   /**

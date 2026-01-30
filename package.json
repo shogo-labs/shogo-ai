@@ -46,6 +46,7 @@
     "screenshots:templates": "bun run scripts/capture-template-screenshots.ts"
   },
   "devDependencies": {
+    "@prisma/adapter-libsql": "^7.3.0",
     "@types/jsonwebtoken": "^9.0.10",
     "jsonwebtoken": "^9.0.3",
     "playwright": "^1.57.0",

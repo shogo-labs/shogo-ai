@@ -3,8 +3,11 @@ import { defineConfig } from 'tsup'
 export default defineConfig({
   entry: [
     'src/index.ts',
+    'src/db/index.ts',
     'src/react/index.ts',
     'src/generators/index.ts',
+    'src/email/index.ts',
+    'src/email/server.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,
@@ -20,5 +23,9 @@ export default defineConfig({
     '@tanstack/react-start',
     '@prisma/client',
     '@prisma/internals',
+    '@prisma/adapter-pg',
+    '@prisma/adapter-libsql',
+    'nodemailer',
+    '@aws-sdk/client-ses',
   ],
 })

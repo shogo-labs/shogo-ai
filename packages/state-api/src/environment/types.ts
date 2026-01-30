@@ -15,7 +15,6 @@
 import type { IPersistenceService } from '../persistence/types'
 import type { IAuthService } from '../auth/types'
 import type { IBillingService } from '../billing/types'
-import type { IEmailService } from '../email/types'
 import type { IRuntimeManager } from '../runtime/types'
 import type { IBackendRegistry } from '../query/registry'
 import type { IQueryValidator } from '../query/validation/types'
@@ -99,24 +98,6 @@ export interface IEnvironment {
      * @see StripeBillingService for production implementation
      */
     billing?: IBillingService
-
-    /**
-     * Email service for sending transactional emails.
-     *
-     * Implementation can be:
-     * - SmtpEmailService (real SMTP integration via nodemailer)
-     * - MockEmailService (in-memory, for testing)
-     *
-     * Optional - email is an enhancement, not a blocker.
-     * If not configured, email-dependent features should gracefully
-     * degrade (log warnings but don't throw errors).
-     * Domain actions like sendInvitationEmail check for service
-     * presence via getEnv(self).services.email?.isConfigured().
-     *
-     * @see IEmailService for interface details
-     * @see SmtpEmailService for production implementation
-     */
-    email?: IEmailService
 
     /**
      * Backend registry for query execution.

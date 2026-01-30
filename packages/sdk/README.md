@@ -1,6 +1,6 @@
 # @shogo/sdk
 
-Shogo Platform SDK - Zero-boilerplate auth and database for Shogo apps.
+Shogo Platform SDK - Zero-boilerplate auth, database, and email for Shogo apps.
 
 ## Installation
 
@@ -35,6 +35,7 @@ await client.db.todos.delete(todo.id)
 
 - **Authentication** - Email/password auth with Better Auth integration
 - **Database** - Zero-config CRUD operations with MongoDB-style filtering
+- **Email** - SMTP and AWS SES support with templates
 - **TypeScript** - Full type safety with generics
 - **Cross-Platform** - Works in browsers, Node.js, and React Native
 
@@ -220,6 +221,127 @@ const client = createTypedClient<{
 // Now fully typed!
 const todos: Todo[] = await client.db.todos.list()
 const user: User | null = await client.db.users.get('123')
+```
+
+## Email (Server-Side)
+
+The SDK includes a server-side email module for sending transactional emails via SMTP or AWS SES.
+
+### Setup
+
+```bash
+# For SMTP (works with SES SMTP, SendGrid, Mailgun, etc.)
+npm install nodemailer
+
+# For AWS SES native API
+npm install @aws-sdk/client-ses
+```
+
+### Environment Variables
+
+```bash
+# SMTP Configuration
+SMTP_HOST=email-smtp.us-east-1.amazonaws.com
+SMTP_PORT=587
+SMTP_USER=AKIA...
+SMTP_PASSWORD=your-password
+EMAIL_FROM=noreply@yourapp.com
+
+# OR AWS SES Configuration
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+EMAIL_FROM=noreply@yourapp.com
+```
+
+### Usage
+
+```typescript
+// In server functions or API routes
+import { createEmail } from '@shogo/sdk/email/server'
+
+// Auto-configured from environment variables
+const email = createEmail()
+
+// Send a templated email (built-in templates: welcome, password-reset, invitation, notification)
+await email.sendTemplate({
+  to: 'user@example.com',
+  template: 'welcome',
+  data: { name: 'Alice', appName: 'MyApp' },
+})
+
+// Send a raw email
+await email.send({
+  to: 'user@example.com',
+  subject: 'Hello!',
+  html: '<h1>Hello World</h1>',
+})
+
+// Register custom templates
+email.registerTemplate({
+  name: 'order-confirmation',
+  subject: 'Order #{{orderId}} Confirmed',
+  html: '<h1>Thanks for your order, {{name}}!</h1><p>Order: {{orderId}}</p>',
+})
+
+await email.sendTemplate({
+  to: 'customer@example.com',
+  template: 'order-confirmation',
+  data: { name: 'Bob', orderId: '12345' },
+})
+```
+
+### Built-in Templates
+
+| Template | Variables |
+|----------|-----------|
+| `welcome` | `name`, `appName`, `loginUrl?` |
+| `password-reset` | `name?`, `appName`, `resetUrl`, `expiresIn?` |
+| `invitation` | `inviterName`, `resourceName`, `role?`, `acceptUrl`, `appName` |
+| `notification` | `title`, `message`, `actionUrl?`, `actionText?`, `appName` |
+
+### Explicit Configuration
+
+```typescript
+// SMTP with explicit config
+const email = createEmail({
+  config: {
+    provider: 'smtp',
+    defaultFrom: 'noreply@myapp.com',
+    smtp: {
+      host: 'smtp.example.com',
+      port: 587,
+      user: 'username',
+      password: 'password',
+    },
+  },
+})
+
+// AWS SES with explicit config
+const email = createEmail({
+  config: {
+    provider: 'ses',
+    defaultFrom: 'noreply@myapp.com',
+    ses: {
+      region: 'us-east-1',
+      // credentials optional if using IAM role
+    },
+  },
+})
+```
+
+### Optional Email (Graceful Degradation)
+
+```typescript
+import { createEmailOptional } from '@shogo/sdk/email/server'
+
+const email = createEmailOptional()
+
+if (email) {
+  await email.sendTemplate({ ... })
+} else {
+  console.log('Email not configured, skipping')
+}
 ```
 
 ## Examples

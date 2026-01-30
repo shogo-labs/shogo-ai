@@ -35,11 +35,6 @@ export * from './authorization'
 // Billing layer
 export * from './billing'
 
-// Email layer - only export browser-safe parts (types and templates)
-// SMTP implementation should be imported directly: import { SmtpEmailService } from '@shogo/state-api/email/smtp'
-export * from './email/types'
-export * from './email/templates'
-
 // BetterAuth layer
 export * from './better-auth'
 
