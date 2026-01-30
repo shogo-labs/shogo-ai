@@ -25,13 +25,28 @@ from pathlib import Path
 import dspy
 from dspy.evaluate import Evaluate
 
-from signatures import TemplateSelector, ShogoTemplateAgent
-from dataset import create_trainset, create_testset, split_dataset
+from signatures import (
+    TemplateSelector, 
+    ShogoTemplateAgent,
+    ShogoFullAgent,
+    SchemaModifier,
+)
+from dataset import (
+    create_trainset, 
+    create_testset, 
+    split_dataset,
+    create_schema_trainset,
+    create_schema_testset,
+    create_unsupported_trainset,
+)
 from metrics import (
     template_accuracy,
     no_unnecessary_clarification,
     combined_metric,
     AgentMetrics,
+    schema_change_accuracy,
+    combined_schema_metric,
+    unsupported_detection_accuracy,
 )
 
 
@@ -192,6 +207,48 @@ def extract_optimized_prompt(agent) -> str:
     return "\n\n".join(instructions)
 
 
+def evaluate_schema_baseline(agent, testset):
+    """Evaluate schema modification agent."""
+    print("\n" + "="*60)
+    print("SCHEMA MODIFICATION BASELINE EVALUATION")
+    print("="*60)
+    
+    evaluator = Evaluate(
+        devset=testset,
+        metric=combined_schema_metric,
+        num_threads=4,
+        display_progress=True,
+        display_table=5,
+    )
+    
+    result = evaluator(agent)
+    score = float(result.score) if hasattr(result, 'score') else float(result)
+    print(f"\nBaseline schema accuracy: {score:.3f}")
+    
+    return score
+
+
+def optimize_schema_with_mipro(agent, trainset):
+    """Optimize schema modification with MIPRO."""
+    print("\n" + "="*60)
+    print("SCHEMA MIPRO OPTIMIZATION")
+    print("="*60)
+    
+    optimizer = dspy.MIPROv2(
+        metric=combined_schema_metric,
+        num_threads=4,
+        verbose=True,
+        auto="light",
+    )
+    
+    optimized = optimizer.compile(
+        agent,
+        trainset=trainset,
+    )
+    
+    return optimized
+
+
 def main():
     parser = argparse.ArgumentParser(description="Optimize Shogo agent with DSPy")
     parser.add_argument("--strategy", choices=["mipro", "bootstrap", "combined"], 
@@ -206,74 +263,143 @@ def main():
                         help="Only evaluate, don't optimize")
     parser.add_argument("--use-full-agent", action="store_true",
                         help="Use full agent (slower) vs just selector")
+    parser.add_argument("--task", choices=["template", "schema", "all"],
+                        default="all", help="What to optimize: template selection, schema modification, or all")
     
     args = parser.parse_args()
     
     # Setup
     print("Setting up DSPy...")
+    print(f"Model: {args.model}")
+    print(f"Task: {args.task}")
     setup_dspy(args.model)
     
-    # Create datasets
-    print("Loading datasets...")
-    trainset = create_trainset()
-    testset = create_testset()
-    print(f"Training: {len(trainset)} examples, Test: {len(testset)} examples")
-    
-    # Create agent
-    if args.use_full_agent:
-        agent = ShogoTemplateAgent()
-    else:
-        agent = TemplateSelector()
-    
-    # Baseline evaluation
-    baseline_score, baseline_metrics = evaluate_baseline(agent, testset)
-    
-    if args.eval_only:
-        print("\n[Eval-only mode, skipping optimization]")
-        return
-    
-    # Optimize
-    if args.strategy == "mipro":
-        optimized_agent = optimize_with_mipro(agent, trainset, args.num_trials)
-    elif args.strategy == "bootstrap":
-        optimized_agent = optimize_with_bootstrap(agent, trainset)
-    elif args.strategy == "combined":
-        optimized_agent = optimize_combined(agent, trainset, args.num_trials)
-    
-    # Evaluate optimized agent
-    print("\n" + "="*60)
-    print("OPTIMIZED EVALUATION")
-    print("="*60)
-    
-    optimized_score, optimized_metrics = evaluate_baseline(optimized_agent, testset)
-    
-    # Print comparison
-    print("\n" + "="*60)
-    print("COMPARISON")
-    print("="*60)
-    print(f"Baseline combined:  {baseline_metrics['avg_combined']:.3f}")
-    print(f"Optimized combined: {optimized_metrics['avg_combined']:.3f}")
-    improvement = optimized_metrics['avg_combined'] - baseline_metrics['avg_combined']
-    print(f"Improvement:        {improvement:+.3f} ({improvement/baseline_metrics['avg_combined']*100:+.1f}%)")
-    
-    # Save results
     output_dir = Path(args.output)
-    save_results(output_dir, baseline_metrics, optimized_score, 
-                 optimized_metrics, args.strategy, optimized_agent)
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Extract and print optimized prompt
-    optimized_prompt = extract_optimized_prompt(optimized_agent)
-    if optimized_prompt:
+    # ============================================
+    # Template Selection Optimization
+    # ============================================
+    if args.task in ["template", "all"]:
         print("\n" + "="*60)
-        print("OPTIMIZED PROMPT INSTRUCTIONS")
+        print("TEMPLATE SELECTION OPTIMIZATION")
         print("="*60)
-        print(optimized_prompt)
         
-        # Save prompt to file
-        prompt_file = output_dir / "optimized_prompt.md"
-        with open(prompt_file, "w") as f:
-            f.write(optimized_prompt)
-        print(f"\nPrompt saved to: {prompt_file}")
+        # Create datasets
+        print("Loading template datasets...")
+        trainset = create_trainset()
+        testset = create_testset()
+        print(f"Training: {len(trainset)} examples, Test: {len(testset)} examples")
+        
+        # Create agent
+        if args.use_full_agent:
+            agent = ShogoTemplateAgent()
+        else:
+            agent = TemplateSelector()
+        
+        # Baseline evaluation
+        baseline_score, baseline_metrics = evaluate_baseline(agent, testset)
+        
+        if not args.eval_only:
+            # Optimize
+            if args.strategy == "mipro":
+                optimized_agent = optimize_with_mipro(agent, trainset, args.num_trials)
+            elif args.strategy == "bootstrap":
+                optimized_agent = optimize_with_bootstrap(agent, trainset)
+            elif args.strategy == "combined":
+                optimized_agent = optimize_combined(agent, trainset, args.num_trials)
+            
+            # Evaluate optimized agent
+            print("\n" + "="*60)
+            print("OPTIMIZED TEMPLATE EVALUATION")
+            print("="*60)
+            
+            optimized_score, optimized_metrics = evaluate_baseline(optimized_agent, testset)
+            
+            # Print comparison
+            print("\n" + "="*60)
+            print("TEMPLATE COMPARISON")
+            print("="*60)
+            print(f"Baseline combined:  {baseline_metrics['avg_combined']:.3f}")
+            print(f"Optimized combined: {optimized_metrics['avg_combined']:.3f}")
+            improvement = optimized_metrics['avg_combined'] - baseline_metrics['avg_combined']
+            print(f"Improvement:        {improvement:+.3f} ({improvement/baseline_metrics['avg_combined']*100:+.1f}%)")
+            
+            # Save results
+            save_results(output_dir, baseline_metrics, optimized_score, 
+                         optimized_metrics, f"template_{args.strategy}", optimized_agent)
+            
+            # Extract and print optimized prompt
+            optimized_prompt = extract_optimized_prompt(optimized_agent)
+            if optimized_prompt:
+                print("\n" + "="*60)
+                print("OPTIMIZED TEMPLATE PROMPT")
+                print("="*60)
+                print(optimized_prompt[:500] + "..." if len(optimized_prompt) > 500 else optimized_prompt)
+                
+                prompt_file = output_dir / "optimized_template_prompt.md"
+                with open(prompt_file, "w") as f:
+                    f.write(optimized_prompt)
+                print(f"\nPrompt saved to: {prompt_file}")
+    
+    # ============================================
+    # Schema Modification Optimization
+    # ============================================
+    if args.task in ["schema", "all"]:
+        print("\n" + "="*60)
+        print("SCHEMA MODIFICATION OPTIMIZATION")
+        print("="*60)
+        
+        # Create datasets
+        print("Loading schema datasets...")
+        schema_train = create_schema_trainset()
+        schema_test = create_schema_testset()
+        print(f"Training: {len(schema_train)} examples, Test: {len(schema_test)} examples")
+        
+        # Create agent
+        schema_agent = SchemaModifier()
+        
+        # Baseline evaluation
+        schema_baseline = evaluate_schema_baseline(schema_agent, schema_test)
+        
+        if not args.eval_only:
+            # Optimize
+            optimized_schema_agent = optimize_schema_with_mipro(schema_agent, schema_train)
+            
+            # Evaluate optimized
+            print("\n" + "="*60)
+            print("OPTIMIZED SCHEMA EVALUATION")
+            print("="*60)
+            optimized_schema_score = evaluate_schema_baseline(optimized_schema_agent, schema_test)
+            
+            # Print comparison
+            print("\n" + "="*60)
+            print("SCHEMA COMPARISON")
+            print("="*60)
+            print(f"Baseline:  {schema_baseline:.3f}")
+            print(f"Optimized: {optimized_schema_score:.3f}")
+            improvement = optimized_schema_score - schema_baseline
+            if schema_baseline > 0:
+                print(f"Improvement: {improvement:+.3f} ({improvement/schema_baseline*100:+.1f}%)")
+            else:
+                print(f"Improvement: {improvement:+.3f} (N/A - baseline was 0)")
+            
+            # Save schema agent
+            schema_agent_file = output_dir / "optimized_schema_agent.json"
+            optimized_schema_agent.save(str(schema_agent_file))
+            print(f"\nSchema agent saved to: {schema_agent_file}")
+            
+            # Extract prompt
+            schema_prompt = extract_optimized_prompt(optimized_schema_agent)
+            if schema_prompt:
+                prompt_file = output_dir / "optimized_schema_prompt.md"
+                with open(prompt_file, "w") as f:
+                    f.write(schema_prompt)
+                print(f"Schema prompt saved to: {prompt_file}")
+    
+    print("\n" + "="*60)
+    print("OPTIMIZATION COMPLETE")
+    print("="*60)
 
 
 if __name__ == "__main__":

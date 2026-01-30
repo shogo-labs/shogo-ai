@@ -374,13 +374,290 @@ def split_dataset(ratio: float = 0.8) -> Tuple[List[dspy.Example], List[dspy.Exa
     return all_examples[:split_idx], all_examples[split_idx:]
 
 
+# ============================================================
+# Schema Modification Examples
+# ============================================================
+
+# Format: (user_request, template, existing_models, target_model, field_name, field_type, is_optional, reasoning)
+SCHEMA_MODIFICATION_EXAMPLES = [
+    # CRM schema modifications
+    (
+        "Build me a CRM and add a way to track each contact's LinkedIn profile",
+        "crm", "Contact, Company, Tag, Note, Deal",
+        "Contact", "linkedIn", "String", True,
+        "User wants to store LinkedIn URLs for contacts - add optional String field"
+    ),
+    (
+        "Set up a CRM. I want to know when I last talked to each contact",
+        "crm", "Contact, Company, Tag, Note, Deal",
+        "Contact", "lastContactedAt", "DateTime", True,
+        "User wants to track last contact date - add optional DateTime field"
+    ),
+    (
+        "Create a CRM. I want to mark deals as hot, warm, or cold",
+        "crm", "Contact, Company, Tag, Note, Deal",
+        "Deal", "temperature", "String", True,  # Could also be enum
+        "User wants deal temperature/priority - add String field (or enum)"
+    ),
+    (
+        "Build a CRM. I need to track expected close dates for deals",
+        "crm", "Contact, Company, Tag, Note, Deal",
+        "Deal", "expectedCloseDate", "DateTime", True,
+        "User wants to forecast sales - add DateTime field for expected close"
+    ),
+    
+    # Inventory schema modifications
+    (
+        "Build me an inventory tracker. I need to store barcodes for products",
+        "inventory", "Product, Category, Supplier, StockMovement",
+        "Product", "barcode", "String", True,
+        "User wants barcode scanning support - add String field for barcode"
+    ),
+    (
+        "Create an inventory system. I need to track where each product is stored",
+        "inventory", "Product, Category, Supplier, StockMovement",
+        "Product", "location", "String", True,
+        "User wants shelf/location tracking - add String field for location"
+    ),
+    (
+        "Build inventory software for my grocery store. Track expiration dates",
+        "inventory", "Product, Category, Supplier, StockMovement",
+        "Product", "expirationDate", "DateTime", True,
+        "Grocery store needs expiration tracking - add DateTime field"
+    ),
+    (
+        "I sell t-shirts. I need to track different sizes (S, M, L, XL)",
+        "inventory", "Product, Category, Supplier, StockMovement",
+        "Product", "size", "String", True,
+        "Clothing store needs size variants - add String field (or create ProductVariant model)"
+    ),
+    
+    # Todo schema modifications
+    (
+        "Build a todo app. I want to add priority levels to my tasks",
+        "todo-app", "Todo, User",
+        "Todo", "priority", "String", True,  # Could be enum: LOW, MEDIUM, HIGH
+        "User wants task prioritization - add String field for priority"
+    ),
+    (
+        "Create a task tracker. I need due dates for tasks",
+        "todo-app", "Todo, User",
+        "Todo", "dueDate", "DateTime", True,
+        "User wants deadline tracking - add DateTime field for due date"
+    ),
+    (
+        "Build a todo list. I want categories for my tasks",
+        "todo-app", "Todo, User",
+        "Todo", "category", "String", True,  # Or create a Category model
+        "User wants task organization - add String field for category"
+    ),
+    (
+        "Make a checklist app. I want to track who assigned each task",
+        "todo-app", "Todo, User",
+        "Todo", "assignedBy", "String", True,
+        "User wants assignment tracking - add String field for assigner"
+    ),
+    
+    # Kanban schema modifications
+    (
+        "Build a kanban board. I need to track story points",
+        "kanban", "Board, Column, Card",
+        "Card", "storyPoints", "Int", True,
+        "Agile team wants effort estimation - add Int field for story points"
+    ),
+    (
+        "Create a project board. I want to assign cards to team members",
+        "kanban", "Board, Column, Card",
+        "Card", "assignee", "String", True,
+        "User wants card assignment - add String field for assignee"
+    ),
+]
+
+
+# Unsupported feature examples
+# Format: (user_request, unsupported_feature, explanation, alternative)
+UNSUPPORTED_FEATURE_EXAMPLES = [
+    (
+        "Build me a CRM that automatically sends follow-up emails",
+        "automated email sending",
+        "Automated email sending requires integration with email services (SendGrid, Mailchimp, etc.) which is not supported",
+        "You can add a 'lastContactedAt' field to manually track when to follow up"
+    ),
+    (
+        "Create inventory software that connects to my barcode scanner",
+        "hardware integration",
+        "Direct hardware integration with barcode scanners is not supported",
+        "You can add a barcode field and manually enter or paste barcodes"
+    ),
+    (
+        "Build a CRM. Import all my contacts from Salesforce",
+        "external data import",
+        "Direct import from Salesforce or other external systems is not supported",
+        "You can manually add contacts or use the API to import data programmatically"
+    ),
+    (
+        "Build inventory software that automatically reorders when stock is low",
+        "automated purchasing/ordering",
+        "Automatic ordering requires integration with supplier systems which is not supported",
+        "You can set minQuantity alerts and manually reorder when notified"
+    ),
+    (
+        "I have 500 products in Excel. Import them into inventory",
+        "bulk data import from files",
+        "Direct Excel/CSV import is not built into the templates",
+        "You can add products manually or use the database directly for bulk import"
+    ),
+    (
+        "Build a chat app with real-time messaging",
+        "real-time websockets",
+        "Real-time websocket connections are not supported in the current architecture",
+        "You can build a polling-based chat or AI chat assistant instead"
+    ),
+    (
+        "Create a booking system with Stripe payments",
+        "payment processing",
+        "Payment processing integration (Stripe, PayPal, etc.) is not supported",
+        "You can track bookings and handle payments externally"
+    ),
+]
+
+
+def create_schema_trainset() -> List[dspy.Example]:
+    """Create training dataset for schema modification optimization."""
+    examples = []
+    
+    for (request, template, models, target, field, ftype, optional, reasoning) in SCHEMA_MODIFICATION_EXAMPLES:
+        examples.append(dspy.Example(
+            user_request=request,
+            template=template,
+            existing_models=models,
+            needs_schema_change=True,
+            target_model=target,
+            field_name=field,
+            field_type=ftype,
+            is_optional=optional,
+            reasoning=reasoning
+        ).with_inputs("user_request", "template", "existing_models"))
+    
+    # Add some "no change needed" examples
+    no_change_examples = [
+        ("Build me a CRM", "crm", "Contact, Company, Tag, Note, Deal", "User just wants basic CRM, no modifications"),
+        ("Create an inventory tracker", "inventory", "Product, Category, Supplier, StockMovement", "Basic inventory request"),
+        ("Make a todo app", "todo-app", "Todo, User", "Standard todo app, no customizations"),
+        ("I need a kanban board", "kanban", "Board, Column, Card", "Basic kanban request"),
+    ]
+    
+    for (request, template, models, reasoning) in no_change_examples:
+        examples.append(dspy.Example(
+            user_request=request,
+            template=template,
+            existing_models=models,
+            needs_schema_change=False,
+            target_model="",
+            field_name="",
+            field_type="",
+            is_optional=True,
+            reasoning=reasoning
+        ).with_inputs("user_request", "template", "existing_models"))
+    
+    return examples
+
+
+def create_schema_testset() -> List[dspy.Example]:
+    """Create test dataset for schema modification."""
+    test_examples = [
+        # Harder variations
+        (
+            "CRM for my recruiting agency - I need to track candidate skills",
+            "crm", "Contact, Company, Tag, Note, Deal",
+            "Contact", "skills", "String", True,
+            "Recruiting use case - skills are like tags but on Contact"
+        ),
+        (
+            "Inventory for my bakery - need to track batch numbers",
+            "inventory", "Product, Category, Supplier, StockMovement",
+            "Product", "batchNumber", "String", True,
+            "Food safety requirement - batch tracking"
+        ),
+        (
+            "Todo app where I can add notes to each task",
+            "todo-app", "Todo, User",
+            "Todo", "notes", "String", True,
+            "User wants extended description/notes field"
+        ),
+        # Should NOT need changes
+        (
+            "Just build me a simple todo list",
+            "todo-app", "Todo, User",
+            "", "", "", True,
+            "Simple request, no modifications"
+        ),
+    ]
+    
+    examples = []
+    for (request, template, models, target, field, ftype, optional, reasoning) in test_examples:
+        examples.append(dspy.Example(
+            user_request=request,
+            template=template,
+            existing_models=models,
+            needs_schema_change=bool(target),
+            target_model=target,
+            field_name=field,
+            field_type=ftype,
+            is_optional=optional,
+            reasoning=reasoning
+        ).with_inputs("user_request", "template", "existing_models"))
+    
+    return examples
+
+
+def create_unsupported_trainset() -> List[dspy.Example]:
+    """Create training dataset for unsupported feature detection."""
+    examples = []
+    
+    for (request, feature, explanation, alternative) in UNSUPPORTED_FEATURE_EXAMPLES:
+        examples.append(dspy.Example(
+            user_request=request,
+            is_unsupported=True,
+            unsupported_feature=feature,
+            explanation=explanation,
+            alternative_suggestion=alternative
+        ).with_inputs("user_request"))
+    
+    # Add supported examples (not unsupported)
+    supported = [
+        "Build me a CRM",
+        "Create an inventory tracker",
+        "I need a todo app with priorities",
+        "Build a kanban board for my team",
+        "Make a booking system for appointments",
+        "CRM with LinkedIn field for contacts",
+        "Inventory with expiration dates",
+    ]
+    
+    for request in supported:
+        examples.append(dspy.Example(
+            user_request=request,
+            is_unsupported=False,
+            unsupported_feature="",
+            explanation="",
+            alternative_suggestion=""
+        ).with_inputs("user_request"))
+    
+    return examples
+
+
 # For quick testing
 if __name__ == "__main__":
     trainset = create_trainset()
     testset = create_testset()
+    schema_train = create_schema_trainset()
+    schema_test = create_schema_testset()
+    unsupported_train = create_unsupported_trainset()
     
-    print(f"Training examples: {len(trainset)}")
-    print(f"Test examples: {len(testset)}")
+    print(f"Template selection - Training: {len(trainset)}, Test: {len(testset)}")
+    print(f"Schema modification - Training: {len(schema_train)}, Test: {len(schema_test)}")
+    print(f"Unsupported features - Training: {len(unsupported_train)}")
     
-    print("\nSample training example:")
-    print(trainset[0])
+    print("\nSample schema modification example:")
+    print(schema_train[0])

@@ -92,3 +92,4 @@ app.config.timestamp*.js
 
 # Chat export logs (auto-generated agent outputs)
 shogo-chats/
+packages/mcp/src/evals/dspy/__pycache__/

@@ -124,6 +124,8 @@ export interface EvalResult {
   metrics: EvalMetrics
   /** Any errors encountered */
   errors?: string[]
+  /** Project directory where the eval was run (for file validation) */
+  projectDir?: string
 }
 
 /**

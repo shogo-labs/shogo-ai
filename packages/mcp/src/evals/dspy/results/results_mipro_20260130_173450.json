@@ -1,0 +1,26 @@
+{
+  "timestamp": "2026-01-30T17:34:50.294411",
+  "strategy": "mipro",
+  "baseline": {
+    "total": 20,
+    "exact_matches": 12,
+    "partial_matches": 3,
+    "avg_accuracy": 0.6375,
+    "avg_no_clarify": 0.85,
+    "avg_reasoning": 0.915,
+    "avg_combined": 0.7567500000000001
+  },
+  "optimized": {
+    "total": 20,
+    "exact_matches": 14,
+    "partial_matches": 1,
+    "avg_accuracy": 0.7125,
+    "avg_no_clarify": 0.95,
+    "avg_reasoning": 0.785,
+    "avg_combined": 0.7982500000000002
+  },
+  "improvement": {
+    "combined_score": 0.04150000000000009,
+    "accuracy": 0.07500000000000007
+  }
+}

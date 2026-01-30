@@ -28,6 +28,8 @@ export interface EvalRunnerConfig {
   verbose?: boolean
   /** Number of retries on failure */
   retries?: number
+  /** Project directory for this eval (used by parallel workers) */
+  projectDir?: string
 }
 
 const DEFAULT_CONFIG: Required<EvalRunnerConfig> = {
@@ -35,6 +37,7 @@ const DEFAULT_CONFIG: Required<EvalRunnerConfig> = {
   timeoutMs: 300000, // 5 minutes default for complex tasks
   verbose: false,
   retries: 0,
+  projectDir: '/tmp/shogo-eval-test',
 }
 
 /**
@@ -164,6 +167,7 @@ export async function runEval(
     },
     metrics,
     errors: errors.length > 0 ? errors : undefined,
+    projectDir: cfg.projectDir,  // Pass project directory for file validation
   }
 
   for (const criterion of eval_.validationCriteria) {

@@ -17,12 +17,30 @@ import { join } from 'path'
 // ============================================
 
 function getProjectDir(result: EvalResult): string | null {
+  // First, check if projectDir was passed in the result (from parallel runner)
+  if (result.projectDir && existsSync(join(result.projectDir, 'prisma/schema.prisma'))) {
+    return result.projectDir
+  }
+  
   // Look for template.copy tool call result to find project dir
   const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
   if (copyCall?.result && typeof copyCall.result === 'object') {
     const res = copyCall.result as Record<string, unknown>
     if (res.projectDir) return res.projectDir as string
   }
+  
+  // Check tool call params
+  if (copyCall?.params?.targetDir) return copyCall.params.targetDir
+  if (copyCall?.params?.target_dir) return copyCall.params.target_dir
+  
+  // Check worker directories (parallel eval runner uses these)
+  for (let i = 0; i < 10; i++) {
+    const workerDir = `/tmp/shogo-eval-worker-${i}`
+    if (existsSync(join(workerDir, 'prisma/schema.prisma'))) {
+      return workerDir
+    }
+  }
+  
   // Fallback to eval mode test directory
   return process.env.PROJECT_DIR || '/tmp/shogo-eval-test'
 }

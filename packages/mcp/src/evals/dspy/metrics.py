@@ -198,6 +198,158 @@ class AgentMetrics:
         print(f"{'='*50}\n")
 
 
+# ============================================================
+# Schema Modification Metrics
+# ============================================================
+
+def schema_change_accuracy(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
+    """
+    Measure if schema modification was correctly identified and planned.
+    
+    Returns:
+        1.0 if all aspects match (needs_change, model, field, type)
+        0.75 if needs_change correct and model correct
+        0.5 if needs_change correct only
+        0.0 if needs_change wrong
+    """
+    expected_needs = getattr(example, 'needs_schema_change', False)
+    
+    # Handle various attribute names for prediction
+    predicted_needs = False
+    if hasattr(prediction, 'needs_schema_change'):
+        predicted_needs = prediction.needs_schema_change
+    elif hasattr(prediction, 'needs_change'):
+        predicted_needs = prediction.needs_change
+    
+    # Convert to bool - handle string, bool, and other types
+    if isinstance(expected_needs, str):
+        expected_needs = expected_needs.lower() in ('true', 'yes', '1')
+    else:
+        expected_needs = bool(expected_needs)
+    
+    if isinstance(predicted_needs, str):
+        predicted_needs = predicted_needs.lower() in ('true', 'yes', '1')
+    else:
+        predicted_needs = bool(predicted_needs)
+    
+    if expected_needs != predicted_needs:
+        return 0.0
+    
+    # If no change needed and correctly identified
+    if not expected_needs:
+        return 1.0
+    
+    score = 0.5  # Base score for correct needs_change
+    
+    # Check model match
+    expected_model = getattr(example, 'target_model', '').lower()
+    predicted_model = getattr(prediction, 'target_model', '').lower()
+    
+    if expected_model and predicted_model and expected_model == predicted_model:
+        score += 0.25
+        
+        # Check field name match (flexible - allow minor variations)
+        expected_field = getattr(example, 'field_name', '').lower()
+        predicted_field = getattr(prediction, 'field_name', '').lower()
+        
+        if expected_field and predicted_field:
+            # Exact match or close enough (e.g., linkedin vs linkedIn)
+            if expected_field == predicted_field or expected_field.replace('_', '') == predicted_field.replace('_', ''):
+                score += 0.15
+            
+            # Check type match
+            expected_type = getattr(example, 'field_type', '').lower()
+            predicted_type = getattr(prediction, 'field_type', '').lower()
+            
+            if expected_type and predicted_type and expected_type == predicted_type:
+                score += 0.1
+    
+    return min(score, 1.0)
+
+
+def unsupported_detection_accuracy(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
+    """
+    Measure if unsupported features are correctly identified.
+    
+    Returns:
+        1.0 if is_unsupported correctly identified
+        0.5 if is_unsupported correct but explanation missing/wrong
+        0.0 if is_unsupported wrong
+    """
+    expected = getattr(example, 'is_unsupported', False)
+    predicted = getattr(prediction, 'is_unsupported', False)
+    
+    # Convert to bool
+    if isinstance(predicted, str):
+        predicted = predicted.lower() in ('true', 'yes', '1')
+    
+    if expected != predicted:
+        return 0.0
+    
+    if not expected:
+        return 1.0  # Correctly identified as supported
+    
+    # Check if explanation is present
+    explanation = getattr(prediction, 'explanation', '')
+    if explanation and len(explanation) > 20:
+        return 1.0
+    
+    return 0.5
+
+
+def schema_reasoning_quality(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
+    """
+    Evaluate reasoning quality for schema modifications.
+    Similar to reasoning_quality but doesn't require selected_template.
+    """
+    reasoning = getattr(prediction, 'reasoning', '')
+    if isinstance(reasoning, str):
+        reasoning = reasoning.lower().strip()
+    else:
+        reasoning = str(reasoning).lower().strip()
+    
+    if not reasoning:
+        return 0.0
+    
+    score = 0.0
+    
+    # Has some reasoning
+    score += 0.3
+    
+    # Check for relevant schema-related keywords
+    schema_keywords = ['field', 'model', 'prisma', 'add', 'modify', 'change', 'schema', 'type', 'optional']
+    if any(word in reasoning for word in schema_keywords):
+        score += 0.3
+    
+    # Appropriate length
+    word_count = len(reasoning.split())
+    if 5 <= word_count <= 100:
+        score += 0.2
+    elif word_count > 0:
+        score += 0.1
+    
+    # Explains the decision
+    match_indicators = ["because", "since", "needs", "wants", "requires", "tracking", "store"]
+    if any(indicator in reasoning for indicator in match_indicators):
+        score += 0.2
+    
+    return min(score, 1.0)
+
+
+def combined_schema_metric(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
+    """
+    Combined metric for schema modification tasks.
+    
+    Weights:
+    - Schema change accuracy: 70%
+    - Reasoning quality: 30%
+    """
+    schema_acc = schema_change_accuracy(example, prediction, trace)
+    reason = schema_reasoning_quality(example, prediction, trace)
+    
+    return (schema_acc * 0.7) + (reason * 0.3)
+
+
 # For testing metrics
 if __name__ == "__main__":
     # Test with mock data
