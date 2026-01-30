@@ -119,17 +119,8 @@ export {
   type DomainProviderConfig,
 } from './react/index.js'
 
-// Database adapters (PostgreSQL/SQLite auto-detection)
-export {
-  createPrismaClient,
-  createPrismaClientSync,
-  createDatabaseAdapter,
-  createAdapterSync,
-  detectProvider,
-  isTestMode,
-  isPostgres,
-  getTestDatabaseUrl,
-  getCurrentProvider,
-  type DatabaseProvider,
-  type DatabaseAdapterConfig,
-} from './db/index.js'
+// NOTE: Database adapters are NOT exported from the main entry point because they
+// contain Node.js-specific code (fs, child_process) that cannot run in the browser.
+// Import from '@shogo/sdk/db' for server-side use only:
+//
+// import { createPrismaClient, detectProvider } from '@shogo/sdk/db'

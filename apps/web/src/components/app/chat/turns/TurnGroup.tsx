@@ -76,14 +76,14 @@ export function TurnGroup({
   return (
     <div
       className={cn(
-        "pl-1 space-y-3",
+        "space-y-2",
         turn.assistantMessage ? colors.border : "border-primary/30",
         className
       )}
     >
       {/* User message */}
       {turn.userMessage && (
-        <div className="space-y-1">
+        <div className="space-y-0.5">
           {/* <TurnHeader role="user" /> */}
           <MessageContent message={turn.userMessage} />
         </div>
@@ -108,7 +108,7 @@ export function TurnGroup({
 
       {/* Assistant message with interleaved tools (default) or plain content (legacy) */}
       {turn.assistantMessage && (
-        <div className="space-y-1">
+        <div className="space-y-0.5">
           <TurnHeader role="assistant" phase={phase} />
           {showToolTimeline ? (
             <MessageContent

@@ -156,7 +156,7 @@ function ImageThumbnail({
 
   if (hasError) {
     return (
-      <div className="max-w-[300px] rounded-lg border border-border bg-muted p-4 text-sm text-muted-foreground">
+      <div className="max-w-[200px] rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">
         Failed to load image
       </div>
     )
@@ -166,7 +166,7 @@ function ImageThumbnail({
     <img
       src={url}
       alt={`Image attachment ${index + 1}`}
-      className="max-w-[300px] max-h-[200px] rounded-lg border border-border object-contain cursor-pointer hover:opacity-90 transition-opacity"
+      className="max-w-[200px] max-h-[150px] rounded-md border border-border object-contain cursor-pointer hover:opacity-90 transition-opacity"
       onClick={handleClick}
       onError={handleError}
       data-testid="image-thumbnail"
@@ -218,7 +218,7 @@ export function AssistantContent({
   }
 
   return (
-    <div className={cn("space-y-2", className)}>
+    <div className={cn("space-y-1.5", className)}>
       {parts.map((part, index) => {
         const isLastPart = index === parts.length - 1
 
@@ -226,7 +226,7 @@ export function AssistantContent({
           return (
             <div
               key={part.id}
-              className="rounded-lg px-4 py-2 bg-muted text-foreground text-sm"
+              className="px-3 py-1.5 text-foreground text-xs"
             >
               <Streamdown>{part.text}</Streamdown>
             </div>

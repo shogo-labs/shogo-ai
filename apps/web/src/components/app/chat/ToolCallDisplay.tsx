@@ -184,7 +184,7 @@ export function ToolCallDisplay({
     <div
       data-state={isError ? "error" : isSuccess ? "success" : "pending"}
       className={cn(
-        "rounded-lg border p-3 text-sm font-mono",
+        "rounded-md border p-2 text-xs font-mono",
         isError && "border-destructive bg-destructive/10 text-destructive",
         isSuccess && "border-green-500/50 bg-green-500/10",
         (isStreaming || isExecuting) && "border-border bg-muted"
@@ -194,17 +194,17 @@ export function ToolCallDisplay({
       <button
         onClick={() => setIsCollapsed(!isCollapsed)}
         data-testid="tool-call-header"
-        className="flex items-center gap-2 w-full text-left"
+        className="flex items-center gap-1.5 w-full text-left"
       >
-        <ChevronIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-        <Icon className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-        <span className="font-medium">{toolName}</span>
+        <ChevronIcon className="h-3 w-3 text-muted-foreground shrink-0" />
+        <Icon className="h-3 w-3 text-muted-foreground shrink-0" />
+        <span className="font-medium text-[10px]">{toolName}</span>
 
         {/* Summary line in collapsed mode */}
         {isCollapsed && summaryLine && (
           <span
             data-testid="summary-line"
-            className="text-muted-foreground text-xs ml-2 truncate flex-1"
+            className="text-muted-foreground text-[9px] ml-1 truncate flex-1"
           >
             {summaryLine}
           </span>
@@ -214,32 +214,32 @@ export function ToolCallDisplay({
           <div
             data-testid="streaming-indicator"
             aria-busy="true"
-            className="ml-auto flex items-center gap-1 flex-shrink-0"
+            className="ml-auto flex items-center gap-1 shrink-0"
           >
-            <span className="text-xs text-muted-foreground">Streaming</span>
-            <div className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse" />
+            <span className="text-[9px] text-muted-foreground">Streaming</span>
+            <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-pulse" />
           </div>
         )}
 
         {isExecuting && (
           <div
             data-testid="executing-indicator"
-            className="ml-auto flex items-center gap-1 flex-shrink-0"
+            className="ml-auto flex items-center gap-1 shrink-0"
           >
-            <span className="text-xs text-muted-foreground">Executing</span>
-            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+            <span className="text-[9px] text-muted-foreground">Executing</span>
+            <Loader2 className="h-2.5 w-2.5 animate-spin text-muted-foreground" />
           </div>
         )}
 
         {isSuccess && (
           <CheckCircle
             data-testid="success-icon"
-            className="ml-auto h-4 w-4 text-green-500 flex-shrink-0"
+            className="ml-auto h-3 w-3 text-green-500 shrink-0"
           />
         )}
 
         {isError && (
-          <XCircle className="ml-auto h-4 w-4 text-destructive flex-shrink-0" />
+          <XCircle className="ml-auto h-3 w-3 text-destructive shrink-0" />
         )}
       </button>
 
@@ -248,9 +248,9 @@ export function ToolCallDisplay({
         <>
           {/* Args display (not shown during input-streaming) */}
           {!isStreaming && args && Object.keys(args).length > 0 && (
-            <div data-testid="tool-args" className="mt-2">
-              <div className="text-xs text-muted-foreground mb-1">Arguments:</div>
-              <pre className="text-xs bg-background/50 rounded p-2 overflow-x-auto">
+            <div data-testid="tool-args" className="mt-1.5">
+              <div className="text-[9px] text-muted-foreground mb-0.5 uppercase">Args</div>
+              <pre className="text-[10px] bg-background/50 rounded p-1.5 overflow-x-auto max-h-32 overflow-y-auto">
                 {JSON.stringify(args, null, 2)}
               </pre>
             </div>
@@ -258,14 +258,14 @@ export function ToolCallDisplay({
 
           {/* Result display with truncation (task-cpbi-011) */}
           {isSuccess && result !== undefined && truncated && (
-            <div data-testid="tool-result" className="mt-2">
-              <div className="text-xs text-muted-foreground mb-1">Result:</div>
+            <div data-testid="tool-result" className="mt-1.5">
+              <div className="text-[9px] text-muted-foreground mb-0.5 uppercase">Result</div>
 
               {/* Metadata section - always visible (task-cpbi-011) */}
               {hasMetadata && (
                 <div
                   data-testid="result-metadata"
-                  className="text-xs bg-background/50 rounded p-2 mb-2 flex flex-wrap gap-x-4 gap-y-1"
+                  className="text-[9px] bg-background/50 rounded p-1.5 mb-1.5 flex flex-wrap gap-x-3 gap-y-0.5"
                 >
                   {Object.entries(metadata).map(([key, value]) => (
                     <span key={key}>
@@ -277,7 +277,7 @@ export function ToolCallDisplay({
               )}
 
               {/* Truncated/full result content */}
-              <pre className="text-xs bg-background/50 rounded p-2 overflow-x-auto whitespace-pre-wrap">
+              <pre className="text-[10px] bg-background/50 rounded p-1.5 overflow-x-auto whitespace-pre-wrap max-h-32 overflow-y-auto">
                 {showFullResult ? resultString : truncated.displayContent}
               </pre>
 
@@ -285,12 +285,12 @@ export function ToolCallDisplay({
               {truncated.isTruncated && (
                 <button
                   onClick={() => setShowFullResult(!showFullResult)}
-                  className="text-xs text-muted-foreground hover:underline mt-1"
+                  className="text-[9px] text-muted-foreground hover:underline mt-0.5"
                   data-testid="show-more-toggle"
                 >
                   {showFullResult
                     ? "Show less"
-                    : `Show more (~${truncated.hiddenCount} chars hidden)`}
+                    : `Show more (~${truncated.hiddenCount} chars)`}
                 </button>
               )}
             </div>
@@ -300,9 +300,9 @@ export function ToolCallDisplay({
 
       {/* Error display - always visible regardless of collapsed state */}
       {isError && error && (
-        <div data-testid="tool-error" className="mt-2">
-          <div className="text-xs text-destructive/80 mb-1">Error:</div>
-          <div className="text-xs">{error}</div>
+        <div data-testid="tool-error" className="mt-1.5">
+          <div className="text-[9px] text-destructive/80 mb-0.5 uppercase">Error</div>
+          <div className="text-[10px]">{error}</div>
         </div>
       )}
     </div>

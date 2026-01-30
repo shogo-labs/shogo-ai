@@ -169,7 +169,7 @@ function OptionButton({
       type="button"
       onClick={onSelect}
       className={cn(
-        "w-full text-left p-3 rounded-md border transition-all duration-200",
+        "w-full text-left p-2 rounded-md border transition-all duration-200",
         "hover:border-primary/50 hover:bg-muted/50",
         "animate-in fade-in slide-in-from-left-2",
         isSelected
@@ -178,11 +178,11 @@ function OptionButton({
       )}
       style={{ animationDelay: `${animationDelay}ms` }}
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-2">
         {/* Radio/Checkbox indicator */}
         <div
           className={cn(
-            "mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors",
+            "mt-0.5 w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors",
             isMultiSelect && "rounded-sm",
             isSelected
               ? "border-primary bg-primary"
@@ -193,16 +193,16 @@ function OptionButton({
             <div
               className={cn(
                 "bg-primary-foreground",
-                isMultiSelect ? "w-2 h-2 rounded-sm" : "w-1.5 h-1.5 rounded-full"
+                isMultiSelect ? "w-1.5 h-1.5 rounded-sm" : "w-1 h-1 rounded-full"
               )}
             />
           )}
         </div>
 
         <div className="flex-1 min-w-0">
-          <div className="font-medium text-sm text-foreground">{label}</div>
+          <div className="font-medium text-xs text-foreground">{label}</div>
           {description && (
-            <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
+            <div className="text-[10px] text-muted-foreground mt-0.5 line-clamp-2">
               {description}
             </div>
           )}
@@ -228,7 +228,7 @@ function QuestionTabs({
   if (questions.length <= 1) return null
 
   return (
-    <div className="flex gap-1 mb-3 border-b border-border/50 pb-2">
+    <div className="flex gap-1 mb-2 border-b border-border/50 pb-1.5">
       {questions.map((q, index) => {
         const hasSelection = (selections.get(index)?.length || 0) > 0
         return (
@@ -237,8 +237,8 @@ function QuestionTabs({
             type="button"
             onClick={() => onTabChange(index)}
             className={cn(
-              "px-3 py-1.5 text-xs font-medium rounded-md transition-colors",
-              "flex items-center gap-1.5",
+              "px-2 py-1 text-[10px] font-medium rounded-md transition-colors",
+              "flex items-center gap-1",
               activeTab === index
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
@@ -246,7 +246,7 @@ function QuestionTabs({
           >
             <span>Q{index + 1}</span>
             {hasSelection && (
-              <CheckCircle2 className="w-3 h-3 text-green-500" />
+              <CheckCircle2 className="w-2.5 h-2.5 text-green-500" />
             )}
           </button>
         )
@@ -403,20 +403,20 @@ export function AskUserQuestionWidget({
     return (
       <div
         className={cn(
-          "rounded-md border border-primary/20 bg-primary/5 p-3",
+          "rounded-md border border-primary/20 bg-primary/5 p-2",
           "animate-in fade-in duration-200",
           className
         )}
       >
-        <div className="flex items-center gap-2">
-          <MessageCircleQuestion className="w-4 h-4 text-primary animate-pulse" />
+        <div className="flex items-center gap-1.5">
+          <MessageCircleQuestion className="w-3 h-3 text-primary animate-pulse" />
           <span
-            className="font-mono text-xs font-medium text-foreground"
+            className="font-mono text-[10px] font-medium text-foreground"
             style={{ fontFamily: "var(--font-display)" }}
           >
             AskUserQuestion
           </span>
-          <span className="text-xs text-muted-foreground">Loading...</span>
+          <span className="text-[9px] text-muted-foreground">Loading...</span>
         </div>
       </div>
     )
@@ -427,11 +427,11 @@ export function AskUserQuestionWidget({
     return (
       <div
         className={cn(
-          "rounded-md border border-border/50 bg-muted/30 p-3",
+          "rounded-md border border-border/50 bg-muted/30 p-2",
           className
         )}
       >
-        <span className="text-sm text-muted-foreground">
+        <span className="text-xs text-muted-foreground">
           Invalid AskUserQuestion data
         </span>
       </div>
@@ -454,29 +454,29 @@ export function AskUserQuestionWidget({
         type="button"
         onClick={handleToggle}
         className={cn(
-          "w-full flex items-center gap-2 py-2 px-3",
+          "w-full flex items-center gap-1.5 py-1.5 px-2",
           "hover:bg-muted/50 transition-colors",
           "text-left"
         )}
       >
         {/* Expand/collapse chevron */}
         {isExpanded ? (
-          <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+          <ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
         ) : (
-          <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+          <ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
         )}
 
         {/* Icon */}
         <MessageCircleQuestion
           className={cn(
-            "w-4 h-4 shrink-0",
+            "w-3 h-3 shrink-0",
             isPending ? "text-primary" : "text-muted-foreground"
           )}
         />
 
         {/* Tool name */}
         <span
-          className="font-mono text-xs font-medium text-foreground"
+          className="font-mono text-[10px] font-medium text-foreground"
           style={{ fontFamily: "var(--font-display)" }}
         >
           AskUserQuestion
@@ -484,7 +484,7 @@ export function AskUserQuestionWidget({
 
         {/* Summary when collapsed and answered */}
         {!isExpanded && isAnswered && summaryText && (
-          <span className="flex-1 text-xs text-muted-foreground truncate text-right">
+          <span className="flex-1 text-[9px] text-muted-foreground truncate text-right">
             {summaryText}
           </span>
         )}
@@ -494,13 +494,13 @@ export function AskUserQuestionWidget({
 
         {/* Status icon */}
         {isAnswered && (
-          <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+          <CheckCircle2 className="w-3 h-3 text-green-500 shrink-0" />
         )}
       </button>
 
       {/* Expanded content */}
       {isExpanded && (
-        <div className="border-t border-border/50 p-4 space-y-4 animate-in fade-in duration-200">
+        <div className="border-t border-border/50 p-3 space-y-3 animate-in fade-in duration-200">
           {/* Question tabs (if multiple) */}
           <QuestionTabs
             questions={questions}
@@ -511,21 +511,21 @@ export function AskUserQuestionWidget({
 
           {/* Current question */}
           {currentQuestion && (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {/* Header badge */}
               <div className="flex items-center gap-2">
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-primary/10 text-primary border border-primary/20">
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
                   {currentQuestion.header}
                 </span>
               </div>
 
               {/* Question text */}
-              <p className="text-sm font-medium text-foreground">
+              <p className="text-xs font-medium text-foreground">
                 {currentQuestion.question}
               </p>
 
               {/* Options */}
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 {(currentQuestion.options ?? []).map((option, optionIndex) => {
                   const currentSelections = selections.get(activeTab) || []
                   const isSelected = currentSelections.includes(option.label)
@@ -575,7 +575,7 @@ export function AskUserQuestionWidget({
 
                   {/* Text input for "Other" */}
                   {(selections.get(activeTab) || []).includes("__other__") && (
-                    <div className="mt-2 ml-7 animate-in fade-in slide-in-from-top-1 duration-200">
+                    <div className="mt-1.5 ml-5 animate-in fade-in slide-in-from-top-1 duration-200">
                       <Input
                         type="text"
                         placeholder="Type your custom response..."
@@ -583,7 +583,7 @@ export function AskUserQuestionWidget({
                         onChange={(e) =>
                           handleOtherTextChange(activeTab, e.target.value)
                         }
-                        className="text-sm"
+                        className="text-xs h-7"
                         autoFocus
                       />
                     </div>
@@ -595,25 +595,25 @@ export function AskUserQuestionWidget({
 
           {/* Submit button - only when pending */}
           {isPending && (
-            <div className="flex justify-end pt-2">
+            <div className="flex justify-end pt-1.5">
               <Button
                 onClick={handleSubmit}
                 disabled={!isValid}
                 size="sm"
-                className="min-w-[140px]"
+                className="min-w-[100px] h-7 text-xs"
               >
-                Submit Selection
+                Submit
               </Button>
             </div>
           )}
 
           {/* Answered state info */}
           {isAnswered && typeof tool.result === "string" && (
-            <div className="space-y-1 pt-2 border-t border-border/30">
-              <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="space-y-0.5 pt-1.5 border-t border-border/30">
+              <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                 Your Response
               </span>
-              <p className="text-sm text-foreground whitespace-pre-wrap">
+              <p className="text-xs text-foreground whitespace-pre-wrap">
                 {tool.result}
               </p>
             </div>

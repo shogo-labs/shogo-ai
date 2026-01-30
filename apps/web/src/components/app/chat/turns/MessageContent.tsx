@@ -101,7 +101,7 @@ function ImageThumbnail({
 
   if (hasError) {
     return (
-      <div className="max-w-[300px] rounded-lg border border-border bg-muted p-4 text-sm text-muted-foreground">
+      <div className="max-w-[200px] rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">
         Failed to load image
       </div>
     )
@@ -111,7 +111,7 @@ function ImageThumbnail({
     <img
       src={url}
       alt={`Image attachment ${index + 1}`}
-      className="max-w-[300px] max-h-[200px] rounded-lg border border-border object-contain cursor-pointer hover:opacity-90 transition-opacity"
+      className="max-w-[200px] max-h-[150px] rounded-md border border-border object-contain cursor-pointer hover:opacity-90 transition-opacity"
       onClick={handleClick}
       onError={handleError}
       data-testid="image-thumbnail"
@@ -146,7 +146,7 @@ export function MessageContent({
   // User messages: bubble style with max-width
   // Assistant messages: full width to accommodate markdown (code blocks, tables)
   const baseClasses = cn(
-    "rounded-lg px-4 py-2 text-sm",
+    "rounded-md px-3 py-1.5 text-xs",
     isUser
       ? "max-w-[85%] bg-primary text-primary-foreground ml-auto"
       : "w-full bg-transparent text-foreground",

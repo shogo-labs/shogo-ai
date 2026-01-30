@@ -47,33 +47,33 @@ export function TurnHeader({
     : null
 
   return (
-    <div className={cn("flex items-center gap-2 mb-1", className)}>
+    <div className={cn("flex items-center gap-1.5 mb-0.5", className)}>
       {/* Role icon */}
       {role === "user" ? (
-        <div className="w-5 h-5 rounded-full bg-primary/10 flex items-center justify-center">
-          <User className="w-3 h-3 text-primary" />
+        <div className="w-4 h-4 rounded-full bg-primary/10 flex items-center justify-center">
+          <User className="w-2.5 h-2.5 text-primary" />
         </div>
       ) : (
-        <div className="w-5 h-5 rounded-full bg-muted flex items-center justify-center">
-          <Bot className="w-3 h-3 text-muted-foreground" />
+        <div className="w-4 h-4 rounded-full bg-muted flex items-center justify-center">
+          <Bot className="w-2.5 h-2.5 text-muted-foreground" />
         </div>
       )}
 
       {/* Role label */}
       <span
         className={cn(
-          "text-xs font-medium",
+          "text-[10px] font-medium",
           role === "user" ? "text-primary" : "text-muted-foreground"
         )}
         style={{ fontFamily: "var(--font-body)" }}
       >
-        {role === "user" ? "You" : "Claude"}
+        {role === "user" ? "You" : "Shogo"}
       </span>
 
       {/* Timestamp */}
       {formattedTime && (
         <span
-          className="text-[10px] text-muted-foreground/60"
+          className="text-[9px] text-muted-foreground/60"
           style={{ fontFamily: "'Space Mono', monospace" }}
         >
           {formattedTime}
@@ -84,7 +84,7 @@ export function TurnHeader({
       {role === "assistant" && phase && (
         <span
           className={cn(
-            "text-[10px] px-1.5 py-0.5 rounded",
+            "text-[9px] px-1 py-0.5 rounded",
             colors.accent
           )}
         >

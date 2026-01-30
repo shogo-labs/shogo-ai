@@ -84,7 +84,7 @@ export function InlineToolWidget({
   return (
     <div
       className={cn(
-        "rounded-md border border-border/50 bg-muted/30 overflow-hidden",
+        "overflow-hidden",
         "transition-all duration-200",
         className
       )}
@@ -94,22 +94,22 @@ export function InlineToolWidget({
         type="button"
         onClick={handleToggle}
         className={cn(
-          "w-full flex items-center gap-2 py-1.5 px-2.5",
+          "w-full flex items-center gap-1.5 py-1 px-2",
           "hover:bg-muted/50 transition-colors",
           "text-left"
         )}
       >
         {/* Expand/collapse chevron */}
         {isExpanded ? (
-          <ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
+          <ChevronDown className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
         ) : (
-          <ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
+          <ChevronRight className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
         )}
 
         {/* Category color indicator */}
         <span
           className={cn(
-            "w-1.5 h-1.5 rounded-full shrink-0",
+            "w-1 h-1 rounded-full shrink-0",
             tool.category === "mcp" && "bg-tool-mcp",
             tool.category === "file" && "bg-tool-file",
             tool.category === "skill" && "bg-tool-skill",
@@ -120,7 +120,7 @@ export function InlineToolWidget({
 
         {/* Tool name */}
         <span
-          className="font-mono text-xs font-medium shrink-0"
+          className="font-mono text-[10px] font-medium shrink-0"
           style={{ fontFamily: "var(--font-display)" }}
         >
           {namespace && (
@@ -133,7 +133,7 @@ export function InlineToolWidget({
 
         {/* Key argument - right aligned, muted */}
         {keyArg && (
-          <span className="flex-1 text-[10px] text-muted-foreground/60 font-light truncate text-right font-mono">
+          <span className="flex-1 text-[9px] text-muted-foreground/60 font-light truncate text-right font-mono">
             {keyArg}
           </span>
         )}
@@ -144,7 +144,7 @@ export function InlineToolWidget({
         {/* State icon */}
         <StateIcon
           className={cn(
-            "w-3.5 h-3.5 shrink-0",
+            "w-3 h-3 shrink-0",
             tool.state === "streaming" && "text-exec-streaming animate-spin",
             tool.state === "success" && "text-exec-success",
             tool.state === "error" && "text-exec-error"
@@ -154,14 +154,14 @@ export function InlineToolWidget({
 
       {/* Expanded content */}
       {isExpanded && (
-        <div className="border-t border-border/50 p-2.5 space-y-2">
+        <div className="border-t border-border/50 p-2 space-y-1.5">
           {/* Arguments */}
           {tool.args && Object.keys(tool.args).length > 0 && (
-            <div className="space-y-1">
-              <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                Arguments
+            <div className="space-y-0.5">
+              <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
+                Args
               </span>
-              <pre className="text-[11px] font-mono bg-background/50 rounded p-2 overflow-x-auto max-h-40 overflow-y-auto">
+              <pre className="text-[10px] font-mono bg-background/50 rounded p-1.5 overflow-x-auto max-h-32 overflow-y-auto">
                 {formatJson(tool.args)}
               </pre>
             </div>
@@ -169,11 +169,11 @@ export function InlineToolWidget({
 
           {/* Result */}
           {tool.state === "success" && tool.result !== undefined && (
-            <div className="space-y-1">
-              <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="space-y-0.5">
+              <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                 Result
               </span>
-              <pre className="text-[11px] font-mono bg-background/50 rounded p-2 overflow-x-auto max-h-40 overflow-y-auto">
+              <pre className="text-[10px] font-mono bg-background/50 rounded p-1.5 overflow-x-auto max-h-32 overflow-y-auto">
                 {formatJson(tool.result)}
               </pre>
             </div>
@@ -181,11 +181,11 @@ export function InlineToolWidget({
 
           {/* Error */}
           {tool.state === "error" && tool.error && (
-            <div className="space-y-1">
-              <span className="text-[10px] font-medium text-exec-error uppercase tracking-wide">
+            <div className="space-y-0.5">
+              <span className="text-[9px] font-medium text-exec-error uppercase tracking-wide">
                 Error
               </span>
-              <pre className="text-[11px] font-mono bg-exec-error/10 text-exec-error rounded p-2 overflow-x-auto">
+              <pre className="text-[10px] font-mono bg-exec-error/10 text-exec-error rounded p-1.5 overflow-x-auto">
                 {tool.error}
               </pre>
             </div>
@@ -193,8 +193,8 @@ export function InlineToolWidget({
 
           {/* Duration */}
           {tool.duration !== undefined && tool.duration > 0 && (
-            <div className="text-[10px] text-muted-foreground">
-              Duration: {tool.duration < 1000 ? `${tool.duration}ms` : `${(tool.duration / 1000).toFixed(2)}s`}
+            <div className="text-[9px] text-muted-foreground">
+              {tool.duration < 1000 ? `${tool.duration}ms` : `${(tool.duration / 1000).toFixed(2)}s`}
             </div>
           )}
         </div>

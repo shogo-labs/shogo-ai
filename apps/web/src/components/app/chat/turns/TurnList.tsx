@@ -62,7 +62,7 @@ export function TurnList({
   const turns = useTurnGrouping(messages, isStreaming, subagentToolCalls)
 
   return (
-    <div className={cn("space-y-6", className)}>
+    <div className={cn("space-y-4", className)}>
       {turns.map((turn, index) => (
         <TurnGroup
           key={turn.id}
