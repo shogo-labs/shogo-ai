@@ -498,6 +498,8 @@ export const EVAL_EDGE_TODO_VS_KANBAN: AgentEval = {
 // ============================================
 
 import { ALL_HARD_EVALS, MULTI_TURN_EVALS, EDGE_CASE_HARD_EVALS } from './test-cases-hard'
+import { ALL_CRM_EVALS, CRM_SCHEMA_EVALS, CRM_UI_EVALS, CRM_EDGE_EVALS } from './test-cases-crm'
+import { ALL_INVENTORY_EVALS, INVENTORY_SCHEMA_EVALS, INVENTORY_UI_EVALS, INVENTORY_EDGE_EVALS } from './test-cases-inventory'
 
 // ============================================
 // Export All Evals
@@ -529,6 +531,8 @@ export const BASIC_EVALS: AgentEval[] = [
 export const ALL_EVALS: AgentEval[] = [
   ...BASIC_EVALS,
   ...ALL_HARD_EVALS,
+  ...ALL_CRM_EVALS,
+  ...ALL_INVENTORY_EVALS,
 ]
 
 export const TEMPLATE_SELECTION_EVALS = ALL_EVALS.filter(
@@ -545,3 +549,7 @@ export const EDGE_CASE_EVALS = ALL_EVALS.filter(
 
 // Re-export hard evals for direct access
 export { ALL_HARD_EVALS, MULTI_TURN_EVALS, EDGE_CASE_HARD_EVALS }
+
+// Re-export template-specific evals
+export { ALL_CRM_EVALS, CRM_SCHEMA_EVALS, CRM_UI_EVALS, CRM_EDGE_EVALS }
+export { ALL_INVENTORY_EVALS, INVENTORY_SCHEMA_EVALS, INVENTORY_UI_EVALS, INVENTORY_EDGE_EVALS }
