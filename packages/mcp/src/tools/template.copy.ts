@@ -23,6 +23,13 @@ import { execSync } from "child_process"
 import { MONOREPO_ROOT } from "../paths"
 import { loadTemplates, type TemplateInfo } from "./template.list"
 
+/**
+ * Check if running in eval mode (uses SQLite for fast, isolated testing)
+ */
+function isEvalMode(): boolean {
+  return process.env.SHOGO_EVAL_MODE === 'true'
+}
+
 // Parameter schema
 const Params = t({
   /** Template name to copy (e.g., "todo-app", "expense-tracker", "crm") */
@@ -288,6 +295,119 @@ function updatePackageJson(projectDir: string, projectName: string): void {
   const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
   pkg.name = projectName
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), "utf-8")
+}
+
+/**
+ * Convert template to SQLite mode for eval/testing
+ * 
+ * This modifies:
+ * 1. prisma/schema.prisma - change provider to sqlite
+ * 2. src/lib/db.ts - use SQLite adapter instead of PostgreSQL
+ * 3. package.json - swap @prisma/adapter-pg for @prisma/adapter-libsql
+ * 4. .env - set DATABASE_URL to file:./dev.db
+ * 5. Regenerate Prisma client for SQLite
+ * 
+ * Called automatically when SHOGO_EVAL_MODE=true
+ */
+function convertToSqliteMode(projectDir: string): void {
+  console.log(`[template.copy] 🧪 Eval mode detected - converting to SQLite for fast testing`)
+  
+  // 1. Transform the Prisma schema
+  const schemaPath = join(projectDir, "prisma/schema.prisma")
+  if (existsSync(schemaPath)) {
+    let schema = readFileSync(schemaPath, "utf-8")
+    
+    // Change provider from postgresql to sqlite
+    schema = schema.replace(
+      /provider\s*=\s*"postgresql"/g,
+      'provider = "sqlite"'
+    )
+    
+    // Convert PostgreSQL-specific defaults
+    // uuid() → cuid() (works on both)
+    schema = schema.replace(/@default\(uuid\(\)\)/g, '@default(cuid())')
+    // dbgenerated("gen_random_uuid()") → cuid()
+    schema = schema.replace(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/g, '@default(cuid())')
+    // auto() → autoincrement() for integer IDs
+    schema = schema.replace(/@default\(auto\(\)\)/g, '@default(autoincrement())')
+    // Remove @db.* native type annotations
+    schema = schema.replace(/@db\.\w+(\([^)]*\))?/g, '')
+    
+    writeFileSync(schemaPath, schema, "utf-8")
+    console.log(`[template.copy] 🧪 Schema converted to SQLite provider`)
+  }
+  
+  // 2. Replace db.ts with SQLite adapter version
+  const dbPath = join(projectDir, "src/lib/db.ts")
+  if (existsSync(dbPath)) {
+    const sqliteDbCode = `import { PrismaLibSql } from '@prisma/adapter-libsql'
+import { PrismaClient } from '../generated/prisma/client'
+
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | undefined
+}
+
+const adapter = new PrismaLibSql({
+  url: process.env.DATABASE_URL || 'file:./dev.db',
+})
+
+export const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    adapter,
+    log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
+  })
+
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+`
+    writeFileSync(dbPath, sqliteDbCode, "utf-8")
+    console.log(`[template.copy] 🧪 db.ts converted to use SQLite adapter`)
+  }
+  
+  // 3. Update package.json to use SQLite adapter instead of PostgreSQL
+  const pkgPath = join(projectDir, "package.json")
+  if (existsSync(pkgPath)) {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
+    
+    // Remove PostgreSQL adapter, add SQLite adapter
+    if (pkg.dependencies) {
+      delete pkg.dependencies['@prisma/adapter-pg']
+      pkg.dependencies['@prisma/adapter-libsql'] = '^7.3.0'
+    }
+    
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), "utf-8")
+    console.log(`[template.copy] 🧪 package.json updated for SQLite`)
+  }
+  
+  // 4. Set DATABASE_URL for SQLite in .env
+  const envPath = join(projectDir, ".env")
+  let envContent = existsSync(envPath) ? readFileSync(envPath, "utf-8") : ''
+  
+  // Remove any existing DATABASE_URL
+  const lines = envContent.split('\n').filter(line => {
+    const trimmed = line.trim()
+    return !trimmed.startsWith('DATABASE_URL=') && !trimmed.startsWith('DATABASE_URL ')
+  })
+  
+  // Add SQLite DATABASE_URL
+  lines.push('DATABASE_URL="file:./dev.db"')
+  writeFileSync(envPath, lines.filter(Boolean).join('\n') + '\n', "utf-8")
+  console.log(`[template.copy] 🧪 DATABASE_URL set to SQLite (file:./dev.db)`)
+  
+  // 5. Regenerate Prisma client for SQLite
+  // This is critical because the copied template may have pre-generated client for PostgreSQL
+  try {
+    console.log(`[template.copy] 🧪 Regenerating Prisma client for SQLite...`)
+    execSync('bunx prisma generate', {
+      cwd: projectDir,
+      env: { ...process.env, DATABASE_URL: 'file:./dev.db' },
+      stdio: 'pipe',
+      timeout: 60000,
+    })
+    console.log(`[template.copy] 🧪 Prisma client regenerated for SQLite`)
+  } catch (error: any) {
+    console.warn(`[template.copy] ⚠️ Failed to regenerate Prisma client: ${error.message}`)
+  }
 }
 
 /**
@@ -569,10 +689,16 @@ export async function executeTemplateCopy(
     updatePackageJson(projectDir, args.name)
     timer.mark('updatePackageJson')
 
-    // Sanitize .env file to remove DATABASE_URL (K8s provides it via env var)
-    // This prevents template's local dev DATABASE_URL from overriding the K8s one
-    sanitizeEnvFile(projectDir)
-    timer.mark('sanitizeEnvFile')
+    // Handle database configuration based on environment
+    if (isEvalMode()) {
+      // Eval mode: Convert to SQLite for fast, isolated testing
+      convertToSqliteMode(projectDir)
+      timer.mark('convertToSqliteMode')
+    } else {
+      // Production/normal mode: Sanitize .env to use environment DATABASE_URL
+      sanitizeEnvFile(projectDir)
+      timer.mark('sanitizeEnvFile')
+    }
 
     // Apply theme if specified
     if (args.theme) {

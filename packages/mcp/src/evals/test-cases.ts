@@ -494,10 +494,16 @@ export const EVAL_EDGE_TODO_VS_KANBAN: AgentEval = {
 }
 
 // ============================================
+// Import Hard Evals
+// ============================================
+
+import { ALL_HARD_EVALS, MULTI_TURN_EVALS, EDGE_CASE_HARD_EVALS } from './test-cases-hard'
+
+// ============================================
 // Export All Evals
 // ============================================
 
-export const ALL_EVALS: AgentEval[] = [
+export const BASIC_EVALS: AgentEval[] = [
   // Direct matches
   EVAL_TODO_DIRECT,
   EVAL_EXPENSE_DIRECT,
@@ -519,6 +525,12 @@ export const ALL_EVALS: AgentEval[] = [
   EVAL_EDGE_TODO_VS_KANBAN,
 ]
 
+// All evals including hard tests
+export const ALL_EVALS: AgentEval[] = [
+  ...BASIC_EVALS,
+  ...ALL_HARD_EVALS,
+]
+
 export const TEMPLATE_SELECTION_EVALS = ALL_EVALS.filter(
   e => e.category === 'template-selection'
 )
@@ -530,3 +542,6 @@ export const TOOL_USAGE_EVALS = ALL_EVALS.filter(
 export const EDGE_CASE_EVALS = ALL_EVALS.filter(
   e => e.category === 'edge-cases'
 )
+
+// Re-export hard evals for direct access
+export { ALL_HARD_EVALS, MULTI_TURN_EVALS, EDGE_CASE_HARD_EVALS }

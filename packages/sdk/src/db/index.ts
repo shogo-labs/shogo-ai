@@ -17,7 +17,9 @@
  * // DATABASE_URL=postgres://user:pass@localhost:5432/mydb
  * 
  * // For testing (SQLite):
+ * // shogo db switch sqlite
  * // DATABASE_URL=file:./test.db bun test
+ * // shogo db switch postgres  # restore for production
  * ```
  */
 
@@ -41,3 +43,13 @@ export {
   type DatabaseProvider,
   type DatabaseAdapterConfig,
 } from './adapters'
+
+// Schema transformer (for CLI and programmatic use)
+export {
+  transformSchema,
+  transformSchemaFile,
+  restoreSchema,
+  detectSchemaProvider,
+  type TransformOptions,
+  type TransformResult,
+} from './schema-transformer'

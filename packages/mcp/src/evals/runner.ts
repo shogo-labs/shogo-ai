@@ -31,7 +31,7 @@ export interface EvalRunnerConfig {
 
 const DEFAULT_CONFIG: Required<EvalRunnerConfig> = {
   agentEndpoint: 'http://localhost:3002/api/chat',
-  timeoutMs: 60000,
+  timeoutMs: 300000, // 5 minutes default for complex tasks
   verbose: false,
   retries: 0,
 }
@@ -173,17 +173,23 @@ export async function runEvalSuite(
   const cfg = { ...DEFAULT_CONFIG, ...config }
   const results: EvalResult[] = []
 
-  for (const eval_ of evals) {
+  for (let i = 0; i < evals.length; i++) {
+    const eval_ = evals[i]
+    const startTime = Date.now()
+    
     if (cfg.verbose) {
-      console.log(`Running eval: ${eval_.name}`)
+      console.log(`\n[${i + 1}/${evals.length}] Running eval: ${eval_.name}`)
+      console.log(`  Started at: ${new Date().toISOString()}`)
+      console.log(`  Timeout: ${(cfg.timeoutMs / 1000 / 60).toFixed(1)} minutes`)
     }
 
     const result = await runEval(eval_, cfg)
     results.push(result)
 
+    const durationSec = ((Date.now() - startTime) / 1000).toFixed(1)
     if (cfg.verbose) {
       console.log(
-        `  ${result.passed ? '✓' : '✗'} Score: ${result.score}/${result.maxScore} (${result.percentage.toFixed(1)}%)`
+        `  ${result.passed ? '✓' : '✗'} Score: ${result.score}/${result.maxScore} (${result.percentage.toFixed(1)}%) in ${durationSec}s`
       )
     }
   }
@@ -285,7 +291,7 @@ async function callAgent(
     }
 
     // Parse streaming response
-    const result = await parseAgentStreamingResponse(response, controller)
+    const result = await parseAgentStreamingResponse(response, controller, config.verbose)
     clearTimeout(timeoutId)
     return result
   } catch (error) {
@@ -313,12 +319,16 @@ async function callAgent(
  */
 async function parseAgentStreamingResponse(
   response: Response,
-  controller: AbortController
+  controller: AbortController,
+  verbose: boolean = false
 ): Promise<{ text: string; toolCalls: ToolCall[] }> {
   const toolCalls: ToolCall[] = []
   const toolInputs: Record<string, string> = {}
   const toolNames: Record<string, string> = {}
   let responseText = ''
+  let stepCount = 0
+  let lastLogTime = Date.now()
+  const LOG_INTERVAL_MS = 5000 // Log progress every 5 seconds
 
   const reader = response.body?.getReader()
   if (!reader) {
@@ -328,11 +338,21 @@ async function parseAgentStreamingResponse(
   const decoder = new TextDecoder()
   let buffer = ''
 
+  const logProgress = (message: string) => {
+    if (verbose) {
+      const elapsed = ((Date.now() - lastLogTime) / 1000).toFixed(1)
+      console.log(`    [${elapsed}s] ${message}`)
+    }
+  }
+
   try {
     while (true) {
       const { done, value } = await reader.read()
       
-      if (done) break
+      if (done) {
+        if (verbose) console.log(`    [Stream] Done - ${toolCalls.length} tool calls captured`)
+        break
+      }
 
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
@@ -345,6 +365,7 @@ async function parseAgentStreamingResponse(
         
         // Check for end of stream
         if (dataStr === '[DONE]') {
+          if (verbose) console.log(`    [Stream] Received [DONE]`)
           return { text: responseText, toolCalls }
         }
 
@@ -355,6 +376,16 @@ async function parseAgentStreamingResponse(
           const data = JSON.parse(dataStr)
           
           switch (data.type) {
+            // Step tracking
+            case 'start-step':
+              stepCount++
+              logProgress(`Step ${stepCount} started`)
+              break
+              
+            case 'finish-step':
+              logProgress(`Step ${stepCount} finished`)
+              break
+              
             // Text handling
             case 'text-delta':
               responseText += data.delta || ''
@@ -367,6 +398,7 @@ async function parseAgentStreamingResponse(
             case 'tool-input-start':
               toolInputs[data.toolCallId] = ''
               toolNames[data.toolCallId] = data.toolName || 'unknown'
+              logProgress(`Tool started: ${data.toolName}`)
               break
               
             case 'tool-input-delta':
@@ -393,6 +425,8 @@ async function parseAgentStreamingResponse(
                   normalizedName = `template.${match[1]}`
                 }
               }
+              
+              logProgress(`Tool input ready: ${normalizedName}`)
               
               // Map tool names to our expected format
               // The Shogo agent uses template.list and template.copy
@@ -422,6 +456,10 @@ async function parseAgentStreamingResponse(
               }
               break
             }
+            
+            case 'tool-output-available':
+              logProgress(`Tool output received`)
+              break
               
             case 'tool-result':
               // Update the most recent matching tool call with result
@@ -431,6 +469,7 @@ async function parseAgentStreamingResponse(
                   break
                 }
               }
+              logProgress(`Tool result captured (${toolCalls.length} total)`)
               break
               
             // Legacy format support
@@ -445,6 +484,12 @@ async function parseAgentStreamingResponse(
         } catch {
           // Skip non-JSON lines (keepalive messages, etc.)
         }
+      }
+      
+      // Periodic progress log
+      if (verbose && Date.now() - lastLogTime > LOG_INTERVAL_MS) {
+        console.log(`    [Progress] ${toolCalls.length} tool calls, ${responseText.length} chars text`)
+        lastLogTime = Date.now()
       }
     }
   } finally {

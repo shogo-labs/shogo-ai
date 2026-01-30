@@ -16,7 +16,6 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
-    "@prisma/adapter-libsql": "^7.3.0",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",
     "@shogo-ai/sdk": "^0.1.0",

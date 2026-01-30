@@ -10,6 +10,10 @@
 #   - template.list - List available templates
 #   - template.copy - Copy a template to set up a project
 #
+# EVAL MODE:
+#   SHOGO_EVAL_MODE=true enables automatic SQLite conversion for templates.
+#   This allows fast, isolated testing without needing a PostgreSQL database.
+#
 # This is different from the platform /api/chat which uses persona-based prompts
 # without template tools.
 
@@ -36,6 +40,7 @@ echo ""
 echo "  PROJECT_ID: $PROJECT_ID"
 echo "  PROJECT_DIR: $PROJECT_DIR"
 echo "  PORT: $PORT"
+echo "  SHOGO_EVAL_MODE: true (SQLite auto-conversion enabled)"
 echo ""
 echo "  Agent endpoint: http://localhost:$PORT/agent/chat"
 echo ""
@@ -48,9 +53,11 @@ echo ""
 # Change to project-runtime directory
 cd "$(dirname "$0")/../../../../packages/project-runtime"
 
-# Start the server with MCP server configured
+# Start the server with eval mode enabled
+# SHOGO_EVAL_MODE=true causes template.copy to automatically convert to SQLite
 PROJECT_ID="$PROJECT_ID" \
 PROJECT_DIR="$PROJECT_DIR" \
 PORT="$PORT" \
 MCP_SERVER_PATH="$MCP_SERVER_PATH" \
+SHOGO_EVAL_MODE="true" \
 bun run src/server.ts

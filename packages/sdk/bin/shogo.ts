@@ -2,7 +2,11 @@
 /**
  * Shogo SDK CLI
  *
- * Generate routes, types, and stores from Prisma schema.
+ * Commands:
+ *   shogo generate                  # Generate routes, types, stores from Prisma
+ *   shogo db switch sqlite          # Switch schema to SQLite for testing
+ *   shogo db switch postgres        # Switch schema back to PostgreSQL
+ *   shogo db status                 # Show current schema provider
  *
  * Usage:
  *   shogo generate                           # Use shogo.config.json
@@ -14,6 +18,11 @@ import { parseArgs } from 'util'
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { generateFromPrisma, type GenerateOptions, type OutputConfig } from '../src/generators/prisma-generator'
+import { 
+  transformSchemaFile, 
+  detectSchemaProvider,
+  type DatabaseProvider as SchemaProvider 
+} from '../src/db/schema-transformer'
 
 // ============================================================================
 // Types
@@ -61,6 +70,20 @@ const { values, positionals } = parseArgs({
       type: 'boolean',
       short: 'h',
     },
+    verbose: {
+      type: 'boolean',
+      short: 'v',
+    },
+    // DB-specific options
+    push: {
+      type: 'boolean',
+    },
+    'no-generate': {
+      type: 'boolean',
+    },
+    url: {
+      type: 'string',
+    },
   },
   allowPositionals: true,
 })
@@ -74,18 +97,43 @@ function printHelp() {
 Shogo SDK CLI
 
 Usage:
-  shogo generate [options]
+  shogo <command> [options]
 
 Commands:
-  generate    Generate routes, types, and stores from Prisma schema
+  generate              Generate routes, types, and stores from Prisma schema
+  db switch <provider>  Switch Prisma schema provider (sqlite | postgres)
+  db status             Show current schema provider
 
-Options:
+Generate Options:
   -c, --config <path>    Path to shogo.config.json (default: ./shogo.config.json)
   -s, --schema <path>    Path to Prisma schema (overrides config)
   -o, --output <path>    Output directory (legacy single-dir mode)
   -m, --models <list>    Comma-separated list of models to include
   -e, --exclude <list>   Comma-separated list of models to exclude
+
+DB Options:
+  -s, --schema <path>    Path to Prisma schema (default: ./prisma/schema.prisma)
+  --push                 Run prisma db push after switching (creates SQLite DB)
+  --no-generate          Skip prisma generate after switching
+  --url <url>            DATABASE_URL to use
+
+General Options:
   -h, --help             Show this help message
+  -v, --verbose          Show verbose output
+
+Examples:
+  # Code generation
+  shogo generate                              # Use config file
+  shogo generate --config ./custom.json       # Custom config
+
+  # Database provider switching (for testing)
+  shogo db switch sqlite                      # Switch to SQLite for tests
+  shogo db switch sqlite --push               # Switch + create DB file
+  DATABASE_URL=file:./test.db bun test        # Run tests with SQLite
+  shogo db switch postgres                    # Switch back to PostgreSQL
+
+  # Check current provider
+  shogo db status                             # Show current provider
 
 Config File (shogo.config.json):
   {
@@ -104,11 +152,39 @@ Config File (shogo.config.json):
       }
     ]
   }
+`)
+}
+
+function printDbHelp() {
+  console.log(`
+Shogo DB Commands
+
+Switch your Prisma schema between PostgreSQL and SQLite providers.
+This enables fast local testing with SQLite while using PostgreSQL in production.
+
+Usage:
+  shogo db switch <provider>   Switch to sqlite or postgres
+  shogo db status              Show current provider
+
+Options:
+  -s, --schema <path>    Path to Prisma schema (default: ./prisma/schema.prisma)
+  --push                 Run prisma db push after switching (useful for SQLite)
+  --no-generate          Skip prisma generate after switching
+  --url <url>            DATABASE_URL to use
+  -v, --verbose          Show verbose output
 
 Examples:
-  shogo generate                              # Use config file
-  shogo generate --config ./custom.json       # Custom config
-  shogo generate --schema ./db.prisma --output ./gen  # Legacy mode
+  # Quick workflow for SQLite testing
+  shogo db switch sqlite --push              # Switch + create test.db
+  DATABASE_URL=file:./test.db bun test       # Run tests
+  shogo db switch postgres                   # Restore for production
+
+  # Integration testing with PostgreSQL
+  shogo db switch postgres
+  DATABASE_URL=postgres://... bun test       # Run against real PostgreSQL
+
+Note: The schema provider must match the adapter type. When you switch
+providers, the Prisma client is regenerated to use the new provider.
 `)
 }
 
@@ -139,10 +215,112 @@ function loadConfig(cwd: string): ShogoConfig | null {
 // Main
 // ============================================================================
 
+// ============================================================================
+// DB Command Handler
+// ============================================================================
+
+async function handleDbCommand() {
+  const subcommand = positionals[1]
+  const cwd = process.cwd()
+  
+  if (!subcommand || values.help) {
+    printDbHelp()
+    process.exit(subcommand ? 0 : 1)
+  }
+  
+  // Determine schema path
+  const schemaPath = values.schema 
+    ? resolve(cwd, values.schema as string)
+    : resolve(cwd, './prisma/schema.prisma')
+  
+  if (!existsSync(schemaPath)) {
+    console.error(`❌ Schema not found: ${schemaPath}`)
+    process.exit(1)
+  }
+  
+  const verbose = values.verbose as boolean || false
+  
+  switch (subcommand) {
+    case 'switch': {
+      const provider = positionals[2] as SchemaProvider
+      
+      if (!provider || !['sqlite', 'postgres', 'postgresql'].includes(provider)) {
+        console.error('❌ Please specify a provider: sqlite or postgres')
+        console.error('   Usage: shogo db switch <sqlite|postgres>')
+        process.exit(1)
+      }
+      
+      const targetProvider: SchemaProvider = provider === 'postgres' ? 'postgresql' : provider as SchemaProvider
+      
+      console.log(`🔄 Switching schema to ${targetProvider}...`)
+      
+      try {
+        const result = await transformSchemaFile({
+          schemaPath,
+          targetProvider,
+          generate: !(values['no-generate'] as boolean),
+          push: values.push as boolean,
+          databaseUrl: values.url as string,
+          verbose,
+        })
+        
+        if (result.modified) {
+          console.log(`✅ Schema switched from ${result.originalProvider} to ${result.newProvider}`)
+        } else {
+          console.log(`✅ Schema already using ${result.newProvider}`)
+        }
+        
+        if (result.warnings.length > 0) {
+          console.log('')
+          console.log('⚠️  Warnings:')
+          for (const warning of result.warnings) {
+            console.log(`   - ${warning}`)
+          }
+        }
+        
+        console.log('')
+        if (targetProvider === 'sqlite') {
+          console.log('Next steps:')
+          console.log('  DATABASE_URL=file:./test.db bun test')
+          console.log('')
+          console.log('To restore PostgreSQL:')
+          console.log('  shogo db switch postgres')
+        } else {
+          console.log('Schema restored to PostgreSQL for production use.')
+        }
+        
+      } catch (error) {
+        console.error(`❌ Failed: ${error instanceof Error ? error.message : error}`)
+        process.exit(1)
+      }
+      break
+    }
+    
+    case 'status': {
+      const content = readFileSync(schemaPath, 'utf-8')
+      const provider = detectSchemaProvider(content)
+      
+      console.log(`📊 Schema Status`)
+      console.log(`   Path: ${schemaPath}`)
+      console.log(`   Provider: ${provider || 'unknown'}`)
+      break
+    }
+    
+    default:
+      console.error(`Unknown db subcommand: ${subcommand}`)
+      printDbHelp()
+      process.exit(1)
+  }
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
 async function main() {
   const command = positionals[0]
 
-  if (values.help) {
+  if (values.help && !command) {
     printHelp()
     process.exit(0)
   }
@@ -150,6 +328,12 @@ async function main() {
   if (!command) {
     printHelp()
     process.exit(1)
+  }
+
+  // Handle db command
+  if (command === 'db') {
+    await handleDbCommand()
+    process.exit(0)
   }
 
   if (command !== 'generate') {
