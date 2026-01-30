@@ -18,6 +18,7 @@ COPY tsconfig.base.json ./
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
+COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/api/package.json ./apps/api/
 
 # Install all dependencies
@@ -27,6 +28,7 @@ RUN bun install
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 COPY packages/project-runtime ./packages/project-runtime
+COPY packages/sdk ./packages/sdk
 COPY apps/api ./apps/api
 
 # Copy prisma schema for generation
@@ -36,7 +38,11 @@ COPY prisma ./prisma
 # Use local prisma from node_modules to ensure correct version (v6)
 RUN ./node_modules/.bin/prisma generate
 
-# Build state-api first (dependency)
+# Build SDK first (dependency of api)
+WORKDIR /app/packages/sdk
+RUN bun run build
+
+# Build state-api (dependency)
 WORKDIR /app/packages/state-api
 RUN bun run build
 
@@ -73,6 +79,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/state-api ./packages/state-api
 COPY --from=builder /app/packages/mcp ./packages/mcp
 COPY --from=builder /app/packages/project-runtime ./packages/project-runtime
+COPY --from=builder /app/packages/sdk ./packages/sdk
 COPY --from=builder /app/apps/api ./apps/api
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./
