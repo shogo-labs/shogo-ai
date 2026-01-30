@@ -1,0 +1,10 @@
+[
+  { "id": "cat-food", "name": "Food & Dining", "icon": "utensils", "color": "#ef4444" },
+  { "id": "cat-transport", "name": "Transportation", "icon": "car", "color": "#3b82f6" },
+  { "id": "cat-entertainment", "name": "Entertainment", "icon": "film", "color": "#8b5cf6" },
+  { "id": "cat-utilities", "name": "Utilities", "icon": "zap", "color": "#f59e0b" },
+  { "id": "cat-shopping", "name": "Shopping", "icon": "shopping-bag", "color": "#ec4899" },
+  { "id": "cat-health", "name": "Health & Fitness", "icon": "heart", "color": "#10b981" },
+  { "id": "cat-travel", "name": "Travel", "icon": "plane", "color": "#06b6d4" },
+  { "id": "cat-other", "name": "Other", "icon": "more-horizontal", "color": "#6b7280" }
+]

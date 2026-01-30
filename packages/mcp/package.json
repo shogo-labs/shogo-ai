@@ -10,7 +10,10 @@
     "start": "bun src/server.ts",
     "start:http": "bun src/server-http.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "evals": "bun src/evals/cli.ts",
+    "evals:verbose": "bun src/evals/cli.ts --verbose",
+    "evals:templates": "bun src/evals/cli.ts --category template-selection --verbose"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.50",
