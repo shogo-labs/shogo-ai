@@ -365,6 +365,165 @@ def export_to_persona_prompts(
     return optimized_section
 
 
+def export_to_system_prompt(
+    template_instructions: Dict[str, str],
+    schema_instructions: Dict[str, str],
+    prompt_file: Path,
+    dry_run: bool = False
+) -> str:
+    """Update the system-prompt.ts file with DSPy-optimized prompts.
+    
+    This modifies the exported constants in the system-prompt.ts file:
+    - TEMPLATE_SELECTION_GUIDE
+    - SCHEMA_MODIFICATIONS
+    
+    Args:
+        template_instructions: Instructions from optimized_agent_template_mipro.json
+        schema_instructions: Instructions from optimized_schema_agent.json
+        prompt_file: Path to packages/project-runtime/src/system-prompt.ts
+        dry_run: If True, preview changes without writing
+    
+    Returns:
+        Summary of changes made
+    """
+    if not prompt_file.exists():
+        raise FileNotFoundError(f"System prompt file not found: {prompt_file}")
+    
+    content = prompt_file.read_text()
+    changes = []
+    
+    # Extract template selection instructions
+    template_prompt = template_instructions.get('select.predict', 
+                      template_instructions.get('select', ''))
+    
+    if template_prompt:
+        # Find the TEMPLATE_SELECTION_GUIDE constant
+        marker = "export const TEMPLATE_SELECTION_GUIDE = `"
+        template_start = content.find(marker)
+        if template_start == -1:
+            print("Warning: Could not find 'TEMPLATE_SELECTION_GUIDE' constant")
+        else:
+            # Find the closing backtick
+            content_start = template_start + len(marker)
+            template_end = content.find('`', content_start)
+            
+            if template_end != -1:
+                # Build new template guide content
+                # The DSPy-optimized prompt already includes the template list
+                new_template_content = f'''## Template Selection Guide
+
+{template_prompt}'''
+                
+                content = content[:content_start] + new_template_content + content[template_end:]
+                changes.append("Updated TEMPLATE_SELECTION_GUIDE")
+    
+    # Extract schema modification instructions
+    plan_prompt = schema_instructions.get('plan.predict', 
+                  schema_instructions.get('plan', ''))
+    generate_prompt = schema_instructions.get('generate.predict',
+                      schema_instructions.get('generate', ''))
+    
+    if plan_prompt or generate_prompt:
+        # Find the SCHEMA_MODIFICATIONS constant
+        marker = "export const SCHEMA_MODIFICATIONS = `"
+        schema_start = content.find(marker)
+        if schema_start == -1:
+            print("Warning: Could not find 'SCHEMA_MODIFICATIONS' constant")
+        else:
+            # Find the closing backtick (need to handle escaped backticks)
+            content_start = schema_start + len(marker)
+            # Find closing backtick that's not escaped
+            pos = content_start
+            while pos < len(content):
+                next_backtick = content.find('`', pos)
+                if next_backtick == -1:
+                    break
+                # Check if it's escaped
+                if next_backtick > 0 and content[next_backtick-1] == '\\':
+                    pos = next_backtick + 1
+                    continue
+                schema_end = next_backtick
+                break
+            
+            if schema_end:
+                # Build new schema section with DSPy-optimized prompts
+                # Use raw string parts to avoid f-string backslash issues
+                backtick = '\\`'
+                triple_backtick = '\\`\\`\\`'
+                
+                # Use DSPy-optimized plan prompt or default
+                plan_text = plan_prompt if plan_prompt else "You are an intelligent schema modification assistant. When users request to add or modify data fields, carefully analyze the request and determine precise database schema modifications."
+                
+                # Use DSPy-optimized generate prompt or default
+                generate_text = generate_prompt if generate_prompt else f"""When generating Prisma field code:
+- Use camelCase for field names
+- Add {backtick}?{backtick} for optional fields
+- Create full enum definitions when a custom enum type is specified
+- Ensure type accuracy and schema compatibility"""
+                
+                new_schema_content = f"""## Schema Modifications (IMPORTANT)
+
+{plan_text}
+
+### Prisma Code Generation Rules
+
+{generate_text}
+
+### Workflow
+
+1. **ALWAYS modify {backtick}prisma/schema.prisma{backtick}** - This is the source of truth for data models
+2. **NEVER directly edit files in {backtick}src/generated/{backtick}** - These are auto-generated from the schema
+3. **After schema changes, ALWAYS run**: {backtick}DATABASE_URL="file:./dev.db" bunx prisma generate && bunx prisma db push{backtick}
+4. **Then update the UI** in {backtick}src/routes/{backtick} or {backtick}src/components/{backtick} to use the new fields
+
+### Example: Adding a "priority" field to Todo
+
+1. Edit {backtick}prisma/schema.prisma{backtick}:
+   {triple_backtick}prisma
+   enum Priority {{
+     LOW
+     MEDIUM
+     HIGH
+   }}
+   
+   model Todo {{
+     ...
+     priority Priority? @default(MEDIUM)
+   }}
+   {triple_backtick}
+
+2. Run: {backtick}DATABASE_URL="file:./dev.db" bunx prisma generate && bunx prisma db push{backtick}
+
+3. Update UI in {backtick}src/routes/index.tsx{backtick} to display/edit priority
+
+### Files You Should NEVER Edit Directly
+
+- {backtick}src/generated/prisma/*{backtick} - Auto-generated Prisma client
+- {backtick}src/generated/types.ts{backtick} - Auto-generated TypeScript types
+- {backtick}src/generated/*.ts{backtick} - All generated files
+
+These files are regenerated from {backtick}prisma/schema.prisma{backtick}. Editing them directly will be overwritten."""
+                
+                content = content[:content_start] + new_schema_content + content[schema_end:]
+                changes.append("Updated SCHEMA_MODIFICATIONS")
+    
+    if dry_run:
+        print("=== DRY RUN - Would make these changes: ===")
+        for change in changes:
+            print(f"  - {change}")
+        return "\n".join(changes)
+    
+    if changes:
+        prompt_file.write_text(content)
+        print(f"Updated: {prompt_file}")
+        for change in changes:
+            print(f"  - {change}")
+    else:
+        print("No changes made - could not find sections to update")
+    
+    return "\n".join(changes)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Export DSPy-optimized prompts to TypeScript"
@@ -372,7 +531,17 @@ def main():
     parser.add_argument(
         "--input", "-i",
         type=str,
-        help="Path to optimized agent JSON file"
+        help="Path to optimized agent JSON file (for ts/md/persona formats)"
+    )
+    parser.add_argument(
+        "--template-agent",
+        type=str,
+        help="Path to optimized template agent JSON (for server format)"
+    )
+    parser.add_argument(
+        "--schema-agent",
+        type=str,
+        help="Path to optimized schema agent JSON (for server format)"
     )
     parser.add_argument(
         "--output", "-o",
@@ -381,9 +550,9 @@ def main():
     )
     parser.add_argument(
         "--format", "-f",
-        choices=["ts", "md", "persona"],
+        choices=["ts", "md", "persona", "server"],
         default="ts",
-        help="Output format: ts (TypeScript), md (Markdown), persona (update persona-prompts.ts)"
+        help="Output format: ts (TypeScript), md (Markdown), persona (update persona-prompts.ts), server (update project-runtime server.ts)"
     )
     parser.add_argument(
         "--dry-run",
@@ -396,10 +565,62 @@ def main():
         default="apps/api/src/prompts/persona-prompts.ts",
         help="Path to persona-prompts.ts for --format persona"
     )
+    parser.add_argument(
+        "--prompt-file",
+        type=str,
+        default="packages/project-runtime/src/system-prompt.ts",
+        help="Path to system-prompt.ts for --format server"
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default="packages/mcp/src/evals/dspy/results",
+        help="Directory containing DSPy results (for auto-discovery)"
+    )
     
     args = parser.parse_args()
     
-    # Load the optimized agent
+    # Handle server format (uses both template and schema agents)
+    if args.format == "server":
+        results_dir = Path(args.results_dir)
+        
+        # Auto-discover or use provided paths
+        template_agent_path = args.template_agent or results_dir / "optimized_agent_template_mipro.json"
+        schema_agent_path = args.schema_agent or results_dir / "optimized_schema_agent.json"
+        
+        template_instructions = {}
+        schema_instructions = {}
+        
+        if Path(template_agent_path).exists():
+            print(f"Loading template agent from: {template_agent_path}")
+            template_data = load_optimized_agent(str(template_agent_path))
+            template_instructions = extract_instructions_from_agent(template_data)
+            print(f"  Extracted {len(template_instructions)} template instructions")
+        else:
+            print(f"Warning: Template agent not found at {template_agent_path}")
+        
+        if Path(schema_agent_path).exists():
+            print(f"Loading schema agent from: {schema_agent_path}")
+            schema_data = load_optimized_agent(str(schema_agent_path))
+            schema_instructions = extract_instructions_from_agent(schema_data)
+            print(f"  Extracted {len(schema_instructions)} schema instructions")
+        else:
+            print(f"Warning: Schema agent not found at {schema_agent_path}")
+        
+        if not template_instructions and not schema_instructions:
+            print("Error: No optimized agents found. Run DSPy optimization first:")
+            print("  python optimize.py --model claude-3-5-haiku-20241022 --output ./results")
+            return
+        
+        prompt_path = Path(args.prompt_file)
+        output = export_to_system_prompt(
+            template_instructions, schema_instructions, prompt_path, args.dry_run
+        )
+        if not args.dry_run and output:
+            print(f"\n✅ Successfully updated {prompt_path}")
+        return
+    
+    # Load the optimized agent (for other formats)
     if args.input:
         print(f"Loading optimized agent from: {args.input}")
         agent_data = load_optimized_agent(args.input)
