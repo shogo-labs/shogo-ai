@@ -15,6 +15,12 @@ import { runEval, type EvalRunnerConfig } from './runner'
 import { ALL_CRM_EVALS } from './test-cases-crm'
 import { ALL_INVENTORY_EVALS } from './test-cases-inventory'
 import { ALL_HARD_EVALS } from './test-cases-hard'
+import { 
+  ALL_BUSINESS_USER_EVALS,
+  VAGUE_BUSINESS_LANGUAGE_EVALS,
+  LEVEL_5_BUSINESS_EVALS,
+  LEVEL_6_BUSINESS_EVALS,
+} from './test-cases-business-user'
 import type { AgentEval, EvalResult } from './types'
 import { mkdirSync, rmSync, existsSync, writeFileSync } from 'fs'
 
@@ -58,9 +64,13 @@ function getEvals(template: string): AgentEval[] {
     case 'crm': return ALL_CRM_EVALS
     case 'inventory': return ALL_INVENTORY_EVALS
     case 'hard': return ALL_HARD_EVALS
-    case 'all': return [...ALL_CRM_EVALS, ...ALL_INVENTORY_EVALS, ...ALL_HARD_EVALS]
+    case 'business': return ALL_BUSINESS_USER_EVALS
+    case 'vague': return VAGUE_BUSINESS_LANGUAGE_EVALS
+    case 'level5': return LEVEL_5_BUSINESS_EVALS
+    case 'level6': return LEVEL_6_BUSINESS_EVALS
+    case 'all': return [...ALL_CRM_EVALS, ...ALL_INVENTORY_EVALS, ...ALL_HARD_EVALS, ...ALL_BUSINESS_USER_EVALS]
     default:
-      console.error(`Unknown template: ${template}`)
+      console.error(`Unknown template: ${template}. Valid options: crm, inventory, hard, business, vague, level5, level6, all`)
       process.exit(1)
   }
 }
@@ -354,25 +364,55 @@ async function main() {
     ? results.reduce((s, r) => s + r.score, 0) / results.length 
     : 0
   
+  // Calculate intention vs execution scores
+  let totalIntentionScore = 0
+  let totalIntentionMax = 0
+  let totalExecutionScore = 0
+  let totalExecutionMax = 0
+  
+  for (const r of results) {
+    if (r.phaseScores) {
+      totalIntentionScore += r.phaseScores.intention.score
+      totalIntentionMax += r.phaseScores.intention.maxScore
+      totalExecutionScore += r.phaseScores.execution.score
+      totalExecutionMax += r.phaseScores.execution.maxScore
+    }
+  }
+  
+  const intentionPct = totalIntentionMax > 0 ? (totalIntentionScore / totalIntentionMax * 100) : 0
+  const executionPct = totalExecutionMax > 0 ? (totalExecutionScore / totalExecutionMax * 100) : 100
+  
   console.log(``)
   console.log(`Total:        ${results.length}`)
   console.log(`Passed:       ${passed} (${(passed / results.length * 100).toFixed(1)}%)`)
   console.log(`Failed:       ${failed}`)
   console.log(`Avg Score:    ${avgScore.toFixed(1)}`)
   console.log(``)
+  console.log('INTENTION vs EXECUTION')
+  console.log('─'.repeat(50))
+  console.log(`🎯 Intention:  ${intentionPct.toFixed(1)}% (${totalIntentionScore}/${totalIntentionMax} pts)`)
+  console.log(`⚙️  Execution:  ${executionPct.toFixed(1)}% (${totalExecutionScore}/${totalExecutionMax} pts)`)
+  console.log(``)
   console.log(`⏱️  Total Time:    ${overallTime.toFixed(1)}s`)
   console.log(`   Per Eval:      ${(overallTime / results.length).toFixed(1)}s avg`)
   console.log(`   Sequential:    ~${(results.length * 90)}s estimated`)
   console.log(`   Speedup:       ~${((results.length * 90) / overallTime).toFixed(1)}x`)
   
-  // Failed evals
-  if (failed > 0) {
-    console.log('')
-    console.log('❌ FAILED:')
-    for (const r of results.filter(r => !r.passed)) {
-      const ev = evals.find(e => e.id === r.evalId)
-      console.log(`  ✗ ${ev?.name}: ${r.score}/${ev?.maxScore}`)
-    }
+  // Individual results with intent/exec scores
+  console.log('')
+  console.log('INDIVIDUAL RESULTS')
+  console.log('─'.repeat(70))
+  console.log('Name'.padEnd(40) + 'Score'.padEnd(10) + 'Intent'.padEnd(10) + 'Exec')
+  console.log('─'.repeat(70))
+  
+  for (const r of results) {
+    const ev = evals.find(e => e.id === r.evalId)
+    const name = (ev?.name || r.evalId).slice(0, 38)
+    const status = r.passed ? '✓' : '✗'
+    const score = `${r.score}/${ev?.maxScore || 100}`
+    const intentPct = r.phaseScores ? `${r.phaseScores.intention.percentage.toFixed(0)}%` : 'N/A'
+    const execPct = r.phaseScores ? `${r.phaseScores.execution.percentage.toFixed(0)}%` : 'N/A'
+    console.log(`${status} ${name.padEnd(38)} ${score.padEnd(10)} ${intentPct.padEnd(10)} ${execPct}`)
   }
   
   // Export for DSPy

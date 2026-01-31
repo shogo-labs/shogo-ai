@@ -170,14 +170,31 @@ export async function runEval(
     projectDir: cfg.projectDir,  // Pass project directory for file validation
   }
 
+  // Track scores by phase
+  let intentionScore = 0
+  let intentionMaxScore = 0
+  let executionScore = 0
+  let executionMaxScore = 0
+
   for (const criterion of eval_.validationCriteria) {
     try {
       const passed = criterion.validate(evalResultBase)
       const pointsEarned = passed ? criterion.points : 0
       totalScore += pointsEarned
 
+      // Track by phase (default to 'intention' if not specified)
+      const phase = criterion.phase || 'intention'
+      if (phase === 'intention') {
+        intentionScore += pointsEarned
+        intentionMaxScore += criterion.points
+      } else {
+        executionScore += pointsEarned
+        executionMaxScore += criterion.points
+      }
+
       if (cfg.verbose) {
-        console.log(`    ${passed ? '✓' : '✗'} ${criterion.description}: ${pointsEarned}/${criterion.points}`)
+        const phaseLabel = phase === 'execution' ? '⚙️' : '🎯'
+        console.log(`    ${passed ? '✓' : '✗'} ${phaseLabel} ${criterion.description}: ${pointsEarned}/${criterion.points}`)
       }
 
       criteriaResults.push({
@@ -194,6 +211,13 @@ export async function runEval(
         passed: false,
         pointsEarned: 0,
       })
+      // Still track max score for failed criteria
+      const phase = criterion.phase || 'intention'
+      if (phase === 'intention') {
+        intentionMaxScore += criterion.points
+      } else {
+        executionMaxScore += criterion.points
+      }
     }
   }
 
@@ -213,6 +237,25 @@ export async function runEval(
   const percentage = (finalScore / eval_.maxScore) * 100
   const passed = percentage >= 70 && triggeredAntiPatterns.length === 0
 
+  // Calculate phase scores
+  const phaseScores = {
+    intention: {
+      score: intentionScore,
+      maxScore: intentionMaxScore,
+      percentage: intentionMaxScore > 0 ? (intentionScore / intentionMaxScore) * 100 : 100,
+    },
+    execution: {
+      score: executionScore,
+      maxScore: executionMaxScore,
+      percentage: executionMaxScore > 0 ? (executionScore / executionMaxScore) * 100 : 100,
+    },
+  }
+
+  if (cfg.verbose && (intentionMaxScore > 0 || executionMaxScore > 0)) {
+    console.log(`    📊 Intention: ${intentionScore}/${intentionMaxScore} (${phaseScores.intention.percentage.toFixed(0)}%)`)
+    console.log(`    📊 Execution: ${executionScore}/${executionMaxScore} (${phaseScores.execution.percentage.toFixed(0)}%)`)
+  }
+
   return {
     ...evalResultBase,
     passed,
@@ -220,6 +263,7 @@ export async function runEval(
     percentage,
     criteriaResults,
     triggeredAntiPatterns,
+    phaseScores,
   }
 }
 
@@ -260,12 +304,27 @@ export async function runEvalSuite(
   const totalPoints = results.reduce((sum, r) => sum + r.score, 0)
   const maxPoints = results.reduce((sum, r) => sum + r.maxScore, 0)
 
-  // Calculate by category
-  const byCategory: Record<EvalCategory, CategorySummary> = {
-    'template-selection': calculateCategorySummary(results, 'template-selection'),
-    'tool-usage': calculateCategorySummary(results, 'tool-usage'),
-    'multi-turn': calculateCategorySummary(results, 'multi-turn'),
-    'edge-cases': calculateCategorySummary(results, 'edge-cases'),
+  // Calculate by category - dynamically based on what's in results
+  const allCategories: EvalCategory[] = [
+    'template-selection',
+    'tool-usage', 
+    'multi-turn',
+    'edge-cases',
+    // Business user categories
+    'business-language',
+    'business-logic-confusion',
+    'multi-turn-coherence',
+    'relationship-changes',
+    'graceful-degradation',
+    'error-recovery',
+    'conditional-logic',
+    'migration-concerns',
+    'framework-specific',
+  ]
+  
+  const byCategory = {} as Record<EvalCategory, CategorySummary>
+  for (const category of allCategories) {
+    byCategory[category] = calculateCategorySummary(results, category)
   }
 
   return {
@@ -311,30 +370,74 @@ function calculateCategorySummary(
 
 /**
  * Call the agent API
+ * 
+ * For multi-turn evals with conversationHistory, we execute each turn sequentially
+ * to build up real project state before running the final eval turn.
  */
 async function callAgent(
   eval_: AgentEval,
   config: Required<EvalRunnerConfig>
 ): Promise<ParsedAgentResponse> {
-  // Build messages array
-  const messages = []
-
-  // Add conversation history if present
-  if (eval_.conversationHistory) {
-    for (const turn of eval_.conversationHistory) {
-      messages.push({
-        role: turn.role,
-        content: turn.content,
-      })
+  // Track accumulated messages for context
+  const messages: Array<{ role: string; content: string }> = []
+  
+  // If there's conversation history, execute each user turn to build real state
+  if (eval_.conversationHistory && eval_.conversationHistory.length > 0) {
+    if (config.verbose) {
+      console.log(`    [Multi-turn] Executing ${eval_.conversationHistory.length} history turns first...`)
+    }
+    
+    for (let i = 0; i < eval_.conversationHistory.length; i++) {
+      const turn = eval_.conversationHistory[i]
+      
+      if (turn.role === 'user') {
+        // Execute user turn and wait for response
+        messages.push({ role: 'user', content: turn.content })
+        
+        if (config.verbose) {
+          console.log(`    [History ${i + 1}] User: "${turn.content.slice(0, 50)}..."`)
+        }
+        
+        try {
+          const historyResponse = await executeAgentTurn(messages, config)
+          // Add assistant response to context
+          messages.push({ role: 'assistant', content: historyResponse.text })
+          
+          if (config.verbose) {
+            console.log(`    [History ${i + 1}] Assistant responded (${historyResponse.toolCalls.length} tools)`)
+          }
+        } catch (error) {
+          if (config.verbose) {
+            console.log(`    [History ${i + 1}] Error: ${error}`)
+          }
+          // Continue with next turn even if one fails
+        }
+      } else if (turn.role === 'assistant') {
+        // For assistant turns in history, use the provided content
+        // (this allows tests to control what the assistant "said")
+        messages.push({ role: 'assistant', content: turn.content })
+      }
+    }
+    
+    if (config.verbose) {
+      console.log(`    [Multi-turn] History complete, now executing final turn...`)
     }
   }
 
-  // Add current input
-  messages.push({
-    role: 'user',
-    content: eval_.input,
-  })
+  // Add the final eval input
+  messages.push({ role: 'user', content: eval_.input })
+  
+  // Execute the final turn and return its response
+  return executeAgentTurn(messages, config)
+}
 
+/**
+ * Execute a single agent turn with the given message history
+ */
+async function executeAgentTurn(
+  messages: Array<{ role: string; content: string }>,
+  config: Required<EvalRunnerConfig>
+): Promise<ParsedAgentResponse> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs)
 
@@ -663,6 +766,21 @@ export function formatEvalReport(suiteResult: EvalSuiteResult): string {
   lines.push(`Avg Score:   ${suiteResult.summary.averageScore.toFixed(1)}`)
   lines.push('')
 
+  // Intention vs Execution breakdown
+  const resultsWithPhases = suiteResult.results.filter(r => r.phaseScores)
+  if (resultsWithPhases.length > 0) {
+    const avgIntention = resultsWithPhases.reduce((sum, r) => 
+      sum + (r.phaseScores?.intention.percentage || 0), 0) / resultsWithPhases.length
+    const avgExecution = resultsWithPhases.reduce((sum, r) => 
+      sum + (r.phaseScores?.execution.percentage || 0), 0) / resultsWithPhases.length
+    
+    lines.push('INTENTION vs EXECUTION')
+    lines.push('-'.repeat(50))
+    lines.push(`🎯 Intention:  ${avgIntention.toFixed(1)}% (understood the request)`)
+    lines.push(`⚙️  Execution:  ${avgExecution.toFixed(1)}% (code actually works)`)
+    lines.push('')
+  }
+
   // Aggregate metrics
   const totalToolCalls = suiteResult.results.reduce((sum, r) => sum + r.metrics.toolCallCount, 0)
   const totalTokens = suiteResult.results.reduce((sum, r) => sum + r.metrics.tokens.total, 0)
@@ -696,18 +814,22 @@ export function formatEvalReport(suiteResult: EvalSuiteResult): string {
   // Individual results with metrics
   lines.push('INDIVIDUAL RESULTS')
   lines.push('-'.repeat(50))
-  lines.push('Name'.padEnd(35) + 'Score'.padEnd(12) + 'Tools'.padEnd(8) + 'Tokens'.padEnd(10) + 'Time')
+  lines.push('Name'.padEnd(30) + 'Score'.padEnd(10) + 'Intent'.padEnd(10) + 'Exec'.padEnd(10) + 'Time')
   lines.push('-'.repeat(70))
   
   for (const result of suiteResult.results) {
     const status = result.passed ? '✓' : '✗'
     const score = `${result.score}/${result.maxScore}`
-    const tools = result.metrics.toolCallCount.toString()
-    const tokens = result.metrics.tokens.total > 0 ? result.metrics.tokens.total.toLocaleString() : 'N/A'
     const time = `${(result.metrics.timing.totalMs / 1000).toFixed(1)}s`
     
-    const name = `${status} ${result.eval.name}`.slice(0, 34)
-    lines.push(`${name.padEnd(35)}${score.padEnd(12)}${tools.padEnd(8)}${tokens.padEnd(10)}${time}`)
+    // Phase scores
+    const intentPct = result.phaseScores?.intention.percentage
+    const execPct = result.phaseScores?.execution.percentage
+    const intentStr = intentPct !== undefined ? `${intentPct.toFixed(0)}%` : '-'
+    const execStr = execPct !== undefined ? `${execPct.toFixed(0)}%` : '-'
+    
+    const name = `${status} ${result.eval.name}`.slice(0, 29)
+    lines.push(`${name.padEnd(30)}${score.padEnd(10)}${intentStr.padEnd(10)}${execStr.padEnd(10)}${time}`)
 
     if (!result.passed && result.triggeredAntiPatterns.length > 0) {
       lines.push(`    Anti-patterns: ${result.triggeredAntiPatterns.join(', ')}`)

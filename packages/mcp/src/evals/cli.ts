@@ -31,6 +31,8 @@ import {
   TEMPLATE_SELECTION_EVALS,
   TOOL_USAGE_EVALS,
   EDGE_CASE_EVALS,
+  ALL_BUSINESS_USER_EVALS,
+  MULTI_TURN_COHERENCE_EVALS,
   type EvalCategory,
   type AgentEval,
 } from './index'
@@ -70,6 +72,8 @@ Commands:
 Options:
   --category <cat>   Run only evals in this category
                      Categories: template-selection, tool-usage, multi-turn, edge-cases
+                                 business, multi-turn-coherence
+  --filter <pattern> Filter evals by name pattern (case insensitive)
   --verbose          Show detailed output during run
   --json             Output results as JSON (for programmatic use)
   --label <name>     Label for this run (e.g., "v2-prompt", "after-fix")
@@ -208,6 +212,7 @@ async function main() {
       // Select evals to run
       let evalsToRun: AgentEval[]
       let suiteName: string
+      const filterPattern = getArg('filter')
 
       if (category) {
         switch (category) {
@@ -232,11 +237,23 @@ async function main() {
             }
             suiteName = 'Edge Cases'
             break
+          // Business user categories
+          case 'business':
+          case 'business-user':
+            evalsToRun = [...ALL_BUSINESS_USER_EVALS]
+            suiteName = 'Business User'
+            break
+          case 'multi-turn-coherence':
+          case 'multiturn':
+            evalsToRun = [...MULTI_TURN_COHERENCE_EVALS]
+            suiteName = 'Multi-Turn Coherence'
+            break
           default:
             evalsToRun = ALL_EVALS.filter(e => e.category === category)
             if (includeExtended) {
               evalsToRun.push(...ALL_EXTENDED_EVALS.filter(e => e.category === category))
             }
+            evalsToRun.push(...ALL_BUSINESS_USER_EVALS.filter(e => e.category === category))
             suiteName = category
         }
       } else {
@@ -245,6 +262,13 @@ async function main() {
           evalsToRun.push(...ALL_EXTENDED_EVALS)
         }
         suiteName = label || 'All Evals'
+      }
+      
+      // Apply filter if provided
+      if (filterPattern) {
+        const pattern = filterPattern.toLowerCase()
+        evalsToRun = evalsToRun.filter(e => e.name.toLowerCase().includes(pattern))
+        suiteName = `${suiteName} (filtered: ${filterPattern})`
       }
 
       if (evalsToRun.length === 0) {

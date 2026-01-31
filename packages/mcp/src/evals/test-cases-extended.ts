@@ -4,7 +4,7 @@
  * Additional test cases covering more scenarios and edge cases.
  */
 
-import type { AgentEval } from './types'
+import type { AgentEval, ValidationPhase } from './types'
 import {
   createTemplateSelectionCriterion,
   createNoClarificationCriterion,
@@ -286,6 +286,7 @@ export const EVAL_THEME_BLUE: AgentEval = {
       id: 'correct-theme-glacier',
       description: 'Mapped blue/cool to glacier theme',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
         return copyCall?.params?.theme === 'glacier'
@@ -320,6 +321,7 @@ export const EVAL_THEME_DEFAULT_EXPLICIT: AgentEval = {
       id: 'default-or-no-theme',
       description: 'Used default theme or omitted theme param',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
         return !copyCall?.params?.theme || copyCall?.params?.theme === 'default'
@@ -351,6 +353,7 @@ export const EVAL_LIST_TEMPLATES: AgentEval = {
       id: 'called-template-list',
       description: 'Called template.list',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         return result.toolCalls.some((t) => t.name === 'template.list')
       },
@@ -359,6 +362,7 @@ export const EVAL_LIST_TEMPLATES: AgentEval = {
       id: 'listed-templates',
       description: 'Listed available templates in response',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         // Should mention at least 3 templates
@@ -371,6 +375,7 @@ export const EVAL_LIST_TEMPLATES: AgentEval = {
       id: 'offered-to-create',
       description: 'Offered to create one',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('create') || text.includes('build') || text.includes('would you like')
@@ -401,6 +406,7 @@ export const EVAL_SEARCH_TEMPLATES: AgentEval = {
       id: 'searched-or-listed',
       description: 'Used template.list',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         return result.toolCalls.some((t) => t.name === 'template.list')
       },
@@ -409,6 +415,7 @@ export const EVAL_SEARCH_TEMPLATES: AgentEval = {
       id: 'mentioned-expense-tracker',
       description: 'Mentioned expense-tracker as relevant',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('expense')
@@ -418,6 +425,7 @@ export const EVAL_SEARCH_TEMPLATES: AgentEval = {
       id: 'offered-to-create',
       description: 'Offered to create it',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('create') || text.includes('build') || text.includes('?')
@@ -450,6 +458,7 @@ export const EVAL_EDGE_EXPENSE_VS_INVENTORY: AgentEval = {
       id: 'reasonable-choice',
       description: 'Selected expense-tracker or asked for clarification',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
         const template = copyCall?.params?.template
@@ -460,6 +469,7 @@ export const EVAL_EDGE_EXPENSE_VS_INVENTORY: AgentEval = {
       id: 'explained-reasoning',
       description: 'Explained the choice or asked about need',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         return result.responseText.length > 50
       },
@@ -490,6 +500,7 @@ export const EVAL_EDGE_CRM_VS_BOOKING: AgentEval = {
       id: 'reasonable-choice',
       description: 'Selected booking-app or CRM or asked',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
         const template = copyCall?.params?.template
@@ -502,6 +513,7 @@ export const EVAL_EDGE_CRM_VS_BOOKING: AgentEval = {
       id: 'recognized-dual-need',
       description: 'Acknowledged both client and appointment aspects',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return (text.includes('client') || text.includes('customer')) &&
@@ -534,6 +546,7 @@ export const EVAL_EDGE_FORM_VS_FEEDBACK: AgentEval = {
       id: 'preferred-specific',
       description: 'Selected feedback-form (more specific) or asked',
       points: 60,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
         const template = copyCall?.params?.template
@@ -546,6 +559,7 @@ export const EVAL_EDGE_FORM_VS_FEEDBACK: AgentEval = {
       id: 'acknowledged-options',
       description: 'Mentioned feedback or form option',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('feedback') || text.includes('form')
@@ -581,6 +595,7 @@ export const EVAL_MULTITURN_REMEMBER_TEMPLATE: AgentEval = {
       id: 'no-recreate',
       description: 'Did not recreate the project',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         return !result.toolCalls.some((t) => t.name === 'template.copy')
       },
@@ -589,6 +604,7 @@ export const EVAL_MULTITURN_REMEMBER_TEMPLATE: AgentEval = {
       id: 'understood-context',
       description: 'Understood we are working on todo app',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('todo') || text.includes('task') || text.includes('priority')
@@ -598,6 +614,7 @@ export const EVAL_MULTITURN_REMEMBER_TEMPLATE: AgentEval = {
       id: 'proposed-modification',
       description: 'Proposed to modify existing app',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('add') || text.includes('update') || text.includes('modify')
@@ -633,6 +650,7 @@ export const EVAL_MULTITURN_THEME_CHANGE: AgentEval = {
       id: 'understood-theme-request',
       description: 'Understood this is a theme change request',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('theme') || text.includes('purple') || text.includes('color') || text.includes('lavender')
@@ -642,6 +660,7 @@ export const EVAL_MULTITURN_THEME_CHANGE: AgentEval = {
       id: 'no-full-recreate',
       description: 'Did not start from scratch',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         // Should not call template.copy again (or if it does, acknowledge it's updating)
         const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
@@ -654,6 +673,7 @@ export const EVAL_MULTITURN_THEME_CHANGE: AgentEval = {
       id: 'mentioned-update',
       description: 'Mentioned updating or changing',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('update') || text.includes('change') || text.includes('apply') || text.includes("'ll")
@@ -720,6 +740,7 @@ export const EVAL_MISLEADING_TRACK_FITNESS: AgentEval = {
       id: 'no-wrong-template',
       description: 'Did not select expense-tracker or todo just because of "track"',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
         return !copyCall || copyCall.params?.template === 'none'
@@ -729,6 +750,7 @@ export const EVAL_MISLEADING_TRACK_FITNESS: AgentEval = {
       id: 'acknowledged-limitation',
       description: 'Acknowledged fitness tracking not available',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('fitness') && 
@@ -754,6 +776,7 @@ export const EVAL_MISLEADING_MESSAGE_BOARD: AgentEval = {
       id: 'no-kanban',
       description: 'Did not select kanban just because of "board"',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
         return !copyCall || copyCall.params?.template !== 'kanban'
@@ -763,6 +786,7 @@ export const EVAL_MISLEADING_MESSAGE_BOARD: AgentEval = {
       id: 'acknowledged-limitation',
       description: 'Acknowledged forum/message board not available',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('forum') || text.includes('message') || 
@@ -794,6 +818,7 @@ export const EVAL_NEGATIVE_TASKS_NOT_KANBAN: AgentEval = {
       id: 'respected-exclusion',
       description: 'Respected the explicit exclusion of kanban',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
         return copyCall?.params?.template !== 'kanban'
@@ -820,6 +845,7 @@ export const EVAL_NEGATIVE_CUSTOMERS_NOT_BOOKING: AgentEval = {
       id: 'respected-exclusion',
       description: 'Respected the explicit exclusion of appointments',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
         return copyCall?.params?.template !== 'booking-app'
@@ -846,12 +872,14 @@ export const EVAL_NO_MATCH_GAME: AgentEval = {
       id: 'no-template-selected',
       description: 'Did not force a template that does not fit',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => !result.toolCalls.some((t) => t.name === 'template.copy'),
     },
     {
       id: 'explained-limitation',
       description: 'Explained that games are not supported',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('game') && 
@@ -877,6 +905,7 @@ export const EVAL_NO_MATCH_ECOMMERCE: AgentEval = {
       id: 'no-template-selected',
       description: 'Did not force inventory template for e-commerce',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
         return !copyCall || copyCall.params?.template !== 'inventory'
@@ -886,6 +915,7 @@ export const EVAL_NO_MATCH_ECOMMERCE: AgentEval = {
       id: 'explained-complexity',
       description: 'Explained that full e-commerce is complex',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return (text.includes('e-commerce') || text.includes('ecommerce') || 
@@ -916,6 +946,7 @@ export const EVAL_JARGON_JIRA_LIKE: AgentEval = {
       id: 'understood-jira',
       description: 'Understood JIRA means issue tracking / kanban',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('kanban') || text.includes('board') || 
@@ -942,6 +973,7 @@ export const EVAL_JARGON_TICKETING: AgentEval = {
       id: 'understood-tickets',
       description: 'Understood ticketing maps to kanban workflow',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('kanban') || text.includes('board') || 
@@ -990,6 +1022,7 @@ export const EVAL_NOISY_LIKE_TRELLO: AgentEval = {
       id: 'understood-trello',
       description: 'Understood Trello reference means kanban',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('kanban') || text.includes('board') || text.includes('trello')

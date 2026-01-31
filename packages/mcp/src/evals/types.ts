@@ -15,8 +15,8 @@ export interface AgentEval {
   name: string
   /** Category: template-selection, tool-usage, multi-turn, edge-cases */
   category: EvalCategory
-  /** Difficulty level */
-  level: 1 | 2 | 3 | 4
+  /** Difficulty level (1=trivial, 6=very hard) */
+  level: 1 | 2 | 3 | 4 | 5 | 6
   /** The user input/prompt */
   input: string
   /** Previous conversation turns (for multi-turn evals) */
@@ -40,6 +40,16 @@ export type EvalCategory =
   | 'tool-usage'
   | 'multi-turn'
   | 'edge-cases'
+  // Business user categories (harder tests)
+  | 'business-language'
+  | 'business-logic-confusion'
+  | 'multi-turn-coherence'
+  | 'relationship-changes'
+  | 'graceful-degradation'
+  | 'error-recovery'
+  | 'conditional-logic'
+  | 'migration-concerns'
+  | 'framework-specific'
 
 /**
  * A conversation turn for multi-turn evals
@@ -79,6 +89,11 @@ export interface ToolCall {
 }
 
 /**
+ * Validation phase - separates "did it try to do the right thing" from "did the code work"
+ */
+export type ValidationPhase = 'intention' | 'execution'
+
+/**
  * Validation criterion for scoring
  */
 export interface ValidationCriterion {
@@ -88,6 +103,14 @@ export interface ValidationCriterion {
   description: string
   /** Points for this criterion */
   points: number
+  /** 
+   * Validation phase:
+   * - 'intention': Did the agent understand and try to do the right thing?
+   *   (correct template, right approach, understood context, asked good questions)
+   * - 'execution': Did the code actually work?
+   *   (compiles, builds, prisma generates, tests pass, app runs)
+   */
+  phase?: ValidationPhase
   /** Validation function */
   validate: (result: EvalResult) => boolean
 }
@@ -126,6 +149,11 @@ export interface EvalResult {
   errors?: string[]
   /** Project directory where the eval was run (for file validation) */
   projectDir?: string
+  /** Score breakdown by phase */
+  phaseScores?: {
+    intention: { score: number; maxScore: number; percentage: number }
+    execution: { score: number; maxScore: number; percentage: number }
+  }
 }
 
 /**

@@ -21,7 +21,11 @@ export const InvitationModel = types
     workspaceId: types.optional(types.string, ""),
     projectId: types.optional(types.string, ""),
     status: types.enumeration("InvitationStatus", ["pending", "accepted", "declined", "expired", "cancelled"]),
-    emailStatus: types.enumeration("EmailStatus", ["not_sent", "sent", "failed"]),
+    // BUG FIX: emailStatus must be optional with default since API may return null
+    emailStatus: types.optional(
+      types.enumeration("EmailStatus", ["not_sent", "sent", "failed"]),
+      "not_sent"
+    ),
     emailSentAt: types.optional(types.number, 0),
     emailError: types.optional(types.string, ""),
     invitedBy: types.optional(types.string, ""),

@@ -4,7 +4,7 @@
  * These can be used directly in tests or as examples.
  */
 
-import type { AgentEval } from './types'
+import type { AgentEval, ValidationPhase } from './types'
 import {
   createTemplateSelectionCriterion,
   createNoClarificationCriterion,
@@ -248,6 +248,7 @@ export const EVAL_AMBIGUOUS_TEAM: AgentEval = {
       id: 'asked-clarification',
       description: 'Asked for clarification',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('?') && 
@@ -258,6 +259,7 @@ export const EVAL_AMBIGUOUS_TEAM: AgentEval = {
       id: 'offered-options',
       description: 'Offered concrete options',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         // Should mention at least 2 template types
@@ -273,6 +275,7 @@ export const EVAL_AMBIGUOUS_TEAM: AgentEval = {
       id: 'single-question',
       description: 'Asked only one question',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const questions = (result.responseText.match(/\?/g) || []).length
         return questions <= 2 // Allow some flexibility
@@ -298,6 +301,7 @@ export const EVAL_AMBIGUOUS_TRACK: AgentEval = {
       id: 'asked-clarification',
       description: 'Asked for clarification about WHAT to track',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('?') && text.includes('track')
@@ -307,6 +311,7 @@ export const EVAL_AMBIGUOUS_TRACK: AgentEval = {
       id: 'offered-categories',
       description: 'Offered different tracking categories',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         const categories = [
@@ -349,6 +354,7 @@ export const EVAL_PARAMS_WITH_NAME: AgentEval = {
       id: 'correct-name',
       description: 'Used specified project name',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
         return copyCall?.params?.name === 'my-daily-tasks'
@@ -383,6 +389,7 @@ export const EVAL_PARAMS_WITH_THEME: AgentEval = {
       id: 'correct-theme',
       description: 'Mapped purple to lavender theme',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
         return copyCall?.params?.theme === 'lavender'
@@ -413,6 +420,7 @@ export const EVAL_ERROR_INVALID_TEMPLATE: AgentEval = {
       id: 'acknowledged-error',
       description: 'Acknowledged template does not exist',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes("don't have") || 
@@ -424,6 +432,7 @@ export const EVAL_ERROR_INVALID_TEMPLATE: AgentEval = {
       id: 'listed-alternatives',
       description: 'Listed available templates',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('todo') || text.includes('expense') || text.includes('crm')
@@ -433,6 +442,7 @@ export const EVAL_ERROR_INVALID_TEMPLATE: AgentEval = {
       id: 'offered-help',
       description: 'Offered to help with alternatives',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('would') || text.includes('help') || text.includes('?')
@@ -469,6 +479,7 @@ export const EVAL_EDGE_TODO_VS_KANBAN: AgentEval = {
       id: 'reasonable-choice',
       description: 'Made reasonable template choice or asked',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
         const template = copyCall?.params?.template
@@ -482,6 +493,7 @@ export const EVAL_EDGE_TODO_VS_KANBAN: AgentEval = {
       id: 'explained-choice',
       description: 'Explained or justified the choice',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         return result.responseText.length > 50 // Should have some explanation
       },
@@ -500,6 +512,7 @@ export const EVAL_EDGE_TODO_VS_KANBAN: AgentEval = {
 import { ALL_HARD_EVALS, MULTI_TURN_EVALS, EDGE_CASE_HARD_EVALS } from './test-cases-hard'
 import { ALL_CRM_EVALS, CRM_SCHEMA_EVALS, CRM_UI_EVALS, CRM_EDGE_EVALS } from './test-cases-crm'
 import { ALL_INVENTORY_EVALS, INVENTORY_SCHEMA_EVALS, INVENTORY_UI_EVALS, INVENTORY_EDGE_EVALS } from './test-cases-inventory'
+import { ALL_BUSINESS_USER_EVALS } from './test-cases-business-user'
 
 // ============================================
 // Export All Evals
@@ -533,6 +546,7 @@ export const ALL_EVALS: AgentEval[] = [
   ...ALL_HARD_EVALS,
   ...ALL_CRM_EVALS,
   ...ALL_INVENTORY_EVALS,
+  ...ALL_BUSINESS_USER_EVALS,
 ]
 
 export const TEMPLATE_SELECTION_EVALS = ALL_EVALS.filter(
@@ -553,3 +567,20 @@ export { ALL_HARD_EVALS, MULTI_TURN_EVALS, EDGE_CASE_HARD_EVALS }
 // Re-export template-specific evals
 export { ALL_CRM_EVALS, CRM_SCHEMA_EVALS, CRM_UI_EVALS, CRM_EDGE_EVALS }
 export { ALL_INVENTORY_EVALS, INVENTORY_SCHEMA_EVALS, INVENTORY_UI_EVALS, INVENTORY_EDGE_EVALS }
+
+// Re-export business user evals (harder tests for non-technical users)
+export {
+  ALL_BUSINESS_USER_EVALS,
+  VAGUE_BUSINESS_LANGUAGE_EVALS,
+  BUSINESS_LOGIC_CONFUSION_EVALS,
+  MULTI_TURN_COHERENCE_EVALS,
+  RELATIONSHIP_CHANGE_EVALS,
+  GRACEFUL_DEGRADATION_EVALS,
+  ERROR_RECOVERY_EVALS,
+  CONDITIONAL_LOGIC_EVALS,
+  MIGRATION_CONCERN_EVALS,
+  FRAMEWORK_SPECIFIC_EVALS,
+  LEVEL_4_BUSINESS_EVALS,
+  LEVEL_5_BUSINESS_EVALS,
+  LEVEL_6_BUSINESS_EVALS,
+} from './test-cases-business-user'

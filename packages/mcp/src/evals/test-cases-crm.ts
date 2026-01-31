@@ -6,7 +6,7 @@
  * - Contact, Company, Tag, Note, Deal
  */
 
-import type { AgentEval, ValidationCriterion, EvalResult } from './types'
+import type { AgentEval, ValidationCriterion, EvalResult, ValidationPhase } from './types'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
@@ -49,12 +49,14 @@ function createFileContainsCriterion(
   filePath: string,
   expectedContent: string | RegExp,
   points: number,
-  description: string
+  description: string,
+  phase: ValidationPhase = 'execution'
 ): ValidationCriterion {
   return {
     id: `file-contains-${filePath.replace(/\//g, '-')}`,
     description,
     points,
+    phase,
     validate: (result) => {
       const projectDir = getProjectDir(result)
       if (!projectDir) return false
@@ -74,9 +76,10 @@ function createFileContainsCriterion(
 function createSchemaContainsCriterion(
   expectedContent: string | RegExp,
   points: number,
-  description: string
+  description: string,
+  phase: ValidationPhase = 'execution'
 ): ValidationCriterion {
-  return createFileContainsCriterion('prisma/schema.prisma', expectedContent, points, description)
+  return createFileContainsCriterion('prisma/schema.prisma', expectedContent, points, description, phase)
 }
 
 function createUsedTemplateCriterion(templateName: string, points: number): ValidationCriterion {
@@ -84,6 +87,7 @@ function createUsedTemplateCriterion(templateName: string, points: number): Vali
     id: 'used-template',
     description: `Used template.copy with ${templateName} template`,
     points,
+    phase: 'intention', // Template selection is intention
     validate: (result) => {
       const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
       if (copyCall?.params?.template === templateName) return true
@@ -101,6 +105,7 @@ function createRanPrismaGenerateCriterion(points: number): ValidationCriterion {
     id: 'ran-prisma-generate',
     description: 'Ran prisma generate/db push after schema changes',
     points,
+    phase: 'execution', // Running prisma generate is execution
     validate: (result) => {
       return result.toolCalls.some(tc => {
         const name = tc.name.toLowerCase()
@@ -147,6 +152,7 @@ export const EVAL_CRM_LAST_CONTACTED: AgentEval = {
       id: 'ui-shows-field',
       description: 'UI displays or allows editing last contacted date',
       points: 20,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         const projectDir = getProjectDir(result)
         if (!projectDir) return false
@@ -243,6 +249,7 @@ export const EVAL_CRM_CONTACTS_BY_COMPANY: AgentEval = {
       id: 'company-filter-ui',
       description: 'UI has company filtering or company detail view',
       points: 35,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         const projectDir = getProjectDir(result)
         if (!projectDir) return false
@@ -280,6 +287,7 @@ export const EVAL_CRM_DEAL_COLORS: AgentEval = {
       id: 'deal-colors',
       description: 'Deals have conditional coloring based on stage',
       points: 35,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         const projectDir = getProjectDir(result)
         if (!projectDir) return false
@@ -328,6 +336,7 @@ export const EVAL_CRM_EXPECTED_CLOSE: AgentEval = {
       id: 'date-ui',
       description: 'UI allows setting/viewing expected close date',
       points: 20,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         const projectDir = getProjectDir(result)
         if (!projectDir) return false
@@ -364,6 +373,7 @@ export const EVAL_CRM_MEETING_NOTES: AgentEval = {
       id: 'meeting-notes-ui',
       description: 'UI shows meeting notes or allows creating notes with type=meeting',
       points: 35,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         const projectDir = getProjectDir(result)
         if (!projectDir) return false
@@ -401,6 +411,7 @@ export const EVAL_CRM_AUTO_EMAILS: AgentEval = {
       id: 'explains-limitation',
       description: 'Explains that automated emails are not supported',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return (text.includes('cannot') || text.includes("can't") || text.includes('not supported') ||
@@ -431,6 +442,7 @@ export const EVAL_CRM_IMPORT: AgentEval = {
       id: 'explains-import-limitation',
       description: 'Explains that direct import is not supported',
       points: 50,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return (text.includes('cannot') || text.includes("can't") || text.includes('not supported') ||

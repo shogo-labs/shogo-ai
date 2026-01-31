@@ -647,6 +647,128 @@ def create_unsupported_trainset() -> List[dspy.Example]:
     return examples
 
 
+# ============================================================
+# Business User Examples (Vague Language, Confusion, Multi-turn)
+# These are HARD examples targeting non-technical users
+# ============================================================
+
+# Vague business language - users don't use technical terms
+VAGUE_BUSINESS_LANGUAGE_EXAMPLES = [
+    # Should ask for clarification
+    ("I need to keep track of everything for my bakery", "clarify", "Vague - bakery could need inventory, orders, expenses"),
+    ("Help me with money stuff for my small business", "clarify", "Vague - could be expenses, revenue, invoices"),
+    ("Make it look more professional", "clarify", "Vague - professional means different things"),
+    ("I want an app for my work", "clarify", "Completely ambiguous - no domain specified"),
+    
+    # Can be inferred with reasonable confidence
+    ("Show me who needs follow-up - people I haven't talked to in a while", "crm", "Implies contact tracking + lastContactedAt filter"),
+    ("Sort contacts by how important they are", "crm", "Implies priority/tier field needed"),
+    ("I want to see which products are running low", "inventory", "Implies low stock filter/warning"),
+    ("Show me the total worth of my stock", "inventory", "Implies computed value display"),
+]
+
+# Business logic confusion - users confuse UI vs schema changes
+BUSINESS_LOGIC_CONFUSION_EXAMPLES = [
+    # Should NOT add new fields - UI change only
+    ("I only want to see active deals", "crm", "Filter existing data, not new field"),
+    ("Show me deals grouped by month", "crm", "UI grouping, not schema change"),
+    ("I want to find contacts by company", "crm", "Search UI, not duplicate field"),
+    ("Show total inventory value at the top", "inventory", "Computed display, not stored field"),
+    
+    # These DO need schema changes
+    ("I want to track when I last talked to each contact", "crm", "Needs lastContactedAt DateTime field"),
+    ("Add priority levels to my tasks", "todo-app", "Needs priority field"),
+    ("Track expiration dates for perishable items", "inventory", "Needs expirationDate field"),
+]
+
+# Graceful degradation - explain limitation but still help
+GRACEFUL_DEGRADATION_EXAMPLES = [
+    ("Email me reminders when tasks are due", "todo-app", "Email not supported - add dueDate field, explain limitation"),
+    ("Sync with my Google Calendar", "booking-app", "Calendar sync not supported - build booking, offer manual workflow"),
+    ("Scan business cards to add contacts", "crm", "OCR not supported - offer quick entry form"),
+    ("Automatically categorize expenses using AI", "expense-tracker", "AI categorization not supported - offer manual categories"),
+    ("Auto-reorder when stock is low", "inventory", "Auto-order not supported - offer low stock alerts"),
+]
+
+# Error recovery - user encounters problems
+ERROR_RECOVERY_EXAMPLES = [
+    ("The app crashes when I open it after adding a field", "none", "Likely prisma generate needed"),
+    ("New field shows blank for existing contacts", "none", "Explain null values for existing records"),
+    ("Can't delete a company - something about contacts", "none", "Explain foreign key constraint"),
+    ("I changed the schema but the app looks the same", "none", "Explain need to restart/refresh"),
+]
+
+
+def create_business_user_trainset() -> List[dspy.Example]:
+    """Create training dataset for business user scenarios (harder)."""
+    examples = []
+    
+    # Vague language examples
+    for request, template, reasoning in VAGUE_BUSINESS_LANGUAGE_EXAMPLES:
+        clarify_q = "Could you tell me more specifically what you need to track?" if template == "clarify" else ""
+        examples.append(dspy.Example(
+            user_request=request,
+            selected_template=template,
+            reasoning=reasoning,
+            clarifying_question=clarify_q
+        ).with_inputs("user_request"))
+    
+    # Business logic confusion
+    for request, template, reasoning in BUSINESS_LOGIC_CONFUSION_EXAMPLES:
+        examples.append(dspy.Example(
+            user_request=request,
+            selected_template=template,
+            reasoning=reasoning,
+            clarifying_question=""
+        ).with_inputs("user_request"))
+    
+    # Graceful degradation
+    for request, template, reasoning in GRACEFUL_DEGRADATION_EXAMPLES:
+        examples.append(dspy.Example(
+            user_request=request,
+            selected_template=template,
+            reasoning=reasoning,
+            clarifying_question=""
+        ).with_inputs("user_request"))
+    
+    return examples
+
+
+def create_business_user_testset() -> List[dspy.Example]:
+    """Create HARD test dataset for business user scenarios."""
+    test_examples = [
+        # Vague but should be answerable
+        ("My hair salon needs appointment booking and client info", "clarify", "Both booking-app and CRM elements"),
+        ("Track my freelance clients and projects", "crm", "Freelance = CRM with project aspect"),
+        ("I run a food truck and need to manage inventory", "inventory", "Food truck = inventory focus"),
+        
+        # Confusing phrasing
+        ("Make the low stock items red", "inventory", "UI styling, not schema - should use existing data"),
+        ("Only show me contacts from this month", "crm", "Filter by createdAt, not new field"),
+        ("Show profit margins next to each product", "inventory", "Computed: price - cost, not stored"),
+        
+        # Graceful degradation needed
+        ("Text me when a task is overdue", "todo-app", "SMS not supported, should build with dueDate + explain"),
+        ("Import my contacts from iPhone", "crm", "Import not supported, should build + explain"),
+        
+        # Complex multi-part
+        ("CRM with email automation and calendar sync", "clarify", "Multiple unsupported features"),
+        ("Inventory with barcode scanning and auto-reorder", "inventory", "Build inventory, explain scan/reorder limitations"),
+    ]
+    
+    examples = []
+    for request, template, reasoning in test_examples:
+        clarify_q = "" if template not in ["clarify"] else "Could you prioritize which feature is most important?"
+        examples.append(dspy.Example(
+            user_request=request,
+            selected_template=template,
+            reasoning=reasoning,
+            clarifying_question=clarify_q
+        ).with_inputs("user_request"))
+    
+    return examples
+
+
 # For quick testing
 if __name__ == "__main__":
     trainset = create_trainset()
@@ -654,10 +776,16 @@ if __name__ == "__main__":
     schema_train = create_schema_trainset()
     schema_test = create_schema_testset()
     unsupported_train = create_unsupported_trainset()
+    business_train = create_business_user_trainset()
+    business_test = create_business_user_testset()
     
     print(f"Template selection - Training: {len(trainset)}, Test: {len(testset)}")
     print(f"Schema modification - Training: {len(schema_train)}, Test: {len(schema_test)}")
     print(f"Unsupported features - Training: {len(unsupported_train)}")
+    print(f"Business user (hard) - Training: {len(business_train)}, Test: {len(business_test)}")
     
     print("\nSample schema modification example:")
     print(schema_train[0])
+    
+    print("\nSample business user example:")
+    print(business_train[0])

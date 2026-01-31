@@ -6,7 +6,7 @@
  * - Product, Category, Supplier, StockMovement
  */
 
-import type { AgentEval, ValidationCriterion, EvalResult } from './types'
+import type { AgentEval, ValidationCriterion, EvalResult, ValidationPhase } from './types'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
@@ -48,12 +48,14 @@ function createFileContainsCriterion(
   filePath: string,
   expectedContent: string | RegExp,
   points: number,
-  description: string
+  description: string,
+  phase: ValidationPhase = 'execution'
 ): ValidationCriterion {
   return {
     id: `file-contains-${filePath.replace(/\//g, '-')}`,
     description,
     points,
+    phase,
     validate: (result) => {
       const projectDir = getProjectDir(result)
       if (!projectDir) return false
@@ -73,9 +75,10 @@ function createFileContainsCriterion(
 function createSchemaContainsCriterion(
   expectedContent: string | RegExp,
   points: number,
-  description: string
+  description: string,
+  phase: ValidationPhase = 'execution'
 ): ValidationCriterion {
-  return createFileContainsCriterion('prisma/schema.prisma', expectedContent, points, description)
+  return createFileContainsCriterion('prisma/schema.prisma', expectedContent, points, description, phase)
 }
 
 function createUsedTemplateCriterion(templateName: string, points: number): ValidationCriterion {
@@ -83,6 +86,7 @@ function createUsedTemplateCriterion(templateName: string, points: number): Vali
     id: 'used-template',
     description: `Used template.copy with ${templateName} template`,
     points,
+    phase: 'intention', // Template selection is intention
     validate: (result) => {
       const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
       if (copyCall?.params?.template === templateName) return true
@@ -99,6 +103,7 @@ function createRanPrismaGenerateCriterion(points: number): ValidationCriterion {
     id: 'ran-prisma-generate',
     description: 'Ran prisma generate/db push after schema changes',
     points,
+    phase: 'execution', // Running prisma generate is execution
     validate: (result) => {
       return result.toolCalls.some(tc => {
         const name = tc.name.toLowerCase()
@@ -223,6 +228,7 @@ export const EVAL_INV_LOW_STOCK_WARNING: AgentEval = {
       id: 'low-stock-ui',
       description: 'UI shows low stock warning (compares quantity to minQuantity)',
       points: 35,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         const projectDir = getProjectDir(result)
         if (!projectDir) return false
@@ -261,6 +267,7 @@ export const EVAL_INV_PROFIT_MARGIN: AgentEval = {
       id: 'profit-margin-ui',
       description: 'UI calculates and displays profit margin (price - cost)',
       points: 35,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         const projectDir = getProjectDir(result)
         if (!projectDir) return false
@@ -298,6 +305,7 @@ export const EVAL_INV_STOCK_COLORS: AgentEval = {
       id: 'stock-colors',
       description: 'Products have conditional colors based on stock level',
       points: 35,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         const projectDir = getProjectDir(result)
         if (!projectDir) return false
@@ -367,6 +375,7 @@ export const EVAL_INV_STOCK_HISTORY: AgentEval = {
       id: 'movement-history-ui',
       description: 'UI displays stock movement history',
       points: 35,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         const projectDir = getProjectDir(result)
         if (!projectDir) return false
@@ -403,6 +412,7 @@ export const EVAL_INV_TOTAL_VALUE: AgentEval = {
       id: 'total-value-ui',
       description: 'UI shows total inventory value calculation',
       points: 35,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         const projectDir = getProjectDir(result)
         if (!projectDir) return false
@@ -441,6 +451,7 @@ export const EVAL_INV_SCANNER: AgentEval = {
       id: 'explains-limitation',
       description: 'Explains hardware integration limitations',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return (text.includes('cannot') || text.includes("can't") || 
@@ -471,6 +482,7 @@ export const EVAL_INV_AUTO_REORDER: AgentEval = {
       id: 'explains-limitation',
       description: 'Explains automatic ordering limitations',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return (text.includes('cannot') || text.includes("can't") || 
@@ -502,6 +514,7 @@ export const EVAL_INV_IMPORT: AgentEval = {
       id: 'explains-import',
       description: 'Explains import limitations or manual entry needed',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return (text.includes('cannot') || text.includes("can't") || 

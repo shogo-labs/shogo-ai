@@ -48,7 +48,7 @@ export function TemplatePreviewModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl w-[95vw] h-[90vh] p-0 gap-0 overflow-hidden flex flex-col">
+      <DialogContent className="max-w-5xl w-[95vw] h-[90vh] p-0 gap-0 overflow-hidden flex flex-col" hideCloseButton>
         {/* Header - matching Lovable's simple style */}
         <DialogHeader className="px-6 py-4 border-b border-border flex-row items-center justify-between space-y-0 shrink-0">
           <div className="flex-1 min-w-0">

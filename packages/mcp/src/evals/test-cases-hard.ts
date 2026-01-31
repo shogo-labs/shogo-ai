@@ -8,7 +8,7 @@
  * 4. Handle edge cases and negative patterns
  */
 
-import type { AgentEval, ValidationCriterion, EvalResult } from './types'
+import type { AgentEval, ValidationCriterion, EvalResult, ValidationPhase } from './types'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
@@ -56,12 +56,14 @@ function createFileContainsCriterion(
   filePath: string,
   searchText: string | RegExp,
   points: number,
-  description: string
+  description: string,
+  phase: ValidationPhase = 'execution'
 ): ValidationCriterion {
   return {
     id: `file-contains-${filePath.replace(/\//g, '-')}`,
     description,
     points,
+    phase, // File content checks are execution
     validate: (result) => {
       const projectDir = getProjectDir(result)
       if (!projectDir) return false
@@ -85,12 +87,14 @@ function createFileNotContainsCriterion(
   filePath: string,
   searchText: string | RegExp,
   points: number,
-  description: string
+  description: string,
+  phase: ValidationPhase = 'execution'
 ): ValidationCriterion {
   return {
     id: `file-not-contains-${filePath.replace(/\//g, '-')}`,
     description,
     points,
+    phase, // File content checks are execution
     validate: (result) => {
       const projectDir = getProjectDir(result)
       if (!projectDir) return false
@@ -116,6 +120,7 @@ function createNoGeneratedFileEditsCriterion(points: number): ValidationCriterio
     id: 'no-generated-file-edits',
     description: 'Did not directly edit files in src/generated/',
     points,
+    phase: 'intention', // Understanding what files to edit is intention
     validate: (result) => {
       // Look for Write/Edit/StrReplace calls to generated paths
       const badEdits = result.toolCalls.filter(tc => {
@@ -143,12 +148,14 @@ function createNoGeneratedFileEditsCriterion(points: number): ValidationCriterio
 function createSchemaModifiedCriterion(
   expectedContent: string | RegExp,
   points: number,
-  description: string
+  description: string,
+  phase: ValidationPhase = 'execution'
 ): ValidationCriterion {
   return {
     id: 'schema-modified',
     description,
     points,
+    phase, // Schema content checks are execution
     validate: (result) => {
       // Just verify schema contains expected content
       // (tool calls may not always be captured properly)
@@ -175,6 +182,7 @@ function createRanPrismaGenerateCriterion(points: number): ValidationCriterion {
     id: 'ran-prisma-generate',
     description: 'Ran prisma generate after schema changes',
     points,
+    phase: 'execution', // Running prisma generate is execution
     validate: (result) => {
       // Check for shell command with prisma generate/db push
       // Support: prisma generate, bunx prisma generate, npx prisma generate, bun exec prisma generate
@@ -199,12 +207,14 @@ function createSourceFileModifiedCriterion(
   filePath: string,
   expectedContent: string | RegExp,
   points: number,
-  description: string
+  description: string,
+  phase: ValidationPhase = 'execution'
 ): ValidationCriterion {
   return {
     id: `source-modified-${filePath.replace(/\//g, '-')}`,
     description,
     points,
+    phase, // Source file checks are execution
     validate: (result) => {
       const projectDir = getProjectDir(result)
       if (!projectDir) return false
@@ -251,6 +261,7 @@ export const EVAL_ADD_PRIORITY_FIELD: AgentEval = {
       id: 'used-template',
       description: 'Used template.copy to create todo app',
       points: 20,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         // Check tool calls
         const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
@@ -271,6 +282,7 @@ export const EVAL_ADD_PRIORITY_FIELD: AgentEval = {
       id: 'schema-has-priority',
       description: 'Added priority field to Prisma schema',
       points: 25,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         const projectDir = getProjectDir(result)
         if (!projectDir) return false
@@ -291,6 +303,7 @@ export const EVAL_ADD_PRIORITY_FIELD: AgentEval = {
       id: 'prisma-regenerated',
       description: 'Prisma client was regenerated',
       points: 15,
+      phase: 'execution' as ValidationPhase,
       validate: (result) => {
         // Check tool calls first
         const ranGenerate = result.toolCalls.some(tc => {
@@ -345,6 +358,7 @@ export const EVAL_ADD_DUE_DATE: AgentEval = {
       id: 'used-template',
       description: 'Used template.copy to create todo app',
       points: 20,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
         return copyCall?.params?.template === 'todo-app'
@@ -396,6 +410,7 @@ export const EVAL_MODIFY_USER_MODEL: AgentEval = {
       id: 'used-template',
       description: 'Used template.copy to create todo app',
       points: 15,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
         return copyCall?.params?.template === 'todo-app'
@@ -415,6 +430,7 @@ export const EVAL_MODIFY_USER_MODEL: AgentEval = {
       id: 'explained-generated',
       description: 'Mentioned that generated files should not be edited',
       points: 10,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('generated') || 
@@ -450,6 +466,7 @@ export const EVAL_DONT_EDIT_TYPES: AgentEval = {
       id: 'used-template',
       description: 'Used template.copy to create todo app',
       points: 15,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
         return copyCall?.params?.template === 'todo-app'
@@ -466,6 +483,7 @@ export const EVAL_DONT_EDIT_TYPES: AgentEval = {
       id: 'no-types-edit',
       description: 'Did not directly edit src/generated/types.ts',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const badEdits = result.toolCalls.filter(tc => {
           const name = tc.name.toLowerCase()
@@ -517,6 +535,7 @@ export const EVAL_CHANGE_BUTTON_COLOR: AgentEval = {
       id: 'used-template',
       description: 'Used template.copy to create todo app',
       points: 25,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
         return copyCall?.params?.template === 'todo-app'
@@ -565,6 +584,7 @@ export const EVAL_ADD_DELETE_CONFIRMATION: AgentEval = {
       id: 'used-template',
       description: 'Used template.copy to create todo app',
       points: 20,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
         return copyCall?.params?.template === 'todo-app'
@@ -618,6 +638,7 @@ export const EVAL_IMPOSSIBLE_FEATURE: AgentEval = {
       id: 'offered-alternative',
       description: 'Offered to build todo app or explained limitations',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return (text.includes('todo') && text.includes('template')) ||
@@ -632,6 +653,7 @@ export const EVAL_IMPOSSIBLE_FEATURE: AgentEval = {
       id: 'honest-about-limitations',
       description: 'Was honest about template limitations',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('websocket') || 
@@ -646,6 +668,7 @@ export const EVAL_IMPOSSIBLE_FEATURE: AgentEval = {
       id: 'no-hallucination',
       description: 'Did not claim template has WebSocket support',
       points: 20,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         // Should NOT say "the template includes websocket" or similar
@@ -680,6 +703,7 @@ export const EVAL_BYPASS_TEMPLATE: AgentEval = {
       id: 'explained-benefits',
       description: 'Explained benefits of using templates',
       points: 40,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('template') && (
@@ -697,6 +721,7 @@ export const EVAL_BYPASS_TEMPLATE: AgentEval = {
       id: 'offered-template',
       description: 'Still offered template as an option',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('todo-app') || text.includes('template.copy')
@@ -707,6 +732,7 @@ export const EVAL_BYPASS_TEMPLATE: AgentEval = {
       id: 'no-raw-file-creation',
       description: 'Did not immediately create files from scratch',
       points: 30,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         // Should not have Write calls creating package.json, etc. without template
         const hasTemplateCopy = result.toolCalls.some(t => t.name === 'template.copy')
@@ -754,6 +780,7 @@ export const EVAL_ADD_CATEGORY_MODEL: AgentEval = {
       id: 'used-template',
       description: 'Used template.copy to create todo app',
       points: 15,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
         return copyCall?.params?.template === 'todo-app'
@@ -808,6 +835,7 @@ export const EVAL_ADD_SOFT_DELETE: AgentEval = {
       id: 'used-template',
       description: 'Used template.copy to create todo app',
       points: 15,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const copyCall = result.toolCalls.find(t => t.name === 'template.copy')
         return copyCall?.params?.template === 'todo-app'
@@ -833,6 +861,7 @@ export const EVAL_ADD_SOFT_DELETE: AgentEval = {
       id: 'explained-soft-delete',
       description: 'Explained soft delete pattern',
       points: 10,
+      phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
         return text.includes('soft delete') || 

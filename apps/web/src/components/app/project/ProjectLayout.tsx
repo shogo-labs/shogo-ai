@@ -649,6 +649,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
         {/* Main content: Chat/History panel (LEFT) + Preview/Workspace (RIGHT) */}
         <div className="flex-1 flex min-h-0">
           {/* Left Panel Container - Chat or History */}
+          {/* BUG FIX: ChatPanel stays mounted when collapsed to preserve streaming state */}
+          {/* Uses visibility:hidden instead of conditional rendering to keep useChat hook alive */}
           <div
             className={cn(
               "shrink-0 flex flex-col transition-all duration-200 bg-card",
@@ -656,52 +658,54 @@ export const ProjectLayout = observer(function ProjectLayout() {
             )}
             style={!isChatCollapsed ? { minWidth: `${chatWidth}px` } : undefined}
           >
-            {!isChatCollapsed && (
-              <>
-                {showChatSessions ? (
-                  // Chat Sessions Panel (triggered by history icon)
-                  <ChatSessionsPanel
-                    sessions={projectChatSessions}
-                    currentSessionId={chatSessionId ?? undefined}
-                    onSelect={(sessionId) => {
-                      handleSelectSession(sessionId)
-                      setShowChatSessions(false) // Close panel after selection
-                    }}
-                    onCreate={() => {
-                      handleCreateSession()
-                      setShowChatSessions(false) // Close panel after creation
-                    }}
-                    onRename={handleRenameSession}
-                    className="flex-1"
-                  />
-                ) : (
-                  // Chat Panel (no header)
-                  // credit-tracking: Pass workspaceId and userId for credit deduction
-                  // Handle both resolved MST reference (object with .id) and unresolved (string)
-                  <ChatPanel
-                    featureId={projectId}
-                    featureName={project.name}
-                    phase={null}
-                    chatSessionId={chatSessionId}
-                    onChatSessionChange={handleChatSessionChange}
-                    isCollapsed={isChatCollapsed}
-                    onCollapsedChange={setIsChatCollapsed}
-                    onWidthChange={setChatWidth}
-                    workspaceId={typeof project.workspace === 'string' ? project.workspace : project.workspace?.id}
-                    userId={session?.user?.id}
-                    projectId={projectId}
-                    className="flex-1 min-h-0"
-                    initialMessage={transitionState?.initialMessage}
-                    inputContainerRef={chatInputContainerRef}
-                    onFilesChanged={(paths) => {
-                      console.log('[ProjectLayout] 📁 Agent modified files:', paths)
-                      // Increment refresh trigger to reload code editor and preview
-                      setCodeRefreshTrigger(prev => prev + 1)
-                    }}
-                  />
-                )}
-              </>
+            {/* Chat Sessions Panel - only rendered when visible (stateless) */}
+            {showChatSessions && !isChatCollapsed && (
+              <ChatSessionsPanel
+                sessions={projectChatSessions}
+                currentSessionId={chatSessionId ?? undefined}
+                onSelect={(sessionId) => {
+                  handleSelectSession(sessionId)
+                  setShowChatSessions(false) // Close panel after selection
+                }}
+                onCreate={() => {
+                  handleCreateSession()
+                  setShowChatSessions(false) // Close panel after creation
+                }}
+                onRename={handleRenameSession}
+                className="flex-1"
+              />
             )}
+            {/* Chat Panel - stays mounted to preserve streaming state when collapsed */}
+            {/* credit-tracking: Pass workspaceId and userId for credit deduction */}
+            {/* Handle both resolved MST reference (object with .id) and unresolved (string) */}
+            <div
+              className={cn(
+                "flex-1 min-h-0 flex flex-col",
+                (isChatCollapsed || showChatSessions) && "invisible absolute pointer-events-none"
+              )}
+            >
+              <ChatPanel
+                featureId={projectId}
+                featureName={project.name}
+                phase={null}
+                chatSessionId={chatSessionId}
+                onChatSessionChange={handleChatSessionChange}
+                isCollapsed={isChatCollapsed}
+                onCollapsedChange={setIsChatCollapsed}
+                onWidthChange={setChatWidth}
+                workspaceId={typeof project.workspace === 'string' ? project.workspace : project.workspace?.id}
+                userId={session?.user?.id}
+                projectId={projectId}
+                className="flex-1 min-h-0"
+                initialMessage={transitionState?.initialMessage}
+                inputContainerRef={chatInputContainerRef}
+                onFilesChanged={(paths) => {
+                  console.log('[ProjectLayout] 📁 Agent modified files:', paths)
+                  // Increment refresh trigger to reload code editor and preview
+                  setCodeRefreshTrigger(prev => prev + 1)
+                }}
+              />
+            </div>
           </div>
 
           {/* Separator - subtle vertical line */}

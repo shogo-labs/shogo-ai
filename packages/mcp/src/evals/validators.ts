@@ -11,6 +11,7 @@ import type {
   ToolCorrectnessScore,
   TemplateSelectionScore,
   ValidationCriterion,
+  ValidationPhase,
 } from './types'
 
 /**
@@ -249,15 +250,18 @@ export function ranManualCommands(toolCalls: ToolCall[]): boolean {
 
 /**
  * Criterion: Correct template was selected
+ * Phase: intention (choosing the right template shows understanding)
  */
 export function createTemplateSelectionCriterion(
   expectedTemplate: string,
-  points: number = 40
+  points: number = 40,
+  phase: ValidationPhase = 'intention'
 ): ValidationCriterion {
   return {
     id: `template-selection-${expectedTemplate}`,
     description: `Selected correct template: ${expectedTemplate}`,
     points,
+    phase,
     validate: (result) => {
       const selected = extractSelectedTemplate(result.toolCalls)
       return selected === expectedTemplate
@@ -267,29 +271,35 @@ export function createTemplateSelectionCriterion(
 
 /**
  * Criterion: No unnecessary clarifying questions
+ * Phase: intention (knowing when NOT to ask shows understanding)
  */
 export function createNoClarificationCriterion(
-  points: number = 20
+  points: number = 20,
+  phase: ValidationPhase = 'intention'
 ): ValidationCriterion {
   return {
     id: 'no-unnecessary-clarification',
     description: 'Did not ask unnecessary clarifying questions',
     points,
+    phase,
     validate: (result) => !didAskClarification(result.responseText),
   }
 }
 
 /**
  * Criterion: Used template.copy with correct params
+ * Phase: intention (using correct params shows understanding)
  */
 export function createToolUsageCriterion(
   expectedParams: Record<string, unknown>,
-  points: number = 20
+  points: number = 20,
+  phase: ValidationPhase = 'intention'
 ): ValidationCriterion {
   return {
     id: 'correct-tool-usage',
     description: 'Called template.copy with correct parameters',
     points,
+    phase,
     validate: (result) => {
       const copyCall = result.toolCalls.find((t) => t.name === 'template.copy')
       if (!copyCall) return false
@@ -300,28 +310,34 @@ export function createToolUsageCriterion(
 
 /**
  * Criterion: No manual commands after template.copy
+ * Phase: intention (knowing not to run extra commands shows understanding)
  */
 export function createNoManualCommandsCriterion(
-  points: number = 15
+  points: number = 15,
+  phase: ValidationPhase = 'intention'
 ): ValidationCriterion {
   return {
     id: 'no-manual-commands',
     description: 'Did not run manual setup commands',
     points,
+    phase,
     validate: (result) => !ranManualCommands(result.toolCalls),
   }
 }
 
 /**
  * Criterion: Offered customization options
+ * Phase: intention (proactive helpfulness shows understanding of user needs)
  */
 export function createOfferedCustomizationCriterion(
-  points: number = 10
+  points: number = 10,
+  phase: ValidationPhase = 'intention'
 ): ValidationCriterion {
   return {
     id: 'offered-customization',
     description: 'Offered to customize after setup',
     points,
+    phase,
     validate: (result) => {
       const customizationPhrases = [
         'customize',
@@ -340,14 +356,17 @@ export function createOfferedCustomizationCriterion(
 
 /**
  * Criterion: Proper error handling
+ * Phase: intention (graceful error handling shows good understanding)
  */
 export function createErrorHandlingCriterion(
-  points: number = 25
+  points: number = 25,
+  phase: ValidationPhase = 'intention'
 ): ValidationCriterion {
   return {
     id: 'graceful-error-handling',
     description: 'Handled errors gracefully with alternatives',
     points,
+    phase,
     validate: (result) => {
       // If there were errors, check response offers alternatives
       if (result.errors && result.errors.length > 0) {
