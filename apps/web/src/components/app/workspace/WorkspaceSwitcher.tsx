@@ -72,6 +72,8 @@ export interface WorkspaceSwitcherProps {
   onWorkspaceChange: (slug: string) => void
   /** Loading state - disables selector while data fetches */
   isLoading?: boolean
+  /** Collapsed mode - shows compact icon-only trigger */
+  collapsed?: boolean
 }
 
 /**
@@ -87,6 +89,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
   currentWorkspace,
   onWorkspaceChange,
   isLoading = false,
+  collapsed = false,
 }: WorkspaceSwitcherProps) {
   const navigate = useNavigate()
   // Use SDK store and domain actions
@@ -156,7 +159,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
 
   // Show skeleton during loading
   if (isLoading) {
-    return <Skeleton className="h-10 w-full" />
+    return <Skeleton className={collapsed ? "h-10 w-10" : "h-10 w-full"} />
   }
 
   // Get workspace initial for avatar
@@ -166,20 +169,33 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
     <>
       <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
         <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            className="w-full justify-start gap-2 h-10 px-2"
-          >
-            {/* Workspace avatar */}
-            <div className="h-6 w-6 rounded bg-primary/10 flex items-center justify-center text-xs font-medium shrink-0">
-              {workspaceInitial}
-            </div>
-            {/* Workspace name */}
-            <span className="flex-1 text-left truncate text-sm">
-              {currentWorkspace?.name ?? "Select workspace"}
-            </span>
-            <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
-          </Button>
+          {collapsed ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="w-full h-10"
+              title={currentWorkspace?.name || "Select workspace"}
+            >
+              <div className="h-6 w-6 rounded bg-primary/10 flex items-center justify-center text-xs font-medium">
+                {workspaceInitial}
+              </div>
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              className="w-full justify-start gap-2 h-10 px-2"
+            >
+              {/* Workspace avatar */}
+              <div className="h-6 w-6 rounded bg-primary/10 flex items-center justify-center text-xs font-medium shrink-0">
+                {workspaceInitial}
+              </div>
+              {/* Workspace name */}
+              <span className="flex-1 text-left truncate text-sm">
+                {currentWorkspace?.name ?? "Select workspace"}
+              </span>
+              <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
+            </Button>
+          )}
         </DropdownMenuTrigger>
 
         <DropdownMenuContent 

@@ -24,7 +24,9 @@ ${TOOL_USAGE}
 
 ${SCHEMA_MODIFICATIONS}
 
-${TAILWIND_STYLING}`
+${TAILWIND_STYLING}
+
+${CODE_QUALITY}`
 
   if (themeContext) {
     return `${basePrompt}\n\n${themeContext}`
@@ -223,3 +225,28 @@ This project uses **Tailwind CSS v4** via CDN. When building UI:
    - Custom colors defined with \`@theme\` use \`--color-*\` prefix
    - Use \`@theme\` instead of extending the config
    - The CDN script is: \`https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4\``
+
+// =============================================================================
+// Code Quality Verification (static)
+// =============================================================================
+
+export const CODE_QUALITY = `## Code Quality Verification (IMPORTANT)
+
+After making code changes, ALWAYS verify there are no TypeScript or linting errors before reporting success:
+
+1. **After editing TypeScript/JavaScript files**, run:
+   \`\`\`bash
+   bunx tsc --noEmit
+   \`\`\`
+
+2. **If errors are found**, fix them immediately. Common issues:
+   - Missing imports
+   - Type mismatches
+   - Undefined variables
+   - Syntax errors
+
+3. **For Prisma schema changes**, the \`prisma generate && prisma db push\` commands already validate the schema.
+
+4. **Do NOT tell the user "done" until the code compiles cleanly.** If you introduced errors, fix them first.
+
+This ensures the code you write actually works and doesn't leave the user with a broken project.`

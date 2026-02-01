@@ -847,25 +847,13 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
 
       {/* Workspace switcher */}
       <div className={cn("p-2 border-b border-border", collapsed && "px-1")}>
-        {collapsed ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="w-full h-10"
-            title={currentWorkspace?.name || "Select workspace"}
-          >
-            <div className="h-6 w-6 rounded bg-primary/10 flex items-center justify-center text-xs font-medium">
-              {currentWorkspace?.name?.[0]?.toUpperCase() || "W"}
-            </div>
-          </Button>
-        ) : (
-          <WorkspaceSwitcher
-            workspaces={workspaces}
-            currentWorkspace={currentWorkspace ?? null}
-            onWorkspaceChange={handleWorkspaceChange}
-            isLoading={isLoading}
-          />
-        )}
+        <WorkspaceSwitcher
+          workspaces={workspaces}
+          currentWorkspace={currentWorkspace ?? null}
+          onWorkspaceChange={handleWorkspaceChange}
+          isLoading={isLoading}
+          collapsed={collapsed}
+        />
       </div>
 
       {/* Main navigation - scrollable */}
