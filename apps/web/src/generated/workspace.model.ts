@@ -15,6 +15,7 @@ import { FolderModel } from "./folder.model"
 import { SubscriptionModel } from "./subscription.model"
 import { CreditLedgerModel } from "./credit-ledger.model"
 import { UsageEventModel } from "./usage-event.model"
+import { StarredProjectModel } from "./starred-project.model"
 
 // ============================================================================
 // Workspace Model
@@ -37,6 +38,7 @@ export const WorkspaceModel = types
     subscriptions: types.optional(types.array(types.safeReference(types.late(() => SubscriptionModel))), []),
     creditLedgers: types.optional(types.array(types.safeReference(types.late(() => CreditLedgerModel))), []),
     usageEvents: types.optional(types.array(types.safeReference(types.late(() => UsageEventModel))), []),
+    starredProjects: types.optional(types.array(types.safeReference(types.late(() => StarredProjectModel))), []),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

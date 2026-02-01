@@ -61,10 +61,27 @@ export function createNotificationRoutes(): Hono {
     try {
       const ctx = buildContext(c)
       const prisma = getPrisma()
+      const query = ctx.query
+      
+      // Build initial where from query params (exclude pagination/meta params)
+      const reservedParams = ["limit", "offset", "userId", "include", "orderBy"]
       let where: any = {}
+      
+      for (const [key, value] of Object.entries(query)) {
+        if (!reservedParams.includes(key) && value !== undefined && value !== null && value !== "") {
+          // Try to parse as number or boolean
+          let parsedValue: any = value
+          if (value === "true") parsedValue = true
+          else if (value === "false") parsedValue = false
+          else if (!isNaN(Number(value)) && value !== "") parsedValue = Number(value)
+          
+          where[key] = parsedValue
+        }
+      }
+      
       let include: any = undefined
 
-      // Apply beforeList hook
+      // Apply beforeList hook (can override where/include)
       if (hooks.beforeList) {
         const result = await hooks.beforeList(ctx)
         if (result && !result.ok) {
@@ -75,8 +92,6 @@ export function createNotificationRoutes(): Hono {
           include = result.data.include || include
         }
       }
-
-      const query = ctx.query
 
       const items = await prisma.notification.findMany({
         where,

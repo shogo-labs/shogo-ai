@@ -53,6 +53,7 @@ export interface GenerateResult {
 export interface GeneratedFile {
   path: string
   content: string
+  skipIfExists?: boolean  // If true, don't overwrite if file already exists
 }
 
 // ============================================================================
@@ -206,11 +207,13 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
           }
           
           // Hooks files (only if hooks requested)
+          // IMPORTANT: Skip hooks files that already exist - they're meant to be edited by users
           if (output.generate.includes('hooks')) {
             for (const hook of hooks) {
               files.push({
                 path: `${dir}/${hook.fileName}`,
                 content: hook.code,
+                skipIfExists: true, // Don't overwrite user customizations
               })
             }
           }

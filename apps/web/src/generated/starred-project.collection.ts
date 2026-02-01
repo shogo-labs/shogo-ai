@@ -320,7 +320,7 @@ export const StarredProjectCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["user"]
+const relationFields = ["user","workspace","project"]
 
 /**
  * Transform API response for MST compatibility:

@@ -13,6 +13,7 @@ import { MemberModel } from "./member.model"
 import { FeatureSessionModel } from "./feature-session.model"
 import { ChatSessionModel } from "./chat-session.model"
 import { UsageEventModel } from "./usage-event.model"
+import { StarredProjectModel } from "./starred-project.model"
 
 // ============================================================================
 // Project Model
@@ -42,6 +43,7 @@ export const ProjectModel = types
     featureSessions: types.optional(types.array(types.safeReference(types.late(() => FeatureSessionModel))), []),
     chatSessions: types.optional(types.array(types.safeReference(types.late(() => ChatSessionModel))), []),
     usageEvents: types.optional(types.array(types.safeReference(types.late(() => UsageEventModel))), []),
+    starredBy: types.optional(types.array(types.safeReference(types.late(() => StarredProjectModel))), []),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

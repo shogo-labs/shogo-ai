@@ -434,6 +434,13 @@ async function main() {
     for (const file of result.files) {
       const filePath = file.path.startsWith('/') ? file.path : resolve(cwd, file.path)
       mkdirSync(dirname(filePath), { recursive: true })
+      
+      // Skip if file exists and skipIfExists is true (for hooks files)
+      if (file.skipIfExists && existsSync(filePath)) {
+        console.log(`   ⊘ ${file.path} (skipped - already exists)`)
+        continue
+      }
+      
       writeFileSync(filePath, file.content)
       console.log(`   ✓ ${file.path}`)
     }

@@ -8,6 +8,8 @@ import { types, Instance, SnapshotIn, SnapshotOut } from "mobx-state-tree"
 
 // Referenced models (use types.late() to avoid circular imports)
 import { UserModel } from "./user.model"
+import { WorkspaceModel } from "./workspace.model"
+import { ProjectModel } from "./project.model"
 
 // ============================================================================
 // StarredProject Model
@@ -21,6 +23,8 @@ export const StarredProjectModel = types
     workspaceId: types.string,
     createdAt: types.optional(types.number, 0),
     user: types.safeReference(types.late(() => UserModel)),
+    workspace: types.safeReference(types.late(() => WorkspaceModel)),
+    project: types.safeReference(types.late(() => ProjectModel)),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

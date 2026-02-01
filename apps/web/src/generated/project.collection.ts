@@ -320,7 +320,7 @@ export const ProjectCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["workspace","folder","members","featureSessions","chatSessions","usageEvents"]
+const relationFields = ["workspace","folder","members","featureSessions","chatSessions","usageEvents","checkpoints","githubConnection","starredBy"]
 
 /**
  * Transform API response for MST compatibility:
