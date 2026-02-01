@@ -146,10 +146,27 @@ export function generateModelRoutes(
   lines.push('    try {')
   lines.push('      const ctx = buildContext(c)')
   lines.push('      const prisma = getPrisma()')
+  lines.push('      const query = ctx.query')
+  lines.push('      ')
+  lines.push('      // Build initial where from query params (exclude pagination/meta params)')
+  lines.push('      const reservedParams = ["limit", "offset", "userId", "include", "orderBy"]')
   lines.push('      let where: any = {}')
+  lines.push('      ')
+  lines.push('      for (const [key, value] of Object.entries(query)) {')
+  lines.push('        if (!reservedParams.includes(key) && value !== undefined && value !== null && value !== "") {')
+  lines.push('          // Try to parse as number or boolean')
+  lines.push('          let parsedValue: any = value')
+  lines.push('          if (value === "true") parsedValue = true')
+  lines.push('          else if (value === "false") parsedValue = false')
+  lines.push('          else if (!isNaN(Number(value)) && value !== "") parsedValue = Number(value)')
+  lines.push('          ')
+  lines.push('          where[key] = parsedValue')
+  lines.push('        }')
+  lines.push('      }')
+  lines.push('      ')
   lines.push('      let include: any = undefined')
   lines.push('')
-  lines.push('      // Apply beforeList hook')
+  lines.push('      // Apply beforeList hook (can override where/include)')
   lines.push('      if (hooks.beforeList) {')
   lines.push('        const result = await hooks.beforeList(ctx)')
   lines.push('        if (result && !result.ok) {')
@@ -160,8 +177,6 @@ export function generateModelRoutes(
   lines.push('          include = result.data.include || include')
   lines.push('        }')
   lines.push('      }')
-  lines.push('')
-  lines.push('      const query = ctx.query')
   lines.push('')
   lines.push(`      const items = await prisma.${modelLower}.findMany({`)
   lines.push('        where,')
@@ -367,7 +382,11 @@ export function generateModelHooks(model: PrismaModel): GeneratedHooksFile {
     ` * Hooks for ${modelName} routes`,
     ' */',
     `export interface ${modelName}Hooks {`,
-    '  /** Called before listing records. Can modify where/include. */',
+    '  /**',
+    '   * Called before listing records. Can modify where/include.',
+    '   * Note: Query parameters (except limit, offset, userId, include, orderBy) are automatically',
+    '   * added to the where clause. This hook receives them and can override/extend them.',
+    '   */',
     '  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any }> | void>',
     '  /** Called before getting a single record. Can reject access. */',
     '  beforeGet?: (id: string, ctx: HookContext) => Promise<HookResult | void>',
@@ -390,8 +409,11 @@ export function generateModelHooks(model: PrismaModel): GeneratedHooksFile {
     ' */',
     `export const ${toCamelCase(modelName)}Hooks: ${modelName}Hooks = {`,
     '  // beforeList: async (ctx) => {',
-    '  //   // Filter by user membership',
-    '  //   return { ok: true, data: { where: { userId: ctx.userId } } }',
+    '  //   // Query params are automatically added to where clause',
+    '  //   // Example: GET /api/v2/projects?workspaceId=123 => where: { workspaceId: "123" }',
+    '  //   ',
+    '  //   // You can override or extend the where clause:',
+    '  //   // return { ok: true, data: { where: { ...ctx.query, userId: ctx.userId } } }',
     '  // },',
     '  // beforeCreate: async (input, ctx) => {',
     '  //   // Set userId on create',
