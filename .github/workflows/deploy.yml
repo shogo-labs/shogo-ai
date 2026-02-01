@@ -227,15 +227,12 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: |
-          cd apps/api
-          bun install
+        run: bun install
 
       - name: Run Prisma migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          cd apps/api
           echo "🔄 Running Prisma migrations for ${{ needs.setup.outputs.environment }}..."
           bunx prisma migrate deploy
           echo "✅ Database migrations completed successfully"
@@ -244,7 +241,6 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          cd apps/api
           echo "📊 Checking migration status..."
           bunx prisma migrate status
 

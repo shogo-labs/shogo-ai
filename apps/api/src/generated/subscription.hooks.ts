@@ -51,12 +51,175 @@ export interface SubscriptionHooks {
  * Default Subscription hooks (customize as needed)
  */
 export const subscriptionHooks: SubscriptionHooks = {
-  // beforeList: async (ctx) => {
-  //   // Filter by user membership
-  //   return { ok: true, data: { where: { userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  /**
+   * Filter subscriptions by workspaceId - user must have access
+   */
+  beforeList: async (ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const workspaceId = ctx.query.workspaceId
+    if (!workspaceId) {
+      // Without workspaceId, return subscriptions for all accessible workspaces
+      return {
+        ok: true,
+        data: {
+          where: {
+            workspace: {
+              members: { some: { userId } },
+            },
+          },
+          include: { workspace: true },
+        },
+      }
+    }
+
+    // Verify user has access to this workspace
+    const membership = await ctx.prisma.member.findFirst({
+      where: { userId, workspaceId },
+    })
+
+    if (!membership) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this workspace" },
+      }
+    }
+
+    return {
+      ok: true,
+      data: {
+        where: { workspaceId },
+        include: { workspace: true },
+      },
+    }
+  },
+
+  /**
+   * Include workspace in get response - verify access
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Get subscription and verify workspace access
+    const subscription = await ctx.prisma.subscription.findUnique({
+      where: { id },
+      include: { workspace: { include: { members: true } } },
+    })
+
+    if (!subscription) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Subscription not found" },
+      }
+    }
+
+    const hasAccess = subscription.workspace.members.some((m: any) => m.userId === userId)
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    return {
+      ok: true,
+      data: { include: { workspace: true } },
+    }
+  },
+
+  /**
+   * Verify user has access to update the subscription (owner/admin only)
+   */
+  beforeUpdate: async (id, input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const subscription = await ctx.prisma.subscription.findUnique({
+      where: { id },
+      include: { workspace: { include: { members: true } } },
+    })
+
+    if (!subscription) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Subscription not found" },
+      }
+    }
+
+    const member = subscription.workspace.members.find((m: any) => m.userId === userId)
+    if (!member) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    if (member.role !== 'owner' && member.role !== 'admin') {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Only workspace owners and admins can manage subscriptions" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user has access to delete the subscription (owner only)
+   */
+  beforeDelete: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const subscription = await ctx.prisma.subscription.findUnique({
+      where: { id },
+      include: { workspace: { include: { members: true } } },
+    })
+
+    if (!subscription) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Subscription not found" },
+      }
+    }
+
+    const member = subscription.workspace.members.find((m: any) => m.userId === userId)
+    if (!member) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    if (member.role !== 'owner') {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Only workspace owners can delete subscriptions" },
+      }
+    }
+
+    return { ok: true }
+  },
 }

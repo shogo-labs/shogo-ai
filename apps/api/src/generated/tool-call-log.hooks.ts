@@ -52,26 +52,124 @@ export interface ToolCallLogHooks {
  */
 export const toolCallLogHooks: ToolCallLogHooks = {
   /**
-   * Filter tool call logs by chatSessionId or messageId query parameters.
+   * Filter tool call logs by chatSessionId or messageId and verify access
    */
   beforeList: async (ctx) => {
-    const where: any = {}
-    
-    // Support filtering by chatSessionId
-    if (ctx.query.chatSessionId) {
-      where.chatSessionId = ctx.query.chatSessionId
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
     }
-    
-    // Support filtering by messageId
-    if (ctx.query.messageId) {
-      where.messageId = ctx.query.messageId
+
+    const { chatSessionId, messageId } = ctx.query
+    const where: Record<string, any> = {}
+
+    if (chatSessionId) where.chatSessionId = chatSessionId
+    if (messageId) where.messageId = messageId
+
+    if (!chatSessionId && !messageId) {
+      return {
+        ok: false,
+        error: {
+          code: "bad_request",
+          message: "chatSessionId or messageId query param required",
+        },
+      }
     }
-    
-    // Support filtering by id
-    if (ctx.query.id) {
-      where.id = ctx.query.id
+
+    // Verify user has access to the chat session
+    if (chatSessionId) {
+      const session = await ctx.prisma.chatSession.findUnique({
+        where: { id: chatSessionId },
+        include: {
+          project: {
+            include: {
+              workspace: {
+                include: { members: true },
+              },
+            },
+          },
+        },
+      })
+
+      if (!session) {
+        return {
+          ok: false,
+          error: { code: "not_found", message: "Chat session not found" },
+        }
+      }
+
+      const hasAccess = session.project?.workspace?.members?.some(
+        (m: any) => m.userId === userId
+      )
+
+      if (!hasAccess) {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Access denied to this chat session" },
+        }
+      }
     }
-    
-    return { ok: true, data: { where } }
+
+    return {
+      ok: true,
+      data: {
+        where,
+        include: { chatSession: true },
+        orderBy: { createdAt: 'asc' },
+      },
+    }
+  },
+
+  /**
+   * Verify user has access to the tool call log via chat session
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const toolCall = await ctx.prisma.toolCallLog.findUnique({
+      where: { id },
+      include: {
+        chatSession: {
+          include: {
+            project: {
+              include: {
+                workspace: {
+                  include: { members: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+
+    if (!toolCall) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Tool call log not found" },
+      }
+    }
+
+    const hasAccess = toolCall.chatSession?.project?.workspace?.members?.some(
+      (m: any) => m.userId === userId
+    )
+
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    return { ok: true }
   },
 }

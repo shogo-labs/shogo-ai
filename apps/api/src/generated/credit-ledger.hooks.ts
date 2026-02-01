@@ -51,12 +51,183 @@ export interface CreditLedgerHooks {
  * Default CreditLedger hooks (customize as needed)
  */
 export const creditLedgerHooks: CreditLedgerHooks = {
-  // beforeList: async (ctx) => {
-  //   // Filter by user membership
-  //   return { ok: true, data: { where: { userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  /**
+   * Filter credit ledgers by workspaceId - user must have access
+   */
+  beforeList: async (ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const workspaceId = ctx.query.workspaceId
+    if (!workspaceId) {
+      // Return credit ledgers for all accessible workspaces
+      return {
+        ok: true,
+        data: {
+          where: {
+            workspace: {
+              members: { some: { userId } },
+            },
+          },
+          include: { workspace: true },
+        },
+      }
+    }
+
+    // Verify user has access to this workspace
+    const membership = await ctx.prisma.member.findFirst({
+      where: { userId, workspaceId },
+    })
+
+    if (!membership) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this workspace" },
+      }
+    }
+
+    return {
+      ok: true,
+      data: {
+        where: { workspaceId },
+        include: { workspace: true },
+      },
+    }
+  },
+
+  /**
+   * Verify user has access to the credit ledger via workspace membership
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const ledger = await ctx.prisma.creditLedger.findUnique({
+      where: { id },
+      include: {
+        workspace: {
+          include: { members: true },
+        },
+      },
+    })
+
+    if (!ledger) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Credit ledger entry not found" },
+      }
+    }
+
+    const hasAccess = ledger.workspace?.members?.some((m: any) => m.userId === userId)
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user has access to update the credit ledger (owner/admin only)
+   */
+  beforeUpdate: async (id, input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const ledger = await ctx.prisma.creditLedger.findUnique({
+      where: { id },
+      include: {
+        workspace: {
+          include: { members: true },
+        },
+      },
+    })
+
+    if (!ledger) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Credit ledger entry not found" },
+      }
+    }
+
+    const member = ledger.workspace?.members?.find((m: any) => m.userId === userId)
+    if (!member) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    if (member.role !== 'owner' && member.role !== 'admin') {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Only workspace owners and admins can modify credit ledger" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user has access to delete the credit ledger (owner only)
+   */
+  beforeDelete: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const ledger = await ctx.prisma.creditLedger.findUnique({
+      where: { id },
+      include: {
+        workspace: {
+          include: { members: true },
+        },
+      },
+    })
+
+    if (!ledger) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Credit ledger entry not found" },
+      }
+    }
+
+    const member = ledger.workspace?.members?.find((m: any) => m.userId === userId)
+    if (!member) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    if (member.role !== 'owner') {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Only workspace owners can delete credit ledger entries" },
+      }
+    }
+
+    return { ok: true }
+  },
 }

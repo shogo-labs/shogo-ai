@@ -51,12 +51,208 @@ export interface FolderHooks {
  * Default Folder hooks (customize as needed)
  */
 export const folderHooks: FolderHooks = {
-  // beforeList: async (ctx) => {
-  //   // Filter by user membership
-  //   return { ok: true, data: { where: { userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  /**
+   * Filter folders to only those in workspaces the user has access to.
+   * Include parent and workspace in list responses.
+   */
+  beforeList: async (ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const workspaceId = ctx.query.workspaceId
+
+    if (workspaceId) {
+      // Verify user has access to this workspace
+      const membership = await ctx.prisma.member.findFirst({
+        where: { userId, workspaceId },
+      })
+
+      if (!membership) {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Access denied to this workspace" },
+        }
+      }
+
+      return {
+        ok: true,
+        data: {
+          where: { workspaceId },
+          include: { parent: true, workspace: true },
+        },
+      }
+    }
+
+    // No workspaceId - return folders from all accessible workspaces
+    return {
+      ok: true,
+      data: {
+        where: {
+          workspace: {
+            members: {
+              some: { userId },
+            },
+          },
+        },
+        include: { parent: true, workspace: true },
+      },
+    }
+  },
+
+  /**
+   * Verify user has access to the folder via workspace membership
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const folder = await ctx.prisma.folder.findUnique({
+      where: { id },
+      include: {
+        workspace: {
+          include: { members: true },
+        },
+      },
+    })
+
+    if (!folder) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Folder not found" },
+      }
+    }
+
+    const hasAccess = folder.workspace?.members?.some((m: any) => m.userId === userId)
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this folder" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user can create folders in the target workspace
+   */
+  beforeCreate: async (input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const workspaceId = input.workspaceId
+    if (!workspaceId) {
+      return {
+        ok: false,
+        error: { code: "bad_request", message: "workspaceId is required" },
+      }
+    }
+
+    // Verify user has access to create in this workspace (member or higher)
+    const membership = await ctx.prisma.member.findFirst({
+      where: { userId, workspaceId },
+    })
+
+    if (!membership) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this workspace" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user has access to update the folder
+   */
+  beforeUpdate: async (id, input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const folder = await ctx.prisma.folder.findUnique({
+      where: { id },
+      include: {
+        workspace: {
+          include: { members: true },
+        },
+      },
+    })
+
+    if (!folder) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Folder not found" },
+      }
+    }
+
+    const hasAccess = folder.workspace?.members?.some((m: any) => m.userId === userId)
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this folder" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user has access to delete the folder
+   */
+  beforeDelete: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const folder = await ctx.prisma.folder.findUnique({
+      where: { id },
+      include: {
+        workspace: {
+          include: { members: true },
+        },
+      },
+    })
+
+    if (!folder) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Folder not found" },
+      }
+    }
+
+    const hasAccess = folder.workspace?.members?.some((m: any) => m.userId === userId)
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this folder" },
+      }
+    }
+
+    return { ok: true }
+  },
 }

@@ -51,12 +51,182 @@ export interface UsageEventHooks {
  * Default UsageEvent hooks (customize as needed)
  */
 export const usageEventHooks: UsageEventHooks = {
-  // beforeList: async (ctx) => {
-  //   // Filter by user membership
-  //   return { ok: true, data: { where: { userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  /**
+   * Filter usage events by workspaceId - user must have access
+   */
+  beforeList: async (ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const { workspaceId, projectId, memberId } = ctx.query
+    const where: Record<string, any> = {}
+
+    if (workspaceId) {
+      // Verify user has access to this workspace
+      const membership = await ctx.prisma.member.findFirst({
+        where: { userId, workspaceId },
+      })
+
+      if (!membership) {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Access denied to this workspace" },
+        }
+      }
+      where.workspaceId = workspaceId
+    } else {
+      // Filter to accessible workspaces only
+      where.workspace = {
+        members: { some: { userId } },
+      }
+    }
+
+    if (projectId) where.projectId = projectId
+    if (memberId) where.memberId = memberId
+
+    return {
+      ok: true,
+      data: {
+        where,
+        include: { workspace: true, project: true },
+        orderBy: { createdAt: 'desc' },
+      },
+    }
+  },
+
+  /**
+   * Verify user has access to the usage event via workspace membership
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const event = await ctx.prisma.usageEvent.findUnique({
+      where: { id },
+      include: {
+        workspace: {
+          include: { members: true },
+        },
+      },
+    })
+
+    if (!event) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Usage event not found" },
+      }
+    }
+
+    const hasAccess = event.workspace?.members?.some((m: any) => m.userId === userId)
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user has access to update the usage event (owner/admin only)
+   */
+  beforeUpdate: async (id, input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const event = await ctx.prisma.usageEvent.findUnique({
+      where: { id },
+      include: {
+        workspace: {
+          include: { members: true },
+        },
+      },
+    })
+
+    if (!event) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Usage event not found" },
+      }
+    }
+
+    const member = event.workspace?.members?.find((m: any) => m.userId === userId)
+    if (!member) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    if (member.role !== 'owner' && member.role !== 'admin') {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Only workspace owners and admins can modify usage events" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user has access to delete the usage event (owner only)
+   */
+  beforeDelete: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const event = await ctx.prisma.usageEvent.findUnique({
+      where: { id },
+      include: {
+        workspace: {
+          include: { members: true },
+        },
+      },
+    })
+
+    if (!event) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Usage event not found" },
+      }
+    }
+
+    const member = event.workspace?.members?.find((m: any) => m.userId === userId)
+    if (!member) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    if (member.role !== 'owner') {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Only workspace owners can delete usage events" },
+      }
+    }
+
+    return { ok: true }
+  },
 }

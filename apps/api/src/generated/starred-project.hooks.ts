@@ -51,12 +51,146 @@ export interface StarredProjectHooks {
  * Default StarredProject hooks (customize as needed)
  */
 export const starredProjectHooks: StarredProjectHooks = {
-  // beforeList: async (ctx) => {
-  //   // Filter by user membership
-  //   return { ok: true, data: { where: { userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  /**
+   * Filter starred projects by current user only
+   */
+  beforeList: async (ctx) => {
+    const requestedUserId = ctx.query.userId
+    const currentUserId = ctx.userId
+
+    if (!currentUserId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Force filter by current user only - security check
+    if (requestedUserId && requestedUserId !== currentUserId) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Can only view your own starred projects" },
+      }
+    }
+
+    return {
+      ok: true,
+      data: {
+        where: { userId: currentUserId },
+      },
+    }
+  },
+
+  /**
+   * Verify user owns the starred project before returning it
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const star = await ctx.prisma.starredProject.findUnique({
+      where: { id },
+    })
+
+    if (!star) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Starred project not found" },
+      }
+    }
+
+    if (star.userId !== userId) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Before creating a star, check if it already exists
+   */
+  beforeCreate: async (input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Verify user owns the userId in the input
+    if (input.userId && input.userId !== userId) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Can only star projects for yourself" },
+      }
+    }
+
+    // Set userId if not provided
+    if (!input.userId) {
+      input.userId = userId
+    }
+
+    const existing = await ctx.prisma.starredProject.findFirst({
+      where: {
+        userId: input.userId,
+        projectId: input.projectId,
+      },
+    })
+
+    if (existing) {
+      // Return the existing record instead of creating a new one
+      // This is handled specially - we return ok: false but with a specific code
+      return {
+        ok: false,
+        error: {
+          code: "already_starred",
+          message: "Project is already starred",
+        },
+      }
+    }
+
+    return { ok: true, data: input }
+  },
+
+  /**
+   * Verify user owns the starred project before deleting it
+   */
+  beforeDelete: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const star = await ctx.prisma.starredProject.findUnique({
+      where: { id },
+    })
+
+    if (!star) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Starred project not found" },
+      }
+    }
+
+    if (star.userId !== userId) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    return { ok: true }
+  },
 }

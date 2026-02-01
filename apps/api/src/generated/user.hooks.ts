@@ -51,12 +51,157 @@ export interface UserHooks {
  * Default User hooks (customize as needed)
  */
 export const userHooks: UserHooks = {
-  // beforeList: async (ctx) => {
-  //   // Filter by user membership
-  //   return { ok: true, data: { where: { userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  /**
+   * Restrict listing users - only return users in shared workspaces
+   */
+  beforeList: async (ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Only show users who are in the same workspaces as the current user
+    return {
+      ok: true,
+      data: {
+        where: {
+          memberships: {
+            some: {
+              workspace: {
+                members: {
+                  some: { userId },
+                },
+              },
+            },
+          },
+        },
+      },
+    }
+  },
+
+  /**
+   * Users can view their own profile or profiles of users in shared workspaces
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Allow viewing own profile
+    if (id === userId) {
+      return { ok: true }
+    }
+
+    // Check if the target user is in any shared workspaces
+    const sharedWorkspace = await ctx.prisma.workspace.findFirst({
+      where: {
+        members: {
+          some: {
+            OR: [
+              { userId: userId },
+              { userId: id },
+            ],
+          },
+        },
+      },
+      include: {
+        members: {
+          where: {
+            OR: [
+              { userId: userId },
+              { userId: id },
+            ],
+          },
+        },
+      },
+    })
+
+    if (!sharedWorkspace || sharedWorkspace.members.length < 2) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Users can only update their own profile
+   */
+  beforeUpdate: async (id, input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    if (id !== userId) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Can only update your own profile" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Users can only delete their own account
+   */
+  beforeDelete: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    if (id !== userId) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Can only delete your own account" },
+      }
+    }
+
+    // Check if user is the last owner of any workspace
+    const ownedWorkspaces = await ctx.prisma.workspace.findMany({
+      where: {
+        members: {
+          some: {
+            userId,
+            role: 'owner',
+          },
+        },
+      },
+      include: {
+        members: {
+          where: { role: 'owner' },
+        },
+      },
+    })
+
+    const isLastOwner = ownedWorkspaces.some(ws => ws.members.length === 1)
+    if (isLastOwner) {
+      return {
+        ok: false,
+        error: {
+          code: "last_owner",
+          message: "Cannot delete account while being the last owner of workspaces. Transfer ownership first.",
+        },
+      }
+    }
+
+    return { ok: true }
+  },
 }

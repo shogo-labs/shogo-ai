@@ -12,7 +12,7 @@
  */
 
 import * as React from "react"
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -81,6 +81,21 @@ export function ChatInput({
         s.description.toLowerCase().includes(lower)
     )
   }, [filterText])
+
+  /**
+   * Auto-resize textarea based on content
+   */
+  const resizeTextarea = useCallback(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+
+    // Reset height to auto to get the correct scrollHeight
+    textarea.style.height = 'auto'
+    
+    // Set height based on scrollHeight, respecting min/max constraints
+    const newHeight = Math.min(Math.max(textarea.scrollHeight, 60), 200)
+    textarea.style.height = `${newHeight}px`
+  }, [])
 
   /**
    * Process an image file and convert to base64 data URL
@@ -165,7 +180,7 @@ export function ChatInput({
   }, [])
 
   /**
-   * Handle input changes to detect slash commands
+   * Handle input changes to detect slash commands and auto-resize
    */
   const handleInput = useCallback(
     (e: React.FormEvent<HTMLTextAreaElement>) => {
@@ -178,8 +193,11 @@ export function ChatInput({
       } else {
         setShowSkillPicker(false)
       }
+      
+      // Auto-resize textarea
+      resizeTextarea()
     },
-    []
+    [resizeTextarea]
   )
 
   /**
@@ -213,7 +231,17 @@ export function ChatInput({
 
     // Focus textarea after submit
     textarea.focus()
-  }, [disabled, onSubmit, pendingImage])
+    
+    // Reset textarea height after clearing
+    resizeTextarea()
+  }, [disabled, onSubmit, pendingImage, resizeTextarea])
+
+  /**
+   * Resize textarea on mount and when dependencies change
+   */
+  useEffect(() => {
+    resizeTextarea()
+  }, [resizeTextarea])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -319,7 +347,7 @@ export function ChatInput({
           className="hidden"
         />
 
-        {/* Textarea - clean, borderless */}
+        {/* Textarea - clean, borderless, auto-expanding */}
         <Textarea
           ref={textareaRef}
           onKeyDown={handleKeyDown}
@@ -328,7 +356,7 @@ export function ChatInput({
           placeholder={placeholder}
           disabled={disabled}
           className={cn(
-            "min-h-[60px] max-h-[200px] resize-none w-full",
+            "min-h-[60px] max-h-[200px] resize-none w-full overflow-y-auto",
             "border-0 bg-transparent shadow-none focus-visible:ring-0",
             "px-4 pt-4 pb-2 text-xs",
             disabled && "cursor-not-allowed opacity-50"

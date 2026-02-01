@@ -51,7 +51,128 @@ export interface ProjectHooks {
  * Default Project hooks (customize as needed)
  */
 export const projectHooks: ProjectHooks = {
+  /**
+   * Filter projects to only those the user has access to via workspace membership.
+   * Include workspace and folder in list responses.
+   */
+  beforeList: async (ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Filter by workspaceId if provided, otherwise show all accessible projects
+    const workspaceId = ctx.query.workspaceId
+
+    if (workspaceId) {
+      // Verify user has access to this workspace
+      const membership = await ctx.prisma.member.findFirst({
+        where: { userId, workspaceId },
+      })
+
+      if (!membership) {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Access denied to this workspace" },
+        }
+      }
+
+      return {
+        ok: true,
+        data: {
+          where: { workspaceId },
+          include: { workspace: true, folder: true },
+        },
+      }
+    }
+
+    // No workspaceId provided - return projects from all workspaces user is a member of
+    return {
+      ok: true,
+      data: {
+        where: {
+          workspace: {
+            members: {
+              some: { userId },
+            },
+          },
+        },
+        include: { workspace: true, folder: true },
+      },
+    }
+  },
+
+  /**
+   * Verify user has access to the project's workspace before returning
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Get project and check workspace membership
+    const project = await ctx.prisma.project.findUnique({
+      where: { id },
+      include: { workspace: { include: { members: true } } },
+    })
+
+    if (!project) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Project not found" },
+      }
+    }
+
+    const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this project" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user can create projects in the target workspace
+   */
   beforeCreate: async (input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const workspaceId = input.workspaceId
+    if (!workspaceId) {
+      return {
+        ok: false,
+        error: { code: "bad_request", message: "workspaceId is required" },
+      }
+    }
+
+    // Verify user has access to create in this workspace (member or higher)
+    const membership = await ctx.prisma.member.findFirst({
+      where: { userId, workspaceId },
+    })
+
+    if (!membership) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this workspace" },
+      }
+    }
+
     // Normalize tier and status to lowercase, set defaults if missing
     if (input.tier) {
       input.tier = input.tier.toLowerCase()
@@ -65,8 +186,78 @@ export const projectHooks: ProjectHooks = {
       input.status = 'draft'
     }
     
-    if (!input.createdBy && ctx.userId) input.createdBy = ctx.userId
-    
+    if (!input.createdBy && userId) input.createdBy = userId
+
     return { ok: true, data: input }
+  },
+
+  /**
+   * Verify user has access to update the project
+   */
+  beforeUpdate: async (id, input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const project = await ctx.prisma.project.findUnique({
+      where: { id },
+      include: { workspace: { include: { members: true } } },
+    })
+
+    if (!project) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Project not found" },
+      }
+    }
+
+    const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this project" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user has access to delete the project
+   */
+  beforeDelete: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const project = await ctx.prisma.project.findUnique({
+      where: { id },
+      include: { workspace: { include: { members: true } } },
+    })
+
+    if (!project) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Project not found" },
+      }
+    }
+
+    const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this project" },
+      }
+    }
+
+    return { ok: true }
   },
 }

@@ -51,12 +51,140 @@ export interface NotificationHooks {
  * Default Notification hooks (customize as needed)
  */
 export const notificationHooks: NotificationHooks = {
-  // beforeList: async (ctx) => {
-  //   // Filter by user membership
-  //   return { ok: true, data: { where: { userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  /**
+   * Filter notifications by current user only - don't allow viewing other users' notifications
+   */
+  beforeList: async (ctx) => {
+    const requestedUserId = ctx.query.userId
+    const currentUserId = ctx.userId
+
+    if (!currentUserId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Force filter by current user only - security check
+    if (requestedUserId && requestedUserId !== currentUserId) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Can only view your own notifications" },
+      }
+    }
+
+    return {
+      ok: true,
+      data: {
+        where: { userId: currentUserId },
+      },
+    }
+  },
+
+  /**
+   * Verify user owns the notification before returning it
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const notification = await ctx.prisma.notification.findUnique({
+      where: { id },
+    })
+
+    if (!notification) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Notification not found" },
+      }
+    }
+
+    if (notification.userId !== userId) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user owns the notification before updating it
+   */
+  beforeUpdate: async (id, input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const notification = await ctx.prisma.notification.findUnique({
+      where: { id },
+    })
+
+    if (!notification) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Notification not found" },
+      }
+    }
+
+    if (notification.userId !== userId) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    // Don't allow changing the userId
+    if (input.userId && input.userId !== userId) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Cannot change notification owner" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user owns the notification before deleting it
+   */
+  beforeDelete: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const notification = await ctx.prisma.notification.findUnique({
+      where: { id },
+    })
+
+    if (!notification) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Notification not found" },
+      }
+    }
+
+    if (notification.userId !== userId) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    return { ok: true }
+  },
 }

@@ -52,27 +52,191 @@ export interface ChatMessageHooks {
  */
 export const chatMessageHooks: ChatMessageHooks = {
   /**
-   * Filter chat messages by sessionId query parameter.
-   * The frontend calls /api/v2/chat-messages?sessionId=xxx to load messages for a chat session.
+   * Filter chat messages by sessionId and verify user has access
    * 
    * IMPORTANT: We explicitly set include: undefined to prevent Prisma from returning
    * the session relation as a nested object. The frontend MST model expects session
    * to be a reference (just an ID), not a full object.
    */
   beforeList: async (ctx) => {
-    const where: any = {}
-    
-    // Support filtering by sessionId (required for chat history loading)
-    if (ctx.query.sessionId) {
-      where.sessionId = ctx.query.sessionId
+    const sessionId = ctx.query.sessionId
+    const userId = ctx.userId
+
+    if (!sessionId) {
+      return {
+        ok: false,
+        error: {
+          code: "bad_request",
+          message: "sessionId query param required",
+        },
+      }
     }
-    
-    // Support filtering by id (for loading specific messages)
-    if (ctx.query.id) {
-      where.id = ctx.query.id
+
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
     }
-    
-    // Explicitly exclude relations - MST expects references (IDs), not nested objects
-    return { ok: true, data: { where, include: undefined } }
+
+    // Verify user owns this session via project workspace membership
+    const session = await ctx.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      include: {
+        project: {
+          include: {
+            workspace: {
+              include: { members: true },
+            },
+          },
+        },
+      },
+    })
+
+    if (!session) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Chat session not found" },
+      }
+    }
+
+    // Check if user is a member of the project's workspace
+    const hasAccess = session.project?.workspace?.members?.some(
+      (m: any) => m.userId === userId
+    )
+
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this chat session" },
+      }
+    }
+
+    return {
+      ok: true,
+      data: {
+        where: { sessionId },
+        // Explicitly no include - MST expects session as ID reference, not nested object
+        include: undefined,
+        orderBy: { createdAt: 'asc' },
+      },
+    }
+  },
+
+  /**
+   * Verify user has access to the chat message's session
+   */
+  beforeGet: async (id, ctx) => {
+    const userId = ctx.userId
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    const message = await ctx.prisma.chatMessage.findUnique({
+      where: { id },
+      include: {
+        session: {
+          include: {
+            project: {
+              include: {
+                workspace: {
+                  include: { members: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+
+    if (!message) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Message not found" },
+      }
+    }
+
+    const hasAccess = message.session?.project?.workspace?.members?.some(
+      (m: any) => m.userId === userId
+    )
+
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Verify user can create messages in this session
+   */
+  beforeCreate: async (input, ctx) => {
+    const sessionId = input.sessionId
+    const userId = ctx.userId
+
+    if (!sessionId) {
+      return {
+        ok: false,
+        error: { code: "bad_request", message: "sessionId is required" },
+      }
+    }
+
+    if (!userId) {
+      return {
+        ok: false,
+        error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Check session access (same as beforeList)
+    const session = await ctx.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      include: {
+        project: {
+          include: {
+            workspace: {
+              include: { members: true },
+            },
+          },
+        },
+      },
+    })
+
+    if (!session) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Chat session not found" },
+      }
+    }
+
+    const hasAccess = session.project?.workspace?.members?.some(
+      (m: any) => m.userId === userId
+    )
+
+    if (!hasAccess) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Cannot create messages in this session" },
+      }
+    }
+
+    return { ok: true }
+  },
+
+  /**
+   * Update session updatedAt when message is created
+   * Note: updatedAt has @updatedAt so it auto-updates, but we call update to trigger it
+   */
+  afterCreate: async (message, ctx) => {
+    await ctx.prisma.chatSession.update({
+      where: { id: message.sessionId },
+      data: { updatedAt: new Date() },
+    })
   },
 }
