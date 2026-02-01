@@ -34,15 +34,15 @@ mkdir -p reports
 
 # Run authenticated workspace CRUD test
 echo "📝 Test: Authenticated Workspace & Project CRUD"
-echo "   Users: 20, Spawn rate: 5, Duration: 5m"
+echo "   Users: 50, Spawn rate: 10, Duration: 5m"
 echo "   Operations: list, create, update, delete workspaces & projects"
 echo ""
 
 locust \
     -f locustfiles/simple/workspace_test.py \
     --headless \
-    --users 20 \
-    --spawn-rate 5 \
+    --users 50 \
+    --spawn-rate 10 \
     --run-time 5m \
     --host "$API_BASE_URL" \
     --html reports/workspace_crud_authenticated.html \

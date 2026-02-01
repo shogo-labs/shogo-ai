@@ -146,30 +146,31 @@ class WorkspaceLoadTestUser(FastHttpUser):
                 response.failure(f"Failed: {response.status_code}")
     
     @task(8)
-    def list_projects_in_workspace(self):
-        """List projects in a workspace."""
-        if not self.authenticated or not self.workspaces:
-            return
+    def list_all_projects(self):
+        """List all projects for authenticated user.
         
-        workspace = random.choice(self.workspaces)
-        workspace_id = workspace.get("id")
-        
-        if not workspace_id:
+        The API returns all projects the user has access to.
+        We can filter client-side by workspace if needed.
+        """
+        if not self.authenticated:
             return
         
         # Use v2 API endpoint - authenticated via session cookie
+        # No workspaceId filter - get all user's projects
         with self.client.get(
-            f"/api/v2/projects?workspaceId={workspace_id}",
+            "/api/v2/projects",
             catch_response=True,
-            name="/api/v2/projects [LIST by workspace]"
+            name="/api/v2/projects [LIST]"
         ) as response:
             if response.status_code == 200:
                 data = response.json()
                 # Store projects for other operations
-                if isinstance(data, list):
-                    self.projects = data
-                elif isinstance(data, dict) and "items" in data:
+                if isinstance(data, dict) and "items" in data:
                     self.projects = data["items"]
+                elif isinstance(data, list):
+                    self.projects = data
+                else:
+                    self.projects = []
                 response.success()
             elif response.status_code == 401:
                 response.failure("Unauthorized - session may have expired")
@@ -197,20 +198,27 @@ class WorkspaceLoadTestUser(FastHttpUser):
             json={
                 "name": f"Load Test Project {project_id}",
                 "workspaceId": workspace_id,
-                "description": "Project for load testing"
+                "description": "Project for load testing",
+                "tier": "FREE",  # Required field
+                "status": "ACTIVE"  # Required field
             },
             catch_response=True,
             name="/api/v2/projects [CREATE]"
         ) as response:
             if response.status_code in [200, 201]:
-                project = response.json()
-                self.projects.append(project)
+                data = response.json()
+                # Handle response format
+                if isinstance(data, dict):
+                    project = data.get("item") or data.get("project") or data
+                    if self.projects is None:
+                        self.projects = []
+                    self.projects.append(project)
                 response.success()
             elif response.status_code == 401:
                 response.failure("Unauthorized - session may have expired")
                 self.authenticated = False
             elif response.status_code == 400:
-                # Validation error
+                # Validation error - don't count as failure
                 response.success()
             else:
                 response.failure(f"Failed: {response.status_code}")

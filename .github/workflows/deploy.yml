@@ -205,12 +205,56 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
   # ===========================================================================
-  # Stage 3: Deploy to EKS
+  # Stage 3: Run Database Migrations
+  # ===========================================================================
+  migrate:
+    name: Run Database Migrations (${{ needs.setup.outputs.environment }})
+    runs-on: ubuntu-latest
+    needs: [setup, build-and-push]
+    environment: ${{ needs.setup.outputs.environment }}
+    
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: |
+          cd apps/api
+          bun install
+
+      - name: Run Prisma migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          cd apps/api
+          echo "🔄 Running Prisma migrations for ${{ needs.setup.outputs.environment }}..."
+          bunx prisma migrate deploy
+          echo "✅ Database migrations completed successfully"
+
+      - name: Verify migration status
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          cd apps/api
+          echo "📊 Checking migration status..."
+          bunx prisma migrate status
+
+  # ===========================================================================
+  # Stage 4: Deploy to EKS
   # ===========================================================================
   deploy:
     name: Deploy to EKS (${{ needs.setup.outputs.environment }})
     runs-on: ubuntu-latest
-    needs: [setup, build-and-push]
+    needs: [setup, build-and-push, migrate]
     environment: ${{ needs.setup.outputs.environment }}
     
     permissions:
@@ -355,6 +399,9 @@ jobs:
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Environment: \`${{ env.ENVIRONMENT }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Database Migrations" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Migrations applied successfully before deployment" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Services Deployed" >> $GITHUB_STEP_SUMMARY
           echo "| Service | Image Tag |" >> $GITHUB_STEP_SUMMARY

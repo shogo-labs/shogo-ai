@@ -115,6 +115,7 @@ model Workspace {
   subscriptions   Subscription[]
   creditLedgers   CreditLedger[]
   usageEvents     UsageEvent[]
+  starredProjects StarredProject[]
 
   @@map("workspaces")
 }
@@ -146,6 +147,7 @@ model Project {
   usageEvents      UsageEvent[]
   checkpoints      ProjectCheckpoint[]
   githubConnection GitHubConnection?
+  starredBy        StarredProject[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -232,9 +234,13 @@ model StarredProject {
   createdAt   DateTime @default(now())
 
   // Relations
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([userId, projectId])
+  @@index([workspaceId])
+  @@index([projectId])
   @@index([userId])
   @@map("starred_projects")
 }
