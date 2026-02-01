@@ -37,7 +37,9 @@ COPY prisma.config.ts ./prisma.config.ts
 
 # Generate Prisma client (must be done before building apps)
 # Use local prisma from node_modules to ensure correct version (v6)
-RUN ./node_modules/.bin/prisma generate
+# Provide a placeholder DATABASE_URL (not used during generation, but schema validation requires it)
+RUN DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder" \
+    ./node_modules/.bin/prisma generate
 
 # Build SDK first (dependency of api)
 WORKDIR /app/packages/sdk
