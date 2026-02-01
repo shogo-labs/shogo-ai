@@ -9,7 +9,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { Loader2, AlertCircle, Wifi, WifiOff, RefreshCw } from "lucide-react"
+import { Loader2, AlertCircle, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 /**
@@ -72,9 +72,9 @@ export function RuntimePreviewPanel({
   const [statusMessage, setStatusMessage] = useState<string>('Initializing...')
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [hmrConnected, setHmrConnected] = useState(false)
   const [iframeLoaded, setIframeLoaded] = useState(false)
   const [pollCount, setPollCount] = useState(0) // Track polls for progress bar
+  const [isRebuilding, setIsRebuilding] = useState(false) // Track rebuild state for smooth overlay
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const retryCountRef = useRef(0)
@@ -258,15 +258,7 @@ export function RuntimePreviewPanel({
   const handleIframeLoad = useCallback(() => {
     setIframeLoaded(true)
     setIsLoading(false)
-
-    // Check HMR connection status
-    // Vite creates a WebSocket connection for HMR
-    if (iframeRef.current?.contentWindow) {
-      // HMR status will be updated via postMessage from the iframe
-      // For now, assume connected if iframe loaded successfully
-      setHmrConnected(true)
-    }
-
+    setIsRebuilding(false) // Clear rebuild state when new content loads
     onLoad?.()
   }, [onLoad])
 
@@ -276,7 +268,7 @@ export function RuntimePreviewPanel({
   const handleIframeError = useCallback(() => {
     setError('Failed to load project preview')
     setIsLoading(false)
-    setHmrConnected(false)
+    setIsRebuilding(false)
     onError?.(new Error('Failed to load project preview'))
   }, [onError])
 
@@ -290,25 +282,24 @@ export function RuntimePreviewPanel({
     }
     retryCountRef.current = 0 // Reset counter for manual retry
     setIframeLoaded(false)
-    setHmrConnected(false)
+    setIsRebuilding(false)
     setError(null)
     fetchSandboxUrl()
   }, [fetchSandboxUrl])
 
   /**
    * Refresh the iframe without restarting runtime.
+   * Uses cache-busting timestamp to force browser to reload.
+   * Shows smooth loading state without flickering.
    */
   const handleRefresh = useCallback(() => {
     if (iframeRef.current && sandboxUrl) {
       setIframeLoaded(false)
-      setIsLoading(true)
-      // Force reload by toggling src
-      iframeRef.current.src = ''
-      setTimeout(() => {
-        if (iframeRef.current) {
-          iframeRef.current.src = sandboxUrl
-        }
-      }, 50)
+      setIsRebuilding(true) // Use rebuild state for smooth overlay
+      // Add cache-busting timestamp to force reload
+      const cacheBuster = Date.now()
+      const separator = sandboxUrl.includes('?') ? '&' : '?'
+      iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
     }
   }, [sandboxUrl])
 
@@ -344,9 +335,8 @@ export function RuntimePreviewPanel({
   const pendingRefreshRef = useRef(false)
 
   /**
-   * Trigger a rebuild of the project (vite build) and then reload the preview.
-   * This is needed because the preview serves static files from dist/,
-   * so file changes don't appear until a rebuild happens.
+   * Trigger a rebuild of the project and refresh the preview smoothly.
+   * Shows a loading overlay while keeping previous content visible (no flickering).
    */
   const triggerRebuild = useCallback(async () => {
     if (isRebuildingRef.current) {
@@ -355,7 +345,8 @@ export function RuntimePreviewPanel({
     }
 
     isRebuildingRef.current = true
-    setStatusMessage('Rebuilding project...')
+    setIsRebuilding(true)
+    setStatusMessage('Updating preview...')
 
     try {
       console.log('[RuntimePreviewPanel] Triggering project rebuild...')
@@ -368,23 +359,31 @@ export function RuntimePreviewPanel({
         const result = await response.json()
         console.log('[RuntimePreviewPanel] Rebuild complete:', result)
         
-        // Wait a moment for the server to be ready, then reload iframe
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        handleRefresh()
+        // Wait for server to be ready
+        await new Promise(resolve => setTimeout(resolve, 2000))
       } else {
-        console.warn('[RuntimePreviewPanel] Rebuild failed, falling back to iframe refresh')
-        // Fallback: just refresh the iframe (might show stale content)
-        handleRefresh()
+        console.warn('[RuntimePreviewPanel] Rebuild failed, but will still try to refresh')
       }
     } catch (err) {
       console.error('[RuntimePreviewPanel] Rebuild error:', err)
-      // Fallback: just refresh the iframe
-      handleRefresh()
-    } finally {
-      isRebuildingRef.current = false
+    }
+    
+    // Refresh with cache-buster after rebuild
+    // Note: isRebuilding state will be cleared by handleIframeLoad
+    if (iframeRef.current && sandboxUrl) {
+      setIframeLoaded(false)
+      const cacheBuster = Date.now()
+      const separator = sandboxUrl.includes('?') ? '&' : '?'
+      console.log('[RuntimePreviewPanel] Refreshing preview with cache-buster:', cacheBuster)
+      iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
+    } else {
+      // No iframe to refresh, clear states
+      setIsRebuilding(false)
       setStatusMessage('')
     }
-  }, [projectId, handleRefresh])
+    
+    isRebuildingRef.current = false
+  }, [projectId, sandboxUrl])
 
   // Auto-refresh when refreshTrigger changes (triggered by agent file modifications)
   // This triggers a full rebuild since the preview serves static files
@@ -404,23 +403,18 @@ export function RuntimePreviewPanel({
     }
   }, [refreshTrigger, sandboxUrl, triggerRebuild])
 
-  // Listen for HMR status messages from iframe
+  // Auto-clear rebuild state if it takes too long (timeout safety)
   useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      // Validate origin matches our sandbox URL
-      if (sandboxUrl && event.origin !== new URL(sandboxUrl).origin) {
-        return
-      }
+    if (isRebuilding) {
+      const timeout = setTimeout(() => {
+        console.warn('[RuntimePreviewPanel] Rebuild timeout, clearing state')
+        setIsRebuilding(false)
+        setStatusMessage('')
+      }, 30000) // 30 second timeout
 
-      // Handle HMR status messages (custom protocol)
-      if (event.data?.type === 'shogo:hmr-status') {
-        setHmrConnected(event.data.connected)
-      }
+      return () => clearTimeout(timeout)
     }
-
-    window.addEventListener('message', handleMessage)
-    return () => window.removeEventListener('message', handleMessage)
-  }, [sandboxUrl])
+  }, [isRebuilding])
 
   // Cleanup on unmount
   useEffect(() => {
@@ -529,35 +523,41 @@ export function RuntimePreviewPanel({
 
   return (
     <div className={cn("relative h-full w-full", className)}>
-      {/* HMR Status Indicator */}
-      <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
-        <div
-          className={cn(
-            "flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium transition-colors",
-            hmrConnected
-              ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-              : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-          )}
-          title={hmrConnected ? "HMR Connected" : "HMR Disconnected"}
-        >
-          {hmrConnected ? (
-            <Wifi className="h-3 w-3" />
-          ) : (
-            <WifiOff className="h-3 w-3" />
-          )}
-          {hmrConnected ? "Live" : "Disconnected"}
-        </div>
+      {/* Refresh Button */}
+      <div className="absolute top-2 right-2 z-10">
         <button
           onClick={handleRefresh}
-          className="p-1.5 rounded-full bg-muted/80 hover:bg-muted transition-colors"
+          disabled={isRebuilding}
+          className={cn(
+            "p-1.5 rounded-full bg-background/90 backdrop-blur-sm border border-border hover:bg-muted transition-colors shadow-sm",
+            isRebuilding && "opacity-50 cursor-not-allowed"
+          )}
           title="Refresh preview"
         >
-          <RefreshCw className="h-3.5 w-3.5 text-muted-foreground" />
+          <RefreshCw className={cn(
+            "h-3.5 w-3.5 text-muted-foreground",
+            isRebuilding && "animate-spin"
+          )} />
         </button>
       </div>
 
-      {/* Loading overlay while iframe loads */}
-      {(isLoading || !iframeLoaded) && sandboxUrl && (
+      {/* Smooth rebuilding overlay - keeps previous content visible */}
+      {isRebuilding && iframeLoaded && (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/60 backdrop-blur-[2px] z-5 animate-in fade-in duration-200">
+          <div className="flex flex-col items-center gap-3 bg-background/95 backdrop-blur-sm border border-border rounded-lg p-6 shadow-lg">
+            <div className="relative">
+              <Loader2 className="h-8 w-8 text-primary animate-spin" />
+            </div>
+            <div className="flex flex-col items-center gap-1">
+              <span className="text-sm font-medium text-foreground">Updating preview</span>
+              <span className="text-xs text-muted-foreground">Building your changes...</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Loading overlay for initial load only */}
+      {(isLoading || !iframeLoaded) && sandboxUrl && !isRebuilding && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-5">
           <div className="flex flex-col items-center gap-2">
             <Loader2 className="h-6 w-6 text-primary animate-spin" />

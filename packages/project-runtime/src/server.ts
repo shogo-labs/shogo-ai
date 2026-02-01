@@ -2093,23 +2093,6 @@ app.get('/preview/*', async (c) => {
     }
   }
   
-  // Dev mode: redirect to subdomain for proper HMR support
-  // The /preview/ endpoint doesn't support HMR well due to path rewriting issues
-  // For dev mode, use subdomain access which proxies directly to vite dev server
-  if (isDevMode && viteDevProcess) {
-    return c.html(`
-      <html>
-        <body style="font-family: system-ui; padding: 2rem; text-align: center;">
-          <h1>Dev Mode Active</h1>
-          <p>For HMR support, access the preview via subdomain.</p>
-          <p style="color: #666; font-size: 0.9em;">
-            The /preview/ path doesn't support HMR. Use the preview subdomain for instant updates.
-          </p>
-        </body>
-      </html>
-    `, 200)
-  }
-  
   // TanStack Start: proxy to the running server
   if (isTanStackStart) {
     const targetUrl = `http://localhost:${NITRO_SERVER_PORT}${relativePath}`
@@ -2643,23 +2626,24 @@ app.all('/*', async (c) => {
     devModeError = null
   }
   
-  // Auto-start dev mode if nothing is running
-  // This makes dev mode the default without needing to call /preview/dev manually
-  if (!isDevMode && !viteDevProcess && !nitroProcess && !devModeStarting && !isInBackoff) {
-    console.log('[project-runtime] Auto-starting dev mode on first subdomain request...')
+  // Auto-start build mode if nothing is running
+  // Use build+restart approach instead of dev mode for reliability and simplicity
+  // This avoids HMR complexity and provides consistent preview updates
+  if (!nitroProcess && !expoServerProcess && !devModeStarting && !isInBackoff) {
+    console.log('[project-runtime] Auto-starting build mode on first subdomain request...')
     devModeStarting = true
     
-    // Start dev mode in background (don't await - we'll show loading page)
-    fetch(`http://localhost:${PORT}/preview/dev`, { method: 'POST' })
+    // Start build mode in background (don't await - we'll show loading page)
+    fetch(`http://localhost:${PORT}/preview/restart`, { method: 'POST' })
       .then(async (res) => {
         if (res.ok) {
-          console.log('[project-runtime] Dev mode auto-started successfully')
+          console.log('[project-runtime] Build mode auto-started successfully')
           // Reset failure tracking on success
           devModeFailureCount = 0
           devModeError = null
         } else {
           const errorText = await res.text()
-          console.error('[project-runtime] Dev mode auto-start failed:', errorText)
+          console.error('[project-runtime] Build mode auto-start failed:', errorText)
           devModeFailureCount++
           devModeLastFailure = Date.now()
           try {
@@ -2672,7 +2656,7 @@ app.all('/*', async (c) => {
         devModeStarting = false
       })
       .catch((err) => {
-        console.error('[project-runtime] Dev mode auto-start error:', err)
+        console.error('[project-runtime] Build mode auto-start error:', err)
         devModeFailureCount++
         devModeLastFailure = Date.now()
         devModeError = err.message || 'Connection error'
@@ -2680,15 +2664,15 @@ app.all('/*', async (c) => {
       })
   }
   
-  // Show loading page while dev mode is starting
-  if (devModeStarting || (!isDevMode && !viteDevProcess && !nitroProcess && !isInBackoff)) {
+  // Show loading page while build is starting
+  if (devModeStarting || (!nitroProcess && !expoServerProcess && !isInBackoff)) {
     return c.html(`
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Starting Dev Server...</title>
+  <title>Building Preview...</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -2723,7 +2707,7 @@ app.all('/*', async (c) => {
       try {
         const res = await fetch('/build-status');
         const data = await res.json();
-        document.querySelector('.status').textContent = data.message || 'Initializing...';
+        document.querySelector('.status').textContent = data.message || 'Building...';
         if (data.ready) location.reload();
         if (data.error) location.reload(); // Reload to show error page
       } catch {}
@@ -2735,8 +2719,8 @@ app.all('/*', async (c) => {
 <body>
   <div class="container">
     <div class="spinner"></div>
-    <h1>Starting Dev Server</h1>
-    <p>Setting up Vite with HMR for instant updates...</p>
+    <h1>Building Your Preview</h1>
+    <p>Compiling your project... This takes 5-10 seconds.</p>
     <div class="status">Initializing...</div>
     <div class="attempt">Starting...</div>
   </div>
@@ -2801,61 +2785,6 @@ app.all('/*', async (c) => {
 </body>
 </html>
       `, 200)
-    }
-  }
-  
-  // Dev mode: proxy directly to Vite dev server (HMR works out of the box)
-  if (isDevMode && viteDevProcess) {
-    const targetUrl = `http://localhost:${VITE_DEV_PORT}${relativePath}`
-    const method = c.req.method
-    console.log(`[project-runtime] Subdomain: proxying ${method} to Vite dev at ${targetUrl}`)
-    
-    try {
-      const proxyHeaders: Record<string, string> = {
-        'Host': `localhost:${VITE_DEV_PORT}`,
-        'Accept': c.req.header('Accept') || '*/*',
-        'Accept-Encoding': c.req.header('Accept-Encoding') || '',
-      }
-      
-      const contentType = c.req.header('Content-Type')
-      if (contentType) proxyHeaders['Content-Type'] = contentType
-      
-      const cookies = c.req.header('Cookie')
-      if (cookies) proxyHeaders['Cookie'] = cookies
-      
-      const fetchOptions: RequestInit = { method, headers: proxyHeaders }
-      
-      if (method !== 'GET' && method !== 'HEAD') {
-        try {
-          const bodyBuffer = await c.req.arrayBuffer()
-          if (bodyBuffer.byteLength > 0) fetchOptions.body = bodyBuffer
-        } catch {}
-      }
-      
-      const response = await fetch(targetUrl, fetchOptions)
-      const responseContentType = response.headers.get('Content-Type') || 'text/html'
-      const body = await response.arrayBuffer()
-      
-      return new Response(body, {
-        status: response.status,
-        headers: {
-          'Content-Type': responseContentType,
-          'Cache-Control': 'no-cache',
-          'Access-Control-Allow-Origin': '*',
-          'X-Frame-Options': 'ALLOWALL',
-        },
-      })
-    } catch (error: any) {
-      console.error('[project-runtime] Subdomain Vite dev proxy error:', error)
-      return c.html(`
-        <html>
-          <body style="font-family: system-ui; padding: 2rem;">
-            <h1>Dev Server Starting...</h1>
-            <p>Please wait...</p>
-            <script>setTimeout(() => location.reload(), 2000)</script>
-          </body>
-        </html>
-      `, 503)
     }
   }
   
