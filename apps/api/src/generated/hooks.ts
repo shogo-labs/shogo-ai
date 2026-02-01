@@ -8,12 +8,48 @@
 import type { RouteHooksConfig } from "./routes"
 import type { ModelHooks, RouteHookContext, HookResult } from "@shogo/state-api/generators"
 import { sendInvitationEmail } from "../services/email.service"
+import { customAlphabet } from 'nanoid'
+
+// Generate random 6-character suffix for slug uniqueness
+const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6)
 
 // ============================================================================
 // Workspace Hooks
 // ============================================================================
 
 const workspaceHooks: ModelHooks = {
+  /**
+   * Generate unique slug before creating workspace
+   * Fixes: Workspace creation failures (5.9% rate) from slug collisions
+   */
+  beforeCreate: async (input, ctx) => {
+    // Generate slug if not provided
+    if (!input.slug && input.name) {
+      const baseSlug = input.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+      
+      // Add random suffix to avoid collisions
+      input.slug = `${baseSlug}-${nanoid()}`
+    }
+    
+    // If slug already provided, verify it's unique
+    if (input.slug) {
+      const existing = await ctx.prisma.workspace.findUnique({
+        where: { slug: input.slug }
+      })
+      
+      if (existing) {
+        // Regenerate with random suffix
+        const baseSlug = input.slug.replace(/-[a-z0-9]{6}$/, '')
+        input.slug = `${baseSlug}-${nanoid()}`
+      }
+    }
+    
+    return { ok: true, data: input }
+  },
+
   /**
    * Filter workspaces by user membership when userId is provided
    */

@@ -51,12 +51,22 @@ export interface ProjectHooks {
  * Default Project hooks (customize as needed)
  */
 export const projectHooks: ProjectHooks = {
-  // beforeList: async (ctx) => {
-  //   // Filter by user membership
-  //   return { ok: true, data: { where: { userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  beforeCreate: async (input, ctx) => {
+    // Normalize tier and status to lowercase, set defaults if missing
+    if (input.tier) {
+      input.tier = input.tier.toLowerCase()
+    } else {
+      input.tier = 'starter'
+    }
+    
+    if (input.status) {
+      input.status = input.status.toLowerCase()
+    } else {
+      input.status = 'draft'
+    }
+    
+    if (!input.createdBy && ctx.userId) input.createdBy = ctx.userId
+    
+    return { ok: true, data: input }
+  },
 }

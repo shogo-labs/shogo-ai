@@ -97,6 +97,19 @@ const todos = await client.db.todos.list({
   skip: 0,
 })
 
+// List with query parameters (sent as URL query params)
+// Example: GET /api/v2/projects?workspaceId=abc123&status=active
+const projects = await client.db.projects.list({
+  where: { workspaceId: 'abc123', status: 'active' },
+  limit: 20,
+})
+
+// You can also use the params option for additional query parameters
+const filtered = await client.db.items.list({
+  where: { category: 'electronics' },
+  params: { sortBy: 'price', order: 'asc' },
+})
+
 // Get by ID
 const todo = await client.db.todos.get('todo-123')
 

@@ -15,6 +15,7 @@
 import { betterAuth } from "better-auth"
 import { Pool } from "pg"
 import { createPersonalWorkspace } from "./services/workspace.service"
+import { sendWelcomeEmail } from "./services/email.service"
 
 // Port configuration from environment
 const API_PORT = process.env.API_PORT || "8002"
@@ -149,8 +150,21 @@ export const auth = betterAuth({
          */
         after: async (user) => {
           try {
+            // BLOCKING: Create workspace (user needs this immediately)
             await createPersonalWorkspace(user.id, user.name || "User")
             console.log(`Created personal workspace for user ${user.email}`)
+            
+            // FIRE-AND-FORGET: Send welcome email (non-blocking)
+            const baseUrl = process.env.APP_URL || process.env.BETTER_AUTH_URL || 'http://localhost:3001'
+            sendWelcomeEmail({
+              to: user.email,
+              name: user.name || 'User',
+              loginUrl: `${baseUrl}/login`
+            }).catch((err) => {
+              // Gracefully log email failures without blocking
+              console.error(`Welcome email failed for ${user.email}:`, err)
+            })
+            
           } catch (error) {
             // Log error but don't block user creation
             console.error(

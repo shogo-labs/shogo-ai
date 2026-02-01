@@ -199,8 +199,8 @@ class WorkspaceLoadTestUser(FastHttpUser):
                 "name": f"Load Test Project {project_id}",
                 "workspaceId": workspace_id,
                 "description": "Project for load testing",
-                "tier": "FREE",  # Required field
-                "status": "ACTIVE"  # Required field
+                "tier": "starter",  # Valid: starter, pro, enterprise, internal
+                "status": "active"  # Valid: draft, active, archived
             },
             catch_response=True,
             name="/api/v2/projects [CREATE]"
