@@ -23,7 +23,7 @@ export function getSubscriptionStore(http?: HttpClient): OptimisticStore<Subscri
     }
     _store = new OptimisticStore<SubscriptionType>({
       http,
-      endpoint: "/api/v2/subscriptions",
+      endpoint: "/api/subscriptions",
     })
   }
   return _store

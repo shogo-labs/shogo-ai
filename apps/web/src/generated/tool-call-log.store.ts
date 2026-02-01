@@ -23,7 +23,7 @@ export function getToolCallLogStore(http?: HttpClient): OptimisticStore<ToolCall
     }
     _store = new OptimisticStore<ToolCallLogType>({
       http,
-      endpoint: "/api/v2/tool-call-logs",
+      endpoint: "/api/tool-call-logs",
     })
   }
   return _store

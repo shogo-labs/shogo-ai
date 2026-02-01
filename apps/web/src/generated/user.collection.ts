@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // User Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/users"
+const ENDPOINT = "/api/users"
 
 /**
  * User Collection Model

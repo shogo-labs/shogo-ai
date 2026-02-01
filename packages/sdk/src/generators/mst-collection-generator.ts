@@ -80,7 +80,7 @@ export function generateMSTCollection(model: PrismaModel): GeneratedMSTCollectio
     `// ${modelName} Collection`,
     '// ============================================================================',
     '',
-    `const ENDPOINT = "/api/v2/${routePath}"`,
+    `const ENDPOINT = "/api/${routePath}"`,
     '',
     '/**',
     ` * ${modelName} Collection Model`,

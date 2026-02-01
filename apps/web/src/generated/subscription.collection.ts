@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // Subscription Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/subscriptions"
+const ENDPOINT = "/api/subscriptions"
 
 /**
  * Subscription Collection Model

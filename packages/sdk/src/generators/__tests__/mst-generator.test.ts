@@ -132,7 +132,7 @@ describe('MST Collection Generator', () => {
   it('should use correct API endpoint', () => {
     const result = generateMSTCollection(mockWorkspaceModel as any)
 
-    expect(result.code).toContain('const ENDPOINT = "/api/v2/workspaces"')
+    expect(result.code).toContain('const ENDPOINT = "/api/workspaces"')
   })
 
   it('should include type exports', () => {

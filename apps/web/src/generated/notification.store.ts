@@ -23,7 +23,7 @@ export function getNotificationStore(http?: HttpClient): OptimisticStore<Notific
     }
     _store = new OptimisticStore<NotificationType>({
       http,
-      endpoint: "/api/v2/notifications",
+      endpoint: "/api/notifications",
     })
   }
   return _store

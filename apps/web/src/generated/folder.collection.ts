@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // Folder Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/folders"
+const ENDPOINT = "/api/folders"
 
 /**
  * Folder Collection Model

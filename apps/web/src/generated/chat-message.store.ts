@@ -23,7 +23,7 @@ export function getChatMessageStore(http?: HttpClient): OptimisticStore<ChatMess
     }
     _store = new OptimisticStore<ChatMessageType>({
       http,
-      endpoint: "/api/v2/chat-messages",
+      endpoint: "/api/chat-messages",
     })
   }
   return _store

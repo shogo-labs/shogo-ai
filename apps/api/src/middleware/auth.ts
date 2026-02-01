@@ -80,8 +80,8 @@ export async function authMiddleware(c: Context, next: Next) {
  *
  * Use after authMiddleware:
  * ```typescript
- * app.use('/api/v2/*', authMiddleware)
- * app.use('/api/v2/*', requireAuth)
+ * app.use('/api/*', authMiddleware)
+ * app.use('/api/*', requireAuth)
  * ```
  */
 export async function requireAuth(c: Context, next: Next) {

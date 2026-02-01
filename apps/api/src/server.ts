@@ -3345,26 +3345,26 @@ app.post('/api/webhooks/stripe', async (c) => {
 // Domain API routes - For APIPersistence layer
 // =============================================================================
 
-// Note: Domain routes are now served via /api/v2 (generated routes below)
+// Note: Domain routes are now served via generated Prisma CRUD routes at /api
 
 // =============================================================================
-// Generated API routes (v2) - Auto-generated from Prisma schema with hooks
+// Generated API Routes - Auto-generated from Prisma schema with hooks
 // =============================================================================
 
-// Apply auth middleware to extract session for all v2 routes
+// Apply auth middleware to extract session for all routes
 // This makes ctx.userId available in route hooks for authorization
-app.use('/api/v2/*', authMiddleware)
+app.use('/api/*', authMiddleware)
 
-// Require authentication for all v2 routes
+// Require authentication for all routes
 // Unauthenticated requests get 401 Unauthorized
-app.use('/api/v2/*', requireAuth)
+app.use('/api/*', requireAuth)
 
-// Mount generated routes at /api/v2
+// Mount generated routes at /api
 const generatedRoutes = createGeneratedRoutes({
   prisma,
   hooks: routeHooks,
 })
-app.route('/api/v2', generatedRoutes)
+app.route('/api', generatedRoutes)
 
 // =============================================================================
 // Graceful shutdown handling

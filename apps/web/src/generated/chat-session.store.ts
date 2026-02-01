@@ -23,7 +23,7 @@ export function getChatSessionStore(http?: HttpClient): OptimisticStore<ChatSess
     }
     _store = new OptimisticStore<ChatSessionType>({
       http,
-      endpoint: "/api/v2/chat-sessions",
+      endpoint: "/api/chat-sessions",
     })
   }
   return _store

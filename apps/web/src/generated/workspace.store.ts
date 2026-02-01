@@ -23,7 +23,7 @@ export function getWorkspaceStore(http?: HttpClient): OptimisticStore<WorkspaceT
     }
     _store = new OptimisticStore<WorkspaceType>({
       http,
-      endpoint: "/api/v2/workspaces",
+      endpoint: "/api/workspaces",
     })
   }
   return _store

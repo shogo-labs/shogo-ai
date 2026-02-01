@@ -23,7 +23,7 @@ export function getMemberStore(http?: HttpClient): OptimisticStore<MemberType> {
     }
     _store = new OptimisticStore<MemberType>({
       http,
-      endpoint: "/api/v2/members",
+      endpoint: "/api/members",
     })
   }
   return _store

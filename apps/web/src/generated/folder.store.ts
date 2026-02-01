@@ -23,7 +23,7 @@ export function getFolderStore(http?: HttpClient): OptimisticStore<FolderType> {
     }
     _store = new OptimisticStore<FolderType>({
       http,
-      endpoint: "/api/v2/folders",
+      endpoint: "/api/folders",
     })
   }
   return _store

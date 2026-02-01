@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // CreditLedger Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/credit-ledgers"
+const ENDPOINT = "/api/credit-ledgers"
 
 /**
  * CreditLedger Collection Model

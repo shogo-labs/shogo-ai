@@ -13,7 +13,7 @@ import { toCamelCase, getIdField } from './prisma-generator'
 // ============================================================================
 
 export interface RouteGeneratorConfig {
-  /** Base path for routes (default: '/api/v2') */
+  /** Base path for routes (default: '/api') */
   basePath?: string
 }
 
@@ -410,7 +410,7 @@ export function generateModelHooks(model: PrismaModel): GeneratedHooksFile {
     `export const ${toCamelCase(modelName)}Hooks: ${modelName}Hooks = {`,
     '  // beforeList: async (ctx) => {',
     '  //   // Query params are automatically added to where clause',
-    '  //   // Example: GET /api/v2/projects?workspaceId=123 => where: { workspaceId: "123" }',
+    '  //   // Example: GET /api/projects?workspaceId=123 => where: { workspaceId: "123" }',
     '  //   ',
     '  //   // You can override or extend the where clause:',
     '  //   // return { ok: true, data: { where: { ...ctx.query, userId: ctx.userId } } }',

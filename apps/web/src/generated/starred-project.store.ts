@@ -23,7 +23,7 @@ export function getStarredProjectStore(http?: HttpClient): OptimisticStore<Starr
     }
     _store = new OptimisticStore<StarredProjectType>({
       http,
-      endpoint: "/api/v2/starred-projects",
+      endpoint: "/api/starred-projects",
     })
   }
   return _store

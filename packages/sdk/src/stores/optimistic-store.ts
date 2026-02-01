@@ -15,7 +15,7 @@ import type { HttpClient } from '../http/client.js'
 export interface OptimisticStoreConfig<T> {
   /** HTTP client for API calls */
   http: HttpClient
-  /** API endpoint (e.g., '/api/v2/workspaces') */
+  /** API endpoint (e.g., '/api/workspaces') */
   endpoint: string
   /** Transform API response to store format (optional) */
   transform?: (item: any) => T
@@ -37,7 +37,7 @@ export interface StoreState {
  * ```typescript
  * const workspaceStore = new OptimisticStore<WorkspaceType>({
  *   http: httpClient,
- *   endpoint: '/api/v2/workspaces',
+ *   endpoint: '/api/workspaces',
  * })
  *
  * // Load all

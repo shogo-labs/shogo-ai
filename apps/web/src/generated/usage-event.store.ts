@@ -23,7 +23,7 @@ export function getUsageEventStore(http?: HttpClient): OptimisticStore<UsageEven
     }
     _store = new OptimisticStore<UsageEventType>({
       http,
-      endpoint: "/api/v2/usage-events",
+      endpoint: "/api/usage-events",
     })
   }
   return _store

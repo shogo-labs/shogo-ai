@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // BillingAccount Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/billing-accounts"
+const ENDPOINT = "/api/billing-accounts"
 
 /**
  * BillingAccount Collection Model

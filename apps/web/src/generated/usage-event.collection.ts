@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // UsageEvent Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/usage-events"
+const ENDPOINT = "/api/usage-events"
 
 /**
  * UsageEvent Collection Model

@@ -359,7 +359,7 @@ describe('Routes Generator', () => {
       const result = generateModelHooks(mockProjectModel)
 
       expect(result.code).toContain('// Query params are automatically added to where clause')
-      expect(result.code).toContain('// Example: GET /api/v2/projects?workspaceId=123 => where: { workspaceId: "123" }')
+      expect(result.code).toContain('// Example: GET /api/projects?workspaceId=123 => where: { workspaceId: "123" }')
     })
   })
 

@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // ChatSession Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/chat-sessions"
+const ENDPOINT = "/api/chat-sessions"
 
 /**
  * ChatSession Collection Model

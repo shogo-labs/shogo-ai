@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // Notification Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/notifications"
+const ENDPOINT = "/api/notifications"
 
 /**
  * Notification Collection Model

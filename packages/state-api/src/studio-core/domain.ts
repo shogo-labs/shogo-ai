@@ -217,8 +217,8 @@ export const studioCoreDomain = domain({
 
           // Make API call to create project in database
           const apiUrl = typeof window !== 'undefined' 
-            ? '/api/v2/projects' 
-            : `${process.env.VITE_API_URL || ''}/api/v2/projects`
+            ? '/api/projects' 
+            : `${process.env.VITE_API_URL || ''}/api/projects`
 
           const response = await fetch(apiUrl, {
             method: 'POST',

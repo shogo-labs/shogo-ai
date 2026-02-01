@@ -23,7 +23,7 @@ export function getInvitationStore(http?: HttpClient): OptimisticStore<Invitatio
     }
     _store = new OptimisticStore<InvitationType>({
       http,
-      endpoint: "/api/v2/invitations",
+      endpoint: "/api/invitations",
     })
   }
   return _store

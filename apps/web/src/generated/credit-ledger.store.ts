@@ -23,7 +23,7 @@ export function getCreditLedgerStore(http?: HttpClient): OptimisticStore<CreditL
     }
     _store = new OptimisticStore<CreditLedgerType>({
       http,
-      endpoint: "/api/v2/credit-ledgers",
+      endpoint: "/api/credit-ledgers",
     })
   }
   return _store

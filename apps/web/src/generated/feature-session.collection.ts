@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // FeatureSession Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/feature-sessions"
+const ENDPOINT = "/api/feature-sessions"
 
 /**
  * FeatureSession Collection Model

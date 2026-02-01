@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // Workspace Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/workspaces"
+const ENDPOINT = "/api/workspaces"
 
 /**
  * Workspace Collection Model

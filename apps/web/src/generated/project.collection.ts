@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // Project Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/projects"
+const ENDPOINT = "/api/projects"
 
 /**
  * Project Collection Model

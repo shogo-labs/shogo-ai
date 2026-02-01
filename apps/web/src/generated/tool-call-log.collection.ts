@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // ToolCallLog Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/tool-call-logs"
+const ENDPOINT = "/api/tool-call-logs"
 
 /**
  * ToolCallLog Collection Model

@@ -31,8 +31,9 @@ COPY packages/project-runtime ./packages/project-runtime
 COPY packages/sdk ./packages/sdk
 COPY apps/api ./apps/api
 
-# Copy prisma schema for generation
+# Copy prisma schema and config for generation
 COPY prisma ./prisma
+COPY prisma.config.ts ./prisma.config.ts
 
 # Generate Prisma client (must be done before building apps)
 # Use local prisma from node_modules to ensure correct version (v6)
@@ -84,8 +85,9 @@ COPY --from=builder /app/apps/api ./apps/api
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./
 
-# Copy prisma schema and migrations for runtime migrations
+# Copy prisma schema, config, and migrations for runtime migrations
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 
 # Copy SDK examples folder for templates API
 COPY packages/sdk/examples ./packages/sdk/examples

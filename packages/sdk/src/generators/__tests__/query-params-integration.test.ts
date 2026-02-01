@@ -62,7 +62,7 @@ function createMockApiClient() {
     if (options?.offset) params.set('offset', String(options.offset))
 
     const query = params.toString() ? `?${params.toString()}` : ''
-    await mockFetch(`/api/v2/projects${query}`, { method: 'GET' })
+    await mockFetch(`/api/projects${query}`, { method: 'GET' })
 
     return { ok: true, items: [] }
   }
@@ -117,7 +117,7 @@ describe('Query Parameters Integration', () => {
       })
 
       const request = client.getLastRequest()
-      expect(request.url).toBe('/api/v2/projects?workspaceId=abc-123')
+      expect(request.url).toBe('/api/projects?workspaceId=abc-123')
       expect(request.method).toBe('GET')
     })
 
@@ -142,7 +142,7 @@ describe('Query Parameters Integration', () => {
       })
 
       const request = client.getLastRequest()
-      expect(request.url).toBe('/api/v2/projects?completed=false')
+      expect(request.url).toBe('/api/projects?completed=false')
     })
 
     it('should serialize number values', async () => {
@@ -151,7 +151,7 @@ describe('Query Parameters Integration', () => {
       })
 
       const request = client.getLastRequest()
-      expect(request.url).toBe('/api/v2/projects?priority=10')
+      expect(request.url).toBe('/api/projects?priority=10')
     })
 
     it('should include pagination params', async () => {
@@ -185,7 +185,7 @@ describe('Query Parameters Integration', () => {
       })
 
       const request = client.getLastRequest()
-      expect(request.url).toBe('/api/v2/projects?workspaceId=abc-123')
+      expect(request.url).toBe('/api/projects?workspaceId=abc-123')
       expect(request.url).not.toContain('status')
     })
 
@@ -195,7 +195,7 @@ describe('Query Parameters Integration', () => {
       })
 
       const request = client.getLastRequest()
-      expect(request.url).toBe('/api/v2/projects?workspaceId=abc-123')
+      expect(request.url).toBe('/api/projects?workspaceId=abc-123')
       expect(request.url).not.toContain('status')
     })
 
@@ -205,14 +205,14 @@ describe('Query Parameters Integration', () => {
       })
 
       const request = client.getLastRequest()
-      expect(request.url).toBe('/api/v2/projects')
+      expect(request.url).toBe('/api/projects')
     })
 
     it('should handle no options', async () => {
       await client.list()
 
       const request = client.getLastRequest()
-      expect(request.url).toBe('/api/v2/projects')
+      expect(request.url).toBe('/api/projects')
     })
   })
 

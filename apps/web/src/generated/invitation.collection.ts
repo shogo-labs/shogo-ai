@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // Invitation Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/invitations"
+const ENDPOINT = "/api/invitations"
 
 /**
  * Invitation Collection Model

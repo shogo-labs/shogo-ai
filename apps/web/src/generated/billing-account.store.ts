@@ -23,7 +23,7 @@ export function getBillingAccountStore(http?: HttpClient): OptimisticStore<Billi
     }
     _store = new OptimisticStore<BillingAccountType>({
       http,
-      endpoint: "/api/v2/billing-accounts",
+      endpoint: "/api/billing-accounts",
     })
   }
   return _store

@@ -386,7 +386,7 @@ export class APIPersistence implements IPersistenceService {
 
   /**
    * Map model name to collection API endpoint.
-   * Uses generated v2 API routes from Prisma schema.
+   * Uses generated API routes from Prisma schema.
    */
   private getCollectionEndpoint(ctx: PersistenceContext): string | null {
     const { modelName, filter } = ctx
@@ -415,12 +415,12 @@ export class APIPersistence implements IPersistenceService {
     }
 
     const queryString = params.toString()
-    return `/api/v2/${routePath}${queryString ? `?${queryString}` : ''}`
+    return `/api/${routePath}${queryString ? `?${queryString}` : ''}`
   }
 
   /**
    * Map model name to entity API endpoint.
-   * Uses generated v2 API routes from Prisma schema.
+   * Uses generated API routes from Prisma schema.
    */
   private getEntityEndpoint(ctx: EntityContext): string | null {
     const { modelName, entityId } = ctx
@@ -430,7 +430,7 @@ export class APIPersistence implements IPersistenceService {
       return null
     }
 
-    return `/api/v2/${routePath}/${encodeURIComponent(entityId)}`
+    return `/api/${routePath}/${encodeURIComponent(entityId)}`
   }
 
   // === Batch Operations (Optimization) ===

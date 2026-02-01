@@ -52,7 +52,7 @@ export interface IPersistenceService {
 export interface APIPersistenceConfig {
   /** HttpClient instance for API calls */
   http: HttpClient
-  /** Base path for API routes (default: '/api/v2') */
+  /** Base path for API routes (default: '/api') */
   basePath?: string
   /** Model name to route path mapping (auto-generated if not provided) */
   routeMap?: Record<string, string>
@@ -108,7 +108,7 @@ export class APIPersistence implements IPersistenceService {
 
   constructor(config: APIPersistenceConfig) {
     this.http = config.http
-    this.basePath = config.basePath ?? '/api/v2'
+    this.basePath = config.basePath ?? '/api'
     this.routeMap = config.routeMap ?? {}
   }
 

@@ -13,7 +13,7 @@ import type { ISDKEnvironment } from "@shogo/sdk"
 // ChatMessage Collection
 // ============================================================================
 
-const ENDPOINT = "/api/v2/chat-messages"
+const ENDPOINT = "/api/chat-messages"
 
 /**
  * ChatMessage Collection Model

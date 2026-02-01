@@ -12,7 +12,7 @@ import { toCamelCase, getIdField } from './prisma-generator'
 // ============================================================================
 
 export interface StoreGeneratorConfig {
-  /** Base API path (default: '/api/v2') */
+  /** Base API path (default: '/api') */
   basePath?: string
 }
 
@@ -65,7 +65,7 @@ export function generateModelStore(
     return null // Skip models without @id
   }
 
-  const basePath = config.basePath || '/api/v2'
+  const basePath = config.basePath || '/api'
   const modelName = model.name
   const modelLower = toCamelCase(modelName)
   const fileName = `${toFileName(modelName)}.store.ts`
@@ -149,7 +149,7 @@ export function generateStoresIndex(
   models: PrismaModel[],
   config: StoreGeneratorConfig = {}
 ): string {
-  const basePath = config.basePath || '/api/v2'
+  const basePath = config.basePath || '/api'
 
   const lines: string[] = [
     '/**',

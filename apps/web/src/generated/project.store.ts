@@ -23,7 +23,7 @@ export function getProjectStore(http?: HttpClient): OptimisticStore<ProjectType>
     }
     _store = new OptimisticStore<ProjectType>({
       http,
-      endpoint: "/api/v2/projects",
+      endpoint: "/api/projects",
     })
   }
   return _store
