@@ -663,7 +663,7 @@ app.use('*', cors({
 // Build Status Helper (for fast start mode)
 // =============================================================================
 
-function getBuildStatus(): { status: string; ready: boolean } {
+function getBuildStatus(): { status: string; ready: boolean; details?: string } {
   if (!FAST_START_MODE) {
     return { status: 'ready', ready: true }
   }
@@ -671,6 +671,57 @@ function getBuildStatus(): { status: string; ready: boolean } {
   try {
     if (existsSync(BUILD_STATUS_FILE)) {
       const status = readFileSync(BUILD_STATUS_FILE, 'utf-8').trim()
+      
+      // If build status file says "ready", also verify actual build artifacts exist
+      if (status === 'ready') {
+        const isTanStackStart = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
+        
+        if (isTanStackStart) {
+          // TanStack Start: verify .output/public/assets has actual files
+          const assetsDir = join(PROJECT_DIR, '.output', 'public', 'assets')
+          if (!existsSync(assetsDir)) {
+            console.log('[project-runtime] Build status says ready but .output/public/assets missing')
+            return { status: 'assets_missing', ready: false, details: 'Build artifacts missing - .output/public/assets not found' }
+          }
+          
+          try {
+            const assetFiles = readdirSync(assetsDir)
+            if (assetFiles.length === 0) {
+              console.log('[project-runtime] Build status says ready but .output/public/assets is empty')
+              return { status: 'assets_empty', ready: false, details: 'Build artifacts empty - no files in .output/public/assets' }
+            }
+            
+            // Check for required JS files (routes and main bundles)
+            const hasRoutes = assetFiles.some(f => f.startsWith('routes-') && f.endsWith('.js'))
+            const hasMain = assetFiles.some(f => f.startsWith('main-') && f.endsWith('.js'))
+            
+            if (!hasRoutes || !hasMain) {
+              console.log(`[project-runtime] Build assets incomplete - hasRoutes: ${hasRoutes}, hasMain: ${hasMain}`)
+              return { 
+                status: 'assets_incomplete', 
+                ready: false, 
+                details: `Build assets incomplete - routes: ${hasRoutes}, main: ${hasMain}` 
+              }
+            }
+          } catch (e) {
+            console.log('[project-runtime] Error reading assets directory:', e)
+            return { status: 'assets_error', ready: false, details: 'Cannot read assets directory' }
+          }
+        } else {
+          // Plain Vite: verify dist/ exists and has index.html
+          const distDir = join(PROJECT_DIR, 'dist')
+          if (!existsSync(distDir)) {
+            console.log('[project-runtime] Build status says ready but dist/ missing')
+            return { status: 'dist_missing', ready: false, details: 'Build artifacts missing - dist/ not found' }
+          }
+          
+          if (!existsSync(join(distDir, 'index.html'))) {
+            console.log('[project-runtime] Build status says ready but dist/index.html missing')
+            return { status: 'dist_incomplete', ready: false, details: 'Build incomplete - dist/index.html not found' }
+          }
+        }
+      }
+      
       return {
         status,
         ready: status === 'ready',
@@ -2498,8 +2549,12 @@ function handleFilesRequest(c: any): Response | null {
  * Handles two types of requests:
  * 1. Subdomain preview requests (with __preview_token or preview-- host)
  * 2. Internal API requests (/files, /terminal/*, etc.) from the API server
+ * 
+ * IMPORTANT: This catch-all is defined BEFORE specific API routes (/terminal/*, /tests/*, /database/*)
+ * because Hono needs to handle subdomain preview at root level. We explicitly skip known API paths
+ * here so they can be handled by their specific route handlers defined later in this file.
  */
-app.all('/*', async (c) => {
+app.all('/*', async (c, next) => {
   const path = c.req.path
   
   // Handle internal API requests (from API server, not subdomain)
@@ -2509,12 +2564,22 @@ app.all('/*', async (c) => {
     const filesResponse = handleFilesRequest(c)
     if (filesResponse) return filesResponse
     
-    // For other internal routes, return 404 (they're handled by specific routes defined after)
-    // Note: /terminal/*, /tests/*, /database/* are still defined after this catch-all
-    // They work because those endpoints are called directly by the API server
-    // and the routes ARE defined (just after this catch-all)
-    // But wait - that's the problem. Routes after catch-all don't get tried.
-    // For now, /files is fixed. Other routes may need similar treatment.
+    // FIXED: Skip known API paths - let them fall through to specific route handlers
+    // These routes are defined after this catch-all but need to be handled by their specific handlers
+    const apiPaths = [
+      '/terminal/',
+      '/tests/',
+      '/database/',
+      '/api/',
+      '/lsp',
+    ]
+    
+    if (apiPaths.some(p => path.startsWith(p))) {
+      // Call next() to let Hono continue to the specific route handlers
+      return next()
+    }
+    
+    // For truly unknown paths, return 404
     return c.notFound()
   }
   

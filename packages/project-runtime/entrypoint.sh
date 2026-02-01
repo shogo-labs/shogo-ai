@@ -278,15 +278,50 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
   bg_log "Step 4: Running prisma db push..."
   STEP_START=$(date +%s%3N)
   
+  # FIXED: Wait for PostgreSQL to be ready before running Prisma commands
+  # This prevents "Connection reset by peer" errors during startup race condition
+  bg_log "Waiting for PostgreSQL to be ready..."
+  MAX_RETRIES=30
+  RETRY_COUNT=0
+  PG_READY=false
+  
+  while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    # Try connecting to postgres - use simple query to verify readiness
+    if psql -h localhost -U postgres -d postgres -c "SELECT 1" > /dev/null 2>&1; then
+      PG_READY=true
+      bg_log "PostgreSQL is ready (attempt $((RETRY_COUNT + 1)))"
+      break
+    fi
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    sleep 0.5
+  done
+  
+  if [ "$PG_READY" = false ]; then
+    bg_log "WARNING: PostgreSQL readiness check timed out after ${MAX_RETRIES} attempts"
+    bg_log "Continuing anyway - Prisma may fail"
+  fi
+  
   # Generate Prisma client first (fast, needed for types)
   bunx prisma generate 2>&1 || true
   
-  # Push schema to database
-  if bunx prisma db push --skip-generate 2>&1; then
-    STEP_END=$(date +%s%3N)
-    bg_log "Prisma db push completed (took $((STEP_END - STEP_START))ms)"
-  else
-    bg_log "Prisma db push failed (non-fatal)"
+  # Push schema to database with retry logic
+  PUSH_RETRIES=3
+  PUSH_SUCCESS=false
+  
+  for i in $(seq 1 $PUSH_RETRIES); do
+    if bunx prisma db push --skip-generate 2>&1; then
+      PUSH_SUCCESS=true
+      STEP_END=$(date +%s%3N)
+      bg_log "Prisma db push completed (took $((STEP_END - STEP_START))ms)"
+      break
+    else
+      bg_log "Prisma db push attempt $i failed, retrying in 2s..."
+      sleep 2
+    fi
+  done
+  
+  if [ "$PUSH_SUCCESS" = false ]; then
+    bg_log "Prisma db push failed after ${PUSH_RETRIES} attempts (non-fatal)"
   fi
 fi
 
@@ -294,6 +329,27 @@ fi
 if [ "$IS_TANSTACK_START" = true ] && [ -f "$PROJECT_DIR/.output/server/index.mjs" ]; then
   bg_log "Step 5: Starting TanStack Start server..."
   STEP_START=$(date +%s%3N)
+  
+  # FIXED: Verify build assets exist before starting Nitro server
+  ASSETS_DIR="$PROJECT_DIR/.output/public/assets"
+  if [ ! -d "$ASSETS_DIR" ]; then
+    bg_log "ERROR: Build assets missing (.output/public/assets not found)"
+    bg_log "Triggering rebuild to fix missing assets..."
+    bun --bun vite build 2>&1 || true
+  else
+    # Check for required JS bundles
+    ROUTES_COUNT=$(ls -1 "$ASSETS_DIR"/routes-*.js 2>/dev/null | wc -l)
+    MAIN_COUNT=$(ls -1 "$ASSETS_DIR"/main-*.js 2>/dev/null | wc -l)
+    
+    if [ "$ROUTES_COUNT" -eq 0 ] || [ "$MAIN_COUNT" -eq 0 ]; then
+      bg_log "ERROR: Build assets incomplete (routes: $ROUTES_COUNT, main: $MAIN_COUNT)"
+      bg_log "Triggering rebuild to fix incomplete assets..."
+      bun --bun vite build 2>&1 || true
+    else
+      bg_log "Build assets verified: routes=$ROUTES_COUNT, main=$MAIN_COUNT"
+    fi
+  fi
+  
   PORT=3000 bun run "$PROJECT_DIR/.output/server/index.mjs" &
   
   # Wait for server to be ready (max 2s with exponential backoff)
