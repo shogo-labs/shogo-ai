@@ -2,12 +2,12 @@
  * ThemeSelector - Theme selection dropdown
  * 
  * Dropdown component for selecting project themes.
- * Shows preset themes with color swatches and a "Create new" button.
+ * Shows preset themes with color swatches.
  * Inspired by Lovable.dev's theme selector UI.
  */
 
 import { useState, useCallback } from "react"
-import { Palette, Check, Plus, Settings2, ChevronDown } from "lucide-react"
+import { Palette, Check, Settings2, ChevronDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
@@ -59,11 +59,6 @@ export function ThemeSelector({
     onSelectTheme(themeId)
     setOpen(false)
   }, [onSelectTheme])
-
-  const handleCreateNew = useCallback(() => {
-    onCreateNew?.()
-    setOpen(false)
-  }, [onCreateNew])
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -141,30 +136,22 @@ export function ThemeSelector({
         </ScrollArea>
 
         {/* Footer actions */}
-        <div className="p-2 border-t border-border flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 flex-1 justify-start gap-2 text-xs"
-            onClick={handleCreateNew}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Create new
-          </Button>
-          {onCustomize && (
+        {onCustomize && (
+          <div className="p-2 border-t border-border flex items-center gap-1">
             <Button
               variant="ghost"
-              size="icon"
-              className="h-8 w-8"
+              size="sm"
+              className="h-8 flex-1 justify-start gap-2 text-xs"
               onClick={() => {
                 onCustomize()
                 setOpen(false)
               }}
             >
               <Settings2 className="h-4 w-4" />
+              <span>Customize</span>
             </Button>
-          )}
-        </div>
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   )

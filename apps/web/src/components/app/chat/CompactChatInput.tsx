@@ -13,7 +13,7 @@ import { useState, useRef, useCallback, forwardRef } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Paperclip, MessageSquare, Send, Loader2 } from "lucide-react"
+import { Paperclip, Send, Loader2 } from "lucide-react"
 import { ThemeSelector } from "@/components/app/shared/ThemeSelector"
 
 export interface CompactChatInputProps {
@@ -120,16 +120,6 @@ export const CompactChatInput = forwardRef<HTMLDivElement, CompactChatInputProps
             </div>
 
             <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 gap-1.5"
-                disabled={disabled || isLoading}
-              >
-                <MessageSquare className="h-4 w-4" />
-                <span className="text-xs">Chat</span>
-              </Button>
               <Button
                 type="submit"
                 size="sm"

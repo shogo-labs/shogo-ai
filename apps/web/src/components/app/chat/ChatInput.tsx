@@ -21,7 +21,6 @@ import {
   Plus,
   Square,
   X,
-  MessageSquare,
   BarChart3,
   Sparkles,
 } from "lucide-react"
@@ -370,18 +369,6 @@ export function ChatInput({
 
           {/* Right side buttons */}
           <div className="flex items-center gap-1">
-            {/* Chat mode button */}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={disabled}
-              className="h-8 gap-1.5 rounded-full px-3 border-border/60"
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              <span className="text-xs">Chat</span>
-            </Button>
-
             {/* Activity button */}
             <Button
               type="button"
