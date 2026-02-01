@@ -845,36 +845,81 @@ app.post('/agent/chat', async (c) => {
     
     console.log(`[project-runtime] Processing ${messages.length} messages`)
     
+    // Retry configuration for transient API errors
+    const MAX_RETRIES = 3
+    const RETRY_DELAY_MS = 2000
+    const RETRYABLE_ERRORS = [
+      'rate_limit',
+      'overloaded',
+      'api_error',
+      'invalid_api_key', // Sometimes transient
+      'connection',
+      'timeout',
+      'ECONNRESET',
+      'ETIMEDOUT',
+      '529', // Overloaded
+      '503', // Service unavailable
+      '502', // Bad gateway
+    ]
+    
+    const isRetryableError = (error: any): boolean => {
+      const errorStr = String(error?.message || error || '').toLowerCase()
+      return RETRYABLE_ERRORS.some(e => errorStr.includes(e.toLowerCase()))
+    }
+    
     // Create streaming response using Claude Code with native template tools
     // Theme context (if provided) is appended to the system prompt for AI-aware styling
     // Model can be configured via AGENT_MODEL env var: haiku, sonnet, opus (default: sonnet)
     const modelName = (process.env.AGENT_MODEL || 'sonnet') as 'haiku' | 'sonnet' | 'opus'
-    const result = streamText({
-      model: claudeCode(modelName, {
-        streamingInput: 'always',
-      }) as Parameters<typeof streamText>[0]['model'],
-      system: getSystemPrompt(),
-      messages: coreMessages,
-      tools: templateTools,
-      maxSteps: 10,
-    })
     
-    // Return the AI SDK UI message stream response with keep-alive wrapper
-    // This ensures compatibility with @ai-sdk/react's useChat hook (DefaultChatTransport)
-    // The keep-alive wrapper prevents HTTP/2 connection termination during long tool calls
-    const response = result.toUIMessageStreamResponse()
-    
-    // Wrap the stream with keep-alive messages to prevent ALB/proxy timeouts
-    // This is critical for long-running operations like template.copy (45+ seconds)
-    if (response.body) {
-      const wrappedStream = wrapStreamWithKeepalive(response.body, 15000)
-      return new Response(wrappedStream, {
-        status: response.status,
-        headers: response.headers,
-      })
+    let lastError: any = null
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const result = streamText({
+          model: claudeCode(modelName, {
+            streamingInput: 'always',
+          }) as Parameters<typeof streamText>[0]['model'],
+          system: getSystemPrompt(),
+          messages: coreMessages,
+          tools: templateTools,
+          maxSteps: 10,
+        })
+        
+        // Return the AI SDK UI message stream response with keep-alive wrapper
+        // This ensures compatibility with @ai-sdk/react's useChat hook (DefaultChatTransport)
+        // The keep-alive wrapper prevents HTTP/2 connection termination during long tool calls
+        const response = result.toUIMessageStreamResponse()
+        
+        // Wrap the stream with keep-alive messages to prevent ALB/proxy timeouts
+        // This is critical for long-running operations like template.copy (45+ seconds)
+        if (response.body) {
+          const wrappedStream = wrapStreamWithKeepalive(response.body, 15000)
+          return new Response(wrappedStream, {
+            status: response.status,
+            headers: response.headers,
+          })
+        }
+        
+        return response
+      } catch (error: any) {
+        lastError = error
+        const errorMsg = error?.message || String(error)
+        
+        if (isRetryableError(error) && attempt < MAX_RETRIES) {
+          const delay = RETRY_DELAY_MS * attempt
+          console.warn(`[project-runtime] Chat API error (attempt ${attempt}/${MAX_RETRIES}): ${errorMsg}`)
+          console.warn(`[project-runtime] Retrying in ${delay}ms...`)
+          await new Promise(resolve => setTimeout(resolve, delay))
+          continue
+        }
+        
+        // Non-retryable or max retries exceeded
+        throw error
+      }
     }
     
-    return response
+    // Should not reach here, but just in case
+    throw lastError
   } catch (error: any) {
     console.error('[project-runtime] Chat error:', error)
     return c.json({

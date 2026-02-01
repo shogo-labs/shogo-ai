@@ -231,15 +231,30 @@ function cleanup() {
 
 // Handle termination signals
 process.on('SIGINT', () => {
-  console.log('\n⚠️  Received SIGINT')
+  console.error('\n⚠️  Received SIGINT')
   cleanup()
   process.exit(130)
 })
 
 process.on('SIGTERM', () => {
-  console.log('\n⚠️  Received SIGTERM')
+  console.error('\n⚠️  Received SIGTERM')
   cleanup()
   process.exit(143)
+})
+
+// Handle uncaught errors
+process.on('uncaughtException', (err) => {
+  console.error('\n❌ UNCAUGHT EXCEPTION:', err.message)
+  console.error(err.stack)
+  cleanup()
+  process.exit(1)
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('\n❌ UNHANDLED REJECTION at:', promise)
+  console.error('Reason:', reason)
+  cleanup()
+  process.exit(1)
 })
 
 // Force unbuffered output
@@ -312,8 +327,14 @@ async function main() {
   
   // Process evals with worker pool
   const runningPromises = new Map<number, Promise<void>>()
+  let lastHeartbeat = Date.now()
   
   while (evalQueue.length > 0 || runningPromises.size > 0) {
+    // Heartbeat every 30 seconds
+    if (Date.now() - lastHeartbeat > 30000) {
+      console.log(`💓 Heartbeat: ${completedCount}/${evals.length} completed, ${runningPromises.size} running`)
+      lastHeartbeat = Date.now()
+    }
     // Start evals on available workers
     for (const worker of workers) {
       if (!worker.busy && evalQueue.length > 0) {

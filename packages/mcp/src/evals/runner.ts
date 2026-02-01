@@ -433,35 +433,106 @@ async function callAgent(
 
 /**
  * Execute a single agent turn with the given message history
+ * Includes retry logic for transient API errors
  */
 async function executeAgentTurn(
   messages: Array<{ role: string; content: string }>,
   config: Required<EvalRunnerConfig>
 ): Promise<ParsedAgentResponse> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs)
-
-  try {
-    const response = await fetch(config.agentEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages }),
-      signal: controller.signal,
-    })
-
-    if (!response.ok) {
-      clearTimeout(timeoutId)
-      throw new Error(`Agent API returned ${response.status}`)
-    }
-
-    // Parse streaming response
-    const result = await parseAgentStreamingResponse(response, controller, config.verbose)
-    clearTimeout(timeoutId)
-    return result
-  } catch (error) {
-    clearTimeout(timeoutId)
-    throw error
+  const MAX_RETRIES = 3
+  const RETRY_DELAY_MS = 3000
+  
+  // Errors that should trigger a retry
+  const RETRYABLE_ERRORS = [
+    'rate_limit',
+    'overloaded', 
+    'api_error',
+    'invalid_api_key',
+    'connection',
+    'timeout',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'aborted',
+    '529',
+    '503',
+    '502',
+  ]
+  
+  const isRetryableError = (error: any, responseText?: string): boolean => {
+    const errorStr = String(error?.message || error || '').toLowerCase()
+    const textStr = (responseText || '').toLowerCase()
+    return RETRYABLE_ERRORS.some(e => 
+      errorStr.includes(e.toLowerCase()) || textStr.includes(e.toLowerCase())
+    )
   }
+  
+  let lastError: any = null
+  
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs)
+
+    try {
+      const response = await fetch(config.agentEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages }),
+        signal: controller.signal,
+      })
+
+      if (!response.ok) {
+        clearTimeout(timeoutId)
+        const errorMsg = `Agent API returned ${response.status}`
+        
+        // Check if retryable HTTP status
+        if ((response.status >= 500 || response.status === 429) && attempt < MAX_RETRIES) {
+          const delay = RETRY_DELAY_MS * attempt
+          if (config.verbose) {
+            console.warn(`    [Retry] HTTP ${response.status} on attempt ${attempt}/${MAX_RETRIES}, waiting ${delay}ms...`)
+          }
+          await new Promise(resolve => setTimeout(resolve, delay))
+          continue
+        }
+        
+        throw new Error(errorMsg)
+      }
+
+      // Parse streaming response
+      const result = await parseAgentStreamingResponse(response, controller, config.verbose)
+      clearTimeout(timeoutId)
+      
+      // Check if the response itself contains an API error
+      if (result.text && isRetryableError(null, result.text) && attempt < MAX_RETRIES) {
+        const delay = RETRY_DELAY_MS * attempt
+        if (config.verbose) {
+          console.warn(`    [Retry] API error in response on attempt ${attempt}/${MAX_RETRIES}: "${result.text.slice(0, 50)}..."`)
+          console.warn(`    [Retry] Waiting ${delay}ms before retry...`)
+        }
+        await new Promise(resolve => setTimeout(resolve, delay))
+        continue
+      }
+      
+      return result
+    } catch (error: any) {
+      clearTimeout(timeoutId)
+      lastError = error
+      
+      if (isRetryableError(error) && attempt < MAX_RETRIES) {
+        const delay = RETRY_DELAY_MS * attempt
+        if (config.verbose) {
+          console.warn(`    [Retry] Error on attempt ${attempt}/${MAX_RETRIES}: ${error.message}`)
+          console.warn(`    [Retry] Waiting ${delay}ms before retry...`)
+        }
+        await new Promise(resolve => setTimeout(resolve, delay))
+        continue
+      }
+      
+      throw error
+    }
+  }
+  
+  // Max retries exceeded
+  throw lastError || new Error('Max retries exceeded')
 }
 
 /**
