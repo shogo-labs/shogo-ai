@@ -2664,8 +2664,17 @@ app.all('/*', async (c) => {
       })
   }
   
+  // Check if dist/ exists (build mode for plain Vite)
+  const DIST_DIR = join(PROJECT_DIR, 'dist')
+  const distExists = existsSync(DIST_DIR)
+  
   // Show loading page while build is starting
-  if (devModeStarting || (!nitroProcess && !expoServerProcess && !isInBackoff)) {
+  // For plain Vite: only show loading if dist/ doesn't exist yet
+  // For TanStack Start/Expo: show loading if respective process isn't running
+  const isTanstackStart = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
+  const needsProcess = isTanstackStart || existsSync(join(PROJECT_DIR, 'app.json')) // TanStack Start or Expo
+  
+  if (devModeStarting || (!distExists && !nitroProcess && !expoServerProcess && !isInBackoff)) {
     return c.html(`
 <!DOCTYPE html>
 <html lang="en">
