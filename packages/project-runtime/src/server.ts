@@ -2626,10 +2626,18 @@ app.all('/*', async (c) => {
     devModeError = null
   }
   
-  // Auto-start build mode if nothing is running
+  // Check if dist/ exists (build mode for plain Vite)
+  const DIST_DIR = join(PROJECT_DIR, 'dist')
+  const distExists = existsSync(DIST_DIR)
+  
+  // Auto-start build mode if nothing is running AND dist/ doesn't exist yet
   // Use build+restart approach instead of dev mode for reliability and simplicity
   // This avoids HMR complexity and provides consistent preview updates
-  if (!nitroProcess && !expoServerProcess && !devModeStarting && !isInBackoff) {
+  // For plain Vite: only auto-start if dist/ doesn't exist (prevents redundant builds)
+  // For TanStack Start/Expo: always auto-start if process isn't running
+  const needsAutoStart = !nitroProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
+  
+  if (needsAutoStart) {
     console.log('[project-runtime] Auto-starting build mode on first subdomain request...')
     devModeStarting = true
     
@@ -2663,10 +2671,6 @@ app.all('/*', async (c) => {
         devModeStarting = false
       })
   }
-  
-  // Check if dist/ exists (build mode for plain Vite)
-  const DIST_DIR = join(PROJECT_DIR, 'dist')
-  const distExists = existsSync(DIST_DIR)
   
   // Show loading page while build is starting
   // For plain Vite: only show loading if dist/ doesn't exist yet
