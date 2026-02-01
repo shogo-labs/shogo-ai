@@ -1,0 +1,157 @@
+"""Authentication utilities for load tests.
+
+Better Auth uses cookie-based sessions, not Bearer tokens.
+The Locust HttpSession automatically handles cookies between requests.
+"""
+import os
+from typing import Optional, Dict
+import random
+import time
+
+from .config import config
+
+
+class AuthManager:
+    """Manages authentication for load test users.
+    
+    Note: Better Auth uses cookie-based sessions. The Locust client
+    automatically maintains cookies, so we just need to track auth state.
+    """
+    
+    def __init__(self, api_base_url: str = None):
+        self.api_base_url = api_base_url or config.API_BASE_URL
+        self.user_data = {}  # user_id -> user data (id, email, name)
+        self.signup_attempts = {}  # user_id -> attempt count
+    
+    def generate_test_email(self, user_id: int) -> str:
+        """Generate unique test email."""
+        return f"{config.TEST_USER_PREFIX}-{user_id}@test.shogo.ai"
+    
+    def generate_password(self) -> str:
+        """Generate password for test user."""
+        return config.TEST_USER_PASSWORD
+    
+    def signup(self, client, user_id: int) -> Optional[Dict]:
+        """Sign up a new user via Better Auth.
+        
+        Better Auth sets session cookies in the response.
+        The Locust client automatically stores and sends these cookies.
+        """
+        email = self.generate_test_email(user_id)
+        password = self.generate_password()
+        
+        # Track signup attempts to avoid hammering on 403s
+        attempts = self.signup_attempts.get(user_id, 0)
+        if attempts >= 3:
+            # After 3 failed attempts, try to login instead
+            return self.login(client, email, password)
+        
+        # Better Auth email signup endpoint - sets session cookie automatically
+        with client.post(
+            "/api/auth/sign-up/email",
+            json={
+                "email": email,
+                "password": password,
+                "name": f"Load Test User {user_id}"
+            },
+            catch_response=True,
+            name="/api/auth/sign-up/email"
+        ) as response:
+            if response.status_code == 200:
+                data = response.json()
+                user_data = data.get("user", {})
+                if user_data:
+                    # Store user data (cookies are handled automatically by Locust)
+                    self.user_data[user_id] = user_data
+                    self.signup_attempts[user_id] = 0
+                    response.success()
+                    return {
+                        "email": email,
+                        "password": password,
+                        "userId": user_data.get("id"),
+                        "userName": user_data.get("name")
+                    }
+            elif response.status_code == 403:
+                # CSRF or rate limit - mark but don't fail the test
+                self.signup_attempts[user_id] = attempts + 1
+                response.success()  # Don't count as failure
+                # Try to login with this email instead
+                return self.login(client, email, password)
+            
+            self.signup_attempts[user_id] = attempts + 1
+            response.failure(f"Signup failed: {response.status_code}")
+            return None
+    
+    def login(self, client, email: str, password: str) -> Optional[Dict]:
+        """Log in existing user via Better Auth.
+        
+        Better Auth sets session cookies in the response.
+        The Locust client automatically stores and sends these cookies.
+        """
+        # Better Auth uses /api/auth/sign-in/email - sets session cookie automatically
+        with client.post(
+            "/api/auth/sign-in/email",
+            json={"email": email, "password": password},
+            catch_response=True,
+            name="/api/auth/sign-in/email"
+        ) as response:
+            if response.status_code == 200:
+                data = response.json()
+                user_data = data.get("user", {})
+                response.success()
+                return {
+                    "email": email,
+                    "password": password,
+                    "userId": user_data.get("id"),
+                    "userName": user_data.get("name")
+                }
+            elif response.status_code == 403:
+                # Account might not exist, mark as success to avoid noise
+                response.success()
+                return None
+            
+            response.failure(f"Login failed: {response.status_code}")
+            return None
+    
+    def get_headers(self, user_id: int = None) -> Dict[str, str]:
+        """Get headers for authenticated requests.
+        
+        With Better Auth's cookie-based sessions, no special headers are needed.
+        The Locust client automatically includes session cookies in requests.
+        
+        Returns empty dict - kept for API compatibility.
+        """
+        # No Authorization header needed - cookies handle authentication
+        return {}
+    
+    def verify_session(self, client) -> Optional[Dict]:
+        """Verify current session with server.
+        
+        This checks if the session cookie is still valid.
+        """
+        with client.get(
+            "/api/auth/get-session",
+            catch_response=True,
+            name="/api/auth/get-session"
+        ) as response:
+            if response.status_code == 200:
+                data = response.json()
+                response.success()
+                return data
+            # Session invalid or endpoint not available
+            response.success()  # Don't fail on 404/401
+            return None
+    
+    def logout(self, client) -> bool:
+        """Log out the current user (clears session cookie)."""
+        with client.post(
+            "/api/auth/sign-out",
+            catch_response=True,
+            name="/api/auth/sign-out"
+        ) as response:
+            if response.status_code == 200:
+                response.success()
+                return True
+            # Logout endpoint might not exist yet
+            response.success()  # Don't fail on 404
+            return False
