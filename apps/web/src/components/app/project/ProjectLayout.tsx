@@ -460,7 +460,6 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Preview controls handlers
   const handleViewportChange = useCallback((viewport: ViewportSize) => {
     setCurrentViewport(viewport)
-    // TODO: Update preview iframe width based on viewport
   }, [])
 
   const handleRouteChange = useCallback((route: string) => {
@@ -637,7 +636,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
           onChatSessionsToggle={handleChatSessionsToggle}
           onChatCollapseToggle={handleChatCollapseToggle}
           onRename={handleRenameProject}
+          currentViewport={currentViewport}
           onViewportChange={handleViewportChange}
+          currentRoute={currentRoute}
           onRouteChange={handleRouteChange}
           onRefresh={handleRefresh}
           // Publish callbacks
@@ -798,6 +799,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   refreshTrigger={codeRefreshTrigger}
                   onError={handleRuntimeError}
                   onLoad={handleRuntimeLoad}
+                  viewport={currentViewport}
                 />
               </div>
               {/* Code Editor - stays mounted to preserve editor state */}

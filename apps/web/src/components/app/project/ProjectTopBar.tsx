@@ -57,7 +57,9 @@ export interface ProjectTopBarProps {
     siteTitle?: string
     siteDescription?: string
   }) => Promise<void>
+  currentViewport?: ViewportSize
   onViewportChange?: (viewport: ViewportSize) => void
+  currentRoute?: string
   onRouteChange?: (route: string) => void
   onRefresh?: () => void
   className?: string
@@ -92,30 +94,14 @@ export function ProjectTopBar({
   onPublish,
   onUnpublish,
   onUpdatePublishSettings,
+  currentViewport = "desktop",
   onViewportChange,
+  currentRoute = "/",
   onRouteChange,
   onRefresh,
   className,
 }: ProjectTopBarProps) {
   const navigate = useNavigate()
-  const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
-  const [currentRoute, setCurrentRoute] = useState("/")
-
-  const handleViewportChange = useCallback(
-    (viewport: ViewportSize) => {
-      setCurrentViewport(viewport)
-      onViewportChange?.(viewport)
-    },
-    [onViewportChange]
-  )
-
-  const handleRouteChange = useCallback(
-    (route: string) => {
-      setCurrentRoute(route)
-      onRouteChange?.(route)
-    },
-    [onRouteChange]
-  )
 
   const handleOpenGitHub = useCallback(() => {
     console.log("Open GitHub")
@@ -187,9 +173,9 @@ export function ProjectTopBar({
       <div className="hidden md:flex items-center">
         <PreviewControls
           currentViewport={currentViewport}
-          onViewportChange={handleViewportChange}
+          onViewportChange={onViewportChange}
           currentRoute={currentRoute}
-          onRouteChange={handleRouteChange}
+          onRouteChange={onRouteChange}
           onRefresh={onRefresh}
         />
       </div>

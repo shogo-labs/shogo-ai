@@ -11,6 +11,7 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { Loader2, AlertCircle, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { VIEWPORT_SIZES, type ViewportSize } from "./PreviewControls"
 
 /**
  * Runtime status from API response
@@ -57,6 +58,8 @@ export interface RuntimePreviewPanelProps {
   onLoad?: () => void
   /** Trigger to refresh the preview (increment to refresh) */
   refreshTrigger?: number
+  /** Viewport size for responsive preview */
+  viewport?: ViewportSize
 }
 
 export function RuntimePreviewPanel({
@@ -65,6 +68,7 @@ export function RuntimePreviewPanel({
   onError,
   onLoad,
   refreshTrigger = 0,
+  viewport = "desktop",
 }: RuntimePreviewPanelProps) {
   const [sandboxUrl, setSandboxUrl] = useState<string | null>(null)
   const [sandboxAttributes, setSandboxAttributes] = useState<string>('')
@@ -521,8 +525,10 @@ export function RuntimePreviewPanel({
     )
   }
 
+  const viewportWidth = VIEWPORT_SIZES[viewport].width
+
   return (
-    <div className={cn("relative h-full w-full", className)}>
+    <div className={cn("relative h-full w-full bg-muted/20", className)}>
       {/* Refresh Button */}
       <div className="absolute top-2 right-2 z-10">
         <button
@@ -566,18 +572,28 @@ export function RuntimePreviewPanel({
         </div>
       )}
 
-      {/* Sandbox iframe */}
+      {/* Viewport-constrained iframe container */}
       {sandboxUrl && (
-        <iframe
-          ref={iframeRef}
-          src={sandboxUrl}
-          sandbox={sandboxAttributes}
-          className="h-full w-full border-0"
-          onLoad={handleIframeLoad}
-          onError={handleIframeError}
-          title={`Project Preview - ${projectId}`}
-          allow="clipboard-read; clipboard-write"
-        />
+        <div className="h-full w-full flex items-start justify-center overflow-auto bg-muted/10">
+          <div 
+            className="h-full bg-background transition-all duration-300 ease-in-out shadow-sm"
+            style={{ 
+              width: `${viewportWidth}px`,
+              minWidth: `${viewportWidth}px`
+            }}
+          >
+            <iframe
+              ref={iframeRef}
+              src={sandboxUrl}
+              sandbox={sandboxAttributes}
+              className="h-full w-full border-0"
+              onLoad={handleIframeLoad}
+              onError={handleIframeError}
+              title={`Project Preview - ${projectId}`}
+              allow="clipboard-read; clipboard-write"
+            />
+          </div>
+        </div>
       )}
     </div>
   )

@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils"
 
 export type ViewportSize = "mobile" | "tablet" | "desktop" | "wide"
 
-const VIEWPORT_SIZES: Record<ViewportSize, { width: number; icon: React.ElementType; label: string }> = {
+export const VIEWPORT_SIZES: Record<ViewportSize, { width: number; icon: React.ElementType; label: string }> = {
   mobile: { width: 375, icon: Smartphone, label: "Mobile" },
   tablet: { width: 768, icon: Tablet, label: "Tablet" },
   desktop: { width: 1024, icon: Monitor, label: "Desktop" },
