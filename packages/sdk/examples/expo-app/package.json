@@ -10,10 +10,10 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "db:generate": "prisma generate",
-    "db:push": "prisma db push",
-    "db:reset": "prisma db push --force-reset --accept-data-loss",
-    "db:studio": "prisma studio"
+    "db:generate": "bunx --bun prisma generate",
+    "db:push": "bunx --bun prisma db push",
+    "db:reset": "bunx --bun prisma db push --force-reset --accept-data-loss",
+    "db:studio": "bunx --bun prisma studio"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.3.0",

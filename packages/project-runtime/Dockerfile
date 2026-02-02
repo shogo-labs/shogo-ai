@@ -95,7 +95,7 @@ RUN for template in todo-app expense-tracker crm inventory kanban ai-chat form-b
       echo "=== Building: $template ===" && \
       cd /templates/examples/$template && \
       if [ -f "prisma/schema.prisma" ]; then \
-        bunx prisma generate 2>&1 || true; \
+        bunx --bun prisma generate 2>&1 || true; \
       fi && \
       if grep -q '"build"' package.json 2>/dev/null; then \
         bun run build 2>&1 || echo "Build skipped for $template"; \
