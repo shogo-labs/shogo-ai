@@ -3911,6 +3911,10 @@ app.get('/database/url', async (c) => {
  * - Asset paths resolved correctly via base tag
  * - API calls intercepted and rewritten via fetch/XHR patching
  * 
+ * IMPORTANT: The <base> tag only works with RELATIVE URLs (e.g., "ui/index.js").
+ * Absolute paths like "/ui/index.js" ignore the base tag and resolve from domain root.
+ * We must convert absolute paths to relative paths so the base tag works.
+ * 
  * @param html - The original HTML content
  * @param basePath - The full proxy base path (e.g., '/api/projects/xyz/database/proxy/')
  */
@@ -3931,6 +3935,21 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
   
   // Fix any hardcoded http://localhost:PORT URLs to be empty (rely on base tag)
   html = html.replace(/http:\/\/localhost:\d+/g, '')
+  
+  // CRITICAL: Convert absolute paths to relative paths in script/link/img tags
+  // The <base> tag only affects relative URLs - absolute paths like "/ui/index.js"
+  // bypass the base tag entirely and resolve from domain root (causing 404s).
+  // By removing the leading "/", we make them relative so the base tag works.
+  
+  // Convert src="/..." to src="..." (for script, img tags)
+  // Handle both cases: <script src="/..." and <script async src="/...
+  html = html.replace(/\ssrc="\/(?!\/)/gi, ' src="')
+  html = html.replace(/\ssrc='\/(?!\/)/gi, " src='")
+  
+  // Convert href="/..." to href="..." (for link tags, excluding http/https and //)
+  // Negative lookahead (?!\/) ensures we don't touch href="//" (protocol-relative URLs)
+  html = html.replace(/\shref="\/(?!\/)/gi, ' href="')
+  html = html.replace(/\shref='\/(?!\/)/gi, " href='")
   
   // Fix any absolute /api/ paths that bypass the base tag (in inline scripts)
   // Prisma Studio's JS sometimes constructs URLs like: location.origin + '/api/'
@@ -3990,6 +4009,51 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
     var args = Array.prototype.slice.call(arguments, 2);
     url = rewriteUrl(url);
     return originalOpen.apply(this, [method, url].concat(args));
+  };
+  
+  // Patch dynamically created script/link elements
+  // Some frameworks create these via createElement and set src/href
+  var originalCreateElement = document.createElement.bind(document);
+  document.createElement = function(tagName, options) {
+    var element = originalCreateElement(tagName, options);
+    var tag = tagName.toLowerCase();
+    
+    if (tag === 'script' || tag === 'img') {
+      // Intercept src setter
+      var descriptor = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src') ||
+                       Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+      if (descriptor && descriptor.set) {
+        var originalSetter = descriptor.set;
+        Object.defineProperty(element, 'src', {
+          set: function(value) {
+            var rewritten = rewriteUrl(value);
+            if (rewritten !== value) {
+              console.log('[Prisma Studio Proxy] Rewrote element src:', value, '->', rewritten);
+            }
+            return originalSetter.call(this, rewritten);
+          },
+          get: descriptor.get
+        });
+      }
+    } else if (tag === 'link') {
+      // Intercept href setter for link elements
+      var linkDescriptor = Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, 'href');
+      if (linkDescriptor && linkDescriptor.set) {
+        var originalLinkSetter = linkDescriptor.set;
+        Object.defineProperty(element, 'href', {
+          set: function(value) {
+            var rewritten = rewriteUrl(value);
+            if (rewritten !== value) {
+              console.log('[Prisma Studio Proxy] Rewrote link href:', value, '->', rewritten);
+            }
+            return originalLinkSetter.call(this, rewritten);
+          },
+          get: linkDescriptor.get
+        });
+      }
+    }
+    
+    return element;
   };
   
   console.log('[Prisma Studio Proxy] URL rewriting enabled, base:', proxyBase);
