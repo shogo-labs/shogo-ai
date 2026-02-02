@@ -100,7 +100,19 @@ Only use Read, Write, Edit, Bash for:
 - Customizing AFTER template.copy
 - Debugging existing code
 - Specific changes user requests
-- Building something with NO matching template (after explaining)`
+- Building something with NO matching template (after explaining)
+
+## Available Project Scripts
+
+The project has convenient scripts in package.json that you can use. Run these from the project root:
+
+**Database & Prisma:**
+- \`bun run db:generate\` - Generate Prisma client after schema changes
+- \`bun run db:push\` - Push schema changes to database
+- \`bun run db:migrate\` - Run database migrations (dev)
+- \`bun run db:reset\` - Reset database and re-run migrations
+
+Use these scripts instead of running commands directly when available (e.g., \`bun run db:generate\` instead of \`bunx prisma generate\`).`
 
 // =============================================================================
 // [DSPy-Optimized] Schema Modifications
@@ -168,7 +180,7 @@ Your code must be precise, clean, and immediately implementable in a Prisma sche
 
 1. **ALWAYS modify \`prisma/schema.prisma\`** - This is the source of truth for data models
 2. **NEVER directly edit files in \`src/generated/\`** - These are auto-generated from the schema
-3. **After schema changes, ALWAYS run**: \`DATABASE_URL="file:./dev.db" bunx prisma generate && bunx prisma db push\`
+3. **After schema changes, ALWAYS run**: \`bun run db:generate && bun run db:push\`
 4. **Then update the UI** in \`src/routes/\` or \`src/components/\` to use the new fields
 
 ### Example: Adding a "priority" field to Todo
@@ -187,7 +199,7 @@ Your code must be precise, clean, and immediately implementable in a Prisma sche
    }
    \`\`\`
 
-2. Run: \`DATABASE_URL="file:./dev.db" bunx prisma generate && bunx prisma db push\`
+2. Run: \`bun run db:generate && bun run db:push\`
 
 3. Update UI in \`src/routes/index.tsx\` to display/edit priority
 
@@ -245,7 +257,7 @@ After making code changes, ALWAYS verify there are no TypeScript or linting erro
    - Undefined variables
    - Syntax errors
 
-3. **For Prisma schema changes**, the \`prisma generate && prisma db push\` commands already validate the schema.
+3. **For Prisma schema changes**, the \`bun run db:generate && bun run db:push\` commands already validate the schema.
 
 4. **Do NOT tell the user "done" until the code compiles cleanly.** If you introduced errors, fix them first.
 

@@ -1586,6 +1586,20 @@ export const ChatPanel = observer(function ChatPanel({
         hasReceivedPartsRef.current = false
       }
 
+      // Fix for duplicate message bug: Check if AI SDK already has messages with matching IDs
+      // This prevents overwriting when optimistic persistence adds a message that AI SDK already has
+      const persistedIds = new Set(persistedMessagesFromMobX.map((msg: any) => msg.id))
+      const aiSdkIds = new Set(messages.map(m => m.id))
+      const hasNewPersistedMessages = Array.from(persistedIds).some(id => !aiSdkIds.has(id))
+      const hasFewerAiSdkMessages = messages.length < persistedMessagesFromMobX.length
+      
+      // Only sync if there are genuinely new messages from persistence, or if AI SDK has fewer messages
+      // This prevents duplicate messages during the brief moment between optimistic add and server response
+      if (!hasNewPersistedMessages && !hasFewerAiSdkMessages) {
+        console.log('[ChatPanel] Skipping message sync - AI SDK already has these messages')
+        return
+      }
+
       // feat-toolcall-rendering-on-reload: Reconstruct parts array from persisted JSON
       const aiMessages = persistedMessagesFromMobX.map((msg: any) => {
         const baseMessage: any = {
