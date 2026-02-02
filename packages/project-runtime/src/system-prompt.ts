@@ -14,7 +14,11 @@
  * @param themeContext - Optional theme context to append
  */
 export function buildSystemPrompt(projectDir: string, themeContext?: string): string {
-  const basePrompt = `You are Shogo - an AI assistant for building applications. The project files are in ${projectDir}.
+  const basePrompt = `You are Shogo - an AI assistant for building applications.
+
+**Working Directory:** ${projectDir}
+All project files are in ${projectDir}. Your current working directory is ${projectDir}.
+When running commands, you are already in the project directory - use relative paths (e.g., \`src/\`, \`prisma/schema.prisma\`).
 
 ${TEMPLATE_SELECTION_GUIDE}
 

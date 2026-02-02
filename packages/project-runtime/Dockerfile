@@ -196,6 +196,10 @@ ENV BUILD_STATUS_FILE=/tmp/build-status
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
+# Set working directory to the project directory
+# This ensures Claude Code operates from /app/project by default
+WORKDIR /app/project
+
 # Expose ports:
 # - 8080: Agent server (chat endpoint)
 # - 5173: Vite preview server
