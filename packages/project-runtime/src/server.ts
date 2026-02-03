@@ -793,11 +793,11 @@ app.get('/ready', (c) => {
     logTiming(`READY! First ready after ${firstReadyTime}ms (${readyCheckCount} checks)`)
     
     // Auto-start vite watch mode for automatic rebuilds (don't block response)
-    // Only for Vite projects (not Expo or TanStack Start)
+    // Works for both plain Vite and TanStack Start (both use vite build)
+    // Expo uses Metro bundler, so watch mode doesn't apply
     const isExpo = existsSync(join(PROJECT_DIR, 'app.json')) || existsSync(join(PROJECT_DIR, 'expo.json'))
-    const isTanStackStart = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
     
-    if (!isExpo && !isTanStackStart && !buildWatchProcess) {
+    if (!isExpo && !buildWatchProcess) {
       console.log('[project-runtime] 🔄 Auto-starting Vite watch mode...')
       startViteBuildWatch().catch((err) => {
         console.error('[project-runtime] Failed to auto-start vite watch:', err)
@@ -1707,8 +1707,9 @@ app.post('/preview/restart', async (c) => {
     }
     
     // After initial build completes, start watch mode for future automatic rebuilds
-    // This only applies to Vite projects (not Expo or TanStack Start)
-    if (!isExpo && !isTanStackStart) {
+    // Works for both plain Vite and TanStack Start (both use vite build)
+    // Expo uses Metro bundler, so watch mode doesn't apply
+    if (!isExpo) {
       console.log('[project-runtime] 🔄 Starting Vite watch mode for automatic rebuilds...')
       await startViteBuildWatch()
       markStep('startViteBuildWatch')
