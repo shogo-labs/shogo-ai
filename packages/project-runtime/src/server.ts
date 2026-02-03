@@ -3969,21 +3969,34 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
         var urlObj = new URL(url);
         // Check if same domain or localhost - rewrite to use proxy
         if (urlObj.hostname === window.location.hostname || urlObj.hostname === 'localhost') {
-          // Strip the origin and treat as relative path through proxy
           var path = urlObj.pathname;
-          if (path.startsWith('/')) path = path.substring(1);
-          url = proxyBase + path + urlObj.search;
+          
+          // CRITICAL FIX: Check if pathname already contains the proxy base
+          // If it does, don't prepend it again (prevents double-prefixing)
+          if (path.startsWith(proxyBase)) {
+            // Path already has proxy base, use as-is
+            url = path + urlObj.search;
+          } else {
+            // Strip the origin and treat as relative path through proxy
+            if (path.startsWith('/')) path = path.substring(1);
+            url = proxyBase + path + urlObj.search;
+          }
           console.log('[Prisma Studio Proxy] Rewrote full URL to:', url);
         }
       } catch(e) {
         // Invalid URL, leave as-is
       }
     }
-    // Handle /api/ calls  
-    else if (url.startsWith('/api/') || url.startsWith('/api')) {
+    // Handle protocol-relative URLs (//...) - leave unchanged
+    else if (url.startsWith('//')) {
+      // Protocol-relative URLs should not be rewritten
+      return url;
+    }
+    // Handle /api/ calls - but check if already proxied
+    else if ((url.startsWith('/api/') || url.startsWith('/api')) && !url.startsWith(proxyBase)) {
       url = proxyBase + url.substring(1);
     }
-    // Handle other absolute paths at root
+    // Handle other absolute paths at root - but check if already proxied
     else if (url.startsWith('/') && !url.startsWith(proxyBase)) {
       url = proxyBase + url.substring(1);
     }
