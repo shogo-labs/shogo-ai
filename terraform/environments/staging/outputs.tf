@@ -56,3 +56,42 @@ output "domains" {
     mcp    = "mcp-staging.shogo.ai"
   }
 }
+
+# -----------------------------------------------------------------------------
+# Observability Outputs
+# -----------------------------------------------------------------------------
+output "signoz_enabled" {
+  description = "Whether SigNoz monitoring is enabled"
+  value       = !var.bootstrap_mode && var.enable_signoz && var.signoz_endpoint != ""
+}
+
+output "signoz_namespace" {
+  description = "Namespace where SigNoz K8s Infra is deployed"
+  value       = !var.bootstrap_mode && var.enable_signoz && var.signoz_endpoint != "" ? module.signoz[0].namespace : null
+}
+
+output "signoz_chart_version" {
+  description = "Version of SigNoz K8s Infra chart deployed"
+  value       = !var.bootstrap_mode && var.enable_signoz && var.signoz_endpoint != "" ? module.signoz[0].chart_version : null
+}
+
+locals {
+  signoz_commands = <<-EOT
+# Check DaemonSet (should have 1 pod per node)
+kubectl get daemonset -n ${var.signoz_namespace}
+
+# Check Deployment
+kubectl get deployment -n ${var.signoz_namespace}
+
+# Check logs
+kubectl logs -n ${var.signoz_namespace} -l app.kubernetes.io/name=k8s-infra --tail=50
+
+# Verify metrics are being sent
+kubectl logs -n ${var.signoz_namespace} -l app.kubernetes.io/name=k8s-infra | grep "Exporting"
+EOT
+}
+
+output "signoz_verification_commands" {
+  description = "Commands to verify SigNoz deployment"
+  value       = !var.bootstrap_mode && var.enable_signoz && var.signoz_endpoint != "" ? local.signoz_commands : "SigNoz not enabled (bootstrap_mode or missing config)"
+}

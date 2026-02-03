@@ -120,6 +120,9 @@ resource "aws_eks_cluster" "main" {
   version  = var.cluster_version
   role_arn = aws_iam_role.cluster.arn
 
+  # Explicitly set to false to match imported cluster state (prevents forced replacement)
+  bootstrap_self_managed_addons = false
+
   vpc_config {
     subnet_ids              = var.private_subnets
     security_group_ids      = [aws_security_group.cluster.id]

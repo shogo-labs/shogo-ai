@@ -41,3 +41,26 @@ better_auth_secret = "shogo-staging-secret-key-must-be-at-least-32-characters-lo
 # GitHub Actions CI/CD
 github_org  = "CodeGlo"
 github_repo = "shogo-ai"
+# =============================================================================
+# SigNoz Configuration for Staging
+# =============================================================================
+# This file contains your SigNoz Cloud credentials
+# Merge these into your terraform.tfvars file
+# =============================================================================
+
+# Enable SigNoz K8s infrastructure monitoring
+enable_signoz = true
+
+# SigNoz Cloud endpoint (US region)
+signoz_endpoint = "ingest.us.signoz.cloud:443"
+
+# SigNoz Cloud ingestion key
+signoz_ingestion_key = "xLFY6djeWtEqZt1eGrYTwKkKeR5kCua-VB1w"
+
+# Namespace for SigNoz collectors
+signoz_namespace = "signoz"
+
+# Feature toggles (logs disabled by default to reduce resource usage)
+signoz_enable_logs    = false  # Set to true if you need container logs
+signoz_enable_events  = true   # K8s events (lightweight)
+signoz_enable_metrics = true   # Node/pod metrics (essential)
