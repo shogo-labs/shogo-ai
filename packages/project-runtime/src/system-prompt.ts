@@ -261,7 +261,7 @@ After making code changes, ALWAYS verify there are no TypeScript or linting erro
    - Undefined variables
    - Syntax errors
 
-3. **For Prisma schema changes**, the \`bun run db:generate && bun run db:push\` commands already validate the schema.
+3. **For Prisma schema changes**, ALWAYS run \`bunx prisma validate\` first before \`bun run db:generate\`. Fix any validation errors before proceeding.
 
 4. **Do NOT tell the user "done" until the code compiles cleanly.** If you introduced errors, fix them first.
 
