@@ -821,14 +821,77 @@ app.get('/build-status', (c) => {
       error: devModeError,
       inBackoff: isInBackoff,
     },
+    // Build watch state
+    buildWatch: {
+      active: buildWatchProcess !== null,
+      state: buildState,
+      building: buildState === 'building',
+      startTime: buildStartTime,
+      duration: buildDuration,
+      lastBuildTime: lastBuildTime,
+      error: buildError,
+    },
     // Provide a user-friendly message
     message: devModeError && isInBackoff 
       ? `Error: ${devModeError}` 
       : devModeStarting 
         ? 'Starting dev server...' 
-        : buildStatus.ready 
-          ? 'Ready' 
-          : 'Initializing...',
+        : buildState === 'building'
+          ? 'Rebuilding project...'
+          : buildStatus.ready 
+            ? 'Ready' 
+            : 'Initializing...',
+  })
+})
+
+/**
+ * Server-Sent Events endpoint for real-time build state updates.
+ * Clients can subscribe to receive instant notifications when builds start/complete.
+ */
+app.get('/build-events', (c) => {
+  // Set SSE headers
+  c.header('Content-Type', 'text/event-stream')
+  c.header('Cache-Control', 'no-cache')
+  c.header('Connection', 'keep-alive')
+  
+  let clientController: ReadableStreamDefaultController | null = null
+  
+  const stream = new ReadableStream({
+    start(controller) {
+      // Store controller for cancel callback
+      clientController = controller
+      
+      // Add client to subscribers
+      buildEventClients.add(controller)
+      
+      // Send initial state immediately
+      const initialState = JSON.stringify({
+        state: buildState,
+        startTime: buildStartTime,
+        duration: buildDuration,
+        lastBuildTime: lastBuildTime,
+        error: buildError,
+        timestamp: Date.now(),
+      })
+      const encoder = new TextEncoder()
+      controller.enqueue(encoder.encode(`data: ${initialState}\n\n`))
+      
+      console.log(`[project-runtime] Build events client connected (total: ${buildEventClients.size})`)
+    },
+    cancel() {
+      if (clientController) {
+        buildEventClients.delete(clientController)
+        console.log(`[project-runtime] Build events client disconnected (remaining: ${buildEventClients.size})`)
+      }
+    },
+  })
+  
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
   })
 })
 
@@ -1094,6 +1157,17 @@ let devModeError: string | null = null
 const DEV_MODE_MAX_FAILURES = 3
 const DEV_MODE_BACKOFF_MS = 60000  // 1 minute backoff after max failures
 
+// Build watch state for automatic rebuilds with vite build --watch
+let buildWatchProcess: ReturnType<typeof Bun.spawn> | null = null
+let buildState: 'idle' | 'building' | 'success' | 'error' = 'idle'
+let buildStartTime: number | null = null
+let buildDuration: number | null = null
+let lastBuildTime: number | null = null
+let buildError: string | null = null
+
+// SSE clients listening for build events
+const buildEventClients = new Set<ReadableStreamDefaultController>()
+
 /**
  * Check if a TCP port is accepting connections.
  * Uses Bun's native TCP socket support for reliability.
@@ -1164,6 +1238,176 @@ async function waitForPostgresReady(timeoutMs: number = 30000): Promise<boolean>
 }
 
 /**
+ * Parse Vite stdout to detect rebuild events
+ */
+function parseViteBuildOutput(line: string): 'start' | 'success' | 'error' | null {
+  // Vite build start: "vite v5.x.x building for production..." or "building..."
+  if (line.includes('building for production') || line.includes('building...')) {
+    return 'start'
+  }
+  // Vite build success: "✓ built in XXXms" or "built in"
+  if (line.includes('✓ built in') || line.match(/built in \d+/)) {
+    return 'success'
+  }
+  // Vite build error: typically starts with "error" or "failed"
+  if (line.toLowerCase().includes('error') || line.toLowerCase().includes('failed')) {
+    return 'error'
+  }
+  return null
+}
+
+/**
+ * Notify all SSE clients about build state change
+ */
+function notifyBuildStateChange() {
+  const payload = JSON.stringify({
+    state: buildState,
+    startTime: buildStartTime,
+    duration: buildDuration,
+    lastBuildTime: lastBuildTime,
+    error: buildError,
+    timestamp: Date.now(),
+  })
+  
+  const encoder = new TextEncoder()
+  const message = encoder.encode(`data: ${payload}\n\n`)
+  
+  // Notify all connected clients
+  for (const controller of buildEventClients) {
+    try {
+      controller.enqueue(message)
+    } catch (e) {
+      // Client disconnected - will be removed by the stream's cancel callback
+      buildEventClients.delete(controller)
+    }
+  }
+  
+  if (buildEventClients.size > 0) {
+    console.log(`[project-runtime] 📡 Notified ${buildEventClients.size} client(s) of build state: ${buildState}`)
+  }
+}
+
+/**
+ * Start Vite in watch mode with rebuild detection.
+ * Monitors stdout for rebuild events and notifies SSE clients.
+ */
+async function startViteBuildWatch(): Promise<void> {
+  if (buildWatchProcess) {
+    console.log('[project-runtime] Vite watch already running')
+    return
+  }
+  
+  console.log('[project-runtime] 🔄 Starting Vite build watch...')
+  
+  buildWatchProcess = Bun.spawn(['bun', '--bun', 'vite', 'build', '--watch'], {
+    cwd: PROJECT_DIR,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: process.env,
+  })
+  
+  // Stream stdout and detect rebuild events
+  ;(async () => {
+    if (!buildWatchProcess || !buildWatchProcess.stdout) return
+    const stdout = buildWatchProcess.stdout
+    if (typeof stdout === 'number') return
+    const reader = stdout.getReader()
+    const decoder = new TextDecoder()
+    
+    while (buildWatchProcess) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) break
+        
+        const output = decoder.decode(value)
+        const lines = output.split('\n')
+        
+        for (const line of lines) {
+          // Log to console for debugging
+          if (line.trim()) {
+            console.log(`[vite] ${line}`)
+          }
+          
+          // Parse for events
+          const event = parseViteBuildOutput(line)
+          if (event === 'start') {
+            buildState = 'building'
+            buildStartTime = Date.now()
+            buildError = null
+            console.log('[project-runtime] 🔨 Vite rebuild started')
+            notifyBuildStateChange()
+          } else if (event === 'success') {
+            buildState = 'success'
+            buildDuration = buildStartTime ? Date.now() - buildStartTime : null
+            lastBuildTime = Date.now()
+            console.log(`[project-runtime] ✅ Vite rebuild complete (${buildDuration}ms)`)
+            notifyBuildStateChange()
+            
+            // Return to idle after 1s
+            setTimeout(() => {
+              buildState = 'idle'
+              notifyBuildStateChange()
+            }, 1000)
+          } else if (event === 'error') {
+            buildState = 'error'
+            buildError = line
+            console.error('[project-runtime] ❌ Vite rebuild error:', line)
+            notifyBuildStateChange()
+          }
+        }
+      } catch (e) {
+        console.error('[project-runtime] Error reading Vite output:', e)
+        break
+      }
+    }
+  })()
+  
+  // Also stream stderr
+  ;(async () => {
+    if (!buildWatchProcess || !buildWatchProcess.stderr) return
+    const stderr = buildWatchProcess.stderr
+    if (typeof stderr === 'number') return
+    const reader = stderr.getReader()
+    const decoder = new TextDecoder()
+    
+    while (buildWatchProcess) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) break
+        const output = decoder.decode(value)
+        if (output.trim()) {
+          console.error(`[vite:error] ${output}`)
+          
+          // Treat any stderr as potential error
+          if (buildState === 'building') {
+            buildState = 'error'
+            buildError = output
+            notifyBuildStateChange()
+          }
+        }
+      } catch (e) {
+        break
+      }
+    }
+  })()
+  
+  console.log('[project-runtime] ✅ Vite watch started')
+}
+
+/**
+ * Stop Vite watch process
+ */
+function stopViteBuildWatch(): void {
+  if (buildWatchProcess) {
+    console.log('[project-runtime] Stopping Vite build watch...')
+    buildWatchProcess.kill()
+    buildWatchProcess = null
+    buildState = 'idle'
+    notifyBuildStateChange()
+  }
+}
+
+/**
  * Restart the preview server after template changes.
  * This will:
  * 1. Kill any existing Nitro server process
@@ -1213,6 +1457,8 @@ app.post('/preview/restart', async (c) => {
       expoDevProcess.kill()
       expoDevProcess = null
     }
+    // Stop build watch process if running
+    stopViteBuildWatch()
     markStep('killExistingServer')
     
     // 2. Check if this is a TanStack Start project
@@ -1446,6 +1692,14 @@ app.post('/preview/restart', async (c) => {
         const totalMs = Math.round(performance.now() - startTime)
         return c.json({ success: false, error: 'Build failed', timings: { steps: timings, totalMs } }, 500)
       }
+    }
+    
+    // After initial build completes, start watch mode for future automatic rebuilds
+    // This only applies to Vite projects (not Expo or TanStack Start)
+    if (!isExpo && !isTanStackStart) {
+      console.log('[project-runtime] 🔄 Starting Vite watch mode for automatic rebuilds...')
+      await startViteBuildWatch()
+      markStep('startViteBuildWatch')
     }
     
     // 6. Start Nitro server for TanStack Start or Hono server for Expo
@@ -4289,6 +4543,9 @@ async function gracefulShutdown(signal: string) {
     ws.close(1001, 'Server shutting down')
   }
   lspConnections.clear()
+  
+  // Stop build watch process
+  stopViteBuildWatch()
 
   // Run final postgres backup before shutdown (critical for data persistence)
   if (postgresBackup) {

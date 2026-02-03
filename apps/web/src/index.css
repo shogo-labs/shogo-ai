@@ -313,6 +313,15 @@ body {
   100% { background-position: 100% 0; }
 }
 
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
 /* Respect reduced motion preference */
 @media (prefers-reduced-motion: reduce) {
   .feature-item[data-phase="complete"]::after {

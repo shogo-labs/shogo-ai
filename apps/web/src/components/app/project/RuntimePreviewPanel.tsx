@@ -19,6 +19,19 @@ import { VIEWPORT_SIZES, type ViewportSize } from "./PreviewControls"
 type RuntimeStatus = 'not_found' | 'creating' | 'starting' | 'running' | 'stopping' | 'stopped' | 'error'
 
 /**
+ * Build watch state from runtime
+ */
+interface BuildWatchState {
+  active: boolean
+  state: 'idle' | 'building' | 'success' | 'error'
+  building: boolean
+  startTime: number | null
+  duration: number | null
+  lastBuildTime: number | null
+  error: string | null
+}
+
+/**
  * Runtime status response from /runtime/status endpoint
  */
 interface RuntimeStatusResponse {
@@ -28,6 +41,7 @@ interface RuntimeStatusResponse {
   ready: boolean
   replicas?: number
   url?: string
+  buildWatch?: BuildWatchState
 }
 
 /**
@@ -79,12 +93,15 @@ export function RuntimePreviewPanel({
   const [iframeLoaded, setIframeLoaded] = useState(false)
   const [pollCount, setPollCount] = useState(0) // Track polls for progress bar
   const [isRebuilding, setIsRebuilding] = useState(false) // Track rebuild state for smooth overlay
+  const [buildState, setBuildState] = useState<BuildWatchState['state']>('idle')
+  const [lastBuildTime, setLastBuildTime] = useState<number | null>(null)
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const retryCountRef = useRef(0)
   const maxAutoRetries = 60 // Allow up to 60 polls (3 minutes at 3s intervals)
   const autoRetryTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const statusPollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const buildEventSourceRef = useRef<EventSource | null>(null)
 
   /**
    * Poll runtime status to check if pod is ready.
@@ -96,11 +113,35 @@ export function RuntimePreviewPanel({
       if (!response.ok) {
         return null
       }
-      return await response.json()
+      const data = await response.json()
+      
+      // Update build state from polling (fallback if SSE not working)
+      if (data.buildWatch && !buildEventSourceRef.current) {
+        const prevState = buildState
+        setBuildState(data.buildWatch.state)
+        setLastBuildTime(data.buildWatch.lastBuildTime)
+        
+        // Handle state changes same as SSE
+        if (data.buildWatch.state === 'building' && prevState !== 'building') {
+          setIsRebuilding(true)
+          setStatusMessage('Rebuilding project...')
+        } else if (data.buildWatch.state === 'success' && prevState === 'building') {
+          setTimeout(() => {
+            if (iframeRef.current && sandboxUrl) {
+              setIframeLoaded(false)
+              const cacheBuster = Date.now()
+              const separator = sandboxUrl.includes('?') ? '&' : '?'
+              iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
+            }
+          }, 500)
+        }
+      }
+      
+      return data
     } catch {
       return null
     }
-  }, [projectId])
+  }, [projectId, buildState, sandboxUrl])
 
   /**
    * Start the runtime initialization flow:
@@ -216,6 +257,93 @@ export function RuntimePreviewPanel({
   }
 
   /**
+   * Subscribe to build events via SSE for real-time rebuild notifications
+   * MUST be defined before fetchSandboxUrlOnce which uses it
+   */
+  const subscribeToBuildEvents = useCallback(() => {
+    // Don't subscribe until we have a sandbox URL
+    if (!sandboxUrl) return
+    
+    // Extract base URL from sandbox URL
+    const url = new URL(sandboxUrl)
+    const baseUrl = `${url.protocol}//${url.host}`
+    
+    console.log('[RuntimePreviewPanel] Subscribing to build events:', `${baseUrl}/build-events`)
+    
+    try {
+      const eventSource = new EventSource(`${baseUrl}/build-events`)
+      buildEventSourceRef.current = eventSource
+      
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as {
+            state: BuildWatchState['state']
+            lastBuildTime: number | null
+            timestamp: number
+          }
+          
+          console.log('[RuntimePreviewPanel] Build state changed:', data.state)
+          
+          const prevState = buildState
+          setBuildState(data.state)
+          setLastBuildTime(data.lastBuildTime)
+          
+          // Show rebuild overlay when build starts
+          if (data.state === 'building' && prevState !== 'building') {
+            setIsRebuilding(true)
+            setStatusMessage('Rebuilding project...')
+          }
+          
+          // Refresh iframe when build succeeds
+          if (data.state === 'success' && prevState === 'building') {
+            console.log('[RuntimePreviewPanel] Build complete, refreshing preview...')
+            // Wait a moment for server to be ready
+            setTimeout(() => {
+              if (iframeRef.current && sandboxUrl) {
+                setIframeLoaded(false)
+                const cacheBuster = Date.now()
+                const separator = sandboxUrl.includes('?') ? '&' : '?'
+                iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
+              }
+            }, 500)
+          }
+          
+          // Show error state
+          if (data.state === 'error') {
+            setError('Build failed - check console for details')
+            setIsRebuilding(false)
+          }
+        } catch (e) {
+          console.error('[RuntimePreviewPanel] Error parsing build event:', e)
+        }
+      }
+      
+      eventSource.onerror = (e) => {
+        console.error('[RuntimePreviewPanel] Build event stream error:', e)
+        // Try to reconnect after 5s
+        setTimeout(() => {
+          if (!buildEventSourceRef.current || buildEventSourceRef.current.readyState === EventSource.CLOSED) {
+            subscribeToBuildEvents()
+          }
+        }, 5000)
+      }
+    } catch (e) {
+      console.error('[RuntimePreviewPanel] Failed to subscribe to build events:', e)
+    }
+  }, [sandboxUrl, buildState])
+
+  /**
+   * Unsubscribe from build events
+   */
+  const unsubscribeFromBuildEvents = useCallback(() => {
+    if (buildEventSourceRef.current) {
+      console.log('[RuntimePreviewPanel] Unsubscribing from build events')
+      buildEventSourceRef.current.close()
+      buildEventSourceRef.current = null
+    }
+  }, [])
+
+  /**
    * Fetch sandbox URL once (after runtime is ready).
    * Uses the blocking version since we know the pod is ready.
    */
@@ -245,13 +373,18 @@ export function RuntimePreviewPanel({
       setSandboxAttributes(data.sandbox)
       setStatus('running')
       retryCountRef.current = 0
+      
+      // Subscribe to build events for real-time rebuild notifications
+      setTimeout(() => {
+        subscribeToBuildEvents()
+      }, 1000)
 
     } catch (err: any) {
       setError(err.message || 'Failed to connect to runtime')
     } finally {
       setIsLoading(false)
     }
-  }, [projectId, initializeRuntime])
+  }, [projectId, initializeRuntime, subscribeToBuildEvents])
 
   // Legacy function for backwards compatibility with retry button
   const fetchSandboxUrl = initializeRuntime
@@ -423,6 +556,9 @@ export function RuntimePreviewPanel({
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      // Unsubscribe from build events
+      unsubscribeFromBuildEvents()
+      
       // Clear any pending auto-retry timeouts
       if (autoRetryTimeoutRef.current) {
         clearTimeout(autoRetryTimeoutRef.current)
@@ -435,7 +571,7 @@ export function RuntimePreviewPanel({
       fetch(`/api/projects/${projectId}/runtime/stop`, { method: 'POST' })
         .catch(() => {}) // Ignore errors on unmount
     }
-  }, [projectId])
+  }, [projectId, unsubscribeFromBuildEvents])
 
   // Error state
   if (error) {
@@ -529,19 +665,35 @@ export function RuntimePreviewPanel({
 
   return (
     <div className={cn("relative h-full w-full bg-muted/20", className)}>
-      {/* Refresh Button */}
-      <div className="absolute top-2 right-2 z-10">
+      {/* Refresh Button & Build Status Indicator */}
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
+        {/* Build status indicator */}
+        {buildState === 'building' && (
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 backdrop-blur-sm border border-primary/20 shadow-sm animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
+            <span className="text-xs font-medium text-primary">Rebuilding...</span>
+          </div>
+        )}
+        
+        {buildState === 'success' && lastBuildTime && Date.now() - lastBuildTime < 3000 && (
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-green-500/10 backdrop-blur-sm border border-green-500/20 shadow-sm animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="h-2 w-2 rounded-full bg-green-500" />
+            <span className="text-xs font-medium text-green-600 dark:text-green-400">Build complete!</span>
+          </div>
+        )}
+        
+        {/* Refresh button */}
         <button
           onClick={handleRefresh}
           disabled={isRebuilding}
           className={cn(
-            "p-1.5 rounded-full bg-background/90 backdrop-blur-sm border border-border hover:bg-muted transition-colors shadow-sm",
+            "p-2 rounded-full bg-background/90 backdrop-blur-sm border border-border hover:bg-muted transition-all shadow-sm hover:shadow-md",
             isRebuilding && "opacity-50 cursor-not-allowed"
           )}
           title="Refresh preview"
         >
           <RefreshCw className={cn(
-            "h-3.5 w-3.5 text-muted-foreground",
+            "h-4 w-4 text-muted-foreground transition-transform",
             isRebuilding && "animate-spin"
           )} />
         </button>
@@ -549,14 +701,38 @@ export function RuntimePreviewPanel({
 
       {/* Smooth rebuilding overlay - keeps previous content visible */}
       {isRebuilding && iframeLoaded && (
-        <div className="absolute inset-0 flex items-center justify-center bg-background/60 backdrop-blur-[2px] z-5 animate-in fade-in duration-200">
-          <div className="flex flex-col items-center gap-3 bg-background/95 backdrop-blur-sm border border-border rounded-lg p-6 shadow-lg">
+        <div className="absolute inset-0 flex items-center justify-center bg-background/70 backdrop-blur-[3px] z-5 animate-in fade-in duration-200">
+          <div className="flex flex-col items-center gap-4 bg-gradient-to-br from-background/98 to-background/95 backdrop-blur-md border-2 border-primary/20 rounded-xl p-8 shadow-2xl max-w-sm">
+            {/* Animated icon */}
             <div className="relative">
-              <Loader2 className="h-8 w-8 text-primary animate-spin" />
+              <div className="absolute inset-0 bg-primary/10 rounded-full blur-xl animate-pulse" />
+              <div className="relative">
+                <Loader2 className="h-10 w-10 text-primary animate-spin" />
+              </div>
             </div>
-            <div className="flex flex-col items-center gap-1">
-              <span className="text-sm font-medium text-foreground">Updating preview</span>
-              <span className="text-xs text-muted-foreground">Building your changes...</span>
+            
+            {/* Status text */}
+            <div className="flex flex-col items-center gap-2 text-center">
+              <span className="text-base font-semibold text-foreground">Rebuilding Project</span>
+              <div className="flex flex-col gap-1">
+                <span className="text-sm text-muted-foreground">
+                  {statusMessage || 'Compiling your changes...'}
+                </span>
+                <span className="text-xs text-muted-foreground/70">
+                  This usually takes 2-4 seconds
+                </span>
+              </div>
+            </div>
+            
+            {/* Progress indicator */}
+            <div className="w-full h-1 bg-muted rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-primary rounded-full" 
+                style={{
+                  width: '40%',
+                  animation: 'shimmer 1.5s ease-in-out infinite'
+                }} 
+              />
             </div>
           </div>
         </div>
