@@ -67,7 +67,7 @@ _tmp/
 .terraform/
 *.tfstate
 *.tfstate.*
-.terraform.lock.hcl
+# .terraform.lock.hcl - should be committed for version consistency
 tfplan
 
 # Kubernetes secrets (managed by GitHub Actions/Terraform, not committed)

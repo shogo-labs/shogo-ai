@@ -3,6 +3,12 @@
 # Updated: January 2026
 # =============================================================================
 
+variable "bootstrap_mode" {
+  description = "Set to true for initial deployment when EKS cluster doesn't exist yet. Set to false after cluster is created."
+  type        = bool
+  default     = false
+}
+
 variable "aws_region" {
   description = "AWS region for deployment"
   type        = string
@@ -206,4 +212,50 @@ variable "github_repo" {
   description = "GitHub repository name"
   type        = string
   default     = "shogo-ai"
+}
+
+# -----------------------------------------------------------------------------
+# Observability Configuration (SigNoz)
+# -----------------------------------------------------------------------------
+variable "enable_signoz" {
+  description = "Enable SigNoz K8s infrastructure monitoring"
+  type        = bool
+  default     = true
+}
+
+variable "signoz_endpoint" {
+  description = "SigNoz OTLP endpoint (gRPC) - e.g., http://signoz-otel-collector.signoz.svc.cluster.local:4317 or ingest.us.signoz.cloud:443"
+  type        = string
+  default     = ""
+}
+
+variable "signoz_ingestion_key" {
+  description = "SigNoz Cloud ingestion key (required for SigNoz Cloud, leave empty for self-hosted)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "signoz_namespace" {
+  description = "Namespace for SigNoz K8s Infra components"
+  type        = string
+  default     = "signoz"
+}
+
+variable "signoz_enable_logs" {
+  description = "Enable log collection in SigNoz"
+  type        = bool
+  default     = false
+}
+
+variable "signoz_enable_events" {
+  description = "Enable Kubernetes event collection in SigNoz"
+  type        = bool
+  default     = true
+}
+
+variable "signoz_enable_metrics" {
+  description = "Enable metrics collection in SigNoz"
+  type        = bool
+  default     = true
 }

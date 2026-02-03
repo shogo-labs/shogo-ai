@@ -36,14 +36,14 @@ terraform {
     }
   }
 
-  # Uncomment for remote state (recommended)
-  # backend "s3" {
-  #   bucket         = "shogo-terraform-state"
-  #   key            = "staging/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   encrypt        = true
-  #   dynamodb_table = "shogo-terraform-locks"
-  # }
+  # Remote state backend (recommended)
+  backend "s3" {
+    bucket         = "shogo-terraform-state"
+    key            = "staging/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    # dynamodb_table = "shogo-terraform-locks"  # Optional: enables state locking
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -61,27 +61,42 @@ provider "aws" {
   }
 }
 
-provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+# -----------------------------------------------------------------------------
+# EKS Cluster Data Sources (for provider configuration)
+# These use the computed cluster name to avoid circular dependency with module.eks
+# In bootstrap mode, these are skipped and providers use dummy values
+# -----------------------------------------------------------------------------
+locals {
+  eks_cluster_name = "${var.project_name}-${var.environment}"
+}
 
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
-  }
+data "aws_eks_cluster" "cluster" {
+  count = var.bootstrap_mode ? 0 : 1
+  name  = local.eks_cluster_name
+
+  depends_on = [module.eks]
+}
+
+data "aws_eks_cluster_auth" "cluster" {
+  count = var.bootstrap_mode ? 0 : 1
+  name  = local.eks_cluster_name
+
+  depends_on = [module.eks]
+}
+
+# Note: In bootstrap mode, these providers use dummy values since EKS doesn't exist yet.
+# After initial EKS creation, set bootstrap_mode = false and re-apply.
+provider "kubernetes" {
+  host                   = var.bootstrap_mode ? "https://localhost" : data.aws_eks_cluster.cluster[0].endpoint
+  cluster_ca_certificate = var.bootstrap_mode ? "" : base64decode(data.aws_eks_cluster.cluster[0].certificate_authority[0].data)
+  token                  = var.bootstrap_mode ? "" : data.aws_eks_cluster_auth.cluster[0].token
 }
 
 provider "helm" {
   kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-
-    exec {
-      api_version = "client.authentication.k8s.io/v1beta1"
-      command     = "aws"
-      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
-    }
+    host                   = var.bootstrap_mode ? "https://localhost" : data.aws_eks_cluster.cluster[0].endpoint
+    cluster_ca_certificate = var.bootstrap_mode ? "" : base64decode(data.aws_eks_cluster.cluster[0].certificate_authority[0].data)
+    token                  = var.bootstrap_mode ? "" : data.aws_eks_cluster_auth.cluster[0].token
   }
 }
 
@@ -413,8 +428,10 @@ resource "aws_vpc_endpoint" "s3" {
 
 # -----------------------------------------------------------------------------
 # AWS Load Balancer Controller (for ALB with SNI multi-certificate support)
+# Note: Skipped in bootstrap_mode since it requires kubernetes/helm providers
 # -----------------------------------------------------------------------------
 module "aws_lb_controller" {
+  count  = var.bootstrap_mode ? 0 : 1
   source = "../../modules/aws-load-balancer-controller"
 
   depends_on = [module.eks]
@@ -432,8 +449,10 @@ module "aws_lb_controller" {
 
 # -----------------------------------------------------------------------------
 # Knative Serving
+# Note: Skipped in bootstrap_mode since it requires kubernetes/helm providers
 # -----------------------------------------------------------------------------
 module "knative" {
+  count  = var.bootstrap_mode ? 0 : 1
   source = "../../modules/knative"
 
   depends_on = [module.eks, module.aws_lb_controller]
@@ -462,10 +481,54 @@ module "knative" {
 }
 
 # -----------------------------------------------------------------------------
+# SigNoz K8s Infrastructure Monitoring
+# Note: Skipped in bootstrap_mode since it requires kubernetes/helm providers
+# -----------------------------------------------------------------------------
+module "signoz" {
+  count  = !var.bootstrap_mode && var.enable_signoz && var.signoz_endpoint != "" ? 1 : 0
+  source = "../../modules/signoz"
+
+  depends_on = [module.eks]
+
+  cluster_name         = module.eks.cluster_name
+  signoz_endpoint      = var.signoz_endpoint
+  signoz_ingestion_key = var.signoz_ingestion_key
+  environment          = var.environment
+
+  # Namespace configuration
+  namespace        = var.signoz_namespace
+  create_namespace = true
+
+  # Feature flags
+  enable_logs    = var.signoz_enable_logs
+  enable_events  = var.signoz_enable_events
+  enable_metrics = var.signoz_enable_metrics
+
+  # Resource limits (staging-appropriate)
+  resource_limits = {
+    cpu    = "500m"
+    memory = "512Mi"
+  }
+
+  resource_requests = {
+    cpu    = "100m"
+    memory = "128Mi"
+  }
+
+  tags = {
+    Environment = var.environment
+    ManagedBy   = "terraform"
+    Project     = var.project_name
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Kubernetes Resources (Namespaces, Secrets, etc.)
 # Note: Staging uses different namespace names
+# Note: These are skipped in bootstrap_mode since kubernetes provider isn't configured
 # -----------------------------------------------------------------------------
 resource "kubernetes_namespace" "shogo_system" {
+  count      = var.bootstrap_mode ? 0 : 1
   depends_on = [module.eks]
 
   metadata {
@@ -478,6 +541,7 @@ resource "kubernetes_namespace" "shogo_system" {
 }
 
 resource "kubernetes_namespace" "shogo_workspaces" {
+  count      = var.bootstrap_mode ? 0 : 1
   depends_on = [module.eks]
 
   metadata {
@@ -491,6 +555,7 @@ resource "kubernetes_namespace" "shogo_workspaces" {
 
 # Database credentials secret (shogo-staging-system namespace)
 resource "kubernetes_secret" "postgres_credentials" {
+  count      = var.bootstrap_mode ? 0 : 1
   depends_on = [kubernetes_namespace.shogo_system]
 
   metadata {
@@ -506,6 +571,7 @@ resource "kubernetes_secret" "postgres_credentials" {
 
 # Database credentials secret (shogo-staging-workspaces namespace)
 resource "kubernetes_secret" "postgres_credentials_workspaces" {
+  count      = var.bootstrap_mode ? 0 : 1
   depends_on = [kubernetes_namespace.shogo_workspaces]
 
   metadata {
@@ -521,6 +587,7 @@ resource "kubernetes_secret" "postgres_credentials_workspaces" {
 
 # Redis credentials secret (shogo-staging-system namespace)
 resource "kubernetes_secret" "redis_credentials" {
+  count      = var.bootstrap_mode ? 0 : 1
   depends_on = [kubernetes_namespace.shogo_system]
 
   metadata {
@@ -535,6 +602,7 @@ resource "kubernetes_secret" "redis_credentials" {
 
 # API secrets
 resource "kubernetes_secret" "api_secrets" {
+  count      = var.bootstrap_mode ? 0 : 1
   depends_on = [kubernetes_namespace.shogo_system]
 
   metadata {
@@ -554,7 +622,7 @@ resource "kubernetes_secret" "api_secrets" {
 
 # Anthropic credentials for project pods (shogo-staging-workspaces namespace)
 resource "kubernetes_secret" "anthropic_credentials_workspaces" {
-  count      = var.anthropic_api_key != "" ? 1 : 0
+  count      = var.bootstrap_mode || var.anthropic_api_key == "" ? 0 : 1
   depends_on = [kubernetes_namespace.shogo_workspaces]
 
   metadata {
@@ -688,6 +756,7 @@ resource "kubernetes_secret" "s3_credentials_workspaces" {
 # Storage Class for EBS CSI Driver (for project PVCs)
 # -----------------------------------------------------------------------------
 resource "kubernetes_storage_class" "ebs_sc" {
+  count      = var.bootstrap_mode ? 0 : 1
   depends_on = [module.eks]
 
   metadata {
@@ -720,14 +789,16 @@ locals {
 
 # Deploy all Knative services and domain mappings
 resource "null_resource" "knative_services" {
+  count = var.bootstrap_mode ? 0 : 1
+
   depends_on = [
-    module.knative,
-    kubernetes_namespace.shogo_system,
-    kubernetes_namespace.shogo_workspaces,
-    kubernetes_secret.postgres_credentials,
-    kubernetes_secret.postgres_credentials_workspaces,
-    kubernetes_secret.redis_credentials,
-    kubernetes_secret.api_secrets
+    module.knative[0],
+    kubernetes_namespace.shogo_system[0],
+    kubernetes_namespace.shogo_workspaces[0],
+    kubernetes_secret.postgres_credentials[0],
+    kubernetes_secret.postgres_credentials_workspaces[0],
+    kubernetes_secret.redis_credentials[0],
+    kubernetes_secret.api_secrets[0]
   ]
 
   triggers = {
