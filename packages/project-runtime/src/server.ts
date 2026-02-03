@@ -791,6 +791,18 @@ app.get('/ready', (c) => {
   if (!firstReadyTime) {
     firstReadyTime = uptimeMs
     logTiming(`READY! First ready after ${firstReadyTime}ms (${readyCheckCount} checks)`)
+    
+    // Auto-start vite watch mode for automatic rebuilds (don't block response)
+    // Only for Vite projects (not Expo or TanStack Start)
+    const isExpo = existsSync(join(PROJECT_DIR, 'app.json')) || existsSync(join(PROJECT_DIR, 'expo.json'))
+    const isTanStackStart = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
+    
+    if (!isExpo && !isTanStackStart && !buildWatchProcess) {
+      console.log('[project-runtime] 🔄 Auto-starting Vite watch mode...')
+      startViteBuildWatch().catch((err) => {
+        console.error('[project-runtime] Failed to auto-start vite watch:', err)
+      })
+    }
   }
   
   return c.json({
