@@ -21,6 +21,7 @@ import {
   User,
   Settings,
   ArrowRight,
+  X,
 } from "lucide-react"
 import {
   Dialog,
@@ -272,7 +273,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="p-0 gap-0 max-w-xl overflow-hidden">
+      <DialogContent className="p-0 gap-0 max-w-xl overflow-hidden" hideCloseButton>
         <DialogTitle className="sr-only">Search</DialogTitle>
         
         {/* Search input */}
@@ -286,9 +287,13 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             className="border-0 bg-transparent p-0 h-auto text-base focus-visible:ring-0 placeholder:text-muted-foreground/60"
             autoFocus
           />
-          <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border border-border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-            ESC
-          </kbd>
+          <button
+            onClick={() => onOpenChange(false)}
+            className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
 
         {/* Results */}
