@@ -18,7 +18,7 @@
   "dependencies": {
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",
-    "@shogo-ai/sdk": "^0.1.0",
+    "@shogo-ai/sdk": "^0.3.0",
     "expo": "~52.0.0",
     "expo-constants": "~17.0.0",
     "expo-linking": "~7.0.0",
