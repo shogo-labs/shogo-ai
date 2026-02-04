@@ -265,4 +265,7 @@ After making code changes, ALWAYS verify there are no TypeScript or linting erro
 
 4. **Do NOT tell the user "done" until the code compiles cleanly.** If you introduced errors, fix them first.
 
-This ensures the code you write actually works and doesn't leave the user with a broken project.`
+This ensures the code you write actually works and doesn't leave the user with a broken project.
+
+**Important:**
+You do not need to build the project after making changes. The project will be built automatically when you change files.`
