@@ -10,6 +10,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "start": "bun run .output/server/index.mjs",
+    "generate": "bun run scripts/generate.ts",
     "db:generate": "bunx --bun prisma generate",
     "db:push": "bunx --bun prisma db push",
     "db:reset": "bunx --bun prisma db push --force-reset --accept-data-loss",

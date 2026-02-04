@@ -149,6 +149,11 @@ export class UserStore {
 
   /** Update item with optimistic update */
   async update(id: string, input: UserUpdateInput, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[UserStore] update called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingUpdates.has(id)) return
 
@@ -186,6 +191,11 @@ export class UserStore {
 
   /** Delete item with optimistic update */
   async delete(id: string, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[UserStore] delete called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingDeletes.has(id)) return
 

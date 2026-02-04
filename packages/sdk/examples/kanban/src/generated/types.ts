@@ -12,7 +12,7 @@
 export interface UserType {
   id: string
   email: string
-  name: string | null
+  name?: string
   createdAt: Date
   updatedAt: Date
 }
@@ -20,7 +20,7 @@ export interface UserType {
 export interface BoardType {
   id: string
   name: string
-  description: string | null
+  description?: string
   color: string
   userId: string
   createdAt: Date
@@ -39,9 +39,9 @@ export interface ColumnType {
 export interface CardType {
   id: string
   title: string
-  description: string | null
+  description?: string
   position: number
-  dueDate: Date | null
+  dueDate?: Date
   columnId: string
   userId: string
   createdAt: Date
@@ -70,24 +70,24 @@ export interface CardLabelType {
 
 export interface UserCreateInput {
   email: string
-  name?: string | null
+  name?: string
 }
 
 export interface UserUpdateInput {
   email?: string
-  name?: string | null
+  name?: string
 }
 
 export interface BoardCreateInput {
   name: string
-  description?: string | null
+  description?: string
   color?: string
   userId: string
 }
 
 export interface BoardUpdateInput {
   name?: string
-  description?: string | null
+  description?: string
   color?: string
   userId?: string
 }
@@ -106,18 +106,18 @@ export interface ColumnUpdateInput {
 
 export interface CardCreateInput {
   title: string
-  description?: string | null
+  description?: string
   position?: number
-  dueDate?: Date | null
+  dueDate?: Date
   columnId: string
   userId: string
 }
 
 export interface CardUpdateInput {
   title?: string
-  description?: string | null
+  description?: string
   position?: number
-  dueDate?: Date | null
+  dueDate?: Date
   columnId?: string
   userId?: string
 }

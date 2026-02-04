@@ -181,6 +181,11 @@ export class UserStore {
 
   /** Update item with optimistic update */
   async update(id: string, input: UserUpdateInput, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[UserStore] update called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingUpdates.has(id)) return
 
@@ -218,6 +223,11 @@ export class UserStore {
 
   /** Delete item with optimistic update */
   async delete(id: string, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[UserStore] delete called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingDeletes.has(id)) return
 
@@ -379,6 +389,11 @@ export class BoardStore {
 
   /** Update item with optimistic update */
   async update(id: string, input: BoardUpdateInput, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[BoardStore] update called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingUpdates.has(id)) return
 
@@ -416,6 +431,11 @@ export class BoardStore {
 
   /** Delete item with optimistic update */
   async delete(id: string, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[BoardStore] delete called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingDeletes.has(id)) return
 
@@ -577,6 +597,11 @@ export class ColumnStore {
 
   /** Update item with optimistic update */
   async update(id: string, input: ColumnUpdateInput, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[ColumnStore] update called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingUpdates.has(id)) return
 
@@ -614,6 +639,11 @@ export class ColumnStore {
 
   /** Delete item with optimistic update */
   async delete(id: string, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[ColumnStore] delete called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingDeletes.has(id)) return
 
@@ -775,6 +805,11 @@ export class CardStore {
 
   /** Update item with optimistic update */
   async update(id: string, input: CardUpdateInput, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[CardStore] update called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingUpdates.has(id)) return
 
@@ -812,6 +847,11 @@ export class CardStore {
 
   /** Delete item with optimistic update */
   async delete(id: string, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[CardStore] delete called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingDeletes.has(id)) return
 
@@ -973,6 +1013,11 @@ export class LabelStore {
 
   /** Update item with optimistic update */
   async update(id: string, input: LabelUpdateInput, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[LabelStore] update called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingUpdates.has(id)) return
 
@@ -1010,6 +1055,11 @@ export class LabelStore {
 
   /** Delete item with optimistic update */
   async delete(id: string, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[LabelStore] delete called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingDeletes.has(id)) return
 
@@ -1171,6 +1221,11 @@ export class CardLabelStore {
 
   /** Update item with optimistic update */
   async update(id: string, input: CardLabelUpdateInput, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[CardLabelStore] update called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingUpdates.has(id)) return
 
@@ -1208,6 +1263,11 @@ export class CardLabelStore {
 
   /** Delete item with optimistic update */
   async delete(id: string, userId?: string) {
+    // Validate id to prevent undefined from reaching the API
+    if (!id || typeof id !== 'string') {
+      console.error('[CardLabelStore] delete called with invalid id:', id)
+      return
+    }
     const existing = this.items.get(id)
     if (!existing || this.pendingDeletes.has(id)) return
 
