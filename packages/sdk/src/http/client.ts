@@ -336,7 +336,7 @@ export class HttpClient {
         protocolVersion: '2024-11-05',
         capabilities: {},
         clientInfo: {
-          name: '@shogo/sdk',
+          name: '@shogo-ai/sdk',
           version: '0.1.0',
         },
       },

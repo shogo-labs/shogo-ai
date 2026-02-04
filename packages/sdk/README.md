@@ -1,19 +1,19 @@
-# @shogo/sdk
+# @shogo-ai/sdk
 
 Shogo Platform SDK - Zero-boilerplate auth, database, and email for Shogo apps.
 
 ## Installation
 
 ```bash
-npm install @shogo/sdk
+npm install @shogo-ai/sdk
 # or
-bun add @shogo/sdk
+bun add @shogo-ai/sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { createClient } from '@shogo/sdk'
+import { createClient } from '@shogo-ai/sdk'
 
 const client = createClient({
   apiUrl: 'http://localhost:3000',
@@ -44,7 +44,7 @@ await client.db.todos.delete(todo.id)
 ### Client Setup
 
 ```typescript
-import { createClient } from '@shogo/sdk'
+import { createClient } from '@shogo-ai/sdk'
 
 const client = createClient({
   apiUrl: 'http://localhost:3000',  // Your app backend URL
@@ -168,7 +168,7 @@ const count = await client.db.todos.count({
 
 ```typescript
 import { useState, useEffect } from 'react'
-import { createClient, type AuthState } from '@shogo/sdk'
+import { createClient, type AuthState } from '@shogo-ai/sdk'
 
 const client = createClient({ apiUrl: 'http://localhost:3000' })
 
@@ -196,7 +196,7 @@ function useAuth() {
 ### React Native
 
 ```typescript
-import { createClient, AsyncStorageAdapter } from '@shogo/sdk'
+import { createClient, AsyncStorageAdapter } from '@shogo-ai/sdk'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 
 const client = createClient({
@@ -210,7 +210,7 @@ const client = createClient({
 Use `createTypedClient` for full type inference:
 
 ```typescript
-import { createTypedClient } from '@shogo/sdk'
+import { createTypedClient } from '@shogo-ai/sdk'
 
 interface Todo {
   id: string
@@ -271,7 +271,7 @@ EMAIL_FROM=noreply@yourapp.com
 
 ```typescript
 // In server functions or API routes
-import { createEmail } from '@shogo/sdk/email/server'
+import { createEmail } from '@shogo-ai/sdk/email/server'
 
 // Auto-configured from environment variables
 const email = createEmail()
@@ -346,7 +346,7 @@ const email = createEmail({
 ### Optional Email (Graceful Degradation)
 
 ```typescript
-import { createEmailOptional } from '@shogo/sdk/email/server'
+import { createEmailOptional } from '@shogo-ai/sdk/email/server'
 
 const email = createEmailOptional()
 

@@ -1,11 +1,11 @@
 /**
  * Email Service
  *
- * Server-side email service using @shogo/sdk email module.
+ * Server-side email service using @shogo-ai/sdk email module.
  * Sends transactional emails for invitations, notifications, etc.
  */
 
-import { createEmail, createEmailOptional, type IEmailService } from '@shogo/sdk/email/server'
+import { createEmail, createEmailOptional, type IEmailService } from '@shogo-ai/sdk/email/server'
 
 // Singleton email service instance
 let emailService: IEmailService | null = null

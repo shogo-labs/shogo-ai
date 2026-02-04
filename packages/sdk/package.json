@@ -1,6 +1,6 @@
 {
-  "name": "@shogo/sdk",
-  "version": "0.1.0",
+  "name": "@shogo-ai/sdk",
+  "version": "0.3.0",
   "description": "Shogo Platform SDK - Zero-boilerplate auth and database for Shogo apps",
   "type": "module",
   "main": "dist/index.cjs",

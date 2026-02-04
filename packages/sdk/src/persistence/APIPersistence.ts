@@ -88,7 +88,7 @@ function toRoutePath(name: string): string {
  *
  * @example
  * ```typescript
- * import { HttpClient, APIPersistence } from '@shogo/sdk'
+ * import { HttpClient, APIPersistence } from '@shogo-ai/sdk'
  *
  * const http = new HttpClient({ baseUrl: 'http://localhost:3000' })
  * const persistence = new APIPersistence({ http })

@@ -68,7 +68,7 @@ let defaultClient: ShogoClient<unknown> | null = null
  * @example
  * ```typescript
  * import { PrismaClient } from '@prisma/client'
- * import { createClient } from '@shogo/sdk'
+ * import { createClient } from '@shogo-ai/sdk'
  *
  * const prisma = new PrismaClient()
  *

@@ -11,7 +11,7 @@
  *
  * @example
  * ```typescript
- * import { createClient, OptimisticStore } from '@shogo/sdk'
+ * import { createClient, OptimisticStore } from '@shogo-ai/sdk'
  *
  * const client = createClient({
  *   apiUrl: 'http://localhost:3000',
@@ -121,6 +121,6 @@ export {
 
 // NOTE: Database adapters are NOT exported from the main entry point because they
 // contain Node.js-specific code (fs, child_process) that cannot run in the browser.
-// Import from '@shogo/sdk/db' for server-side use only:
+// Import from '@shogo-ai/sdk/db' for server-side use only:
 //
-// import { createPrismaClient, detectProvider } from '@shogo/sdk/db'
+// import { createPrismaClient, detectProvider } from '@shogo-ai/sdk/db'

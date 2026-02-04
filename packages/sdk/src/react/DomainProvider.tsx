@@ -6,7 +6,7 @@
  *
  * @example
  * ```tsx
- * import { DomainProvider, useDomain } from '@shogo/sdk/react'
+ * import { DomainProvider, useDomain } from '@shogo-ai/sdk/react'
  * import { createDomainStore } from './generated/domain'
  *
  * // In App.tsx

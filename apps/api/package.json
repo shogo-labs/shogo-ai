@@ -17,7 +17,7 @@
     "@kubernetes/client-node": "^1.4.0",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",
-    "@shogo/sdk": "workspace:*",
+    "@shogo-ai/sdk": "workspace:*",
     "ai": "^6.0.23",
     "ai-sdk-provider-claude-code": "^3.3.0",
     "better-auth": "^1.2.8",

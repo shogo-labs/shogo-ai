@@ -15,11 +15,11 @@ import { join, resolve } from 'path'
 // Try to import from the monorepo first (for local development), then from npm package
 let generators: typeof import('../../../src/generators/index')
 try {
-  // Monorepo context - import from relative path
+  // Monorepo context - import from relative path (when running in SDK examples)
   generators = await import('../../../src/generators/index')
 } catch {
-  // Installed context - import from npm package
-  generators = await import('@shogo/sdk/generators')
+  // Installed context - import from published npm package
+  generators = await import('@shogo-ai/sdk/generators')
 }
 
 const {

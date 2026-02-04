@@ -26,7 +26,7 @@
  */
 
 import { createContext, useContext, useRef, useEffect, useState, useMemo, type ReactNode } from 'react'
-import { HttpClient } from '@shogo/sdk'
+import { HttpClient } from '@shogo-ai/sdk'
 import { useSession } from './SessionProvider'
 import {
   createDomainStore,
