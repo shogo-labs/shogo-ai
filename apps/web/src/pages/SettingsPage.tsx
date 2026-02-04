@@ -85,6 +85,7 @@ import { useDomainActions } from "@/generated/domain-actions"
 import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
 import { PlanSelector } from "@/components/app/billing/PlanSelector"
+import { useBillingData } from "@/hooks/useBillingData"
 
 // Tab types
 type TabId =
@@ -1059,34 +1060,23 @@ function PeopleTab() {
 // ============================================================================
 function BillingTab() {
   const { currentWorkspace } = useWorkspaceData()
-  const store = useSDKDomain() as IDomainStore
+  
+  // Use billing data hook to get subscription and credit ledger
+  const {
+    subscription,
+    effectiveBalance,
+    hasActiveSubscription,
+    isLoading: isBillingLoading,
+  } = useBillingData(currentWorkspace?.id)
 
-  // Get subscription for current workspace from SDK store
-  const getActiveSubscription = (workspaceId: string) => {
-    if (!store?.subscriptionCollection) return null
-    try {
-      const subscriptions = store.subscriptionCollection.all.filter((s: any) => s.workspaceId === workspaceId)
-      return subscriptions.find((s: any) => s.status === 'active' || s.status === 'trialing') || null
-    } catch {
-      return null
-    }
-  }
-
-  const subscription = currentWorkspace ? getActiveSubscription(currentWorkspace.id) : null
   const currentPlanId = subscription?.planId || undefined
-
-  // Get credit info
-  const creditLedger = currentWorkspace
-    ? billing?.creditLedgerCollection?.findByWorkspace?.(currentWorkspace.id)
-    : null
-  const effectiveBalance = creditLedger?.effectiveBalance
 
   const planType = subscription
     ? subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)
     : "Free"
 
-  const creditsRemaining = effectiveBalance?.total ?? (subscription ? 105 : 5)
-  const creditsTotal = subscription ? 105 : 5
+  const creditsRemaining = effectiveBalance?.total ?? (hasActiveSubscription ? 105 : 5)
+  const creditsTotal = hasActiveSubscription ? 105 : 5
 
   return (
     <div className="space-y-6">
