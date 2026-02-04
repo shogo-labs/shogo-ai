@@ -14,7 +14,7 @@
 
 import { useState, useCallback, useEffect, useMemo } from "react"
 import { observer } from "mobx-react-lite"
-import { Link, useLocation, useNavigate } from "react-router-dom"
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom"
 import {
   Home,
   Search,
@@ -173,10 +173,27 @@ function NavItem({ icon: Icon, label, to, href, active, collapsed, onClick, exte
   }
 
   if (to) {
+    // Use NavLink with end prop for exact matching, but control active state via prop
     return (
-      <Link to={to} className={className} title={collapsed ? label : undefined}>
+      <NavLink
+        to={to}
+        end={true}
+        className={({ isActive }) =>
+          cn(
+            "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors w-full",
+            // Use our controlled active prop, not NavLink's isActive
+            active
+              ? "bg-accent text-accent-foreground"
+              : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground",
+            collapsed && "justify-center px-2",
+            // Remove focus styles that might look like active state
+            "focus-visible:outline-none focus-visible:ring-0"
+          )
+        }
+        title={collapsed ? label : undefined}
+      >
         {content}
-      </Link>
+      </NavLink>
     )
   }
 
@@ -275,11 +292,33 @@ function ExpandableNavItem({
     return (
       <div>
         {to ? (
-          <Link to={to} className={className} title={label}>
+          <NavLink
+            to={to}
+            end={true}
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors w-full justify-center px-2",
+                // Use our controlled active prop, not NavLink's isActive
+                active
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground",
+                // Remove focus styles that might look like active state
+                "focus-visible:outline-none focus-visible:ring-0"
+              )
+            }
+            title={label}
+          >
             <Icon className="h-4 w-4" />
-          </Link>
+          </NavLink>
         ) : (
-          <button onClick={handleToggle} className={className} title={label}>
+          <button 
+            onClick={handleToggle} 
+            className={cn(
+              className,
+              "focus-visible:outline-none focus-visible:ring-0"
+            )} 
+            title={label}
+          >
             <Icon className="h-4 w-4" />
           </button>
         )}
@@ -290,9 +329,24 @@ function ExpandableNavItem({
   return (
     <div>
       {to ? (
-        <Link to={to} className={className}>
+        <NavLink
+          to={to}
+          end={true}
+          className={({ isActive }) =>
+            cn(
+              "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors w-full",
+              // Use our controlled active prop, not NavLink's isActive
+              active
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground",
+              collapsed && "justify-center px-2",
+              // Remove focus styles that might look like active state
+              "focus-visible:outline-none focus-visible:ring-0"
+            )
+          }
+        >
           {content}
-        </Link>
+        </NavLink>
       ) : (
         <button onClick={handleToggle} className={className}>
           {content}
@@ -737,8 +791,20 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
     setWorkspaceSlug(slug)
   }
 
-  // Check if current path matches
-  const isActive = (path: string) => location.pathname === path
+  // Check if current path matches (exact match only)
+  const isActive = (path: string) => {
+    // Use exact pathname matching to prevent multiple items being active
+    return location.pathname === path
+  }
+  
+  // Check if we're on the home page (exact "/" only, not "/projects" or other routes)
+  // This ensures Home button is only active on the true home page
+  const isHomePage = location.pathname === "/" && !location.search && !location.hash
+  
+  // Check if we're viewing projects (either /projects or / with project context)
+  // IMPORTANT: This must explicitly exclude the home page to prevent both Home and Recent being active
+  // Recent should ONLY be active when on /projects route, never on pure home page
+  const isProjectsView = location.pathname.startsWith("/projects") && location.pathname !== "/"
 
   // Get recent projects (sorted by updatedAt, limit to 5)
   const recentProjects = [...projects]
@@ -864,7 +930,7 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
             icon={Home}
             label="Home"
             to="/"
-            active={isActive("/")}
+            active={isHomePage}
             collapsed={collapsed}
           />
           <NavItem
@@ -880,11 +946,13 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
         <NavSection title="Projects" collapsed={collapsed}>
           <div className="px-2">
             {/* Recent - expandable with recent projects */}
+            {/* Only active when explicitly viewing recent projects, never on home or /projects */}
+            {/* Recent should never be active - it's just a list, not a route */}
             <ExpandableNavItem
               icon={Clock}
               label="Recent"
               to="/"
-              active={isActive("/")}
+              active={false}
               collapsed={collapsed}
               defaultExpanded={true}
             >
@@ -899,11 +967,12 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
             </ExpandableNavItem>
 
             {/* All projects - expandable with folders */}
+            {/* Only active when on /projects route, never on home */}
             <ExpandableNavItem
               icon={LayoutGrid}
               label="All projects"
               to="/projects"
-              active={isActive("/projects")}
+              active={isActive("/projects") && !isHomePage}
               collapsed={collapsed}
               defaultExpanded={true}
             >
