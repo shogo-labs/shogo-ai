@@ -700,11 +700,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 className="flex-1 min-h-0"
                 initialMessage={transitionState?.initialMessage}
                 inputContainerRef={chatInputContainerRef}
-                onFilesChanged={(paths) => {
-                  console.log('[ProjectLayout] 📁 Agent modified files:', paths)
-                  // Increment refresh trigger to reload code editor and preview
-                  setCodeRefreshTrigger(prev => prev + 1)
-                }}
+              onFilesChanged={(paths) => {
+                console.log('[ProjectLayout] 📁 Agent modified files:', paths)
+                // Increment refresh trigger to reload code editor
+                // Preview auto-refresh is handled by SSE build events from Vite
+                setCodeRefreshTrigger(prev => prev + 1)
+              }}
               />
             </div>
           </div>
@@ -796,7 +797,6 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <RuntimePreviewPanel
                   projectId={projectId || ''}
                   className="h-full"
-                  refreshTrigger={codeRefreshTrigger}
                   onError={handleRuntimeError}
                   onLoad={handleRuntimeLoad}
                   viewport={currentViewport}

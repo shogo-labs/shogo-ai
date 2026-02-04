@@ -70,8 +70,6 @@ export interface RuntimePreviewPanelProps {
   onError?: (error: Error) => void
   /** Callback when runtime successfully loads */
   onLoad?: () => void
-  /** Trigger to refresh the preview (increment to refresh) */
-  refreshTrigger?: number
   /** Viewport size for responsive preview */
   viewport?: ViewportSize
 }
@@ -81,7 +79,6 @@ export function RuntimePreviewPanel({
   className,
   onError,
   onLoad,
-  refreshTrigger = 0,
   viewport = "desktop",
 }: RuntimePreviewPanelProps) {
   const [sandboxUrl, setSandboxUrl] = useState<string | null>(null)
@@ -464,81 +461,10 @@ export function RuntimePreviewPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]) // Only depend on projectId, not initializeRuntime
 
-  // Track previous refreshTrigger to detect changes
-  const prevRefreshTriggerRef = useRef(refreshTrigger)
-  const isRebuildingRef = useRef(false)
-  // Track if a refresh was requested while sandboxUrl wasn't ready
-  // This handles the case where template.copy completes before runtime is ready
-  const pendingRefreshRef = useRef(false)
-
-  /**
-   * Trigger a rebuild of the project and refresh the preview smoothly.
-   * Shows a loading overlay while keeping previous content visible (no flickering).
-   */
-  const triggerRebuild = useCallback(async () => {
-    if (isRebuildingRef.current) {
-      console.log('[RuntimePreviewPanel] Rebuild already in progress, skipping')
-      return
-    }
-
-    isRebuildingRef.current = true
-    setIsRebuilding(true)
-    setStatusMessage('Updating preview...')
-
-    try {
-      console.log('[RuntimePreviewPanel] Triggering project rebuild...')
-      // Force rebuild since code was modified by the agent
-      const response = await fetch(`/api/projects/${projectId}/runtime/restart?force=true`, {
-        method: 'POST',
-      })
-
-      if (response.ok) {
-        const result = await response.json()
-        console.log('[RuntimePreviewPanel] Rebuild complete:', result)
-        
-        // Wait for server to be ready
-        await new Promise(resolve => setTimeout(resolve, 2000))
-      } else {
-        console.warn('[RuntimePreviewPanel] Rebuild failed, but will still try to refresh')
-      }
-    } catch (err) {
-      console.error('[RuntimePreviewPanel] Rebuild error:', err)
-    }
-    
-    // Refresh with cache-buster after rebuild
-    // Note: isRebuilding state will be cleared by handleIframeLoad
-    if (iframeRef.current && sandboxUrl) {
-      setIframeLoaded(false)
-      const cacheBuster = Date.now()
-      const separator = sandboxUrl.includes('?') ? '&' : '?'
-      console.log('[RuntimePreviewPanel] Refreshing preview with cache-buster:', cacheBuster)
-      iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
-    } else {
-      // No iframe to refresh, clear states
-      setIsRebuilding(false)
-      setStatusMessage('')
-    }
-    
-    isRebuildingRef.current = false
-  }, [projectId, sandboxUrl])
-
-  // Auto-refresh when refreshTrigger changes (triggered by agent file modifications)
-  // This triggers a full rebuild since the preview serves static files
-  useEffect(() => {
-    if (refreshTrigger !== prevRefreshTriggerRef.current && sandboxUrl) {
-      prevRefreshTriggerRef.current = refreshTrigger
-      console.log('[RuntimePreviewPanel] Files changed, triggering rebuild...')
-      
-      // Debounce: wait a moment for multiple file changes to settle
-      const timer = setTimeout(() => {
-        triggerRebuild()
-      }, 1500)
-      
-      return () => {
-        clearTimeout(timer)
-      }
-    }
-  }, [refreshTrigger, sandboxUrl, triggerRebuild])
+  // Note: Auto-refresh is handled entirely by SSE build events (subscribeToBuildEvents)
+  // When the Vite build completes (state: 'building' -> 'success'), the SSE handler
+  // automatically refreshes the iframe with a cache-buster. No manual polling or 
+  // refresh triggers needed.
 
   // Auto-clear rebuild state if it takes too long (timeout safety)
   useEffect(() => {

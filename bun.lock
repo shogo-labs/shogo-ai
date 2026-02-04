@@ -31,7 +31,7 @@
         "@kubernetes/client-node": "^1.4.0",
         "@prisma/adapter-pg": "^7.3.0",
         "@prisma/client": "^7.3.0",
-        "@shogo/sdk": "workspace:*",
+        "@shogo-ai/sdk": "workspace:*",
         "ai": "^6.0.23",
         "ai-sdk-provider-claude-code": "^3.3.0",
         "better-auth": "^1.2.8",
@@ -75,7 +75,7 @@
         "@radix-ui/react-switch": "^1.2.6",
         "@radix-ui/react-tabs": "^1.1.13",
         "@radix-ui/react-toast": "^1.2.15",
-        "@shogo/sdk": "workspace:*",
+        "@shogo-ai/sdk": "workspace:*",
         "@shogo/state-api": "workspace:*",
         "@supabase/supabase-js": "^2.86.2",
         "@xyflow/react": "^12.10.0",
@@ -157,12 +157,15 @@
       },
     },
     "packages/sdk": {
-      "name": "@shogo/sdk",
-      "version": "0.1.0",
+      "name": "@shogo-ai/sdk",
+      "version": "0.3.0",
       "devDependencies": {
         "@aws-sdk/client-ses": "^3.700.0",
         "@playwright/test": "^1.40.0",
+        "@prisma/internals": "^7.3.0",
         "@types/nodemailer": "^6.4.17",
+        "@types/react": "^19.0.0",
+        "mobx": "^6.13.5",
         "nodemailer": "^6.9.16",
         "tsup": "^8.0.0",
         "typescript": "^5.0.0",
@@ -172,12 +175,14 @@
         "@prisma/adapter-libsql": "",
         "@prisma/adapter-pg": "^7.3.0",
         "nodemailer": ">=6.0.0",
+        "react": ">=18.0.0",
       },
       "optionalPeers": [
         "@aws-sdk/client-ses",
         "@prisma/adapter-libsql",
         "@prisma/adapter-pg",
         "nodemailer",
+        "react",
       ],
     },
     "packages/state-api": {
@@ -847,13 +852,13 @@
 
     "@sec-ant/readable-stream": ["@sec-ant/readable-stream@0.4.1", "", {}, "sha512-831qok9r2t8AlxLko40y2ebgSDhenenCatLVeW/uBtnHPyhHOvG0C7TvfgecV+wHzIm5KUICgzmVpWS+IMEAeg=="],
 
+    "@shogo-ai/sdk": ["@shogo-ai/sdk@workspace:packages/sdk"],
+
     "@shogo/api": ["@shogo/api@workspace:apps/api"],
 
     "@shogo/mcp": ["@shogo/mcp@workspace:packages/mcp"],
 
     "@shogo/project-runtime": ["@shogo/project-runtime@workspace:packages/project-runtime"],
-
-    "@shogo/sdk": ["@shogo/sdk@workspace:packages/sdk"],
 
     "@shogo/state-api": ["@shogo/state-api@workspace:packages/state-api"],
 
