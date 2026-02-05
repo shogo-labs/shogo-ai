@@ -660,6 +660,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
           currentRoute={currentRoute}
           onRouteChange={handleRouteChange}
           onRefresh={handleRefresh}
+          onOpenCode={() => setPreviewMode('code')}
           // Publish callbacks
           onPublish={handlePublish}
           onUnpublish={handleUnpublish}

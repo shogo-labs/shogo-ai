@@ -21,7 +21,6 @@ import {
   ArrowUpRight,
   ArrowLeft,
   ArrowRight,
-  Plus,
   Code,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -106,7 +105,7 @@ export function PreviewControls({
         onClick={onOpenCode}
         title="View code"
       >
-        <Plus className="h-3.5 w-3.5" />
+        <Code className="h-3.5 w-3.5" />
       </Button>
 
       {/* Separator */}
