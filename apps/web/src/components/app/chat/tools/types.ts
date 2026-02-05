@@ -26,6 +26,26 @@ export interface AskUserQuestionItem {
   multiSelect: boolean
 }
 
+// ============================================================
+// TodoWrite Tool Types
+// ============================================================
+
+/** Status of a todo item */
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled"
+
+/** Single todo item in a TodoWrite tool call */
+export interface TodoItem {
+  id: string
+  content: string
+  status: TodoStatus
+}
+
+/** Args structure for the TodoWrite tool */
+export interface TodoWriteArgs {
+  todos: TodoItem[]
+  merge: boolean
+}
+
 /** Args structure for the AskUserQuestion tool */
 export interface AskUserQuestionArgs {
   questions: AskUserQuestionItem[]

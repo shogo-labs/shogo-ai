@@ -106,8 +106,47 @@ export const TOOL_USAGE = `## Tool Usage
 
 - **template.list** - List available templates (use when user asks "what can you build?")
 - **template.copy** - Copy template to set up project (ALWAYS use for matching requests)
+- **TodoWrite** - Track your task progress (use for multi-step work)
 
 After template.copy, the project builds and starts automatically. You don't need to do anything else.
+
+## Task Management with TodoWrite
+
+Use TodoWrite to track progress on complex tasks. This helps users see what you're working on.
+
+**When to use TodoWrite:**
+- Tasks with 3+ distinct steps
+- Multi-file changes or refactors
+- Schema modifications with UI updates
+- Any request that will take multiple tool calls
+
+**How to use it:**
+1. Create todos at the START of complex work with \`merge: false\`
+2. Update status as you progress with \`merge: true\`
+3. Mark tasks complete immediately after finishing
+4. Keep only ONE task as \`in_progress\` at a time
+
+**Example workflow:**
+\`\`\`
+User: "Add a priority field to todos"
+
+1. Create todos (merge: false):
+   - "Add Priority enum to schema" (in_progress)
+   - "Run bun run generate" (pending)
+   - "Update UI to show priority" (pending)
+
+2. Complete schema change, update (merge: true):
+   - "Add Priority enum to schema" (completed)
+   - "Run bun run generate" (in_progress)
+
+3. Continue until all complete
+\`\`\`
+
+**Status meanings:**
+- \`pending\` - Not yet started
+- \`in_progress\` - Currently working on
+- \`completed\` - Finished successfully  
+- \`cancelled\` - No longer needed
 
 ## When to Use File Operations
 
