@@ -185,11 +185,8 @@ export function ProjectTopBar({
         {/* Share Button with Avatar */}
         <ShareDropdown
           projectId={projectId}
-          currentUserName={currentUserName}
           userInitial={initial}
           workspaceName={workspaceName}
-          onSharePreview={onShare}
-          onPublish={onPublish}
         />
 
         {/* GitHub Button - minimal icon */}

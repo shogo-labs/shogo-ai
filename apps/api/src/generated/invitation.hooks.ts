@@ -187,9 +187,11 @@ export const invitationHooks: InvitationHooks = {
       }
     }
 
-    // Set default expiration (7 days)
+    // Set default expiration (7 days) or convert timestamp to Date
     if (!input.expiresAt) {
       input.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    } else if (typeof input.expiresAt === 'number') {
+      input.expiresAt = new Date(input.expiresAt)
     }
 
     // Set default status

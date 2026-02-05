@@ -1,11 +1,10 @@
 /**
  * E2E Test: Share Dropdown
- * 
+ *
  * Tests the share functionality:
  * 1. Share dropdown opens correctly
- * 2. User can see sharing options
- * 3. User can add collaborators
- * 4. User can change permissions
+ * 2. User can see project access settings
+ * 3. User can see invite link option
  */
 
 import { test, expect } from '@playwright/test'
@@ -89,18 +88,18 @@ test.describe('Share Dropdown E2E', () => {
     await expect(workspaceAccess).toBeVisible()
   })
 
-  test('user can see publish options in share menu', async ({ page }) => {
+  test('user can see invite link option in share menu', async ({ page }) => {
     // Sign up a user
     await signUpUser(page)
-    
+
     // Create a project
     const chatInput = page.getByRole('textbox', { name: /Ask Shogo to create/i })
-    await chatInput.fill(`Publish Test ${Date.now()}`)
+    await chatInput.fill(`Invite Link Test ${Date.now()}`)
     await chatInput.press('Enter')
-    
+
     // Wait for project to be created
     await waitForProjectCreation(page)
-    
+
     // Navigate to project if needed
     const url = page.url()
     if (!url.match(/\/projects\/[a-f0-9-]+/)) {
@@ -111,21 +110,18 @@ test.describe('Share Dropdown E2E', () => {
       }
     }
     await page.waitForTimeout(2000)
-    
+
     // Open share dropdown
     const shareButton = page.getByRole('button', { name: /Share/i }).first()
     await shareButton.click()
     await page.waitForTimeout(500)
-    
-    // Look for publish/share preview options
-    const sharePreviewButton = page.getByRole('button', { name: /Share preview|Publish project/i }).first()
-    
-    // This might not always be visible, so we'll check if it exists
-    const isVisible = await sharePreviewButton.isVisible().catch(() => false)
-    
-    // If visible, verify it's clickable
-    if (isVisible) {
-      await expect(sharePreviewButton).toBeVisible()
-    }
+
+    // Verify invite link section is visible
+    const inviteLinkText = page.getByText(/Invite link/i).first()
+    await expect(inviteLinkText).toBeVisible({ timeout: 5000 })
+
+    // Verify create invite link button is visible
+    const createInviteLinkButton = page.getByRole('button', { name: /Create invite link/i })
+    await expect(createInviteLinkButton).toBeVisible()
   })
 })

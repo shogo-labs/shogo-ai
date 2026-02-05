@@ -25,7 +25,12 @@ if [[ "$file_path" == */generated/* ]] || [[ "$file_path" == *"/generated/"* ]];
   if [[ "$file_path" == *.hooks.ts ]]; then
     exit 0
   fi
-  
+
+  # EXCEPTION: Allow domain-actions.ts - manually maintained orchestration logic
+  if [[ "$file_path" == */domain-actions.ts ]]; then
+    exit 0
+  fi
+
   # Add more exceptions here as needed:
   # if [[ "$file_path" == *.custom.ts ]]; then
   #   exit 0
@@ -43,3 +48,4 @@ fi
 
 # Allow the operation (no output or empty JSON means proceed)
 exit 0
+

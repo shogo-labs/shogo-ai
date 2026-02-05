@@ -323,6 +323,7 @@ export function createDomainActions(store: IDomainStore) {
       return store.invitationCollection.create({
         ...data,
         status: "pending",
+        emailStatus: "not_sent",
         expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
       })
     },
