@@ -21,12 +21,14 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { observer } from "mobx-react-lite"
 import { useChat, type Message } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
+import { useNavigate } from "react-router-dom"
 import { useDomains, useSDKDomains } from "@/contexts/DomainProvider"
 import { useDomainActions } from "@/generated/domain-actions"
+import { useBillingData } from "@/hooks/useBillingData"
 import { cn } from "@/lib/utils"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
-import { ChatInput } from "./ChatInput"
+import { ChatInput, type AgentMode } from "./ChatInput"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
@@ -589,6 +591,19 @@ export const ChatPanel = observer(function ChatPanel({
     componentBuilder: any
   }>()
 
+  // Navigation for upgrade flow
+  const navigate = useNavigate()
+
+  // Billing data for Pro subscription check
+  const { hasActiveSubscription } = useBillingData(workspaceId)
+
+  // Handle upgrade click - navigate to billing settings
+  const handleUpgradeClick = useCallback(() => {
+    if (projectId) {
+      navigate(`/projects/${projectId}/settings?tab=billing`)
+    }
+  }, [navigate, projectId])
+
   // Panel state - use controlled prop if provided, otherwise internal state
   const [internalIsCollapsed, setInternalIsCollapsed] = useState(() => getStoredCollapsed())
   const isCollapsed = controlledIsCollapsed ?? internalIsCollapsed
@@ -604,6 +619,9 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Chat session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+
+  // Agent mode state for switching between basic (Haiku) and advanced (Sonnet) models
+  const [agentMode, setAgentMode] = useState<AgentMode>("advanced")
 
   // Claude Code session ID for continuity (task-cc-chatpanel-integration)
   // Initialized from existing session's claudeCodeSessionId on load
@@ -1724,8 +1742,9 @@ export const ChatPanel = observer(function ChatPanel({
   // chat-session-sync-fix: Handle message submission using v3 sendMessage() API
   // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
   // task-chatpanel-sendmessage: Extended to support imageData parameter
+  // agent-mode: Extended to support agentMode parameter for model selection
   const handleSendMessage = useCallback(
-    async (content: string, imageData?: string) => {
+    async (content: string, imageData?: string, selectedAgentMode?: AgentMode) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
@@ -1772,6 +1791,7 @@ export const ChatPanel = observer(function ChatPanel({
       // - ccSessionIdRef.current ensures fresh session ID value
       // credit-tracking: Include workspaceId and userId for credit deduction
       // theme-integration: Include theme context for AI-aware styling
+      // agent-mode: Include agentMode for model selection (basic=haiku, advanced=sonnet)
       try {
         // Get current theme context for AI-aware code generation
         const themeContext = getThemePromptContext()
@@ -1787,6 +1807,7 @@ export const ChatPanel = observer(function ChatPanel({
               userId,
               projectId,
               themeContext,
+              agentMode: selectedAgentMode || agentMode,
             },
           }
         )
@@ -1794,14 +1815,15 @@ export const ChatPanel = observer(function ChatPanel({
         console.error("[ChatPanel] Failed to send message:", err)
       }
     },
-    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId, projectId]
+    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId, projectId, agentMode]
   )
 
   // Handle form submit from ChatInput
   // task-chatpanel-sendmessage: Extended to support imageData parameter
+  // agent-mode: Extended to support agentMode parameter for model selection
   const handleInputSubmit = useCallback(
-    (content: string, imageData?: string) => {
-      handleSendMessage(content, imageData)
+    (content: string, imageData?: string, selectedAgentMode?: AgentMode) => {
+      handleSendMessage(content, imageData, selectedAgentMode)
     },
     [handleSendMessage]
   )
@@ -2065,6 +2087,10 @@ export const ChatPanel = observer(function ChatPanel({
             }
             isStreaming={isStreaming}
             onStop={stop}
+            agentMode={agentMode}
+            onAgentModeChange={setAgentMode}
+            isPro={hasActiveSubscription}
+            onUpgradeClick={handleUpgradeClick}
           />
         </div>
       </div>

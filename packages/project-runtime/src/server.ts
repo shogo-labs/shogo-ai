@@ -642,6 +642,8 @@ const ChatRequestSchema = z.object({
   system: z.string().optional(),
   // Theme context for AI-aware styling (Phase 3: AI Agent Integration)
   themeContext: z.string().optional(),
+  // Agent mode for model selection: basic (Haiku) or advanced (Sonnet)
+  agentMode: z.enum(['basic', 'advanced']).optional(),
   // Additional AI SDK fields
   body: z.any().optional(),
 })
@@ -926,7 +928,7 @@ app.post('/agent/chat', async (c) => {
       }, 400)
     }
     
-    const { messages, system, themeContext } = parsed.data
+    const { messages, system, themeContext, agentMode } = parsed.data
     
     // Build system prompt with optional theme context and current build status
     // The prompt is defined in system-prompt.ts and can be updated via DSPy export
@@ -1001,8 +1003,16 @@ app.post('/agent/chat', async (c) => {
     
     // Create streaming response using Claude Code with native template tools
     // Theme context (if provided) is appended to the system prompt for AI-aware styling
-    // Model can be configured via AGENT_MODEL env var: haiku, sonnet, opus (default: sonnet)
-    const modelName = (process.env.AGENT_MODEL || 'sonnet') as 'haiku' | 'sonnet' | 'opus'
+    // Model selection: agentMode takes precedence, then AGENT_MODEL env var, then default to sonnet
+    // - basic mode uses Haiku (faster, cheaper)
+    // - advanced mode uses Sonnet (more capable)
+    const getModelFromAgentMode = (mode?: 'basic' | 'advanced'): 'haiku' | 'sonnet' | 'opus' => {
+      if (mode === 'basic') return 'haiku'
+      if (mode === 'advanced') return 'sonnet'
+      return (process.env.AGENT_MODEL || 'sonnet') as 'haiku' | 'sonnet' | 'opus'
+    }
+    const modelName = getModelFromAgentMode(agentMode)
+    console.log(`[project-runtime] Using model: ${modelName} (agentMode: ${agentMode || 'default'})`)
     
     let lastError: any = null
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {

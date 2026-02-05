@@ -34,7 +34,7 @@ export {
 export { ChatMessage, type ChatMessageProps } from "./ChatMessage"
 export { MessageList, type MessageListProps } from "./MessageList"
 export { ToolCallDisplay, type ToolCallDisplayProps, type ToolCallState } from "./ToolCallDisplay"
-export { ChatInput, type ChatInputProps } from "./ChatInput"
+export { ChatInput, type ChatInputProps, type AgentMode, type AgentModeConfig } from "./ChatInput"
 export { ChatHeader, type ChatHeaderProps } from "./ChatHeader"
 export { ChatSessionPicker, type ChatSessionPickerProps, type ChatSession, formatRelativeTime } from "./ChatSessionPicker"
 export { ExpandTab, type ExpandTabProps } from "./ExpandTab"
