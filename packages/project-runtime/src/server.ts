@@ -1293,6 +1293,89 @@ function streamProcessOutput(proc: ReturnType<typeof Bun.spawn>, name: string) {
   }
 }
 
+// Browser console log - captures console.log/error/warn from client-side code
+const BROWSER_LOG_MAX_LINES = 500
+let browserLogLines: string[] = []
+const BROWSER_LOG_PATH = join(PROJECT_DIR, '.browser.log')
+
+function appendToBrowserLog(level: string, message: string) {
+  const timestamp = new Date().toISOString().slice(11, 19) // HH:MM:SS
+  const levelPrefix = level === 'error' ? '[err]' : level === 'warn' ? '[warn]' : '[log]'
+  const logLine = `[${timestamp}] ${levelPrefix} ${message}`
+  browserLogLines.push(logLine)
+  if (browserLogLines.length > BROWSER_LOG_MAX_LINES) {
+    browserLogLines = browserLogLines.slice(-BROWSER_LOG_MAX_LINES)
+  }
+  // Also write to file for agent access
+  try {
+    writeFileSync(BROWSER_LOG_PATH, browserLogLines.join('\n'))
+  } catch (e) {
+    // Ignore write errors
+  }
+}
+
+/**
+ * JavaScript snippet to inject into HTML pages to capture browser console logs.
+ * Sends logs to /__console endpoint for server-side storage.
+ */
+const BROWSER_CONSOLE_CAPTURE_SCRIPT = `
+<script>
+(function() {
+  if (window.__shogoBrowserLoggerInstalled) return;
+  window.__shogoBrowserLoggerInstalled = true;
+  
+  const originalConsole = {
+    log: console.log.bind(console),
+    error: console.error.bind(console),
+    warn: console.warn.bind(console)
+  };
+  
+  function sendLog(level, args) {
+    try {
+      const message = args.map(arg => {
+        if (arg instanceof Error) return arg.stack || arg.message;
+        if (typeof arg === 'object') {
+          try { return JSON.stringify(arg); } catch { return String(arg); }
+        }
+        return String(arg);
+      }).join(' ');
+      
+      fetch('/__console', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level, message })
+      }).catch(() => {});
+    } catch (e) {}
+  }
+  
+  console.log = function(...args) {
+    originalConsole.log(...args);
+    sendLog('log', args);
+  };
+  
+  console.error = function(...args) {
+    originalConsole.error(...args);
+    sendLog('error', args);
+  };
+  
+  console.warn = function(...args) {
+    originalConsole.warn(...args);
+    sendLog('warn', args);
+  };
+  
+  // Capture unhandled errors
+  window.addEventListener('error', function(event) {
+    sendLog('error', ['Uncaught Error: ' + event.message + ' at ' + event.filename + ':' + event.lineno]);
+  });
+  
+  // Capture unhandled promise rejections
+  window.addEventListener('unhandledrejection', function(event) {
+    sendLog('error', ['Unhandled Promise Rejection: ' + (event.reason?.stack || event.reason?.message || event.reason)]);
+  });
+})();
+</script>
+`;
+
 /**
  * Get current build status context for inclusion in agent system prompt.
  * Returns a formatted string describing the build state.
@@ -1329,7 +1412,8 @@ ${status}${avgInfo}
 
 **Log files available:**
 - \`cat .build.log\` - Build output (compilation, bundling)
-- \`cat .console.log\` - Application console output (server logs, errors, console.log statements)
+- \`cat .console.log\` - Server console output (API handlers, server-side logs)
+- \`cat .browser.log\` - Browser console output (client-side logs, React errors, unhandled exceptions)
 - \`curl -s http://localhost:${PORT}/preview/status | jq .buildWatch\` - Build status as JSON`
 }
 
@@ -2332,6 +2416,23 @@ app.post('/preview/dev/stop', async (c) => {
   return c.json({ success: true, message: 'Dev mode was not running' })
 })
 
+/**
+ * Endpoint to receive browser console logs from injected client script.
+ * Stores logs in .browser.log for agent access.
+ */
+app.post('/__console', async (c) => {
+  try {
+    const body = await c.req.json()
+    const { level, message } = body
+    if (level && message) {
+      appendToBrowserLog(level, message)
+    }
+    return c.json({ ok: true })
+  } catch (e) {
+    return c.json({ ok: false }, 400)
+  }
+})
+
 const previewMode = isExpo ? 'Expo (Hono server)' : isTanStackStart ? 'TanStack Start (proxy)' : 'Static files'
 console.log(`[project-runtime] Preview mode: ${previewMode}`)
 
@@ -2488,6 +2589,14 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
     html = html.replace(/<base[^>]*>/, (match) => match + patchScript)
   } else if (html.includes('<head>')) {
     html = html.replace('<head>', `<head>${patchScript}`)
+  }
+  
+  // Inject browser console capture script (before </head> to ensure it runs early)
+  if (html.includes('</head>')) {
+    html = html.replace('</head>', `${BROWSER_CONSOLE_CAPTURE_SCRIPT}</head>`)
+  } else if (html.includes('</body>')) {
+    // Fallback: inject before </body> if no </head>
+    html = html.replace('</body>', `${BROWSER_CONSOLE_CAPTURE_SCRIPT}</body>`)
   }
   
   return html
