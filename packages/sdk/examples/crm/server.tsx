@@ -66,7 +66,7 @@ app.route('/api', generatedRoutes)
 app.use('/*', serveStatic({ root: './dist' }))
 app.get('/*', serveStatic({ path: './dist/index.html' }))
 
-const port = parseInt(process.env.PORT || '3000', 10)
+const port = parseInt(process.env.PORT || '3001', 10)
 console.log(`🚀 Server running at http://localhost:${port}`)
 
 export default { port, fetch: app.fetch }

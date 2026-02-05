@@ -34,7 +34,7 @@ app.route('/api', createAllRoutes(prisma))
 app.use('/*', serveStatic({ root: './dist' }))
 app.get('*', serveStatic({ path: './dist/index.html' }))
 
-const port = Number(process.env.PORT) || 3000
+const port = Number(process.env.PORT) || 3001
 console.log(`🚀 Server running on http://localhost:${port}`)
 
 export default {

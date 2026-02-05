@@ -1162,12 +1162,16 @@ app.post('/sync/download', async (c) => {
 // =============================================================================
 
 const DIST_DIR = join(PROJECT_DIR, 'dist')
-const NITRO_SERVER_PORT = parseInt(process.env.NITRO_SERVER_PORT || '3000', 10)
+
+// Port configuration: Vite UI on 3000, Backend API on 3001
+const VITE_DEV_PORT = parseInt(process.env.VITE_DEV_PORT || '3000', 10)
+const SERVER_PORT = parseInt(process.env.SERVER_PORT || '3001', 10)
+const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '8081', 10)
 
 // Track current preview mode and server processes
 let isTanStackStart = process.env.IS_TANSTACK_START === 'true'
 let isExpo = process.env.IS_EXPO === 'true'
-let nitroProcess: ReturnType<typeof Bun.spawn> | null = null
+let serverProcess: ReturnType<typeof Bun.spawn> | null = null
 let expoServerProcess: ReturnType<typeof Bun.spawn> | null = null
 
 // Dev mode: use vite dev server with HMR instead of production builds
@@ -1175,8 +1179,6 @@ let isDevMode = false
 let viteDevProcess: ReturnType<typeof Bun.spawn> | null = null
 let expoDevProcess: ReturnType<typeof Bun.spawn> | null = null
 let devModeStarting = false  // Track if dev mode is currently being started
-const VITE_DEV_PORT = parseInt(process.env.VITE_DEV_PORT || '3001', 10)
-const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '3000', 10)
 
 // Circuit breaker state for dev mode auto-start
 let devModeFailureCount = 0
@@ -2036,10 +2038,10 @@ app.post('/preview/restart', async (c) => {
   
   try {
     // 1. Kill existing servers (Nitro, Vite dev, Expo if running)
-    if (nitroProcess) {
-      console.log('[project-runtime] Stopping existing Nitro server...')
-      nitroProcess.kill()
-      nitroProcess = null
+    if (serverProcess) {
+      console.log('[project-runtime] Stopping existing backend server...')
+      serverProcess.kill()
+      serverProcess = null
     }
     if (expoServerProcess) {
       console.log('[project-runtime] Stopping existing Expo server...')
@@ -2354,15 +2356,15 @@ app.post('/preview/restart', async (c) => {
         return c.json({ success: false, error: 'Nitro build output not found at .output/server/index.mjs', timings: { steps: timings, totalMs } }, 500)
       }
 
-      console.log(`[project-runtime] ⏱️  Starting Nitro server on port ${NITRO_SERVER_PORT}...`)
-      appendToConsoleLog(`--- Server starting on port ${NITRO_SERVER_PORT} ---`, 'stdout')
-      nitroProcess = Bun.spawn(['bun', 'run', serverPath], {
+      console.log(`[project-runtime] ⏱️  Starting backend server on port ${SERVER_PORT}...`)
+      appendToConsoleLog(`--- Server starting on port ${SERVER_PORT} ---`, 'stdout')
+      serverProcess = Bun.spawn(['bun', 'run', serverPath], {
         cwd: PROJECT_DIR,
-        env: { ...process.env, PORT: String(NITRO_SERVER_PORT) },
+        env: { ...process.env, PORT: String(SERVER_PORT) },
         stdout: 'pipe',
         stderr: 'pipe',
       })
-      streamProcessOutput(nitroProcess, 'app')
+      streamProcessOutput(serverProcess, 'app')
 
       // Wait for server to be ready with exponential backoff (max ~2s total)
       let serverReady = false
@@ -2371,12 +2373,12 @@ app.post('/preview/restart', async (c) => {
 
       for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
         try {
-          const healthCheck = await fetch(`http://localhost:${NITRO_SERVER_PORT}/`, {
+          const healthCheck = await fetch(`http://localhost:${SERVER_PORT}/`, {
             signal: AbortSignal.timeout(500),
           })
           if (healthCheck.ok || healthCheck.status < 500) {
             serverReady = true
-            console.log(`[project-runtime] ⏱️  Nitro server ready after ${attempt} attempt(s)`)
+            console.log(`[project-runtime] ⏱️  Backend server ready after ${attempt} attempt(s)`)
           }
         } catch (e) {
           // Server not ready yet, wait with exponential backoff
@@ -2387,7 +2389,7 @@ app.post('/preview/restart', async (c) => {
       markStep('startNitroServer')
 
       if (!serverReady) {
-        console.warn('[project-runtime] Nitro server may still be starting after health checks...')
+        console.warn('[project-runtime] Backend server may still be starting after health checks...')
       }
     }
 
@@ -2402,7 +2404,7 @@ app.post('/preview/restart', async (c) => {
     console.log('[project-runtime] ════════════════════════════════════════')
 
     const mode = isExpo ? 'expo' : isTanStackStart ? 'nitro' : 'static'
-    const port = isExpo ? EXPO_SERVER_PORT : isTanStackStart ? NITRO_SERVER_PORT : null
+    const port = isExpo ? EXPO_SERVER_PORT : isTanStackStart ? SERVER_PORT : null
 
     return c.json({
       success: true,
@@ -2576,10 +2578,10 @@ app.post('/preview/dev', async (c) => {
   
   try {
     // 1. Kill existing processes
-    if (nitroProcess) {
-      console.log('[project-runtime] Stopping existing Nitro server...')
-      nitroProcess.kill()
-      nitroProcess = null
+    if (serverProcess) {
+      console.log('[project-runtime] Stopping existing backend server...')
+      serverProcess.kill()
+      serverProcess = null
     }
     if (expoServerProcess) {
       console.log('[project-runtime] Stopping existing Expo server...')
@@ -3162,14 +3164,14 @@ app.get('/preview/*', async (c) => {
   
   // TanStack Start: proxy to the running server
   if (isTanStackStart) {
-    const targetUrl = `http://localhost:${NITRO_SERVER_PORT}${relativePath}`
+    const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
     console.log(`[project-runtime] Proxying preview to TanStack: ${targetUrl}`)
     
     try {
       const response = await fetch(targetUrl, {
         method: c.req.method,
         headers: {
-          'Host': `localhost:${NITRO_SERVER_PORT}`,
+          'Host': `localhost:${SERVER_PORT}`,
           'Accept': c.req.header('Accept') || '*/*',
           'Accept-Encoding': c.req.header('Accept-Encoding') || '',
         },
@@ -3716,7 +3718,7 @@ app.all('/*', async (c, next) => {
   // This avoids HMR complexity and provides consistent preview updates
   // For plain Vite: only auto-start if dist/ doesn't exist (prevents redundant builds)
   // For TanStack Start/Expo: always auto-start if process isn't running
-  const needsAutoStart = !nitroProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
+  const needsAutoStart = !serverProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
   
   if (needsAutoStart) {
     console.log('[project-runtime] Auto-starting build mode on first subdomain request...')
@@ -3759,7 +3761,7 @@ app.all('/*', async (c, next) => {
   const isTanstackStart = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
   const needsProcess = isTanstackStart || existsSync(join(PROJECT_DIR, 'app.json')) // TanStack Start or Expo
   
-  if (devModeStarting || (!distExists && !nitroProcess && !expoServerProcess && !isInBackoff)) {
+  if (devModeStarting || (!distExists && !serverProcess && !expoServerProcess && !isInBackoff)) {
     return c.html(`
 <!DOCTYPE html>
 <html lang="en">
@@ -3884,14 +3886,14 @@ app.all('/*', async (c, next) => {
   
   // TanStack Start: proxy to the running server
   if (isTanStackStart) {
-    const targetUrl = `http://localhost:${NITRO_SERVER_PORT}${relativePath}`
+    const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
     const method = c.req.method
     console.log(`[project-runtime] Subdomain: proxying ${method} to TanStack at ${targetUrl}`)
     
     try {
       // Build headers for the proxy request
       const proxyHeaders: Record<string, string> = {
-        'Host': `localhost:${NITRO_SERVER_PORT}`,
+        'Host': `localhost:${SERVER_PORT}`,
         'Accept': c.req.header('Accept') || '*/*',
         'Accept-Encoding': c.req.header('Accept-Encoding') || '',
       }

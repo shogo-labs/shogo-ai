@@ -292,7 +292,7 @@ app.delete('/api/history', async (c) => {
 app.use('/*', serveStatic({ root: './dist' }))
 app.get('/*', serveStatic({ path: './dist/index.html' }))
 
-const port = parseInt(process.env.PORT || '3005', 10)
+const port = parseInt(process.env.PORT || '3001', 10)
 const hasAI = !!(process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY)
 console.log(`🚀 AI Chat Server running at http://localhost:${port}`)
 console.log(`🤖 AI Mode: ${hasAI ? 'Enabled' : 'Demo (set OPENAI_API_KEY or ANTHROPIC_API_KEY)'}`)
