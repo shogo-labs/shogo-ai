@@ -31,7 +31,9 @@ ${SCHEMA_MODIFICATIONS}
 
 ${TAILWIND_STYLING}
 
-${CODE_QUALITY}`
+${CODE_QUALITY}
+
+${BUILD_FAILURE_RECOVERY}`
 
   let prompt = basePrompt
   
@@ -301,3 +303,18 @@ After making code changes, verify there are no TypeScript errors:
 3. **For Prisma schema changes**, ALWAYS run \`bunx prisma validate\` first before \`bun run generate\`. Fix any validation errors before proceeding.
 
 4. **Do NOT tell the user "done" until the code compiles cleanly.** If you introduced errors, fix them first.`
+
+// =============================================================================
+// Build Failure Recovery
+// =============================================================================
+
+export const BUILD_FAILURE_RECOVERY = `## Build Failure Recovery
+
+When you see a "BUILD ERROR" in the Current Build Status section:
+
+1. **Read the full build log first:** \`cat .build.log\`
+2. **Diagnose** the issue from the log output
+3. **Fix** the problem
+4. **Wait** for the automatic rebuild to verify success
+
+The build log contains the complete error context. Read it before attempting any fix.`
