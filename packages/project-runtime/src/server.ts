@@ -1220,6 +1220,79 @@ function appendToBuildLog(line: string) {
   }
 }
 
+// Console log - captures stdout/stderr from the running application server
+const CONSOLE_LOG_MAX_LINES = 500
+let consoleLogLines: string[] = []
+const CONSOLE_LOG_PATH = join(PROJECT_DIR, '.console.log')
+
+function appendToConsoleLog(line: string, stream: 'stdout' | 'stderr' = 'stdout') {
+  const timestamp = new Date().toISOString().slice(11, 19) // HH:MM:SS
+  const prefix = stream === 'stderr' ? '[err]' : '[out]'
+  const logLine = `[${timestamp}] ${prefix} ${line}`
+  consoleLogLines.push(logLine)
+  if (consoleLogLines.length > CONSOLE_LOG_MAX_LINES) {
+    consoleLogLines = consoleLogLines.slice(-CONSOLE_LOG_MAX_LINES)
+  }
+  // Also write to file for agent access
+  try {
+    writeFileSync(CONSOLE_LOG_PATH, consoleLogLines.join('\n'))
+  } catch (e) {
+    // Ignore write errors
+  }
+}
+
+/**
+ * Stream process output to console log file.
+ * Captures stdout and stderr from spawned server processes.
+ */
+function streamProcessOutput(proc: ReturnType<typeof Bun.spawn>, name: string) {
+  // Stream stdout
+  if (proc.stdout && typeof proc.stdout !== 'number') {
+    ;(async () => {
+      const reader = proc.stdout.getReader()
+      const decoder = new TextDecoder()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const output = decoder.decode(value)
+          for (const line of output.split('\n')) {
+            if (line.trim()) {
+              console.log(`[${name}] ${line}`)
+              appendToConsoleLog(line, 'stdout')
+            }
+          }
+        }
+      } catch (e) {
+        // Process ended
+      }
+    })()
+  }
+  
+  // Stream stderr
+  if (proc.stderr && typeof proc.stderr !== 'number') {
+    ;(async () => {
+      const reader = proc.stderr.getReader()
+      const decoder = new TextDecoder()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const output = decoder.decode(value)
+          for (const line of output.split('\n')) {
+            if (line.trim()) {
+              console.error(`[${name}:error] ${line}`)
+              appendToConsoleLog(line, 'stderr')
+            }
+          }
+        }
+      } catch (e) {
+        // Process ended
+      }
+    })()
+  }
+}
+
 /**
  * Get current build status context for inclusion in agent system prompt.
  * Returns a formatted string describing the build state.
@@ -1254,8 +1327,10 @@ export function getBuildStatusContext(): string {
 
 ${status}${avgInfo}
 
-To see recent build output: \`cat .build.log\`
-To check build status programmatically: \`curl -s http://localhost:${PORT}/preview/status | jq .buildWatch\``
+**Log files available:**
+- \`cat .build.log\` - Build output (compilation, bundling)
+- \`cat .console.log\` - Application console output (server logs, errors, console.log statements)
+- \`curl -s http://localhost:${PORT}/preview/status | jq .buildWatch\` - Build status as JSON`
 }
 
 // SSE clients listening for build events
@@ -1811,12 +1886,14 @@ app.post('/preview/restart', async (c) => {
       }
 
       console.log(`[project-runtime] ⏱️  Starting Expo Hono server on port ${EXPO_SERVER_PORT}...`)
+      appendToConsoleLog(`--- Expo server starting on port ${EXPO_SERVER_PORT} ---`, 'stdout')
       expoServerProcess = Bun.spawn(['bun', 'run', serverPath], {
         cwd: PROJECT_DIR,
         env: { ...process.env, PORT: String(EXPO_SERVER_PORT) },
-        stdout: 'inherit',
-        stderr: 'inherit',
+        stdout: 'pipe',
+        stderr: 'pipe',
       })
+      streamProcessOutput(expoServerProcess, 'expo')
 
       // Wait for server to be ready with exponential backoff
       let serverReady = false
@@ -1850,12 +1927,14 @@ app.post('/preview/restart', async (c) => {
       }
 
       console.log(`[project-runtime] ⏱️  Starting Nitro server on port ${NITRO_SERVER_PORT}...`)
+      appendToConsoleLog(`--- Server starting on port ${NITRO_SERVER_PORT} ---`, 'stdout')
       nitroProcess = Bun.spawn(['bun', 'run', serverPath], {
         cwd: PROJECT_DIR,
         env: { ...process.env, PORT: String(NITRO_SERVER_PORT) },
-        stdout: 'inherit',
-        stderr: 'inherit',
+        stdout: 'pipe',
+        stderr: 'pipe',
       })
+      streamProcessOutput(nitroProcess, 'app')
 
       // Wait for server to be ready with exponential backoff (max ~2s total)
       let serverReady = false
@@ -2119,12 +2198,14 @@ app.post('/preview/dev', async (c) => {
       markStep('expoBuild')
 
       // Start the Hono server
+      appendToConsoleLog(`--- Expo server starting on port ${EXPO_SERVER_PORT} ---`, 'stdout')
       expoServerProcess = Bun.spawn(['bun', 'run', serverPath], {
         cwd: PROJECT_DIR,
         env: { ...process.env, PORT: String(EXPO_SERVER_PORT) },
-        stdout: 'inherit',
-        stderr: 'inherit',
+        stdout: 'pipe',
+        stderr: 'pipe',
       })
+      streamProcessOutput(expoServerProcess, 'expo')
       serverPort = EXPO_SERVER_PORT
 
       for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
@@ -2150,16 +2231,18 @@ app.post('/preview/dev', async (c) => {
       // Start vite dev server - served directly on subdomain for proper HMR
       // In Kubernetes (staging/prod), set SHOGO_RUNTIME to use wss:// on port 443 for HMR
       // Locally, let Vite auto-detect the WebSocket settings
+      appendToConsoleLog(`--- Vite dev server starting on port ${VITE_DEV_PORT} ---`, 'stdout')
       viteDevProcess = Bun.spawn(['bun', '--bun', 'vite', 'dev', '--port', String(VITE_DEV_PORT), '--host', '0.0.0.0'], {
         cwd: PROJECT_DIR,
-        stdout: 'inherit',
-        stderr: 'inherit',
+        stdout: 'pipe',
+        stderr: 'pipe',
         env: {
           ...process.env,
           PORT: String(VITE_DEV_PORT),
           ...(isKubernetes && { SHOGO_RUNTIME: 'true' }),  // Signal to vite config to use production HMR settings
         },
       })
+      streamProcessOutput(viteDevProcess, 'vite')
       serverPort = VITE_DEV_PORT
 
       // Wait for Vite dev server to be ready
