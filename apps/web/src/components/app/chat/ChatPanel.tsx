@@ -749,6 +749,10 @@ export const ChatPanel = observer(function ChatPanel({
   // Guard to prevent double-injection of initial message (homepage transition warm-start)
   const hasInjectedInitialMessageRef = useRef(false)
 
+  // Guard to prevent sync effect from running while sending a message
+  // This prevents duplicate messages when persisting optimistically before AI SDK adds its own
+  const isSendingMessageRef = useRef(false)
+
   // Store last user input for retry functionality (task-chat-retry-fix)
   // This allows retry to work even if AI SDK's reload() fails
   const lastUserInputRef = useRef<{ content: string; imageData?: string } | null>(null)
@@ -1592,6 +1596,13 @@ export const ChatPanel = observer(function ChatPanel({
         return
       }
 
+      // Fix for duplicate message bug: Skip sync while sending a message
+      // When sending from homepage, we persist optimistically before AI SDK adds its own message
+      // This prevents the sync effect from adding the MobX message while AI SDK is adding its own
+      if (isSendingMessageRef.current) {
+        return
+      }
+
       // Fix for duplicate message bug: Only sync on initial load when AI SDK has no messages
       // During active session, AI SDK already has messages from sendMessage()
       // This prevents duplicate messages from ID mismatch between MobX (ID-A) and AI SDK (ID-B)
@@ -1759,6 +1770,11 @@ export const ChatPanel = observer(function ChatPanel({
       // task-chat-retry-fix: Store input for potential retry
       lastUserInputRef.current = { content: trimmedContent, imageData }
 
+      // Fix for duplicate message bug: Set flag to prevent sync effect from running
+      // while we're sending a message. This prevents the sync effect from adding the
+      // MobX message while AI SDK is adding its own message.
+      isSendingMessageRef.current = true
+
       // Persist user message to local store (fire-and-forget)
       // task-chatpanel-sendmessage: Include imageData when present
       actions.addMessage({
@@ -1813,6 +1829,11 @@ export const ChatPanel = observer(function ChatPanel({
         )
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
+      } finally {
+        // Clear the flag after sendMessage completes (AI SDK has added the message)
+        // Since we await sendMessage, the AI SDK should have already added the message
+        // The existing guard (messages.length > 0) will prevent sync if messages exist
+        isSendingMessageRef.current = false
       }
     },
     [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId, projectId, agentMode]
