@@ -1197,6 +1197,12 @@ let buildError: string | null = null
 const BUILD_HISTORY_MAX = 10
 let buildTimeHistory: number[] = []
 
+// Watch process crash recovery
+let watchCrashCount = 0
+let lastWatchCrashTime: number | null = null
+const WATCH_CRASH_COOLDOWN_MS = 5000  // Wait 5s between auto-restarts
+const MAX_WATCH_CRASHES = 5  // Max crashes before giving up auto-restart
+
 // =============================================================================
 // Enhanced Build Error Context (for agent build recovery)
 // =============================================================================
@@ -1766,6 +1772,18 @@ function notifyBuildStateChange() {
     duration: buildDuration,
     lastBuildTime: lastBuildTime,
     error: buildError,
+    // Include error context for rich error display
+    errorContext: buildErrorContext ? {
+      category: buildErrorContext.errorCategory,
+      rootCause: buildErrorContext.rootCause,
+      canAutoRecover: buildErrorContext.canSelfFix,
+      suggestions: buildErrorContext.detectedIssues?.map(i => i.suggestion) || [],
+    } : null,
+    // Include last 10 lines of build log for quick preview
+    logPreview: buildLogLines.slice(-10).join('\n'),
+    // Include crash recovery info
+    watchCrashCount,
+    canAutoRestart: watchCrashCount <= MAX_WATCH_CRASHES,
     timestamp: Date.now(),
   })
   
@@ -1790,6 +1808,7 @@ function notifyBuildStateChange() {
 /**
  * Start Vite in watch mode with rebuild detection.
  * Monitors stdout for rebuild events and notifies SSE clients.
+ * Automatically recovers from crashes (like the nitro plugin Object.entries bug).
  */
 async function startViteBuildWatch(): Promise<void> {
   if (buildWatchProcess) {
@@ -1806,15 +1825,84 @@ async function startViteBuildWatch(): Promise<void> {
     env: process.env,
   })
   
+  const currentProcess = buildWatchProcess
+  
+  // Monitor process exit for auto-recovery
+  currentProcess.exited.then((exitCode) => {
+    // Only handle if this is still the current process
+    if (buildWatchProcess !== currentProcess) return
+    
+    console.log(`[project-runtime] ⚠️ Vite watch process exited with code ${exitCode}`)
+    buildWatchProcess = null
+    
+    // Handle crash recovery
+    const now = Date.now()
+    if (lastWatchCrashTime && now - lastWatchCrashTime > 60000) {
+      // Reset crash count if more than 1 minute since last crash
+      watchCrashCount = 0
+    }
+    
+    lastWatchCrashTime = now
+    watchCrashCount++
+    
+    // Check if this was likely the nitro plugin Object.entries bug
+    const isNitroBug = buildError?.includes('Object.entries') || 
+                       buildLogLines.some(l => l.includes('Object.entries'))
+    
+    if (isNitroBug) {
+      console.log('[project-runtime] 🔧 Detected nitro plugin Object.entries bug - will auto-recover')
+      appendToBuildLog('⚠️ Watch process crashed (known nitro plugin issue)')
+    }
+    
+    // Notify frontend of crash
+    buildState = 'error'
+    buildError = buildError || `Watch process crashed (exit code ${exitCode})`
+    buildErrorContext = {
+      errorMessage: buildError,
+      errorCategory: isNitroBug ? 'build_tool' : 'unknown',
+      rootCause: isNitroBug 
+        ? 'TanStack nitro plugin bug in watch mode (Object.entries on null)'
+        : 'Watch process exited unexpectedly',
+      canSelfFix: true,
+      logFilePath: '.build.log',
+      logExcerpt: buildLogLines.slice(-30).join('\n'),
+      detectedIssues: isNitroBug ? [{
+        type: 'nitro_watch_crash',
+        suggestion: 'This is a known bug in the nitro plugin. Auto-recovery in progress.'
+      }] : [],
+      recoverySteps: ['Automatic restart in progress...']
+    }
+    notifyBuildStateChange()
+    
+    // Auto-restart if under crash limit
+    if (watchCrashCount <= MAX_WATCH_CRASHES) {
+      const delay = WATCH_CRASH_COOLDOWN_MS * watchCrashCount  // Exponential backoff
+      console.log(`[project-runtime] 🔄 Auto-restarting watch in ${delay}ms (crash ${watchCrashCount}/${MAX_WATCH_CRASHES})`)
+      appendToBuildLog(`🔄 Auto-restarting watch in ${delay/1000}s...`)
+      
+      setTimeout(() => {
+        if (!buildWatchProcess) {
+          console.log('[project-runtime] 🔄 Attempting watch process recovery...')
+          startViteBuildWatch()
+        }
+      }, delay)
+    } else {
+      console.error(`[project-runtime] ❌ Watch process crashed ${watchCrashCount} times - giving up auto-restart`)
+      appendToBuildLog(`❌ Watch process crashed too many times. Use "Rebuild" button to restart.`)
+      buildError = 'Watch process crashed repeatedly. Use the Rebuild button to manually restart.'
+      notifyBuildStateChange()
+    }
+  })
+  
   // Stream stdout and detect rebuild events
   ;(async () => {
-    if (!buildWatchProcess || !buildWatchProcess.stdout) return
-    const stdout = buildWatchProcess.stdout
+    if (!currentProcess.stdout) return
+    const stdout = currentProcess.stdout
     if (typeof stdout === 'number') return
     const reader = stdout.getReader()
     const decoder = new TextDecoder()
     
-    while (buildWatchProcess) {
+    while (buildWatchProcess === currentProcess) {
       try {
         const { done, value } = await reader.read()
         if (done) break
@@ -1846,12 +1934,16 @@ async function startViteBuildWatch(): Promise<void> {
             if (buildDuration) recordBuildTime(buildDuration)
             appendToBuildLog(`✅ Build complete (${buildDuration}ms)`)
             console.log(`[project-runtime] ✅ Vite rebuild complete (${buildDuration}ms)`)
+            // Reset crash count on successful build
+            watchCrashCount = 0
             notifyBuildStateChange()
             
             // Return to idle after 1s
             setTimeout(() => {
-              buildState = 'idle'
-              notifyBuildStateChange()
+              if (buildState === 'success') {
+                buildState = 'idle'
+                notifyBuildStateChange()
+              }
             }, 1000)
           } else if (event === 'error') {
             buildState = 'error'
@@ -1872,13 +1964,13 @@ async function startViteBuildWatch(): Promise<void> {
   
   // Also stream stderr
   ;(async () => {
-    if (!buildWatchProcess || !buildWatchProcess.stderr) return
-    const stderr = buildWatchProcess.stderr
+    if (!currentProcess.stderr) return
+    const stderr = currentProcess.stderr
     if (typeof stderr === 'number') return
     const reader = stderr.getReader()
     const decoder = new TextDecoder()
     
-    while (buildWatchProcess) {
+    while (buildWatchProcess === currentProcess) {
       try {
         const { done, value } = await reader.read()
         if (done) break
@@ -2323,6 +2415,132 @@ app.post('/preview/restart', async (c) => {
     console.error(`[project-runtime] ⏱️  Preview restart error after ${totalMs}ms:`, error)
     return c.json({ success: false, error: error.message, timings: { steps: timings, totalMs } }, 500)
   }
+})
+
+/**
+ * Manual rebuild endpoint - triggers a fresh vite build and restarts watch mode.
+ * Use this when:
+ * - Watch mode has crashed and auto-recovery failed
+ * - User wants to force a full rebuild
+ * - Build is in an error state and user wants to retry
+ */
+app.post('/preview/rebuild', async (c) => {
+  const startTime = performance.now()
+  
+  console.log('[project-runtime] 🔨 Manual rebuild triggered')
+  appendToBuildLog('🔨 Manual rebuild triggered by user')
+  
+  try {
+    // 1. Stop existing watch process
+    stopViteBuildWatch()
+    
+    // Reset crash counter for manual rebuilds
+    watchCrashCount = 0
+    lastWatchCrashTime = null
+    
+    // 2. Clear error state and set to building
+    buildState = 'building'
+    buildStartTime = Date.now()
+    buildError = null
+    buildErrorContext = null
+    notifyBuildStateChange()
+    
+    // 3. Run a fresh vite build
+    console.log('[project-runtime] 🔨 Running fresh vite build...')
+    appendToBuildLog('🔨 Running fresh vite build...')
+    
+    const buildProc = Bun.spawnSync(['bun', '--bun', 'vite', 'build'], {
+      cwd: PROJECT_DIR,
+      env: process.env,
+    })
+    
+    const stdout = buildProc.stdout?.toString() || ''
+    const stderr = buildProc.stderr?.toString() || ''
+    
+    // Log output
+    if (stdout.trim()) {
+      appendToBuildLog(stdout)
+      console.log(`[vite] ${stdout}`)
+    }
+    if (stderr.trim()) {
+      appendToBuildLog(`[error] ${stderr}`)
+      console.error(`[vite:error] ${stderr}`)
+    }
+    
+    const durationMs = Math.round(performance.now() - startTime)
+    
+    if (buildProc.exitCode !== 0) {
+      buildState = 'error'
+      buildError = stderr || 'Build failed with exit code ' + buildProc.exitCode
+      buildErrorContext = analyzeBuildError(buildError)
+      buildDuration = durationMs
+      appendToBuildLog(`❌ Build failed (${durationMs}ms)`)
+      notifyBuildStateChange()
+      
+      return c.json({
+        success: false,
+        error: buildError,
+        buildLog: buildLogLines.slice(-50).join('\n'),
+        durationMs,
+      }, 500)
+    }
+    
+    // 4. Build succeeded - update state
+    buildState = 'success'
+    buildDuration = durationMs
+    lastBuildTime = Date.now()
+    recordBuildTime(durationMs)
+    appendToBuildLog(`✅ Build complete (${durationMs}ms)`)
+    console.log(`[project-runtime] ✅ Manual rebuild complete (${durationMs}ms)`)
+    notifyBuildStateChange()
+    
+    // 5. Restart watch mode for future changes
+    console.log('[project-runtime] 🔄 Restarting watch mode...')
+    await startViteBuildWatch()
+    
+    // Return to idle after short delay
+    setTimeout(() => {
+      if (buildState === 'success') {
+        buildState = 'idle'
+        notifyBuildStateChange()
+      }
+    }, 1000)
+    
+    return c.json({
+      success: true,
+      buildLog: buildLogLines.slice(-50).join('\n'),
+      durationMs,
+    })
+  } catch (error: any) {
+    const durationMs = Math.round(performance.now() - startTime)
+    console.error('[project-runtime] ❌ Manual rebuild error:', error)
+    
+    buildState = 'error'
+    buildError = error.message || 'Rebuild failed'
+    appendToBuildLog(`❌ Rebuild error: ${buildError}`)
+    notifyBuildStateChange()
+    
+    return c.json({
+      success: false,
+      error: error.message,
+      buildLog: buildLogLines.slice(-50).join('\n'),
+      durationMs,
+    }, 500)
+  }
+})
+
+/**
+ * Get the current build log (last N lines)
+ */
+app.get('/build-log', (c) => {
+  const lines = parseInt(c.req.query('lines') || '100', 10)
+  return c.json({
+    log: buildLogLines.slice(-lines).join('\n'),
+    totalLines: buildLogLines.length,
+    state: buildState,
+    error: buildError,
+    errorContext: buildErrorContext,
+  })
 })
 
 /**

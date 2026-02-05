@@ -72,6 +72,16 @@ export interface TerminalPanelProps {
   className?: string
   /** Callback to restart the dev server (optional) */
   onRestartServer?: () => void
+  /** Callback to trigger a rebuild */
+  onRebuild?: () => Promise<void>
+  /** Current build error if any */
+  buildError?: string | null
+  /** Build error context */
+  buildErrorContext?: {
+    category?: string
+    rootCause?: string
+    suggestions?: string[]
+  } | null
 }
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
@@ -94,6 +104,9 @@ export function TerminalPanel({
   projectId,
   className,
   onRestartServer,
+  onRebuild,
+  buildError,
+  buildErrorContext,
 }: TerminalPanelProps) {
   const [commands, setCommands] = useState<CommandsByCategory>({})
   const [isLoadingCommands, setIsLoadingCommands] = useState(true)
@@ -103,8 +116,13 @@ export function TerminalPanel({
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
     new Set(['package', 'database'])
   )
+  const [activeTab, setActiveTab] = useState<'commands' | 'buildLog'>('commands')
+  const [buildLog, setBuildLog] = useState<string>('')
+  const [isLoadingBuildLog, setIsLoadingBuildLog] = useState(false)
+  const [isRebuilding, setIsRebuilding] = useState(false)
   
   const outputRef = useRef<HTMLPreElement>(null)
+  const buildLogRef = useRef<HTMLPreElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
   // Fetch available commands on mount
@@ -125,12 +143,73 @@ export function TerminalPanel({
     fetchCommands()
   }, [projectId])
 
+  // Fetch build log from runtime
+  const fetchBuildLog = useCallback(async () => {
+    setIsLoadingBuildLog(true)
+    try {
+      // Get sandbox URL first to know the runtime URL
+      const sandboxResponse = await fetch(`/api/projects/${projectId}/sandbox/url`)
+      if (!sandboxResponse.ok) {
+        console.error('[TerminalPanel] Failed to get sandbox URL')
+        return
+      }
+      const sandboxData = await sandboxResponse.json()
+      const url = new URL(sandboxData.url)
+      const baseUrl = `${url.protocol}//${url.host}`
+      
+      const response = await fetch(`${baseUrl}/build-log?lines=200`)
+      if (response.ok) {
+        const data = await response.json()
+        setBuildLog(data.log || '')
+      }
+    } catch (err) {
+      console.error('[TerminalPanel] Failed to fetch build log:', err)
+    } finally {
+      setIsLoadingBuildLog(false)
+    }
+  }, [projectId])
+
+  // Auto-switch to build log tab when there's a build error
+  useEffect(() => {
+    if (buildError) {
+      setActiveTab('buildLog')
+      fetchBuildLog()
+    }
+  }, [buildError, fetchBuildLog])
+
+  // Fetch build log when switching to build log tab
+  useEffect(() => {
+    if (activeTab === 'buildLog') {
+      fetchBuildLog()
+    }
+  }, [activeTab, fetchBuildLog])
+
+  // Handle rebuild button click
+  const handleRebuild = useCallback(async () => {
+    if (!onRebuild || isRebuilding) return
+    setIsRebuilding(true)
+    try {
+      await onRebuild()
+      // Refresh build log after rebuild
+      await fetchBuildLog()
+    } finally {
+      setIsRebuilding(false)
+    }
+  }, [onRebuild, isRebuilding, fetchBuildLog])
+
   // Auto-scroll output
   useEffect(() => {
     if (outputRef.current && currentExecution) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight
     }
   }, [currentExecution?.output])
+
+  // Auto-scroll build log
+  useEffect(() => {
+    if (buildLogRef.current && buildLog) {
+      buildLogRef.current.scrollTop = buildLogRef.current.scrollHeight
+    }
+  }, [buildLog])
 
   /**
    * Execute a preset command
@@ -261,14 +340,72 @@ export function TerminalPanel({
 
   return (
     <div className={cn("flex flex-col h-full bg-background", className)}>
-      {/* Header */}
+      {/* Header with tabs */}
       <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/30">
-        <div className="flex items-center gap-2">
-          <Terminal className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium">Terminal</span>
+        <div className="flex items-center gap-4">
+          {/* Tab buttons */}
+          <button
+            onClick={() => setActiveTab('commands')}
+            className={cn(
+              "flex items-center gap-2 px-2 py-1 text-sm font-medium rounded transition-colors",
+              activeTab === 'commands' 
+                ? "bg-background text-foreground shadow-sm" 
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <Terminal className="h-4 w-4" />
+            Commands
+          </button>
+          <button
+            onClick={() => setActiveTab('buildLog')}
+            className={cn(
+              "flex items-center gap-2 px-2 py-1 text-sm font-medium rounded transition-colors",
+              activeTab === 'buildLog' 
+                ? "bg-background text-foreground shadow-sm" 
+                : "text-muted-foreground hover:text-foreground",
+              buildError && activeTab !== 'buildLog' && "text-red-500"
+            )}
+          >
+            <Hammer className="h-4 w-4" />
+            Build Log
+            {buildError && (
+              <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+            )}
+          </button>
         </div>
         <div className="flex items-center gap-1">
-          {onRestartServer && (
+          {activeTab === 'buildLog' && onRebuild && (
+            <button
+              onClick={handleRebuild}
+              disabled={isRebuilding}
+              className={cn(
+                "flex items-center gap-1 px-2 py-1 text-xs font-medium rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors",
+                isRebuilding && "opacity-50 cursor-not-allowed"
+              )}
+              title="Trigger full rebuild"
+            >
+              {isRebuilding ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3 w-3" />
+              )}
+              Rebuild
+            </button>
+          )}
+          {activeTab === 'buildLog' && (
+            <button
+              onClick={fetchBuildLog}
+              disabled={isLoadingBuildLog}
+              className="p-1.5 rounded hover:bg-muted transition-colors"
+              title="Refresh Build Log"
+            >
+              <RefreshCw className={cn(
+                "h-3.5 w-3.5 text-muted-foreground",
+                isLoadingBuildLog && "animate-spin"
+              )} />
+            </button>
+          )}
+          {activeTab === 'commands' && onRestartServer && (
             <button
               onClick={onRestartServer}
               className="p-1.5 rounded hover:bg-muted transition-colors"
@@ -277,17 +414,78 @@ export function TerminalPanel({
               <RefreshCw className="h-3.5 w-3.5 text-muted-foreground" />
             </button>
           )}
-          <button
-            onClick={clearOutput}
-            className="p-1.5 rounded hover:bg-muted transition-colors"
-            title="Clear Output"
-            disabled={isRunning}
-          >
-            <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-          </button>
+          {activeTab === 'commands' && (
+            <button
+              onClick={clearOutput}
+              className="p-1.5 rounded hover:bg-muted transition-colors"
+              title="Clear Output"
+              disabled={isRunning}
+            >
+              <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+            </button>
+          )}
         </div>
       </div>
 
+      {/* Build Log Tab Content */}
+      {activeTab === 'buildLog' && (
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* Error banner if there's a build error */}
+          {buildError && (
+            <div className="px-4 py-3 bg-red-500/10 border-b border-red-500/20">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-red-600 dark:text-red-400">
+                    Build Error
+                  </p>
+                  <p className="text-xs text-red-600/80 dark:text-red-400/80 mt-1">
+                    {buildErrorContext?.rootCause || buildError}
+                  </p>
+                  {buildErrorContext?.suggestions && buildErrorContext.suggestions.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-xs text-muted-foreground">Suggestions:</p>
+                      <ul className="mt-1 space-y-1">
+                        {buildErrorContext.suggestions.map((suggestion, i) => (
+                          <li key={i} className="text-xs text-muted-foreground flex items-start gap-1">
+                            <span className="text-primary">•</span>
+                            {suggestion}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {/* Build log output */}
+          <pre
+            ref={buildLogRef}
+            className={cn(
+              "flex-1 p-4 overflow-auto font-mono text-xs leading-relaxed",
+              "bg-zinc-950 text-zinc-100",
+              "whitespace-pre-wrap break-all"
+            )}
+          >
+            {isLoadingBuildLog ? (
+              <span className="text-zinc-500">Loading build log...</span>
+            ) : buildLog ? (
+              buildLog
+            ) : (
+              <span className="text-zinc-500">
+                No build log available yet.
+                {'\n\n'}
+                The build log will appear here when you make changes to your code.
+              </span>
+            )}
+          </pre>
+        </div>
+      )}
+
+      {/* Commands Tab Content */}
+      {activeTab === 'commands' && (
       <div className="flex flex-1 min-h-0">
         {/* Command sidebar */}
         <div className="w-56 border-r overflow-y-auto bg-muted/10">
@@ -400,6 +598,7 @@ export function TerminalPanel({
           )}
         </div>
       </div>
+      )}
 
       {/* Confirmation dialog for dangerous commands */}
       {confirmingCommand && (
