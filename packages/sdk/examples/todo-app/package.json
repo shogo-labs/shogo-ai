@@ -8,8 +8,8 @@
   },
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
-    "start": "bun run .output/server/index.mjs",
+    "build": "bun --bun vite build",
+    "start": "bun run server.ts",
     "generate": "bun run scripts/generate.ts",
     "db:generate": "bunx --bun prisma generate",
     "db:push": "bunx --bun prisma db push",
@@ -23,7 +23,6 @@
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",
     "@shogo-ai/sdk": "^0.3.0",
-    "@tanstack/nitro-v2-vite-plugin": "1.154.7",
     "@tanstack/react-router": "1.154.7",
     "@tanstack/react-start": "1.154.7",
     "mobx": "^6.13.0",
