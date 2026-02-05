@@ -69,6 +69,7 @@ export function ChatInput({
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string }>>([])
   const [imageError, setImageError] = useState<string | null>(null)
   const [isProcessingImages, setIsProcessingImages] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
   
   // Use ref to track current images for sequential processing
   const pendingImagesRef = useRef<Array<{ id: string; dataUrl: string }>>([])
@@ -269,18 +270,15 @@ export function ChatInput({
   }, [generateImageId])
 
   /**
-   * Handle file input change - support multiple file selection
-   * Improved error handling to collect all errors
-   * Processes files sequentially to avoid race conditions with duplicate detection
+   * Process dropped files - shared logic for both file input and drag-drop
    */
-  const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files
-    if (!files || files.length === 0) return
+  const processFiles = useCallback(async (files: FileList | File[]) => {
+    const fileArray = Array.from(files)
+    if (fileArray.length === 0) return
 
     setIsProcessingImages(true)
     setImageError(null)
 
-    const fileArray = Array.from(files)
     const errors: string[] = []
     const newImages: Array<{ id: string; dataUrl: string }> = []
 
@@ -358,12 +356,24 @@ export function ChatInput({
     }
 
     setIsProcessingImages(false)
+  }, [generateImageId])
+
+  /**
+   * Handle file input change - support multiple file selection
+   * Improved error handling to collect all errors
+   * Processes files sequentially to avoid race conditions with duplicate detection
+   */
+  const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    await processFiles(files)
 
     // Reset file input so same file can be selected again
     if (fileInputRef.current) {
       fileInputRef.current.value = ""
     }
-  }, [generateImageId])
+  }, [processFiles])
 
   /**
    * Open file picker
@@ -371,6 +381,43 @@ export function ChatInput({
   const handleAttachClick = useCallback(() => {
     fileInputRef.current?.click()
   }, [])
+
+  /**
+   * Handle drag and drop events
+   */
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!isDragging) {
+      setIsDragging(true)
+    }
+  }, [isDragging])
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    // Only set dragging to false if we're leaving the container itself
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragging(false)
+    }
+  }, [])
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+
+    const files = e.dataTransfer.files
+    if (files && files.length > 0) {
+      await processFiles(files)
+    }
+  }, [processFiles])
 
   /**
    * Remove a specific attached image by ID
@@ -534,7 +581,16 @@ export function ChatInput({
       )}
 
       {/* Main input container - Lovable.dev style */}
-      <div className="relative rounded-xl border border-border/60 bg-muted/30 overflow-hidden">
+      <div 
+        className={cn(
+          "relative rounded-xl border border-border/60 bg-muted/30 overflow-hidden",
+          isDragging && "border-primary ring-2 ring-primary/20"
+        )}
+        onDragOver={handleDragOver}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         {/* Skill picker dropdown */}
         {showSkillPicker && filteredSkills.length > 0 && (
           <div className="absolute bottom-full left-0 right-0 mb-1 max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md z-50">
