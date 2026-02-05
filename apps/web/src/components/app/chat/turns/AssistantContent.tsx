@@ -12,6 +12,7 @@ import type { Message } from "@ai-sdk/react"
 import { Streamdown } from "streamdown"
 import { InlineToolWidget } from "./InlineToolWidget"
 import { AskUserQuestionWidget } from "./AskUserQuestionWidget"
+import { TodoWidget } from "./TodoWidget"
 import type { MessagePart } from "./types"
 import { type ToolCallData, getToolCategory } from "../tools/types"
 import { useChatContextSafe } from "../ChatContext"
@@ -257,6 +258,21 @@ export function AssistantContent({
                     chatContext.sendMessage(response)
                   }
                 }}
+              />
+            )
+          }
+
+          // Special handling for TodoWrite - render task list widget
+          if (part.tool.toolName === "TodoWrite") {
+            // Default to expanded for todos
+            const isExpanded = !expandedTools.has(part.id) // Inverted - collapsed when in set
+            
+            return (
+              <TodoWidget
+                key={part.id}
+                tool={part.tool}
+                isExpanded={isExpanded}
+                onToggle={() => toggleTool(part.id)}
               />
             )
           }

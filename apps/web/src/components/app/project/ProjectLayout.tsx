@@ -117,6 +117,14 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
 
+  // Build error state - shared between RuntimePreviewPanel and TerminalPanel
+  const [buildError, setBuildError] = useState<string | null>(null)
+  const [buildErrorContext, setBuildErrorContext] = useState<{
+    category?: string
+    rootCause?: string
+    suggestions?: string[]
+  } | null>(null)
+
   // Stable callbacks for panels to prevent unnecessary re-renders
   const handleDatabaseError = useCallback((err: Error) => {
     console.error('[ProjectLayout] Database error:', err)
@@ -129,6 +137,17 @@ export const ProjectLayout = observer(function ProjectLayout() {
   }, [])
   const handleRuntimeLoad = useCallback(() => {
     console.log('[ProjectLayout] Runtime loaded successfully')
+  }, [])
+  const handleBuildError = useCallback((error: string, context?: { category?: string; rootCause?: string; canAutoRecover?: boolean; suggestions?: string[] } | null) => {
+    console.error('[ProjectLayout] Build error:', error, context)
+    setBuildError(error)
+    setBuildErrorContext(context ? {
+      category: context.category,
+      rootCause: context.rootCause,
+      suggestions: context.suggestions,
+    } : null)
+    // Switch to terminal tab to show build errors
+    setPreviewMode('terminal')
   }, [])
 
   // Project state
@@ -828,6 +847,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   onError={handleRuntimeError}
                   onLoad={handleRuntimeLoad}
                   viewport={currentViewport}
+                  onBuildError={handleBuildError}
                 />
               </div>
               {/* Code Editor - stays mounted to preserve editor state */}
@@ -854,6 +874,34 @@ export const ProjectLayout = observer(function ProjectLayout() {
                       await fetch(`/api/projects/${projectId}/runtime/restart`, { method: 'POST' })
                     } catch (err) {
                       console.error('[ProjectLayout] Failed to restart runtime:', err)
+                    }
+                  }}
+                  buildError={buildError}
+                  buildErrorContext={buildErrorContext}
+                  onRebuild={async () => {
+                    try {
+                      // Get sandbox URL to call rebuild endpoint
+                      const sandboxResponse = await fetch(`/api/projects/${projectId}/sandbox/url`)
+                      if (!sandboxResponse.ok) {
+                        console.error('[ProjectLayout] Failed to get sandbox URL')
+                        return
+                      }
+                      const sandboxData = await sandboxResponse.json()
+                      const url = new URL(sandboxData.url)
+                      const baseUrl = `${url.protocol}//${url.host}`
+                      
+                      const response = await fetch(`${baseUrl}/preview/rebuild`, { method: 'POST' })
+                      const data = await response.json()
+                      
+                      if (data.success) {
+                        // Clear build error on successful rebuild
+                        setBuildError(null)
+                        setBuildErrorContext(null)
+                        // Switch back to preview
+                        setPreviewMode('runtime')
+                      }
+                    } catch (err) {
+                      console.error('[ProjectLayout] Failed to trigger rebuild:', err)
                     }
                   }}
                 />

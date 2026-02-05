@@ -642,6 +642,8 @@ const ChatRequestSchema = z.object({
   system: z.string().optional(),
   // Theme context for AI-aware styling (Phase 3: AI Agent Integration)
   themeContext: z.string().optional(),
+  // Agent mode for model selection: basic (Haiku) or advanced (Sonnet)
+  agentMode: z.enum(['basic', 'advanced']).optional(),
   // Additional AI SDK fields
   body: z.any().optional(),
 })
@@ -926,7 +928,7 @@ app.post('/agent/chat', async (c) => {
       }, 400)
     }
     
-    const { messages, system, themeContext } = parsed.data
+    const { messages, system, themeContext, agentMode } = parsed.data
     
     // Build system prompt with optional theme context and current build status
     // The prompt is defined in system-prompt.ts and can be updated via DSPy export
@@ -1001,8 +1003,16 @@ app.post('/agent/chat', async (c) => {
     
     // Create streaming response using Claude Code with native template tools
     // Theme context (if provided) is appended to the system prompt for AI-aware styling
-    // Model can be configured via AGENT_MODEL env var: haiku, sonnet, opus (default: sonnet)
-    const modelName = (process.env.AGENT_MODEL || 'sonnet') as 'haiku' | 'sonnet' | 'opus'
+    // Model selection: agentMode takes precedence, then AGENT_MODEL env var, then default to sonnet
+    // - basic mode uses Haiku (faster, cheaper)
+    // - advanced mode uses Sonnet (more capable)
+    const getModelFromAgentMode = (mode?: 'basic' | 'advanced'): 'haiku' | 'sonnet' | 'opus' => {
+      if (mode === 'basic') return 'haiku'
+      if (mode === 'advanced') return 'sonnet'
+      return (process.env.AGENT_MODEL || 'sonnet') as 'haiku' | 'sonnet' | 'opus'
+    }
+    const modelName = getModelFromAgentMode(agentMode)
+    console.log(`[project-runtime] Using model: ${modelName} (agentMode: ${agentMode || 'default'})`)
     
     let lastError: any = null
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -1186,6 +1196,223 @@ let buildError: string | null = null
 // Build time history for calculating averages (last 10 builds)
 const BUILD_HISTORY_MAX = 10
 let buildTimeHistory: number[] = []
+
+// Watch process crash recovery
+let watchCrashCount = 0
+let lastWatchCrashTime: number | null = null
+const WATCH_CRASH_COOLDOWN_MS = 5000  // Wait 5s between auto-restarts
+const MAX_WATCH_CRASHES = 5  // Max crashes before giving up auto-restart
+
+// =============================================================================
+// Enhanced Build Error Context (for agent build recovery)
+// =============================================================================
+
+interface BuildErrorContext {
+  errorMessage: string
+  errorCategory: 'missing_files' | 'typescript_error' | 'dependency_missing' | 'syntax_error' | 'schema_sync' | 'build_tool' | 'unknown'
+  rootCause: string
+  canSelfFix: boolean
+  logFilePath: string
+  logExcerpt: string  // Last 30 lines of build log
+  detectedIssues: Array<{
+    type: string
+    file?: string
+    line?: number
+    suggestion: string
+  }>
+  recoverySteps: string[]
+}
+
+let buildErrorContext: BuildErrorContext | null = null
+
+/**
+ * Analyze build error and create rich error context for agent recovery
+ */
+function analyzeBuildError(errorLine: string): BuildErrorContext {
+  const logExcerpt = buildLogLines.slice(-30).join('\n')
+  const fullLog = buildLogLines.join('\n')
+  
+  // Detect error category and extract details
+  let category: BuildErrorContext['errorCategory'] = 'unknown'
+  let rootCause = errorLine
+  let canSelfFix = true
+  const detectedIssues: BuildErrorContext['detectedIssues'] = []
+  const recoverySteps: string[] = []
+  
+  // Pattern matching for common error types
+  const patterns = {
+    missingRoutesDir: /ENOENT.*scandir.*['"](.*routes.*)['"]/i,
+    missingFile: /ENOENT.*['"](.*)['"]/i,
+    noRouteFiles: /No route files found|no route files/i,
+    moduleNotFound: /Module not found|Cannot find module|Can't resolve ['"](.*)['"]/i,
+    typescriptError: /TS\d+:|error TS\d+|Type '.*' is not assignable/i,
+    syntaxError: /SyntaxError|Unexpected token|Parse error/i,
+    prismaError: /PrismaClient|prisma.*generate|@prisma\/client/i,
+    nitroError: /nitro|bundle.*size|chunk.*size/i,
+    invalidExtension: /Invalid.*extension|\.jsx.*not supported/i,
+    reactNotDefined: /React is not defined|'React' is not defined/i,
+    importError: /Cannot resolve|wrong.*path|import.*error/i,
+  }
+  
+  // Check for missing routes directory
+  if (patterns.missingRoutesDir.test(fullLog) || patterns.noRouteFiles.test(fullLog)) {
+    category = 'missing_files'
+    const match = fullLog.match(/['"](.*routes.*)['"]/i)
+    const routesPath = match ? match[1] : 'src/routes'
+    rootCause = `Routes directory or files missing: ${routesPath}`
+    detectedIssues.push({
+      type: 'missing_routes',
+      file: routesPath,
+      suggestion: 'Create routes directory and add at least one route file (index.tsx)'
+    })
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Check if routes directory exists: `ls -la src/routes/` or `ls -la src/`',
+      'STEP 3: If directory missing, create it: `mkdir -p src/routes`',
+      'STEP 4: Create index route file with basic route component',
+      'STEP 5: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for TypeScript errors
+  else if (patterns.typescriptError.test(fullLog) || patterns.reactNotDefined.test(fullLog)) {
+    category = 'typescript_error'
+    const tsMatch = fullLog.match(/TS(\d+):/i)
+    const fileMatch = fullLog.match(/([^\s]+\.tsx?):(\d+)/i)
+    rootCause = tsMatch ? `TypeScript error TS${tsMatch[1]}` : 'TypeScript compilation error'
+    if (fileMatch) {
+      detectedIssues.push({
+        type: 'typescript_error',
+        file: fileMatch[1],
+        line: parseInt(fileMatch[2], 10),
+        suggestion: 'Fix the TypeScript error in the indicated file and line'
+      })
+    }
+    if (patterns.reactNotDefined.test(fullLog)) {
+      detectedIssues.push({
+        type: 'missing_import',
+        suggestion: "Add `import React from 'react'` at the top of the component file"
+      })
+    }
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Identify the exact file and line with the error',
+      'STEP 3: Read the problematic file to understand the context',
+      'STEP 4: Fix the TypeScript error (missing import, type mismatch, etc.)',
+      'STEP 5: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for missing modules/imports
+  else if (patterns.moduleNotFound.test(fullLog) || patterns.importError.test(fullLog)) {
+    category = 'missing_files'
+    const moduleMatch = fullLog.match(/[Cc]an't resolve ['"](.*)['"]/i) || fullLog.match(/Module not found.*['"](.*)['"]/i)
+    rootCause = moduleMatch ? `Cannot resolve module: ${moduleMatch[1]}` : 'Module resolution error'
+    detectedIssues.push({
+      type: 'import_error',
+      suggestion: 'Check import path - may be wrong relative depth or missing file'
+    })
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Find the file with the bad import',
+      'STEP 3: Check if the imported file exists at that path',
+      'STEP 4: Fix the import path (check relative depth: ../ vs ../../)',
+      'STEP 5: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for schema/prisma sync issues
+  else if (patterns.prismaError.test(fullLog) || /schema.*sync|generated.*types.*stale/i.test(fullLog)) {
+    category = 'schema_sync'
+    rootCause = 'Prisma schema out of sync with generated files'
+    detectedIssues.push({
+      type: 'schema_sync',
+      suggestion: 'Run `bun run generate` to regenerate types from schema.prisma'
+    })
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Check if schema was recently modified: `cat prisma/schema.prisma`',
+      'STEP 3: Regenerate all SDK files: `bun run generate`',
+      'STEP 4: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for syntax errors
+  else if (patterns.syntaxError.test(fullLog)) {
+    category = 'syntax_error'
+    const fileMatch = fullLog.match(/([^\s]+\.[jt]sx?):(\d+)/i)
+    rootCause = 'JavaScript/TypeScript syntax error'
+    if (fileMatch) {
+      detectedIssues.push({
+        type: 'syntax_error',
+        file: fileMatch[1],
+        line: parseInt(fileMatch[2], 10),
+        suggestion: 'Fix the syntax error at the indicated location'
+      })
+    }
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Identify the file and line with the syntax error',
+      'STEP 3: Read the file to see the malformed code',
+      'STEP 4: Fix the syntax (missing bracket, quote, semicolon, etc.)',
+      'STEP 5: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for invalid file extensions
+  else if (patterns.invalidExtension.test(fullLog)) {
+    category = 'missing_files'
+    const fileMatch = fullLog.match(/([^\s]+\.jsx)/i)
+    rootCause = 'Invalid file extension (.jsx not supported, use .tsx)'
+    if (fileMatch) {
+      detectedIssues.push({
+        type: 'wrong_extension',
+        file: fileMatch[1],
+        suggestion: 'Rename file from .jsx to .tsx'
+      })
+    }
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Find the file with wrong extension',
+      'STEP 3: Rename the file: `mv src/routes/index.jsx src/routes/index.tsx`',
+      'STEP 4: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for build tool errors (Nitro, Vite)
+  else if (patterns.nitroError.test(fullLog)) {
+    category = 'build_tool'
+    rootCause = 'Build tool error (Nitro/Vite)'
+    canSelfFix = false  // These often need user intervention
+    detectedIssues.push({
+      type: 'build_tool_error',
+      suggestion: 'May require dependency update or configuration change'
+    })
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Check for specific Nitro/Vite error messages',
+      'STEP 3: This may require manual investigation - explain the issue to the user'
+    )
+  }
+  // Unknown error - still provide recovery steps
+  else {
+    category = 'unknown'
+    rootCause = errorLine || 'Unknown build error'
+    recoverySteps.push(
+      'STEP 1: Read the FULL build log first: `cat .build.log`',
+      'STEP 2: Search for "error" in the log to find the root cause',
+      'STEP 3: Identify the file(s) involved',
+      'STEP 4: Read the problematic file(s) to understand context',
+      'STEP 5: Apply appropriate fix based on error type',
+      'STEP 6: Wait for automatic rebuild and verify success'
+    )
+  }
+  
+  return {
+    errorMessage: errorLine,
+    errorCategory: category,
+    rootCause,
+    canSelfFix,
+    logFilePath: BUILD_LOG_PATH,
+    logExcerpt,
+    detectedIssues,
+    recoverySteps
+  }
+}
 
 function recordBuildTime(durationMs: number) {
   buildTimeHistory.push(durationMs)
@@ -1379,6 +1606,12 @@ const BROWSER_CONSOLE_CAPTURE_SCRIPT = `
 /**
  * Get current build status context for inclusion in agent system prompt.
  * Returns a formatted string describing the build state.
+ * 
+ * When there's a build error, this includes:
+ * - Rich error context with category and root cause
+ * - Explicit step-by-step recovery instructions
+ * - Last 30 lines of build log
+ * - Detected issues with suggestions
  */
 export function getBuildStatusContext(): string {
   const now = Date.now()
@@ -1390,7 +1623,12 @@ export function getBuildStatusContext(): string {
     const elapsed = buildStartTime ? Math.round((now - buildStartTime) / 1000) : 0
     status = `⏳ BUILD IN PROGRESS (${elapsed}s elapsed, avg build time: ${avgStr}) - Wait for completion before testing changes`
   } else if (buildState === 'error' && buildError) {
-    status = `❌ BUILD ERROR: ${buildError}\nFix the error and save the file - the build will retry automatically.`
+    // Use rich error context if available
+    if (buildErrorContext) {
+      status = formatBuildErrorWithRecovery(buildErrorContext)
+    } else {
+      status = `❌ BUILD ERROR: ${buildError}\nFix the error and save the file - the build will retry automatically.`
+    }
   } else if (buildState === 'success' || buildState === 'idle') {
     if (lastBuildTime) {
       const ago = Math.round((now - lastBuildTime) / 1000)
@@ -1415,6 +1653,22 @@ ${status}${avgInfo}
 - \`cat .console.log\` - Server console output (API handlers, server-side logs)
 - \`cat .browser.log\` - Browser console output (client-side logs, React errors, unhandled exceptions)
 - \`curl -s http://localhost:${PORT}/preview/status | jq .buildWatch\` - Build status as JSON`
+}
+
+/**
+ * Format build error with context for the agent.
+ */
+function formatBuildErrorWithRecovery(ctx: BuildErrorContext): string {
+  return `❌ BUILD ERROR: ${ctx.rootCause}
+
+**Error Category:** ${ctx.errorCategory}
+
+Read the full build log for details: \`cat .build.log\`
+
+**Log Excerpt (Last 30 Lines):**
+\`\`\`
+${ctx.logExcerpt}
+\`\`\``
 }
 
 // SSE clients listening for build events
@@ -1518,6 +1772,18 @@ function notifyBuildStateChange() {
     duration: buildDuration,
     lastBuildTime: lastBuildTime,
     error: buildError,
+    // Include error context for rich error display
+    errorContext: buildErrorContext ? {
+      category: buildErrorContext.errorCategory,
+      rootCause: buildErrorContext.rootCause,
+      canAutoRecover: buildErrorContext.canSelfFix,
+      suggestions: buildErrorContext.detectedIssues?.map(i => i.suggestion) || [],
+    } : null,
+    // Include last 10 lines of build log for quick preview
+    logPreview: buildLogLines.slice(-10).join('\n'),
+    // Include crash recovery info
+    watchCrashCount,
+    canAutoRestart: watchCrashCount <= MAX_WATCH_CRASHES,
     timestamp: Date.now(),
   })
   
@@ -1542,6 +1808,7 @@ function notifyBuildStateChange() {
 /**
  * Start Vite in watch mode with rebuild detection.
  * Monitors stdout for rebuild events and notifies SSE clients.
+ * Automatically recovers from crashes (like the nitro plugin Object.entries bug).
  */
 async function startViteBuildWatch(): Promise<void> {
   if (buildWatchProcess) {
@@ -1558,15 +1825,84 @@ async function startViteBuildWatch(): Promise<void> {
     env: process.env,
   })
   
+  const currentProcess = buildWatchProcess
+  
+  // Monitor process exit for auto-recovery
+  currentProcess.exited.then((exitCode) => {
+    // Only handle if this is still the current process
+    if (buildWatchProcess !== currentProcess) return
+    
+    console.log(`[project-runtime] ⚠️ Vite watch process exited with code ${exitCode}`)
+    buildWatchProcess = null
+    
+    // Handle crash recovery
+    const now = Date.now()
+    if (lastWatchCrashTime && now - lastWatchCrashTime > 60000) {
+      // Reset crash count if more than 1 minute since last crash
+      watchCrashCount = 0
+    }
+    
+    lastWatchCrashTime = now
+    watchCrashCount++
+    
+    // Check if this was likely the nitro plugin Object.entries bug
+    const isNitroBug = buildError?.includes('Object.entries') || 
+                       buildLogLines.some(l => l.includes('Object.entries'))
+    
+    if (isNitroBug) {
+      console.log('[project-runtime] 🔧 Detected nitro plugin Object.entries bug - will auto-recover')
+      appendToBuildLog('⚠️ Watch process crashed (known nitro plugin issue)')
+    }
+    
+    // Notify frontend of crash
+    buildState = 'error'
+    buildError = buildError || `Watch process crashed (exit code ${exitCode})`
+    buildErrorContext = {
+      errorMessage: buildError,
+      errorCategory: isNitroBug ? 'build_tool' : 'unknown',
+      rootCause: isNitroBug 
+        ? 'TanStack nitro plugin bug in watch mode (Object.entries on null)'
+        : 'Watch process exited unexpectedly',
+      canSelfFix: true,
+      logFilePath: '.build.log',
+      logExcerpt: buildLogLines.slice(-30).join('\n'),
+      detectedIssues: isNitroBug ? [{
+        type: 'nitro_watch_crash',
+        suggestion: 'This is a known bug in the nitro plugin. Auto-recovery in progress.'
+      }] : [],
+      recoverySteps: ['Automatic restart in progress...']
+    }
+    notifyBuildStateChange()
+    
+    // Auto-restart if under crash limit
+    if (watchCrashCount <= MAX_WATCH_CRASHES) {
+      const delay = WATCH_CRASH_COOLDOWN_MS * watchCrashCount  // Exponential backoff
+      console.log(`[project-runtime] 🔄 Auto-restarting watch in ${delay}ms (crash ${watchCrashCount}/${MAX_WATCH_CRASHES})`)
+      appendToBuildLog(`🔄 Auto-restarting watch in ${delay/1000}s...`)
+      
+      setTimeout(() => {
+        if (!buildWatchProcess) {
+          console.log('[project-runtime] 🔄 Attempting watch process recovery...')
+          startViteBuildWatch()
+        }
+      }, delay)
+    } else {
+      console.error(`[project-runtime] ❌ Watch process crashed ${watchCrashCount} times - giving up auto-restart`)
+      appendToBuildLog(`❌ Watch process crashed too many times. Use "Rebuild" button to restart.`)
+      buildError = 'Watch process crashed repeatedly. Use the Rebuild button to manually restart.'
+      notifyBuildStateChange()
+    }
+  })
+  
   // Stream stdout and detect rebuild events
   ;(async () => {
-    if (!buildWatchProcess || !buildWatchProcess.stdout) return
-    const stdout = buildWatchProcess.stdout
+    if (!currentProcess.stdout) return
+    const stdout = currentProcess.stdout
     if (typeof stdout === 'number') return
     const reader = stdout.getReader()
     const decoder = new TextDecoder()
     
-    while (buildWatchProcess) {
+    while (buildWatchProcess === currentProcess) {
       try {
         const { done, value } = await reader.read()
         if (done) break
@@ -1587,6 +1923,7 @@ async function startViteBuildWatch(): Promise<void> {
             buildState = 'building'
             buildStartTime = Date.now()
             buildError = null
+            buildErrorContext = null  // Clear error context on new build
             appendToBuildLog('🔨 Build started...')
             console.log('[project-runtime] 🔨 Vite rebuild started')
             notifyBuildStateChange()
@@ -1597,18 +1934,24 @@ async function startViteBuildWatch(): Promise<void> {
             if (buildDuration) recordBuildTime(buildDuration)
             appendToBuildLog(`✅ Build complete (${buildDuration}ms)`)
             console.log(`[project-runtime] ✅ Vite rebuild complete (${buildDuration}ms)`)
+            // Reset crash count on successful build
+            watchCrashCount = 0
             notifyBuildStateChange()
             
             // Return to idle after 1s
             setTimeout(() => {
-              buildState = 'idle'
-              notifyBuildStateChange()
+              if (buildState === 'success') {
+                buildState = 'idle'
+                notifyBuildStateChange()
+              }
             }, 1000)
           } else if (event === 'error') {
             buildState = 'error'
             buildError = line
+            buildErrorContext = analyzeBuildError(line)  // Create rich error context
             appendToBuildLog(`❌ Build error: ${line}`)
             console.error('[project-runtime] ❌ Vite rebuild error:', line)
+            console.log('[project-runtime] Error context:', JSON.stringify(buildErrorContext, null, 2))
             notifyBuildStateChange()
           }
         }
@@ -1621,13 +1964,13 @@ async function startViteBuildWatch(): Promise<void> {
   
   // Also stream stderr
   ;(async () => {
-    if (!buildWatchProcess || !buildWatchProcess.stderr) return
-    const stderr = buildWatchProcess.stderr
+    if (!currentProcess.stderr) return
+    const stderr = currentProcess.stderr
     if (typeof stderr === 'number') return
     const reader = stderr.getReader()
     const decoder = new TextDecoder()
     
-    while (buildWatchProcess) {
+    while (buildWatchProcess === currentProcess) {
       try {
         const { done, value } = await reader.read()
         if (done) break
@@ -1640,6 +1983,7 @@ async function startViteBuildWatch(): Promise<void> {
           if (buildState === 'building') {
             buildState = 'error'
             buildError = output
+            buildErrorContext = analyzeBuildError(output)  // Create rich error context
             notifyBuildStateChange()
           }
         }
@@ -2071,6 +2415,132 @@ app.post('/preview/restart', async (c) => {
     console.error(`[project-runtime] ⏱️  Preview restart error after ${totalMs}ms:`, error)
     return c.json({ success: false, error: error.message, timings: { steps: timings, totalMs } }, 500)
   }
+})
+
+/**
+ * Manual rebuild endpoint - triggers a fresh vite build and restarts watch mode.
+ * Use this when:
+ * - Watch mode has crashed and auto-recovery failed
+ * - User wants to force a full rebuild
+ * - Build is in an error state and user wants to retry
+ */
+app.post('/preview/rebuild', async (c) => {
+  const startTime = performance.now()
+  
+  console.log('[project-runtime] 🔨 Manual rebuild triggered')
+  appendToBuildLog('🔨 Manual rebuild triggered by user')
+  
+  try {
+    // 1. Stop existing watch process
+    stopViteBuildWatch()
+    
+    // Reset crash counter for manual rebuilds
+    watchCrashCount = 0
+    lastWatchCrashTime = null
+    
+    // 2. Clear error state and set to building
+    buildState = 'building'
+    buildStartTime = Date.now()
+    buildError = null
+    buildErrorContext = null
+    notifyBuildStateChange()
+    
+    // 3. Run a fresh vite build
+    console.log('[project-runtime] 🔨 Running fresh vite build...')
+    appendToBuildLog('🔨 Running fresh vite build...')
+    
+    const buildProc = Bun.spawnSync(['bun', '--bun', 'vite', 'build'], {
+      cwd: PROJECT_DIR,
+      env: process.env,
+    })
+    
+    const stdout = buildProc.stdout?.toString() || ''
+    const stderr = buildProc.stderr?.toString() || ''
+    
+    // Log output
+    if (stdout.trim()) {
+      appendToBuildLog(stdout)
+      console.log(`[vite] ${stdout}`)
+    }
+    if (stderr.trim()) {
+      appendToBuildLog(`[error] ${stderr}`)
+      console.error(`[vite:error] ${stderr}`)
+    }
+    
+    const durationMs = Math.round(performance.now() - startTime)
+    
+    if (buildProc.exitCode !== 0) {
+      buildState = 'error'
+      buildError = stderr || 'Build failed with exit code ' + buildProc.exitCode
+      buildErrorContext = analyzeBuildError(buildError)
+      buildDuration = durationMs
+      appendToBuildLog(`❌ Build failed (${durationMs}ms)`)
+      notifyBuildStateChange()
+      
+      return c.json({
+        success: false,
+        error: buildError,
+        buildLog: buildLogLines.slice(-50).join('\n'),
+        durationMs,
+      }, 500)
+    }
+    
+    // 4. Build succeeded - update state
+    buildState = 'success'
+    buildDuration = durationMs
+    lastBuildTime = Date.now()
+    recordBuildTime(durationMs)
+    appendToBuildLog(`✅ Build complete (${durationMs}ms)`)
+    console.log(`[project-runtime] ✅ Manual rebuild complete (${durationMs}ms)`)
+    notifyBuildStateChange()
+    
+    // 5. Restart watch mode for future changes
+    console.log('[project-runtime] 🔄 Restarting watch mode...')
+    await startViteBuildWatch()
+    
+    // Return to idle after short delay
+    setTimeout(() => {
+      if (buildState === 'success') {
+        buildState = 'idle'
+        notifyBuildStateChange()
+      }
+    }, 1000)
+    
+    return c.json({
+      success: true,
+      buildLog: buildLogLines.slice(-50).join('\n'),
+      durationMs,
+    })
+  } catch (error: any) {
+    const durationMs = Math.round(performance.now() - startTime)
+    console.error('[project-runtime] ❌ Manual rebuild error:', error)
+    
+    buildState = 'error'
+    buildError = error.message || 'Rebuild failed'
+    appendToBuildLog(`❌ Rebuild error: ${buildError}`)
+    notifyBuildStateChange()
+    
+    return c.json({
+      success: false,
+      error: error.message,
+      buildLog: buildLogLines.slice(-50).join('\n'),
+      durationMs,
+    }, 500)
+  }
+})
+
+/**
+ * Get the current build log (last N lines)
+ */
+app.get('/build-log', (c) => {
+  const lines = parseInt(c.req.query('lines') || '100', 10)
+  return c.json({
+    log: buildLogLines.slice(-lines).join('\n'),
+    totalLines: buildLogLines.length,
+    state: buildState,
+    error: buildError,
+    errorContext: buildErrorContext,
+  })
 })
 
 /**

@@ -17,13 +17,36 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   ArrowUp,
   Plus,
   Square,
   X,
   BarChart3,
-  Sparkles,
+  Zap,
+  Rocket,
+  Lock,
+  Crown,
 } from "lucide-react"
+
+// Agent mode configuration
+export type AgentMode = "basic" | "advanced"
+
+export interface AgentModeConfig {
+  id: AgentMode
+  label: string
+  description: string
+  icon: React.ReactNode
+  creditHint: string
+  /** Whether this mode requires a Pro subscription */
+  requiresPro?: boolean
+}
 
 // Maximum file size in bytes (4MB)
 const MAX_IMAGE_SIZE = 4 * 1024 * 1024
@@ -44,14 +67,43 @@ const SKILLS: SkillOption[] = (() => {
   }
 })()
 
+// Agent mode options
+// Credit pricing: Haiku ~0.025/5k tokens (min 0.2), Sonnet ~0.1/5k tokens (min 0.5)
+const AGENT_MODES: AgentModeConfig[] = [
+  {
+    id: "basic",
+    label: "Basic",
+    description: "Fast responses, 4x cheaper",
+    icon: <Zap className="h-3.5 w-3.5" />,
+    creditHint: "~0.2 credits",
+    requiresPro: false,
+  },
+  {
+    id: "advanced",
+    label: "Advanced",
+    description: "More capable, better quality",
+    icon: <Rocket className="h-3.5 w-3.5" />,
+    creditHint: "~0.5-1 credits",
+    requiresPro: true,
+  },
+]
+
 export interface ChatInputProps {
-  onSubmit: (content: string, imageData?: string | string[]) => void
+  onSubmit: (content: string, imageData?: string | string[], agentMode?: AgentMode) => void
   disabled?: boolean
   placeholder?: string
   /** Whether a stream is currently in progress */
   isStreaming?: boolean
   /** Callback to stop the current stream */
   onStop?: () => void
+  /** Current agent mode */
+  agentMode?: AgentMode
+  /** Callback when agent mode changes */
+  onAgentModeChange?: (mode: AgentMode) => void
+  /** Whether user has an active Pro subscription */
+  isPro?: boolean
+  /** Callback when user clicks upgrade (for locked features) */
+  onUpgradeClick?: () => void
 }
 
 export function ChatInput({
@@ -60,6 +112,10 @@ export function ChatInput({
   placeholder = "Ask Shogo...",
   isStreaming = false,
   onStop,
+  agentMode: controlledAgentMode,
+  onAgentModeChange,
+  isPro = false,
+  onUpgradeClick,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -78,6 +134,34 @@ export function ChatInput({
   useEffect(() => {
     pendingImagesRef.current = pendingImages
   }, [pendingImages])
+
+  // Agent mode state (controlled or uncontrolled)
+  // Default to "basic" for free users, "advanced" for Pro users
+  const [internalAgentMode, setInternalAgentMode] = useState<AgentMode>(isPro ? "advanced" : "basic")
+  const agentMode = controlledAgentMode ?? internalAgentMode
+  
+  const handleAgentModeChange = useCallback((mode: AgentMode) => {
+    const modeConfig = AGENT_MODES.find((m) => m.id === mode)
+    
+    // Check if mode requires Pro and user isn't Pro
+    if (modeConfig?.requiresPro && !isPro) {
+      // Trigger upgrade flow instead of changing mode
+      onUpgradeClick?.()
+      return
+    }
+    
+    if (onAgentModeChange) {
+      onAgentModeChange(mode)
+    } else {
+      setInternalAgentMode(mode)
+    }
+  }, [onAgentModeChange, isPro, onUpgradeClick])
+
+  // Get current agent mode config
+  const currentAgentConfig = useMemo(() => 
+    AGENT_MODES.find(m => m.id === agentMode) || AGENT_MODES[1],
+    [agentMode]
+  )
 
   // Skill picker state
   const [showSkillPicker, setShowSkillPicker] = useState(false)
@@ -477,7 +561,7 @@ export function ChatInput({
       ? pendingImages.map((img) => img.dataUrl)
       : undefined
 
-    onSubmit(trimmedContent, imageData)
+    onSubmit(trimmedContent, imageData, agentMode)
     textarea.value = ""
     setPendingImages([])
     setImageError(null)
@@ -487,7 +571,7 @@ export function ChatInput({
     
     // Reset textarea height after clearing
     resizeTextarea()
-  }, [disabled, onSubmit, pendingImages, resizeTextarea, isProcessingImages])
+  }, [disabled, onSubmit, pendingImages, resizeTextarea, isProcessingImages, agentMode])
 
   /**
    * Resize textarea on mount and when dependencies change
@@ -659,17 +743,63 @@ export function ChatInput({
               <span className="sr-only">Attach</span>
             </Button>
 
-            {/* Visual edits button */}
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={disabled}
-              className="h-8 gap-1.5 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted px-3"
+            {/* Agent mode selector */}
+            <Select
+              value={agentMode}
+              onValueChange={(value) => handleAgentModeChange(value as AgentMode)}
+              disabled={disabled || isStreaming}
             >
-              <Sparkles className="h-3.5 w-3.5" />
-              <span className="text-xs">Visual edits</span>
-            </Button>
+              <SelectTrigger 
+                className="h-8 w-auto gap-1.5 rounded-full border-0 bg-transparent text-muted-foreground hover:text-foreground hover:bg-muted px-3 shadow-none focus:ring-0"
+                data-testid="agent-mode-selector"
+              >
+                {currentAgentConfig.icon}
+                <span className="text-xs">{currentAgentConfig.label}</span>
+              </SelectTrigger>
+              <SelectContent align="start">
+                {AGENT_MODES.map((mode) => {
+                  const isLocked = mode.requiresPro && !isPro
+                  return (
+                    <SelectItem 
+                      key={mode.id} 
+                      value={mode.id}
+                      className={cn(
+                        "cursor-pointer",
+                        isLocked && "opacity-80"
+                      )}
+                      data-testid={`agent-mode-option-${mode.id}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        {isLocked ? (
+                          <Lock className="h-3.5 w-3.5 text-muted-foreground" />
+                        ) : (
+                          mode.icon
+                        )}
+                        <div className="flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-medium">{mode.label}</span>
+                            {mode.requiresPro && (
+                              <span className={cn(
+                                "inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full",
+                                isPro 
+                                  ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" 
+                                  : "bg-muted text-muted-foreground"
+                              )}>
+                                <Crown className="h-2.5 w-2.5" />
+                                PRO
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {isLocked ? "Upgrade to unlock" : `${mode.description} (${mode.creditHint})`}
+                          </div>
+                        </div>
+                      </div>
+                    </SelectItem>
+                  )
+                })}
+              </SelectContent>
+            </Select>
           </div>
 
           {/* Right side buttons */}

@@ -9,7 +9,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { Loader2, AlertCircle, RefreshCw } from "lucide-react"
+import { Loader2, AlertCircle, RefreshCw, Hammer } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { VIEWPORT_SIZES, type ViewportSize } from "./PreviewControls"
 
@@ -29,6 +29,15 @@ interface BuildWatchState {
   duration: number | null
   lastBuildTime: number | null
   error: string | null
+  errorContext?: {
+    category: string
+    rootCause: string
+    canAutoRecover: boolean
+    suggestions: string[]
+  } | null
+  logPreview?: string
+  watchCrashCount?: number
+  canAutoRestart?: boolean
 }
 
 /**
@@ -72,6 +81,8 @@ export interface RuntimePreviewPanelProps {
   onLoad?: () => void
   /** Viewport size for responsive preview */
   viewport?: ViewportSize
+  /** Callback when build error occurs with detailed info */
+  onBuildError?: (error: string, context?: BuildWatchState['errorContext'] | null) => void
 }
 
 export function RuntimePreviewPanel({
@@ -80,6 +91,7 @@ export function RuntimePreviewPanel({
   onError,
   onLoad,
   viewport = "desktop",
+  onBuildError,
 }: RuntimePreviewPanelProps) {
   const [sandboxUrl, setSandboxUrl] = useState<string | null>(null)
   const [sandboxAttributes, setSandboxAttributes] = useState<string>('')
@@ -92,6 +104,9 @@ export function RuntimePreviewPanel({
   const [isRebuilding, setIsRebuilding] = useState(false) // Track rebuild state for smooth overlay
   const [buildState, setBuildState] = useState<BuildWatchState['state']>('idle')
   const [lastBuildTime, setLastBuildTime] = useState<number | null>(null)
+  const [buildError, setBuildError] = useState<string | null>(null)
+  const [buildErrorContext, setBuildErrorContext] = useState<BuildWatchState['errorContext'] | null>(null)
+  const [isManualRebuilding, setIsManualRebuilding] = useState(false)
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const retryCountRef = useRef(0)
@@ -254,6 +269,54 @@ export function RuntimePreviewPanel({
   }
 
   /**
+   * Trigger a manual rebuild
+   */
+  const handleRebuild = useCallback(async () => {
+    if (!sandboxUrl || isManualRebuilding) return
+    
+    const url = new URL(sandboxUrl)
+    const baseUrl = `${url.protocol}//${url.host}`
+    
+    console.log('[RuntimePreviewPanel] Triggering manual rebuild...')
+    setIsManualRebuilding(true)
+    setBuildError(null)
+    setBuildErrorContext(null)
+    setIsRebuilding(true)
+    setStatusMessage('Manual rebuild in progress...')
+    
+    try {
+      const response = await fetch(`${baseUrl}/preview/rebuild`, {
+        method: 'POST',
+      })
+      
+      const data = await response.json()
+      
+      if (!response.ok || !data.success) {
+        console.error('[RuntimePreviewPanel] Rebuild failed:', data.error)
+        setBuildError(data.error || 'Rebuild failed')
+        setIsRebuilding(false)
+      } else {
+        console.log('[RuntimePreviewPanel] Rebuild succeeded')
+        // Refresh iframe after successful rebuild
+        setTimeout(() => {
+          if (iframeRef.current && sandboxUrl) {
+            setIframeLoaded(false)
+            const cacheBuster = Date.now()
+            const separator = sandboxUrl.includes('?') ? '&' : '?'
+            iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
+          }
+        }, 500)
+      }
+    } catch (err: any) {
+      console.error('[RuntimePreviewPanel] Rebuild error:', err)
+      setBuildError(err.message || 'Rebuild failed')
+      setIsRebuilding(false)
+    } finally {
+      setIsManualRebuilding(false)
+    }
+  }, [sandboxUrl, isManualRebuilding])
+
+  /**
    * Subscribe to build events via SSE for real-time rebuild notifications
    * MUST be defined before fetchSandboxUrlOnce which uses it
    */
@@ -276,10 +339,15 @@ export function RuntimePreviewPanel({
           const data = JSON.parse(event.data) as {
             state: BuildWatchState['state']
             lastBuildTime: number | null
+            error: string | null
+            errorContext?: BuildWatchState['errorContext']
+            logPreview?: string
+            watchCrashCount?: number
+            canAutoRestart?: boolean
             timestamp: number
           }
           
-          console.log('[RuntimePreviewPanel] Build state changed:', data.state)
+          console.log('[RuntimePreviewPanel] Build state changed:', data.state, data.error ? `(error: ${data.error})` : '')
           
           const prevState = buildState
           setBuildState(data.state)
@@ -289,11 +357,15 @@ export function RuntimePreviewPanel({
           if (data.state === 'building' && prevState !== 'building') {
             setIsRebuilding(true)
             setStatusMessage('Rebuilding project...')
+            setBuildError(null)
+            setBuildErrorContext(null)
           }
           
           // Refresh iframe when build succeeds
           if (data.state === 'success' && prevState === 'building') {
             console.log('[RuntimePreviewPanel] Build complete, refreshing preview...')
+            setBuildError(null)
+            setBuildErrorContext(null)
             // Wait a moment for server to be ready
             setTimeout(() => {
               if (iframeRef.current && sandboxUrl) {
@@ -305,10 +377,21 @@ export function RuntimePreviewPanel({
             }, 500)
           }
           
-          // Show error state
+          // Handle error state with enhanced context
           if (data.state === 'error') {
-            setError('Build failed - check console for details')
+            setBuildError(data.error || 'Build failed')
+            setBuildErrorContext(data.errorContext || null)
             setIsRebuilding(false)
+            
+            // Notify parent component of build error
+            if (onBuildError && data.error) {
+              onBuildError(data.error, data.errorContext)
+            }
+            
+            // Don't set general error if auto-recovery is in progress
+            if (!data.canAutoRestart) {
+              setError('Build failed - use Rebuild button to retry')
+            }
           }
         } catch (e) {
           console.error('[RuntimePreviewPanel] Error parsing build event:', e)
@@ -606,6 +689,50 @@ export function RuntimePreviewPanel({
             <div className="h-2 w-2 rounded-full bg-green-500" />
             <span className="text-xs font-medium text-green-600 dark:text-green-400">Build complete!</span>
           </div>
+        )}
+        
+        {/* Build error indicator with rebuild button */}
+        {buildState === 'error' && buildError && (
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/10 backdrop-blur-sm border border-red-500/20 shadow-sm animate-in fade-in slide-in-from-top-2 duration-200">
+            <AlertCircle className="h-4 w-4 text-red-500" />
+            <span className="text-xs font-medium text-red-600 dark:text-red-400 max-w-[200px] truncate" title={buildError}>
+              {buildErrorContext?.rootCause || 'Build failed'}
+            </span>
+            <button
+              onClick={handleRebuild}
+              disabled={isManualRebuilding}
+              className={cn(
+                "flex items-center gap-1 px-2 py-1 text-xs font-medium rounded bg-red-500 text-white hover:bg-red-600 transition-colors",
+                isManualRebuilding && "opacity-50 cursor-not-allowed"
+              )}
+              title="Trigger a manual rebuild"
+            >
+              {isManualRebuilding ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3 w-3" />
+              )}
+              Rebuild
+            </button>
+          </div>
+        )}
+        
+        {/* Rebuild button (shown when not in error state but build crashed) */}
+        {buildState !== 'error' && buildState !== 'building' && (
+          <button
+            onClick={handleRebuild}
+            disabled={isManualRebuilding || isRebuilding}
+            className={cn(
+              "p-2 rounded-full bg-background/90 backdrop-blur-sm border border-border hover:bg-muted transition-all shadow-sm hover:shadow-md",
+              (isManualRebuilding || isRebuilding) && "opacity-50 cursor-not-allowed"
+            )}
+            title="Trigger full rebuild"
+          >
+            <Hammer className={cn(
+              "h-4 w-4 text-muted-foreground",
+              isManualRebuilding && "animate-pulse"
+            )} />
+          </button>
         )}
         
         {/* Refresh button */}

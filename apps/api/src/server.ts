@@ -2722,22 +2722,78 @@ Examples:
 })
 
 /**
- * Calculate credit cost based on total tokens consumed.
+ * Model-specific credit pricing configuration.
  * 
- * Pricing: 0.1 credits per 5,000 tokens
- * - Round up to nearest 0.1 credits
- * - Minimum charge: 0.5 credits
+ * Pricing is based on Anthropic's model costs:
+ * - Haiku: ~$0.80/$4 per 1M tokens (input/output) - cheapest
+ * - Sonnet: ~$3/$15 per 1M tokens (input/output) - 4x more than Haiku
+ * 
+ * Credit rates (per 5000 tokens):
+ * - Haiku (basic): 0.025 credits
+ * - Sonnet (advanced): 0.1 credits
+ * 
+ * Minimum charges:
+ * - Haiku (basic): 0.2 credits
+ * - Sonnet (advanced): 0.5 credits
+ */
+const MODEL_CREDIT_CONFIG = {
+  haiku: {
+    creditsPerTokenBatch: 0.025, // 0.025 credits per 5000 tokens
+    tokenBatchSize: 5000,
+    minimumCharge: 0.2,
+  },
+  sonnet: {
+    creditsPerTokenBatch: 0.1, // 0.1 credits per 5000 tokens
+    tokenBatchSize: 5000,
+    minimumCharge: 0.5,
+  },
+  opus: {
+    creditsPerTokenBatch: 0.5, // 0.5 credits per 5000 tokens (5x Sonnet)
+    tokenBatchSize: 5000,
+    minimumCharge: 1.0,
+  },
+} as const
+
+type ModelName = keyof typeof MODEL_CREDIT_CONFIG
+type AgentMode = 'basic' | 'advanced'
+
+/**
+ * Map agent mode to model name for credit calculation.
+ */
+function agentModeToModel(agentMode?: AgentMode): ModelName {
+  if (agentMode === 'basic') return 'haiku'
+  return 'sonnet' // default for 'advanced' or undefined
+}
+
+/**
+ * Calculate credit cost based on total tokens consumed and model used.
  * 
  * @param totalTokens - Combined input + output tokens
- * @returns Credits to charge (minimum 0.5)
+ * @param modelOrAgentMode - Model name ('haiku', 'sonnet', 'opus') or agent mode ('basic', 'advanced')
+ * @returns Credits to charge (with model-specific minimum)
  */
-function calculateCreditCost(totalTokens: number): number {
-  // Rate: 0.1 credits per 5000 tokens
-  const rawCredits = (totalTokens / 5000) * 0.1
+function calculateCreditCost(
+  totalTokens: number,
+  modelOrAgentMode?: ModelName | AgentMode
+): number {
+  // Determine the model from input
+  let model: ModelName = 'sonnet' // default
+  if (modelOrAgentMode === 'basic' || modelOrAgentMode === 'advanced') {
+    model = agentModeToModel(modelOrAgentMode as AgentMode)
+  } else if (modelOrAgentMode && modelOrAgentMode in MODEL_CREDIT_CONFIG) {
+    model = modelOrAgentMode as ModelName
+  }
+  
+  const config = MODEL_CREDIT_CONFIG[model]
+  
+  // Calculate raw credits based on tokens
+  const rawCredits = (totalTokens / config.tokenBatchSize) * config.creditsPerTokenBatch
+  
   // Round up to nearest 0.1
   const rounded = Math.ceil(rawCredits * 10) / 10
-  // Enforce minimum of 0.5 credits
-  return Math.max(rounded, 0.5)
+  
+  // Enforce model-specific minimum
+  return Math.max(rounded, config.minimumCharge)
 }
 
 /**
@@ -2758,7 +2814,7 @@ function calculateCreditCost(totalTokens: number): number {
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, ccSessionId, workspaceId, userId, projectId } = await c.req.json()
+    const { messages, ccSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
 
     // Create project-scoped Claude Code instance if projectId is provided
     // This sets the cwd to the project's workspace directory for file operations
@@ -3082,6 +3138,7 @@ Use the Read, Write, and Edit tools to view and modify these files. All file pat
 
           // credit-tracking: Charge credits AFTER stream completes based on token usage
           // Fire-and-forget pattern - don't block the stream response
+          // credit-model-aware: Credit cost varies by model (basic=haiku is cheaper, advanced=sonnet is standard)
           if (workspaceId && userId) {
             (async () => {
               try {
@@ -3090,7 +3147,9 @@ Use the Read, Write, and Edit tools to view and modify these files. All file pat
                 const inputTokens = usage?.promptTokens ?? usage?.inputTokens ?? 0
                 const outputTokens = usage?.completionTokens ?? usage?.outputTokens ?? 0
                 const totalTokens = usage?.totalTokens ?? (inputTokens + outputTokens)
-                const creditCost = calculateCreditCost(totalTokens)
+                // Calculate credit cost based on agent mode (basic=haiku cheaper, advanced=sonnet standard)
+                const creditCost = calculateCreditCost(totalTokens, agentMode as AgentMode | undefined)
+                const modelUsed = agentMode === 'basic' ? 'haiku' : 'sonnet'
 
                 await billingService.consumeCredits(
                   workspaceId,
@@ -3103,9 +3162,11 @@ Use the Read, Write, and Edit tools to view and modify these files. All file pat
                     inputTokens,
                     outputTokens,
                     totalTokens,
+                    agentMode,
+                    modelUsed,
                   }
                 )
-                console.log(`[/api/chat] 💰 Charged ${creditCost} credits (${totalTokens} tokens) for workspace ${workspaceId}`)
+                console.log(`[/api/chat] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${modelUsed}) for workspace ${workspaceId}`)
               } catch (creditError: any) {
                 console.error(`[/api/chat] ⚠️ Failed to charge credits:`, creditError.message)
               }

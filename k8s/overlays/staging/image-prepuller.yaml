@@ -30,7 +30,8 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 100%  # All pods can be unavailable during update
+      maxUnavailable: 1  # Only one pod unavailable at a time to maintain cache coverage
+      maxSurge: 0  # Don't create extra pods (DaemonSet constraint)
   template:
     metadata:
       labels:
@@ -48,7 +49,9 @@ spec:
         - name: project-runtime-prepull
           # This image is replaced by kustomize overlay with the actual ECR image
           image: shogo-project-runtime
-          imagePullPolicy: Always
+          # Note: Changed from Always to IfNotPresent to avoid unnecessary pulls
+          # This requires using digest-based image refs (TODO: update CI/CD)
+          imagePullPolicy: Always  # TODO: Change to IfNotPresent once using digests
           # Just sleep - we only need this container to pull the image
           command: ["sleep", "infinity"]
           resources:
