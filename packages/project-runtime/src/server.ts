@@ -928,15 +928,21 @@ app.post('/agent/chat', async (c) => {
     
     const { messages, system, themeContext } = parsed.data
     
-    // Build system prompt with optional theme context
+    // Build system prompt with optional theme context and current build status
     // The prompt is defined in system-prompt.ts and can be updated via DSPy export
     const getSystemPrompt = () => {
+      // Get current build status context for the agent
+      const buildContext = getBuildStatusContext()
+      
       if (system) {
-        // Custom system prompt provided - use it with optional theme context
-        return themeContext ? `${system}\n\n${themeContext}` : system
+        // Custom system prompt provided - append build status and optional theme context
+        let prompt = system
+        if (buildContext) prompt = `${prompt}\n\n${buildContext}`
+        if (themeContext) prompt = `${prompt}\n\n${themeContext}`
+        return prompt
       }
-      // Use the default system prompt from system-prompt.ts
-      return buildSystemPrompt(PROJECT_DIR, themeContext)
+      // Use the default system prompt from system-prompt.ts with build status
+      return buildSystemPrompt(PROJECT_DIR, themeContext, buildContext)
     }
     
     // Convert to CoreMessage format, handling both string and parts content
@@ -1177,6 +1183,81 @@ let buildDuration: number | null = null
 let lastBuildTime: number | null = null
 let buildError: string | null = null
 
+// Build time history for calculating averages (last 10 builds)
+const BUILD_HISTORY_MAX = 10
+let buildTimeHistory: number[] = []
+
+function recordBuildTime(durationMs: number) {
+  buildTimeHistory.push(durationMs)
+  if (buildTimeHistory.length > BUILD_HISTORY_MAX) {
+    buildTimeHistory = buildTimeHistory.slice(-BUILD_HISTORY_MAX)
+  }
+}
+
+function getAverageBuildTime(): number | null {
+  if (buildTimeHistory.length === 0) return null
+  const sum = buildTimeHistory.reduce((a, b) => a + b, 0)
+  return Math.round(sum / buildTimeHistory.length)
+}
+
+// Build log - circular buffer of recent build output (last 500 lines)
+const BUILD_LOG_MAX_LINES = 500
+let buildLogLines: string[] = []
+const BUILD_LOG_PATH = join(PROJECT_DIR, '.build.log')
+
+function appendToBuildLog(line: string) {
+  const timestamp = new Date().toISOString().slice(11, 19) // HH:MM:SS
+  const logLine = `[${timestamp}] ${line}`
+  buildLogLines.push(logLine)
+  if (buildLogLines.length > BUILD_LOG_MAX_LINES) {
+    buildLogLines = buildLogLines.slice(-BUILD_LOG_MAX_LINES)
+  }
+  // Also write to file for agent access
+  try {
+    writeFileSync(BUILD_LOG_PATH, buildLogLines.join('\n'))
+  } catch (e) {
+    // Ignore write errors
+  }
+}
+
+/**
+ * Get current build status context for inclusion in agent system prompt.
+ * Returns a formatted string describing the build state.
+ */
+export function getBuildStatusContext(): string {
+  const now = Date.now()
+  let status = ''
+  const avgBuildTime = getAverageBuildTime()
+  const avgStr = avgBuildTime ? `${(avgBuildTime / 1000).toFixed(1)}s` : 'unknown'
+  
+  if (buildState === 'building') {
+    const elapsed = buildStartTime ? Math.round((now - buildStartTime) / 1000) : 0
+    status = `⏳ BUILD IN PROGRESS (${elapsed}s elapsed, avg build time: ${avgStr}) - Wait for completion before testing changes`
+  } else if (buildState === 'error' && buildError) {
+    status = `❌ BUILD ERROR: ${buildError}\nFix the error and save the file - the build will retry automatically.`
+  } else if (buildState === 'success' || buildState === 'idle') {
+    if (lastBuildTime) {
+      const ago = Math.round((now - lastBuildTime) / 1000)
+      const duration = buildDuration ? `${buildDuration}ms` : 'unknown'
+      status = `✅ BUILD READY (last build: ${ago}s ago, took ${duration})`
+    } else {
+      status = '✅ BUILD READY'
+    }
+  }
+  
+  // Add average build time info if we have history
+  const avgInfo = avgBuildTime 
+    ? `\nAverage build time: ${avgStr} (based on last ${buildTimeHistory.length} builds)`
+    : ''
+  
+  return `## Current Build Status
+
+${status}${avgInfo}
+
+To see recent build output: \`cat .build.log\`
+To check build status programmatically: \`curl -s http://localhost:${PORT}/preview/status | jq .buildWatch\``
+}
+
 // SSE clients listening for build events
 const buildEventClients = new Set<ReadableStreamDefaultController>()
 
@@ -1338,6 +1419,7 @@ async function startViteBuildWatch(): Promise<void> {
           // Log to console for debugging
           if (line.trim()) {
             console.log(`[vite] ${line}`)
+            appendToBuildLog(line)
           }
           
           // Parse for events
@@ -1346,12 +1428,15 @@ async function startViteBuildWatch(): Promise<void> {
             buildState = 'building'
             buildStartTime = Date.now()
             buildError = null
+            appendToBuildLog('🔨 Build started...')
             console.log('[project-runtime] 🔨 Vite rebuild started')
             notifyBuildStateChange()
           } else if (event === 'success') {
             buildState = 'success'
             buildDuration = buildStartTime ? Date.now() - buildStartTime : null
             lastBuildTime = Date.now()
+            if (buildDuration) recordBuildTime(buildDuration)
+            appendToBuildLog(`✅ Build complete (${buildDuration}ms)`)
             console.log(`[project-runtime] ✅ Vite rebuild complete (${buildDuration}ms)`)
             notifyBuildStateChange()
             
@@ -1363,6 +1448,7 @@ async function startViteBuildWatch(): Promise<void> {
           } else if (event === 'error') {
             buildState = 'error'
             buildError = line
+            appendToBuildLog(`❌ Build error: ${line}`)
             console.error('[project-runtime] ❌ Vite rebuild error:', line)
             notifyBuildStateChange()
           }
@@ -1389,6 +1475,7 @@ async function startViteBuildWatch(): Promise<void> {
         const output = decoder.decode(value)
         if (output.trim()) {
           console.error(`[vite:error] ${output}`)
+          appendToBuildLog(`[error] ${output}`)
           
           // Treat any stderr as potential error
           if (buildState === 'building') {
