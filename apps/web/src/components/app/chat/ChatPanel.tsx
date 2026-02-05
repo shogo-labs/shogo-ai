@@ -1573,6 +1573,15 @@ export const ChatPanel = observer(function ChatPanel({
       if (isStreamingRef.current) {
         return
       }
+
+      // Fix for duplicate message bug: Only sync on initial load when AI SDK has no messages
+      // During active session, AI SDK already has messages from sendMessage()
+      // This prevents duplicate messages from ID mismatch between MobX (ID-A) and AI SDK (ID-B)
+      if (messages.length > 0) {
+        console.log('[ChatPanel] Skipping message sync - AI SDK already has messages (active session)')
+        return
+      }
+
       // Don't overwrite if we've received streaming parts - they contain live tool invocations
       // that would be lost. But DO allow if persisted messages have parts (reload scenario).
       // feat-toolcall-rendering-on-reload: Check if persisted messages have parts
@@ -1584,20 +1593,6 @@ export const ChatPanel = observer(function ChatPanel({
       // Reset the ref if we're loading persisted parts (reload scenario)
       if (persistedHaveParts) {
         hasReceivedPartsRef.current = false
-      }
-
-      // Fix for duplicate message bug: Check if AI SDK already has messages with matching IDs
-      // This prevents overwriting when optimistic persistence adds a message that AI SDK already has
-      const persistedIds = new Set(persistedMessagesFromMobX.map((msg: any) => msg.id))
-      const aiSdkIds = new Set(messages.map(m => m.id))
-      const hasNewPersistedMessages = Array.from(persistedIds).some(id => !aiSdkIds.has(id))
-      const hasFewerAiSdkMessages = messages.length < persistedMessagesFromMobX.length
-      
-      // Only sync if there are genuinely new messages from persistence, or if AI SDK has fewer messages
-      // This prevents duplicate messages during the brief moment between optimistic add and server response
-      if (!hasNewPersistedMessages && !hasFewerAiSdkMessages) {
-        console.log('[ChatPanel] Skipping message sync - AI SDK already has these messages')
-        return
       }
 
       // feat-toolcall-rendering-on-reload: Reconstruct parts array from persisted JSON

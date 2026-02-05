@@ -1,20 +1,17 @@
 /**
- * ShareDropdown - Lovable.dev-style share panel
+ * ShareDropdown - Project sharing panel
  *
- * Exact styling matches:
- * - Avatar with coral background + "Share" text (no icon)
+ * Features:
+ * - Avatar with coral background + "Share" text
  * - "Add people" full-width button
- * - Clean project access list
+ * - Clean project access list (shows only invited collaborators)
+ * - Workspace access control
  * - Invite link toggle with "Create invite link" button
- * - Share preview and Publish project buttons
  */
 
-import { useState } from "react"
 import {
   Users,
   Link2,
-  Share2,
-  Globe,
   ChevronDown,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -22,9 +19,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuTrigger,
-  DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
-import { cn } from "@/lib/utils"
 
 interface Collaborator {
   id: string
@@ -36,7 +31,6 @@ interface Collaborator {
 export interface ShareDropdownProps {
   projectId: string
   collaborators?: Collaborator[]
-  currentUserName?: string
   userInitial?: string
   workspaceName?: string
   inviteLinkEnabled?: boolean
@@ -44,23 +38,16 @@ export interface ShareDropdownProps {
   onChangeRole?: (userId: string, role: string) => void
   onToggleInviteLink?: (enabled: boolean) => void
   onCreateInviteLink?: () => void
-  onSharePreview?: () => void
-  onPublish?: () => void
 }
 
 export function ShareDropdown({
-  projectId,
   collaborators = [],
-  currentUserName = "You",
   userInitial = "Y",
   workspaceName = "My Workspace",
   inviteLinkEnabled = false,
   onAddPeople,
-  onChangeRole,
   onToggleInviteLink,
   onCreateInviteLink,
-  onSharePreview,
-  onPublish,
 }: ShareDropdownProps) {
   return (
     <DropdownMenu>
@@ -119,15 +106,15 @@ export function ShareDropdown({
                     ))}
                   </div>
                 ) : (
-                  <div className="h-5 w-5 rounded-full bg-orange-500 flex items-center justify-center">
-                    <span className="text-[10px] font-medium text-white">{userInitial}</span>
-                  </div>
+                  <span className="text-xs text-muted-foreground">None yet</span>
                 )}
-                <ChevronDown className="h-3 w-3 ml-1 text-muted-foreground" />
+                {collaborators.length > 0 && (
+                  <ChevronDown className="h-3 w-3 ml-1 text-muted-foreground" />
+                )}
               </div>
             </div>
 
-            {/* Workspace */}
+            {/* Workspace - commented out until project-level permissions are implemented
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="h-5 w-5 rounded bg-orange-500/20 flex items-center justify-center">
@@ -142,17 +129,7 @@ export function ShareDropdown({
                 <ChevronDown className="h-3 w-3" />
               </Button>
             </div>
-
-            {/* Current User (Owner) */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="h-5 w-5 rounded-full bg-orange-500 flex items-center justify-center">
-                  <span className="text-[10px] font-medium text-white">{userInitial}</span>
-                </div>
-                <span className="text-sm">{currentUserName} (you)</span>
-              </div>
-              <span className="text-xs text-muted-foreground">Owner</span>
-            </div>
+            */}
 
             {/* Invite Link */}
             <div className="space-y-2">
@@ -179,29 +156,6 @@ export function ShareDropdown({
           </div>
         </div>
 
-        <DropdownMenuSeparator className="my-0" />
-
-        {/* Bottom Actions */}
-        <div className="p-3 flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-1 h-8 gap-1.5 text-xs"
-            onClick={onSharePreview}
-          >
-            <Share2 className="h-3.5 w-3.5" />
-            Share preview
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-1 h-8 gap-1.5 text-xs"
-            onClick={onPublish}
-          >
-            <Globe className="h-3.5 w-3.5" />
-            Publish project
-          </Button>
-        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   )
