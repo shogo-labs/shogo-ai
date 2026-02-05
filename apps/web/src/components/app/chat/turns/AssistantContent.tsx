@@ -30,9 +30,15 @@ export interface AssistantContentProps {
  * Handles both standard tool-invocation states and dynamic-tool states
  */
 function mapToolState(state?: string): ToolCallData["state"] {
-  if (state === "result" || state === "output-available") return "success"
-  if (state === "error") return "error"
-  return "streaming"
+  console.log("[mapToolState] Received state:", state)
+
+  // Known states from Claude Code dynamic-tool format:
+  if (state === "input-streaming") return "streaming"
+  if (state === "output-available") return "success"
+  if (state === "output-error") return "error"
+
+  // Default to success for unknown states (likely completed)
+  return "success"
 }
 
 /**
