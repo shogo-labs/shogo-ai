@@ -24,9 +24,9 @@ export const LoginPage = observer(function LoginPage() {
     e.preventDefault()
 
     if (mode === 'signin') {
-      await auth.signIn(email, password)
+      await auth.signIn({ email, password })
     } else {
-      await auth.signUp(email, password, name || undefined)
+      await auth.signUp({ email, password, name: name || undefined })
     }
   }
 

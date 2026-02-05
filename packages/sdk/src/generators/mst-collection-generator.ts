@@ -57,7 +57,7 @@ function toRoutePath(name: string): string {
 export function generateMSTCollection(model: PrismaModel): GeneratedMSTCollectionFile {
   const modelName = model.name
   const modelLower = toCamelCase(modelName)
-  const fileName = `${toFileName(modelName)}.collection.ts`
+  const fileName = `${toFileName(modelName)}.collection.tsx`
   const routePath = toRoutePath(modelName)
 
   // Get relation field names for transformForMST

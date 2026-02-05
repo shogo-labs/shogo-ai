@@ -261,7 +261,7 @@ function generateHookTypes(models: PrismaModel[]): string[] {
  */
 export function generateModelTypes(model: PrismaModel, enums: PrismaEnum[] = []): GeneratedTypeFile {
   const modelName = model.name
-  const fileName = `${toFileName(modelName)}.types.ts`
+  const fileName = `${toFileName(modelName)}.types.tsx`
 
   const lines: string[] = [
     '/**',

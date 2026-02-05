@@ -134,7 +134,7 @@ export function generateMSTModel(
   includedModelNames?: Set<string>
 ): GeneratedMSTModelFile {
   const modelName = model.name
-  const fileName = `${toFileName(modelName)}.model.ts`
+  const fileName = `${toFileName(modelName)}.model.tsx`
   
   const scalarFields = getScalarFields(model)
   const relationFields = getRelationFields(model)

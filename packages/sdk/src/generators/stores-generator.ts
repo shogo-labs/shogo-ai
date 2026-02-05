@@ -68,7 +68,7 @@ export function generateModelStore(
   const basePath = config.basePath || '/api'
   const modelName = model.name
   const modelLower = toCamelCase(modelName)
-  const fileName = `${toFileName(modelName)}.store.ts`
+  const fileName = `${toFileName(modelName)}.store.tsx`
   const routePath = toRoutePath(modelName)
   const endpoint = `${basePath}/${routePath}`
 

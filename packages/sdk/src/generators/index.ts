@@ -72,6 +72,21 @@ export {
   type GeneratedMSTDomainFile,
 } from './mst-domain-generator'
 
+// Server generator (Hono)
+export {
+  generateServer,
+  generateDbModule,
+  type ServerGeneratorConfig,
+} from './server-generator'
+
+// Auth store generator
+export {
+  generateAuthStore,
+  getUserModel,
+  hasUserModel,
+  type AuthStoreGeneratorOptions,
+} from './auth-store-generator'
+
 // Legacy exports (for backward compatibility)
 export { generateServerFunctions } from './server-functions'
 export { generateDomainStore } from './domain-store'

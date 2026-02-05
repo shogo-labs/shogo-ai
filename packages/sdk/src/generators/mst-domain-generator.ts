@@ -201,7 +201,7 @@ export function generateMSTDomain(models: PrismaModel[]): GeneratedMSTDomainFile
   lines.push('')
 
   return {
-    fileName: 'domain.ts',
+    fileName: 'domain.tsx',
     code: lines.join('\n'),
   }
 }

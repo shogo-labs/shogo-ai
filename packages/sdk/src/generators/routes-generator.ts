@@ -77,7 +77,7 @@ export function generateModelRoutes(
 
   const modelName = model.name
   const modelLower = toCamelCase(modelName)
-  const fileName = `${toFileName(modelName)}.routes.ts`
+  const fileName = `${toFileName(modelName)}.routes.tsx`
 
   const lines: string[] = [
     '/**',
@@ -348,7 +348,7 @@ export function generateModelRoutes(
  */
 export function generateModelHooks(model: PrismaModel): GeneratedHooksFile {
   const modelName = model.name
-  const fileName = `${toFileName(modelName)}.hooks.ts`
+  const fileName = `${toFileName(modelName)}.hooks.tsx`
 
   const lines: string[] = [
     '/**',
@@ -455,6 +455,9 @@ export function generateRoutes(
  * Generate index file for routes
  */
 export function generateRoutesIndex(models: PrismaModel[]): string {
+  // Filter to only models with @id field (skip composite key models)
+  const routeModels = models.filter(model => getIdField(model) !== undefined)
+
   const lines: string[] = [
     '/**',
     ' * Auto-generated Routes Index',
@@ -468,7 +471,7 @@ export function generateRoutesIndex(models: PrismaModel[]): string {
     '// Route imports',
   ]
 
-  for (const model of models) {
+  for (const model of routeModels) {
     const fileName = toFileName(model.name)
     lines.push(`import { create${model.name}Routes, setPrisma as setPrisma${model.name}, set${model.name}Hooks } from "./${fileName}.routes"`)
   }
@@ -476,7 +479,7 @@ export function generateRoutesIndex(models: PrismaModel[]): string {
   lines.push('')
   lines.push('// Hook imports')
 
-  for (const model of models) {
+  for (const model of routeModels) {
     const fileName = toFileName(model.name)
     const hookVarName = toCamelCase(model.name) + 'Hooks'
     lines.push(`import { ${hookVarName} } from "./${fileName}.hooks"`)
@@ -487,7 +490,7 @@ export function generateRoutesIndex(models: PrismaModel[]): string {
   lines.push('export {')
   
   const routeExports: string[] = []
-  for (const model of models) {
+  for (const model of routeModels) {
     routeExports.push(`  create${model.name}Routes`)
     routeExports.push(`  setPrisma${model.name}`)
     routeExports.push(`  set${model.name}Hooks`)
@@ -500,7 +503,7 @@ export function generateRoutesIndex(models: PrismaModel[]): string {
   lines.push('export {')
   
   const hookExports: string[] = []
-  for (const model of models) {
+  for (const model of routeModels) {
     const hookVarName = toCamelCase(model.name) + 'Hooks'
     hookExports.push(`  ${hookVarName}`)
   }
@@ -509,7 +512,7 @@ export function generateRoutesIndex(models: PrismaModel[]): string {
 
   lines.push('')
   lines.push('// Re-export hook types')
-  for (const model of models) {
+  for (const model of routeModels) {
     const fileName = toFileName(model.name)
     lines.push(`export type { ${model.name}Hooks } from "./${fileName}.hooks"`)
   }
@@ -523,14 +526,14 @@ export function generateRoutesIndex(models: PrismaModel[]): string {
   lines.push('')
   lines.push('  // Set Prisma client for all routes')
 
-  for (const model of models) {
+  for (const model of routeModels) {
     lines.push(`  setPrisma${model.name}(prisma)`)
   }
 
   lines.push('')
   lines.push('  // Set hooks for all routes')
 
-  for (const model of models) {
+  for (const model of routeModels) {
     const hookVarName = toCamelCase(model.name) + 'Hooks'
     lines.push(`  set${model.name}Hooks(${hookVarName})`)
   }
@@ -538,7 +541,7 @@ export function generateRoutesIndex(models: PrismaModel[]): string {
   lines.push('')
   lines.push('  // Mount routes')
 
-  for (const model of models) {
+  for (const model of routeModels) {
     const routePath = toRoutePath(model.name)
     lines.push(`  app.route("/${routePath}", create${model.name}Routes())`)
   }
