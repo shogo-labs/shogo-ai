@@ -83,6 +83,8 @@ export interface RuntimePreviewPanelProps {
   viewport?: ViewportSize
   /** Callback when build error occurs with detailed info */
   onBuildError?: (error: string, context?: BuildWatchState['errorContext'] | null) => void
+  /** Force refresh trigger - increment to force a preview refresh (backup for SSE failures) */
+  forceRefresh?: number
 }
 
 export function RuntimePreviewPanel({
@@ -92,6 +94,7 @@ export function RuntimePreviewPanel({
   onLoad,
   viewport = "desktop",
   onBuildError,
+  forceRefresh,
 }: RuntimePreviewPanelProps) {
   const [sandboxUrl, setSandboxUrl] = useState<string | null>(null)
   const [sandboxAttributes, setSandboxAttributes] = useState<string>('')
@@ -561,6 +564,30 @@ export function RuntimePreviewPanel({
       return () => clearTimeout(timeout)
     }
   }, [isRebuilding])
+
+  // Force refresh handler - backup mechanism when SSE fails
+  // Parent component (ProjectLayout) increments forceRefresh when AI modifies files
+  useEffect(() => {
+    // Skip initial render (forceRefresh starts at 0)
+    if (!forceRefresh || forceRefresh === 0) return
+    
+    // Only refresh if we have a sandbox URL and the iframe is loaded
+    if (iframeRef.current && sandboxUrl && iframeLoaded) {
+      console.log('[RuntimePreviewPanel] 🔄 Force refresh triggered by parent (forceRefresh:', forceRefresh, ')')
+      setIframeLoaded(false)
+      setIsRebuilding(true)
+      setStatusMessage('Files changed, refreshing preview...')
+      
+      // Wait a moment for file changes to be picked up by Vite
+      setTimeout(() => {
+        if (iframeRef.current && sandboxUrl) {
+          const cacheBuster = Date.now()
+          const separator = sandboxUrl.includes('?') ? '&' : '?'
+          iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
+        }
+      }, 1000) // 1 second delay to allow Vite to pick up changes
+    }
+  }, [forceRefresh, sandboxUrl, iframeLoaded])
 
   // Cleanup on unmount
   useEffect(() => {

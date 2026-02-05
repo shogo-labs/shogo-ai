@@ -217,7 +217,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const domainsReady = sdkReady && !!store?.projectCollection
 
   // Load project data using SDK store with retry logic
+  // CRITICAL FIX: Skip SDK loading if we already have project from navigation state
   useEffect(() => {
+    // If we already have a valid project from transition state, skip loading
+    if (project?.id === projectId) {
+      console.log('[ProjectLayout] Using project from navigation state:', projectId)
+      setIsLoading(false)
+      return
+    }
+
     if (!projectId || !domainsReady || !session?.user?.id) {
       return
     }
@@ -225,6 +233,22 @@ export const ProjectLayout = observer(function ProjectLayout() {
     let cancelled = false
     const MAX_RETRIES = 10
     const RETRY_DELAY_MS = 500
+
+    // Direct API fallback - used when SDK store fails
+    const fetchProjectFromAPI = async (): Promise<any | null> => {
+      try {
+        console.log('[ProjectLayout] Fetching project directly from API...')
+        const response = await fetch(`/api/projects/${projectId}`)
+        if (response.ok) {
+          const data = await response.json()
+          console.log('[ProjectLayout] Got project from API:', data.id)
+          return data
+        }
+      } catch (err) {
+        console.warn('[ProjectLayout] Direct API fetch failed:', err)
+      }
+      return null
+    }
 
     const loadProjectData = async (attempt = 1): Promise<void> => {
       if (cancelled) return
@@ -248,7 +272,17 @@ export const ProjectLayout = observer(function ProjectLayout() {
           setIsLoading(false)
         } else {
           // Project not found - could be race condition during creation
-          // Retry a few times before giving up
+          // After 3 attempts, try direct API fetch as fallback
+          if (attempt === 3) {
+            const apiProject = await fetchProjectFromAPI()
+            if (apiProject && !cancelled) {
+              setProject(apiProject)
+              setIsLoading(false)
+              return
+            }
+          }
+          
+          // Retry a few more times via SDK
           if (attempt < MAX_RETRIES) {
             // Only log at higher attempts to reduce noise
             if (attempt > 3) {
@@ -257,6 +291,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt))
             return loadProjectData(attempt + 1)
           }
+          
+          // Final fallback: try API one more time
+          const apiProject = await fetchProjectFromAPI()
+          if (apiProject && !cancelled) {
+            setProject(apiProject)
+            setIsLoading(false)
+            return
+          }
+          
           // Only warn after all retries exhausted
           console.warn("[ProjectLayout] Project not found after retries:", projectId)
           setIsLoading(false)
@@ -277,6 +320,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
         }
 
         console.error("[ProjectLayout] Failed to load project:", err)
+        
+        // Last resort: try direct API fetch on error
+        const apiProject = await fetchProjectFromAPI()
+        if (apiProject && !cancelled) {
+          setProject(apiProject)
+          setIsLoading(false)
+          return
+        }
+        
         setIsLoading(false)
       }
     }
@@ -286,7 +338,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
     return () => {
       cancelled = true
     }
-  }, [projectId, domainsReady, store, session?.user?.id])
+  }, [projectId, domainsReady, store, session?.user?.id, project?.id])
 
   // Get chat sessions for this project (synchronous - uses in-memory data from SDK store)
   const projectChatSessions: ChatSessionItem[] = projectId
@@ -849,6 +901,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   onLoad={handleRuntimeLoad}
                   viewport={currentViewport}
                   onBuildError={handleBuildError}
+                  forceRefresh={codeRefreshTrigger}
                 />
               </div>
               {/* Code Editor - stays mounted to preserve editor state */}
