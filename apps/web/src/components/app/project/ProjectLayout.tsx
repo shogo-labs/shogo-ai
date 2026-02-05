@@ -472,6 +472,25 @@ export const ProjectLayout = observer(function ProjectLayout() {
     console.log("Refresh preview")
   }, [])
 
+  const handleOpenExternal = useCallback(async () => {
+    if (!projectId) return
+    
+    try {
+      // Fetch the preview URL
+      const response = await fetch(`/api/projects/${projectId}/sandbox/url`)
+      const data = await response.json()
+      
+      if (response.ok && data.url) {
+        // Open the preview URL in a new tab
+        window.open(data.url, '_blank', 'noopener,noreferrer')
+      } else {
+        console.error('Failed to get preview URL:', data.error?.message || 'Unknown error')
+      }
+    } catch (err) {
+      console.error('Error opening preview in new tab:', err)
+    }
+  }, [projectId])
+
   // Publish handlers
   const handlePublish = useCallback(
     async (data: {
@@ -641,6 +660,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
           currentRoute={currentRoute}
           onRouteChange={handleRouteChange}
           onRefresh={handleRefresh}
+          onOpenExternal={handleOpenExternal}
           // Publish callbacks
           onPublish={handlePublish}
           onUnpublish={handleUnpublish}

@@ -10,7 +10,7 @@
  * - Navigation arrows and refresh
  */
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   Smartphone,
   Tablet,
@@ -59,10 +59,20 @@ export function PreviewControls({
   className,
 }: PreviewControlsProps) {
   const [routeInput, setRouteInput] = useState(currentRoute)
+  const [showUrlBar, setShowUrlBar] = useState(true)
+
+  // Sync routeInput with currentRoute when it changes externally
+  useEffect(() => {
+    setRouteInput(currentRoute)
+  }, [currentRoute])
 
   const handleRouteSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     onRouteChange?.(routeInput)
+  }
+
+  const handleToggleUrlBar = () => {
+    setShowUrlBar(prev => !prev)
   }
 
   return (
@@ -116,23 +126,29 @@ export function PreviewControls({
       <Button
         variant="ghost"
         size="icon"
-        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+        className={cn(
+          "h-7 w-7 text-muted-foreground hover:text-foreground",
+          showUrlBar && "bg-accent text-foreground"
+        )}
         title="Toggle URL bar"
+        onClick={handleToggleUrlBar}
       >
         <Monitor className="h-3.5 w-3.5" />
       </Button>
 
       {/* URL Input */}
-      <form onSubmit={handleRouteSubmit} className="flex items-center">
-        <div className="flex items-center h-7 rounded-md border border-border/40 bg-muted/30 px-2">
-          <Input
-            value={routeInput}
-            onChange={(e) => setRouteInput(e.target.value)}
-            className="h-5 w-24 border-0 bg-transparent px-0 text-xs focus-visible:ring-0 placeholder:text-muted-foreground/60"
-            placeholder="/"
-          />
-        </div>
-      </form>
+      {showUrlBar && (
+        <form onSubmit={handleRouteSubmit} className="flex items-center">
+          <div className="flex items-center h-7 rounded-md border border-border/40 bg-muted/30 px-2">
+            <Input
+              value={routeInput}
+              onChange={(e) => setRouteInput(e.target.value)}
+              className="h-5 w-24 border-0 bg-transparent px-0 text-xs focus-visible:ring-0 placeholder:text-muted-foreground/60"
+              placeholder="/"
+            />
+          </div>
+        </form>
+      )}
 
       {/* Navigation arrows */}
       <Button
