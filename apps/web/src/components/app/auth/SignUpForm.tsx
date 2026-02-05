@@ -20,9 +20,56 @@ import { cn } from "@/lib/utils"
 import { CheckCircle2, XCircle, AlertCircle } from "lucide-react"
 
 /**
- * Email validation regex - standard format check
+ * Email validation with proper domain validation
+ * Validates:
+ * - Basic email format (local@domain)
+ * - Domain structure (alphanumeric, hyphens, dots)
+ * - Valid TLD (top-level domain) with at least 2 characters
+ * - Domain doesn't start/end with dot or hyphen
  */
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+function isValidEmail(email: string): boolean {
+  if (!email || email.trim().length === 0) return false
+
+  // Basic format check: must have @ and at least one character before and after
+  const parts = email.split("@")
+  if (parts.length !== 2) return false
+
+  const [localPart, domainPart] = parts
+
+  // Local part validation (before @)
+  if (!localPart || localPart.length === 0 || localPart.length > 64) return false
+  if (localPart.startsWith(".") || localPart.endsWith(".")) return false
+  if (localPart.includes("..")) return false
+
+  // Domain part validation (after @)
+  if (!domainPart || domainPart.length === 0 || domainPart.length > 253) return false
+  if (domainPart.startsWith(".") || domainPart.startsWith("-") || domainPart.endsWith(".") || domainPart.endsWith("-")) return false
+  if (domainPart.includes("..")) return false
+
+  // Domain must contain at least one dot (for TLD)
+  if (!domainPart.includes(".")) return false
+
+  // Split domain into parts
+  const domainParts = domainPart.split(".")
+  if (domainParts.length < 2) return false
+
+  // Validate TLD (last part) - must be at least 2 characters, letters only
+  const tld = domainParts[domainParts.length - 1]
+  if (!tld || tld.length < 2 || !/^[a-zA-Z]+$/.test(tld)) return false
+
+  // Validate each domain segment
+  for (const segment of domainParts) {
+    if (segment.length === 0 || segment.length > 63) return false
+    // Domain segments can contain letters, numbers, and hyphens, but not start/end with hyphen
+    if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(segment)) return false
+  }
+
+  // Validate local part characters (letters, numbers, dots, hyphens, underscores, plus signs)
+  // Must start with alphanumeric; if it has multiple characters, must end with alphanumeric
+  if (!/^[a-zA-Z0-9]([a-zA-Z0-9._+-]*[a-zA-Z0-9])?$/.test(localPart)) return false
+
+  return true
+}
 
 /**
  * Password strength calculation
@@ -84,7 +131,7 @@ export const SignUpForm = observer(function SignUpForm() {
   const isLoading = auth.authStatus === "loading"
 
   // Email validation
-  const isEmailValid = useMemo(() => EMAIL_REGEX.test(email), [email])
+  const isEmailValid = useMemo(() => isValidEmail(email), [email])
   const showEmailError = emailTouched && email.length > 0 && !isEmailValid
 
   // Password strength
