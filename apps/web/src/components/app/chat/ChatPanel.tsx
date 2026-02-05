@@ -755,7 +755,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Store last user input for retry functionality (task-chat-retry-fix)
   // This allows retry to work even if AI SDK's reload() fails
-  const lastUserInputRef = useRef<{ content: string; imageData?: string } | null>(null)
+  const lastUserInputRef = useRef<{ content: string; imageData?: string[] } | null>(null)
 
   // Initialize ccSessionId from existing session (task-cc-chatpanel-integration)
   // This ensures session continuity when reloading the page or switching sessions
@@ -1753,22 +1753,44 @@ export const ChatPanel = observer(function ChatPanel({
   // chat-session-sync-fix: Handle message submission using v3 sendMessage() API
   // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
   // task-chatpanel-sendmessage: Extended to support imageData parameter
+  // Support multiple images: imageData is always an array (or undefined)
   // agent-mode: Extended to support agentMode parameter for model selection
   const handleSendMessage = useCallback(
-    async (content: string, imageData?: string, selectedAgentMode?: AgentMode) => {
+    async (content: string, imageData?: string[], selectedAgentMode?: AgentMode) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
       }
 
-      if (!content.trim() && !imageData) {
+      // Normalize imageData to array for processing (backward compatibility)
+      const imageArray = imageData || []
+
+      if (!content.trim() && imageArray.length === 0) {
         return
       }
 
       const trimmedContent = content.trim()
 
       // task-chat-retry-fix: Store input for potential retry
-      lastUserInputRef.current = { content: trimmedContent, imageData }
+      lastUserInputRef.current = { content: trimmedContent, imageData: imageArray }
+
+      // Build parts array for user message to preserve all images on reload
+      // Parts array format: [{ type: "text", text: "..." }, { type: "file", mediaType: "...", url: "..." }]
+      const parts: Array<{ type: "text"; text: string } | { type: "file"; mediaType: string; url: string }> = []
+      
+      // Add text part if content exists
+      if (trimmedContent) {
+        parts.push({ type: "text", text: trimmedContent })
+      }
+      
+      // Add file parts for all images
+      imageArray.forEach((dataUrl) => {
+        parts.push({
+          type: "file",
+          mediaType: extractMediaType(dataUrl),
+          url: dataUrl,
+        })
+      })
 
       // Fix for duplicate message bug: Set flag to prevent sync effect from running
       // while we're sending a message. This prevents the sync effect from adding the
@@ -1776,29 +1798,30 @@ export const ChatPanel = observer(function ChatPanel({
       isSendingMessageRef.current = true
 
       // Persist user message to local store (fire-and-forget)
-      // task-chatpanel-sendmessage: Include imageData when present
+      // task-chatpanel-sendmessage: Include imageData and parts array
+      // Store first image for backward compatibility with single imageData field
+      // Store parts array as JSON string to preserve all images on reload
       actions.addMessage({
         sessionId: currentSessionId,
         role: "user",
         content: trimmedContent,
-        imageData: imageData,
+        imageData: imageArray.length > 0 ? imageArray[0] : undefined,
+        parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
       }).catch((err) => console.warn("[ChatPanel] Failed to persist user message:", err))
 
       // Build the sendMessage options
       // task-chatpanel-sendmessage: Construct FileUIPart when image is attached
+      // Support multiple images by creating files array
       const messagePayload: { text: string; files?: Array<{ type: "file"; mediaType: string; url: string }> } = {
         text: trimmedContent,
       }
 
-      if (imageData) {
-        const mediaType = extractMediaType(imageData)
-        messagePayload.files = [
-          {
-            type: "file" as const,
-            mediaType,
-            url: imageData,
-          },
-        ]
+      if (imageArray.length > 0) {
+        messagePayload.files = imageArray.map((dataUrl) => ({
+          type: "file" as const,
+          mediaType: extractMediaType(dataUrl),
+          url: dataUrl,
+        }))
       }
 
       // chat-session-sync-fix: Send via v3 sendMessage() API
@@ -1841,10 +1864,15 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Handle form submit from ChatInput
   // task-chatpanel-sendmessage: Extended to support imageData parameter
+  // imageData is always an array (or undefined) for consistency
   // agent-mode: Extended to support agentMode parameter for model selection
   const handleInputSubmit = useCallback(
-    (content: string, imageData?: string, selectedAgentMode?: AgentMode) => {
-      handleSendMessage(content, imageData, selectedAgentMode)
+    (content: string, imageData?: string | string[], selectedAgentMode?: AgentMode) => {
+      // Normalize to array format (backward compatibility with old single string format)
+      const normalizedImageData = imageData 
+        ? (Array.isArray(imageData) ? imageData : [imageData])
+        : undefined
+      handleSendMessage(content, normalizedImageData, selectedAgentMode)
     },
     [handleSendMessage]
   )

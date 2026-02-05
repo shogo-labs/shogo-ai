@@ -62,6 +62,7 @@ export interface ProjectTopBarProps {
   currentRoute?: string
   onRouteChange?: (route: string) => void
   onRefresh?: () => void
+  onOpenExternal?: () => void
   onOpenCode?: () => void
   className?: string
 }
@@ -100,6 +101,7 @@ export function ProjectTopBar({
   currentRoute = "/",
   onRouteChange,
   onRefresh,
+  onOpenExternal,
   onOpenCode,
   className,
 }: ProjectTopBarProps) {
@@ -179,6 +181,7 @@ export function ProjectTopBar({
           currentRoute={currentRoute}
           onRouteChange={onRouteChange}
           onRefresh={onRefresh}
+          onOpenExternal={onOpenExternal}
           onOpenCode={onOpenCode}
         />
       </div>

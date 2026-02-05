@@ -16,7 +16,7 @@
 import { observer } from "mobx-react-lite"
 import { useEffect, useCallback, useState, useRef } from "react"
 import { useParams, useLocation } from "react-router-dom"
-import { useDomains, useSchemaLoadingState, useSDKDomain, useSDKReady } from "@/contexts/DomainProvider"
+import { useDomains, useSchemaLoadingState, useSDKDomain, useSDKReady, useSDKHttp } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
 import { ComponentRegistryProvider } from "@/components/rendering"
@@ -71,6 +71,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const store = useSDKDomain() as IDomainStore
   const sdkReady = useSDKReady()
   const actions = useDomainActions()
+  const http = useSDKHttp()
 
   // Legacy domains for componentBuilder (rendering) and platformFeatures
   const { platformFeatures, componentBuilder, studioChat, billing } = useDomains<{
@@ -491,6 +492,32 @@ export const ProjectLayout = observer(function ProjectLayout() {
     console.log("Refresh preview")
   }, [])
 
+  const handleOpenExternal = useCallback(async () => {
+    if (!projectId) return
+    
+    try {
+      // Fetch the preview URL using authenticated HTTP client
+      const response = await http.get<{
+        url: string
+        ready: boolean
+        error?: {
+          code: string
+          message: string
+          retryable?: boolean
+        }
+      }>(`/api/projects/${projectId}/sandbox/url`)
+      
+      if (response.data?.url && response.data?.ready) {
+        // Open the preview URL in a new tab
+        window.open(response.data.url, '_blank', 'noopener,noreferrer')
+      } else {
+        console.error('Failed to get preview URL:', response.data?.error?.message || 'Preview not ready')
+      }
+    } catch (err) {
+      console.error('Error opening preview in new tab:', err)
+    }
+  }, [projectId, http])
+
   // Publish handlers
   const handlePublish = useCallback(
     async (data: {
@@ -660,6 +687,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
           currentRoute={currentRoute}
           onRouteChange={handleRouteChange}
           onRefresh={handleRefresh}
+          onOpenExternal={handleOpenExternal}
           onOpenCode={() => setPreviewMode('code')}
           // Publish callbacks
           onPublish={handlePublish}
