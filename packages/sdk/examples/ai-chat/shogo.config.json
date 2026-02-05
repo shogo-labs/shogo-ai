@@ -6,10 +6,6 @@
       "generate": ["routes", "hooks", "types", "api-client", "auth"]
     },
     {
-      "dir": ".",
-      "generate": ["server"]
-    },
-    {
       "dir": "./src/lib",
       "generate": ["db"]
     }

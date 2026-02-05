@@ -6,20 +6,23 @@
 
 export interface MessageType {
   id: string
-  role: string
-  content: string
   chatId: string
+  role: string
+  parts: string
+  attachments: string
   createdAt: Date
 }
 
 export interface MessageCreateInput {
-  role: string
-  content: string
   chatId: string
+  role: string
+  parts?: string
+  attachments?: string
 }
 
 export interface MessageUpdateInput {
-  role?: string
-  content?: string
   chatId?: string
+  role?: string
+  parts?: string
+  attachments?: string
 }

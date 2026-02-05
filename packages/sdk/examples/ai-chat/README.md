@@ -1,176 +1,71 @@
-# AI Chat
+<a href="https://chat.vercel.ai/">
+  <img alt="Next.js 14 and App Router-ready AI chatbot." src="app/(chat)/opengraph-image.png">
+  <h1 align="center">Chat SDK</h1>
+</a>
 
-A full-featured AI chatbot application built with the Vercel AI SDK and @shogo-ai/sdk. This example demonstrates how to build a ChatGPT-like interface with conversation history, streaming responses, and user authentication.
+<p align="center">
+    Chat SDK is a free, open-source template built with Next.js and the AI SDK that helps you quickly build powerful chatbot applications.
+</p>
 
-**Adapted from [Vercel AI Chatbot](https://github.com/vercel/ai-chatbot)** - converted from Next.js to TanStack Start + Vite + Bun.
+<p align="center">
+  <a href="https://chat-sdk.dev"><strong>Read Docs</strong></a> ·
+  <a href="#features"><strong>Features</strong></a> ·
+  <a href="#model-providers"><strong>Model Providers</strong></a> ·
+  <a href="#deploy-your-own"><strong>Deploy Your Own</strong></a> ·
+  <a href="#running-locally"><strong>Running locally</strong></a>
+</p>
+<br/>
 
 ## Features
 
-- 🤖 **AI-powered chat** using OpenAI GPT models via Vercel AI SDK
-- 💬 **Conversation history** with persistent chat storage
-- 🔐 **User authentication** with email-based login
-- 📝 **Multiple chats** with sidebar navigation
-- ⚡ **Real-time responses** with loading states
-- 🎨 **Dark theme UI** with responsive design
-- 🗃️ **PostgreSQL database** with Prisma ORM
+- [Next.js](https://nextjs.org) App Router
+  - Advanced routing for seamless navigation and performance
+  - React Server Components (RSCs) and Server Actions for server-side rendering and increased performance
+- [AI SDK](https://ai-sdk.dev/docs/introduction)
+  - Unified API for generating text, structured objects, and tool calls with LLMs
+  - Hooks for building dynamic chat and generative user interfaces
+  - Supports xAI (default), OpenAI, Fireworks, and other model providers
+- [shadcn/ui](https://ui.shadcn.com)
+  - Styling with [Tailwind CSS](https://tailwindcss.com)
+  - Component primitives from [Radix UI](https://radix-ui.com) for accessibility and flexibility
+- Data Persistence
+  - [Neon Serverless Postgres](https://vercel.com/marketplace/neon) for saving chat history and user data
+  - [Vercel Blob](https://vercel.com/storage/blob) for efficient file storage
+- [Auth.js](https://authjs.dev)
+  - Simple and secure authentication
 
-## Quick Start
+## Model Providers
 
-```bash
-# Install dependencies
-bun install
+This template uses the [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) to access multiple AI models through a unified interface. The default configuration includes [xAI](https://x.ai) models (`grok-2-vision-1212`, `grok-3-mini`) routed through the gateway.
 
-# Generate Prisma client
-bun run db:generate
+### AI Gateway Authentication
 
-# Push schema to database
-bun run db:push
+**For Vercel deployments**: Authentication is handled automatically via OIDC tokens.
 
-# Start development server
-bun run dev
-```
+**For non-Vercel deployments**: You need to provide an AI Gateway API key by setting the `AI_GATEWAY_API_KEY` environment variable in your `.env.local` file.
 
-Open [http://localhost:3005](http://localhost:3005) in your browser.
+With the [AI SDK](https://ai-sdk.dev/docs/introduction), you can also switch to direct LLM providers like [OpenAI](https://openai.com), [Anthropic](https://anthropic.com), [Cohere](https://cohere.com/), and [many more](https://ai-sdk.dev/providers/ai-sdk-providers) with just a few lines of code.
 
-## Configuration
+## Deploy Your Own
 
-### OpenAI API Key
+You can deploy your own version of the Next.js AI Chatbot to Vercel with one click:
 
-To enable actual AI responses (instead of demo mode), create a `.env` file:
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/templates/next.js/nextjs-ai-chatbot)
 
-```env
-OPENAI_API_KEY=sk-your-openai-api-key-here
-```
+## Running locally
 
-Without an API key, the app runs in "demo mode" and returns a message explaining how to configure it.
+You will need to use the environment variables [defined in `.env.example`](.env.example) to run Next.js AI Chatbot. It's recommended you use [Vercel Environment Variables](https://vercel.com/docs/projects/environment-variables) for this, but a `.env` file is all that is necessary.
 
-## Tech Stack
+> Note: You should not commit your `.env` file or it will expose secrets that will allow others to control access to your various AI and authentication provider accounts.
 
-- **Runtime**: Bun
-- **Framework**: TanStack Start + Vite
-- **UI**: React with custom CSS (dark theme)
-- **Database**: PostgreSQL with Prisma
-- **AI**: Vercel AI SDK with OpenAI
-- **SDK**: @shogo-ai/sdk for database access
-
-## Project Structure
-
-```
-ai-chat/
-├── prisma/
-│   └── schema.prisma      # Database schema (User, Chat, Message)
-├── src/
-│   ├── lib/
-│   │   ├── ai.ts          # AI SDK configuration
-│   │   └── shogo.ts       # @shogo-ai/sdk setup
-│   ├── routes/
-│   │   ├── __root.tsx     # Root layout with styles
-│   │   └── index.tsx      # Main chat interface
-│   └── utils/
-│       ├── db.ts          # Prisma client
-│       ├── user.ts        # User server functions
-│       ├── chats.ts       # Chat server functions
-│       ├── messages.ts    # Message server functions
-│       └── ai.ts          # AI generation functions
-├── tests/
-│   └── e2e.test.ts        # Playwright E2E tests
-└── package.json
-```
-
-## Database Schema
-
-### User
-- `id` - Unique identifier
-- `email` - User email (unique)
-- `password` - Optional password
-- `createdAt` / `updatedAt` - Timestamps
-
-### Chat
-- `id` - Unique identifier
-- `title` - Chat title (auto-generated from first message)
-- `visibility` - "public" or "private"
-- `userId` - Owner reference
-- `createdAt` / `updatedAt` - Timestamps
-
-### Message
-- `id` - Unique identifier
-- `role` - "user", "assistant", or "system"
-- `content` - Message content
-- `chatId` - Chat reference
-- `createdAt` - Timestamp
-
-## API / Server Functions
-
-### User Functions
-- `getCurrentUser()` - Get the current user
-- `createUser({ email, password? })` - Create a new user
-- `loginUser({ email, password? })` - Sign in or create user
-
-### Chat Functions
-- `getChats({ userId })` - List user's chats
-- `getChat({ chatId, userId })` - Get chat with messages
-- `createChat({ userId, title?, visibility? })` - Create new chat
-- `updateChatTitle({ chatId, userId, title })` - Update title
-- `deleteChat({ chatId, userId })` - Delete a chat
-
-### Message Functions
-- `getMessages({ chatId, userId })` - Get chat messages
-- `saveMessage({ chatId, userId, role, content })` - Save a message
-- `deleteMessage({ messageId, userId })` - Delete a message
-
-### AI Functions
-- `generateAIResponse({ messages, chatId, userId, model? })` - Generate AI response
-- `quickChat({ message, history? })` - Simple chat without persistence
-
-## Running Tests
+1. Install Vercel CLI: `npm i -g vercel`
+2. Link local instance with Vercel and GitHub accounts (creates `.vercel` directory): `vercel link`
+3. Download your environment variables: `vercel env pull`
 
 ```bash
-# Run E2E tests
-bun run test
-
-# Run with UI
-bun run test:ui
-
-# Run headed (see browser)
-bun run test:headed
+pnpm install
+pnpm db:migrate # Setup database or apply latest database changes
+pnpm dev
 ```
 
-## Customization
-
-### Changing the AI Model
-
-Edit `src/lib/ai.ts` to change the default model:
-
-```typescript
-export function getLanguageModel(modelId: string = 'gpt-4') {
-  return openai(modelId)
-}
-```
-
-### Custom System Prompt
-
-Edit the `systemPrompt` in `src/lib/ai.ts`:
-
-```typescript
-export const systemPrompt = `You are a helpful assistant specialized in...`
-```
-
-### Using Different Providers
-
-The AI SDK supports multiple providers. To use Anthropic:
-
-```typescript
-import { createAnthropic } from '@ai-sdk/anthropic'
-
-export const anthropic = createAnthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-})
-
-export function getLanguageModel() {
-  return anthropic('claude-3-sonnet-20240229')
-}
-```
-
-## License
-
-MIT - Based on [Vercel AI Chatbot](https://github.com/vercel/ai-chatbot)
+Your app template should now be running on [localhost:3000](http://localhost:3000).

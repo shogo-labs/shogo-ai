@@ -11,11 +11,13 @@ import { PrismaClient } from "./prisma/client"
 import { createUserRoutes, setPrisma as setPrismaUser, setUserHooks } from "./user.routes"
 import { createChatRoutes, setPrisma as setPrismaChat, setChatHooks } from "./chat.routes"
 import { createMessageRoutes, setPrisma as setPrismaMessage, setMessageHooks } from "./message.routes"
+import { createDocumentRoutes, setPrisma as setPrismaDocument, setDocumentHooks } from "./document.routes"
 
 // Hook imports
 import { userHooks } from "./user.hooks"
 import { chatHooks } from "./chat.hooks"
 import { messageHooks } from "./message.hooks"
+import { documentHooks } from "./document.hooks"
 
 // Re-export route creators and setters
 export {
@@ -27,20 +29,25 @@ export {
   setChatHooks,
   createMessageRoutes,
   setPrismaMessage,
-  setMessageHooks
+  setMessageHooks,
+  createDocumentRoutes,
+  setPrismaDocument,
+  setDocumentHooks
 }
 
 // Re-export hooks (model-specific)
 export {
   userHooks,
   chatHooks,
-  messageHooks
+  messageHooks,
+  documentHooks
 }
 
 // Re-export hook types
 export type { UserHooks } from "./user.hooks"
 export type { ChatHooks } from "./chat.hooks"
 export type { MessageHooks } from "./message.hooks"
+export type { DocumentHooks } from "./document.hooks"
 
 /**
  * Create all routes and mount them on a single Hono app
@@ -52,16 +59,19 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
   setPrismaUser(prisma)
   setPrismaChat(prisma)
   setPrismaMessage(prisma)
+  setPrismaDocument(prisma)
 
   // Set hooks for all routes
   setUserHooks(userHooks)
   setChatHooks(chatHooks)
   setMessageHooks(messageHooks)
+  setDocumentHooks(documentHooks)
 
   // Mount routes
   app.route("/users", createUserRoutes())
   app.route("/chats", createChatRoutes())
   app.route("/messages", createMessageRoutes())
+  app.route("/documents", createDocumentRoutes())
 
   return app
 }
@@ -76,3 +86,5 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
 export * from "./user.types"
 export * from "./chat.types"
 export * from "./message.types"
+export * from "./vote.types"
+export * from "./document.types"

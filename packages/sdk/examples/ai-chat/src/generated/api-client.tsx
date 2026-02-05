@@ -15,6 +15,12 @@ import type {
   MessageType,
   MessageCreateInput,
   MessageUpdateInput,
+  VoteType,
+  VoteCreateInput,
+  VoteUpdateInput,
+  DocumentType,
+  DocumentCreateInput,
+  DocumentUpdateInput,
 } from './types'
 
 // ============================================================================
@@ -24,6 +30,11 @@ import type {
 export interface ApiResponse<T> {
   ok: boolean
   data?: T
+  error?: { code: string; message: string }
+}
+
+export interface ApiListResponse<T> {
+  ok: boolean
   items?: T[]
   error?: { code: string; message: string }
 }
@@ -117,7 +128,7 @@ export const userApi = {
    * @param options.offset - Number of records to skip
    * @param options.params - Additional query parameters to append to the request
    */
-  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiResponse<UserType[]>> {
+  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiListResponse<UserType>> {
     const params = new URLSearchParams()
     
     // Add where filters as query params
@@ -144,8 +155,7 @@ export const userApi = {
     if (config.userId) params.set('userId', config.userId)
     
     const query = params.toString() ? `?${params.toString()}` : ''
-    const result = await request<UserType>('GET', `/users${query}`)
-    return { ok: result.ok, items: result.items, error: result.error }
+    return request<UserType>('GET', `/users${query}`) as Promise<ApiListResponse<UserType>>
   },
 
   /**
@@ -191,7 +201,7 @@ export const chatApi = {
    * @param options.offset - Number of records to skip
    * @param options.params - Additional query parameters to append to the request
    */
-  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiResponse<ChatType[]>> {
+  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiListResponse<ChatType>> {
     const params = new URLSearchParams()
     
     // Add where filters as query params
@@ -218,8 +228,7 @@ export const chatApi = {
     if (config.userId) params.set('userId', config.userId)
     
     const query = params.toString() ? `?${params.toString()}` : ''
-    const result = await request<ChatType>('GET', `/chats${query}`)
-    return { ok: result.ok, items: result.items, error: result.error }
+    return request<ChatType>('GET', `/chats${query}`) as Promise<ApiListResponse<ChatType>>
   },
 
   /**
@@ -265,7 +274,7 @@ export const messageApi = {
    * @param options.offset - Number of records to skip
    * @param options.params - Additional query parameters to append to the request
    */
-  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiResponse<MessageType[]>> {
+  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiListResponse<MessageType>> {
     const params = new URLSearchParams()
     
     // Add where filters as query params
@@ -292,8 +301,7 @@ export const messageApi = {
     if (config.userId) params.set('userId', config.userId)
     
     const query = params.toString() ? `?${params.toString()}` : ''
-    const result = await request<MessageType>('GET', `/messages${query}`)
-    return { ok: result.ok, items: result.items, error: result.error }
+    return request<MessageType>('GET', `/messages${query}`) as Promise<ApiListResponse<MessageType>>
   },
 
   /**
@@ -326,6 +334,81 @@ export const messageApi = {
   },
 }
 
+// Skipped Vote - no @id field found
+
+// ============================================================================
+// Document API Client
+// ============================================================================
+
+export const documentApi = {
+  /**
+   * List all Document records
+   * @param options - Query options including where filters, pagination, and custom query params
+   * @param options.where - Filter conditions (passed as query params to the API)
+   * @param options.limit - Maximum number of records to return
+   * @param options.offset - Number of records to skip
+   * @param options.params - Additional query parameters to append to the request
+   */
+  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiListResponse<DocumentType>> {
+    const params = new URLSearchParams()
+    
+    // Add where filters as query params
+    if (options?.where) {
+      for (const [key, value] of Object.entries(options.where)) {
+        if (value !== undefined && value !== null) {
+          params.set(key, String(value))
+        }
+      }
+    }
+    
+    // Add additional params
+    if (options?.params) {
+      for (const [key, value] of Object.entries(options.params)) {
+        if (value !== undefined && value !== null) {
+          params.set(key, String(value))
+        }
+      }
+    }
+    
+    // Add pagination
+    if (options?.limit) params.set('limit', String(options.limit))
+    if (options?.offset) params.set('offset', String(options.offset))
+    if (config.userId) params.set('userId', config.userId)
+    
+    const query = params.toString() ? `?${params.toString()}` : ''
+    return request<DocumentType>('GET', `/documents${query}`) as Promise<ApiListResponse<DocumentType>>
+  },
+
+  /**
+   * Get a single Document by ID
+   */
+  async get(id: string): Promise<ApiResponse<DocumentType>> {
+    return request<DocumentType>('GET', `/documents/${id}`)
+  },
+
+  /**
+   * Create a new Document
+   */
+  async create(input: DocumentCreateInput): Promise<ApiResponse<DocumentType>> {
+    const body = config.userId ? { ...input, userId: config.userId } : input
+    return request<DocumentType>('POST', `/documents`, body)
+  },
+
+  /**
+   * Update an existing Document
+   */
+  async update(id: string, input: DocumentUpdateInput): Promise<ApiResponse<DocumentType>> {
+    return request<DocumentType>('PATCH', `/documents/${id}`, input)
+  },
+
+  /**
+   * Delete a Document
+   */
+  async delete(id: string): Promise<ApiResponse<void>> {
+    return request<void>('DELETE', `/documents/${id}`)
+  },
+}
+
 // ============================================================================
 // Combined API Client
 // ============================================================================
@@ -337,6 +420,7 @@ export const api = {
   user: userApi,
   chat: chatApi,
   message: messageApi,
+  document: documentApi,
 }
 
 export default api

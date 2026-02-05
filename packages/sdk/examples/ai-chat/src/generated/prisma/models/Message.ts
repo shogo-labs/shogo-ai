@@ -26,25 +26,28 @@ export type AggregateMessage = {
 
 export type MessageMinAggregateOutputType = {
   id: string | null
-  role: string | null
-  content: string | null
   chatId: string | null
+  role: string | null
+  parts: string | null
+  attachments: string | null
   createdAt: Date | null
 }
 
 export type MessageMaxAggregateOutputType = {
   id: string | null
-  role: string | null
-  content: string | null
   chatId: string | null
+  role: string | null
+  parts: string | null
+  attachments: string | null
   createdAt: Date | null
 }
 
 export type MessageCountAggregateOutputType = {
   id: number
-  role: number
-  content: number
   chatId: number
+  role: number
+  parts: number
+  attachments: number
   createdAt: number
   _all: number
 }
@@ -52,25 +55,28 @@ export type MessageCountAggregateOutputType = {
 
 export type MessageMinAggregateInputType = {
   id?: true
-  role?: true
-  content?: true
   chatId?: true
+  role?: true
+  parts?: true
+  attachments?: true
   createdAt?: true
 }
 
 export type MessageMaxAggregateInputType = {
   id?: true
-  role?: true
-  content?: true
   chatId?: true
+  role?: true
+  parts?: true
+  attachments?: true
   createdAt?: true
 }
 
 export type MessageCountAggregateInputType = {
   id?: true
-  role?: true
-  content?: true
   chatId?: true
+  role?: true
+  parts?: true
+  attachments?: true
   createdAt?: true
   _all?: true
 }
@@ -149,9 +155,10 @@ export type MessageGroupByArgs<ExtArgs extends runtime.Types.Extensions.Internal
 
 export type MessageGroupByOutputType = {
   id: string
-  role: string
-  content: string
   chatId: string
+  role: string
+  parts: string
+  attachments: string
   createdAt: Date
   _count: MessageCountAggregateOutputType | null
   _min: MessageMinAggregateOutputType | null
@@ -178,20 +185,24 @@ export type MessageWhereInput = {
   OR?: Prisma.MessageWhereInput[]
   NOT?: Prisma.MessageWhereInput | Prisma.MessageWhereInput[]
   id?: Prisma.StringFilter<"Message"> | string
-  role?: Prisma.StringFilter<"Message"> | string
-  content?: Prisma.StringFilter<"Message"> | string
   chatId?: Prisma.StringFilter<"Message"> | string
+  role?: Prisma.StringFilter<"Message"> | string
+  parts?: Prisma.StringFilter<"Message"> | string
+  attachments?: Prisma.StringFilter<"Message"> | string
   createdAt?: Prisma.DateTimeFilter<"Message"> | Date | string
   chat?: Prisma.XOR<Prisma.ChatScalarRelationFilter, Prisma.ChatWhereInput>
+  votes?: Prisma.VoteListRelationFilter
 }
 
 export type MessageOrderByWithRelationInput = {
   id?: Prisma.SortOrder
-  role?: Prisma.SortOrder
-  content?: Prisma.SortOrder
   chatId?: Prisma.SortOrder
+  role?: Prisma.SortOrder
+  parts?: Prisma.SortOrder
+  attachments?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   chat?: Prisma.ChatOrderByWithRelationInput
+  votes?: Prisma.VoteOrderByRelationAggregateInput
 }
 
 export type MessageWhereUniqueInput = Prisma.AtLeast<{
@@ -199,18 +210,21 @@ export type MessageWhereUniqueInput = Prisma.AtLeast<{
   AND?: Prisma.MessageWhereInput | Prisma.MessageWhereInput[]
   OR?: Prisma.MessageWhereInput[]
   NOT?: Prisma.MessageWhereInput | Prisma.MessageWhereInput[]
-  role?: Prisma.StringFilter<"Message"> | string
-  content?: Prisma.StringFilter<"Message"> | string
   chatId?: Prisma.StringFilter<"Message"> | string
+  role?: Prisma.StringFilter<"Message"> | string
+  parts?: Prisma.StringFilter<"Message"> | string
+  attachments?: Prisma.StringFilter<"Message"> | string
   createdAt?: Prisma.DateTimeFilter<"Message"> | Date | string
   chat?: Prisma.XOR<Prisma.ChatScalarRelationFilter, Prisma.ChatWhereInput>
+  votes?: Prisma.VoteListRelationFilter
 }, "id">
 
 export type MessageOrderByWithAggregationInput = {
   id?: Prisma.SortOrder
-  role?: Prisma.SortOrder
-  content?: Prisma.SortOrder
   chatId?: Prisma.SortOrder
+  role?: Prisma.SortOrder
+  parts?: Prisma.SortOrder
+  attachments?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   _count?: Prisma.MessageCountOrderByAggregateInput
   _max?: Prisma.MessageMaxOrderByAggregateInput
@@ -222,64 +236,76 @@ export type MessageScalarWhereWithAggregatesInput = {
   OR?: Prisma.MessageScalarWhereWithAggregatesInput[]
   NOT?: Prisma.MessageScalarWhereWithAggregatesInput | Prisma.MessageScalarWhereWithAggregatesInput[]
   id?: Prisma.StringWithAggregatesFilter<"Message"> | string
-  role?: Prisma.StringWithAggregatesFilter<"Message"> | string
-  content?: Prisma.StringWithAggregatesFilter<"Message"> | string
   chatId?: Prisma.StringWithAggregatesFilter<"Message"> | string
+  role?: Prisma.StringWithAggregatesFilter<"Message"> | string
+  parts?: Prisma.StringWithAggregatesFilter<"Message"> | string
+  attachments?: Prisma.StringWithAggregatesFilter<"Message"> | string
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"Message"> | Date | string
 }
 
 export type MessageCreateInput = {
   id?: string
   role: string
-  content: string
+  parts?: string
+  attachments?: string
   createdAt?: Date | string
   chat: Prisma.ChatCreateNestedOneWithoutMessagesInput
+  votes?: Prisma.VoteCreateNestedManyWithoutMessageInput
 }
 
 export type MessageUncheckedCreateInput = {
   id?: string
-  role: string
-  content: string
   chatId: string
+  role: string
+  parts?: string
+  attachments?: string
   createdAt?: Date | string
+  votes?: Prisma.VoteUncheckedCreateNestedManyWithoutMessageInput
 }
 
 export type MessageUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   role?: Prisma.StringFieldUpdateOperationsInput | string
-  content?: Prisma.StringFieldUpdateOperationsInput | string
+  parts?: Prisma.StringFieldUpdateOperationsInput | string
+  attachments?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   chat?: Prisma.ChatUpdateOneRequiredWithoutMessagesNestedInput
+  votes?: Prisma.VoteUpdateManyWithoutMessageNestedInput
 }
 
 export type MessageUncheckedUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  role?: Prisma.StringFieldUpdateOperationsInput | string
-  content?: Prisma.StringFieldUpdateOperationsInput | string
   chatId?: Prisma.StringFieldUpdateOperationsInput | string
+  role?: Prisma.StringFieldUpdateOperationsInput | string
+  parts?: Prisma.StringFieldUpdateOperationsInput | string
+  attachments?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  votes?: Prisma.VoteUncheckedUpdateManyWithoutMessageNestedInput
 }
 
 export type MessageCreateManyInput = {
   id?: string
-  role: string
-  content: string
   chatId: string
+  role: string
+  parts?: string
+  attachments?: string
   createdAt?: Date | string
 }
 
 export type MessageUpdateManyMutationInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   role?: Prisma.StringFieldUpdateOperationsInput | string
-  content?: Prisma.StringFieldUpdateOperationsInput | string
+  parts?: Prisma.StringFieldUpdateOperationsInput | string
+  attachments?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
 
 export type MessageUncheckedUpdateManyInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  role?: Prisma.StringFieldUpdateOperationsInput | string
-  content?: Prisma.StringFieldUpdateOperationsInput | string
   chatId?: Prisma.StringFieldUpdateOperationsInput | string
+  role?: Prisma.StringFieldUpdateOperationsInput | string
+  parts?: Prisma.StringFieldUpdateOperationsInput | string
+  attachments?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
 
@@ -295,26 +321,34 @@ export type MessageOrderByRelationAggregateInput = {
 
 export type MessageCountOrderByAggregateInput = {
   id?: Prisma.SortOrder
-  role?: Prisma.SortOrder
-  content?: Prisma.SortOrder
   chatId?: Prisma.SortOrder
+  role?: Prisma.SortOrder
+  parts?: Prisma.SortOrder
+  attachments?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
 }
 
 export type MessageMaxOrderByAggregateInput = {
   id?: Prisma.SortOrder
-  role?: Prisma.SortOrder
-  content?: Prisma.SortOrder
   chatId?: Prisma.SortOrder
+  role?: Prisma.SortOrder
+  parts?: Prisma.SortOrder
+  attachments?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
 }
 
 export type MessageMinOrderByAggregateInput = {
   id?: Prisma.SortOrder
-  role?: Prisma.SortOrder
-  content?: Prisma.SortOrder
   chatId?: Prisma.SortOrder
+  role?: Prisma.SortOrder
+  parts?: Prisma.SortOrder
+  attachments?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
+}
+
+export type MessageScalarRelationFilter = {
+  is?: Prisma.MessageWhereInput
+  isNot?: Prisma.MessageWhereInput
 }
 
 export type MessageCreateNestedManyWithoutChatInput = {
@@ -359,18 +393,36 @@ export type MessageUncheckedUpdateManyWithoutChatNestedInput = {
   deleteMany?: Prisma.MessageScalarWhereInput | Prisma.MessageScalarWhereInput[]
 }
 
+export type MessageCreateNestedOneWithoutVotesInput = {
+  create?: Prisma.XOR<Prisma.MessageCreateWithoutVotesInput, Prisma.MessageUncheckedCreateWithoutVotesInput>
+  connectOrCreate?: Prisma.MessageCreateOrConnectWithoutVotesInput
+  connect?: Prisma.MessageWhereUniqueInput
+}
+
+export type MessageUpdateOneRequiredWithoutVotesNestedInput = {
+  create?: Prisma.XOR<Prisma.MessageCreateWithoutVotesInput, Prisma.MessageUncheckedCreateWithoutVotesInput>
+  connectOrCreate?: Prisma.MessageCreateOrConnectWithoutVotesInput
+  upsert?: Prisma.MessageUpsertWithoutVotesInput
+  connect?: Prisma.MessageWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.MessageUpdateToOneWithWhereWithoutVotesInput, Prisma.MessageUpdateWithoutVotesInput>, Prisma.MessageUncheckedUpdateWithoutVotesInput>
+}
+
 export type MessageCreateWithoutChatInput = {
   id?: string
   role: string
-  content: string
+  parts?: string
+  attachments?: string
   createdAt?: Date | string
+  votes?: Prisma.VoteCreateNestedManyWithoutMessageInput
 }
 
 export type MessageUncheckedCreateWithoutChatInput = {
   id?: string
   role: string
-  content: string
+  parts?: string
+  attachments?: string
   createdAt?: Date | string
+  votes?: Prisma.VoteUncheckedCreateNestedManyWithoutMessageInput
 }
 
 export type MessageCreateOrConnectWithoutChatInput = {
@@ -404,80 +456,176 @@ export type MessageScalarWhereInput = {
   OR?: Prisma.MessageScalarWhereInput[]
   NOT?: Prisma.MessageScalarWhereInput | Prisma.MessageScalarWhereInput[]
   id?: Prisma.StringFilter<"Message"> | string
-  role?: Prisma.StringFilter<"Message"> | string
-  content?: Prisma.StringFilter<"Message"> | string
   chatId?: Prisma.StringFilter<"Message"> | string
+  role?: Prisma.StringFilter<"Message"> | string
+  parts?: Prisma.StringFilter<"Message"> | string
+  attachments?: Prisma.StringFilter<"Message"> | string
   createdAt?: Prisma.DateTimeFilter<"Message"> | Date | string
+}
+
+export type MessageCreateWithoutVotesInput = {
+  id?: string
+  role: string
+  parts?: string
+  attachments?: string
+  createdAt?: Date | string
+  chat: Prisma.ChatCreateNestedOneWithoutMessagesInput
+}
+
+export type MessageUncheckedCreateWithoutVotesInput = {
+  id?: string
+  chatId: string
+  role: string
+  parts?: string
+  attachments?: string
+  createdAt?: Date | string
+}
+
+export type MessageCreateOrConnectWithoutVotesInput = {
+  where: Prisma.MessageWhereUniqueInput
+  create: Prisma.XOR<Prisma.MessageCreateWithoutVotesInput, Prisma.MessageUncheckedCreateWithoutVotesInput>
+}
+
+export type MessageUpsertWithoutVotesInput = {
+  update: Prisma.XOR<Prisma.MessageUpdateWithoutVotesInput, Prisma.MessageUncheckedUpdateWithoutVotesInput>
+  create: Prisma.XOR<Prisma.MessageCreateWithoutVotesInput, Prisma.MessageUncheckedCreateWithoutVotesInput>
+  where?: Prisma.MessageWhereInput
+}
+
+export type MessageUpdateToOneWithWhereWithoutVotesInput = {
+  where?: Prisma.MessageWhereInput
+  data: Prisma.XOR<Prisma.MessageUpdateWithoutVotesInput, Prisma.MessageUncheckedUpdateWithoutVotesInput>
+}
+
+export type MessageUpdateWithoutVotesInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  role?: Prisma.StringFieldUpdateOperationsInput | string
+  parts?: Prisma.StringFieldUpdateOperationsInput | string
+  attachments?: Prisma.StringFieldUpdateOperationsInput | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  chat?: Prisma.ChatUpdateOneRequiredWithoutMessagesNestedInput
+}
+
+export type MessageUncheckedUpdateWithoutVotesInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  chatId?: Prisma.StringFieldUpdateOperationsInput | string
+  role?: Prisma.StringFieldUpdateOperationsInput | string
+  parts?: Prisma.StringFieldUpdateOperationsInput | string
+  attachments?: Prisma.StringFieldUpdateOperationsInput | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
 
 export type MessageCreateManyChatInput = {
   id?: string
   role: string
-  content: string
+  parts?: string
+  attachments?: string
   createdAt?: Date | string
 }
 
 export type MessageUpdateWithoutChatInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   role?: Prisma.StringFieldUpdateOperationsInput | string
-  content?: Prisma.StringFieldUpdateOperationsInput | string
+  parts?: Prisma.StringFieldUpdateOperationsInput | string
+  attachments?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  votes?: Prisma.VoteUpdateManyWithoutMessageNestedInput
 }
 
 export type MessageUncheckedUpdateWithoutChatInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   role?: Prisma.StringFieldUpdateOperationsInput | string
-  content?: Prisma.StringFieldUpdateOperationsInput | string
+  parts?: Prisma.StringFieldUpdateOperationsInput | string
+  attachments?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  votes?: Prisma.VoteUncheckedUpdateManyWithoutMessageNestedInput
 }
 
 export type MessageUncheckedUpdateManyWithoutChatInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   role?: Prisma.StringFieldUpdateOperationsInput | string
-  content?: Prisma.StringFieldUpdateOperationsInput | string
+  parts?: Prisma.StringFieldUpdateOperationsInput | string
+  attachments?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
 
 
+/**
+ * Count Type MessageCountOutputType
+ */
+
+export type MessageCountOutputType = {
+  votes: number
+}
+
+export type MessageCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  votes?: boolean | MessageCountOutputTypeCountVotesArgs
+}
+
+/**
+ * MessageCountOutputType without action
+ */
+export type MessageCountOutputTypeDefaultArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the MessageCountOutputType
+   */
+  select?: Prisma.MessageCountOutputTypeSelect<ExtArgs> | null
+}
+
+/**
+ * MessageCountOutputType without action
+ */
+export type MessageCountOutputTypeCountVotesArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  where?: Prisma.VoteWhereInput
+}
+
 
 export type MessageSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
   id?: boolean
-  role?: boolean
-  content?: boolean
   chatId?: boolean
+  role?: boolean
+  parts?: boolean
+  attachments?: boolean
   createdAt?: boolean
   chat?: boolean | Prisma.ChatDefaultArgs<ExtArgs>
+  votes?: boolean | Prisma.Message$votesArgs<ExtArgs>
+  _count?: boolean | Prisma.MessageCountOutputTypeDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["message"]>
 
 export type MessageSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
   id?: boolean
-  role?: boolean
-  content?: boolean
   chatId?: boolean
+  role?: boolean
+  parts?: boolean
+  attachments?: boolean
   createdAt?: boolean
   chat?: boolean | Prisma.ChatDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["message"]>
 
 export type MessageSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
   id?: boolean
-  role?: boolean
-  content?: boolean
   chatId?: boolean
+  role?: boolean
+  parts?: boolean
+  attachments?: boolean
   createdAt?: boolean
   chat?: boolean | Prisma.ChatDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["message"]>
 
 export type MessageSelectScalar = {
   id?: boolean
-  role?: boolean
-  content?: boolean
   chatId?: boolean
+  role?: boolean
+  parts?: boolean
+  attachments?: boolean
   createdAt?: boolean
 }
 
-export type MessageOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "role" | "content" | "chatId" | "createdAt", ExtArgs["result"]["message"]>
+export type MessageOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "chatId" | "role" | "parts" | "attachments" | "createdAt", ExtArgs["result"]["message"]>
 export type MessageInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   chat?: boolean | Prisma.ChatDefaultArgs<ExtArgs>
+  votes?: boolean | Prisma.Message$votesArgs<ExtArgs>
+  _count?: boolean | Prisma.MessageCountOutputTypeDefaultArgs<ExtArgs>
 }
 export type MessageIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   chat?: boolean | Prisma.ChatDefaultArgs<ExtArgs>
@@ -490,12 +638,14 @@ export type $MessagePayload<ExtArgs extends runtime.Types.Extensions.InternalArg
   name: "Message"
   objects: {
     chat: Prisma.$ChatPayload<ExtArgs>
+    votes: Prisma.$VotePayload<ExtArgs>[]
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
-    role: string
-    content: string
     chatId: string
+    role: string
+    parts: string
+    attachments: string
     createdAt: Date
   }, ExtArgs["result"]["message"]>
   composites: {}
@@ -892,6 +1042,7 @@ readonly fields: MessageFieldRefs;
 export interface Prisma__MessageClient<T, Null = never, ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
   readonly [Symbol.toStringTag]: "PrismaPromise"
   chat<T extends Prisma.ChatDefaultArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.ChatDefaultArgs<ExtArgs>>): Prisma.Prisma__ChatClient<runtime.Types.Result.GetResult<Prisma.$ChatPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
+  votes<T extends Prisma.Message$votesArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Message$votesArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$VotePayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -922,9 +1073,10 @@ export interface Prisma__MessageClient<T, Null = never, ExtArgs extends runtime.
  */
 export interface MessageFieldRefs {
   readonly id: Prisma.FieldRef<"Message", 'String'>
-  readonly role: Prisma.FieldRef<"Message", 'String'>
-  readonly content: Prisma.FieldRef<"Message", 'String'>
   readonly chatId: Prisma.FieldRef<"Message", 'String'>
+  readonly role: Prisma.FieldRef<"Message", 'String'>
+  readonly parts: Prisma.FieldRef<"Message", 'String'>
+  readonly attachments: Prisma.FieldRef<"Message", 'String'>
   readonly createdAt: Prisma.FieldRef<"Message", 'DateTime'>
 }
     
@@ -1319,6 +1471,30 @@ export type MessageDeleteManyArgs<ExtArgs extends runtime.Types.Extensions.Inter
    * Limit how many Messages to delete.
    */
   limit?: number
+}
+
+/**
+ * Message.votes
+ */
+export type Message$votesArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the Vote
+   */
+  select?: Prisma.VoteSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the Vote
+   */
+  omit?: Prisma.VoteOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.VoteInclude<ExtArgs> | null
+  where?: Prisma.VoteWhereInput
+  orderBy?: Prisma.VoteOrderByWithRelationInput | Prisma.VoteOrderByWithRelationInput[]
+  cursor?: Prisma.VoteWhereUniqueInput
+  take?: number
+  skip?: number
+  distinct?: Prisma.VoteScalarFieldEnum | Prisma.VoteScalarFieldEnum[]
 }
 
 /**

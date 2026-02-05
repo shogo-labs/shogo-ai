@@ -32,3 +32,13 @@ export type Chat = Prisma.ChatModel
  * 
  */
 export type Message = Prisma.MessageModel
+/**
+ * Model Vote
+ * 
+ */
+export type Vote = Prisma.VoteModel
+/**
+ * Model Document
+ * 
+ */
+export type Document = Prisma.DocumentModel

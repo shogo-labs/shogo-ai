@@ -1,5 +1,5 @@
 // Prisma schema for AI Chat
-// Converted from Drizzle schema
+// Based on Vercel AI Chatbot Drizzle schema
 
 generator client {
   provider            = "prisma-client"
@@ -18,7 +18,8 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  chats Chat[]
+  chats     Chat[]
+  documents Document[]
 
   @@map("users")
 }
@@ -33,20 +34,49 @@ model Chat {
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages Message[]
+  votes    Vote[]
 
   @@index([userId, updatedAt])
   @@map("chats")
 }
 
 model Message {
-  id        String   @id @default(cuid())
-  role      String   // "user" | "assistant" | "system"
-  content   String   // JSON string for parts/content
-  chatId    String   @map("chat_id")
-  createdAt DateTime @default(now()) @map("created_at")
+  id          String   @id @default(cuid())
+  chatId      String   @map("chat_id")
+  role        String   // "user" | "assistant" | "system"
+  parts       String   @default("[]") // JSON array of message parts
+  attachments String   @default("[]") // JSON array of attachments
+  createdAt   DateTime @default(now()) @map("created_at")
 
-  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chat  Chat   @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  votes Vote[]
 
   @@index([chatId, createdAt])
   @@map("messages")
+}
+
+model Vote {
+  chatId    String  @map("chat_id")
+  messageId String  @map("message_id")
+  isUpvoted Boolean @map("is_upvoted")
+
+  chat    Chat    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@id([chatId, messageId])
+  @@map("votes")
+}
+
+model Document {
+  id        String   @id @default(cuid())
+  title     String
+  content   String?  @db.Text
+  kind      String   @default("text") // "text" | "code" | "image" | "sheet"
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("documents")
 }

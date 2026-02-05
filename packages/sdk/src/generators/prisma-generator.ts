@@ -240,7 +240,13 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
             })
           }
           
-          // Types index (append to existing index or create)
+          // Create types.tsx re-export file (for api-client imports)
+          files.push({
+            path: `${dir}/types.tsx`,
+            content: generateTypesIndex(models),
+          })
+          
+          // Also append to index.tsx for convenience
           const existingIndex = files.find(f => f.path === `${dir}/index.tsx`)
           if (existingIndex) {
             existingIndex.content += '\n' + generateTypesIndex(models)
