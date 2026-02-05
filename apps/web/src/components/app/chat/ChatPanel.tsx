@@ -244,13 +244,17 @@ function extractToolCalls(message: Message): ExtractedToolCall[] {
           error: invocation?.error,
         }
       } else {
-        // dynamic-tool: data is directly on the part, not nested in toolInvocation
+        // dynamic-tool: data is directly on the part; for output-error, error is in errorText
+        const errorContent =
+          part.state === "output-error"
+            ? (part as { errorText?: string }).errorText ?? part.error
+            : part.error
         return {
           toolName: part.toolName || "unknown",
           state: mapToolCallState(part.state),
           args: part.input || part.args,
           result: part.output || part.result,
-          error: part.error,
+          error: errorContent,
         }
       }
     })

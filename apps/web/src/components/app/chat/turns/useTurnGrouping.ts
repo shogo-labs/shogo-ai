@@ -52,7 +52,7 @@ function extractToolCallsFromMessage(message: Message): ToolCallData[] {
  */
 function mapToolState(state?: string): ToolCallData["state"] {
   if (state === "result" || state === "output-available") return "success"
-  if (state === "error") return "error"
+  if (state === "error" || state === "output-error") return "error"
   return "streaming"
 }
 
@@ -104,6 +104,11 @@ function extractOrderedParts(message: Message): MessagePart[] {
       // Claude Code provider dynamic-tool format
       // Data is directly on the part, not nested in toolInvocation
       const toolCallId = part.toolCallId || `tool-${index}`
+      // For output-error, AI SDK puts error content in errorText, not output/error
+      const errorContent =
+        part.state === "output-error"
+          ? (part as { errorText?: string }).errorText ?? part.error
+          : part.error
       result.push({
         type: "tool",
         id: toolCallId,
@@ -114,7 +119,7 @@ function extractOrderedParts(message: Message): MessagePart[] {
           state: mapToolState(part.state),
           args: part.input, // dynamic-tool uses 'input' not 'args'
           result: part.output, // dynamic-tool uses 'output' not 'result'
-          error: part.error,
+          error: errorContent,
           timestamp: Date.now(),
         },
       })
