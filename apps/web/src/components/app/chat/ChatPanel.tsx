@@ -1935,8 +1935,12 @@ export const ChatPanel = observer(function ChatPanel({
   }
 
   // Handle compact mode submit - delegates to parent since no session exists yet
-  const handleCompactSubmit = useCallback((prompt: string) => {
+  const handleCompactSubmit = useCallback((prompt: string, imageData?: string) => {
+    // For compact mode, we can pass imageData to onCompactSubmit if needed
+    // For now, we'll just pass the prompt and let the parent handle navigation
+    // The image will be handled after navigation to the full chat
     onCompactSubmit?.(prompt)
+    // TODO: Store imageData temporarily if needed for post-navigation submission
   }, [onCompactSubmit])
 
   // Render compact mode (homepage)

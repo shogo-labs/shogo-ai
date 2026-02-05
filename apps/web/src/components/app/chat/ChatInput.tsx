@@ -8,7 +8,7 @@
  * - Clean textarea with "Ask Shogo..." placeholder
  * - Bottom toolbar with action buttons
  *
- * Supports image attachments via paste (Ctrl/Cmd+V) or file picker.
+ * Supports file attachments (images and other files) via paste (Ctrl/Cmd+V) or file picker.
  */
 
 import * as React from "react"
@@ -33,6 +33,7 @@ import {
   Rocket,
   Lock,
   Crown,
+  File,
 } from "lucide-react"
 
 // Agent mode configuration
@@ -48,8 +49,9 @@ export interface AgentModeConfig {
   requiresPro?: boolean
 }
 
-// Maximum file size in bytes (4MB)
-const MAX_IMAGE_SIZE = 4 * 1024 * 1024
+// Maximum file size in bytes (5MB for images, 10MB for other files)
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024
+const MAX_FILE_SIZE = 10 * 1024 * 1024
 
 // Skills loaded from VITE_SHOGO_SKILLS env var (set at build time)
 interface SkillOption {
@@ -87,7 +89,7 @@ const AGENT_MODES: AgentModeConfig[] = [
 ]
 
 export interface ChatInputProps {
-  onSubmit: (content: string, imageData?: string, agentMode?: AgentMode) => void
+  onSubmit: (content: string, fileData?: string, agentMode?: AgentMode) => void
   disabled?: boolean
   placeholder?: string
   /** Whether a stream is currently in progress */
@@ -118,9 +120,9 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Image attachment state
-  const [pendingImage, setPendingImage] = useState<string | undefined>(undefined)
-  const [imageError, setImageError] = useState<string | null>(null)
+  // File attachment state (supports images and other files)
+  const [pendingFile, setPendingFile] = useState<{ dataUrl: string; name: string; type: string; size: number } | undefined>(undefined)
+  const [fileError, setFileError] = useState<string | null>(null)
 
   // Agent mode state (controlled or uncontrolled)
   // Default to "basic" for free users, "advanced" for Pro users
@@ -182,57 +184,61 @@ export function ChatInput({
   }, [])
 
   /**
-   * Process an image file and convert to base64 data URL
+   * Process a file and convert to base64 data URL
+   * Supports both images and other file types
    */
-  const processImageFile = useCallback((file: File) => {
-    // Validate file size
-    if (file.size > MAX_IMAGE_SIZE) {
-      setImageError(`Image must be smaller than 4MB (current: ${(file.size / 1024 / 1024).toFixed(1)}MB)`)
-      return
-    }
+  const processFile = useCallback((file: File) => {
+    const isImage = file.type.startsWith("image/")
+    const maxSize = isImage ? MAX_IMAGE_SIZE : MAX_FILE_SIZE
+    const maxSizeMB = isImage ? 5 : 10
 
-    // Validate file type
-    if (!file.type.startsWith("image/")) {
-      setImageError("Only image files are supported")
+    // Validate file size
+    if (file.size > maxSize) {
+      setFileError(`File must be smaller than ${maxSizeMB}MB (current: ${(file.size / 1024 / 1024).toFixed(1)}MB)`)
       return
     }
 
     // Clear any previous error
-    setImageError(null)
+    setFileError(null)
 
     // Read file as data URL
     const reader = new FileReader()
     reader.onload = () => {
       const dataUrl = reader.result as string
-      setPendingImage(dataUrl)
+      setPendingFile({
+        dataUrl,
+        name: file.name,
+        type: file.type || "application/octet-stream",
+        size: file.size,
+      })
     }
     reader.onerror = () => {
-      setImageError("Failed to read image file")
+      setFileError("Failed to read file")
     }
     reader.readAsDataURL(file)
   }, [])
 
   /**
-   * Handle paste events to capture images from clipboard
+   * Handle paste events to capture files from clipboard
    */
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items
     if (!items) return
 
-    // Look for image items in clipboard
+    // Look for file items in clipboard (images are most common)
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
-      if (item.kind === "file" && item.type.startsWith("image/")) {
+      if (item.kind === "file") {
         const file = item.getAsFile()
         if (file) {
-          e.preventDefault() // Prevent default paste behavior for images
-          processImageFile(file)
+          e.preventDefault() // Prevent default paste behavior for files
+          processFile(file)
           return
         }
       }
     }
-    // For non-image content, let the default paste behavior handle it
-  }, [processImageFile])
+    // For non-file content, let the default paste behavior handle it
+  }, [processFile])
 
   /**
    * Handle file input change
@@ -240,13 +246,13 @@ export function ChatInput({
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
-      processImageFile(file)
+      processFile(file)
     }
     // Reset file input so same file can be selected again
     if (fileInputRef.current) {
       fileInputRef.current.value = ""
     }
-  }, [processImageFile])
+  }, [processFile])
 
   /**
    * Open file picker
@@ -256,11 +262,11 @@ export function ChatInput({
   }, [])
 
   /**
-   * Remove attached image
+   * Remove attached file
    */
-  const handleRemoveImage = useCallback(() => {
-    setPendingImage(undefined)
-    setImageError(null)
+  const handleRemoveFile = useCallback(() => {
+    setPendingFile(undefined)
+    setFileError(null)
   }, [])
 
   /**
@@ -306,19 +312,19 @@ export function ChatInput({
     if (!textarea) return
 
     const trimmedContent = textarea.value.trim()
-    if ((!trimmedContent && !pendingImage) || disabled) return
+    if ((!trimmedContent && !pendingFile) || disabled) return
 
-    onSubmit(trimmedContent, pendingImage, agentMode)
+    onSubmit(trimmedContent, pendingFile?.dataUrl, agentMode)
     textarea.value = ""
-    setPendingImage(undefined)
-    setImageError(null)
+    setPendingFile(undefined)
+    setFileError(null)
 
     // Focus textarea after submit
     textarea.focus()
     
     // Reset textarea height after clearing
     resizeTextarea()
-  }, [disabled, onSubmit, pendingImage, resizeTextarea, agentMode])
+  }, [disabled, onSubmit, pendingFile, resizeTextarea, agentMode])
 
   /**
    * Resize textarea on mount and when dependencies change
@@ -361,40 +367,67 @@ export function ChatInput({
     [handleSubmit, showSkillPicker, filteredSkills, selectedIndex, selectSkill]
   )
 
+  const isImage = pendingFile?.type.startsWith("image/")
+
   return (
     <div className="p-3">
-      {/* Image preview - shown above the input container */}
-      {pendingImage && (
+      {/* File preview - shown above the input container */}
+      {pendingFile && (
         <div
           data-testid="image-preview"
-          className="relative inline-block max-w-[200px] mb-2"
+          className="relative inline-block max-w-[300px] mb-2"
         >
-          <img
-            src={pendingImage}
-            alt="Attached image"
-            className="max-h-[100px] rounded-lg border border-border object-cover"
-          />
-          <Button
-            type="button"
-            variant="destructive"
-            size="icon"
-            className="absolute -right-2 -top-2 h-6 w-6"
-            onClick={handleRemoveImage}
-            data-testid="remove-image-button"
-          >
-            <X className="h-4 w-4" />
-            <span className="sr-only">Remove image</span>
-          </Button>
+          {isImage ? (
+            <div className="relative">
+              <img
+                src={pendingFile.dataUrl}
+                alt="Attached image"
+                className="max-h-[100px] rounded-lg border border-border object-cover"
+              />
+              <Button
+                type="button"
+                variant="destructive"
+                size="icon"
+                className="absolute -right-2 -top-2 h-6 w-6"
+                onClick={handleRemoveFile}
+                data-testid="remove-image-button"
+              >
+                <X className="h-4 w-4" />
+                <span className="sr-only">Remove file</span>
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 p-2 rounded-lg border border-border bg-muted">
+              <File className="h-5 w-5 text-muted-foreground" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium truncate">{pendingFile.name}</div>
+                <div className="text-xs text-muted-foreground">
+                  {(pendingFile.size / 1024).toFixed(1)} KB
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="destructive"
+                size="icon"
+                className="h-6 w-6 shrink-0"
+                onClick={handleRemoveFile}
+                data-testid="remove-image-button"
+              >
+                <X className="h-4 w-4" />
+                <span className="sr-only">Remove file</span>
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
       {/* Error message */}
-      {imageError && (
+      {fileError && (
         <div
           data-testid="image-error"
           className="text-sm text-destructive mb-2"
         >
-          {imageError}
+          {fileError}
         </div>
       )}
 
@@ -426,7 +459,6 @@ export function ChatInput({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
           onChange={handleFileChange}
           className="hidden"
         />
