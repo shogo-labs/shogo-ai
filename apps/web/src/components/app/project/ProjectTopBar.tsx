@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button"
 import { useNavigate } from "react-router-dom"
 import { ProjectNameDropdown } from "./ProjectNameDropdown"
 import { PreviewControls, type ViewportSize } from "./PreviewControls"
-import { ShareDropdown } from "./ShareDropdown"
+// import { ShareDropdown } from "./ShareDropdown"
 import { PublishDropdown, type AccessLevel } from "./PublishDropdown"
 import { cn } from "@/lib/utils"
 
@@ -188,12 +188,12 @@ export function ProjectTopBar({
 
       {/* Right Section: Share, GitHub, Upgrade, Publish */}
       <div className="flex items-center gap-1.5">
-        {/* Share Button with Avatar */}
-        <ShareDropdown
+        {/* Share Button with Avatar - disabled for now, no sharing functionality */}
+        {/* <ShareDropdown
           projectId={projectId}
           userInitial={initial}
           workspaceName={workspaceName}
-        />
+        /> */}
 
         {/* GitHub Button - minimal icon */}
         <Button
