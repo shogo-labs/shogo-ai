@@ -10,7 +10,7 @@ export default defineConfig({
   timeout: 30000,
   outputDir: './test-results',
   use: {
-    baseURL: process.env.BASE_URL || 'http://localhost:3001',
+    baseURL: process.env.BASE_URL || 'http://localhost:3000',
     trace: 'on',
     screenshot: 'on',
     video: 'retain-on-failure',
@@ -24,7 +24,7 @@ export default defineConfig({
   ...(process.env.START_SERVER ? {
     webServer: {
       command: 'bun run dev',
-      url: 'http://localhost:3001',
+      url: 'http://localhost:3000',
       reuseExistingServer: !process.env.CI,
       timeout: 120000,
     },
