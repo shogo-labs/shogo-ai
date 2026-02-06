@@ -879,36 +879,48 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
         collapsed ? "justify-center px-2" : "justify-between px-4"
       )}>
         {!collapsed && (
-          <Link to="/" className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-              <span className="text-white font-bold text-sm">S</span>
-            </div>
-            <span className="font-semibold">Shogo</span>
-          </Link>
+          <>
+            <Link to="/" className="flex items-center gap-2">
+              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+                <span className="text-white font-bold text-sm">S</span>
+              </div>
+              <span className="font-semibold">Shogo</span>
+            </Link>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleCollapse}
+              className="h-8 w-8"
+              title="Collapse sidebar"
+            >
+              <PanelLeftClose className="h-4 w-4" />
+            </Button>
+          </>
         )}
         {collapsed && (
-          <Link to="/" className="flex items-center justify-center">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-              <span className="text-white font-bold text-sm">S</span>
-            </div>
-          </Link>
+          <div className="group relative flex items-center justify-center w-full">
+            <Link 
+              to="/" 
+              className="flex items-center justify-center transition-opacity duration-150 opacity-100 group-hover:opacity-0"
+            >
+              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+                <span className="text-white font-bold text-sm">S</span>
+              </div>
+            </Link>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleCollapse}
+              className={cn(
+                "h-8 w-8 absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card border border-border rounded-full shadow-sm",
+                "opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+              )}
+              title="Expand sidebar"
+            >
+              <PanelLeft className="h-4 w-4" />
+            </Button>
+          </div>
         )}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={toggleCollapse}
-          className={cn(
-            "h-8 w-8",
-            collapsed && "absolute -right-3 top-1/2 -translate-y-1/2 bg-card border border-border rounded-full z-10 shadow-sm"
-          )}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-        >
-          {collapsed ? (
-            <PanelLeft className="h-4 w-4" />
-          ) : (
-            <PanelLeftClose className="h-4 w-4" />
-          )}
-        </Button>
       </div>
 
       {/* Workspace switcher */}
