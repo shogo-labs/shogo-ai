@@ -703,9 +703,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const userInitial = session?.user?.name?.charAt(0).toUpperCase() || "U"
 
   // Get workspace ID for credit lookup
-  const workspaceId = project
-    ? (typeof project.workspace === 'string' ? project.workspace : project.workspace?.id)
-    : null
+  // Use workspaceId (plain string) instead of workspace reference to avoid MST InvalidReferenceError
+  const workspaceId = project?.workspaceId || null
 
   // Load and get credits from SDK store
   useEffect(() => {
@@ -831,7 +830,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 isCollapsed={isChatCollapsed}
                 onCollapsedChange={setIsChatCollapsed}
                 onWidthChange={setChatWidth}
-                workspaceId={typeof project.workspace === 'string' ? project.workspace : project.workspace?.id}
+                workspaceId={project?.workspaceId}
                 userId={session?.user?.id}
                 projectId={projectId}
                 className="flex-1 min-h-0"

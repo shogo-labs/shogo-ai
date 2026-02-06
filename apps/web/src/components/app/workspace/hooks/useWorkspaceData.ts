@@ -528,9 +528,11 @@ export function useWorkspaceData(): WorkspaceDataState {
   }
 
   // Get projects from shared workspaces
+  // Use p.workspaceId (plain string) instead of p.workspace?.id (safeReference)
+  // to avoid MST InvalidReferenceError when workspace isn't loaded yet
   const sharedWorkspaceIds = new Set(sharedWorkspaces.map((ws: any) => ws.id))
   const sharedProjects = allProjects.filter((p: any) =>
-    sharedWorkspaceIds.has(p.workspace?.id)
+    sharedWorkspaceIds.has(p.workspaceId)
   )
 
   // Helper function to check if a project is starred

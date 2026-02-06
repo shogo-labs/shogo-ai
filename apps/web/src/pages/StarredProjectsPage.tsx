@@ -120,7 +120,7 @@ export const StarredProjectsPage = observer(function StarredProjectsPage() {
 
   const handleUnstar = useCallback(async (project: any, e: React.MouseEvent) => {
     e.stopPropagation()
-    const workspaceId = project._workspaceId || project.workspace?.id
+    const workspaceId = project._workspaceId || project.workspaceId
     if (workspaceId) {
       await toggleStarProject(project.id, workspaceId)
     }
@@ -128,7 +128,7 @@ export const StarredProjectsPage = observer(function StarredProjectsPage() {
 
   // Get workspace name for a project
   const getWorkspaceName = useCallback((project: any) => {
-    const workspaceId = project._workspaceId || project.workspace?.id
+    const workspaceId = project._workspaceId || project.workspaceId
     const workspace = workspaces.find((ws: any) => ws.id === workspaceId)
     return workspace?.name || "Unknown workspace"
   }, [workspaces])
