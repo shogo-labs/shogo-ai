@@ -1,7 +1,10 @@
 /**
  * Project Chat Proxy Routes
  *
- * Proxies chat requests to per-project runtime pods via Knative Services.
+ * Proxies chat requests to per-project runtime pods.
+ *
+ * In Kubernetes: Routes to Knative Services via internal DNS
+ * In Local Dev: Routes to local RuntimeManager-spawned processes
  *
  * Endpoints:
  * - POST /projects/:projectId/chat - Proxy chat to project pod
@@ -10,6 +13,7 @@
 import { Hono } from "hono"
 import { getProjectPodUrl } from "../lib/knative-project-manager"
 import { prisma } from "../lib/prisma"
+import type { IRuntimeManager } from "../lib/runtime"
 
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
@@ -19,7 +23,10 @@ const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 // =============================================================================
 
 export interface ProjectChatRoutesConfig {
-  // Configuration options can be added here if needed
+  /**
+   * Local runtime manager (used in non-K8s environments).
+   */
+  runtimeManager?: IRuntimeManager
 }
 
 // =============================================================================
@@ -27,6 +34,7 @@ export interface ProjectChatRoutesConfig {
 // =============================================================================
 
 export function projectChatRoutes(config: ProjectChatRoutesConfig) {
+  const { runtimeManager } = config
   const router = new Hono()
 
   /**
@@ -46,15 +54,60 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   }
 
   /**
+   * Wait for runtime to become ready (status === 'running').
+   * Used when runtime is already starting from another request.
+   */
+  async function waitForRuntimeReady(projectId: string, timeoutMs: number = 30000): Promise<void> {
+    const startTime = Date.now()
+    const checkInterval = 500
+
+    while (Date.now() - startTime < timeoutMs) {
+      const runtime = runtimeManager?.status(projectId)
+      if (runtime?.status === 'running') {
+        return
+      }
+      if (runtime?.status === 'error' || runtime?.status === 'stopped') {
+        throw new Error(`Runtime for ${projectId} failed to start: ${runtime.status}`)
+      }
+      await new Promise(resolve => setTimeout(resolve, checkInterval))
+    }
+    throw new Error(`Timeout waiting for runtime ${projectId} to become ready`)
+  }
+
+  /**
    * Get the URL for a project's runtime agent server.
-   * Uses Knative project manager for pod URL.
+   * Handles both Kubernetes (Knative) and local development.
+   *
+   * Properly handles concurrent requests by:
+   * - Starting the runtime if stopped/error/missing
+   * - Waiting if runtime is already starting from another request
    */
   async function getProjectUrl(projectId: string): Promise<string> {
     if (isKubernetes()) {
       // In Kubernetes: Use Knative project manager
       return await getProjectPodUrl(projectId)
+    } else if (runtimeManager) {
+      // Local development: Use RuntimeManager
+      let runtime = runtimeManager.status(projectId)
+
+      if (!runtime || runtime.status === "stopped" || runtime.status === "error") {
+        // No runtime or failed - start it
+        console.log(`[ProjectChat] Starting runtime for ${projectId}...`)
+        runtime = await runtimeManager.start(projectId)
+      } else if (runtime.status === "starting") {
+        // Runtime is being started by another request - wait for it
+        console.log(`[ProjectChat] Runtime for ${projectId} is starting, waiting...`)
+        await waitForRuntimeReady(projectId)
+        runtime = runtimeManager.status(projectId)!
+      }
+      // else: runtime.status === "running" - proceed immediately
+
+      // Use agentPort if available, otherwise calculate from Vite port
+      // Agent runs on port = Vite port + 1000 (e.g., 5200 -> 6200)
+      const agentPort = runtime.agentPort || (runtime.port + 1000)
+      return `http://localhost:${agentPort}`
     } else {
-      throw new Error("Local development requires Knative. Use `npm run dev:full` to start all services.")
+      throw new Error("No runtime manager available for local development")
     }
   }
 
@@ -256,10 +309,25 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           url: status.url,
           replicas: status.replicas,
         })
+      } else if (runtimeManager) {
+        // Local development: Check RuntimeManager
+        const runtime = runtimeManager.status(projectId)
+
+        return c.json({
+          mode: "local",
+          exists: !!runtime,
+          ready: runtime?.status === "running",
+          url: runtime?.url || null,
+          status: runtime?.status || "stopped",
+        })
       } else {
         return c.json({
-          error: { code: "not_implemented", message: "Local development requires Knative." }
-        }, 501)
+          mode: "none",
+          exists: false,
+          ready: false,
+          url: null,
+          message: "No runtime manager configured",
+        })
       }
     } catch (error: any) {
       console.error("[ProjectChat] Status error:", error)
