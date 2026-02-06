@@ -665,6 +665,36 @@ body {
  * Scrollbar Utilities
  * ============================================================================ */
 
+/* Theme-aware scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox scrollbar styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
 /* Hide scrollbar while maintaining scroll functionality */
 .scrollbar-hide {
   -ms-overflow-style: none;  /* IE and Edge */
