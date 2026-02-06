@@ -617,6 +617,20 @@ function wrapStreamWithKeepalive(
 }
 
 // =============================================================================
+// Image Handling Helpers
+// =============================================================================
+
+/**
+ * Parse a data URL to extract mediaType and base64 data.
+ * Example: "data:image/png;base64,iVBORw0..." -> { mimeType: "image/png", base64Data: "iVBORw0..." }
+ */
+function parseDataUrl(dataUrl: string): { mimeType: string; base64Data: string } | null {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
+  if (!match) return null
+  return { mimeType: match[1], base64Data: match[2] }
+}
+
+// =============================================================================
 // Request Schemas
 // =============================================================================
 
@@ -948,36 +962,86 @@ app.post('/agent/chat', async (c) => {
     }
     
     // Convert to CoreMessage format, handling both string and parts content
+    // Preserves image parts for multimodal AI processing
+    type ContentPart = { type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }
+
     const coreMessages: CoreMessage[] = messages.map((msg) => {
-      let content: string
-      
+      // If message already has content string, pass through
       if (typeof msg.content === 'string') {
-        content = msg.content
-      } else if (Array.isArray(msg.content)) {
-        // Extract text from content parts
-        content = msg.content
-          .filter((part): part is { type: 'text'; text: string } => 
-            part && typeof part === 'object' && part.type === 'text')
-          .map(part => part.text)
-          .join('')
-      } else if (Array.isArray(msg.parts)) {
-        // AI SDK v4 parts format
-        content = msg.parts
-          .filter((part): part is { type: 'text'; text: string } => 
-            part && typeof part === 'object' && part.type === 'text')
-          .map(part => part.text)
-          .join('')
-      } else {
-        content = ''
+        return { role: msg.role, content: msg.content }
       }
-      
-      return {
-        role: msg.role,
-        content,
+
+      // If message has parts array (AI SDK v4 UIMessage format), process all part types including images
+      if (Array.isArray(msg.parts)) {
+        const contentParts: ContentPart[] = []
+
+        for (const part of msg.parts) {
+          if (part.type === 'text' && part.text) {
+            contentParts.push({ type: 'text', text: part.text })
+          } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
+            // File parts with image mediaType: convert to ImagePart
+            // The url field contains the data URL (data:image/png;base64,...)
+            const parsed = parseDataUrl(part.url || '')
+            if (parsed) {
+              contentParts.push({
+                type: 'image',
+                image: parsed.base64Data,
+                mimeType: parsed.mimeType,
+              })
+            }
+          }
+        }
+
+        // Return appropriate format based on content
+        if (contentParts.length === 1 && contentParts[0].type === 'text') {
+          return { role: msg.role, content: contentParts[0].text }
+        }
+        if (contentParts.length > 0) {
+          return { role: msg.role, content: contentParts }
+        }
+        return { role: msg.role, content: '' }
       }
+
+      // Also handle content array format (alternative message format)
+      if (Array.isArray(msg.content)) {
+        const contentParts: ContentPart[] = []
+
+        for (const part of msg.content) {
+          if (part.type === 'text' && part.text) {
+            contentParts.push({ type: 'text', text: part.text })
+          } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
+            const parsed = parseDataUrl(part.url || '')
+            if (parsed) {
+              contentParts.push({
+                type: 'image',
+                image: parsed.base64Data,
+                mimeType: parsed.mimeType,
+              })
+            }
+          } else if (part.type === 'image' && part.image) {
+            // Already in image format, pass through
+            contentParts.push({ type: 'image', image: part.image, mimeType: part.mimeType || 'image/png' })
+          }
+        }
+
+        if (contentParts.length === 1 && contentParts[0].type === 'text') {
+          return { role: msg.role, content: contentParts[0].text }
+        }
+        if (contentParts.length > 0) {
+          return { role: msg.role, content: contentParts }
+        }
+      }
+
+      return { role: msg.role, content: msg.content ?? '' }
     })
     
-    console.log(`[project-runtime] Processing ${messages.length} messages`)
+    // Debug: Log message structure to verify image handling
+    const messageStats = coreMessages.map(m => ({
+      role: m.role,
+      contentType: typeof m.content === 'string' ? 'string' : Array.isArray(m.content) ? `array(${m.content.length})` : typeof m.content,
+      hasImages: Array.isArray(m.content) ? m.content.some((p: any) => p.type === 'image') : false,
+    }))
+    console.log(`[project-runtime] Processing ${messages.length} messages:`, JSON.stringify(messageStats))
     
     // Retry configuration for transient API errors
     const MAX_RETRIES = 3

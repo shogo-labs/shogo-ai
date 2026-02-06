@@ -81,6 +81,22 @@ export function InlineToolWidget({
     }
   }
 
+  // Extract displayable content from tool result (handles Bash stdout/stderr, MCP content, etc.)
+  const getDisplayableResult = (): string => {
+    if (tool.error) return tool.error
+    if (tool.result === undefined || tool.result === null) return ""
+    if (typeof tool.result === "string") return tool.result
+    const r = tool.result as Record<string, unknown>
+    // Bash/command output: { stdout, stderr, exitCode } – prefer stderr on error
+    if (r.stderr && typeof r.stderr === "string") {
+      const stdout = typeof r.stdout === "string" ? r.stdout : ""
+      return stdout ? `${stdout}\n${r.stderr}` : r.stderr
+    }
+    if (r.stdout && typeof r.stdout === "string") return r.stdout
+    if (r.text && typeof r.text === "string") return r.text
+    return formatJson(tool.result)
+  }
+
   return (
     <div
       className={cn(
@@ -179,14 +195,14 @@ export function InlineToolWidget({
             </div>
           )}
 
-          {/* Error */}
-          {tool.state === "error" && tool.error && (
+          {/* Error – always show when failed; use fallback if no content captured */}
+          {tool.state === "error" && (
             <div className="space-y-0.5">
               <span className="text-[9px] font-medium text-exec-error uppercase tracking-wide">
                 Error
               </span>
-              <pre className="text-[10px] font-mono bg-exec-error/10 text-exec-error rounded p-1.5 overflow-x-auto">
-                {tool.error}
+              <pre className="text-[10px] font-mono bg-exec-error/10 text-exec-error rounded p-1.5 overflow-x-auto max-h-32 overflow-y-auto">
+                {getDisplayableResult() || "No output captured"}
               </pre>
             </div>
           )}

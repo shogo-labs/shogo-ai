@@ -160,6 +160,8 @@ export interface ChatPanelProps {
   onCompactSubmit?: (prompt: string) => void
   /** Ref to expose the input container for transition animation measurement */
   inputContainerRef?: React.RefObject<HTMLDivElement>
+  /** Ref to expose the message container for transition animation measurement (targets first message area) */
+  messageContainerRef?: React.RefObject<HTMLDivElement>
   /** Controlled value for compact mode input */
   compactValue?: string
   /** Callback when compact mode input value changes */
@@ -244,13 +246,17 @@ function extractToolCalls(message: Message): ExtractedToolCall[] {
           error: invocation?.error,
         }
       } else {
-        // dynamic-tool: data is directly on the part, not nested in toolInvocation
+        // dynamic-tool: data is directly on the part; for output-error, error is in errorText
+        const errorContent =
+          part.state === "output-error"
+            ? (part as { errorText?: string }).errorText ?? part.error
+            : part.error
         return {
           toolName: part.toolName || "unknown",
           state: mapToolCallState(part.state),
           args: part.input || part.args,
           result: part.output || part.result,
-          error: part.error,
+          error: errorContent,
         }
       }
     })
@@ -572,6 +578,7 @@ export const ChatPanel = observer(function ChatPanel({
   initialMessage,
   onCompactSubmit,
   inputContainerRef,
+  messageContainerRef,
   compactValue,
   onCompactValueChange,
   onFilesChanged,
@@ -1319,6 +1326,39 @@ export const ChatPanel = observer(function ChatPanel({
   // Derive isStreaming from v3 status for backward compatibility
   const isStreaming = status === 'streaming' || status === 'submitted'
 
+  // Optimistic first message for homepage transition: show user message before useChat adds it
+  const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
+
+  // Persist initialMessage in a ref so we never lose it for display (survives re-renders/prop changes)
+  const initialMessageRef = useRef<string | undefined>(undefined)
+  if (initialMessage != null && initialMessage.trim() !== '') {
+    initialMessageRef.current = initialMessage
+  }
+
+  // Clear pending once real messages arrive (avoids duplicate and keeps list in sync)
+  useEffect(() => {
+    if (messages.length > 0 && pendingInitialMessage !== null) {
+      setPendingInitialMessage(null)
+    }
+  }, [messages.length, pendingInitialMessage])
+
+  // Display messages: use real messages, or single optimistic user message when transitioning from homepage
+  // Prefer ref so the first message stays visible even if parent stops passing initialMessage
+  const displayMessages = useMemo((): Message[] => {
+    if (messages.length > 0) return messages
+    const text = (pendingInitialMessage ?? initialMessage ?? initialMessageRef.current ?? '').trim()
+    if (text !== '') {
+      return [
+        {
+          id: 'initial-optimistic',
+          role: 'user',
+          content: text,
+        } as Message,
+      ]
+    }
+    return []
+  }, [messages, pendingInitialMessage, initialMessage])
+
   // Ref to track streaming status for effects that shouldn't re-run on streaming changes
   // but need to check current streaming state (e.g., message sync guard)
   const isStreamingRef = useRef(false)
@@ -1649,7 +1689,11 @@ export const ChatPanel = observer(function ChatPanel({
         messagesEndRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
       }, 50)
     } else if (currentSessionId) {
-      // Only clear if we have a session but no messages
+      // Don't clear during homepage transition: we show an optimistic first message from initialMessage.
+      // Clearing here would leave messages=[], and we'd rely on displayMessages; avoid the clear so we don't trigger flicker.
+      if (initialMessageRef.current?.trim()) {
+        return
+      }
       setMessages([])
     }
     // Note: persistedMessagesFromMobX.length used as stable primitive dep
@@ -1690,18 +1734,32 @@ export const ChatPanel = observer(function ChatPanel({
   }, [])
 
   // Auto-scroll effect - respects user position
-  // Includes currentSessionId to trigger scroll when switching sessions
+  // First message at top: when only one message, scroll to top so first message is at top and agent builds below
+  // When 2+ messages (e.g. first response arrived), scroll to bottom so response is visible (including when streaming)
   useEffect(() => {
-    // Only auto-scroll if user is at bottom (or first load)
-    if (messagesEndRef.current && (isFirstLoadRef.current || isUserAtBottomRef.current)) {
-      // Use requestAnimationFrame to ensure DOM is ready
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    if (displayMessages.length === 1 && (isFirstLoadRef.current || isUserAtBottomRef.current)) {
+      requestAnimationFrame(() => {
+        container.scrollTop = 0
+        isFirstLoadRef.current = false
+      })
+      return
+    }
+
+    const shouldScrollToBottom =
+      displayMessages.length > 1 &&
+      (isFirstLoadRef.current || isUserAtBottomRef.current || isStreaming)
+
+    if (messagesEndRef.current && shouldScrollToBottom) {
       requestAnimationFrame(() => {
         const behavior = isFirstLoadRef.current ? 'instant' : 'smooth'
         messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' })
         isFirstLoadRef.current = false
       })
     }
-  }, [messages, isStreaming, currentSessionId])
+  }, [displayMessages.length, messages, isStreaming, currentSessionId])
 
   // Detect if there's a pending AskUserQuestion in the messages
   // Used to show a hint in the chat input
@@ -1878,20 +1936,20 @@ export const ChatPanel = observer(function ChatPanel({
   )
 
   // Homepage transition warm-start: Inject initial message on mount
-  // When navigating from homepage with a prompt, this sends the message through
-  // the normal flow as if the user typed and submitted it directly
+  // Inject as soon as we have session (no wait for status === 'ready') to reduce lag
+  // Show optimistic message immediately via pendingInitialMessage so first message is visible when overlay fades
   useEffect(() => {
     if (
       initialMessage &&
       currentSessionId &&
-      !hasInjectedInitialMessageRef.current &&
-      status === 'ready'  // Only inject when chat is ready, not streaming
+      !hasInjectedInitialMessageRef.current
     ) {
       hasInjectedInitialMessageRef.current = true
+      setPendingInitialMessage(initialMessage)
       console.log('[ChatPanel] Injecting initial message from homepage transition:', initialMessage.slice(0, 50))
       handleSendMessage(initialMessage)
     }
-  }, [initialMessage, currentSessionId, status, handleSendMessage])
+  }, [initialMessage, currentSessionId, handleSendMessage])
 
   // Collapse toggle - persist to localStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {
@@ -2056,11 +2114,18 @@ export const ChatPanel = observer(function ChatPanel({
         /> */}
 
         {/* Messages with Turn Grouping (task-chat-008) */}
-        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4">
-          {messages.length > 0 ? (
+        {/* Use displayMessages so optimistic first message shows immediately on homepage transition */}
+        <div ref={(el) => {
+          // Callback ref to set both internal scrollContainerRef and external messageContainerRef
+          (scrollContainerRef as React.MutableRefObject<HTMLDivElement | null>).current = el
+          if (messageContainerRef) {
+            (messageContainerRef as React.MutableRefObject<HTMLDivElement | null>).current = el
+          }
+        }} className="flex-1 overflow-y-auto p-4">
+          {displayMessages.length > 0 ? (
             <>
               <TurnList
-                messages={messages}
+                messages={displayMessages}
                 isStreaming={isStreaming}
                 phase={phase}
                 activeSubagents={Array.from(activeSubagents.values()) as SubagentProgressType[]}

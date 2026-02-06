@@ -64,8 +64,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const location = useLocation()
   const { data: session } = useSession()
 
-  // Extract state passed from homepage transition (for instant render + warm-start)
-  const transitionState = location.state as TransitionLocationState | null
+  // Capture transition state from navigation so it survives replaceState (which would clear location.state)
+  // Without this, first message and overlay start rect are lost before ChatPanel can use them
+  const [capturedTransition] = useState<TransitionLocationState | null>(
+    () => (location.state as TransitionLocationState | null) ?? null
+  )
+  const transitionState = capturedTransition
 
   // Use SDK store for data loading
   const store = useSDKDomain() as IDomainStore
@@ -157,6 +161,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
   // Transition overlay state - for animating from homepage to chat panel
   const chatInputContainerRef = useRef<HTMLDivElement>(null)
+  const messageContainerRef = useRef<HTMLDivElement>(null)
   const [transitionOverlayActive, setTransitionOverlayActive] = useState(false)
   const [transitionEndRect, setTransitionEndRect] = useState<DOMRect | null>(null)
   const transitionMeasuredRef = useRef(false)
@@ -171,40 +176,76 @@ export const ProjectLayout = observer(function ProjectLayout() {
       )
     : null
 
-  // Clear location state after consuming initialMessage to prevent re-injection on refresh
+  // Clear location state after transition is consumed to prevent re-injection on refresh
+  // We use captured transition state above, so clearing here only affects back-button behavior
   useEffect(() => {
     if (transitionState?.initialMessage) {
-      // Replace current history entry without the state
       window.history.replaceState({}, document.title)
     }
   }, []) // Only run on mount
 
-  // Measure ChatPanel input and activate transition overlay
-  // This runs once when we have a start rect and the ChatPanel has mounted
+  // Measure ChatPanel message container and activate transition overlay
+  // Animation should target the message area (top of chat) not the input (bottom)
+  // Delay measurement so layout is stable; chat panel is on the LEFT so reject rects in the right half
   useEffect(() => {
     if (
       !transitionStartRect ||
-      !chatInputContainerRef.current ||
+      !messageContainerRef.current ||
       transitionMeasuredRef.current ||
       isChatCollapsed
     ) {
       return
     }
 
-    // Wait for layout to settle
+    const el = messageContainerRef.current
+    let retryTimeoutId: ReturnType<typeof setTimeout> | null = null
+
     const measureAndActivate = () => {
-      const endRect = chatInputContainerRef.current?.getBoundingClientRect()
-      if (endRect) {
+      if (!el || transitionMeasuredRef.current) return
+      const endRect = el.getBoundingClientRect()
+      const hasSize = endRect && endRect.width > 0 && endRect.height > 0
+      // Chat panel is on the left: endRect.left should be in the left half of the viewport
+      // Reject (0,0) or right-side coords that would put the overlay in the wrong place
+      const inLeftHalf = typeof window !== 'undefined' && endRect.left < window.innerWidth * 0.6
+      const sanePosition = endRect.top >= 0 && endRect.left >= 0
+      const isValid = hasSize && inLeftHalf && sanePosition
+
+      if (isValid) {
         transitionMeasuredRef.current = true
         setTransitionEndRect(endRect)
         setTransitionOverlayActive(true)
       }
     }
 
-    // Use requestAnimationFrame to ensure layout is complete
-    requestAnimationFrame(() => {
-      requestAnimationFrame(measureAndActivate)
-    })
+    const RETRY_MS = 80
+    const MAX_RETRIES = 25
+
+    const scheduleRetry = (attempt: number) => {
+      if (transitionMeasuredRef.current || attempt >= MAX_RETRIES) return
+      retryTimeoutId = setTimeout(() => {
+        measureAndActivate()
+        if (!transitionMeasuredRef.current) scheduleRetry(attempt + 1)
+      }, RETRY_MS)
+    }
+
+    const observer = new ResizeObserver(() => measureAndActivate())
+    observer.observe(el)
+
+    // Wait for layout to settle before first measure (avoids wrong position / bottom-right flash)
+    const startDelay = setTimeout(() => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          measureAndActivate()
+          if (!transitionMeasuredRef.current) scheduleRetry(0)
+        })
+      })
+    }, 150)
+
+    return () => {
+      clearTimeout(startDelay)
+      observer.disconnect()
+      if (retryTimeoutId != null) clearTimeout(retryTimeoutId)
+    }
   }, [transitionStartRect, isChatCollapsed])
 
   // Handle transition overlay completion
@@ -800,6 +841,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 className="flex-1 min-h-0"
                 initialMessage={transitionState?.initialMessage}
                 inputContainerRef={chatInputContainerRef}
+                messageContainerRef={messageContainerRef}
               onFilesChanged={(paths) => {
                 console.log('[ProjectLayout] 📁 Agent modified files:', paths)
                 // Increment refresh trigger to reload code editor

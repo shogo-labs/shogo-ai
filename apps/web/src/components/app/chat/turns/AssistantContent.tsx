@@ -31,15 +31,15 @@ export interface AssistantContentProps {
  * Handles both standard tool-invocation states and dynamic-tool states
  */
 function mapToolState(state?: string): ToolCallData["state"] {
-  console.log("[mapToolState] Received state:", state)
-
-  // Known states from Claude Code dynamic-tool format:
+  // Claude Code dynamic-tool: input-streaming, output-available, output-error
   if (state === "input-streaming") return "streaming"
   if (state === "output-available") return "success"
   if (state === "output-error") return "error"
+  // Standard AI SDK tool-invocation: result, error
+  if (state === "result") return "success"
+  if (state === "error") return "error"
 
-  // Default to success for unknown states (likely completed)
-  return "success"
+  return "streaming"
 }
 
 /**
@@ -80,7 +80,6 @@ function extractOrderedParts(message: Message): MessagePart[] {
     } else if (part.type === "tool-invocation") {
       // Standard AI SDK tool-invocation format
       const inv = part.toolInvocation
-      // console.log("[AssistantContent] Found tool-invocation part", { inv, part })
       if (inv) {
         result.push({
           type: "tool",
@@ -100,8 +99,12 @@ function extractOrderedParts(message: Message): MessagePart[] {
     } else if (part.type === "dynamic-tool") {
       // Claude Code provider dynamic-tool format
       // Data is directly on the part, not nested in toolInvocation
-      // console.log("[AssistantContent] Found dynamic-tool part", { part })
       const toolCallId = part.toolCallId || `tool-${index}`
+      // For output-error, AI SDK puts error content in errorText, not output/error
+      const errorContent =
+        part.state === "output-error"
+          ? (part as { errorText?: string }).errorText ?? part.error
+          : part.error
       result.push({
         type: "tool",
         id: toolCallId,
@@ -112,7 +115,7 @@ function extractOrderedParts(message: Message): MessagePart[] {
           state: mapToolState(part.state),
           args: part.input, // dynamic-tool uses 'input' not 'args'
           result: part.output, // dynamic-tool uses 'output' not 'result'
-          error: part.error,
+          error: errorContent,
           timestamp: Date.now(),
         },
       })
