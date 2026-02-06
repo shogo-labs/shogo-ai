@@ -168,6 +168,8 @@ export interface ChatPanelProps {
   onCompactValueChange?: (value: string) => void
   /** Callback when agent modifies files (Write, Edit, StrReplace tools) - for code panel refresh */
   onFilesChanged?: (paths: string[]) => void
+  /** Callback when a tool call becomes active/inactive - for preview overlay during template_copy */
+  onActiveToolCall?: (toolName: string | null) => void
   /** Currently selected theme ID (for compact mode) */
   selectedThemeId?: string
   /** Callback when theme is selected (for compact mode) */
@@ -582,6 +584,7 @@ export const ChatPanel = observer(function ChatPanel({
   compactValue,
   onCompactValueChange,
   onFilesChanged,
+  onActiveToolCall,
   selectedThemeId,
   onSelectTheme,
   onCreateTheme,
@@ -1369,7 +1372,7 @@ export const ChatPanel = observer(function ChatPanel({
   // because onFinish never fires. This detects idle state and calls stop().
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastMessageContentRef = useRef<string>("")
-  const IDLE_TIMEOUT_MS = 90000 // 90 seconds of no new content = consider complete
+  const IDLE_TIMEOUT_MS = 180000 // 3 minutes of no new content = consider complete (increased for template_copy)
 
   useEffect(() => {
     // Get current content to track changes
@@ -1579,6 +1582,51 @@ export const ChatPanel = observer(function ChatPanel({
     }
     prevIsStreamingRef.current = isStreaming
   }, [isStreaming])
+
+  // Detect template_copy tool invocation and notify parent for preview overlay
+  // This provides UX feedback during the template copy process
+  const prevActiveTemplateCopyRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!onActiveToolCall) return
+    
+    // Look for template_copy tool in the latest assistant message
+    const latestMessage = messages[messages.length - 1]
+    if (!latestMessage || latestMessage.role !== 'assistant') {
+      // No assistant message - clear any active tool
+      if (prevActiveTemplateCopyRef.current !== null) {
+        onActiveToolCall(null)
+        prevActiveTemplateCopyRef.current = null
+      }
+      return
+    }
+    
+    // Extract tool calls from the message
+    const toolCalls = extractToolCalls(latestMessage)
+    
+    // Find any template_copy that is actively running (not yet completed)
+    const activeTemplateCopy = toolCalls.find(tc => {
+      const normalizedName = tc.toolName.includes('__') 
+        ? tc.toolName.split('__').pop() 
+        : tc.toolName
+      const isTemplateTool = normalizedName === 'template_copy' || normalizedName === 'template.copy'
+      const isRunning = tc.state === 'input-streaming' || tc.state === 'input-available'
+      return isTemplateTool && isRunning
+    })
+    
+    if (activeTemplateCopy) {
+      // Template copy is running
+      if (prevActiveTemplateCopyRef.current !== activeTemplateCopy.toolName) {
+        console.log('[ChatPanel] 📦 Template copy started:', activeTemplateCopy.toolName)
+        onActiveToolCall(activeTemplateCopy.toolName)
+        prevActiveTemplateCopyRef.current = activeTemplateCopy.toolName
+      }
+    } else if (prevActiveTemplateCopyRef.current !== null) {
+      // Template copy finished or no longer active
+      console.log('[ChatPanel] 📦 Template copy completed')
+      onActiveToolCall(null)
+      prevActiveTemplateCopyRef.current = null
+    }
+  }, [messages, onActiveToolCall])
 
   // Effect 1: Trigger data loading for chat messages from API
   // loadAll() calls APIPersistence which fetches from REST API with sessionId filter

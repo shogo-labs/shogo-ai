@@ -121,6 +121,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
 
+  // Template copy state - tracks when template_copy tool is running for preview overlay
+  const [isTemplateCopying, setIsTemplateCopying] = useState(false)
+
   // Build error state - shared between RuntimePreviewPanel and TerminalPanel
   const [buildError, setBuildError] = useState<string | null>(null)
   const [buildErrorContext, setBuildErrorContext] = useState<{
@@ -848,6 +851,11 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 // Preview auto-refresh is handled by SSE build events from Vite
                 setCodeRefreshTrigger(prev => prev + 1)
               }}
+              onActiveToolCall={(toolName) => {
+                // Track template_copy for preview overlay
+                const isTemplateTool = toolName?.includes('template_copy') || toolName?.includes('template.copy')
+                setIsTemplateCopying(isTemplateTool === true)
+              }}
               />
             </div>
           </div>
@@ -944,6 +952,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   viewport={currentViewport}
                   onBuildError={handleBuildError}
                   forceRefresh={codeRefreshTrigger}
+                  isTemplateCopying={isTemplateCopying}
                 />
               </div>
               {/* Code Editor - stays mounted to preserve editor state */}

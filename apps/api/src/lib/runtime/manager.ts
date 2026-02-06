@@ -85,31 +85,84 @@ export class RuntimeManager implements IRuntimeManager {
   }
 
   /**
-   * Allocate next available port starting from basePort.
-   * Checks both internal tracking AND actual port availability to handle
-   * stale processes from previous API server instances (e.g., after hot reload).
+   * Kill any process running on the specified port.
+   * Uses lsof to find the PID and kills it.
+   */
+  private killProcessOnPort(port: number): void {
+    try {
+      // Find PID using lsof (works on macOS and Linux)
+      const result = execSync(`lsof -ti :${port} 2>/dev/null || true`, { encoding: 'utf-8' })
+      const pids = result.trim().split('\n').filter(pid => pid.length > 0)
+      
+      for (const pid of pids) {
+        try {
+          console.log(`[RuntimeManager] Killing stale process ${pid} on port ${port}`)
+          execSync(`kill -9 ${pid} 2>/dev/null || true`)
+        } catch {
+          // Process might have already exited
+        }
+      }
+      
+      if (pids.length > 0) {
+        // Give the OS a moment to release the port
+        execSync('sleep 0.5')
+      }
+    } catch (err) {
+      console.warn(`[RuntimeManager] Failed to kill process on port ${port}:`, err)
+    }
+  }
+
+  /**
+   * Allocate a port for a project - in local dev, always use the same port per project.
+   * If the port is in use by a stale process, kill it first.
+   * This ensures consistent port assignments and avoids port drift on hot reload.
    */
   private async allocatePortAsync(): Promise<number> {
     const { basePort, maxRuntimes } = this.config
-    for (let offset = 0; offset < maxRuntimes; offset++) {
-      const port = basePort + offset
-      if (!this.usedPorts.has(port)) {
-        // Also check if agent port (port + 1000) is actually free
-        const agentPort = port + 1000
-        const viteInUse = await this.isPortInUse(port)
-        const agentInUse = await this.isPortInUse(agentPort)
-        
-        if (!viteInUse && !agentInUse) {
-          this.usedPorts.add(port)
-          return port
-        } else {
-          // Port is in use by stale process - skip it and mark as used
-          console.warn(`[RuntimeManager] Port ${port} or ${agentPort} is in use by stale process, skipping`)
-          this.usedPorts.add(port)
+    
+    // In local development, always try to use basePort first (5200)
+    // This provides consistent URLs and avoids confusion
+    const port = basePort
+    const agentPort = port + 1000
+    
+    // Check if ports are in use
+    const viteInUse = await this.isPortInUse(port)
+    const agentInUse = await this.isPortInUse(agentPort)
+    
+    // If either port is in use by a stale process, kill it
+    if (viteInUse) {
+      console.log(`[RuntimeManager] Port ${port} is in use, killing stale process...`)
+      this.killProcessOnPort(port)
+    }
+    if (agentInUse) {
+      console.log(`[RuntimeManager] Port ${agentPort} is in use, killing stale process...`)
+      this.killProcessOnPort(agentPort)
+    }
+    
+    // Verify ports are now free
+    const stillViteInUse = await this.isPortInUse(port)
+    const stillAgentInUse = await this.isPortInUse(agentPort)
+    
+    if (stillViteInUse || stillAgentInUse) {
+      console.error(`[RuntimeManager] Failed to free ports ${port}/${agentPort}, trying next available...`)
+      // Fall back to finding next available port
+      for (let offset = 1; offset < maxRuntimes; offset++) {
+        const nextPort = basePort + offset
+        const nextAgentPort = nextPort + 1000
+        if (!this.usedPorts.has(nextPort)) {
+          const nextViteInUse = await this.isPortInUse(nextPort)
+          const nextAgentInUse = await this.isPortInUse(nextAgentPort)
+          if (!nextViteInUse && !nextAgentInUse) {
+            this.usedPorts.add(nextPort)
+            return nextPort
+          }
         }
       }
+      throw new Error(`Cannot allocate port - all ports occupied`)
     }
-    throw new Error(`Maximum runtimes (${maxRuntimes}) reached or all ports occupied by stale processes. Cannot allocate port.`)
+    
+    this.usedPorts.add(port)
+    return port
   }
 
   /**

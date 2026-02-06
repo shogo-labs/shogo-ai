@@ -70,6 +70,145 @@ interface SandboxUrlResponse {
   }
 }
 
+/**
+ * Animated overlay shown during template_copy operation
+ * Shows step-by-step progress with animated indicators
+ */
+function TemplateCopyOverlay() {
+  const [currentStep, setCurrentStep] = useState(0)
+  
+  const steps = [
+    { icon: '📦', label: 'Copying template files', sublabel: 'Setting up project structure' },
+    { icon: '⚙️', label: 'Installing dependencies', sublabel: 'Preparing packages' },
+    { icon: '🔧', label: 'Configuring project', sublabel: 'Setting up development environment' },
+    { icon: '🚀', label: 'Starting dev server', sublabel: 'Almost ready...' },
+  ]
+  
+  // Cycle through steps to show activity
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentStep(prev => (prev + 1) % steps.length)
+    }, 2500)
+    return () => clearInterval(interval)
+  }, [steps.length])
+  
+  return (
+    <div className="absolute inset-0 z-10 flex items-center justify-center bg-gradient-to-br from-background via-background/95 to-primary/5 backdrop-blur-sm animate-in fade-in duration-300">
+      <div className="flex flex-col items-center gap-8 max-w-md text-center px-8">
+        {/* Animated logo/icon area */}
+        <div className="relative">
+          {/* Outer glow pulse */}
+          <div className="absolute -inset-6 bg-primary/10 rounded-full blur-2xl animate-pulse" />
+          
+          {/* Animated ring */}
+          <div className="relative">
+            <svg className="w-24 h-24 -rotate-90" viewBox="0 0 100 100">
+              {/* Background ring */}
+              <circle
+                cx="50"
+                cy="50"
+                r="42"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="4"
+                className="text-muted/30"
+              />
+              {/* Animated progress ring */}
+              <circle
+                cx="50"
+                cy="50"
+                r="42"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="4"
+                strokeLinecap="round"
+                strokeDasharray="264"
+                strokeDashoffset="66"
+                className="text-primary animate-spin"
+                style={{ animationDuration: '3s' }}
+              />
+            </svg>
+            
+            {/* Center icon */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="text-3xl animate-bounce" style={{ animationDuration: '1s' }}>
+                {steps[currentStep].icon}
+              </span>
+            </div>
+          </div>
+        </div>
+        
+        {/* Title */}
+        <div className="space-y-2">
+          <h3 className="text-xl font-semibold text-foreground">
+            Setting Up Your Project
+          </h3>
+          <p className="text-sm text-muted-foreground">
+            Please wait while we prepare your workspace
+          </p>
+        </div>
+        
+        {/* Steps display */}
+        <div className="w-full space-y-3">
+          {steps.map((step, index) => (
+            <div
+              key={step.label}
+              className={cn(
+                "flex items-center gap-3 p-3 rounded-lg transition-all duration-500",
+                index === currentStep
+                  ? "bg-primary/10 border border-primary/30 scale-[1.02]"
+                  : index < currentStep
+                    ? "bg-muted/30 opacity-60"
+                    : "bg-muted/10 opacity-40"
+              )}
+            >
+              <div className={cn(
+                "w-8 h-8 rounded-full flex items-center justify-center text-lg transition-all",
+                index === currentStep
+                  ? "bg-primary/20 animate-pulse"
+                  : index < currentStep
+                    ? "bg-green-500/20"
+                    : "bg-muted/30"
+              )}>
+                {index < currentStep ? '✓' : step.icon}
+              </div>
+              <div className="flex-1 text-left">
+                <p className={cn(
+                  "text-sm font-medium transition-colors",
+                  index === currentStep ? "text-foreground" : "text-muted-foreground"
+                )}>
+                  {step.label}
+                </p>
+                <p className="text-xs text-muted-foreground/70">
+                  {step.sublabel}
+                </p>
+              </div>
+              {index === currentStep && (
+                <Loader2 className="h-4 w-4 text-primary animate-spin" />
+              )}
+            </div>
+          ))}
+        </div>
+        
+        {/* Progress bar */}
+        <div className="w-full">
+          <div className="h-1.5 bg-muted/30 rounded-full overflow-hidden">
+            <div 
+              className="h-full bg-gradient-to-r from-primary via-primary/80 to-primary rounded-full transition-all duration-500"
+              style={{
+                width: `${((currentStep + 1) / steps.length) * 100}%`,
+              }}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground/60 mt-2">
+            Step {currentStep + 1} of {steps.length}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export interface RuntimePreviewPanelProps {
   /** Project ID to load runtime for */
   projectId: string
@@ -85,6 +224,8 @@ export interface RuntimePreviewPanelProps {
   onBuildError?: (error: string, context?: BuildWatchState['errorContext'] | null) => void
   /** Force refresh trigger - increment to force a preview refresh (backup for SSE failures) */
   forceRefresh?: number
+  /** Whether template copy is in progress - shows animated overlay */
+  isTemplateCopying?: boolean
 }
 
 export function RuntimePreviewPanel({
@@ -95,6 +236,7 @@ export function RuntimePreviewPanel({
   viewport = "desktop",
   onBuildError,
   forceRefresh,
+  isTemplateCopying = false,
 }: RuntimePreviewPanelProps) {
   const [sandboxUrl, setSandboxUrl] = useState<string | null>(null)
   const [sandboxAttributes, setSandboxAttributes] = useState<string>('')
@@ -117,6 +259,9 @@ export function RuntimePreviewPanel({
   const autoRetryTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const statusPollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const buildEventSourceRef = useRef<EventSource | null>(null)
+  // Shared ref to track last refresh time - used by both SSE handler and forceRefresh to prevent double-refreshes
+  const lastForceRefreshRef = useRef<number>(0)
+  const forceRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   /**
    * Poll runtime status to check if pod is ready.
@@ -358,6 +503,7 @@ export function RuntimePreviewPanel({
           
           // Show rebuild overlay when build starts
           if (data.state === 'building' && prevState !== 'building') {
+            console.log('[RuntimePreviewPanel] 📥 SSE_BUILD_STARTED - Vite is rebuilding')
             setIsRebuilding(true)
             setStatusMessage('Rebuilding project...')
             setBuildError(null)
@@ -366,18 +512,39 @@ export function RuntimePreviewPanel({
           
           // Refresh iframe when build succeeds
           if (data.state === 'success' && prevState === 'building') {
-            console.log('[RuntimePreviewPanel] Build complete, refreshing preview...')
             setBuildError(null)
             setBuildErrorContext(null)
-            // Wait a moment for server to be ready
-            setTimeout(() => {
-              if (iframeRef.current && sandboxUrl) {
-                setIframeLoaded(false)
-                const cacheBuster = Date.now()
-                const separator = sandboxUrl.includes('?') ? '&' : '?'
-                iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
-              }
-            }, 500)
+            
+            // Throttle: Skip if a refresh happened in the last 2 seconds (forceRefresh may have already triggered)
+            const now = Date.now()
+            const timeSinceLastRefresh = now - lastForceRefreshRef.current
+            const SSE_THROTTLE_MS = 2000
+            
+            console.log('[RuntimePreviewPanel] 📥 SSE_BUILD_SUCCESS received:', {
+              prevState,
+              newState: data.state,
+              timeSinceLastRefresh,
+              throttleMs: SSE_THROTTLE_MS,
+              willThrottle: timeSinceLastRefresh < SSE_THROTTLE_MS,
+            })
+            
+            if (timeSinceLastRefresh < SSE_THROTTLE_MS) {
+              console.log('[RuntimePreviewPanel] ⏸️ SSE_BUILD_SUCCESS THROTTLED - skipping refresh')
+              setIsRebuilding(false)
+            } else {
+              console.log('[RuntimePreviewPanel] 🔄 SSE_BUILD_SUCCESS EXECUTING - refreshing iframe')
+              lastForceRefreshRef.current = now
+              // Wait a moment for server to be ready
+              setTimeout(() => {
+                if (iframeRef.current && sandboxUrl) {
+                  setIframeLoaded(false)
+                  const cacheBuster = Date.now()
+                  const separator = sandboxUrl.includes('?') ? '&' : '?'
+                  console.log('[RuntimePreviewPanel] 🔄 SSE_BUILD_SUCCESS setting iframe src with cacheBuster:', cacheBuster)
+                  iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
+                }
+              }, 500)
+            }
           }
           
           // Handle error state with enhanced context
@@ -567,25 +734,59 @@ export function RuntimePreviewPanel({
 
   // Force refresh handler - backup mechanism when SSE fails
   // Parent component (ProjectLayout) increments forceRefresh when AI modifies files
+  // Throttled to prevent excessive refreshes that cause flickering (refs defined at top of component)
   useEffect(() => {
     // Skip initial render (forceRefresh starts at 0)
     if (!forceRefresh || forceRefresh === 0) return
     
+    // Throttle: ignore if a refresh happened in the last 3 seconds
+    const now = Date.now()
+    const timeSinceLastRefresh = now - lastForceRefreshRef.current
+    const THROTTLE_MS = 3000 // 3 second throttle
+    
+    console.log('[RuntimePreviewPanel] 📥 FORCE_REFRESH received:', {
+      forceRefresh,
+      timeSinceLastRefresh,
+      throttleMs: THROTTLE_MS,
+      willThrottle: timeSinceLastRefresh < THROTTLE_MS,
+      sandboxUrl: !!sandboxUrl,
+      iframeLoaded,
+    })
+    
+    if (timeSinceLastRefresh < THROTTLE_MS) {
+      console.log('[RuntimePreviewPanel] ⏸️ FORCE_REFRESH THROTTLED - skipping refresh')
+      return
+    }
+    
     // Only refresh if we have a sandbox URL and the iframe is loaded
     if (iframeRef.current && sandboxUrl && iframeLoaded) {
-      console.log('[RuntimePreviewPanel] 🔄 Force refresh triggered by parent (forceRefresh:', forceRefresh, ')')
+      console.log('[RuntimePreviewPanel] 🔄 FORCE_REFRESH EXECUTING - refreshing iframe')
+      
+      // Clear any pending refresh timeout
+      if (forceRefreshTimeoutRef.current) {
+        clearTimeout(forceRefreshTimeoutRef.current)
+      }
+      
       setIframeLoaded(false)
       setIsRebuilding(true)
       setStatusMessage('Files changed, refreshing preview...')
+      lastForceRefreshRef.current = now
       
       // Wait a moment for file changes to be picked up by Vite
-      setTimeout(() => {
+      forceRefreshTimeoutRef.current = setTimeout(() => {
         if (iframeRef.current && sandboxUrl) {
           const cacheBuster = Date.now()
           const separator = sandboxUrl.includes('?') ? '&' : '?'
+          console.log('[RuntimePreviewPanel] 🔄 FORCE_REFRESH setting iframe src with cacheBuster:', cacheBuster)
           iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
         }
       }, 1000) // 1 second delay to allow Vite to pick up changes
+    } else {
+      console.log('[RuntimePreviewPanel] ⚠️ FORCE_REFRESH skipped - conditions not met:', {
+        hasIframeRef: !!iframeRef.current,
+        sandboxUrl: !!sandboxUrl,
+        iframeLoaded,
+      })
     }
   }, [forceRefresh, sandboxUrl, iframeLoaded])
 
@@ -598,6 +799,10 @@ export function RuntimePreviewPanel({
       // Clear any pending auto-retry timeouts
       if (autoRetryTimeoutRef.current) {
         clearTimeout(autoRetryTimeoutRef.current)
+      }
+      // Clear force refresh timeout
+      if (forceRefreshTimeoutRef.current) {
+        clearTimeout(forceRefreshTimeoutRef.current)
       }
       // Clear status poll interval
       if (statusPollIntervalRef.current) {
@@ -819,13 +1024,18 @@ export function RuntimePreviewPanel({
       )}
 
       {/* Loading overlay for initial load only */}
-      {(isLoading || !iframeLoaded) && sandboxUrl && !isRebuilding && (
+      {(isLoading || !iframeLoaded) && sandboxUrl && !isRebuilding && !isTemplateCopying && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-5">
           <div className="flex flex-col items-center gap-2">
             <Loader2 className="h-6 w-6 text-primary animate-spin" />
             <span className="text-xs text-muted-foreground">Loading preview...</span>
           </div>
         </div>
+      )}
+
+      {/* Template copy overlay - shows animated progress during template_copy */}
+      {isTemplateCopying && (
+        <TemplateCopyOverlay />
       )}
 
       {/* Viewport-constrained iframe container */}
