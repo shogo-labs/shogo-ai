@@ -2252,23 +2252,32 @@ app.post('/preview/restart', async (c) => {
     const projectType = isExpo ? 'Expo (React Native)' : isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'
     console.log(`[project-runtime] Project type: ${projectType}`)
     
-    // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
+    // 3. Install dependencies (skip only if node_modules clearly matches package.json)
+    // After template_copy overwrites package.json, we must run bun install so deps like vite-tsconfig-paths are present.
     const nodeModulesPath = join(PROJECT_DIR, 'node_modules')
     const nodeModulesExists = existsSync(nodeModulesPath)
-    
-    // Check if node_modules appears complete (has key packages)
     const hasReact = existsSync(join(nodeModulesPath, 'react'))
     const hasVite = existsSync(join(nodeModulesPath, 'vite'))
     const nodeModulesComplete = nodeModulesExists && hasReact && hasVite
-    
-    // Check if package.json has overrides - if so, we MUST run bun install to apply them
-    // This is critical for templates using rolldown-vite via "overrides": { "vite": "npm:rolldown-vite@latest" }
+
+    // If package.json lists template-specific deps, they must exist in node_modules to skip install.
+    // Otherwise we may have an old node_modules (e.g. from minimal template) and a new package.json (from template copy).
+    const allDeps = { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) }
+    const hasViteTsconfigPaths = existsSync(join(nodeModulesPath, 'vite-tsconfig-paths'))
+    const needsViteTsconfigPaths = !!allDeps['vite-tsconfig-paths']
+    const hasTanStackStart = existsSync(join(nodeModulesPath, '@tanstack', 'react-start'))
+    const needsTanStackStart = !!allDeps['@tanstack/react-start']
+    const templateDepsSatisfied =
+      (!needsViteTsconfigPaths || hasViteTsconfigPaths) && (!needsTanStackStart || hasTanStackStart)
+
     const hasOverrides = !!(packageJson.overrides || packageJson.resolutions)
     if (hasOverrides) {
       console.log('[project-runtime] Package has overrides/resolutions - will run bun install to apply them')
     }
-    
-    if (nodeModulesComplete && !hasOverrides) {
+
+    const shouldSkipInstall =
+      nodeModulesComplete && !hasOverrides && templateDepsSatisfied
+    if (shouldSkipInstall) {
       console.log('[project-runtime] ⚡ node_modules already exists (pre-installed from template) - skipping bun install')
       markStep('bunInstall (skipped - pre-installed)')
     } else {

@@ -69,6 +69,8 @@ if [ ! -f "$PROJECT_DIR/package.json" ]; then
     "preview": "vite preview"
   },
   "dependencies": {
+    "mobx": "^6.13.0",
+    "mobx-react-lite": "^4.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

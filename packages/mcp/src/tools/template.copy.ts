@@ -811,9 +811,9 @@ export async function executeTemplateCopy(
         timer.mark('previewRestartCall (failed)')
       }
       
-      response.message = response.setup?.success 
+      response.message = response.setup?.success
         ? `Template "${template.name}" copied and fully set up. The preview should now show the app.`
-        : `Template copied but setup failed: ${response.setup?.error}. Try refreshing the preview.`
+        : `Template copied but setup failed: ${response.setup?.error}. The preview will run \`bun install\` on next restart if needed. Do not run \`generate\` after template copy—the template already includes generated files. Try refreshing the preview.`
     } else if (!args.skipInstall) {
       // Local development (not in project context) - run install steps here
       const installResults: { step: string; success: boolean; error?: string; durationMs?: number }[] = []

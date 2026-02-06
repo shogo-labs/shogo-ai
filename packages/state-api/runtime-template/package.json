@@ -12,6 +12,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "mobx": "^6.13.0",
+    "mobx-react-lite": "^4.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

@@ -76,6 +76,7 @@ Trigger on patterns like:
 
 3. **Wait for Setup Completion**
    - Tool handles: file copy, bun install, prisma setup, build, server start
+   - Do **not** run `generate` or `scripts/generate.ts` after template copy—the template already includes all generated files (auth, domain, routes, Prisma client).
    - Report success to user
    - Mention preview is ready
 
@@ -154,7 +155,7 @@ template.copy({
 
 1. ❌ Writing custom code without checking templates
 2. ❌ Asking multiple clarifying questions
-3. ❌ Running `bun install` or `prisma` commands after template.copy
+3. ❌ Running `bun install`, `prisma`, or `generate` / `scripts/generate.ts` after template.copy (the tool and preview restart handle setup)
 4. ❌ Selecting wrong template (expense-tracker for todo requests)
 5. ❌ Not waiting for setup completion before declaring success
 

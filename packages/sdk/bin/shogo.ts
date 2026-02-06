@@ -18,12 +18,12 @@ import { parseArgs } from 'util'
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { execSync } from 'child_process'
-import { generateFromPrisma, type GenerateOptions, type OutputConfig } from '../src/generators/prisma-generator'
-import { 
-  transformSchemaFile, 
+import { generateFromPrisma, type GenerateOptions, type OutputConfig } from '@shogo-ai/sdk/generators'
+import {
+  transformSchemaFile,
   detectSchemaProvider,
-  type DatabaseProvider as SchemaProvider 
-} from '../src/db/schema-transformer'
+  type DatabaseProvider as SchemaProvider,
+} from '@shogo-ai/sdk/db'
 
 // ============================================================================
 // Types
