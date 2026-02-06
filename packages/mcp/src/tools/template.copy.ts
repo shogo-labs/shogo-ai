@@ -459,38 +459,50 @@ function sanitizeEnvFile(projectDir: string): void {
  * Templates always copy to the root of the project directory.
  */
 function getDefaultOutputDir(projectName: string): string {
+  // Log environment variables for debugging
+  const projectDir = process.env.PROJECT_DIR
+  const projectId = process.env.PROJECT_ID
+  console.log(`[template.copy] 🔍 ENV vars: PROJECT_ID=${projectId || '(not set)'}, PROJECT_DIR=${projectDir || '(not set)'}`)
+  
   // Priority 1: PROJECT_DIR env var (Kubernetes runtime)
   // This is the correct path in containerized environments
-  const projectDir = process.env.PROJECT_DIR
-  if (projectDir && existsSync(projectDir)) {
-    console.log(`[template.copy] Using PROJECT_DIR: ${projectDir}`)
+  if (projectDir) {
+    // Create directory if it doesn't exist (might be fresh project)
+    if (!existsSync(projectDir)) {
+      console.log(`[template.copy] Creating PROJECT_DIR: ${projectDir}`)
+      mkdirSync(projectDir, { recursive: true })
+    }
+    console.log(`[template.copy] ✅ Using PROJECT_DIR: ${projectDir}`)
     return projectDir
   }
 
   // Priority 2: PROJECT_ID with workspaces directory (local dev with project context)
-  const projectId = process.env.PROJECT_ID
   if (projectId) {
     const workspacesDir = resolve(MONOREPO_ROOT, "workspaces")
-    if (existsSync(workspacesDir)) {
-      const projectPath = resolve(workspacesDir, projectId)
-      console.log(`[template.copy] Using PROJECT_ID workspace: ${projectPath}`)
-      return projectPath
+    // Create workspaces dir if needed
+    if (!existsSync(workspacesDir)) {
+      console.log(`[template.copy] Creating workspaces dir: ${workspacesDir}`)
+      mkdirSync(workspacesDir, { recursive: true })
     }
-  }
-
-  // Priority 3: workspaces/{projectId or name} for local development
-  const workspacesDir = resolve(MONOREPO_ROOT, "workspaces")
-  if (existsSync(workspacesDir)) {
-    // Use projectId if available, otherwise use name
-    const dirName = projectId || projectName
-    const projectPath = resolve(workspacesDir, dirName)
-    console.log(`[template.copy] Using workspaces directory: ${projectPath}`)
+    const projectPath = resolve(workspacesDir, projectId)
+    // Create project dir if needed
+    if (!existsSync(projectPath)) {
+      console.log(`[template.copy] Creating project workspace: ${projectPath}`)
+      mkdirSync(projectPath, { recursive: true })
+    }
+    console.log(`[template.copy] ✅ Using PROJECT_ID workspace: ${projectPath}`)
     return projectPath
   }
 
-  // Priority 4: Fallback to cwd
-  console.log(`[template.copy] Using cwd fallback: ${process.cwd()}`)
-  return process.cwd()
+  // Priority 3: workspaces/{projectName} for local development (FALLBACK - should rarely hit this)
+  console.warn(`[template.copy] ⚠️ No PROJECT_ID or PROJECT_DIR set! Using template name as directory (this may cause issues)`)
+  const workspacesDir = resolve(MONOREPO_ROOT, "workspaces")
+  if (!existsSync(workspacesDir)) {
+    mkdirSync(workspacesDir, { recursive: true })
+  }
+  const projectPath = resolve(workspacesDir, projectName)
+  console.log(`[template.copy] Using workspaces/${projectName}: ${projectPath}`)
+  return projectPath
 }
 
 /**

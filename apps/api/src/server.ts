@@ -12,6 +12,7 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join, extname, relative, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
+import { existsSync, mkdirSync } from 'fs'
 import { auth } from './auth'
 import { PERSONA_PROMPTS, isAgentPersona, type AgentPersona } from './prompts/persona-prompts'
 import { getPriceId } from './config/stripe-prices'
@@ -557,18 +558,22 @@ function createProjectScopedClaudeCode(projectId?: string) {
 
   if (projectId) {
     const resolvedProjectDir = resolve(WORKSPACES_DIR, projectId)
-    // Check if project directory exists - if not, fall back to project root
-    // This handles the case where a project record exists but workspace hasn't been created yet
+    // PROACTIVELY create workspace directory if it doesn't exist
+    // This ensures template.copy and AI edits write to the correct location
+    // Critical fix: Without this, cwd falls back to PROJECT_ROOT and edits go to wrong place
     try {
-      const fs = require('fs')
-      if (fs.existsSync(resolvedProjectDir)) {
-        cwd = resolvedProjectDir
-        projectDir = resolvedProjectDir // Enable path restriction
-      } else {
-        console.warn(`[ClaudeCode] Project workspace not found: ${resolvedProjectDir}, using project root (no path restriction)`)
+      if (!existsSync(resolvedProjectDir)) {
+        console.log(`[ClaudeCode] Creating workspace directory: ${resolvedProjectDir}`)
+        mkdirSync(resolvedProjectDir, { recursive: true })
       }
+      // Always use project workspace as cwd when projectId is provided
+      cwd = resolvedProjectDir
+      projectDir = resolvedProjectDir // Enable path restriction
+      console.log(`[ClaudeCode] Using project workspace: ${resolvedProjectDir}`)
     } catch (e) {
-      console.warn(`[ClaudeCode] Error checking project workspace: ${e}, using project root (no path restriction)`)
+      console.error(`[ClaudeCode] Error creating/checking project workspace: ${e}`)
+      // Fall back to project root only on error
+      console.warn(`[ClaudeCode] Falling back to project root (no path restriction)`)
     }
   }
 
@@ -594,9 +599,18 @@ function createProjectScopedClaudeCode(projectId?: string) {
     mcpServers: {
       wavesmith: {
         // Run MCP server as subprocess (packages/mcp included in Docker build)
-        // Use absolute path since cwd is set to project workspace, not app root
+        // Path varies between local dev and Docker:
+        // - Local: PROJECT_ROOT/packages/mcp/src/server-templates.ts
+        // - Docker: /app/packages/mcp/src/server-templates.ts
         command: 'bun',
-        args: ['run', '/app/packages/mcp/src/server.ts'],
+        args: ['run', resolve(PROJECT_ROOT, 'packages/mcp/src/server-templates.ts')],
+        // Pass PROJECT_ID and PROJECT_DIR so template.copy writes to correct location
+        env: {
+          ...(projectId && {
+            PROJECT_ID: projectId,
+            PROJECT_DIR: projectDir || resolve(WORKSPACES_DIR, projectId),
+          }),
+        },
       },
       // SDK MCP server for virtual tools (in-process, defined above)
       'virtual-tools': virtualToolsServer,
