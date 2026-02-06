@@ -9,6 +9,14 @@
 * 🟢 You can import this file directly.
 */
 
+export const UserRole = {
+  user: 'user',
+  super_admin: 'super_admin'
+} as const
+
+export type UserRole = (typeof UserRole)[keyof typeof UserRole]
+
+
 export const ProjectTier = {
   starter: 'starter',
   pro: 'pro',

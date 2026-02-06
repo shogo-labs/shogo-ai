@@ -104,6 +104,13 @@ export {
   type DocsSiteConfig,
 } from './docs-site-generator'
 
+// Admin routes generator
+export {
+  generateAdminRoutes,
+  type AdminRoutesGeneratorConfig,
+  type GeneratedAdminRoutesFile,
+} from './admin-routes-generator'
+
 // Legacy exports (for backward compatibility)
 export { generateServerFunctions } from './server-functions'
 export { generateDomainStore } from './domain-store'

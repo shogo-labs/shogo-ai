@@ -40,8 +40,10 @@ import {
   X,
   Building2,
   Loader2,
+  Shield,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useSessionContext } from "@/contexts/SessionProvider"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -727,6 +729,7 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
   const store = useSDKDomain() as IDomainStore
   const actions = useDomainActions()
   const { auth } = useDomains() // auth stays with legacy for now
+  const sessionCtx = useSessionContext()
 
   // Sidebar collapse state - persisted to localStorage
   const [internalCollapsed, setInternalCollapsed] = useState(() => {
@@ -1116,6 +1119,16 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
                   <span>Profile</span>
                 </Link>
               </DropdownMenuItem>
+
+              {/* Admin Portal link (super admins only) */}
+              {sessionCtx?.isSuperAdmin && (
+                <DropdownMenuItem asChild className="cursor-pointer">
+                  <Link to="/admin">
+                    <Shield className="mr-2 h-4 w-4" />
+                    <span>Admin Portal</span>
+                  </Link>
+                </DropdownMenuItem>
+              )}
 
               {/* Appearance submenu */}
               <DropdownMenuSub>

@@ -15,6 +15,8 @@ import { toCamelCase, getIdField } from './prisma-generator'
 export interface RouteGeneratorConfig {
   /** Base path for routes (default: '/api') */
   basePath?: string
+  /** File extension: 'ts' or 'tsx' (default: 'tsx') */
+  fileExtension?: 'ts' | 'tsx'
 }
 
 export interface GeneratedRouteFile {
@@ -77,7 +79,8 @@ export function generateModelRoutes(
 
   const modelName = model.name
   const modelLower = toCamelCase(modelName)
-  const fileName = `${toFileName(modelName)}.routes.tsx`
+  const ext = config.fileExtension || 'tsx'
+  const fileName = `${toFileName(modelName)}.routes.${ext}`
 
   const lines: string[] = [
     '/**',
@@ -346,9 +349,10 @@ export function generateModelRoutes(
 /**
  * Generate hooks file for a single model
  */
-export function generateModelHooks(model: PrismaModel): GeneratedHooksFile {
+export function generateModelHooks(model: PrismaModel, config: RouteGeneratorConfig = {}): GeneratedHooksFile {
   const modelName = model.name
-  const fileName = `${toFileName(modelName)}.hooks.tsx`
+  const ext = config.fileExtension || 'tsx'
+  const fileName = `${toFileName(modelName)}.hooks.${ext}`
 
   const lines: string[] = [
     '/**',
@@ -444,7 +448,7 @@ export function generateRoutes(
     const routeFile = generateModelRoutes(model, config)
     if (routeFile) {
       routes.push(routeFile)
-      hooks.push(generateModelHooks(model))
+      hooks.push(generateModelHooks(model, config))
     }
   }
 

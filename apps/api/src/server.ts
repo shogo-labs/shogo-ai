@@ -29,6 +29,11 @@ import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
+import { adminRoutes } from './routes/admin'
+import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
+import { requireSuperAdmin } from './middleware/super-admin'
+// Generated admin CRUD routes (unrestricted, middleware-protected)
+import { createAdminRoutes } from './generated/admin-routes'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
 import { createRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
@@ -3431,6 +3436,51 @@ app.route('/api', aiProxy)
 // =============================================================================
 
 // Note: Domain routes are now served via generated Prisma CRUD routes at /api
+
+// =============================================================================
+// Super Admin Routes (self-contained auth middleware)
+// =============================================================================
+
+// Generated admin CRUD routes - full model CRUD with pagination/search/sorting
+// Protected by auth + requireSuperAdmin middleware stack
+app.route('/api/admin', createAdminRoutes({
+  prisma,
+  middleware: [authMiddleware, requireAuth, requireSuperAdmin],
+}))
+
+// Hand-written admin routes for custom analytics endpoints
+app.route('/api/admin', adminRoutes())
+
+// Scoped analytics routes handle their own auth (workspace/project membership checks)
+app.route('/api', scopedAnalyticsRoutes())
+
+// =============================================================================
+// Current User Route (/api/me) - Returns user profile with role
+// =============================================================================
+
+app.get('/api/me', authMiddleware, requireAuth, async (c) => {
+  const authCtx = c.get('auth')
+  if (!authCtx?.userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+  }
+  const user = await prisma.user.findUnique({
+    where: { id: authCtx.userId },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      emailVerified: true,
+      image: true,
+      role: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  })
+  if (!user) {
+    return c.json({ error: { code: 'not_found', message: 'User not found' } }, 404)
+  }
+  return c.json({ ok: true, data: user })
+})
 
 // =============================================================================
 // Generated API Routes - Auto-generated from Prisma schema with hooks

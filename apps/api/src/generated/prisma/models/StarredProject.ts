@@ -183,6 +183,8 @@ export type StarredProjectWhereInput = {
   workspaceId?: Prisma.StringFilter<"StarredProject"> | string
   createdAt?: Prisma.DateTimeFilter<"StarredProject"> | Date | string
   user?: Prisma.XOR<Prisma.UserScalarRelationFilter, Prisma.UserWhereInput>
+  workspace?: Prisma.XOR<Prisma.WorkspaceScalarRelationFilter, Prisma.WorkspaceWhereInput>
+  project?: Prisma.XOR<Prisma.ProjectScalarRelationFilter, Prisma.ProjectWhereInput>
 }
 
 export type StarredProjectOrderByWithRelationInput = {
@@ -192,6 +194,8 @@ export type StarredProjectOrderByWithRelationInput = {
   workspaceId?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   user?: Prisma.UserOrderByWithRelationInput
+  workspace?: Prisma.WorkspaceOrderByWithRelationInput
+  project?: Prisma.ProjectOrderByWithRelationInput
 }
 
 export type StarredProjectWhereUniqueInput = Prisma.AtLeast<{
@@ -205,6 +209,8 @@ export type StarredProjectWhereUniqueInput = Prisma.AtLeast<{
   workspaceId?: Prisma.StringFilter<"StarredProject"> | string
   createdAt?: Prisma.DateTimeFilter<"StarredProject"> | Date | string
   user?: Prisma.XOR<Prisma.UserScalarRelationFilter, Prisma.UserWhereInput>
+  workspace?: Prisma.XOR<Prisma.WorkspaceScalarRelationFilter, Prisma.WorkspaceWhereInput>
+  project?: Prisma.XOR<Prisma.ProjectScalarRelationFilter, Prisma.ProjectWhereInput>
 }, "id" | "userId_projectId">
 
 export type StarredProjectOrderByWithAggregationInput = {
@@ -231,10 +237,10 @@ export type StarredProjectScalarWhereWithAggregatesInput = {
 
 export type StarredProjectCreateInput = {
   id?: string
-  projectId: string
-  workspaceId: string
   createdAt?: Date | string
   user: Prisma.UserCreateNestedOneWithoutStarredProjectsInput
+  workspace: Prisma.WorkspaceCreateNestedOneWithoutStarredProjectsInput
+  project: Prisma.ProjectCreateNestedOneWithoutStarredByInput
 }
 
 export type StarredProjectUncheckedCreateInput = {
@@ -247,10 +253,10 @@ export type StarredProjectUncheckedCreateInput = {
 
 export type StarredProjectUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  projectId?: Prisma.StringFieldUpdateOperationsInput | string
-  workspaceId?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   user?: Prisma.UserUpdateOneRequiredWithoutStarredProjectsNestedInput
+  workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutStarredProjectsNestedInput
+  project?: Prisma.ProjectUpdateOneRequiredWithoutStarredByNestedInput
 }
 
 export type StarredProjectUncheckedUpdateInput = {
@@ -271,8 +277,6 @@ export type StarredProjectCreateManyInput = {
 
 export type StarredProjectUpdateManyMutationInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  projectId?: Prisma.StringFieldUpdateOperationsInput | string
-  workspaceId?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
 
@@ -365,11 +369,95 @@ export type StarredProjectUncheckedUpdateManyWithoutUserNestedInput = {
   deleteMany?: Prisma.StarredProjectScalarWhereInput | Prisma.StarredProjectScalarWhereInput[]
 }
 
+export type StarredProjectCreateNestedManyWithoutWorkspaceInput = {
+  create?: Prisma.XOR<Prisma.StarredProjectCreateWithoutWorkspaceInput, Prisma.StarredProjectUncheckedCreateWithoutWorkspaceInput> | Prisma.StarredProjectCreateWithoutWorkspaceInput[] | Prisma.StarredProjectUncheckedCreateWithoutWorkspaceInput[]
+  connectOrCreate?: Prisma.StarredProjectCreateOrConnectWithoutWorkspaceInput | Prisma.StarredProjectCreateOrConnectWithoutWorkspaceInput[]
+  createMany?: Prisma.StarredProjectCreateManyWorkspaceInputEnvelope
+  connect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+}
+
+export type StarredProjectUncheckedCreateNestedManyWithoutWorkspaceInput = {
+  create?: Prisma.XOR<Prisma.StarredProjectCreateWithoutWorkspaceInput, Prisma.StarredProjectUncheckedCreateWithoutWorkspaceInput> | Prisma.StarredProjectCreateWithoutWorkspaceInput[] | Prisma.StarredProjectUncheckedCreateWithoutWorkspaceInput[]
+  connectOrCreate?: Prisma.StarredProjectCreateOrConnectWithoutWorkspaceInput | Prisma.StarredProjectCreateOrConnectWithoutWorkspaceInput[]
+  createMany?: Prisma.StarredProjectCreateManyWorkspaceInputEnvelope
+  connect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+}
+
+export type StarredProjectUpdateManyWithoutWorkspaceNestedInput = {
+  create?: Prisma.XOR<Prisma.StarredProjectCreateWithoutWorkspaceInput, Prisma.StarredProjectUncheckedCreateWithoutWorkspaceInput> | Prisma.StarredProjectCreateWithoutWorkspaceInput[] | Prisma.StarredProjectUncheckedCreateWithoutWorkspaceInput[]
+  connectOrCreate?: Prisma.StarredProjectCreateOrConnectWithoutWorkspaceInput | Prisma.StarredProjectCreateOrConnectWithoutWorkspaceInput[]
+  upsert?: Prisma.StarredProjectUpsertWithWhereUniqueWithoutWorkspaceInput | Prisma.StarredProjectUpsertWithWhereUniqueWithoutWorkspaceInput[]
+  createMany?: Prisma.StarredProjectCreateManyWorkspaceInputEnvelope
+  set?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  disconnect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  delete?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  connect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  update?: Prisma.StarredProjectUpdateWithWhereUniqueWithoutWorkspaceInput | Prisma.StarredProjectUpdateWithWhereUniqueWithoutWorkspaceInput[]
+  updateMany?: Prisma.StarredProjectUpdateManyWithWhereWithoutWorkspaceInput | Prisma.StarredProjectUpdateManyWithWhereWithoutWorkspaceInput[]
+  deleteMany?: Prisma.StarredProjectScalarWhereInput | Prisma.StarredProjectScalarWhereInput[]
+}
+
+export type StarredProjectUncheckedUpdateManyWithoutWorkspaceNestedInput = {
+  create?: Prisma.XOR<Prisma.StarredProjectCreateWithoutWorkspaceInput, Prisma.StarredProjectUncheckedCreateWithoutWorkspaceInput> | Prisma.StarredProjectCreateWithoutWorkspaceInput[] | Prisma.StarredProjectUncheckedCreateWithoutWorkspaceInput[]
+  connectOrCreate?: Prisma.StarredProjectCreateOrConnectWithoutWorkspaceInput | Prisma.StarredProjectCreateOrConnectWithoutWorkspaceInput[]
+  upsert?: Prisma.StarredProjectUpsertWithWhereUniqueWithoutWorkspaceInput | Prisma.StarredProjectUpsertWithWhereUniqueWithoutWorkspaceInput[]
+  createMany?: Prisma.StarredProjectCreateManyWorkspaceInputEnvelope
+  set?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  disconnect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  delete?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  connect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  update?: Prisma.StarredProjectUpdateWithWhereUniqueWithoutWorkspaceInput | Prisma.StarredProjectUpdateWithWhereUniqueWithoutWorkspaceInput[]
+  updateMany?: Prisma.StarredProjectUpdateManyWithWhereWithoutWorkspaceInput | Prisma.StarredProjectUpdateManyWithWhereWithoutWorkspaceInput[]
+  deleteMany?: Prisma.StarredProjectScalarWhereInput | Prisma.StarredProjectScalarWhereInput[]
+}
+
+export type StarredProjectCreateNestedManyWithoutProjectInput = {
+  create?: Prisma.XOR<Prisma.StarredProjectCreateWithoutProjectInput, Prisma.StarredProjectUncheckedCreateWithoutProjectInput> | Prisma.StarredProjectCreateWithoutProjectInput[] | Prisma.StarredProjectUncheckedCreateWithoutProjectInput[]
+  connectOrCreate?: Prisma.StarredProjectCreateOrConnectWithoutProjectInput | Prisma.StarredProjectCreateOrConnectWithoutProjectInput[]
+  createMany?: Prisma.StarredProjectCreateManyProjectInputEnvelope
+  connect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+}
+
+export type StarredProjectUncheckedCreateNestedManyWithoutProjectInput = {
+  create?: Prisma.XOR<Prisma.StarredProjectCreateWithoutProjectInput, Prisma.StarredProjectUncheckedCreateWithoutProjectInput> | Prisma.StarredProjectCreateWithoutProjectInput[] | Prisma.StarredProjectUncheckedCreateWithoutProjectInput[]
+  connectOrCreate?: Prisma.StarredProjectCreateOrConnectWithoutProjectInput | Prisma.StarredProjectCreateOrConnectWithoutProjectInput[]
+  createMany?: Prisma.StarredProjectCreateManyProjectInputEnvelope
+  connect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+}
+
+export type StarredProjectUpdateManyWithoutProjectNestedInput = {
+  create?: Prisma.XOR<Prisma.StarredProjectCreateWithoutProjectInput, Prisma.StarredProjectUncheckedCreateWithoutProjectInput> | Prisma.StarredProjectCreateWithoutProjectInput[] | Prisma.StarredProjectUncheckedCreateWithoutProjectInput[]
+  connectOrCreate?: Prisma.StarredProjectCreateOrConnectWithoutProjectInput | Prisma.StarredProjectCreateOrConnectWithoutProjectInput[]
+  upsert?: Prisma.StarredProjectUpsertWithWhereUniqueWithoutProjectInput | Prisma.StarredProjectUpsertWithWhereUniqueWithoutProjectInput[]
+  createMany?: Prisma.StarredProjectCreateManyProjectInputEnvelope
+  set?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  disconnect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  delete?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  connect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  update?: Prisma.StarredProjectUpdateWithWhereUniqueWithoutProjectInput | Prisma.StarredProjectUpdateWithWhereUniqueWithoutProjectInput[]
+  updateMany?: Prisma.StarredProjectUpdateManyWithWhereWithoutProjectInput | Prisma.StarredProjectUpdateManyWithWhereWithoutProjectInput[]
+  deleteMany?: Prisma.StarredProjectScalarWhereInput | Prisma.StarredProjectScalarWhereInput[]
+}
+
+export type StarredProjectUncheckedUpdateManyWithoutProjectNestedInput = {
+  create?: Prisma.XOR<Prisma.StarredProjectCreateWithoutProjectInput, Prisma.StarredProjectUncheckedCreateWithoutProjectInput> | Prisma.StarredProjectCreateWithoutProjectInput[] | Prisma.StarredProjectUncheckedCreateWithoutProjectInput[]
+  connectOrCreate?: Prisma.StarredProjectCreateOrConnectWithoutProjectInput | Prisma.StarredProjectCreateOrConnectWithoutProjectInput[]
+  upsert?: Prisma.StarredProjectUpsertWithWhereUniqueWithoutProjectInput | Prisma.StarredProjectUpsertWithWhereUniqueWithoutProjectInput[]
+  createMany?: Prisma.StarredProjectCreateManyProjectInputEnvelope
+  set?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  disconnect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  delete?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  connect?: Prisma.StarredProjectWhereUniqueInput | Prisma.StarredProjectWhereUniqueInput[]
+  update?: Prisma.StarredProjectUpdateWithWhereUniqueWithoutProjectInput | Prisma.StarredProjectUpdateWithWhereUniqueWithoutProjectInput[]
+  updateMany?: Prisma.StarredProjectUpdateManyWithWhereWithoutProjectInput | Prisma.StarredProjectUpdateManyWithWhereWithoutProjectInput[]
+  deleteMany?: Prisma.StarredProjectScalarWhereInput | Prisma.StarredProjectScalarWhereInput[]
+}
+
 export type StarredProjectCreateWithoutUserInput = {
   id?: string
-  projectId: string
-  workspaceId: string
   createdAt?: Date | string
+  workspace: Prisma.WorkspaceCreateNestedOneWithoutStarredProjectsInput
+  project: Prisma.ProjectCreateNestedOneWithoutStarredByInput
 }
 
 export type StarredProjectUncheckedCreateWithoutUserInput = {
@@ -416,6 +504,86 @@ export type StarredProjectScalarWhereInput = {
   createdAt?: Prisma.DateTimeFilter<"StarredProject"> | Date | string
 }
 
+export type StarredProjectCreateWithoutWorkspaceInput = {
+  id?: string
+  createdAt?: Date | string
+  user: Prisma.UserCreateNestedOneWithoutStarredProjectsInput
+  project: Prisma.ProjectCreateNestedOneWithoutStarredByInput
+}
+
+export type StarredProjectUncheckedCreateWithoutWorkspaceInput = {
+  id?: string
+  userId: string
+  projectId: string
+  createdAt?: Date | string
+}
+
+export type StarredProjectCreateOrConnectWithoutWorkspaceInput = {
+  where: Prisma.StarredProjectWhereUniqueInput
+  create: Prisma.XOR<Prisma.StarredProjectCreateWithoutWorkspaceInput, Prisma.StarredProjectUncheckedCreateWithoutWorkspaceInput>
+}
+
+export type StarredProjectCreateManyWorkspaceInputEnvelope = {
+  data: Prisma.StarredProjectCreateManyWorkspaceInput | Prisma.StarredProjectCreateManyWorkspaceInput[]
+  skipDuplicates?: boolean
+}
+
+export type StarredProjectUpsertWithWhereUniqueWithoutWorkspaceInput = {
+  where: Prisma.StarredProjectWhereUniqueInput
+  update: Prisma.XOR<Prisma.StarredProjectUpdateWithoutWorkspaceInput, Prisma.StarredProjectUncheckedUpdateWithoutWorkspaceInput>
+  create: Prisma.XOR<Prisma.StarredProjectCreateWithoutWorkspaceInput, Prisma.StarredProjectUncheckedCreateWithoutWorkspaceInput>
+}
+
+export type StarredProjectUpdateWithWhereUniqueWithoutWorkspaceInput = {
+  where: Prisma.StarredProjectWhereUniqueInput
+  data: Prisma.XOR<Prisma.StarredProjectUpdateWithoutWorkspaceInput, Prisma.StarredProjectUncheckedUpdateWithoutWorkspaceInput>
+}
+
+export type StarredProjectUpdateManyWithWhereWithoutWorkspaceInput = {
+  where: Prisma.StarredProjectScalarWhereInput
+  data: Prisma.XOR<Prisma.StarredProjectUpdateManyMutationInput, Prisma.StarredProjectUncheckedUpdateManyWithoutWorkspaceInput>
+}
+
+export type StarredProjectCreateWithoutProjectInput = {
+  id?: string
+  createdAt?: Date | string
+  user: Prisma.UserCreateNestedOneWithoutStarredProjectsInput
+  workspace: Prisma.WorkspaceCreateNestedOneWithoutStarredProjectsInput
+}
+
+export type StarredProjectUncheckedCreateWithoutProjectInput = {
+  id?: string
+  userId: string
+  workspaceId: string
+  createdAt?: Date | string
+}
+
+export type StarredProjectCreateOrConnectWithoutProjectInput = {
+  where: Prisma.StarredProjectWhereUniqueInput
+  create: Prisma.XOR<Prisma.StarredProjectCreateWithoutProjectInput, Prisma.StarredProjectUncheckedCreateWithoutProjectInput>
+}
+
+export type StarredProjectCreateManyProjectInputEnvelope = {
+  data: Prisma.StarredProjectCreateManyProjectInput | Prisma.StarredProjectCreateManyProjectInput[]
+  skipDuplicates?: boolean
+}
+
+export type StarredProjectUpsertWithWhereUniqueWithoutProjectInput = {
+  where: Prisma.StarredProjectWhereUniqueInput
+  update: Prisma.XOR<Prisma.StarredProjectUpdateWithoutProjectInput, Prisma.StarredProjectUncheckedUpdateWithoutProjectInput>
+  create: Prisma.XOR<Prisma.StarredProjectCreateWithoutProjectInput, Prisma.StarredProjectUncheckedCreateWithoutProjectInput>
+}
+
+export type StarredProjectUpdateWithWhereUniqueWithoutProjectInput = {
+  where: Prisma.StarredProjectWhereUniqueInput
+  data: Prisma.XOR<Prisma.StarredProjectUpdateWithoutProjectInput, Prisma.StarredProjectUncheckedUpdateWithoutProjectInput>
+}
+
+export type StarredProjectUpdateManyWithWhereWithoutProjectInput = {
+  where: Prisma.StarredProjectScalarWhereInput
+  data: Prisma.XOR<Prisma.StarredProjectUpdateManyMutationInput, Prisma.StarredProjectUncheckedUpdateManyWithoutProjectInput>
+}
+
 export type StarredProjectCreateManyUserInput = {
   id?: string
   projectId: string
@@ -425,9 +593,9 @@ export type StarredProjectCreateManyUserInput = {
 
 export type StarredProjectUpdateWithoutUserInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  projectId?: Prisma.StringFieldUpdateOperationsInput | string
-  workspaceId?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutStarredProjectsNestedInput
+  project?: Prisma.ProjectUpdateOneRequiredWithoutStarredByNestedInput
 }
 
 export type StarredProjectUncheckedUpdateWithoutUserInput = {
@@ -444,6 +612,62 @@ export type StarredProjectUncheckedUpdateManyWithoutUserInput = {
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
 
+export type StarredProjectCreateManyWorkspaceInput = {
+  id?: string
+  userId: string
+  projectId: string
+  createdAt?: Date | string
+}
+
+export type StarredProjectUpdateWithoutWorkspaceInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  user?: Prisma.UserUpdateOneRequiredWithoutStarredProjectsNestedInput
+  project?: Prisma.ProjectUpdateOneRequiredWithoutStarredByNestedInput
+}
+
+export type StarredProjectUncheckedUpdateWithoutWorkspaceInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  userId?: Prisma.StringFieldUpdateOperationsInput | string
+  projectId?: Prisma.StringFieldUpdateOperationsInput | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+}
+
+export type StarredProjectUncheckedUpdateManyWithoutWorkspaceInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  userId?: Prisma.StringFieldUpdateOperationsInput | string
+  projectId?: Prisma.StringFieldUpdateOperationsInput | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+}
+
+export type StarredProjectCreateManyProjectInput = {
+  id?: string
+  userId: string
+  workspaceId: string
+  createdAt?: Date | string
+}
+
+export type StarredProjectUpdateWithoutProjectInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  user?: Prisma.UserUpdateOneRequiredWithoutStarredProjectsNestedInput
+  workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutStarredProjectsNestedInput
+}
+
+export type StarredProjectUncheckedUpdateWithoutProjectInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  userId?: Prisma.StringFieldUpdateOperationsInput | string
+  workspaceId?: Prisma.StringFieldUpdateOperationsInput | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+}
+
+export type StarredProjectUncheckedUpdateManyWithoutProjectInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  userId?: Prisma.StringFieldUpdateOperationsInput | string
+  workspaceId?: Prisma.StringFieldUpdateOperationsInput | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+}
+
 
 
 export type StarredProjectSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -453,6 +677,8 @@ export type StarredProjectSelect<ExtArgs extends runtime.Types.Extensions.Intern
   workspaceId?: boolean
   createdAt?: boolean
   user?: boolean | Prisma.UserDefaultArgs<ExtArgs>
+  workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
+  project?: boolean | Prisma.ProjectDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["starredProject"]>
 
 export type StarredProjectSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -462,6 +688,8 @@ export type StarredProjectSelectCreateManyAndReturn<ExtArgs extends runtime.Type
   workspaceId?: boolean
   createdAt?: boolean
   user?: boolean | Prisma.UserDefaultArgs<ExtArgs>
+  workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
+  project?: boolean | Prisma.ProjectDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["starredProject"]>
 
 export type StarredProjectSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -471,6 +699,8 @@ export type StarredProjectSelectUpdateManyAndReturn<ExtArgs extends runtime.Type
   workspaceId?: boolean
   createdAt?: boolean
   user?: boolean | Prisma.UserDefaultArgs<ExtArgs>
+  workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
+  project?: boolean | Prisma.ProjectDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["starredProject"]>
 
 export type StarredProjectSelectScalar = {
@@ -484,18 +714,26 @@ export type StarredProjectSelectScalar = {
 export type StarredProjectOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "userId" | "projectId" | "workspaceId" | "createdAt", ExtArgs["result"]["starredProject"]>
 export type StarredProjectInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   user?: boolean | Prisma.UserDefaultArgs<ExtArgs>
+  workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
+  project?: boolean | Prisma.ProjectDefaultArgs<ExtArgs>
 }
 export type StarredProjectIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   user?: boolean | Prisma.UserDefaultArgs<ExtArgs>
+  workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
+  project?: boolean | Prisma.ProjectDefaultArgs<ExtArgs>
 }
 export type StarredProjectIncludeUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   user?: boolean | Prisma.UserDefaultArgs<ExtArgs>
+  workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
+  project?: boolean | Prisma.ProjectDefaultArgs<ExtArgs>
 }
 
 export type $StarredProjectPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "StarredProject"
   objects: {
     user: Prisma.$UserPayload<ExtArgs>
+    workspace: Prisma.$WorkspacePayload<ExtArgs>
+    project: Prisma.$ProjectPayload<ExtArgs>
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
@@ -898,6 +1136,8 @@ readonly fields: StarredProjectFieldRefs;
 export interface Prisma__StarredProjectClient<T, Null = never, ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
   readonly [Symbol.toStringTag]: "PrismaPromise"
   user<T extends Prisma.UserDefaultArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.UserDefaultArgs<ExtArgs>>): Prisma.Prisma__UserClient<runtime.Types.Result.GetResult<Prisma.$UserPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
+  workspace<T extends Prisma.WorkspaceDefaultArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.WorkspaceDefaultArgs<ExtArgs>>): Prisma.Prisma__WorkspaceClient<runtime.Types.Result.GetResult<Prisma.$WorkspacePayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
+  project<T extends Prisma.ProjectDefaultArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.ProjectDefaultArgs<ExtArgs>>): Prisma.Prisma__ProjectClient<runtime.Types.Result.GetResult<Prisma.$ProjectPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.

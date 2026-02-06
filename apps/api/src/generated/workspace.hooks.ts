@@ -53,11 +53,24 @@ export interface WorkspaceHooks {
 }
 
 /**
+ * Check if the current user is a super admin.
+ */
+async function isSuperAdmin(ctx: HookContext): Promise<boolean> {
+  if (!ctx.userId) return false
+  const user = await ctx.prisma.user.findUnique({
+    where: { id: ctx.userId },
+    select: { role: true },
+  })
+  return user?.role === 'super_admin'
+}
+
+/**
  * Default Workspace hooks (customize as needed)
  */
 export const workspaceHooks: WorkspaceHooks = {
   /**
-   * Filter workspaces by user membership and enforce access control
+   * Filter workspaces by user membership and enforce access control.
+   * Super admins can see all workspaces.
    */
   beforeList: async (ctx) => {
     const requestedUserId = ctx.query.userId
@@ -68,6 +81,22 @@ export const workspaceHooks: WorkspaceHooks = {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
       }
+    }
+
+    // Super admins can see all workspaces
+    if (await isSuperAdmin(ctx)) {
+      // If a userId filter is provided, scope to that user's workspaces
+      if (requestedUserId) {
+        return {
+          ok: true,
+          data: {
+            where: {
+              members: { some: { userId: requestedUserId } },
+            },
+          },
+        }
+      }
+      return { ok: true, data: { where: {} } }
     }
 
     // Force filter by current user only - security check
@@ -94,7 +123,8 @@ export const workspaceHooks: WorkspaceHooks = {
   },
 
   /**
-   * Verify user has access to the workspace before returning it
+   * Verify user has access to the workspace before returning it.
+   * Super admins can access any workspace.
    */
   beforeGet: async (id, ctx) => {
     const userId = ctx.userId
@@ -103,6 +133,11 @@ export const workspaceHooks: WorkspaceHooks = {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
       }
+    }
+
+    // Super admins can access any workspace
+    if (await isSuperAdmin(ctx)) {
+      return { ok: true }
     }
 
     const workspace = await ctx.prisma.workspace.findUnique({
@@ -180,7 +215,8 @@ export const workspaceHooks: WorkspaceHooks = {
   },
 
   /**
-   * Verify user has access to update the workspace
+   * Verify user has access to update the workspace.
+   * Super admins can update any workspace.
    */
   beforeUpdate: async (id, input, ctx) => {
     const userId = ctx.userId
@@ -189,6 +225,11 @@ export const workspaceHooks: WorkspaceHooks = {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
       }
+    }
+
+    // Super admins can update any workspace
+    if (await isSuperAdmin(ctx)) {
+      return { ok: true }
     }
 
     const workspace = await ctx.prisma.workspace.findUnique({
@@ -223,7 +264,8 @@ export const workspaceHooks: WorkspaceHooks = {
   },
 
   /**
-   * Verify user has access to delete the workspace (owner only)
+   * Verify user has access to delete the workspace (owner only).
+   * Super admins can delete any workspace.
    */
   beforeDelete: async (id, ctx) => {
     const userId = ctx.userId
@@ -232,6 +274,11 @@ export const workspaceHooks: WorkspaceHooks = {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
       }
+    }
+
+    // Super admins can delete any workspace
+    if (await isSuperAdmin(ctx)) {
+      return { ok: true }
     }
 
     const workspace = await ctx.prisma.workspace.findUnique({

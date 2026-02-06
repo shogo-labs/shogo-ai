@@ -57,6 +57,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.9.6",
+    "recharts": "^3.7.0",
     "streamdown": "^2.0.1",
     "tailwind-merge": "^3.4.0",
     "vscode-languageclient": "^9.0.1",

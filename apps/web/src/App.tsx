@@ -14,6 +14,14 @@ import { SharedWithMePage } from './pages/SharedWithMePage'
 import { TemplatesPage } from './pages/TemplatesPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { AuthProvider } from './contexts/AuthContext'
+// Admin portal
+import { AdminGuard } from './components/admin/AdminGuard'
+import { AdminShell } from './components/admin/AdminShell'
+import { AdminDashboard } from './components/admin/pages/AdminDashboard'
+import { AdminUsers } from './components/admin/pages/AdminUsers'
+import { AdminUserDetail } from './components/admin/pages/AdminUserDetail'
+import { AdminWorkspaces } from './components/admin/pages/AdminWorkspaces'
+import { AdminAnalytics } from './components/admin/pages/AdminAnalytics'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { SessionProvider, useSessionContext } from './contexts/SessionProvider'
@@ -124,6 +132,19 @@ function AppWithSession() {
             <WavesmithMetaStoreProvider>
               <AuthProvider authService={betterAuthService}>
                 <Routes>
+                  {/* Super Admin Portal - separate layout */}
+                  <Route path="/admin" element={
+                    <AdminGuard>
+                      <AdminShell />
+                    </AdminGuard>
+                  }>
+                    <Route index element={<AdminDashboard />} />
+                    <Route path="users" element={<AdminUsers />} />
+                    <Route path="users/:userId" element={<AdminUserDetail />} />
+                    <Route path="workspaces" element={<AdminWorkspaces />} />
+                    <Route path="analytics" element={<AdminAnalytics />} />
+                  </Route>
+
                   {/* Project view route - full screen without sidebar */}
                   <Route path="/projects/:projectId" element={
                     <AuthGate>

@@ -20,6 +20,7 @@ import { generateApiClient } from './api-client'
 import { generateAuthStore, getUserModel, hasUserModel } from './auth-store-generator'
 import { generateDocs } from './docs-generator'
 import { generateDocsSiteScaffold, generateDocsTsConfig } from './docs-site-generator'
+import { generateAdminRoutes } from './admin-routes-generator'
 
 // ============================================================================
 // Types
@@ -29,9 +30,11 @@ export interface OutputConfig {
   /** Output directory */
   dir: string
   /** What to generate */
-  generate: ('routes' | 'hooks' | 'types' | 'stores' | 'mst' | 'server' | 'db' | 'api-client' | 'auth' | 'docs')[]
+  generate: ('routes' | 'hooks' | 'types' | 'stores' | 'mst' | 'server' | 'db' | 'api-client' | 'auth' | 'docs' | 'admin-routes')[]
   /** Generate per-model files (default: true) */
   perModel?: boolean
+  /** File extension for generated files: 'ts' or 'tsx' (default: 'tsx') */
+  fileExtension?: 'ts' | 'tsx'
 }
 
 export interface GenerateOptions {
@@ -198,11 +201,13 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
     for (const output of outputs) {
       const dir = output.dir
       const perModel = output.perModel !== false // default true
+      const ext = output.fileExtension || 'tsx'
+      const indexFile = `${dir}/index.${ext}`
 
       // Generate routes
       if (output.generate.includes('routes')) {
         if (perModel) {
-          const { routes, hooks } = generateRoutes(models)
+          const { routes, hooks } = generateRoutes(models, { fileExtension: ext })
           
           // Route files
           for (const route of routes) {
@@ -226,7 +231,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
           
           // Routes index
           files.push({
-            path: `${dir}/index.tsx`,
+            path: indexFile,
             content: generateRoutesIndex(models),
           })
         }
@@ -235,7 +240,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       // Generate types
       if (output.generate.includes('types')) {
         if (perModel) {
-          const typeFiles = generateTypesPerModel(models, enums)
+          const typeFiles = generateTypesPerModel(models, enums, ext)
           for (const typeFile of typeFiles) {
             files.push({
               path: `${dir}/${typeFile.fileName}`,
@@ -243,26 +248,26 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
             })
           }
           
-          // Create types.tsx re-export file (for api-client imports)
+          // Create types re-export file (for api-client imports)
           files.push({
-            path: `${dir}/types.tsx`,
+            path: `${dir}/types.${ext}`,
             content: generateTypesIndex(models),
           })
           
-          // Also append to index.tsx for convenience
-          const existingIndex = files.find(f => f.path === `${dir}/index.tsx`)
+          // Also append to index for convenience
+          const existingIndex = files.find(f => f.path === indexFile)
           if (existingIndex) {
             existingIndex.content += '\n' + generateTypesIndex(models)
           } else {
             files.push({
-              path: `${dir}/index.tsx`,
+              path: indexFile,
               content: generateTypesIndex(models),
             })
           }
         } else {
           // Single file mode
           files.push({
-            path: `${dir}/types.tsx`,
+            path: `${dir}/types.${ext}`,
             content: generateTypes(models, enums),
           })
         }
@@ -271,7 +276,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       // Generate stores (plain MobX)
       if (output.generate.includes('stores')) {
         if (perModel) {
-          const storeFiles = generateStores(models)
+          const storeFiles = generateStores(models, { fileExtension: ext })
           for (const storeFile of storeFiles) {
             files.push({
               path: `${dir}/${storeFile.fileName}`,
@@ -280,12 +285,12 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
           }
           
           // Stores index (append to existing index or create)
-          const existingStoresIndex = files.find(f => f.path === `${dir}/index.tsx`)
+          const existingStoresIndex = files.find(f => f.path === indexFile)
           if (existingStoresIndex) {
             existingStoresIndex.content += '\n' + generateStoresIndex(models)
           } else {
             files.push({
-              path: `${dir}/index.tsx`,
+              path: indexFile,
               content: generateStoresIndex(models),
             })
           }
@@ -296,7 +301,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       if (output.generate.includes('mst')) {
         if (perModel) {
           // Generate MST models (pass enums for proper enum value generation)
-          const mstModelFiles = generateMSTModels(models, models, enums)
+          const mstModelFiles = generateMSTModels(models, models, enums, ext)
           for (const modelFile of mstModelFiles) {
             files.push({
               path: `${dir}/${modelFile.fileName}`,
@@ -305,7 +310,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
           }
 
           // Generate MST collections
-          const mstCollectionFiles = generateMSTCollections(models)
+          const mstCollectionFiles = generateMSTCollections(models, ext)
           for (const collectionFile of mstCollectionFiles) {
             files.push({
               path: `${dir}/${collectionFile.fileName}`,
@@ -314,20 +319,20 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
           }
 
           // Generate domain (root store)
-          const domainFile = generateMSTDomain(models)
+          const domainFile = generateMSTDomain(models, ext)
           files.push({
             path: `${dir}/${domainFile.fileName}`,
             content: domainFile.code,
           })
 
           // Update or create index to export domain
-          const existingMstIndex = files.find(f => f.path === `${dir}/index.tsx`)
+          const existingMstIndex = files.find(f => f.path === indexFile)
           const mstExports = generateMSTIndex(models)
           if (existingMstIndex) {
             existingMstIndex.content += '\n' + mstExports
           } else {
             files.push({
-              path: `${dir}/index.tsx`,
+              path: indexFile,
               content: mstExports,
             })
           }
@@ -337,7 +342,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       // Generate API client (fetch client for browser)
       if (output.generate.includes('api-client')) {
         files.push({
-          path: `${dir}/api-client.tsx`,
+          path: `${dir}/api-client.${ext}`,
           content: generateApiClient(models),
         })
       }
@@ -347,7 +352,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
         if (hasUserModel(models)) {
           const userModel = getUserModel(models)!
           files.push({
-            path: `${dir}/auth.tsx`,
+            path: `${dir}/auth.${ext}`,
             content: generateAuthStore({ userModel }),
           })
         } else {
@@ -358,7 +363,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       // Generate server entry point (Hono)
       if (output.generate.includes('server')) {
         files.push({
-          path: `${dir}/server.tsx`,
+          path: `${dir}/server.${ext}`,
           content: generateServer({
             routesPath: './src/generated',
             dbPath: './src/lib/db',
@@ -370,7 +375,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       // Generate database module (Prisma client)
       if (output.generate.includes('db')) {
         files.push({
-          path: `${dir}/db.tsx`,
+          path: `${dir}/db.${ext}`,
           content: generateDbModule(),
           skipIfExists: true, // Don't overwrite user customizations
         })
@@ -409,6 +414,15 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
             skipIfExists: df.skipIfExists,
           })
         }
+      }
+
+      // Generate admin routes (single file with unrestricted CRUD for all models)
+      if (output.generate.includes('admin-routes')) {
+        const adminFile = generateAdminRoutes(models, { fileExtension: ext as 'ts' | 'tsx' })
+        files.push({
+          path: `${dir}/${adminFile.fileName}`,
+          content: adminFile.code,
+        })
       }
     }
 
