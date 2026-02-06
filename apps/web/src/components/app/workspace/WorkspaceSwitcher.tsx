@@ -199,7 +199,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
         </DropdownMenuTrigger>
 
         <DropdownMenuContent 
-          className="w-72" 
+          className="w-[232px] max-w-[232px] overflow-x-hidden" 
           align="start"
           sideOffset={4}
         >
