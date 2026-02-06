@@ -30,7 +30,7 @@ export async function createPersonalWorkspace(
   // Generate slug from userId prefix (first 8 chars, no dashes)
   const userIdPrefix = userId.substring(0, 8).replace(/-/g, '');
   const slug = `user-${userIdPrefix}-personal`;
-  const workspaceName = `${userName || 'User'}'s Shogo`;
+  const workspaceName = `${userName || 'User'} Personal`;
 
   // Use transaction to ensure workspace + member are created atomically
   const result = await prisma.$transaction(async (tx) => {
