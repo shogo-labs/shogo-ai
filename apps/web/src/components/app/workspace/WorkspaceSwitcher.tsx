@@ -19,7 +19,7 @@
  * Inspired by Lovable.dev's workspace dropdown design.
  */
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { useNavigate } from "react-router-dom"
 import { observer } from "mobx-react-lite"
 import { Plus, Settings, Users, ChevronDown, Check, Zap, ArrowLeft } from "lucide-react"
@@ -116,6 +116,16 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
     throw new Error("Failed to create workspace")
   }, [actions, session?.user?.id, onWorkspaceChange])
 
+  // Load credit ledger for current workspace on mount / workspace change
+  // This ensures the credits display has fresh data from the server
+  useEffect(() => {
+    if (currentWorkspace?.id && store?.creditLedgerCollection) {
+      store.creditLedgerCollection.loadAll({ workspaceId: currentWorkspace.id }).catch((err: any) => {
+        console.error("[WorkspaceSwitcher] Failed to load credit ledger:", err)
+      })
+    }
+  }, [currentWorkspace?.id, store])
+
   // Get subscription for current workspace from SDK store
   // Uses MST observer pattern - component re-renders when billing data changes
   const getActiveSubscription = useCallback((workspaceId: string) => {
@@ -149,7 +159,13 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
   const creditLedger = currentWorkspace
     ? store?.creditLedgerCollection?.all.find((cl: any) => cl.workspaceId === currentWorkspace.id)
     : null
-  const effectiveBalance = creditLedger?.effectiveBalance
+  // Compute effective balance from raw credit ledger fields
+  const effectiveBalance = creditLedger ? {
+    dailyCredits: creditLedger.dailyCredits ?? 0,
+    monthlyCredits: creditLedger.monthlyCredits ?? 0,
+    rolloverCredits: creditLedger.rolloverCredits ?? 0,
+    total: (creditLedger.dailyCredits ?? 0) + (creditLedger.monthlyCredits ?? 0) + (creditLedger.rolloverCredits ?? 0),
+  } : null
 
   // TODO: Get actual member count from domain
   const memberCount = 1

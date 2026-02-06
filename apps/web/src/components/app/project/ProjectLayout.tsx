@@ -707,11 +707,25 @@ export const ProjectLayout = observer(function ProjectLayout() {
     ? (typeof project.workspace === 'string' ? project.workspace : project.workspace?.id)
     : null
 
-  // Get credits from SDK store
+  // Load and get credits from SDK store
+  useEffect(() => {
+    if (workspaceId && store?.creditLedgerCollection) {
+      store.creditLedgerCollection.loadAll({ workspaceId }).catch((err: any) => {
+        console.error("[ProjectLayout] Failed to load credit ledger:", err)
+      })
+    }
+  }, [workspaceId, store])
+
   const creditLedger = workspaceId
     ? store?.creditLedgerCollection?.all.find((l: any) => l.workspaceId === workspaceId)
     : null
-  const effectiveBalance = creditLedger?.effectiveBalance
+  // Compute effective balance from raw credit ledger fields
+  const effectiveBalance = creditLedger ? {
+    dailyCredits: creditLedger.dailyCredits ?? 0,
+    monthlyCredits: creditLedger.monthlyCredits ?? 0,
+    rolloverCredits: creditLedger.rolloverCredits ?? 0,
+    total: (creditLedger.dailyCredits ?? 0) + (creditLedger.monthlyCredits ?? 0) + (creditLedger.rolloverCredits ?? 0),
+  } : null
   const creditsRemaining = effectiveBalance?.total ?? 5
   const maxCredits = effectiveBalance ? (effectiveBalance.dailyCredits + effectiveBalance.monthlyCredits + effectiveBalance.rolloverCredits) : 5
 

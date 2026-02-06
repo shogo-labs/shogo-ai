@@ -604,8 +604,8 @@ export const ChatPanel = observer(function ChatPanel({
   // Navigation for upgrade flow
   const navigate = useNavigate()
 
-  // Billing data for Pro subscription check
-  const { hasActiveSubscription } = useBillingData(workspaceId)
+  // Billing data for Pro subscription check and credit refresh after messages
+  const { hasActiveSubscription, refetchCreditLedger } = useBillingData(workspaceId)
 
   // Handle upgrade click - navigate to billing settings
   const handleUpgradeClick = useCallback(() => {
@@ -1251,6 +1251,11 @@ export const ChatPanel = observer(function ChatPanel({
             }
           })
         }
+
+        // Refresh credit balance after every message (credits are deducted server-side)
+        // Fire-and-forget: this updates the MobX store which reactively updates
+        // WorkspaceSwitcher, ProjectNameDropdown, and other credit displays
+        refetchCreditLedger()
 
         // Smart Query Triggers (task-3-1-004)
         // After streaming completes, detect tool calls and trigger targeted data refreshes
