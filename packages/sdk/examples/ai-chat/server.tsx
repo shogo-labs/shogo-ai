@@ -39,7 +39,7 @@ If you don't know something, say so honestly.`
  * 3. Direct OpenAI API key (OPENAI_API_KEY)
  * 4. null (demo mode)
  */
-function getAIModel(modelId: string = 'gpt-4o-mini') {
+function getAIModel(modelId: string = 'claude-haiku-4-5') {
   // 1. Shogo AI Proxy - preferred, no raw API keys needed
   const proxyUrl = process.env.AI_PROXY_URL
   const proxyToken = process.env.AI_PROXY_TOKEN
@@ -75,7 +75,7 @@ function getAIModel(modelId: string = 'gpt-4o-mini') {
 app.post('/api/chat', async (c) => {
   try {
     const body = await c.req.json()
-    const { id: chatId, message, selectedChatModel = 'gpt-4o-mini', userId } = body
+    const { id: chatId, message, selectedChatModel = 'claude-haiku-4-5', userId } = body
     
     if (!message || !chatId) {
       return c.json({ error: 'Message and chat ID are required' }, 400)
