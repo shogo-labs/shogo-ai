@@ -320,6 +320,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
 
     setIsCreatingFolder(true)
     try {
+      // Pass null for root folders (API expects null, collection normalizes to undefined for MST)
       await actions.createFolder(
         newFolderName.trim(),
         currentWorkspace.id,
