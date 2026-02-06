@@ -711,7 +711,7 @@ export function ChatInput({
           disabled={disabled}
           className={cn(
             "min-h-[60px] max-h-[200px] resize-none w-full overflow-y-auto",
-            "border-0 bg-transparent shadow-none focus-visible:ring-0",
+            "border-0 bg-transparent shadow-none !ring-0 !ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:outline-none focus-visible:border-0 focus:!ring-0 focus:!ring-offset-0 focus:outline-none focus:border-0 outline-none",
             "px-4 pt-4 pb-2 text-xs",
             disabled && "cursor-not-allowed opacity-50"
           )}

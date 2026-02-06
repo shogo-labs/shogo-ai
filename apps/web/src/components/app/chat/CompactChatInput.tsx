@@ -415,7 +415,7 @@ export const CompactChatInput = forwardRef<HTMLDivElement, CompactChatInputProps
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={disabled || isLoading}
-              className="min-h-[80px] resize-none border-0 bg-transparent p-0 text-base focus-visible:ring-0 placeholder:text-muted-foreground/60"
+              className="min-h-[80px] resize-none border-0 bg-transparent p-0 text-base !ring-0 !ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:outline-none focus-visible:border-0 focus:!ring-0 focus:!ring-offset-0 focus:outline-none focus:border-0 outline-none placeholder:text-muted-foreground/60"
               rows={3}
             />
           </div>

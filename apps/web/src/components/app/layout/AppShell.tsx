@@ -71,7 +71,13 @@ const SidebarCollapseContext = createContext<SidebarCollapseContextValue | null>
 export function useSidebarCollapseContext() {
   const context = useContext(SidebarCollapseContext)
   if (!context) {
-    throw new Error("useSidebarCollapseContext must be used within AppShell")
+    // Return a safe fallback instead of throwing to prevent crashes
+    // This can happen during initial render or in certain routing scenarios
+    return {
+      collapseSidebar: () => {},
+      releaseSidebar: () => {},
+      isForceCollapsed: false,
+    }
   }
   return context
 }
