@@ -33,6 +33,7 @@ import { HistoryPanel } from "./HistoryPanel"
 import { cn } from "@/lib/utils"
 import { useSession } from "@/contexts/SessionProvider"
 import type { ViewportSize } from "./PreviewControls"
+import { useToast } from "@/hooks/use-toast"
 
 // Default chat panel width in px
 const DEFAULT_CHAT_WIDTH = 480
@@ -95,6 +96,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Preview controls state
   const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
   const [currentRoute, setCurrentRoute] = useState("/")
+  
+  // Toast notifications
+  const { toast } = useToast()
+  
+  // External preview opening state
+  const [isOpeningExternal, setIsOpeningExternal] = useState(false)
 
   // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'terminal' (TerminalPanel), 'database' (DatabasePanel), 'tests' (TestPanel), or 'history' (HistoryPanel)
   const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'terminal' | 'database' | 'tests' | 'history'>('runtime')
@@ -572,11 +579,16 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const handleOpenExternal = useCallback(async () => {
     if (!projectId) return
     
+    if (isOpeningExternal) return // Prevent multiple clicks
+    
+    setIsOpeningExternal(true)
+    
     try {
       // Fetch the preview URL using authenticated HTTP client
       const response = await http.get<{
         url: string
         ready: boolean
+        status?: string
         error?: {
           code: string
           message: string
@@ -584,16 +596,91 @@ export const ProjectLayout = observer(function ProjectLayout() {
         }
       }>(`/api/projects/${projectId}/sandbox/url`)
       
-      if (response.data?.url && response.data?.ready) {
-        // Open the preview URL in a new tab
-        window.open(response.data.url, '_blank', 'noopener,noreferrer')
+      if (response.data?.url) {
+        // Build the full preview URL with current route
+        let previewUrl = response.data.url
+        
+        // Append current route if it's not the root path
+        if (currentRoute && currentRoute !== '/') {
+          try {
+            const urlObj = new URL(previewUrl)
+            // Ensure route path starts with /
+            const routePath = currentRoute.startsWith('/') ? currentRoute : `/${currentRoute}`
+            // Append route to pathname, handling trailing slashes
+            if (urlObj.pathname === '/' || urlObj.pathname === '') {
+              urlObj.pathname = routePath
+            } else {
+              // Remove trailing slash from pathname if present, then append route
+              const cleanPathname = urlObj.pathname.endsWith('/') 
+                ? urlObj.pathname.slice(0, -1) 
+                : urlObj.pathname
+              urlObj.pathname = `${cleanPathname}${routePath}`
+            }
+            previewUrl = urlObj.toString()
+          } catch (urlError) {
+            // If URL parsing fails, just append the route as a string
+            console.warn('Failed to parse preview URL, appending route as string:', urlError)
+            const separator = previewUrl.endsWith('/') ? '' : '/'
+            previewUrl = `${previewUrl}${separator}${currentRoute.startsWith('/') ? currentRoute.slice(1) : currentRoute}`
+          }
+        }
+        
+        if (response.data?.ready) {
+          // Open the preview URL in a new tab
+          const newWindow = window.open(previewUrl, '_blank', 'noopener,noreferrer')
+          
+          if (newWindow) {
+            toast({
+              title: "Preview opened",
+              description: "The preview has been opened in a new tab.",
+            })
+          } else {
+            // Popup blocked
+            toast({
+              variant: "destructive",
+              title: "Popup blocked",
+              description: "Please allow popups for this site to open the preview in a new tab.",
+            })
+          }
+        } else {
+          // Preview not ready yet - still open it but show a warning
+          const status = response.data?.status || 'starting'
+          const newWindow = window.open(previewUrl, '_blank', 'noopener,noreferrer')
+          
+          if (newWindow) {
+            toast({
+              title: "Preview opening",
+              description: `The preview is ${status}. It may take a moment to load.`,
+            })
+          } else {
+            toast({
+              variant: "destructive",
+              title: "Popup blocked",
+              description: "Please allow popups for this site to open the preview in a new tab.",
+            })
+          }
+        }
       } else {
-        console.error('Failed to get preview URL:', response.data?.error?.message || 'Preview not ready')
+        const errorMessage = response.data?.error?.message || 'Preview URL not available'
+        toast({
+          variant: "destructive",
+          title: "Failed to open preview",
+          description: errorMessage,
+        })
+        console.error('Failed to get preview URL:', errorMessage)
       }
-    } catch (err) {
+    } catch (err: any) {
+      const errorMessage = err?.response?.data?.error?.message || err?.message || 'Failed to open preview in new tab'
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: errorMessage,
+      })
       console.error('Error opening preview in new tab:', err)
+    } finally {
+      setIsOpeningExternal(false)
     }
-  }, [projectId, http])
+  }, [projectId, http, currentRoute, isOpeningExternal, toast])
 
   // Publish handlers
   const handlePublish = useCallback(
@@ -764,6 +851,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
           onOpenPreview={() => setPreviewMode('runtime')}
           onOpenExternal={handleOpenExternal}
           onOpenCode={() => setPreviewMode('code')}
+          isOpeningExternal={isOpeningExternal}
           // Publish callbacks
           onPublish={handlePublish}
           onUnpublish={handleUnpublish}

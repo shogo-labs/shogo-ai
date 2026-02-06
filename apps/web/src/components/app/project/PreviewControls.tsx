@@ -22,6 +22,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Code,
+  Loader2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -45,6 +46,7 @@ export interface PreviewControlsProps {
   onOpenPreview?: () => void
   onOpenCode?: () => void
   onOpenExternal?: () => void
+  isOpeningExternal?: boolean
   className?: string
 }
 
@@ -57,6 +59,7 @@ export function PreviewControls({
   onOpenPreview,
   onOpenCode,
   onOpenExternal,
+  isOpeningExternal = false,
   className,
 }: PreviewControlsProps) {
   const [routeInput, setRouteInput] = useState(currentRoute)
@@ -153,15 +156,20 @@ export function PreviewControls({
         </form>
       )}
 
-      {/* Navigation arrows */}
+      {/* Open in new tab button */}
       <Button
         variant="ghost"
         size="icon"
         className="h-7 w-7 text-muted-foreground hover:text-foreground"
         title="Open in new tab"
         onClick={onOpenExternal}
+        disabled={isOpeningExternal}
       >
-        <ArrowUpRight className="h-3.5 w-3.5" />
+        {isOpeningExternal ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <ArrowUpRight className="h-3.5 w-3.5" />
+        )}
       </Button>
 
       {/* Refresh Button */}
