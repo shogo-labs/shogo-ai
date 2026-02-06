@@ -87,6 +87,23 @@ export {
   type AuthStoreGeneratorOptions,
 } from './auth-store-generator'
 
+// Docs generator (Docusaurus)
+export {
+  generateDocs,
+  generateModelDoc,
+  generateModelsIndex,
+  generateApiOverview,
+  type GeneratedDocFile,
+  type DocsGeneratorConfig,
+} from './docs-generator'
+
+// Docs site scaffolding (Docusaurus 3.9)
+export {
+  generateDocsSiteScaffold,
+  generateDocsTsConfig,
+  type DocsSiteConfig,
+} from './docs-site-generator'
+
 // Legacy exports (for backward compatibility)
 export { generateServerFunctions } from './server-functions'
 export { generateDomainStore } from './domain-store'

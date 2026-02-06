@@ -5,6 +5,7 @@
  * - Hono routes (per-model)
  * - TypeScript types (per-model)
  * - OptimisticStore instances (per-model)
+ * - Docusaurus documentation site
  * - Index files for re-exports
  */
 
@@ -17,6 +18,8 @@ import { generateMSTDomain } from './mst-domain-generator'
 import { generateServer, generateDbModule } from './server-generator'
 import { generateApiClient } from './api-client'
 import { generateAuthStore, getUserModel, hasUserModel } from './auth-store-generator'
+import { generateDocs } from './docs-generator'
+import { generateDocsSiteScaffold, generateDocsTsConfig } from './docs-site-generator'
 
 // ============================================================================
 // Types
@@ -26,7 +29,7 @@ export interface OutputConfig {
   /** Output directory */
   dir: string
   /** What to generate */
-  generate: ('routes' | 'hooks' | 'types' | 'stores' | 'mst' | 'server' | 'db' | 'api-client' | 'auth')[]
+  generate: ('routes' | 'hooks' | 'types' | 'stores' | 'mst' | 'server' | 'db' | 'api-client' | 'auth' | 'docs')[]
   /** Generate per-model files (default: true) */
   perModel?: boolean
 }
@@ -371,6 +374,41 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
           content: generateDbModule(),
           skipIfExists: true, // Don't overwrite user customizations
         })
+      }
+
+      // Generate Docusaurus documentation site
+      if (output.generate.includes('docs')) {
+        // Scaffold the Docusaurus site (skipIfExists — won't overwrite user edits)
+        const scaffoldFiles = generateDocsSiteScaffold({
+          projectName: 'My App',
+        })
+        for (const sf of scaffoldFiles) {
+          files.push({
+            path: `${dir}/${sf.path}`,
+            content: sf.content,
+            skipIfExists: sf.skipIfExists,
+          })
+        }
+
+        // tsconfig for the docs site
+        const tsConfig = generateDocsTsConfig()
+        files.push({
+          path: `${dir}/${tsConfig.path}`,
+          content: tsConfig.content,
+          skipIfExists: true,
+        })
+
+        // Generate documentation content (always regenerated)
+        const docFiles = generateDocs(models, enums, {
+          apiBasePath: '/api',
+        })
+        for (const df of docFiles) {
+          files.push({
+            path: `${dir}/${df.path}`,
+            content: df.content,
+            skipIfExists: df.skipIfExists,
+          })
+        }
       }
     }
 

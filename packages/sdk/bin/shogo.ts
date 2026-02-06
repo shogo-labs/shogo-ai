@@ -100,7 +100,7 @@ Usage:
   shogo <command> [options]
 
 Commands:
-  generate              Generate routes, types, and stores from Prisma schema
+  generate              Generate routes, types, stores, and docs from Prisma schema
   db switch <provider>  Switch Prisma schema provider (sqlite | postgres)
   db status             Show current schema provider
 
@@ -149,6 +149,10 @@ Config File (shogo.config.json):
         "dir": "./apps/web/src/generated",
         "generate": ["types", "stores"],
         "perModel": true
+      },
+      {
+        "dir": "./docs",
+        "generate": ["docs"]
       }
     ]
   }
@@ -463,13 +467,20 @@ async function main() {
     if (outputs) {
       const hasRoutes = outputs.some(o => o.generate.includes('routes'))
       const hasStores = outputs.some(o => o.generate.includes('stores'))
+      const hasDocs = outputs.some(o => o.generate.includes('docs'))
+      let step = 1
       
       if (hasRoutes) {
-        console.log('  1. Customize hooks in your API generated/*.hooks.ts files')
-        console.log('  2. Mount routes with createAllRoutes(prisma) in your server')
+        console.log(`  ${step++}. Customize hooks in your API generated/*.hooks.ts files`)
+        console.log(`  ${step++}. Mount routes with createAllRoutes(prisma) in your server`)
       }
       if (hasStores) {
-        console.log('  3. Import stores and use with DomainProvider in your app')
+        console.log(`  ${step++}. Import stores and use with DomainProvider in your app`)
+      }
+      if (hasDocs) {
+        const docsDir = outputs.find(o => o.generate.includes('docs'))?.dir || './docs'
+        console.log(`  ${step++}. Install docs dependencies: cd ${docsDir} && npm install`)
+        console.log(`  ${step++}. Start docs dev server: cd ${docsDir} && npm start`)
       }
     } else {
       console.log('  1. Review generated hooks in hooks.ts')
