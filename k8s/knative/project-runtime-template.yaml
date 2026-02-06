@@ -80,11 +80,9 @@ spec:
             # PostgreSQL connection - localhost since sidecar
             - name: DATABASE_URL
               value: "postgres://shogo:shogo@localhost:5432/project"
-            - name: ANTHROPIC_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: anthropic-credentials
-                  key: api-key
+            # AI_PROXY_URL and AI_PROXY_TOKEN are injected programmatically
+            # by knative-project-manager.ts at pod creation time.
+            # Raw API keys are never exposed to project pods.
             # S3 sync configuration - enables file persistence with emptyDir
             - name: S3_WORKSPACES_BUCKET
               valueFrom:

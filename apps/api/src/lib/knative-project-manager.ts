@@ -747,16 +747,11 @@ export class KnativeProjectManager {
       console.error(`[KnativeProjectManager] Failed to generate AI proxy token for ${projectId}:`, err.message)
     }
 
-    // Fallback: inject raw ANTHROPIC_API_KEY only if proxy token generation failed
-    // When proxy is available, the project-runtime derives ANTHROPIC_API_KEY from the proxy token
+    // If proxy token generation failed, AI features will be unavailable in the pod.
+    // We intentionally do NOT fall back to injecting the raw ANTHROPIC_API_KEY secret
+    // to prevent exposing API keys to user code running inside project pods.
     if (!proxyTokenGenerated) {
-      console.warn(`[KnativeProjectManager] Falling back to direct ANTHROPIC_API_KEY for ${projectId}`)
-      env.push({
-        name: "ANTHROPIC_API_KEY",
-        valueFrom: {
-          secretKeyRef: { name: "anthropic-credentials", key: "api-key" },
-        },
-      })
+      console.warn(`[KnativeProjectManager] AI proxy token not generated for ${projectId} — AI features will be unavailable in this pod`)
     }
 
     // Add PostgreSQL DATABASE_URL if postgres sidecar is enabled
