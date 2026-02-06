@@ -26,6 +26,3 @@ export { UserMenu, ThemeToggle, SplashScreen } from "./shared"
 
 // Workspace components (Session 2.2)
 export * from "./workspace"
-
-// Stepper components (Session 2.3A)
-export * from "./stepper"

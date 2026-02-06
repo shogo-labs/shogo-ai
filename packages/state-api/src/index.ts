@@ -63,6 +63,3 @@ export * from './studio-chat'
 
 // Component Builder layer
 export * from './component-builder'
-
-// Utilities
-export * from './utils'

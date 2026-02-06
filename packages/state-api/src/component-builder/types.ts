@@ -64,8 +64,7 @@ export interface RenderableComponentProps<T = any> {
  * Metadata about a property, derived from EnhancedJsonSchema.
  * Used by ComponentRegistry to resolve the appropriate display renderer.
  *
- * This is the isomorphic version - identical to apps/web/src/components/rendering/types.ts
- * but without React dependencies. The apps/web version re-exports this for convenience.
+ * This is the isomorphic version without React dependencies.
  *
  * Property names use camelCase (matching meta-store Property entity),
  * while the source schema uses kebab-case (x-renderer, x-computed, etc.)

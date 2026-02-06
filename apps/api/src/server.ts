@@ -19,7 +19,6 @@ import { getPriceId } from './config/stripe-prices'
 import { processInterleavedStream, finalizeCurrentText } from './lib/interleaved-stream'
 import * as billingService from './services/billing.service'
 import { publishRoutes } from './routes/publish'
-import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
@@ -29,16 +28,12 @@ import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { githubRoutes } from './routes/github'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
-import { createRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
 import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 // Auth middleware for generated routes
 import { authMiddleware, requireAuth } from './middleware/auth'
-
-// Runtime manager singleton for project Vite runtimes
-let runtimeManager: IRuntimeManager | null = null
 
 // MCP session management for API → MCP calls
 let mcpSessionId: string | null = null
@@ -103,34 +98,8 @@ async function callMcpTool(toolName: string, args: Record<string, unknown>): Pro
   }
 }
 
-/**
- * Get or create the RuntimeManager singleton.
- *
- * Configurable via environment variables:
- * - RUNTIME_BASE_PORT: Base port for Vite runtimes (default: 5200)
- * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: 10)
- * - RUNTIME_DOMAIN_SUFFIX: Domain suffix for URLs (default: localhost)
- * - WORKSPACES_DIR: Directory containing project workspaces (default: PROJECT_ROOT/workspaces)
- */
-function getRuntimeManager(): IRuntimeManager {
-  if (!runtimeManager) {
-    const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-    runtimeManager = createRuntimeManager({
-      basePort: parseInt(process.env.RUNTIME_BASE_PORT || '5200', 10),
-      maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
-      domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
-      workspacesDir,
-      templateDir: '_template',
-    })
-    console.log('[Runtime] RuntimeManager initialized:', {
-      basePort: process.env.RUNTIME_BASE_PORT || '5200',
-      maxRuntimes: process.env.RUNTIME_MAX_COUNT || '10',
-      domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
-      workspacesDir,
-    })
-  }
-  return runtimeManager
-}
+// Note: RuntimeManager has been removed. All runtime management
+// is now handled via Knative project manager.
 
 /**
  * Parse a data URL to extract mediaType and base64 data.
@@ -1051,14 +1020,24 @@ app.post('/api/projects/:projectId/unpublish', async (c) => {
 // Runtime routes - Project Vite runtime management
 // =============================================================================
 
-// Start project runtime
+// Start project runtime - Now handled by Knative
+// This endpoint is deprecated and only kept for backwards compatibility
 app.post('/api/projects/:projectId/runtime/start', async (c) => {
-  const manager = getRuntimeManager()
-  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/runtime/start`
-  const newReq = new Request(url.toString(), { method: 'POST' })
-  return router.fetch(newReq)
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // Knative handles starting automatically on first request
+    return c.json({
+      success: true,
+      projectId,
+      status: 'starting',
+      message: 'Runtime will start automatically on first request',
+    })
+  } else {
+    return c.json({
+      error: { code: 'not_implemented', message: 'Local development requires Knative. Use `npm run dev:full` to start all services.' }
+    }, 501)
+  }
 })
 
 // Stop project runtime
@@ -1066,32 +1045,17 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Scale the project to 0 (or just return success since Knative auto-scales)
-    // Note: We don't actually stop the pod - Knative handles scaling to zero automatically
-    // This endpoint exists for compatibility with the frontend cleanup
-    try {
-      // Just return success - Knative will scale to zero automatically after idle timeout
-      return c.json({
-        success: true,
-        projectId,
-        status: 'scaling_down',
-        message: 'Project will scale to zero after idle timeout',
-      })
-    } catch (error: any) {
-      console.error('[Runtime] Stop error:', error)
-      return c.json(
-        { error: { code: 'stop_failed', message: error.message || 'Failed to stop runtime' } },
-        500
-      )
-    }
+    // In Kubernetes: Knative handles scaling to zero automatically
+    return c.json({
+      success: true,
+      projectId,
+      status: 'scaling_down',
+      message: 'Project will scale to zero after idle timeout',
+    })
   } else {
-    // Local development: Use RuntimeManager
-    const manager = getRuntimeManager()
-    const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
-    const url = new URL(c.req.url)
-    url.pathname = `/projects/${projectId}/runtime/stop`
-    const newReq = new Request(url.toString(), { method: 'POST' })
-    return router.fetch(newReq)
+    return c.json({
+      error: { code: 'not_implemented', message: 'Local development requires Knative. Use `npm run dev:full` to start all services.' }
+    }, 501)
   }
 })
 
@@ -1102,7 +1066,6 @@ app.post('/api/projects/:projectId/runtime/restart', async (c) => {
   
   if (isKubernetes()) {
     // In Kubernetes: Proxy to project-runtime pod's /preview/restart endpoint
-    // This triggers a rebuild (vite build) and restarts the preview server
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -1139,15 +1102,11 @@ app.post('/api/projects/:projectId/runtime/restart', async (c) => {
         error: err.message || 'Failed to restart runtime',
       }, 500)
     }
+  } else {
+    return c.json({
+      error: { code: 'not_implemented', message: 'Local development requires Knative. Use `npm run dev:full` to start all services.' }
+    }, 501)
   }
-  
-  // Local development: use RuntimeManager
-  const manager = getRuntimeManager()
-  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${projectId}/runtime/restart`
-  const newReq = new Request(url.toString(), { method: 'POST' })
-  return router.fetch(newReq)
 })
 
 // Get project runtime status
@@ -1215,13 +1174,9 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
       }, 500)
     }
   } else {
-    // Local development: Use RuntimeManager
-    const manager = getRuntimeManager()
-    const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
-    const url = new URL(c.req.url)
-    url.pathname = `/projects/${c.req.param('projectId')}/runtime/status`
-    const newReq = new Request(url.toString(), { method: 'GET' })
-    return router.fetch(newReq)
+    return c.json({
+      error: { code: 'not_implemented', message: 'Local development requires Knative. Use `npm run dev:full` to start all services.' }
+    }, 501)
   }
 })
 
@@ -1341,13 +1296,9 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       }, 503)
     }
   } else {
-    // Local development: Use RuntimeManager
-    const manager = getRuntimeManager()
-    const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
-    const url = new URL(c.req.url)
-    url.pathname = `/projects/${projectId}/sandbox/url`
-    const newReq = new Request(url.toString(), { method: 'GET' })
-    return router.fetch(newReq)
+    return c.json({
+      error: { code: 'not_implemented', message: 'Local development requires Knative. Use `npm run dev:full` to start all services.' }
+    }, 501)
   }
 })
 
@@ -1361,14 +1312,9 @@ app.all('/api/projects/:projectId/preview/*', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (!isKubernetes()) {
-    // In local dev, redirect to the local Vite dev server directly
-    const manager = getRuntimeManager()
-    const runtime = manager.status(projectId)
-    if (runtime?.url) {
-      const path = c.req.path.replace(`/api/projects/${projectId}/preview`, '') || '/'
-      return c.redirect(`${runtime.url}${path}`)
-    }
-    return c.json({ error: { code: 'not_running', message: 'Project runtime not running' } }, 404)
+    return c.json({ 
+      error: { code: 'not_implemented', message: 'Local development requires Knative. Use `npm run dev:full` to start all services.' } 
+    }, 501)
   }
   
   try {
@@ -2552,8 +2498,7 @@ app.route('/api', githubRouter)
 
 // POST /api/projects/:projectId/chat - Proxy chat to project pod
 app.post('/api/projects/:projectId/chat', async (c) => {
-  const manager = getRuntimeManager()
-  const router = projectChatRoutes({ runtimeManager: manager })
+  const router = projectChatRoutes({})
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat`
   const newReq = new Request(url.toString(), {
@@ -2566,8 +2511,7 @@ app.post('/api/projects/:projectId/chat', async (c) => {
 
 // GET /api/projects/:projectId/chat/status - Check project runtime status
 app.get('/api/projects/:projectId/chat/status', async (c) => {
-  const manager = getRuntimeManager()
-  const router = projectChatRoutes({ runtimeManager: manager })
+  const router = projectChatRoutes({})
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat/status`
   const newReq = new Request(url.toString(), { method: 'GET' })
@@ -2576,8 +2520,7 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
 
 // POST /api/projects/:projectId/chat/wake - Wake up a scaled-to-zero pod
 app.post('/api/projects/:projectId/chat/wake', async (c) => {
-  const manager = getRuntimeManager()
-  const router = projectChatRoutes({ runtimeManager: manager })
+  const router = projectChatRoutes({})
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat/wake`
   const newReq = new Request(url.toString(), { method: 'POST' })
@@ -3448,17 +3391,6 @@ app.route('/api', generatedRoutes)
 // Stop all runtimes on server shutdown
 async function gracefulShutdown(signal: string) {
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
-
-  // Stop all project runtimes
-  if (runtimeManager) {
-    console.log('[Server] Stopping all project runtimes...')
-    try {
-      await runtimeManager.stopAll()
-      console.log('[Server] All runtimes stopped')
-    } catch (err: any) {
-      console.error('[Server] Error stopping runtimes:', err.message)
-    }
-  }
 
   // Stop all Prisma Studio instances
   console.log('[Server] Stopping all Prisma Studio instances...')

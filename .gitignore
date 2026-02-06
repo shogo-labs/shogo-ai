@@ -86,6 +86,9 @@ workspaces/
 /packages/sdk/examples/*/playwright-report
 /packages/sdk/examples/*/.output
 /packages/sdk/examples/*/.nitro
+/packages/sdk/examples/*/docs/build
+/packages/sdk/examples/*/docs/node_modules
+/packages/sdk/examples/*/docs/.docusaurus
 
 # Vite/TanStack generated timestamp files (bust Docker cache)
 app.config.timestamp*.js
