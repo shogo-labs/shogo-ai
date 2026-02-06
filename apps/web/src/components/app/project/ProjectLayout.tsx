@@ -761,6 +761,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
           currentRoute={currentRoute}
           onRouteChange={handleRouteChange}
           onRefresh={handleRefresh}
+          onOpenPreview={() => setPreviewMode('runtime')}
           onOpenExternal={handleOpenExternal}
           onOpenCode={() => setPreviewMode('code')}
           // Publish callbacks

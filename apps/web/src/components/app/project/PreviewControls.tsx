@@ -42,6 +42,7 @@ export interface PreviewControlsProps {
   currentRoute?: string
   onRouteChange?: (route: string) => void
   onRefresh?: () => void
+  onOpenPreview?: () => void
   onOpenCode?: () => void
   onOpenExternal?: () => void
   className?: string
@@ -53,6 +54,7 @@ export function PreviewControls({
   currentRoute = "/",
   onRouteChange,
   onRefresh,
+  onOpenPreview,
   onOpenCode,
   onOpenExternal,
   className,
@@ -81,6 +83,8 @@ export function PreviewControls({
         variant="secondary"
         size="sm"
         className="h-7 gap-1.5 px-2.5 text-xs bg-muted/80 hover:bg-muted"
+        onClick={onOpenPreview}
+        title="Switch to preview mode"
       >
         <Eye className="h-3.5 w-3.5" />
         Preview
