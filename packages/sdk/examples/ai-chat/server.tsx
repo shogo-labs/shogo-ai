@@ -1,6 +1,6 @@
 /**
  * AI Chat Server
- * Based on Vercel AI Chatbot - adapted for Shogo SDK
+ * Shogo AI Chat Server
  *
  * AI Model Access:
  * 1. Shogo AI Proxy (preferred) - Uses AI_PROXY_URL + AI_PROXY_TOKEN
@@ -11,8 +11,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { serveStatic } from 'hono/bun'
-import { streamText, convertToCoreMessages } from 'ai'
-import { createOpenAI } from '@ai-sdk/openai'
+import { streamText, type UIMessage, convertToModelMessages } from 'ai'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createAllRoutes } from './src/generated/index.js'
 import { prisma as db } from './src/lib/db.js'
@@ -25,6 +24,17 @@ app.use('*', cors())
 const generatedRoutes = createAllRoutes(db)
 app.route('/api', generatedRoutes)
 
+// Debug endpoint (remove in production)
+app.get('/api/debug-env', (c) => {
+  return c.json({
+    hasProxy: !!(process.env.AI_PROXY_URL && process.env.AI_PROXY_TOKEN),
+    proxyUrl: process.env.AI_PROXY_URL || 'not set',
+    proxyTokenLen: process.env.AI_PROXY_TOKEN?.length || 0,
+    hasAnthropic: !!process.env.ANTHROPIC_API_KEY,
+    hasOpenAI: !!process.env.OPENAI_API_KEY,
+  })
+})
+
 // System prompt for the AI
 const SYSTEM_PROMPT = `You are a helpful AI assistant. Be concise, helpful, and friendly.
 When appropriate, use markdown formatting to make your responses clearer.
@@ -34,10 +44,9 @@ If you don't know something, say so honestly.`
  * Get AI model based on configuration.
  *
  * Priority:
- * 1. Shogo AI Proxy (AI_PROXY_URL + AI_PROXY_TOKEN) - no API keys needed
+ * 1. Shogo AI Proxy (AI_PROXY_URL + AI_PROXY_TOKEN) - uses native Anthropic endpoint
  * 2. Direct Anthropic API key (ANTHROPIC_API_KEY)
- * 3. Direct OpenAI API key (OPENAI_API_KEY)
- * 4. null (demo mode)
+ * 3. null (demo mode)
  */
 function getAIModel(modelId: string = 'claude-haiku-4-5') {
   // 1. Shogo AI Proxy - preferred, no raw API keys needed
@@ -45,93 +54,108 @@ function getAIModel(modelId: string = 'claude-haiku-4-5') {
   const proxyToken = process.env.AI_PROXY_TOKEN
   
   if (proxyUrl && proxyToken) {
-    // The proxy is OpenAI-compatible, so we use createOpenAI with custom baseURL
-    // This works for both OpenAI and Anthropic models (the proxy handles routing)
-    const proxy = createOpenAI({
-      baseURL: proxyUrl,
-      apiKey: proxyToken, // Proxy token used as the API key
+    // Derive the Anthropic-native proxy URL from the base proxy URL
+    // e.g. http://localhost:8002/api/ai/v1 -> http://localhost:8002/api/ai/anthropic/v1
+    const anthropicProxyUrl = proxyUrl.replace('/ai/v1', '/ai/anthropic/v1')
+    
+    const anthropic = createAnthropic({
+      baseURL: anthropicProxyUrl,
+      apiKey: proxyToken, // Proxy token sent as x-api-key
     })
-    return proxy(modelId)
-  }
-
-  // 2. Direct API keys (fallback for local development without proxy)
-  const openaiKey = process.env.OPENAI_API_KEY
-  const anthropicKey = process.env.ANTHROPIC_API_KEY
-  
-  if (modelId.startsWith('claude') && anthropicKey) {
-    const anthropic = createAnthropic({ apiKey: anthropicKey })
     return anthropic(modelId)
   }
+
+  // 2. Direct Anthropic API key (fallback for local development without proxy)
+  const anthropicKey = process.env.ANTHROPIC_API_KEY
   
-  if (openaiKey) {
-    const openai = createOpenAI({ apiKey: openaiKey })
-    return openai(modelId)
+  if (anthropicKey) {
+    const anthropic = createAnthropic({ apiKey: anthropicKey })
+    return anthropic(modelId)
   }
   
   return null
 }
 
-// AI Chat streaming endpoint
+// AI Chat streaming endpoint (AI SDK v6)
 app.post('/api/chat', async (c) => {
   try {
     const body = await c.req.json()
-    const { id: chatId, message, selectedChatModel = 'claude-haiku-4-5', userId } = body
+    const { id: chatId, message, messages: allMessages, selectedChatModel = 'claude-haiku-4-5', userId } = body
     
-    if (!message || !chatId) {
-      return c.json({ error: 'Message and chat ID are required' }, 400)
+    if (!chatId) {
+      return c.json({ error: 'Chat ID is required' }, 400)
     }
+
+    // Extract user content from message or messages array
+    const lastMessage = message || (allMessages && allMessages[allMessages.length - 1])
+    if (!lastMessage) {
+      return c.json({ error: 'Message is required' }, 400)
+    }
+
+    const userContent = lastMessage.parts?.find((p: any) => p.type === 'text')?.text || lastMessage.content || ''
 
     // Check if we have an AI model configured
     const model = getAIModel(selectedChatModel)
     
     if (!model) {
       // Demo mode - return a simulated response
-      return handleDemoMode(c, chatId, message, userId)
+      return handleDemoMode(c, chatId, lastMessage, userId)
     }
 
     // Real AI streaming
     try {
-      // Save user message
-      if (userId) {
-        await db.message.create({
-          data: {
-            id: message.id || nanoid(),
+      // Save user message (upsert to handle retries gracefully)
+      if (userId && lastMessage.role === 'user') {
+        const msgId = lastMessage.id || nanoid()
+        await db.message.upsert({
+          where: { id: msgId },
+          update: {},
+          create: {
+            id: msgId,
             chatId,
             role: 'user',
-            parts: JSON.stringify(message.parts || [{ type: 'text', text: message.content || '' }]),
+            parts: JSON.stringify(lastMessage.parts || [{ type: 'text', text: userContent }]),
             attachments: '[]',
           }
         })
       }
 
-      // Get message history for context
-      const historyMessages = await db.message.findMany({
-        where: { chatId },
-        orderBy: { createdAt: 'asc' },
-        take: 20, // Last 20 messages for context
-      })
+      // Build messages for the AI model
+      // If allMessages are provided (v6 format), use them directly
+      let uiMessages: UIMessage[]
+      if (allMessages && allMessages.length > 0) {
+        uiMessages = allMessages
+      } else {
+        // Fall back to fetching from DB
+        const historyMessages = await db.message.findMany({
+          where: { chatId },
+          orderBy: { createdAt: 'asc' },
+          take: 20,
+        })
 
-      // Convert to AI SDK format
-      const messages = historyMessages.map(m => {
-        const parts = JSON.parse(m.parts || '[]')
-        const textPart = parts.find((p: any) => p.type === 'text')
-        return {
-          role: m.role as 'user' | 'assistant',
-          content: textPart?.text || '',
+        uiMessages = historyMessages.map(m => {
+          const parts = JSON.parse(m.parts || '[]')
+          return {
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            parts: parts,
+          }
+        }) as UIMessage[]
+
+        // Add current message if not already in history
+        if (!uiMessages.some(m => m.id === lastMessage.id)) {
+          uiMessages.push(lastMessage as UIMessage)
         }
-      })
-
-      // Add current message if not already in history
-      const userContent = message.parts?.find((p: any) => p.type === 'text')?.text || message.content || ''
-      if (!messages.some(m => m.content === userContent)) {
-        messages.push({ role: 'user' as const, content: userContent })
       }
+
+      // Convert UIMessages to model messages for AI SDK v6
+      const modelMessages = await convertToModelMessages(uiMessages)
 
       // Stream the response
       const result = streamText({
         model,
         system: SYSTEM_PROMPT,
-        messages: convertToCoreMessages(messages),
+        messages: modelMessages,
         onFinish: async ({ text }) => {
           // Save assistant response
           if (userId) {
@@ -158,11 +182,12 @@ app.post('/api/chat', async (c) => {
         },
       })
 
-      return result.toDataStreamResponse()
+      // Return UIMessage stream response for AI SDK v6 DefaultChatTransport
+      return result.toUIMessageStreamResponse()
     } catch (aiError) {
       console.error('AI streaming error:', aiError)
       // Fall back to demo mode on AI error
-      return handleDemoMode(c, chatId, message, userId)
+      return handleDemoMode(c, chatId, lastMessage, userId)
     }
   } catch (error) {
     console.error('Chat error:', error)
@@ -322,7 +347,7 @@ app.get('/*', serveStatic({ path: './dist/index.html' }))
 
 const port = parseInt(process.env.PORT || '3001', 10)
 const hasProxy = !!(process.env.AI_PROXY_URL && process.env.AI_PROXY_TOKEN)
-const hasDirectAI = !!(process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY)
+const hasDirectAI = !!process.env.ANTHROPIC_API_KEY
 const hasAI = hasProxy || hasDirectAI
 console.log(`🚀 AI Chat Server running at http://localhost:${port}`)
 if (hasProxy) {
