@@ -18,6 +18,7 @@
 
 import * as k8s from "@kubernetes/client-node"
 import * as fs from "fs"
+import { generateProxyToken } from './ai-proxy-token'
 
 // =============================================================================
 // Configuration
@@ -422,7 +423,7 @@ export class KnativeProjectManager {
 
     // Create Knative Service
     const ksvcStartTime = Date.now()
-    const service = this.buildKnativeService(projectId)
+    const service = await this.buildKnativeService(projectId)
     const api = getCustomApi()
 
     try {
@@ -689,18 +690,12 @@ export class KnativeProjectManager {
    * Build the Knative Service spec for a project.
    * Includes PostgreSQL sidecar container for per-project database.
    */
-  private buildKnativeService(projectId: string): any {
+  private async buildKnativeService(projectId: string): Promise<any> {
     // Build environment variables for project-runtime container
     const env: any[] = [
       { name: "PROJECT_ID", value: projectId },
       { name: "PROJECT_DIR", value: "/app/project" },
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
-      {
-        name: "ANTHROPIC_API_KEY",
-        valueFrom: {
-          secretKeyRef: { name: "anthropic-credentials", key: "api-key" },
-        },
-      },
       // Auth secret for validating preview JWT tokens
       {
         name: "BETTER_AUTH_SECRET",
@@ -709,6 +704,60 @@ export class KnativeProjectManager {
         },
       },
     ]
+
+    // AI Proxy configuration
+    // When the proxy is configured, the project-runtime routes ALL AI calls
+    // (including Claude Code CLI) through the proxy. No raw API keys are exposed.
+    //
+    // How it works:
+    // - AI_PROXY_URL + AI_PROXY_TOKEN are injected into the pod
+    // - project-runtime sets ANTHROPIC_BASE_URL → proxy's Anthropic-native endpoint
+    // - project-runtime sets ANTHROPIC_API_KEY → proxy token (validated by proxy)
+    // - The proxy forwards to the real Anthropic API using server-side keys
+    //
+    // Fallback: If proxy token generation fails, inject the raw ANTHROPIC_API_KEY
+    // from K8s secrets so the pod can still function.
+    const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || 'http://api.shogo-system.svc.cluster.local:3000'
+    env.push({ name: "AI_PROXY_URL", value: `${apiUrl}/api/ai/v1` })
+
+    let proxyTokenGenerated = false
+
+    // Generate a long-lived proxy token for this project (7 days, refreshed on pod creation)
+    try {
+      // Look up the project's workspace for billing context
+      const { prisma } = await import('./prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspaceId: true },
+      })
+      if (project) {
+        const proxyToken = await generateProxyToken(
+          projectId,
+          project.workspaceId,
+          'system', // System-generated token for the runtime
+          7 * 24 * 60 * 60 * 1000 // 7 days
+        )
+        env.push({ name: "AI_PROXY_TOKEN", value: proxyToken })
+        proxyTokenGenerated = true
+        console.log(`[KnativeProjectManager] Generated AI proxy token for project ${projectId} (no raw API key exposed)`)
+      } else {
+        console.warn(`[KnativeProjectManager] Project ${projectId} not found, skipping AI proxy token`)
+      }
+    } catch (err: any) {
+      console.error(`[KnativeProjectManager] Failed to generate AI proxy token for ${projectId}:`, err.message)
+    }
+
+    // Fallback: inject raw ANTHROPIC_API_KEY only if proxy token generation failed
+    // When proxy is available, the project-runtime derives ANTHROPIC_API_KEY from the proxy token
+    if (!proxyTokenGenerated) {
+      console.warn(`[KnativeProjectManager] Falling back to direct ANTHROPIC_API_KEY for ${projectId}`)
+      env.push({
+        name: "ANTHROPIC_API_KEY",
+        valueFrom: {
+          secretKeyRef: { name: "anthropic-credentials", key: "api-key" },
+        },
+      })
+    }
 
     // Add PostgreSQL DATABASE_URL if postgres sidecar is enabled
     // Uses localhost since postgres runs in the same pod

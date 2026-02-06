@@ -1,6 +1,11 @@
 /**
  * AI Chat Server
  * Based on Vercel AI Chatbot - adapted for Shogo SDK
+ *
+ * AI Model Access:
+ * 1. Shogo AI Proxy (preferred) - Uses AI_PROXY_URL + AI_PROXY_TOKEN
+ *    No API keys needed! The proxy is provided by the Shogo platform.
+ * 2. Direct API keys (fallback) - Uses OPENAI_API_KEY or ANTHROPIC_API_KEY
  */
 
 import { Hono } from 'hono'
@@ -25,8 +30,31 @@ const SYSTEM_PROMPT = `You are a helpful AI assistant. Be concise, helpful, and 
 When appropriate, use markdown formatting to make your responses clearer.
 If you don't know something, say so honestly.`
 
-// Get AI model based on configuration
+/**
+ * Get AI model based on configuration.
+ *
+ * Priority:
+ * 1. Shogo AI Proxy (AI_PROXY_URL + AI_PROXY_TOKEN) - no API keys needed
+ * 2. Direct Anthropic API key (ANTHROPIC_API_KEY)
+ * 3. Direct OpenAI API key (OPENAI_API_KEY)
+ * 4. null (demo mode)
+ */
 function getAIModel(modelId: string = 'gpt-4o-mini') {
+  // 1. Shogo AI Proxy - preferred, no raw API keys needed
+  const proxyUrl = process.env.AI_PROXY_URL
+  const proxyToken = process.env.AI_PROXY_TOKEN
+  
+  if (proxyUrl && proxyToken) {
+    // The proxy is OpenAI-compatible, so we use createOpenAI with custom baseURL
+    // This works for both OpenAI and Anthropic models (the proxy handles routing)
+    const proxy = createOpenAI({
+      baseURL: proxyUrl,
+      apiKey: proxyToken, // Proxy token used as the API key
+    })
+    return proxy(modelId)
+  }
+
+  // 2. Direct API keys (fallback for local development without proxy)
   const openaiKey = process.env.OPENAI_API_KEY
   const anthropicKey = process.env.ANTHROPIC_API_KEY
   
@@ -293,8 +321,16 @@ app.use('/*', serveStatic({ root: './dist' }))
 app.get('/*', serveStatic({ path: './dist/index.html' }))
 
 const port = parseInt(process.env.PORT || '3001', 10)
-const hasAI = !!(process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY)
+const hasProxy = !!(process.env.AI_PROXY_URL && process.env.AI_PROXY_TOKEN)
+const hasDirectAI = !!(process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY)
+const hasAI = hasProxy || hasDirectAI
 console.log(`🚀 AI Chat Server running at http://localhost:${port}`)
-console.log(`🤖 AI Mode: ${hasAI ? 'Enabled' : 'Demo (set OPENAI_API_KEY or ANTHROPIC_API_KEY)'}`)
+if (hasProxy) {
+  console.log(`🤖 AI Mode: Shogo Proxy (${process.env.AI_PROXY_URL})`)
+} else if (hasDirectAI) {
+  console.log(`🤖 AI Mode: Direct API Keys`)
+} else {
+  console.log(`🤖 AI Mode: Demo (set AI_PROXY_URL+AI_PROXY_TOKEN or OPENAI_API_KEY/ANTHROPIC_API_KEY)`)
+}
 
 export default { port, fetch: app.fetch }

@@ -28,6 +28,7 @@ import { testsRoutes } from './routes/tests'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { githubRoutes } from './routes/github'
+import { aiProxyRoutes } from './routes/ai-proxy'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
 import { createRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
@@ -3417,6 +3418,15 @@ app.post('/api/webhooks/stripe', async (c) => {
 })
 
 // =============================================================================
+// AI Model Proxy Routes (OpenAI-compatible, project-scoped token auth)
+// =============================================================================
+
+// Mount AI proxy routes BEFORE the general auth middleware.
+// The proxy uses its own project-scoped token authentication.
+const aiProxy = aiProxyRoutes()
+app.route('/api', aiProxy)
+
+// =============================================================================
 // Domain API routes - For APIPersistence layer
 // =============================================================================
 
@@ -3477,7 +3487,11 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 console.log(`🚀 API server running on http://localhost:${API_PORT}`)
 console.log(`   Chat endpoint: POST http://localhost:${API_PORT}/api/chat`)
 console.log(`   Runtime endpoints: POST/GET http://localhost:${API_PORT}/api/projects/:id/runtime/*`)
+console.log(`   AI Proxy: POST http://localhost:${API_PORT}/api/ai/v1/chat/completions`)
+console.log(`   AI Models: GET  http://localhost:${API_PORT}/api/ai/v1/models`)
+console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/health`)
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
+console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}`)
 
 export default {
   port: API_PORT,

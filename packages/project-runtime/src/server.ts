@@ -460,6 +460,39 @@ function createPathRestrictor(projectDir: string) {
 
 const pathRestrictor = createPathRestrictor(PROJECT_DIR)
 
+// AI Proxy Configuration
+// When AI_PROXY_URL and AI_PROXY_TOKEN are set, route Claude Code CLI through
+// the proxy instead of directly to Anthropic. This prevents exposing the raw
+// ANTHROPIC_API_KEY to the project pod.
+//
+// How it works:
+// - ANTHROPIC_BASE_URL is set to the proxy's Anthropic-native endpoint
+// - ANTHROPIC_API_KEY is set to the proxy token (proxy validates it)
+// - The proxy forwards requests to the real Anthropic API with server-side keys
+const AI_PROXY_URL = process.env.AI_PROXY_URL
+const AI_PROXY_TOKEN = process.env.AI_PROXY_TOKEN
+const useAIProxy = !!(AI_PROXY_URL && AI_PROXY_TOKEN)
+
+if (useAIProxy) {
+  // Derive the Anthropic-native proxy base URL from AI_PROXY_URL
+  // AI_PROXY_URL is like: http://api-server/api/ai/v1
+  // Anthropic base URL should be: http://api-server/api/ai/anthropic
+  const anthropicProxyBase = AI_PROXY_URL.replace(/\/v1$/, '/anthropic')
+  console.log(`[project-runtime] AI Proxy enabled: Claude Code → ${anthropicProxyBase}`)
+  console.log(`[project-runtime] Proxy token: ${AI_PROXY_TOKEN.slice(0, 20)}...`)
+} else {
+  console.log(`[project-runtime] AI Proxy not configured, using direct ANTHROPIC_API_KEY`)
+}
+
+// Build environment overrides for Claude Code process
+// When proxy is enabled, override ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY
+const claudeCodeEnv: Record<string, string> = {}
+if (useAIProxy) {
+  const anthropicProxyBase = AI_PROXY_URL!.replace(/\/v1$/, '/anthropic')
+  claudeCodeEnv.ANTHROPIC_BASE_URL = anthropicProxyBase
+  claudeCodeEnv.ANTHROPIC_API_KEY = AI_PROXY_TOKEN!
+}
+
 const claudeCode = createClaudeCode({
   defaultSettings: {
     // Enable streaming (required for hooks)
@@ -472,6 +505,9 @@ const claudeCode = createClaudeCode({
     canUseTool: pathRestrictor,
     // Load project settings (.claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
+    // Environment overrides for Claude Code process
+    // When AI proxy is enabled, this routes all API calls through the proxy
+    ...(Object.keys(claudeCodeEnv).length > 0 && { env: claudeCodeEnv }),
     // MCP server configuration
     mcpServers: {
       wavesmith: {
@@ -1153,6 +1189,40 @@ app.get('/info', (c) => {
     } : {
       enabled: false,
     },
+    aiProxy: {
+      url: process.env.AI_PROXY_URL || null,
+      configured: !!process.env.AI_PROXY_TOKEN,
+    },
+  })
+})
+
+// =============================================================================
+// AI Proxy Configuration Endpoint
+// =============================================================================
+// Exposes AI proxy credentials to user-created apps running in this project.
+// User apps call this endpoint to get the proxy URL and token without needing
+// raw API keys in their environment.
+
+app.get('/ai/config', (c) => {
+  const proxyUrl = process.env.AI_PROXY_URL
+  const proxyToken = process.env.AI_PROXY_TOKEN
+
+  if (!proxyUrl || !proxyToken) {
+    return c.json({
+      configured: false,
+      message: 'AI proxy not configured for this project runtime.',
+    })
+  }
+
+  return c.json({
+    configured: true,
+    proxyUrl,
+    proxyToken,
+    // OpenAI-compatible base URL that AI SDKs can use directly
+    baseUrl: proxyUrl,
+    // Models available through the proxy
+    modelsUrl: `${proxyUrl}/models`,
+    completionsUrl: `${proxyUrl}/chat/completions`,
   })
 })
 
