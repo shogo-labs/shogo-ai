@@ -28,7 +28,6 @@ import {
   Plus,
   Square,
   X,
-  BarChart3,
   Zap,
   Rocket,
   Lock,
@@ -798,18 +797,6 @@ export function ChatInput({
 
           {/* Right side buttons */}
           <div className="flex items-center gap-1">
-            {/* Activity button */}
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              disabled={disabled}
-              className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
-            >
-              <BarChart3 className="h-4 w-4" />
-              <span className="sr-only">Activity</span>
-            </Button>
-
             {/* Send/Stop button */}
             {isStreaming ? (
               <Button
