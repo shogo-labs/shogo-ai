@@ -19,8 +19,6 @@ import { useParams, useLocation } from "react-router-dom"
 import { useDomains, useSchemaLoadingState, useSDKDomain, useSDKReady, useSDKHttp } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
-import { ComponentRegistryProvider } from "@/components/rendering"
-import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
 import { ChatPanel } from "../chat/ChatPanel"
 import { ChatPanelTransitionOverlay } from "../chat/ChatPanelTransitionOverlay"
 import { useChatSessionNavigation } from "../advanced-chat/hooks/useChatSessionNavigation"
@@ -77,29 +75,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const actions = useDomainActions()
   const http = useSDKHttp()
 
-  // Legacy domains for componentBuilder (rendering) and platformFeatures
-  const { platformFeatures, componentBuilder, studioChat, billing } = useDomains<{
+  // Legacy domains for platformFeatures
+  const { platformFeatures, studioChat, billing } = useDomains<{
     platformFeatures: any
-    componentBuilder: any
     studioChat: any
     billing: any
   }>()
-
-  // Create component registry from domain (same pattern as AppShell)
-  const prevBindingsKeyRef = useRef<string>('')
-  const registryRef = useRef<ReturnType<typeof createRegistryFromDomain> | null>(null)
-
-  const bindings = componentBuilder?.rendererBindingCollection?.all() ?? []
-  const currentBindingsKey = bindings.map((b: any) =>
-    `${b.id}:${b.updatedAt ?? ''}`
-  ).join('|')
-
-  if (currentBindingsKey !== prevBindingsKeyRef.current || !registryRef.current) {
-    prevBindingsKeyRef.current = currentBindingsKey
-    registryRef.current = createRegistryFromDomain(componentBuilder)
-  }
-
-  const registry = registryRef.current
 
   // Track current chat session in URL
   const { chatSessionId, setChatSessionId } = useChatSessionNavigation()
@@ -737,27 +718,24 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Loading state
   if (isLoading || !project) {
     return (
-      <ComponentRegistryProvider registry={registry}>
-        <div className="h-screen flex flex-col bg-background">
-          <ProjectTopBar
-            projectName="Loading..."
-            projectId={projectId || ""}
-            showChatSessions={showChatSessions}
-            isChatCollapsed={isChatCollapsed}
-            onChatSessionsToggle={handleChatSessionsToggle}
-            onChatCollapseToggle={handleChatCollapseToggle}
-          />
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-muted-foreground animate-pulse">Loading project...</div>
-          </div>
+      <div className="h-screen flex flex-col bg-background">
+        <ProjectTopBar
+          projectName="Loading..."
+          projectId={projectId || ""}
+          showChatSessions={showChatSessions}
+          isChatCollapsed={isChatCollapsed}
+          onChatSessionsToggle={handleChatSessionsToggle}
+          onChatCollapseToggle={handleChatCollapseToggle}
+        />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-muted-foreground animate-pulse">Loading project...</div>
         </div>
-      </ComponentRegistryProvider>
+      </div>
     )
   }
 
   return (
-    <ComponentRegistryProvider registry={registry}>
-      <div className="h-screen flex flex-col bg-background">
+    <div className="h-screen flex flex-col bg-background">
         {/* Project top bar - Lovable.dev style */}
         <ProjectTopBar
           projectName={project.name}
@@ -1067,6 +1045,5 @@ export const ProjectLayout = observer(function ProjectLayout() {
           />
         )}
       </div>
-    </ComponentRegistryProvider>
   )
 })

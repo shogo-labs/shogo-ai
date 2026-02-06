@@ -169,7 +169,6 @@ const store = RootStoreModel.create({}, {
 
 ### apps/web/src/
 - `persistence/MCPPersistence.ts` — Browser HTTP adapter
-- `components/rendering/` — Dynamic component rendering system
 - `components/app/` — Main application components
 
 ### apps/api/src/
