@@ -13,8 +13,6 @@ import { StarredProjectsPage } from './pages/StarredProjectsPage'
 import { SharedWithMePage } from './pages/SharedWithMePage'
 import { TemplatesPage } from './pages/TemplatesPage'
 import { SettingsPage } from './pages/SettingsPage'
-import { MonacoTestPage } from './pages/MonacoTestPage'
-import { TodoWidgetTestPage } from './pages/TodoWidgetTestPage'
 import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
@@ -126,12 +124,6 @@ function AppWithSession() {
             <WavesmithMetaStoreProvider>
               <AuthProvider authService={betterAuthService}>
                 <Routes>
-                  {/* Monaco Test Page - accessible without auth for debugging */}
-                  <Route path="/monaco-test" element={<MonacoTestPage />} />
-                  
-                  {/* TodoWidget Test Page - accessible without auth for testing */}
-                  <Route path="/todo-test" element={<TodoWidgetTestPage />} />
-
                   {/* Project view route - full screen without sidebar */}
                   <Route path="/projects/:projectId" element={
                     <AuthGate>
