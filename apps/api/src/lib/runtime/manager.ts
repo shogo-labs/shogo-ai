@@ -87,14 +87,26 @@ export class RuntimeManager implements IRuntimeManager {
   /**
    * Kill any process running on the specified port.
    * Uses lsof to find the PID and kills it.
+   *
+   * IMPORTANT: Excludes the current process (and its parent) to avoid
+   * the API server killing itself when it has connections to the port.
    */
   private killProcessOnPort(port: number): void {
     try {
       // Find PID using lsof (works on macOS and Linux)
       const result = execSync(`lsof -ti :${port} 2>/dev/null || true`, { encoding: 'utf-8' })
       const pids = result.trim().split('\n').filter(pid => pid.length > 0)
-      
-      for (const pid of pids) {
+
+      // Never kill ourselves or our parent process
+      const selfPid = String(process.pid)
+      const parentPid = String(process.ppid)
+      const safePids = pids.filter(pid => pid !== selfPid && pid !== parentPid)
+
+      if (pids.length > 0 && safePids.length === 0) {
+        console.log(`[RuntimeManager] Port ${port} is held by the current process — skipping kill`)
+      }
+
+      for (const pid of safePids) {
         try {
           console.log(`[RuntimeManager] Killing stale process ${pid} on port ${port}`)
           execSync(`kill -9 ${pid} 2>/dev/null || true`)
@@ -103,7 +115,7 @@ export class RuntimeManager implements IRuntimeManager {
         }
       }
       
-      if (pids.length > 0) {
+      if (safePids.length > 0) {
         // Give the OS a moment to release the port
         execSync('sleep 0.5')
       }
