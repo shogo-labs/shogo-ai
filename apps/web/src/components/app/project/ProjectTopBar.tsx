@@ -7,7 +7,7 @@
  * - Right: Share (avatar + text), GitHub icon, Upgrade link, Publish button
  */
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { History, Zap, Github, PanelLeftClose, PanelLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useNavigate } from "react-router-dom"
@@ -109,9 +109,49 @@ export function ProjectTopBar({
 }: ProjectTopBarProps) {
   const navigate = useNavigate()
 
+  // GitHub connection state
+  const [githubConnection, setGithubConnection] = useState<{
+    repoFullName: string
+  } | null>(null)
+  const [isLoadingGitHub, setIsLoadingGitHub] = useState(false)
+
+  // Fetch GitHub connection on mount
+  useEffect(() => {
+    const fetchGitHubConnection = async () => {
+      if (!projectId) return
+
+      setIsLoadingGitHub(true)
+      try {
+        const response = await fetch(`/api/projects/${projectId}/github`)
+        const data = await response.json()
+
+        if (data.ok && data.connected && data.connection) {
+          setGithubConnection({
+            repoFullName: data.connection.repoFullName,
+          })
+        } else {
+          setGithubConnection(null)
+        }
+      } catch {
+        setGithubConnection(null)
+      } finally {
+        setIsLoadingGitHub(false)
+      }
+    }
+
+    fetchGitHubConnection()
+  }, [projectId])
+
   const handleOpenGitHub = useCallback(() => {
-    console.log("Open GitHub")
-  }, [])
+    if (githubConnection) {
+      // Open GitHub repository in new tab
+      const githubUrl = `https://github.com/${githubConnection.repoFullName}`
+      window.open(githubUrl, "_blank")
+    } else {
+      // Navigate to settings to connect GitHub
+      navigate(`/projects/${projectId}/settings?tab=github`)
+    }
+  }, [githubConnection, navigate, projectId])
 
   // Get user initial for avatar
   const initial = userInitial || currentUserName?.charAt(0).toUpperCase() || "U"
@@ -202,9 +242,17 @@ export function ProjectTopBar({
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8 text-muted-foreground hover:text-foreground"
+          className={cn(
+            "h-8 w-8 text-muted-foreground hover:text-foreground",
+            githubConnection && "text-foreground"
+          )}
           onClick={handleOpenGitHub}
-          title="View on GitHub"
+          disabled={isLoadingGitHub}
+          title={
+            githubConnection
+              ? `View on GitHub: ${githubConnection.repoFullName}`
+              : "Connect GitHub repository"
+          }
         >
           <Github className="h-4 w-4" />
         </Button>
