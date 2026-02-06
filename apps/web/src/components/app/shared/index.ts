@@ -21,12 +21,6 @@ export { EmptyState } from "./EmptyState"
 export type { EmptyStateVariant } from "./EmptyState"
 
 // Phase view shared cards (Session 2.3B)
-export { RequirementCard, priorityBadgeVariants } from "./RequirementCard"
-export type { RequirementCardProps, Requirement, RequirementPriority } from "./RequirementCard"
-
-export { FindingCard, findingTypeBadgeVariants } from "./FindingCard"
-export type { FindingCardProps, Finding, FindingType } from "./FindingCard"
-
 export { ArchetypeBadge, archetypeBadgeVariants } from "./ArchetypeBadge"
 export type { ArchetypeBadgeProps, FeatureArchetype } from "./ArchetypeBadge"
 

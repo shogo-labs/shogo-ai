@@ -227,8 +227,7 @@ export class KnativeProjectManager {
    */
   getProjectPodUrl(projectId: string): string {
     if (!isKubernetes()) {
-      // Local development - use localhost with dynamic port
-      // In local mode, the RuntimeManager handles this
+      // Local development requires Knative
       throw new Error("KnativeProjectManager requires Kubernetes environment")
     }
 
@@ -922,7 +921,7 @@ const PENDING_REQUEST_CLEANUP_MS = 5 * 60 * 1000
 /**
  * Get the URL for a project pod.
  * In Kubernetes, creates the pod if it doesn't exist and waits for it to be ready.
- * In local dev, throws an error (use RuntimeManager instead).
+ * In local dev without Knative, throws an error.
  * 
  * This function deduplicates concurrent requests - if multiple requests come in
  * for the same project while it's starting, they all share the same wait promise.
