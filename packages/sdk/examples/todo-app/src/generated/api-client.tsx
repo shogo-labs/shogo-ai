@@ -21,6 +21,11 @@ import type {
 export interface ApiResponse<T> {
   ok: boolean
   data?: T
+  error?: { code: string; message: string }
+}
+
+export interface ApiListResponse<T> {
+  ok: boolean
   items?: T[]
   error?: { code: string; message: string }
 }
@@ -114,7 +119,7 @@ export const userApi = {
    * @param options.offset - Number of records to skip
    * @param options.params - Additional query parameters to append to the request
    */
-  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiResponse<UserType[]>> {
+  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiListResponse<UserType>> {
     const params = new URLSearchParams()
     
     // Add where filters as query params
@@ -141,8 +146,7 @@ export const userApi = {
     if (config.userId) params.set('userId', config.userId)
     
     const query = params.toString() ? `?${params.toString()}` : ''
-    const result = await request<UserType>('GET', `/users${query}`)
-    return { ok: result.ok, items: result.items, error: result.error }
+    return request<UserType>('GET', `/users${query}`) as Promise<ApiListResponse<UserType>>
   },
 
   /**
@@ -188,7 +192,7 @@ export const todoApi = {
    * @param options.offset - Number of records to skip
    * @param options.params - Additional query parameters to append to the request
    */
-  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiResponse<TodoType[]>> {
+  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiListResponse<TodoType>> {
     const params = new URLSearchParams()
     
     // Add where filters as query params
@@ -215,8 +219,7 @@ export const todoApi = {
     if (config.userId) params.set('userId', config.userId)
     
     const query = params.toString() ? `?${params.toString()}` : ''
-    const result = await request<TodoType>('GET', `/todos${query}`)
-    return { ok: result.ok, items: result.items, error: result.error }
+    return request<TodoType>('GET', `/todos${query}`) as Promise<ApiListResponse<TodoType>>
   },
 
   /**

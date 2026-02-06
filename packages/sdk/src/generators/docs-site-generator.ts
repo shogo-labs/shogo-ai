@@ -50,7 +50,7 @@ function generatePackageJson(config: DocsSiteConfig): GeneratedDocFile {
   const slug = projectName.toLowerCase().replace(/\s+/g, '-')
 
   const pkg = {
-    name: `${slug}-docs`,
+    name: `${slug}-dev-docs`,
     version: '0.0.0',
     private: true,
     scripts: {
@@ -104,7 +104,7 @@ function generatePackageJson(config: DocsSiteConfig): GeneratedDocFile {
 
 function generateDocusaurusConfig(config: DocsSiteConfig): GeneratedDocFile {
   const projectName = config.projectName || 'My App'
-  const tagline = config.tagline || 'Auto-generated developer documentation'
+  const tagline = config.tagline || 'Auto-generated developer reference'
   const baseUrl = config.baseUrl || '/'
   const url = config.url || 'https://your-docs-site.example.com'
 
@@ -113,7 +113,7 @@ import type { Config } from '@docusaurus/types'
 import type * as Preset from '@docusaurus/preset-classic'
 
 const config: Config = {
-  title: '${projectName} Docs',
+  title: '${projectName} Developer Docs',
   tagline: '${tagline}',
   favicon: 'img/favicon.ico',
 
@@ -146,13 +146,13 @@ const config: Config = {
 
   themeConfig: {
     navbar: {
-      title: '${projectName} Docs',
+      title: '${projectName} Developer Docs',
       items: [
         {
           type: 'docSidebar',
           sidebarId: 'docsSidebar',
           position: 'left',
-          label: 'Documentation',
+          label: 'Developer Reference',
         },
       ],
     },
