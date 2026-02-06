@@ -173,6 +173,68 @@ export function useAdminWorkspaces(params?: { page?: string; limit?: string; sea
   }>('/workspaces', params as Record<string, string>)
 }
 
+// =============================================================================
+// Usage Log & Summary (AI proxy usage)
+// =============================================================================
+
+import type { UsageSummaryData, UsageLogData } from '../analytics/UsageTable'
+
+/**
+ * Fetch aggregated usage summary (by user + model).
+ * Works with both admin and workspace-scoped base URLs.
+ */
+export function useUsageSummary(period: AnalyticsPeriod = '30d', basePath: string = API_BASE) {
+  return useScopedFetch<UsageSummaryData>(`${basePath}/analytics/usage-summary`, { period })
+}
+
+/**
+ * Fetch paginated usage event log.
+ * Works with both admin and workspace-scoped base URLs.
+ */
+export function useUsageLog(
+  period: AnalyticsPeriod = '30d',
+  page: number = 1,
+  basePath: string = API_BASE
+) {
+  return useScopedFetch<UsageLogData>(`${basePath}/analytics/usage-log`, {
+    period,
+    page: String(page),
+    limit: '50',
+  })
+}
+
+/**
+ * Generic scoped fetch - like useAdminFetch but accepts a full URL base.
+ */
+function useScopedFetch<T>(fullPath: string, params?: Record<string, string>) {
+  const [data, setData] = useState<T | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const queryString = params ? '?' + new URLSearchParams(params).toString() : ''
+  const fullUrl = `${fullPath}${queryString}`
+
+  const refetch = useCallback(() => {
+    setLoading(true)
+    setError(null)
+    fetchJson<ApiResponse<T>>(fullUrl)
+      .then((res) => {
+        setData(res.data)
+        setLoading(false)
+      })
+      .catch((err) => {
+        setError(err.message)
+        setLoading(false)
+      })
+  }, [fullUrl])
+
+  useEffect(() => {
+    refetch()
+  }, [refetch])
+
+  return { data, loading, error, refetch }
+}
+
 /**
  * Update a user (admin).
  */

@@ -158,6 +158,52 @@ export function scopedAnalyticsRoutes(): Hono {
     }
   })
 
+  /**
+   * GET /workspaces/:workspaceId/analytics/usage-log - Paginated AI proxy usage log
+   */
+  router.get('/workspaces/:workspaceId/analytics/usage-log', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const page = parseInt(url.searchParams.get('page') || '1', 10)
+      const limit = parseInt(url.searchParams.get('limit') || '50', 10)
+      const userId = url.searchParams.get('userId') || undefined
+      const model = url.searchParams.get('model') || undefined
+
+      const data = await analytics.getUsageLog({ workspaceId }, period, { page, limit, userId, model })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /workspaces/:workspaceId/analytics/usage-summary - Aggregated usage by user + model
+   */
+  router.get('/workspaces/:workspaceId/analytics/usage-summary', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+      const data = await analytics.getUsageSummary({ workspaceId }, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
   // --------------------------------------------------------------------------
   // Project Analytics
   // --------------------------------------------------------------------------

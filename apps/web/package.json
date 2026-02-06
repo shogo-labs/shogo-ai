@@ -16,7 +16,7 @@
     "test:e2e:docker:headed": "DOCKER_E2E=true npx playwright test --headed"
   },
   "dependencies": {
-    "@ai-sdk/react": "^3.0.23",
+    "@ai-sdk/react": "^3.0.75",
     "@codesandbox/sandpack-react": "^2.20.0",
     "@jsonforms/core": "^3.7.0",
     "@jsonforms/react": "^3.7.0",
@@ -40,7 +40,7 @@
     "@shogo/state-api": "workspace:*",
     "@supabase/supabase-js": "^2.86.2",
     "@xyflow/react": "^12.10.0",
-    "ai": "^6.0.23",
+    "ai": "^6.0.73",
     "better-auth": "^1.2.9",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

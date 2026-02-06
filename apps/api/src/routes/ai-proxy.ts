@@ -677,8 +677,11 @@ async function proxyOpenAINonStream(
 // Usage Logging
 // =============================================================================
 
+import { calculateCreditCost, proxyModelToBillingModel } from '../lib/credit-cost'
+import * as billingService from '../services/billing.service'
+
 /**
- * Log a proxy usage event (fire-and-forget, don't block response).
+ * Log a proxy usage event and charge credits (fire-and-forget, don't block response).
  */
 async function logProxyUsage(
   tokenPayload: ProxyTokenPayload,
@@ -691,29 +694,72 @@ async function logProxyUsage(
   errorMessage?: string
 ) {
   try {
-    await prisma.usageEvent.create({
-      data: {
-        workspaceId: tokenPayload.workspaceId,
-        projectId: tokenPayload.projectId,
-        memberId: tokenPayload.userId || 'system',
-        actionType: 'ai_proxy_completion',
-        actionMetadata: {
-          model,
-          provider,
-          inputTokens,
-          outputTokens,
-          totalTokens: inputTokens + outputTokens,
-          durationMs,
-          success,
-          errorMessage,
-          stream: true,
+    const totalTokens = inputTokens + outputTokens
+    const billingModel = proxyModelToBillingModel(model)
+    const creditCost = totalTokens > 0 ? calculateCreditCost(totalTokens, billingModel) : 0
+
+    const actionMetadata = {
+      model,
+      provider,
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      durationMs,
+      success,
+      errorMessage,
+      stream: totalTokens === 0, // streaming requests have 0 tokens at log time
+    }
+
+    if (creditCost > 0) {
+      // Use billing service to deduct credits + log the usage event in one transaction
+      const result = await billingService.consumeCredits(
+        tokenPayload.workspaceId,
+        tokenPayload.projectId || null,
+        tokenPayload.userId || 'system',
+        'ai_proxy_completion',
+        creditCost,
+        actionMetadata
+      )
+
+      if (result.success) {
+        console.log(
+          `[AI Proxy] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${billingModel}) for workspace ${tokenPayload.workspaceId} — remaining: ${result.remainingCredits}`
+        )
+      } else {
+        // Credit deduction failed (no ledger or insufficient) — still log the event but with 0 cost
+        console.warn(
+          `[AI Proxy] ⚠️ Could not charge credits: ${result.error} — logging usage with 0 cost`
+        )
+        await prisma.usageEvent.create({
+          data: {
+            workspaceId: tokenPayload.workspaceId,
+            projectId: tokenPayload.projectId,
+            memberId: tokenPayload.userId || 'system',
+            actionType: 'ai_proxy_completion',
+            actionMetadata,
+            creditCost: 0,
+            creditSource: 'daily',
+            balanceBefore: 0,
+            balanceAfter: 0,
+          },
+        })
+      }
+    } else {
+      // No tokens (streaming request) or failed request — log with 0 cost
+      await prisma.usageEvent.create({
+        data: {
+          workspaceId: tokenPayload.workspaceId,
+          projectId: tokenPayload.projectId,
+          memberId: tokenPayload.userId || 'system',
+          actionType: 'ai_proxy_completion',
+          actionMetadata,
+          creditCost: 0,
+          creditSource: 'daily',
+          balanceBefore: 0,
+          balanceAfter: 0,
         },
-        creditCost: 0, // TODO: Calculate based on token usage
-        creditSource: 'daily',
-        balanceBefore: 0,
-        balanceAfter: 0,
-      },
-    })
+      })
+    }
   } catch (err) {
     console.error('[AI Proxy] Failed to log usage event:', err)
   }

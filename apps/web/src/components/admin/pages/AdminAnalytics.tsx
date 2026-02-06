@@ -7,22 +7,28 @@ import { OverviewCards } from '../analytics/OverviewCards'
 import { GrowthChart } from '../analytics/GrowthChart'
 import { ActiveUsersChart } from '../analytics/ActiveUsersChart'
 import { UsageBreakdown } from '../analytics/UsageBreakdown'
+import { UsageTable } from '../analytics/UsageTable'
 import { PeriodSelector, type AnalyticsPeriod } from '../analytics/PeriodSelector'
 import {
   useOverviewStats,
   useGrowthData,
   useActiveUsersData,
   useUsageData,
+  useUsageSummary,
+  useUsageLog,
   useAdminFetch,
 } from '../hooks/useAdminApi'
 
 export function AdminAnalytics() {
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
+  const [logPage, setLogPage] = useState(1)
 
   const overview = useOverviewStats()
   const growth = useGrowthData(period)
   const activeUsers = useActiveUsersData(period)
   const usage = useUsageData(period)
+  const usageSummary = useUsageSummary(period)
+  const usageLog = useUsageLog(period, logPage)
   const chatAnalytics = useAdminFetch<{
     totalSessions: number
     totalMessages: number
@@ -45,6 +51,16 @@ export function AdminAnalytics() {
       <OverviewCards data={overview.data} loading={overview.loading} />
 
       <ActiveUsersChart data={activeUsers.data} loading={activeUsers.loading} />
+
+      {/* AI Usage by User - the main new view */}
+      <UsageTable
+        summaryData={usageSummary.data}
+        logData={usageLog.data}
+        summaryLoading={usageSummary.loading}
+        logLoading={usageLog.loading}
+        onPageChange={setLogPage}
+        currentPage={logPage}
+      />
 
       {/* Chat Analytics */}
       <div className="rounded-xl border border-border bg-card p-6">

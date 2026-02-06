@@ -29,6 +29,7 @@ import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
+import { calculateCreditCost, agentModeToModel, MODEL_CREDIT_CONFIG, type ModelName, type AgentMode } from './lib/credit-cost'
 import { adminRoutes } from './routes/admin'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { requireSuperAdmin } from './middleware/super-admin'
@@ -151,20 +152,20 @@ function parseDataUrl(dataUrl: string): { mimeType: string; base64Data: string }
 }
 
 /**
- * Convert UIMessage format (from @ai-sdk/react v3) to CoreMessage format (for streamText).
+ * Convert UIMessage format (from @ai-sdk/react v3) to ModelMessage format (for streamText).
  *
  * UIMessage uses `parts` array: { parts: [{ type: "text", text: "..." }], role, id }
- * CoreMessage uses `content` string or array: { role, content: "..." | Array<TextPart | ImagePart> }
+ * ModelMessage uses `content` string or array: { role, content: "..." | Array<TextPart | ImagePart> }
  *
  * chat-session-sync-fix: Required because v3 sendMessage() sends UIMessage format,
- * but streamText() expects CoreMessage format.
+ * but streamText() expects ModelMessage format.
  *
  * task-api-convert-images: Extended to handle file parts with image mediaTypes.
  * File parts with image/* mediaType are converted to ImagePart format for Claude API.
  */
-function convertUIMessagesToCoreMessages(messages: any[]): ModelMessage[] {
+function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
   return messages.map((msg) => {
-    // If message already has content string (CoreMessage format), pass through
+    // If message already has content string (ModelMessage format), pass through
     if (typeof msg.content === 'string') {
       return { role: msg.role, content: msg.content }
     }
@@ -2741,80 +2742,7 @@ Examples:
   }
 })
 
-/**
- * Model-specific credit pricing configuration.
- * 
- * Pricing is based on Anthropic's model costs:
- * - Haiku: ~$0.80/$4 per 1M tokens (input/output) - cheapest
- * - Sonnet: ~$3/$15 per 1M tokens (input/output) - 4x more than Haiku
- * 
- * Credit rates (per 5000 tokens):
- * - Haiku (basic): 0.025 credits
- * - Sonnet (advanced): 0.1 credits
- * 
- * Minimum charges:
- * - Haiku (basic): 0.2 credits
- * - Sonnet (advanced): 0.5 credits
- */
-const MODEL_CREDIT_CONFIG = {
-  haiku: {
-    creditsPerTokenBatch: 0.025, // 0.025 credits per 5000 tokens
-    tokenBatchSize: 5000,
-    minimumCharge: 0.2,
-  },
-  sonnet: {
-    creditsPerTokenBatch: 0.1, // 0.1 credits per 5000 tokens
-    tokenBatchSize: 5000,
-    minimumCharge: 0.5,
-  },
-  opus: {
-    creditsPerTokenBatch: 0.5, // 0.5 credits per 5000 tokens (5x Sonnet)
-    tokenBatchSize: 5000,
-    minimumCharge: 1.0,
-  },
-} as const
-
-type ModelName = keyof typeof MODEL_CREDIT_CONFIG
-type AgentMode = 'basic' | 'advanced'
-
-/**
- * Map agent mode to model name for credit calculation.
- */
-function agentModeToModel(agentMode?: AgentMode): ModelName {
-  if (agentMode === 'basic') return 'haiku'
-  return 'sonnet' // default for 'advanced' or undefined
-}
-
-/**
- * Calculate credit cost based on total tokens consumed and model used.
- * 
- * @param totalTokens - Combined input + output tokens
- * @param modelOrAgentMode - Model name ('haiku', 'sonnet', 'opus') or agent mode ('basic', 'advanced')
- * @returns Credits to charge (with model-specific minimum)
- */
-function calculateCreditCost(
-  totalTokens: number,
-  modelOrAgentMode?: ModelName | AgentMode
-): number {
-  // Determine the model from input
-  let model: ModelName = 'sonnet' // default
-  if (modelOrAgentMode === 'basic' || modelOrAgentMode === 'advanced') {
-    model = agentModeToModel(modelOrAgentMode as AgentMode)
-  } else if (modelOrAgentMode && modelOrAgentMode in MODEL_CREDIT_CONFIG) {
-    model = modelOrAgentMode as ModelName
-  }
-  
-  const config = MODEL_CREDIT_CONFIG[model]
-  
-  // Calculate raw credits based on tokens
-  const rawCredits = (totalTokens / config.tokenBatchSize) * config.creditsPerTokenBatch
-  
-  // Round up to nearest 0.1
-  const rounded = Math.ceil(rawCredits * 10) / 10
-  
-  // Enforce model-specific minimum
-  return Math.max(rounded, config.minimumCharge)
-}
+// Credit cost calculation imported from ./lib/credit-cost
 
 /**
  * AI Chat endpoint using Vercel AI SDK with Claude Code provider
@@ -2899,9 +2827,9 @@ Use the Read, Write, and Edit tools to view and modify these files. All file pat
     // This enables session continuity in Claude Code
     const modelSettings = ccSessionId ? { resume: ccSessionId } : {}
 
-    // chat-session-sync-fix: Convert UIMessage format to CoreMessage format
-    // v3 @ai-sdk/react sends UIMessage with parts array, but streamText expects CoreMessage with content string
-    const coreMessages = convertUIMessagesToCoreMessages(messages)
+    // chat-session-sync-fix: Convert UIMessage format to ModelMessage format
+    // v3 @ai-sdk/react sends UIMessage with parts array, but streamText expects ModelMessage with content string
+    const coreMessages = convertUIMessagesToModelMessages(messages)
 
     // task-subagent-progress-streaming: Buffer events BEFORE starting streamText
     // This fixes the race condition where SubagentStart fires before the stream listener is attached

@@ -28,7 +28,7 @@ logTiming('Server module loading...')
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText, tool, type CoreMessage } from 'ai'
+import { streamText, tool, type ModelMessage } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
@@ -997,11 +997,11 @@ app.post('/agent/chat', async (c) => {
       return buildSystemPrompt(PROJECT_DIR, themeContext, buildContext)
     }
     
-    // Convert to CoreMessage format, handling both string and parts content
+    // Convert to ModelMessage format, handling both string and parts content
     // Preserves image parts for multimodal AI processing
     type ContentPart = { type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }
 
-    const coreMessages: CoreMessage[] = messages.map((msg) => {
+    const coreMessages: ModelMessage[] = messages.map((msg) => {
       // If message already has content string, pass through
       if (typeof msg.content === 'string') {
         return { role: msg.role, content: msg.content }
@@ -1134,8 +1134,44 @@ app.post('/agent/chat', async (c) => {
         
         // Wrap the stream with keep-alive messages to prevent ALB/proxy timeouts
         // This is critical for long-running operations like template.copy (45+ seconds)
+        // Also appends a custom usage SSE event after the stream finishes
         if (response.body) {
-          const wrappedStream = wrapStreamWithKeepalive(response.body, 15000)
+          const originalStream = response.body
+          const usagePromise = result.usage
+          
+          // Create a new stream that wraps the original with keep-alive AND appends usage
+          const wrappedStream = new ReadableStream({
+            async start(controller) {
+              const reader = wrapStreamWithKeepalive(originalStream, 15000).getReader()
+              try {
+                while (true) {
+                  const { done, value } = await reader.read()
+                  if (done) break
+                  controller.enqueue(value)
+                }
+              } catch (err) {
+                console.error('[project-runtime] Stream read error:', err)
+              } finally {
+                reader.releaseLock()
+              }
+              
+              // After the main stream finishes, append usage data as a custom SSE event
+              // Using "data-" prefix so @ai-sdk/react's stream validator accepts it
+              try {
+                const usage = await usagePromise
+                console.log('[project-runtime] Usage from streamText:', JSON.stringify(usage))
+                if (usage) {
+                  const usageEvent = `data: ${JSON.stringify({ type: 'data-usage', data: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } })}\n\n`
+                  controller.enqueue(new TextEncoder().encode(usageEvent))
+                }
+              } catch (err) {
+                console.error('[project-runtime] Failed to get usage:', err)
+              }
+              
+              controller.close()
+            },
+          })
+          
           return new Response(wrappedStream, {
             status: response.status,
             headers: response.headers,

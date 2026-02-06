@@ -376,6 +376,238 @@ export async function getActiveUsers(
 }
 
 // ============================================================================
+// Usage Log (AI Proxy Completions)
+// ============================================================================
+
+/** A single usage event with user info and extracted metadata. */
+export interface UsageLogEntry {
+  id: string
+  userId: string
+  userName: string | null
+  userEmail: string
+  userImage: string | null
+  model: string
+  provider: string
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  creditCost: number
+  durationMs: number
+  success: boolean
+  createdAt: string
+}
+
+/** Aggregated usage per user+model pair. */
+export interface UsageSummaryEntry {
+  userId: string
+  userName: string | null
+  userEmail: string
+  userImage: string | null
+  model: string
+  provider: string
+  requestCount: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalTokens: number
+  totalCredits: number
+  avgDurationMs: number
+}
+
+/**
+ * Get a paginated log of AI proxy usage events with user info.
+ * Scope-aware: no scope = platform-wide, workspaceId = workspace-scoped.
+ */
+export async function getUsageLog(
+  scope: AnalyticsScope = {},
+  period: AnalyticsPeriod = '30d',
+  options: { page?: number; limit?: number; userId?: string; model?: string } = {}
+) {
+  const since = periodToDate(period)
+  const page = options.page ?? 1
+  const limit = Math.min(options.limit ?? 50, 100)
+
+  const where: any = {
+    actionType: { in: ['ai_proxy_completion', 'chat_message'] },
+    createdAt: { gte: since },
+  }
+  if (scope.workspaceId) where.workspaceId = scope.workspaceId
+  if (scope.projectId) where.projectId = scope.projectId
+  if (options.userId) where.memberId = options.userId
+  // Model filter: search inside JSON actionMetadata
+  if (options.model) {
+    where.actionMetadata = { path: ['model'], string_contains: options.model }
+  }
+
+  const [events, total] = await Promise.all([
+    prisma.usageEvent.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.usageEvent.count({ where }),
+  ])
+
+  // Collect unique userIds from memberId field
+  const userIds = [...new Set(events.map((e) => e.memberId).filter((id) => id !== 'system'))]
+  const users = await prisma.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, name: true, email: true, image: true },
+  })
+  const userMap = new Map(users.map((u) => [u.id, u]))
+
+  const entries: UsageLogEntry[] = events.map((event) => {
+    const meta = (event.actionMetadata as Record<string, any>) || {}
+    const user = userMap.get(event.memberId)
+    return {
+      id: event.id,
+      userId: event.memberId,
+      userName: user?.name ?? null,
+      userEmail: user?.email ?? event.memberId,
+      userImage: user?.image ?? null,
+      model: meta.model || meta.modelUsed || 'unknown',
+      provider: meta.provider || 'anthropic',
+      inputTokens: meta.inputTokens || 0,
+      outputTokens: meta.outputTokens || 0,
+      totalTokens: meta.totalTokens || 0,
+      creditCost: event.creditCost,
+      durationMs: meta.durationMs || 0,
+      success: meta.success !== false,
+      createdAt: event.createdAt.toISOString(),
+    }
+  })
+
+  return { entries, total, page, limit }
+}
+
+/**
+ * Get aggregated usage summary grouped by user + model.
+ * Scope-aware: no scope = platform-wide, workspaceId = workspace-scoped.
+ */
+export async function getUsageSummary(
+  scope: AnalyticsScope = {},
+  period: AnalyticsPeriod = '30d'
+) {
+  const since = periodToDate(period)
+
+  const where: any = {
+    actionType: { in: ['ai_proxy_completion', 'chat_message'] },
+    createdAt: { gte: since },
+  }
+  if (scope.workspaceId) where.workspaceId = scope.workspaceId
+  if (scope.projectId) where.projectId = scope.projectId
+
+  // Fetch all matching events (for in-memory aggregation)
+  const events = await prisma.usageEvent.findMany({
+    where,
+    select: {
+      memberId: true,
+      creditCost: true,
+      actionMetadata: true,
+    },
+  })
+
+  // Aggregate by userId + model
+  const aggregateMap = new Map<string, {
+    userId: string
+    model: string
+    provider: string
+    requestCount: number
+    totalInputTokens: number
+    totalOutputTokens: number
+    totalTokens: number
+    totalCredits: number
+    totalDurationMs: number
+  }>()
+
+  for (const event of events) {
+    const meta = (event.actionMetadata as Record<string, any>) || {}
+    const model = meta.model || meta.modelUsed || 'unknown'
+    const key = `${event.memberId}::${model}`
+    const existing = aggregateMap.get(key)
+
+    if (existing) {
+      existing.requestCount += 1
+      existing.totalInputTokens += meta.inputTokens || 0
+      existing.totalOutputTokens += meta.outputTokens || 0
+      existing.totalTokens += meta.totalTokens || 0
+      existing.totalCredits += event.creditCost
+      existing.totalDurationMs += meta.durationMs || 0
+    } else {
+      aggregateMap.set(key, {
+        userId: event.memberId,
+        model,
+        provider: meta.provider || 'anthropic',
+        requestCount: 1,
+        totalInputTokens: meta.inputTokens || 0,
+        totalOutputTokens: meta.outputTokens || 0,
+        totalTokens: meta.totalTokens || 0,
+        totalCredits: event.creditCost,
+        totalDurationMs: meta.durationMs || 0,
+      })
+    }
+  }
+
+  // Resolve user info
+  const userIds = [...new Set([...aggregateMap.values()].map((a) => a.userId).filter((id) => id !== 'system'))]
+  const users = await prisma.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, name: true, email: true, image: true },
+  })
+  const userMap = new Map(users.map((u) => [u.id, u]))
+
+  // Also get tool call counts per user (from ToolCallLog → ChatSession → Project)
+  // We aggregate tool calls through the workspace scope if available
+  const toolCallWhere: any = { status: 'complete' }
+  if (scope.workspaceId) {
+    toolCallWhere.chatSession = { project: { workspaceId: scope.workspaceId } }
+  }
+  if (scope.projectId) {
+    toolCallWhere.chatSession = { contextId: scope.projectId }
+  }
+  if (since) {
+    toolCallWhere.createdAt = { gte: since }
+  }
+
+  // Get total tool calls at platform or workspace level
+  const totalToolCalls = await prisma.toolCallLog.count({ where: toolCallWhere })
+
+  const summaries: UsageSummaryEntry[] = [...aggregateMap.values()]
+    .map((agg) => {
+      const user = userMap.get(agg.userId)
+      return {
+        userId: agg.userId,
+        userName: user?.name ?? null,
+        userEmail: user?.email ?? agg.userId,
+        userImage: user?.image ?? null,
+        model: agg.model,
+        provider: agg.provider,
+        requestCount: agg.requestCount,
+        totalInputTokens: agg.totalInputTokens,
+        totalOutputTokens: agg.totalOutputTokens,
+        totalTokens: agg.totalTokens,
+        totalCredits: agg.totalCredits,
+        avgDurationMs: agg.requestCount > 0 ? Math.round(agg.totalDurationMs / agg.requestCount) : 0,
+      }
+    })
+    .sort((a, b) => b.totalTokens - a.totalTokens)
+
+  // Compute totals
+  const totals = {
+    totalRequests: events.length,
+    totalInputTokens: summaries.reduce((s, e) => s + e.totalInputTokens, 0),
+    totalOutputTokens: summaries.reduce((s, e) => s + e.totalOutputTokens, 0),
+    totalTokens: summaries.reduce((s, e) => s + e.totalTokens, 0),
+    totalCredits: summaries.reduce((s, e) => s + e.totalCredits, 0),
+    totalToolCalls,
+    uniqueUsers: new Set(summaries.map((s) => s.userId)).size,
+    uniqueModels: new Set(summaries.map((s) => s.model)).size,
+  }
+
+  return { summaries, totals }
+}
+
+// ============================================================================
 // Chat Analytics
 // ============================================================================
 
