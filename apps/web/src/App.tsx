@@ -17,7 +17,7 @@ import { AuthProvider } from './contexts/AuthContext'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { SessionProvider, useSessionContext } from './contexts/SessionProvider'
-import { SupabaseAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService, MemoryBackend } from '@shogo/state-api'
+import { createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService, MemoryBackend } from '@shogo/state-api'
 import { APIPersistence } from './persistence/APIPersistence'
 // SDK-based provider for new/migrated code
 import { SDKDomainProvider as SDKProvider } from './contexts/SDKDomainProvider'
