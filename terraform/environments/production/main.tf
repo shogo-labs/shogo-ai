@@ -146,6 +146,7 @@ module "ecr" {
     "shogo-mcp",
     "shogo-api",
     "shogo-web",
+    "shogo-docs",
     "project-runtime"
   ]
 }
