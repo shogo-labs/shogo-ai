@@ -33,7 +33,9 @@ ${TAILWIND_STYLING}
 
 ${CODE_QUALITY}
 
-${BUILD_FAILURE_RECOVERY}`
+${BUILD_FAILURE_RECOVERY}
+
+${ENVIRONMENT_AWARENESS}`
 
   let prompt = basePrompt
   
@@ -357,3 +359,19 @@ When you see a "BUILD ERROR" in the Current Build Status section:
 4. **Wait** for the automatic rebuild to verify success
 
 The build log contains the complete error context. Read it before attempting any fix.`
+
+// =============================================================================
+// Build Verification
+// =============================================================================
+
+export const ENVIRONMENT_AWARENESS = `## Build Verification (CRITICAL)
+
+After making code changes, ALWAYS verify the build succeeded by checking \`.build.log\`:
+
+\`\`\`bash
+tail -5 .build.log
+\`\`\`
+
+- Look for "built in" (success) or "Build failed" / "error" (failure).
+- Do NOT tell the user changes are complete until you've confirmed the build succeeded.
+- If the build failed, read the full log with \`cat .build.log\` and fix the error before reporting success.`

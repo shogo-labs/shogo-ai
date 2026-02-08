@@ -9,7 +9,7 @@
  * - useChat from @ai-sdk/react with /api/chat endpoint
  * - Persists user messages optimistically before sending
  * - Persists assistant messages in onFinish callback
- * - Records tool calls via actions.recordToolCall
+ * - Tool call data is embedded in chat messages (logging to separate table disabled)
  * - Auto-creates ChatSession if none exists for feature
  * - Collapse/expand with manual resize
  * - localStorage persistence for collapse state and width
@@ -1229,28 +1229,9 @@ export const ChatPanel = observer(function ChatPanel({
           console.warn("[ChatPanel] Failed to persist assistant message:", err)
         })
 
-        // Record tool calls from the message (fire-and-forget)
-        // task-toolcall-warning-fix: Ensure args and result are serializable
-        const toolCalls = extractToolCalls(message)
-        for (const toolCall of toolCalls) {
-          // Ensure args and result are not null/undefined (can cause DB errors)
-          const safeArgs = toolCall.args ?? {}
-          const safeResult = toolCall.result !== undefined ? toolCall.result : null
-          
-          actions.recordToolCall({
-            sessionId: currentSessionId,
-            toolName: toolCall.toolName,
-            status: toolCall.state === "output-available" ? "complete" :
-              toolCall.state === "output-error" ? "error" : "executing",
-            args: safeArgs,
-            result: safeResult,
-          }).catch((err) => {
-            // Only log in debug - these are fire-and-forget operations
-            if (process.env.NODE_ENV === 'development') {
-              console.debug("[ChatPanel] Failed to record tool call:", err)
-            }
-          })
-        }
+        // Tool call logging disabled - was causing 404 console spam
+        // Tool call data is already embedded in the chat messages themselves
+        // If we need analytics, we can extract from chat message content later
 
         // Refresh credit balance after every message (credits are deducted server-side)
         // Fire-and-forget: this updates the MobX store which reactively updates

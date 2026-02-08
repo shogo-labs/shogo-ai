@@ -259,6 +259,8 @@ export function RuntimePreviewPanel({
   const autoRetryTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const statusPollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const buildEventSourceRef = useRef<EventSource | null>(null)
+  // Track build state inside SSE handler via ref (avoids stale closure issues)
+  const buildStateForSSERef = useRef<BuildWatchState['state'] | null>(null)
   // Shared ref to track last refresh time - used by both SSE handler and forceRefresh to prevent double-refreshes
   const lastForceRefreshRef = useRef<number>(0)
   const forceRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -497,7 +499,10 @@ export function RuntimePreviewPanel({
           
           console.log('[RuntimePreviewPanel] Build state changed:', data.state, data.error ? `(error: ${data.error})` : '')
           
-          const prevState = buildState
+          // Use ref for previous state to avoid stale closure issues
+          // (both 'building' and 'success' events can arrive within one React render)
+          const prevState = buildStateForSSERef.current
+          buildStateForSSERef.current = data.state
           setBuildState(data.state)
           setLastBuildTime(data.lastBuildTime)
           
@@ -580,7 +585,7 @@ export function RuntimePreviewPanel({
     } catch (e) {
       console.error('[RuntimePreviewPanel] Failed to subscribe to build events:', e)
     }
-  }, [sandboxUrl, buildState])
+  }, [sandboxUrl])
 
   /**
    * Unsubscribe from build events

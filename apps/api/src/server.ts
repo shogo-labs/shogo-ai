@@ -2670,10 +2670,20 @@ app.delete('/api/admin/projects/:projectId', async (c) => {
  */
 function fallbackGenerateProjectName(prompt: string): string {
   const fillerWords = new Set([
+    // articles & pronouns
     "a", "an", "the", "to", "for", "with", "that", "this", "is", "are",
-    "create", "build", "make", "design", "develop", "implement",
+    "my", "me", "its", "it", "our", "your", "their",
+    // verbs (action words from prompts)
+    "create", "build", "make", "design", "develop", "implement", "add", "include",
+    "show", "showing", "display", "have", "has", "using", "use",
+    // polite / conversational
     "please", "can", "you", "i", "want", "need", "would", "like",
-    "simple", "basic", "web", "app", "application", "website", "page"
+    // generic tech words
+    "simple", "basic", "web", "app", "application", "website", "page",
+    // conjunctions & prepositions that slip through
+    "where", "when", "how", "what", "which", "each", "every", "some",
+    "and", "but", "also", "then", "from", "into", "about", "just",
+    "nice", "good", "new", "should", "could",
   ])
 
   const words = prompt.toLowerCase()
