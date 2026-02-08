@@ -23,10 +23,14 @@ output "ecr_repository_urls" {
   value       = module.ecr.repository_urls
 }
 
-output "rds_endpoint" {
-  description = "RDS PostgreSQL endpoint"
-  value       = module.rds.endpoint
-  sensitive   = true
+output "cnpg_platform_service" {
+  description = "CloudNativePG platform database K8s service"
+  value       = "platform-pg-rw.shogo-system.svc.cluster.local"
+}
+
+output "cnpg_projects_service" {
+  description = "CloudNativePG projects database K8s service"
+  value       = "projects-pg-rw.shogo-system.svc.cluster.local"
 }
 
 output "redis_endpoint" {

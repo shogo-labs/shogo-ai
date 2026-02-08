@@ -112,23 +112,28 @@ const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
   }
 })()
 
-// Initialize PostgreSQL S3 backup in background (after postgres sidecar is ready)
-// This provides persistence for postgres data when using emptyDir volumes
-;(async () => {
-  // Wait a bit for postgres sidecar to start (it runs in the same pod)
-  await new Promise(resolve => setTimeout(resolve, 5000))
-  
-  try {
-    postgresBackup = await initializePostgresBackup()
-    if (postgresBackup) {
-      logTiming('PostgreSQL S3 backup initialized')
-    } else {
-      logTiming('PostgreSQL S3 backup not configured or postgres not detected')
+// PostgreSQL S3 backup initialization
+// NOTE: With CloudNativePG shared cluster, postgres backup is handled by the operator
+// via Barman WAL archiving. The S3 backup module is only used for legacy sidecar mode.
+if (process.env.POSTGRES_S3_BACKUP_ENABLED !== 'false') {
+  ;(async () => {
+    // Wait a bit for postgres to be reachable
+    await new Promise(resolve => setTimeout(resolve, 5000))
+    
+    try {
+      postgresBackup = await initializePostgresBackup()
+      if (postgresBackup) {
+        logTiming('PostgreSQL S3 backup initialized (legacy sidecar mode)')
+      } else {
+        logTiming('PostgreSQL S3 backup not configured')
+      }
+    } catch (error) {
+      console.error(`[project-runtime] PostgreSQL backup initialization failed:`, error)
     }
-  } catch (error) {
-    console.error(`[project-runtime] PostgreSQL backup initialization failed:`, error)
-  }
-})()
+  })()
+} else {
+  logTiming('PostgreSQL S3 backup disabled (using CloudNativePG managed backups)')
+}
 
 // =============================================================================
 // Template Tools (Native - no MCP required)
@@ -1887,8 +1892,8 @@ async function checkTcpPort(host: string, port: number, timeoutMs: number = 1000
 /**
  * Wait for PostgreSQL to be ready to accept connections.
  * Uses direct TCP socket connection for reliability - no external tools needed.
- * This is critical when using postgres sidecar - we need to wait for it to start
- * before running prisma commands.
+ * Supports both local sidecar (localhost) and remote shared cluster (CloudNativePG).
+ * Parses DATABASE_URL to determine the host and port.
  * 
  * @param timeoutMs - Maximum time to wait (default 30s)
  * @returns true if postgres is ready, false if timeout
@@ -1897,21 +1902,35 @@ async function waitForPostgresReady(timeoutMs: number = 30000): Promise<boolean>
   const startTime = Date.now()
   const checkInterval = 500
   
-  console.log('[project-runtime] Waiting for PostgreSQL to be ready...')
+  // Parse host and port from DATABASE_URL, fallback to localhost:5432
+  let pgHost = 'localhost'
+  let pgPort = 5432
+  const dbUrl = process.env.DATABASE_URL
+  if (dbUrl) {
+    try {
+      const url = new URL(dbUrl)
+      pgHost = url.hostname
+      pgPort = parseInt(url.port, 10) || 5432
+    } catch {
+      // Invalid URL, use defaults
+    }
+  }
+  
+  console.log(`[project-runtime] Waiting for PostgreSQL at ${pgHost}:${pgPort}...`)
   
   while (Date.now() - startTime < timeoutMs) {
     // Direct TCP connection check - most reliable method
-    const isReady = await checkTcpPort('localhost', 5432, 1000)
+    const isReady = await checkTcpPort(pgHost, pgPort, 1000)
     if (isReady) {
       const elapsed = Date.now() - startTime
-      console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms (TCP check)`)
+      console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms (TCP check on ${pgHost}:${pgPort})`)
       return true
     }
     
     await new Promise(resolve => setTimeout(resolve, checkInterval))
   }
   
-  console.error(`[project-runtime] PostgreSQL not ready after ${timeoutMs}ms`)
+  console.error(`[project-runtime] PostgreSQL not ready after ${timeoutMs}ms at ${pgHost}:${pgPort}`)
   return false
 }
 

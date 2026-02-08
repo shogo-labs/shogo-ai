@@ -3,15 +3,22 @@
  *
  * Manages the lifecycle of per-project Knative Services:
  * - Creates Knative Services for projects on demand
- * - Creates PVCs for project storage and PostgreSQL data
+ * - Provisions per-project databases on shared CloudNativePG cluster
  * - Provides URLs for routing to project pods
  * - Handles scale-to-zero and cold starts
- * - Includes PostgreSQL sidecar container for per-project database
  *
  * Architecture:
- * Each project pod contains two containers:
+ * Each project pod contains a single container:
  * 1. project-runtime: The main application (Claude Code, MCP, Vite)
- * 2. postgres: PostgreSQL 16 sidecar for project data
+ *
+ * Database:
+ * Projects use a shared CloudNativePG PostgreSQL cluster (projects-pg).
+ * Each project gets its own database (project_{uuid}) provisioned on demand.
+ * This replaces the previous PostgreSQL sidecar pattern for:
+ * - Better resource utilization (no per-pod postgres overhead)
+ * - Faster cold starts (no postgres startup wait)
+ * - Centralized backups (CloudNativePG handles WAL archiving)
+ * - Portable across EKS, k3s, and bare metal
  *
  * Used by the API to proxy requests to project-specific runtimes.
  */
@@ -19,6 +26,7 @@
 import * as k8s from "@kubernetes/client-node"
 import * as fs from "fs"
 import { generateProxyToken } from './ai-proxy-token'
+import * as databaseService from '../services/database.service'
 
 // =============================================================================
 // Configuration
@@ -156,24 +164,10 @@ export interface KnativeProjectManagerConfig {
   s3Region?: string
   /** Enable S3 path-style access (for MinIO) */
   s3ForcePathStyle?: boolean
-  /** PostgreSQL sidecar configuration */
+  /** Shared PostgreSQL configuration (CloudNativePG) */
   postgres?: {
-    /** Enable PostgreSQL sidecar (default: true) */
+    /** Enable shared PostgreSQL database provisioning (default: true) */
     enabled?: boolean
-    /** PostgreSQL image (default: postgres:16-alpine) */
-    image?: string
-    /** PostgreSQL user (default: shogo) */
-    user?: string
-    /** PostgreSQL password (default: shogo) */
-    password?: string
-    /** PostgreSQL database name (default: project) */
-    database?: string
-    /** Memory limit for PostgreSQL container (default: 512Mi) */
-    memoryLimit?: string
-    /** CPU limit for PostgreSQL container (default: 250m) */
-    cpuLimit?: string
-    /** Storage size for PostgreSQL PVC (default: 1Gi) */
-    storageSize?: string
   }
 }
 
@@ -191,15 +185,8 @@ export class KnativeProjectManager {
   private s3Endpoint: string | null
   private s3Region: string
   private s3ForcePathStyle: boolean
-  // PostgreSQL sidecar configuration
+  // Shared PostgreSQL configuration (CloudNativePG)
   private postgresEnabled: boolean
-  private postgresImage: string
-  private postgresUser: string
-  private postgresPassword: string
-  private postgresDatabase: string
-  private postgresMemoryLimit: string
-  private postgresCpuLimit: string
-  private postgresStorageSize: string
 
   constructor(config: KnativeProjectManagerConfig = {}) {
     this.namespace = config.namespace || NAMESPACE
@@ -211,15 +198,8 @@ export class KnativeProjectManager {
     this.s3Endpoint = config.s3Endpoint || process.env.S3_ENDPOINT || null
     this.s3Region = config.s3Region || process.env.S3_REGION || "us-east-1"
     this.s3ForcePathStyle = config.s3ForcePathStyle ?? (process.env.S3_FORCE_PATH_STYLE === "true")
-    // PostgreSQL sidecar configuration - read from env vars or config
+    // Shared PostgreSQL configuration (CloudNativePG cluster)
     this.postgresEnabled = config.postgres?.enabled ?? (process.env.POSTGRES_ENABLED !== "false")
-    this.postgresImage = config.postgres?.image || process.env.POSTGRES_IMAGE || "postgres:16-alpine"
-    this.postgresUser = config.postgres?.user || process.env.POSTGRES_USER || "shogo"
-    this.postgresPassword = config.postgres?.password || process.env.POSTGRES_PASSWORD || "shogo"
-    this.postgresDatabase = config.postgres?.database || process.env.POSTGRES_DATABASE || "project"
-    this.postgresMemoryLimit = config.postgres?.memoryLimit || process.env.POSTGRES_MEMORY_LIMIT || "512Mi"
-    this.postgresCpuLimit = config.postgres?.cpuLimit || process.env.POSTGRES_CPU_LIMIT || "250m"
-    this.postgresStorageSize = config.postgres?.storageSize || process.env.POSTGRES_STORAGE_SIZE || "1Gi"
   }
 
   /**
@@ -717,7 +697,10 @@ export class KnativeProjectManager {
     //
     // Fallback: If proxy token generation fails, inject the raw ANTHROPIC_API_KEY
     // from K8s secrets so the pod can still function.
-    const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || 'http://api.shogo-system.svc.cluster.local:3000'
+    // Derive the API service URL from the pod's own namespace (e.g., shogo-staging-system)
+    // The API is a Knative service exposed on port 80 via kourier
+    const systemNamespace = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
+    const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || `http://api.${systemNamespace}.svc.cluster.local`
     env.push({ name: "AI_PROXY_URL", value: `${apiUrl}/api/ai/v1` })
 
     let proxyTokenGenerated = false
@@ -754,20 +737,23 @@ export class KnativeProjectManager {
       console.warn(`[KnativeProjectManager] AI proxy token not generated for ${projectId} — AI features will be unavailable in this pod`)
     }
 
-    // Add PostgreSQL DATABASE_URL if postgres sidecar is enabled
-    // Uses localhost since postgres runs in the same pod
+    // Add PostgreSQL DATABASE_URL for shared CloudNativePG cluster
+    // Database is provisioned per-project on the shared projects-pg cluster
     if (this.postgresEnabled) {
-      env.push({
-        name: "DATABASE_URL",
-        value: `postgres://${this.postgresUser}:${this.postgresPassword}@localhost:5432/${this.postgresDatabase}`,
-      })
-      // Add postgres credentials for backup script (pg_dump/psql)
-      env.push({ name: "POSTGRES_USER", value: this.postgresUser })
-      env.push({ name: "POSTGRES_PASSWORD", value: this.postgresPassword })
-      env.push({ name: "POSTGRES_DB", value: this.postgresDatabase })
-      // Enable postgres S3 backup (uses same S3 bucket as project files)
-      // Backup interval: 10 minutes (600000ms)
-      env.push({ name: "POSTGRES_BACKUP_INTERVAL", value: "600000" })
+      try {
+        const dbInfo = await databaseService.provisionDatabase(projectId)
+        env.push({
+          name: "DATABASE_URL",
+          value: dbInfo.connectionUrl,
+        })
+        // Disable postgres S3 backup (CloudNativePG handles backups via Barman)
+        env.push({ name: "POSTGRES_S3_BACKUP_ENABLED", value: "false" })
+        console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId}`)
+      } catch (err: any) {
+        console.error(`[KnativeProjectManager] Failed to provision database for ${projectId}:`, err.message)
+        // Continue without database - project can still run without DB
+        env.push({ name: "POSTGRES_S3_BACKUP_ENABLED", value: "false" })
+      }
     }
 
     // Add S3 configuration if bucket is specified
@@ -845,30 +831,9 @@ export class KnativeProjectManager {
       },
     ]
 
-    // Add PostgreSQL sidecar container if enabled
-    // NOTE: Knative doesn't allow probes on sidecar containers (only on the main container)
-    // The main project-runtime container handles all probing; postgres sidecar just runs alongside
-    if (this.postgresEnabled) {
-      containers.push({
-        name: "postgres",
-        image: this.postgresImage,
-        env: [
-          { name: "POSTGRES_USER", value: this.postgresUser },
-          { name: "POSTGRES_PASSWORD", value: this.postgresPassword },
-          { name: "POSTGRES_DB", value: this.postgresDatabase },
-          // PGDATA must be a subdirectory of the volume mount
-          { name: "PGDATA", value: "/var/lib/postgresql/data/pgdata" },
-        ],
-        resources: {
-          requests: { memory: "128Mi", cpu: "50m" },
-          limits: { memory: this.postgresMemoryLimit, cpu: this.postgresCpuLimit },
-        },
-        volumeMounts: [
-          { name: "postgres-data", mountPath: "/var/lib/postgresql/data" },
-        ],
-        // No probes allowed on sidecar containers in Knative Serving
-      })
-    }
+    // NOTE: PostgreSQL sidecar removed. Projects now use shared CloudNativePG cluster.
+    // Database is provisioned per-project via databaseService.provisionDatabase()
+    // and the DATABASE_URL env var points to the shared cluster.
 
     // Build volumes array
     // Project data uses emptyDir for faster cold starts (~6s faster than EBS)
@@ -880,17 +845,7 @@ export class KnativeProjectManager {
       },
     ]
 
-    // Add PostgreSQL data volume if enabled
-    // Uses emptyDir + S3 backup pattern to avoid:
-    // - EBS Multi-Attach errors (EBS is ReadWriteOnce)
-    // - EFS permission issues (chown errors)
-    // Data is backed up to S3 using pg_dump and restored on startup
-    if (this.postgresEnabled) {
-      volumes.push({
-        name: "postgres-data",
-        emptyDir: { sizeLimit: this.postgresStorageSize },
-      })
-    }
+    // NOTE: postgres-data volume removed. Database is on shared CloudNativePG cluster.
 
     return {
       apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,

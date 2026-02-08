@@ -278,18 +278,27 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
   bg_log "Step 4: Running prisma db push..."
   STEP_START=$(date +%s%3N)
   
-  # FIXED: Wait for PostgreSQL to be ready before running Prisma commands
-  # This prevents "Connection reset by peer" errors during startup race condition
-  bg_log "Waiting for PostgreSQL to be ready..."
+  # Wait for PostgreSQL to be ready before running Prisma commands
+  # Supports both local sidecar (localhost) and remote shared cluster (CloudNativePG)
+  # Parse host from DATABASE_URL, fallback to localhost
+  PG_HOST="localhost"
+  PG_PORT="5432"
+  if [ -n "$DATABASE_URL" ]; then
+    # Extract host and port from postgres://user:pass@host:port/db
+    PG_HOST=$(echo "$DATABASE_URL" | sed -n 's|.*@\([^:/]*\).*|\1|p')
+    PG_PORT=$(echo "$DATABASE_URL" | sed -n 's|.*@[^:]*:\([0-9]*\)/.*|\1|p')
+    PG_PORT="${PG_PORT:-5432}"
+  fi
+  bg_log "Waiting for PostgreSQL at ${PG_HOST}:${PG_PORT}..."
   MAX_RETRIES=30
   RETRY_COUNT=0
   PG_READY=false
   
   while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    # Try connecting to postgres - use simple query to verify readiness
-    if psql -h localhost -U postgres -d postgres -c "SELECT 1" > /dev/null 2>&1; then
+    # Try TCP connection check (works for both local and remote postgres)
+    if nc -z "$PG_HOST" "$PG_PORT" 2>/dev/null || (echo > /dev/tcp/"$PG_HOST"/"$PG_PORT") 2>/dev/null; then
       PG_READY=true
-      bg_log "PostgreSQL is ready (attempt $((RETRY_COUNT + 1)))"
+      bg_log "PostgreSQL is ready at ${PG_HOST}:${PG_PORT} (attempt $((RETRY_COUNT + 1)))"
       break
     fi
     RETRY_COUNT=$((RETRY_COUNT + 1))
@@ -297,7 +306,7 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
   done
   
   if [ "$PG_READY" = false ]; then
-    bg_log "WARNING: PostgreSQL readiness check timed out after ${MAX_RETRIES} attempts"
+    bg_log "WARNING: PostgreSQL readiness check timed out after ${MAX_RETRIES} attempts at ${PG_HOST}:${PG_PORT}"
     bg_log "Continuing anyway - Prisma may fail"
   fi
   

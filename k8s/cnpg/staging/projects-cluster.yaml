@@ -1,0 +1,86 @@
+# =============================================================================
+# Projects PostgreSQL Cluster (Staging)
+# =============================================================================
+# Shared PostgreSQL for ALL user project databases.
+# Replaces per-project PostgreSQL sidecars.
+# Each project gets its own database: project_{uuid}
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: projects-pg
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: staging
+spec:
+  # HA: 2 instances (primary + 1 replica) for staging
+  instances: 2
+
+  # PostgreSQL configuration - tuned for many small databases
+  postgresql:
+    parameters:
+      max_connections: "600"
+      shared_buffers: "512MB"
+      effective_cache_size: "1536MB"
+      work_mem: "4MB"
+      maintenance_work_mem: "64MB"
+      wal_buffers: "16MB"
+      # Connection handling
+      idle_in_transaction_session_timeout: "30000"  # 30s
+      statement_timeout: "60000"  # 60s per query
+      # Logging
+      log_min_duration_statement: "2000"  # Log queries > 2s
+      log_checkpoints: "on"
+    pg_hba:
+      # Allow connections from within the cluster (pods in any namespace)
+      - host all all 10.0.0.0/8 md5
+      - host all all 172.16.0.0/12 md5
+
+  # Bootstrap: create the initial admin database
+  bootstrap:
+    initdb:
+      database: projects_admin
+      owner: projects_admin
+
+  # Storage: EBS gp3 on EKS, local-path on bare metal
+  storage:
+    size: 50Gi
+    storageClass: ebs-sc
+
+  # Backup to S3 (compatible with MinIO for bare metal)
+  backup:
+    barmanObjectStore:
+      destinationPath: s3://shogo-pg-backups-staging/projects/
+      s3Credentials:
+        accessKeyId:
+          name: cnpg-s3-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: cnpg-s3-credentials
+          key: SECRET_ACCESS_KEY
+        region:
+          name: cnpg-s3-credentials
+          key: REGION
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+    retentionPolicy: "30d"
+
+  # Monitoring: Prometheus metrics
+  monitoring:
+    enablePodMonitor: true
+
+  # Resources - larger than platform since it hosts many databases
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "200m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+  # Affinity: spread across nodes for HA
+  affinity:
+    topologyKey: kubernetes.io/hostname

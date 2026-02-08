@@ -5,11 +5,15 @@
  * Platform lives at shogo.ai, published apps at shogo.one for isolation.
  * 
  * Architecture:
- *   1. Trigger build in project-runtime pod
- *   2. Download built dist/ files from pod
- *   3. Upload to S3 bucket
- *   4. Invalidate CloudFront cache
- *   5. Serve via CloudFront CDN at {subdomain}.shogo.one
+ *   1. Provision database on shared CloudNativePG cluster (if not exists)
+ *   2. Trigger build in project-runtime pod
+ *   3. Download built dist/ files from pod
+ *   4. Upload to S3 bucket
+ *   5. Invalidate CloudFront cache
+ *   6. Serve via CloudFront CDN at {subdomain}.shogo.one
+ *
+ * Future: Deploy published Node server as a lightweight Knative Service
+ * that connects to the provisioned database for API routes.
  */
 
 import { Hono } from "hono"
@@ -19,6 +23,7 @@ import { CloudFrontClient, CreateInvalidationCommand } from "@aws-sdk/client-clo
 import { prisma } from "../lib/prisma"
 import { getProjectPodUrl } from "../lib/knative-project-manager"
 import * as checkpointService from "../services/checkpoint.service"
+import * as databaseService from "../services/database.service"
 
 // Workspaces directory for checkpoint creation
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(__dirname, '../../../../workspaces')
@@ -323,6 +328,18 @@ export function publishRoutes() {
         }
       }
 
+      // Ensure project database exists on shared CloudNativePG cluster
+      // This is idempotent - if the database already exists, it just updates credentials
+      let publishedDbUrl: string | null = null
+      try {
+        const dbInfo = await databaseService.provisionDatabase(projectId)
+        publishedDbUrl = dbInfo.connectionUrl
+        console.log(`[Publish] Database provisioned: ${dbInfo.databaseName}`)
+      } catch (err: any) {
+        console.warn("[Publish] Database provisioning failed (non-blocking):", err.message)
+        // Continue - the project might not need a database (static site)
+      }
+
       // In Kubernetes: Build, download, and upload to S3
       if (isKubernetes()) {
         // Step 1: Trigger build
@@ -439,6 +456,10 @@ export function publishRoutes() {
           console.warn("[Publish] Failed to delete from S3:", err)
         }
       }
+
+      // Note: We intentionally keep the project database on unpublish.
+      // The database is shared with the development environment and dropping
+      // it would destroy user data. Database cleanup happens on project deletion.
 
       // Clear publish info from project
       await prisma.project.update({

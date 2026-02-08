@@ -19,9 +19,29 @@ output "eks_cluster_endpoint" {
 }
 
 output "rds_endpoint" {
-  description = "RDS PostgreSQL endpoint"
+  description = "RDS PostgreSQL endpoint (LEGACY - during migration)"
   value       = module.rds.endpoint
   sensitive   = true
+}
+
+output "cnpg_platform_cluster" {
+  description = "CloudNativePG platform cluster name"
+  value       = "platform-pg"
+}
+
+output "cnpg_projects_cluster" {
+  description = "CloudNativePG projects cluster name"
+  value       = "projects-pg"
+}
+
+output "cnpg_platform_service" {
+  description = "CloudNativePG platform database K8s service"
+  value       = "platform-pg-rw.shogo-staging-system.svc.cluster.local"
+}
+
+output "cnpg_projects_service" {
+  description = "CloudNativePG projects database K8s service"
+  value       = "projects-pg-rw.shogo-staging-system.svc.cluster.local"
 }
 
 output "redis_endpoint" {
