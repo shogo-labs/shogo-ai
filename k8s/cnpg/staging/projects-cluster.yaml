@@ -42,6 +42,20 @@ spec:
     initdb:
       database: projects_admin
       owner: projects_admin
+      postInitApplicationSQL:
+        - ALTER ROLE projects_admin CREATEROLE CREATEDB
+
+  # Managed roles: ensure projects_admin always has CREATEROLE/CREATEDB
+  # This survives cluster restores and failovers
+  managed:
+    roles:
+      - name: projects_admin
+        ensure: present
+        login: true
+        createdb: true
+        createrole: true
+        passwordSecret:
+          name: projects-pg-app
 
   # Storage: EBS gp3 on EKS, local-path on bare metal
   storage:

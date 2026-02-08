@@ -17,6 +17,7 @@ import { getTodoList } from '../generated/server-functions'
 
 export const Route = createFileRoute('/')({
   loader: async () => {
+    // Fetch user and todos via REST API (no server-side imports)
     const user = await getCurrentUser()
     if (user) {
       const todos = await getTodoList({ data: { userId: user.id } })

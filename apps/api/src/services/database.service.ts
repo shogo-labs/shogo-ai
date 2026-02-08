@@ -117,7 +117,10 @@ function generatePassword(): string {
  * Provision a new database for a project.
  * Creates the database and a dedicated user with full access.
  *
- * Idempotent: if the database already exists, returns existing credentials.
+ * Fully idempotent and concurrency-safe:
+ * - Uses PostgreSQL advisory locks to serialize concurrent provisions for the same project
+ * - Uses PL/pgSQL DO blocks for atomic role creation (no TOCTOU race)
+ * - Handles "already exists" errors gracefully as success
  */
 export async function provisionDatabase(
   projectId: string
@@ -133,50 +136,83 @@ export async function provisionDatabase(
 
   const client = await pool.connect()
   try {
-    // Check if database already exists
-    const existsResult = await client.query(
-      `SELECT 1 FROM pg_database WHERE datname = $1`,
-      [dbName]
-    )
+    // Acquire an advisory lock keyed on the database name to serialize concurrent provisions.
+    // This prevents two concurrent createProject calls from racing on the same project.
+    await client.query(`SELECT pg_advisory_lock(hashtext($1))`, [dbName])
 
-    if (existsResult.rows.length > 0) {
-      console.log(
-        `[DatabaseService] Database "${dbName}" already exists, updating password`
-      )
-      // Update password for existing user (in case it was lost)
-      await client.query(
-        `ALTER USER "${username}" WITH PASSWORD '${password}'`
-      )
-    } else {
-      // Create user
-      await client.query(
-        `CREATE USER "${username}" WITH PASSWORD '${password}'`
+    try {
+      // Check if database already exists
+      const existsResult = await client.query(
+        `SELECT 1 FROM pg_database WHERE datname = $1`,
+        [dbName]
       )
 
-      // Create database owned by the user
-      await client.query(
-        `CREATE DATABASE "${dbName}" OWNER "${username}"`
-      )
+      if (existsResult.rows.length > 0) {
+        console.log(
+          `[DatabaseService] Database "${dbName}" already exists, updating password`
+        )
+        // Update password for existing user (in case it was lost)
+        await client.query(
+          `ALTER USER "${username}" WITH PASSWORD '${password}'`
+        )
+      } else {
+        // Create role atomically using PL/pgSQL DO block.
+        // This avoids the TOCTOU race where two concurrent calls both see the role
+        // doesn't exist and then one fails on CREATE USER.
+        await client.query(`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${username}') THEN
+              CREATE USER "${username}" WITH PASSWORD '${password}';
+              RAISE NOTICE 'Created role %', '${username}';
+            ELSE
+              ALTER USER "${username}" WITH PASSWORD '${password}';
+              RAISE NOTICE 'Role % already exists, updated password', '${username}';
+            END IF;
+          END
+          $$;
+        `)
 
-      // Grant all privileges
-      await client.query(
-        `GRANT ALL PRIVILEGES ON DATABASE "${dbName}" TO "${username}"`
-      )
+        // Create database owned by the user.
+        // Wrap in try/catch to handle "already exists" from partial previous runs.
+        try {
+          await client.query(
+            `CREATE DATABASE "${dbName}" OWNER "${username}"`
+          )
+        } catch (err: any) {
+          if (err.code === '42P04') {
+            // 42P04 = duplicate_database — already exists, that's fine
+            console.log(
+              `[DatabaseService] Database "${dbName}" already exists (concurrent creation)`
+            )
+          } else {
+            throw err
+          }
+        }
 
-      console.log(`[DatabaseService] Database "${dbName}" created successfully`)
-    }
+        // Grant all privileges (idempotent — safe to run multiple times)
+        await client.query(
+          `GRANT ALL PRIVILEGES ON DATABASE "${dbName}" TO "${username}"`
+        )
 
-    const host = PROJECTS_DB_HOST
-    const port = parseInt(PROJECTS_DB_PORT, 10)
-    const connectionUrl = `postgres://${username}:${password}@${host}:${port}/${dbName}`
+        console.log(`[DatabaseService] Database "${dbName}" created successfully`)
+      }
 
-    return {
-      databaseName: dbName,
-      username,
-      password,
-      connectionUrl,
-      host,
-      port,
+      const host = PROJECTS_DB_HOST
+      const port = parseInt(PROJECTS_DB_PORT, 10)
+      const connectionUrl = `postgres://${username}:${password}@${host}:${port}/${dbName}`
+
+      return {
+        databaseName: dbName,
+        username,
+        password,
+        connectionUrl,
+        host,
+        port,
+      }
+    } finally {
+      // Always release the advisory lock, even on error
+      await client.query(`SELECT pg_advisory_unlock(hashtext($1))`, [dbName])
     }
   } finally {
     client.release()

@@ -381,8 +381,49 @@ export class KnativeProjectManager {
   /**
    * Create a Knative Service for a project.
    * Also creates the PVC for project storage if it doesn't exist.
+   *
+   * Deduplicates concurrent calls — if multiple requests arrive for the same project,
+   * they share a single creation promise (prevents duplicate DB provisioning and K8s resource races).
    */
   async createProject(projectId: string): Promise<string> {
+    // Check if there's already a pending creation for this project
+    const pending = pendingCreateRequests.get(projectId)
+    if (pending) {
+      const waitTime = Date.now() - pending.startTime
+      console.log(`[KnativeProjectManager] Joining existing createProject for ${projectId} (already in progress ${waitTime}ms)`)
+      return pending.promise
+    }
+
+    const startTime = Date.now()
+    const createPromise = this._doCreateProject(projectId)
+
+    // Store the pending request so concurrent callers can join
+    pendingCreateRequests.set(projectId, {
+      promise: createPromise,
+      startTime,
+    })
+
+    // Ensure cleanup happens regardless of outcome
+    createPromise.finally(() => {
+      pendingCreateRequests.delete(projectId)
+    })
+
+    // Safety cleanup for stale entries (in case of memory leaks)
+    setTimeout(() => {
+      const entry = pendingCreateRequests.get(projectId)
+      if (entry && Date.now() - entry.startTime > 5 * 60 * 1000) {
+        console.log(`[KnativeProjectManager] Cleaning up stale createProject request for ${projectId}`)
+        pendingCreateRequests.delete(projectId)
+      }
+    }, 5 * 60 * 1000)
+
+    return createPromise
+  }
+
+  /**
+   * Internal implementation of project creation (called once per project, guarded by dedup map).
+   */
+  private async _doCreateProject(projectId: string): Promise<string> {
     const createStartTime = Date.now()
     console.log(`[KnativeProjectManager] Creating project: ${projectId}`)
 
@@ -914,6 +955,17 @@ export function getKnativeProjectManager(): KnativeProjectManager {
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/**
+ * Request deduplication cache for createProject.
+ * When multiple requests try to create the same project simultaneously,
+ * they share a single creation promise. This prevents duplicate database
+ * provisioning and Kubernetes resource creation races.
+ */
+const pendingCreateRequests = new Map<string, {
+  promise: Promise<string>
+  startTime: number
+}>()
 
 /**
  * Request deduplication cache for getProjectPodUrl.
