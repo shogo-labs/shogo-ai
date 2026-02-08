@@ -109,6 +109,36 @@ function getToolCategory(name: string): 'mcp' | 'file' | 'skill' | 'other' {
   return 'other'
 }
 
+// Friendly error code mapping for chat errors
+const ERROR_CODE_MESSAGES: Record<string, string> = {
+  pod_unavailable: "We're having trouble starting your project environment. Please try again in a moment.",
+  rate_limit_exceeded: "You're sending messages too quickly. Please wait a moment and try again.",
+  insufficient_credits: "You've run out of credits. Please upgrade your plan to continue.",
+  session_expired: "Your session has expired. Please refresh the page.",
+  internal_error: "Something went wrong on our end. Please try again.",
+}
+
+// Parse potentially JSON error messages into user-friendly text
+function formatErrorMessage(rawMessage: string): string {
+  try {
+    const parsed = JSON.parse(rawMessage)
+    // Handle { error: { code, message } } format
+    if (parsed?.error?.code && ERROR_CODE_MESSAGES[parsed.error.code]) {
+      return ERROR_CODE_MESSAGES[parsed.error.code]
+    }
+    if (parsed?.error?.message) {
+      return parsed.error.message
+    }
+    // Handle { message } format
+    if (parsed?.message) {
+      return parsed.message
+    }
+  } catch {
+    // Not JSON, use as-is
+  }
+  return rawMessage
+}
+
 // Re-export WorkspacePanelData from advanced-chat for workspace integration (task-testbed-chat-integration)
 import type { WorkspacePanelData } from "../advanced-chat/WorkspacePanel"
 export type { WorkspacePanelData }
@@ -166,6 +196,8 @@ export interface ChatPanelProps {
   compactValue?: string
   /** Callback when compact mode input value changes */
   onCompactValueChange?: (value: string) => void
+  /** Callback when chat encounters an error (for RuntimePreviewPanel to stop loading) */
+  onChatError?: (error: Error | null) => void
   /** Callback when agent modifies files (Write, Edit, StrReplace tools) - for code panel refresh */
   onFilesChanged?: (paths: string[]) => void
   /** Callback when a tool call becomes active/inactive - for preview overlay during template_copy */
@@ -583,6 +615,7 @@ export const ChatPanel = observer(function ChatPanel({
   messageContainerRef,
   compactValue,
   onCompactValueChange,
+  onChatError,
   onFilesChanged,
   onActiveToolCall,
   selectedThemeId,
@@ -1312,6 +1345,11 @@ export const ChatPanel = observer(function ChatPanel({
   // Derive isStreaming from v3 status for backward compatibility
   const isStreaming = status === 'streaming' || status === 'submitted'
 
+  // Notify parent when chat error changes (for RuntimePreviewPanel to stop loading)
+  useEffect(() => {
+    onChatError?.(error ?? null)
+  }, [error, onChatError])
+
   // Optimistic first message for homepage transition: show user message before useChat adds it
   const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
 
@@ -2037,21 +2075,16 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Error retry handler (task-chat-retry-fix)
   // AI SDK v3: reload() regenerates the last assistant message
-  // If reload isn't available or no messages, fallback to resending last user input
+  // Only use reload() to avoid duplicating user messages
   const handleRetry = useCallback(() => {
     if (typeof reload === 'function' && messages.length > 0) {
       reload()
-    } else if (lastUserInputRef.current) {
-      // Fallback: resend the last user message
-      console.log('[ChatPanel] Using fallback retry - resending last input')
-      handleSendMessage(
-        lastUserInputRef.current.content,
-        lastUserInputRef.current.imageData
-      )
     } else {
-      console.warn('[ChatPanel] Cannot retry: no messages or last input available')
+      // Don't resend via handleSendMessage as it duplicates the user message.
+      // Instead, suggest refreshing.
+      console.warn('[ChatPanel] Cannot retry via reload. Please refresh the page.')
     }
-  }, [reload, messages.length, handleSendMessage])
+  }, [reload, messages.length])
 
   // Convert messages for MessageList
   const messageListMessages = messages.map((msg) => ({
@@ -2206,7 +2239,7 @@ export const ChatPanel = observer(function ChatPanel({
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
               <AlertDescription className="flex items-center justify-between gap-2">
-                <span className="text-sm">{error.message}</span>
+                <span className="text-sm">{formatErrorMessage(error.message)}</span>
                 <Button
                   variant="outline"
                   size="sm"

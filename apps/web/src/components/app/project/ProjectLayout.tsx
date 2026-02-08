@@ -105,6 +105,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Template copy state - tracks when template_copy tool is running for preview overlay
   const [isTemplateCopying, setIsTemplateCopying] = useState(false)
 
+  // Chat error state - passed to RuntimePreviewPanel to stop loading on project creation failure
+  const [chatError, setChatError] = useState<Error | null>(null)
+
   // Build error state - shared between RuntimePreviewPanel and TerminalPanel
   const [buildError, setBuildError] = useState<string | null>(null)
   const [buildErrorContext, setBuildErrorContext] = useState<{
@@ -837,6 +840,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 initialMessage={transitionState?.initialMessage}
                 inputContainerRef={chatInputContainerRef}
                 messageContainerRef={messageContainerRef}
+              onChatError={setChatError}
               onFilesChanged={(paths) => {
                 console.log('[ProjectLayout] 📁 Agent modified files:', paths)
                 // Increment refresh trigger to reload code editor
@@ -945,6 +949,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   onBuildError={handleBuildError}
                   forceRefresh={codeRefreshTrigger}
                   isTemplateCopying={isTemplateCopying}
+                  chatError={chatError}
                 />
               </div>
               {/* Code Editor - stays mounted to preserve editor state */}

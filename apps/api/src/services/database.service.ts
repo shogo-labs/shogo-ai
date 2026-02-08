@@ -23,12 +23,14 @@ import crypto from "crypto"
 
 // The admin connection URL for the projects PostgreSQL cluster
 // CloudNativePG creates a secret with the superuser credentials
-// Service name format: {cluster}-rw.{namespace}.svc.cluster.local
-const PROJECTS_DB_ADMIN_URL =
-  process.env.PROJECTS_DB_ADMIN_URL ||
-  "postgres://projects_admin:projects_admin@projects-pg-rw.shogo-staging-system.svc.cluster.local:5432/projects_admin"
+// MUST be set via PROJECTS_DB_ADMIN_URL env var (from projects-db-admin K8s secret)
+const PROJECTS_DB_ADMIN_URL = process.env.PROJECTS_DB_ADMIN_URL
+if (!PROJECTS_DB_ADMIN_URL) {
+  console.error("[DatabaseService] PROJECTS_DB_ADMIN_URL is not set. Database provisioning will fail.")
+}
 
 // The hostname of the projects PostgreSQL cluster (for building per-project URLs)
+// Defaults to the standard CloudNativePG service name if not explicitly set
 const PROJECTS_DB_HOST =
   process.env.PROJECTS_DB_HOST ||
   "projects-pg-rw.shogo-staging-system.svc.cluster.local"
@@ -67,6 +69,9 @@ export interface DatabaseStatus {
 let adminPool: InstanceType<typeof Pool> | null = null
 
 function getAdminPool(): InstanceType<typeof Pool> {
+  if (!PROJECTS_DB_ADMIN_URL) {
+    throw new Error("PROJECTS_DB_ADMIN_URL is not configured. Cannot connect to projects database.")
+  }
   if (!adminPool) {
     adminPool = new Pool({
       connectionString: PROJECTS_DB_ADMIN_URL,

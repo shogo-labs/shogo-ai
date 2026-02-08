@@ -226,6 +226,8 @@ export interface RuntimePreviewPanelProps {
   forceRefresh?: number
   /** Whether template copy is in progress - shows animated overlay */
   isTemplateCopying?: boolean
+  /** Chat error from ChatPanel - stops loading animation when project creation fails */
+  chatError?: Error | null
 }
 
 export function RuntimePreviewPanel({
@@ -237,6 +239,7 @@ export function RuntimePreviewPanel({
   onBuildError,
   forceRefresh,
   isTemplateCopying = false,
+  chatError,
 }: RuntimePreviewPanelProps) {
   const [sandboxUrl, setSandboxUrl] = useState<string | null>(null)
   const [sandboxAttributes, setSandboxAttributes] = useState<string>('')
@@ -834,6 +837,38 @@ export function RuntimePreviewPanel({
             </h3>
             <p className="text-sm text-muted-foreground mt-1">
               {error}
+            </p>
+          </div>
+          <button
+            onClick={handleRetry}
+            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Retry
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // If a chat error occurred during project creation, stop the loading animation
+  // and show a user-friendly error state instead of spinning forever
+  if (isLoading && !sandboxUrl && chatError) {
+    return (
+      <div className={cn(
+        "flex flex-col items-center justify-center h-full w-full bg-gradient-to-b from-background to-destructive/5",
+        className
+      )}>
+        <div className="flex flex-col items-center gap-4 max-w-md text-center px-6">
+          <div className="bg-destructive/10 p-4 rounded-full border border-destructive/20">
+            <AlertCircle className="h-10 w-10 text-destructive" />
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-lg font-semibold text-foreground">
+              Environment setup failed
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              There was a problem starting your project. Check the chat panel for details, or try again.
             </p>
           </div>
           <button
