@@ -13,10 +13,15 @@
  */
 
 import { Hono } from "hono"
+import { resolve } from "path"
 import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3"
 import { CloudFrontClient, CreateInvalidationCommand } from "@aws-sdk/client-cloudfront"
 import { prisma } from "../lib/prisma"
 import { getProjectPodUrl } from "../lib/knative-project-manager"
+import * as checkpointService from "../services/checkpoint.service"
+
+// Workspaces directory for checkpoint creation
+const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(__dirname, '../../../../workspaces')
 
 // S3 and CloudFront configuration
 const PUBLISH_BUCKET = process.env.PUBLISH_BUCKET || "shogo-published-apps-staging"
@@ -380,6 +385,18 @@ export function publishRoutes() {
         },
       })
 
+      // Auto-checkpoint on publish (fire-and-forget)
+      const workspacePath = resolve(WORKSPACES_DIR, projectId)
+      checkpointService.createCheckpoint({
+        projectId,
+        workspacePath,
+        message: `Published to ${subdomain}.${PUBLISH_DOMAIN}`,
+        name: `Publish: ${subdomain}.${PUBLISH_DOMAIN}`,
+        isAutomatic: true,
+      }).catch((err) => {
+        console.warn('[Publish] Auto-checkpoint failed (non-blocking):', err.message)
+      })
+
       return c.json(
         {
           url: `https://${subdomain}.${PUBLISH_DOMAIN}`,
@@ -487,6 +504,18 @@ export function publishRoutes() {
       await prisma.project.update({
         where: { id: projectId },
         data: { publishedAt },
+      })
+
+      // Auto-checkpoint on republish (fire-and-forget)
+      const workspacePath = resolve(WORKSPACES_DIR, projectId)
+      checkpointService.createCheckpoint({
+        projectId,
+        workspacePath,
+        message: `Republished to ${subdomain}.${PUBLISH_DOMAIN}`,
+        name: `Republish: ${subdomain}.${PUBLISH_DOMAIN}`,
+        isAutomatic: true,
+      }).catch((err) => {
+        console.warn('[Publish] Auto-checkpoint on republish failed (non-blocking):', err.message)
       })
 
       return c.json({

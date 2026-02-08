@@ -15,6 +15,7 @@ import { ProjectNameDropdown } from "./ProjectNameDropdown"
 import { PreviewControls, type ViewportSize } from "./PreviewControls"
 // import { ShareDropdown } from "./ShareDropdown"
 import { PublishDropdown, type AccessLevel } from "./PublishDropdown"
+import { GitHubConnectDialog } from "./GitHubConnectDialog"
 import { cn } from "@/lib/utils"
 
 export interface ProjectTopBarProps {
@@ -114,33 +115,34 @@ export function ProjectTopBar({
     repoFullName: string
   } | null>(null)
   const [isLoadingGitHub, setIsLoadingGitHub] = useState(false)
+  const [showGitHubDialog, setShowGitHubDialog] = useState(false)
 
   // Fetch GitHub connection on mount
-  useEffect(() => {
-    const fetchGitHubConnection = async () => {
-      if (!projectId) return
+  const fetchGitHubConnection = useCallback(async () => {
+    if (!projectId) return
 
-      setIsLoadingGitHub(true)
-      try {
-        const response = await fetch(`/api/projects/${projectId}/github`)
-        const data = await response.json()
+    setIsLoadingGitHub(true)
+    try {
+      const response = await fetch(`/api/projects/${projectId}/github`)
+      const data = await response.json()
 
-        if (data.ok && data.connected && data.connection) {
-          setGithubConnection({
-            repoFullName: data.connection.repoFullName,
-          })
-        } else {
-          setGithubConnection(null)
-        }
-      } catch {
+      if (data.ok && data.connected && data.connection) {
+        setGithubConnection({
+          repoFullName: data.connection.repoFullName,
+        })
+      } else {
         setGithubConnection(null)
-      } finally {
-        setIsLoadingGitHub(false)
       }
+    } catch {
+      setGithubConnection(null)
+    } finally {
+      setIsLoadingGitHub(false)
     }
-
-    fetchGitHubConnection()
   }, [projectId])
+
+  useEffect(() => {
+    fetchGitHubConnection()
+  }, [fetchGitHubConnection])
 
   const handleOpenGitHub = useCallback(() => {
     if (githubConnection) {
@@ -148,10 +150,10 @@ export function ProjectTopBar({
       const githubUrl = `https://github.com/${githubConnection.repoFullName}`
       window.open(githubUrl, "_blank")
     } else {
-      // Navigate to settings to connect GitHub
-      navigate(`/projects/${projectId}/settings?tab=github`)
+      // Open the GitHub connect dialog
+      setShowGitHubDialog(true)
     }
-  }, [githubConnection, navigate, projectId])
+  }, [githubConnection])
 
   // Get user initial for avatar
   const initial = userInitial || currentUserName?.charAt(0).toUpperCase() || "U"
@@ -284,6 +286,19 @@ export function ProjectTopBar({
           onViewPublished={(url) => window.open(url, '_blank')}
         />
       </div>
+
+      {/* GitHub Connect Dialog */}
+      <GitHubConnectDialog
+        projectId={projectId}
+        open={showGitHubDialog}
+        onOpenChange={setShowGitHubDialog}
+        onConnected={() => {
+          fetchGitHubConnection()
+        }}
+        onDisconnected={() => {
+          setGithubConnection(null)
+        }}
+      />
     </nav>
   )
 }

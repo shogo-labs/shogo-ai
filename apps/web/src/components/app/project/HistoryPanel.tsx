@@ -7,7 +7,7 @@
  * - Named/bookmarked for easy access
  */
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import {
   RotateCcw,
   MoreHorizontal,
@@ -18,6 +18,10 @@ import {
   Loader2,
   ChevronRight,
   AlertCircle,
+  Github,
+  RefreshCw,
+  ExternalLink,
+  Check,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -40,6 +44,15 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
 import { useCheckpoints, type Checkpoint } from "@/hooks/useCheckpoints"
+import { GitHubConnectDialog } from "./GitHubConnectDialog"
+
+export interface HistoryEntry {
+  id: string
+  title: string
+  timestamp: Date
+  isBookmarked?: boolean
+  isCurrent?: boolean
+}
 
 export interface HistoryPanelProps {
   projectId: string
@@ -105,6 +118,65 @@ export function HistoryPanel({
   const [rollbackTarget, setRollbackTarget] = useState<Checkpoint | null>(null)
   const [rollbackIncludeDb, setRollbackIncludeDb] = useState(false)
 
+  // GitHub connection state
+  const [githubConnection, setGithubConnection] = useState<{
+    repoFullName: string
+    syncEnabled: boolean
+    lastPushAt: string | null
+    lastSyncError: string | null
+  } | null>(null)
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [syncSuccess, setSyncSuccess] = useState(false)
+  const [showGitHubDialog, setShowGitHubDialog] = useState(false)
+
+  // Fetch GitHub connection status
+  const fetchGitHubConnection = useCallback(async () => {
+    if (!projectId) return
+    try {
+      const res = await fetch(`/api/projects/${projectId}/github`)
+      const data = await res.json()
+      if (data.ok && data.connected && data.connection) {
+        setGithubConnection({
+          repoFullName: data.connection.repoFullName,
+          syncEnabled: data.connection.syncEnabled,
+          lastPushAt: data.connection.lastPushAt,
+          lastSyncError: data.connection.lastSyncError,
+        })
+      } else {
+        setGithubConnection(null)
+      }
+    } catch {
+      setGithubConnection(null)
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    fetchGitHubConnection()
+  }, [fetchGitHubConnection])
+
+  // Manual sync handler
+  const handleSync = useCallback(async () => {
+    if (!projectId) return
+    setIsSyncing(true)
+    setSyncSuccess(false)
+    try {
+      const res = await fetch(`/api/projects/${projectId}/github/sync`, {
+        method: "POST",
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setSyncSuccess(true)
+        setTimeout(() => setSyncSuccess(false), 3000)
+        // Refresh connection to update lastPushAt
+        fetchGitHubConnection()
+      }
+    } catch (err) {
+      console.error("[HistoryPanel] Sync failed:", err)
+    } finally {
+      setIsSyncing(false)
+    }
+  }, [projectId, fetchGitHubConnection])
+
   // Create checkpoint handler
   const handleCreateCheckpoint = useCallback(async () => {
     if (!newCheckpointMessage.trim()) return
@@ -167,13 +239,76 @@ export function HistoryPanel({
             <span className="font-mono">{gitStatus.branch || "main"}</span>
             {hasUncommittedChanges && (
               <>
-                <span className="text-border">•</span>
+                <span className="text-border">·</span>
                 <span className="text-amber-500">
                   {(gitStatus.staged.length + gitStatus.unstaged.length + gitStatus.untracked.length)} uncommitted changes
                 </span>
               </>
             )}
           </div>
+        </div>
+      )}
+
+      {/* GitHub sync status bar */}
+      {githubConnection ? (
+        <div className="px-3 py-2 border-b border-border/30 bg-muted/20">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
+              <Github className="h-3 w-3 shrink-0" />
+              <a
+                href={`https://github.com/${githubConnection.repoFullName}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="truncate hover:text-foreground transition-colors"
+              >
+                {githubConnection.repoFullName}
+              </a>
+              {githubConnection.syncEnabled && (
+                <>
+                  <span className="text-border shrink-0">·</span>
+                  {githubConnection.lastPushAt ? (
+                    <span className="text-green-500 shrink-0 whitespace-nowrap">
+                      Synced {formatTimestamp(githubConnection.lastPushAt)}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground/70 shrink-0">Not synced yet</span>
+                  )}
+                </>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs gap-1 shrink-0"
+              onClick={handleSync}
+              disabled={isSyncing}
+            >
+              {isSyncing ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : syncSuccess ? (
+                <Check className="h-3 w-3 text-green-500" />
+              ) : (
+                <RefreshCw className="h-3 w-3" />
+              )}
+              {syncSuccess ? "Synced" : "Sync"}
+            </Button>
+          </div>
+          {githubConnection.lastSyncError && (
+            <p className="text-xs text-destructive mt-1 truncate">
+              {githubConnection.lastSyncError}
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="px-3 py-2 border-b border-border/30">
+          <button
+            onClick={() => setShowGitHubDialog(true)}
+            className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors w-full"
+          >
+            <Github className="h-3 w-3" />
+            <span>Connect GitHub to sync your checkpoints</span>
+            <ExternalLink className="h-3 w-3 ml-auto" />
+          </button>
         </div>
       )}
 
@@ -465,6 +600,19 @@ export function HistoryPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* GitHub Connect Dialog */}
+      <GitHubConnectDialog
+        projectId={projectId}
+        open={showGitHubDialog}
+        onOpenChange={setShowGitHubDialog}
+        onConnected={() => {
+          fetchGitHubConnection()
+        }}
+        onDisconnected={() => {
+          setGithubConnection(null)
+        }}
+      />
     </div>
   )
 }
