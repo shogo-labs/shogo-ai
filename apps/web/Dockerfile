@@ -33,6 +33,7 @@ COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
+COPY apps/api/package.json ./apps/api/
 
 # Install all dependencies
 RUN bun install
