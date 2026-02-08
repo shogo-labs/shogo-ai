@@ -740,20 +740,32 @@ export class KnativeProjectManager {
     // Add PostgreSQL DATABASE_URL for shared CloudNativePG cluster
     // Database is provisioned per-project on the shared projects-pg cluster
     if (this.postgresEnabled) {
-      try {
-        const dbInfo = await databaseService.provisionDatabase(projectId)
+      // Retry database provisioning up to 3 times (CNPG cluster may be briefly unavailable)
+      let dbInfo: Awaited<ReturnType<typeof databaseService.provisionDatabase>> | null = null
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          dbInfo = await databaseService.provisionDatabase(projectId)
+          break
+        } catch (err: any) {
+          console.error(`[KnativeProjectManager] Database provisioning attempt ${attempt}/3 failed for ${projectId}:`, err.message)
+          if (attempt < 3) {
+            await new Promise(resolve => setTimeout(resolve, 2000 * attempt))
+          }
+        }
+      }
+
+      if (dbInfo) {
         env.push({
           name: "DATABASE_URL",
           value: dbInfo.connectionUrl,
         })
-        // Disable postgres S3 backup (CloudNativePG handles backups via Barman)
-        env.push({ name: "POSTGRES_S3_BACKUP_ENABLED", value: "false" })
         console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId}`)
-      } catch (err: any) {
-        console.error(`[KnativeProjectManager] Failed to provision database for ${projectId}:`, err.message)
-        // Continue without database - project can still run without DB
-        env.push({ name: "POSTGRES_S3_BACKUP_ENABLED", value: "false" })
+      } else {
+        // DATABASE_URL is required for all templates — fail the project creation
+        throw new Error(`Failed to provision database for project ${projectId} after 3 attempts. Check CloudNativePG cluster health.`)
       }
+      // Disable postgres S3 backup (CloudNativePG handles backups via Barman)
+      env.push({ name: "POSTGRES_S3_BACKUP_ENABLED", value: "false" })
     }
 
     // Add S3 configuration if bucket is specified

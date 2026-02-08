@@ -38,11 +38,15 @@
       "require": "./dist/generators/index.cjs"
     }
   },
+  "bin": {
+    "shogo": "./bin/cli.mjs"
+  },
   "files": [
     "dist/**/*.js",
     "dist/**/*.cjs",
     "dist/**/*.d.ts",
-    "dist/**/*.d.cts"
+    "dist/**/*.d.cts",
+    "bin/cli.mjs"
   ],
   "scripts": {
     "build": "tsup",

@@ -132,13 +132,17 @@ WORKDIR /app
 
 # Install required system packages:
 # - curl: health checks
-# - nodejs + npm: Claude Code CLI
+# - nodejs + npm: Claude Code CLI (need Node 22+ for Prisma 7.x)
 # - bash: Claude Code requires SHELL=/bin/bash
 # - git: for project operations
 # - tar: for S3 archive sync
 # - Chromium dependencies for Playwright E2E tests
-RUN apk add --no-cache \
-    curl nodejs npm bash git tar gzip \
+# NOTE: oven/bun:1.2-alpine is based on Alpine 3.20 which only has Node 20.15.
+# Prisma 7.x requires Node 20.19+, so we pull nodejs from Alpine 3.21 repos.
+RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" >> /etc/apk/repositories && \
+    apk add --no-cache \
+    curl bash git tar gzip \
+    'nodejs>22' npm \
     # Playwright/Chromium dependencies
     chromium \
     nss \

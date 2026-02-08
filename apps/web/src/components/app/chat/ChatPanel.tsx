@@ -1229,10 +1229,6 @@ export const ChatPanel = observer(function ChatPanel({
           console.warn("[ChatPanel] Failed to persist assistant message:", err)
         })
 
-        // Tool call logging disabled - was causing 404 console spam
-        // Tool call data is already embedded in the chat messages themselves
-        // If we need analytics, we can extract from chat message content later
-
         // Refresh credit balance after every message (credits are deducted server-side)
         // Fire-and-forget: this updates the MobX store which reactively updates
         // WorkspaceSwitcher, ProjectNameDropdown, and other credit displays
@@ -1240,6 +1236,7 @@ export const ChatPanel = observer(function ChatPanel({
 
         // Smart Query Triggers (task-3-1-004)
         // After streaming completes, detect tool calls and trigger targeted data refreshes
+        const toolCalls = extractToolCalls(message)
         if (toolCalls.length > 0) {
           // Collect refresh targets by schema
           const platformFeaturesCollections: string[] = []
