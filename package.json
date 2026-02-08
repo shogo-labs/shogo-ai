@@ -43,7 +43,9 @@
     "docker:prod": "docker-compose up",
     "docker:prod:build": "docker-compose up --build",
     "docker:prod:down": "docker-compose down",
-    "screenshots:templates": "bun run scripts/capture-template-screenshots.ts"
+    "screenshots:templates": "bun run scripts/capture-template-screenshots.ts",
+    "docs:dev": "bun run --cwd apps/docs dev",
+    "docs:build": "bun run --cwd apps/docs build"
   },
   "devDependencies": {
     "@prisma/adapter-libsql": "^7.3.0",

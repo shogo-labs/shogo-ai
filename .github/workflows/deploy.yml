@@ -50,6 +50,7 @@ jobs:
       namespace_workspaces: ${{ steps.set-env.outputs.namespace_workspaces }}
       domain: ${{ steps.set-env.outputs.domain }}
       mcp_domain: ${{ steps.set-env.outputs.mcp_domain }}
+      docs_domain: ${{ steps.set-env.outputs.docs_domain }}
     steps:
       - name: Set environment variables
         id: set-env
@@ -80,12 +81,14 @@ jobs:
             echo "namespace_workspaces=shogo-workspaces" >> $GITHUB_OUTPUT
             echo "domain=studio.shogo.ai" >> $GITHUB_OUTPUT
             echo "mcp_domain=mcp.shogo.ai" >> $GITHUB_OUTPUT
+            echo "docs_domain=docs.shogo.ai" >> $GITHUB_OUTPUT
           else
             echo "eks_cluster=shogo-staging" >> $GITHUB_OUTPUT
             echo "namespace_system=shogo-staging-system" >> $GITHUB_OUTPUT
             echo "namespace_workspaces=shogo-staging-workspaces" >> $GITHUB_OUTPUT
             echo "domain=studio-staging.shogo.ai" >> $GITHUB_OUTPUT
             echo "mcp_domain=mcp-staging.shogo.ai" >> $GITHUB_OUTPUT
+            echo "docs_domain=docs-staging.shogo.ai" >> $GITHUB_OUTPUT
           fi
 
   # ===========================================================================
@@ -148,6 +151,10 @@ jobs:
           - image: project-runtime
             dockerfile: packages/project-runtime/Dockerfile
             ecr_name: project-runtime
+            build_args: ""
+          - image: docs
+            dockerfile: apps/docs/Dockerfile
+            ecr_name: shogo-docs
             build_args: ""
     
     permissions:
@@ -225,6 +232,7 @@ jobs:
       NS_WORKSPACES: ${{ needs.setup.outputs.namespace_workspaces }}
       DOMAIN: ${{ needs.setup.outputs.domain }}
       MCP_DOMAIN: ${{ needs.setup.outputs.mcp_domain }}
+      DOCS_DOMAIN: ${{ needs.setup.outputs.docs_domain }}
       IMAGE_TAG: ${{ needs.setup.outputs.environment }}-${{ github.sha }}
 
     steps:
@@ -309,6 +317,11 @@ jobs:
           kubectl patch ksvc mcp-workspace -n ${{ env.NS_WORKSPACES }} --type='json' -p="[
             {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-mcp:${{ env.IMAGE_TAG }}\"}
           ]" || echo "MCP service not found, may need terraform apply first"
+          
+          # Update Docs service
+          kubectl patch ksvc docs -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+            {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-docs:${{ env.IMAGE_TAG }}\"}
+          ]" || echo "Docs service not found, may need terraform apply first"
 
       - name: Wait for rollout
         run: |
@@ -322,6 +335,9 @@ jobs:
           
           echo "Waiting for mcp rollout..."
           kubectl wait --for=condition=ready ksvc/mcp-workspace -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+          
+          echo "Waiting for docs rollout..."
+          kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
 
       - name: Restart image prepuller
         run: |
@@ -366,11 +382,13 @@ jobs:
           echo "| MCP | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| API | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Web | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docs | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Endpoints" >> $GITHUB_STEP_SUMMARY
           echo "- **Studio**: https://${{ env.DOMAIN }}" >> $GITHUB_STEP_SUMMARY
           echo "- **API**: https://${{ env.DOMAIN }}/api" >> $GITHUB_STEP_SUMMARY
           echo "- **MCP**: https://${{ env.MCP_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Docs**: https://${{ env.DOCS_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Cluster" >> $GITHUB_STEP_SUMMARY
           echo "- **EKS Cluster**: \`${{ env.EKS_CLUSTER }}\`" >> $GITHUB_STEP_SUMMARY

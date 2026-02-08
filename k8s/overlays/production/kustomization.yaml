@@ -14,6 +14,7 @@ resources:
   - domain-mappings.yaml
   - api-service.yaml
   - web-service.yaml
+  - docs-service.yaml
   - workspace-services.yaml
 
 labels:
@@ -32,4 +33,7 @@ images:
     newTag: production-latest
   - name: shogo-web
     newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-web
+    newTag: production-latest
+  - name: shogo-docs
+    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-docs
     newTag: production-latest
