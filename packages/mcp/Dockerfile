@@ -17,6 +17,8 @@ COPY tsconfig.base.json ./
 # All workspace members must be present for bun install to succeed
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
+COPY packages/project-runtime/package.json ./packages/project-runtime/
+COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
 
