@@ -6,7 +6,7 @@
  * - Workspace switcher
  * - Navigation sections (Home, Search)
  * - Projects section with expandable Recent and All projects
- * - Resources section (Discover, Templates, Learn)
+ * - Resources section (Templates)
  * - User avatar and inbox at bottom
  *
  * Inspired by Lovable.dev's sidebar design for better navigation UX.
@@ -22,9 +22,7 @@ import {
   LayoutGrid,
   Star,
   Users,
-  Compass,
   FileCode2,
-  BookOpen,
   ChevronDown,
   ChevronRight,
   PanelLeftClose,
@@ -1036,25 +1034,11 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
         <NavSection title="Resources" collapsed={collapsed}>
           <div className="px-2">
             <NavItem
-              icon={Compass}
-              label="Discover"
-              to="/discover"
-              active={isActive("/discover")}
-              collapsed={collapsed}
-            />
-            <NavItem
               icon={FileCode2}
               label="Templates"
               to="/templates"
               active={isActive("/templates")}
               collapsed={collapsed}
-            />
-            <NavItem
-              icon={BookOpen}
-              label="Learn"
-              href="https://docs.shogo.ai"
-              collapsed={collapsed}
-              external
             />
           </div>
         </NavSection>
@@ -1062,8 +1046,8 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
 
       {/* Bottom section - promotional cards and user avatar */}
       <div className="mt-auto border-t border-border">
-        {/* Share card */}
-        {!collapsed && (
+        {/* Share card - not functional yet, no backend for referral/credits */}
+        {/* {!collapsed && (
           <div className="p-2">
             <button className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-card hover:bg-accent/50 transition-colors text-left">
               <div className="flex-1 min-w-0">
@@ -1073,7 +1057,7 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
               <Gift className="h-4 w-4 text-muted-foreground" />
             </button>
           </div>
-        )}
+        )} */}
 
         {/* Upgrade CTA (hidden for paid plans) */}
         {!collapsed && !isPaidPlan && (

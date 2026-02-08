@@ -2011,7 +2011,7 @@ export const SettingsPage = observer(function SettingsPage() {
     {
       title: "Connectors",
       items: [
-        { id: "connectors", label: "Connectors", icon: Plug },
+        // { id: "connectors", label: "Connectors", icon: Plug }, // not functional yet
         { id: "github", label: "GitHub", icon: Github },
       ],
     },
@@ -2064,7 +2064,7 @@ export const SettingsPage = observer(function SettingsPage() {
           {activeTab === "privacy" && <PrivacyTab />}
           {activeTab === "account" && <AccountTab />}
           {activeTab === "labs" && <LabsTab />}
-          {activeTab === "connectors" && <ConnectorsTab />}
+          {/* {activeTab === "connectors" && <ConnectorsTab />} */} {/* not functional yet */}
           {activeTab === "github" && <GitHubTab />}
         </div>
       </div>
