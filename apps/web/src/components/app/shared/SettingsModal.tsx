@@ -497,6 +497,34 @@ function PeopleTab() {
     }
   }
 
+  const handleExport = () => {
+    const headers = ["Name", "Email", "Role", "Joined date"]
+    const rows = filteredMembers.map(member => {
+      const isCurrentUser = member.userId === currentUserId
+      const name = isCurrentUser ? `${currentUserName} (you)` : `User ${member.userId.slice(0, 8)}`
+      const email = isCurrentUser ? currentUserEmail : `${member.userId.slice(0, 16)}...`
+      const role = member.role.charAt(0).toUpperCase() + member.role.slice(1)
+      const joinedDate = format(new Date(member.createdAt), "MMM d, yyyy")
+      
+      return [name, email, role, joinedDate]
+    })
+
+    const csvContent = [
+      headers.join(","),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(","))
+    ].join("\n")
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `workspace-members-${format(new Date(), "yyyy-MM-dd")}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -551,7 +579,7 @@ function PeopleTab() {
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              <Button variant="outline" size="sm" className="h-8 gap-1">
+              <Button variant="outline" size="sm" className="h-8 gap-1" onClick={handleExport}>
                 <Download className="h-3.5 w-3.5" />
                 Export
               </Button>
