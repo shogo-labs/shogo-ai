@@ -34,6 +34,8 @@ import {
   Loader2,
   Trash2,
   ChevronDown,
+  ChevronRight,
+  ChevronLeft,
   Check,
   Eye,
   EyeOff,
@@ -124,6 +126,67 @@ function useWorkspaceUsageLog(basePath: string, period: string, page: number) {
       .then((res: ApiResponse<UsageLogData>) => { setData(res.data); setLoading(false) })
       .catch(() => setLoading(false))
   }, [url])
+
+  return { data, loading }
+}
+
+interface ProjectUsageData {
+  projectId: string
+  projectName: string
+  aiCredits: number
+}
+
+function useProjectUsageBreakdown(workspaceId: string | undefined, period: string) {
+  const [data, setData] = useState<ProjectUsageData[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!workspaceId) { setLoading(false); return }
+    
+    setLoading(true)
+    
+    // Fetch projects and their usage
+    Promise.all([
+      // Fetch projects
+      fetch(`/api/projects?workspaceId=${workspaceId}`, { credentials: 'include' })
+        .then((r) => r.json())
+        .then((res: { ok: boolean; items?: Array<{ id: string; name: string }> }) => res.items || []),
+      // Fetch usage events for the period
+      fetch(`/api/workspaces/${workspaceId}/analytics/usage-log?period=${period}&limit=1000`, { credentials: 'include' })
+        .then((r) => r.json())
+        .then((res: ApiResponse<UsageLogData>) => res.data?.entries || [])
+    ])
+      .then(([projects, usageEvents]) => {
+        // Aggregate AI credits by project
+        const projectCreditsMap = new Map<string, number>()
+        
+        // Initialize all projects with 0 credits
+        projects.forEach((project: { id: string; name: string }) => {
+          projectCreditsMap.set(project.id, 0)
+        })
+        
+        // Sum creditCost from usage events per project
+        usageEvents.forEach((event: any) => {
+          if (event.projectId) {
+            const existing = projectCreditsMap.get(event.projectId) || 0
+            projectCreditsMap.set(event.projectId, existing + (event.creditCost || 0))
+          }
+        })
+        
+        // Convert to array format
+        const result: ProjectUsageData[] = projects.map((project: { id: string; name: string }) => ({
+          projectId: project.id,
+          projectName: project.name,
+          aiCredits: projectCreditsMap.get(project.id) || 0,
+        }))
+        
+        setData(result)
+        setLoading(false)
+      })
+      .catch(() => {
+        setLoading(false)
+      })
+  }, [workspaceId, period])
 
   return { data, loading }
 }
@@ -1197,6 +1260,109 @@ function BillingTab() {
 }
 
 // ============================================================================
+// PROJECT BREAKDOWN COMPONENT
+// ============================================================================
+function ProjectBreakdown({ workspaceId, period }: { workspaceId: string | undefined; period: string }) {
+  const [isExpanded, setIsExpanded] = useState(false)
+  const [currentPage, setCurrentPage] = useState(1)
+  const itemsPerPage = 10
+  
+  const { data: projectUsage, loading } = useProjectUsageBreakdown(workspaceId, period)
+  
+  // Reset to page 1 when period changes
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [period])
+  
+  const totalPages = Math.ceil((projectUsage?.length || 0) / itemsPerPage)
+  const startIndex = (currentPage - 1) * itemsPerPage
+  const endIndex = startIndex + itemsPerPage
+  const paginatedProjects = projectUsage?.slice(startIndex, endIndex) || []
+  
+  const formatCredits = (credits: number) => {
+    return credits % 1 === 0 ? `${credits}` : credits.toFixed(1)
+  }
+  
+  return (
+    <div className="bg-card rounded-lg border border-border">
+      <button
+        type="button"
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full p-4 flex items-center justify-between hover:bg-muted/30 transition-colors cursor-pointer"
+      >
+        <span className="font-medium">Project breakdown</span>
+        {isExpanded ? (
+          <ChevronDown className="h-4 w-4" />
+        ) : (
+          <ChevronRight className="h-4 w-4" />
+        )}
+      </button>
+      
+      {isExpanded && (
+        <div className="border-t border-border">
+          {loading ? (
+            <div className="p-8 flex items-center justify-center">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : projectUsage && projectUsage.length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted-foreground">
+              No projects found
+            </div>
+          ) : (
+            <>
+              {/* Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left p-4 text-sm font-medium text-muted-foreground">Project</th>
+                      <th className="text-right p-4 text-sm font-medium text-muted-foreground">AI usage (credits)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedProjects.map((project) => (
+                      <tr key={project.projectId} className="border-b border-border last:border-b-0">
+                        <td className="p-4 text-sm">{project.projectName}</td>
+                        <td className="p-4 text-sm text-right">{formatCredits(project.aiCredits)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              
+              {/* Pagination */}
+              <div className="p-4 border-t border-border flex items-center justify-between">
+                <div className="text-sm text-muted-foreground">
+                  Page {currentPage}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="p-1.5 rounded border border-border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="p-1.5 rounded border border-border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
 // USAGE TAB (Cloud & AI Balance + Team Usage Table)
 // ============================================================================
 function UsageTab() {
@@ -1303,12 +1469,7 @@ function UsageTab() {
       )}
 
       {/* Project breakdown */}
-      <div className="p-4 bg-card rounded-lg border border-border">
-        <Button variant="ghost" className="w-full justify-between">
-          <span>Project breakdown</span>
-          <ChevronDown className="h-4 w-4" />
-        </Button>
-      </div>
+      <ProjectBreakdown workspaceId={workspaceId} period={period} />
 
       <p className="text-sm text-muted-foreground">
         This is a temporary offering until the beginning of 2026 as we refine our pricing model.{" "}
