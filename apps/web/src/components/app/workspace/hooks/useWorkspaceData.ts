@@ -199,20 +199,28 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Uses retry-with-backoff to handle the race condition where the personal workspace
   // hasn't been created yet after signup (the server creates it asynchronously).
   useEffect(() => {
+    let cancelled = false
+    
     const loadWorkspaces = async () => {
       if (!userId || !store?.workspaceCollection) {
         setIsLoadingWorkspaces(false)
         return
       }
 
-      const maxRetries = 4
-      const backoffMs = [0, 500, 1000, 2000] // Immediate, then 0.5s, 1s, 2s
+      // Generous retry window to handle async workspace creation after signup.
+      // The server's Better Auth `after` hook creates the workspace asynchronously,
+      // so it may not exist when the first request fires.
+      const maxRetries = 8
+      const backoffMs = [0, 300, 600, 1000, 1500, 2000, 3000, 4000] // ~12.4s total window
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
+        if (cancelled) return
+        
         try {
           if (attempt > 0) {
             console.log(`[useWorkspaceData] Retry ${attempt}/${maxRetries - 1} loading workspaces (backoff: ${backoffMs[attempt]}ms)`)
             await new Promise(resolve => setTimeout(resolve, backoffMs[attempt]))
+            if (cancelled) return
           }
 
           setIsLoadingWorkspaces(true)
@@ -233,21 +241,26 @@ export function useWorkspaceData(): WorkspaceDataState {
           // Done — either we have workspaces or we've exhausted retries
           break
         } catch (error) {
-          // On 400/network errors, retry (workspace may not exist yet after signup)
+          // On 400/network errors, retry silently (workspace may not exist yet after signup)
           if (attempt < maxRetries - 1) {
-            console.warn(`[useWorkspaceData] Error loading workspaces (attempt ${attempt + 1}), will retry:`, error)
+            // Only log at debug level during retries to avoid console error spam
+            console.debug(`[useWorkspaceData] Workspace load attempt ${attempt + 1} failed, will retry:`, error)
             continue
           }
           console.error("[useWorkspaceData] Error loading workspaces (final attempt):", error)
         }
       }
 
-      setIsLoadingWorkspaces(false)
-      // User transition complete - safe to make workspace-scoped requests
-      setUserTransitioning(false)
+      if (!cancelled) {
+        setIsLoadingWorkspaces(false)
+        // User transition complete - safe to make workspace-scoped requests
+        setUserTransitioning(false)
+      }
     }
 
     loadWorkspaces()
+    
+    return () => { cancelled = true }
   }, [userId, store, workspacesRefetchCounter])
 
   // Function to trigger a refetch of workspaces
@@ -437,11 +450,20 @@ export function useWorkspaceData(): WorkspaceDataState {
     setFoldersRefetchCounter((c) => c + 1)
   }, [])
 
-  // Reload starred projects from API when user changes or refetch is triggered
+  // Reload starred projects from API when user changes or refetch is triggered.
+  // Deferred until workspaces are loaded to avoid race condition on signup where
+  // the workspace hasn't been created yet (the server creates it asynchronously).
   useEffect(() => {
     const loadStarred = async () => {
       if (!userId || !store?.starredProjectCollection || userTransitioning) {
         setIsLoadingStarred(false)
+        return
+      }
+
+      // Wait until workspaces have loaded before fetching starred projects.
+      // On fresh signup, the workspace may not exist yet which can cause 400 errors
+      // on starred-projects API since auth/membership isn't established.
+      if (isLoadingWorkspaces) {
         return
       }
 
@@ -450,14 +472,15 @@ export function useWorkspaceData(): WorkspaceDataState {
         // Use SDK collection (v2 API routes)
         await store.starredProjectCollection.loadAll({ userId })
       } catch (error) {
-        console.error("[useWorkspaceData] Error loading starred projects:", error)
+        // Silently handle errors during initial load — starred projects are non-critical
+        console.debug("[useWorkspaceData] Error loading starred projects:", error)
       } finally {
         setIsLoadingStarred(false)
       }
     }
 
     loadStarred()
-  }, [userId, store, starredRefetchCounter, userTransitioning])
+  }, [userId, store, starredRefetchCounter, userTransitioning, isLoadingWorkspaces])
 
   // Function to trigger a refetch of starred projects
   const refetchStarredProjects = useCallback(() => {

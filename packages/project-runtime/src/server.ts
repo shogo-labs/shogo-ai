@@ -2460,10 +2460,14 @@ app.post('/preview/restart', async (c) => {
       markStep('startViteBuildWatch')
     }
     
-    // 6. Start Hono server for Expo
+    // 6. Start Hono/API server if server.ts exists
+    // For Expo: required (serves both API routes and static files)
+    // For plain Vite: optional (serves API routes like /api/* if the project has a backend)
+    const serverPath = join(PROJECT_DIR, 'server.ts')
+    const hasServerFile = existsSync(serverPath)
+    
     if (isExpo) {
-      const serverPath = join(PROJECT_DIR, 'server.ts')
-      if (!existsSync(serverPath)) {
+      if (!hasServerFile) {
         const totalMs = Math.round(performance.now() - startTime)
         return c.json({ success: false, error: 'Expo server.ts not found', timings: { steps: timings, totalMs } }, 500)
       }
@@ -2502,6 +2506,51 @@ app.post('/preview/restart', async (c) => {
       if (!serverReady) {
         console.warn('[project-runtime] Expo Hono server may still be starting after health checks...')
       }
+    } else if (hasServerFile) {
+      // Plain Vite project with server.ts — start it for API route handling
+      // This allows projects with a Hono backend (e.g., /api/* routes) to work correctly.
+      // Without this, /api/* requests fall through to static file serving and return HTML.
+      console.log(`[project-runtime] ⏱️  Starting project API server on port ${SERVER_PORT}...`)
+      appendToConsoleLog(`--- Project API server starting on port ${SERVER_PORT} ---`, 'stdout')
+      
+      // Kill existing server process if any
+      if (serverProcess) {
+        serverProcess.kill()
+        serverProcess = null
+      }
+      
+      serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(SERVER_PORT) },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      streamProcessOutput(serverProcess, 'api-server')
+
+      // Wait for server to be ready with exponential backoff
+      let serverReady = false
+      const maxAttempts = 10
+      const baseDelayMs = 100
+
+      for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${SERVER_PORT}/`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ⏱️  Project API server ready after ${attempt} attempt(s)`)
+          }
+        } catch (e) {
+          const delay = Math.min(baseDelayMs * attempt, 500)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
+      }
+      markStep('startProjectApiServer')
+
+      if (!serverReady) {
+        console.warn('[project-runtime] Project API server may still be starting after health checks...')
+      }
     }
 
     const totalMs = Math.round(performance.now() - startTime)
@@ -2514,8 +2563,8 @@ app.post('/preview/restart', async (c) => {
     }
     console.log('[project-runtime] ════════════════════════════════════════')
 
-    const mode = isExpo ? 'expo' : 'static'
-    const port = isExpo ? EXPO_SERVER_PORT : null
+    const mode = isExpo ? 'expo' : (serverProcess ? 'static+api' : 'static')
+    const port = isExpo ? EXPO_SERVER_PORT : (serverProcess ? SERVER_PORT : null)
 
     return c.json({
       success: true,
@@ -3645,6 +3694,108 @@ app.all('/*', async (c, next) => {
   const previewPathMatch = relativePath.match(/\/api\/projects\/[^/]+\/preview(.*)/)
   if (previewPathMatch) {
     relativePath = previewPathMatch[1] || '/'
+  }
+  
+  // Pass through internal runtime endpoints to their dedicated route handlers.
+  // Without this, subdomain requests to /build-events (SSE), /build-status, etc.
+  // would fall through to static file serving and return HTML instead of the SSE stream.
+  // This is critical for the preview auto-refresh mechanism (SSE build events).
+  const runtimeInternalPaths = [
+    '/build-events',
+    '/build-status',
+    '/preview/restart',
+    '/preview/rebuild',
+    '/preview/status',
+    '/console-log',
+  ]
+  
+  if (runtimeInternalPaths.some(p => relativePath === p || relativePath.startsWith(p + '/'))) {
+    console.log(`[project-runtime] Subdomain: passing through internal endpoint ${relativePath}`)
+    return next()
+  }
+  
+  // Proxy /api/* requests to the project's backend server if one is running.
+  // For Expo: handled below via the Expo server proxy.
+  // For plain Vite: proxy to the project's Hono server started from server.ts.
+  // Without this, /api/* requests are served as static files from dist/, returning HTML.
+  if (!isExpo && serverProcess && relativePath.startsWith('/api/')) {
+    const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
+    const method = c.req.method
+    console.log(`[project-runtime] Subdomain: proxying ${method} ${relativePath} to project API server at ${targetUrl}`)
+    
+    try {
+      // Build headers for the proxy request
+      const proxyHeaders: Record<string, string> = {
+        'Host': `localhost:${SERVER_PORT}`,
+        'Accept': c.req.header('Accept') || '*/*',
+        'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+      }
+      
+      // Forward Content-Type for POST/PUT/PATCH requests
+      const contentType = c.req.header('Content-Type')
+      if (contentType) {
+        proxyHeaders['Content-Type'] = contentType
+      }
+      
+      // Forward cookies for auth
+      const cookies = c.req.header('Cookie')
+      if (cookies) {
+        proxyHeaders['Cookie'] = cookies
+      }
+      
+      // Forward Authorization header
+      const authHeader = c.req.header('Authorization')
+      if (authHeader) {
+        proxyHeaders['Authorization'] = authHeader
+      }
+      
+      // Build fetch options
+      const fetchOptions: RequestInit = {
+        method,
+        headers: proxyHeaders,
+      }
+      
+      // Forward request body for POST/PUT/PATCH
+      if (method !== 'GET' && method !== 'HEAD') {
+        try {
+          const bodyBuffer = await c.req.arrayBuffer()
+          if (bodyBuffer.byteLength > 0) {
+            fetchOptions.body = bodyBuffer
+          }
+        } catch {
+          // No body or couldn't read body - that's ok
+        }
+      }
+      
+      const response = await fetch(targetUrl, fetchOptions)
+      
+      const responseContentType = response.headers.get('Content-Type') || 'application/json'
+      const body = await response.arrayBuffer()
+      
+      // Build response headers
+      const responseHeaders: Record<string, string> = {
+        'Content-Type': responseContentType,
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Credentials': 'true',
+      }
+      
+      // Forward Set-Cookie headers for auth
+      const setCookie = response.headers.get('Set-Cookie')
+      if (setCookie) {
+        responseHeaders['Set-Cookie'] = setCookie
+      }
+      
+      return new Response(body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[project-runtime] Subdomain API proxy error:', error)
+      return c.json({
+        error: { code: 'api_proxy_error', message: `Failed to proxy to project API server: ${error.message}` }
+      }, 502)
+    }
   }
   
   // Check if dev mode has failed too many times (circuit breaker)

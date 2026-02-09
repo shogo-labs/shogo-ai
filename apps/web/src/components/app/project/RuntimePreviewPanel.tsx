@@ -523,7 +523,13 @@ export function RuntimePreviewPanel({
             setBuildError(null)
             setBuildErrorContext(null)
             
-            // Throttle: Skip if a refresh happened in the last 2 seconds (forceRefresh may have already triggered)
+            // Cancel any pending forceRefresh fallback timeout — SSE delivered the success event
+            if (forceRefreshTimeoutRef.current) {
+              clearTimeout(forceRefreshTimeoutRef.current)
+              forceRefreshTimeoutRef.current = null
+            }
+            
+            // Throttle: Skip if a refresh happened in the last 2 seconds
             const now = Date.now()
             const timeSinceLastRefresh = now - lastForceRefreshRef.current
             const SSE_THROTTLE_MS = 2000
@@ -759,6 +765,7 @@ export function RuntimePreviewPanel({
       willThrottle: timeSinceLastRefresh < THROTTLE_MS,
       sandboxUrl: !!sandboxUrl,
       iframeLoaded,
+      buildState,
     })
     
     if (timeSinceLastRefresh < THROTTLE_MS) {
@@ -766,29 +773,31 @@ export function RuntimePreviewPanel({
       return
     }
     
-    // Only refresh if we have a sandbox URL and the iframe is loaded
+    // Only act if we have a sandbox URL and the iframe is loaded
     if (iframeRef.current && sandboxUrl && iframeLoaded) {
-      console.log('[RuntimePreviewPanel] 🔄 FORCE_REFRESH EXECUTING - refreshing iframe')
-      
       // Clear any pending refresh timeout
       if (forceRefreshTimeoutRef.current) {
         clearTimeout(forceRefreshTimeoutRef.current)
       }
       
-      setIframeLoaded(false)
+      // Show "rebuilding" overlay immediately so the user knows changes are being applied.
+      // DON'T reload the iframe yet — the build hasn't completed, so we'd just show stale content.
+      // The actual iframe reload is handled by the SSE build-events handler when state='success'.
       setIsRebuilding(true)
-      setStatusMessage('Files changed, refreshing preview...')
-      lastForceRefreshRef.current = now
+      setStatusMessage('Files changed, rebuilding preview...')
       
-      // Wait a moment for file changes to be picked up by Vite
+      // Fallback: if SSE doesn't fire a success event within 60s, force-reload the iframe.
+      // This handles edge cases where SSE disconnects or the build completes without notification.
       forceRefreshTimeoutRef.current = setTimeout(() => {
         if (iframeRef.current && sandboxUrl) {
+          console.log('[RuntimePreviewPanel] 🔄 FORCE_REFRESH FALLBACK - SSE did not report success within timeout, refreshing iframe')
+          lastForceRefreshRef.current = Date.now()
+          setIframeLoaded(false)
           const cacheBuster = Date.now()
           const separator = sandboxUrl.includes('?') ? '&' : '?'
-          console.log('[RuntimePreviewPanel] 🔄 FORCE_REFRESH setting iframe src with cacheBuster:', cacheBuster)
           iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
         }
-      }, 1000) // 1 second delay to allow Vite to pick up changes
+      }, 60000) // 60 second fallback (builds can take 18-48s)
     } else {
       console.log('[RuntimePreviewPanel] ⚠️ FORCE_REFRESH skipped - conditions not met:', {
         hasIframeRef: !!iframeRef.current,
@@ -796,7 +805,7 @@ export function RuntimePreviewPanel({
         iframeLoaded,
       })
     }
-  }, [forceRefresh, sandboxUrl, iframeLoaded])
+  }, [forceRefresh, sandboxUrl, iframeLoaded, buildState])
 
   // Cleanup on unmount
   useEffect(() => {
