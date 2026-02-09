@@ -899,6 +899,40 @@ export function buildSystemPrompt(
 
 const app = new Hono()
 
+// =============================================================================
+// Global Error Handling
+// =============================================================================
+// Hono-level error handler: catches unhandled errors in route handlers and
+// returns a structured JSON response instead of crashing the Bun process.
+app.onError((err, c) => {
+  console.error(`[API] Unhandled route error on ${c.req.method} ${c.req.path}:`, err.message)
+  // Don't expose internal error details in production
+  const isProduction = process.env.NODE_ENV === 'production'
+  return c.json({
+    error: {
+      code: 'internal_error',
+      message: isProduction ? 'An internal error occurred' : err.message,
+    },
+  }, 500)
+})
+
+// Process-level handlers: catch unhandled promise rejections and uncaught
+// exceptions that escape Hono's error boundary. Log them instead of crashing.
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[API] Unhandled promise rejection:', reason?.message || reason)
+  if (reason?.stack) {
+    console.error('[API] Stack:', reason.stack)
+  }
+})
+
+process.on('uncaughtException', (err: Error) => {
+  console.error('[API] Uncaught exception:', err.message)
+  if (err.stack) {
+    console.error('[API] Stack:', err.stack)
+  }
+  // For truly fatal errors (OOM, etc.), still crash — but DB/network errors should not kill the process
+})
+
 // CORS origins from environment - supports comma-separated list
 // Defaults to localhost for development
 const getAllowedOrigins = (): string[] => {

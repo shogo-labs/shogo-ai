@@ -159,14 +159,25 @@ export async function provisionDatabase(
         // Create role atomically using PL/pgSQL DO block.
         // This avoids the TOCTOU race where two concurrent calls both see the role
         // doesn't exist and then one fails on CREATE USER.
+        //
+        // In PostgreSQL 16+, CREATEROLE no longer grants automatic admin membership
+        // on created roles. We must explicitly GRANT the new role to the current user
+        // so that CREATE DATABASE ... OWNER works (requires SET ROLE capability).
         await client.query(`
           DO $$
           BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${username}') THEN
               CREATE USER "${username}" WITH PASSWORD '${password}';
+              GRANT "${username}" TO CURRENT_USER;
               RAISE NOTICE 'Created role %', '${username}';
             ELSE
               ALTER USER "${username}" WITH PASSWORD '${password}';
+              -- Ensure membership exists (idempotent, handles upgrade from PG <16)
+              BEGIN
+                GRANT "${username}" TO CURRENT_USER;
+              EXCEPTION WHEN duplicate_object THEN
+                -- Already a member, ignore
+              END;
               RAISE NOTICE 'Role % already exists, updated password', '${username}';
             END IF;
           END
