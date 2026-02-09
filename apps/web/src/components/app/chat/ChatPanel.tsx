@@ -804,6 +804,17 @@ export const ChatPanel = observer(function ChatPanel({
   // This allows retry to work even if AI SDK's reload() fails
   const lastUserInputRef = useRef<{ content: string; imageData?: string[] } | null>(null)
 
+  // Message queue for sequential processing (like Cursor)
+  // Messages are queued and processed one at a time, waiting for each to complete
+  type QueuedMessage = {
+    id: string
+    content: string
+    imageData?: string[]
+    selectedAgentMode?: AgentMode
+  }
+  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([])
+  const isProcessingQueueRef = useRef(false)
+
   // Initialize ccSessionId from existing session (task-cc-chatpanel-integration)
   // This ensures session continuity when reloading the page or switching sessions
   useEffect(() => {
@@ -1924,12 +1935,9 @@ export const ChatPanel = observer(function ChatPanel({
     return match?.[1] || "image/png" // Default to PNG if parsing fails
   }, [])
 
-  // chat-session-sync-fix: Handle message submission using v3 sendMessage() API
-  // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
-  // task-chatpanel-sendmessage: Extended to support imageData parameter
-  // Support multiple images: imageData is always an array (or undefined)
-  // agent-mode: Extended to support agentMode parameter for model selection
-  const handleSendMessage = useCallback(
+  // Internal function that actually sends a message (used by queue processor)
+  // This is extracted from handleSendMessage to allow queue processing
+  const sendMessageInternal = useCallback(
     async (content: string, imageData?: string[], selectedAgentMode?: AgentMode) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
@@ -2026,6 +2034,7 @@ export const ChatPanel = observer(function ChatPanel({
         )
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
+        throw err // Re-throw to allow queue processor to handle errors
       } finally {
         // Clear the flag after sendMessage completes (AI SDK has added the message)
         // Since we await sendMessage, the AI SDK should have already added the message
@@ -2033,7 +2042,169 @@ export const ChatPanel = observer(function ChatPanel({
         isSendingMessageRef.current = false
       }
     },
-    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId, projectId, agentMode]
+    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId, projectId, agentMode, actions]
+  )
+
+  // Queue processor: processes messages one at a time, waiting for each to complete
+  // This ensures messages are sent sequentially like in Cursor
+  const processMessageQueue = useCallback(async () => {
+    // Prevent concurrent processing
+    if (isProcessingQueueRef.current) {
+      return
+    }
+
+    // Wait for current streaming to complete
+    if (isStreaming) {
+      return
+    }
+
+    // Validate session exists before processing
+    if (!currentSessionId) {
+      return
+    }
+
+    // Get current queue state
+    setMessageQueue((queue) => {
+      if (queue.length === 0) {
+        return queue
+      }
+
+      // Process the first message in the queue
+      const [nextMessage, ...remainingQueue] = queue
+      
+      // Mark as processing
+      isProcessingQueueRef.current = true
+
+      // Process the message asynchronously
+      // Note: sendMessageInternal returns when the request is sent, not when streaming completes
+      // We rely on the useEffect below to detect when streaming completes and process the next message
+      sendMessageInternal(
+        nextMessage.content,
+        nextMessage.imageData,
+        nextMessage.selectedAgentMode
+      )
+        .catch((err) => {
+          console.error("[ChatPanel] Error processing queued message:", err)
+          // On error, clear processing flag so queue can continue
+          isProcessingQueueRef.current = false
+        })
+
+      // Return remaining queue (message is now being sent)
+      return remainingQueue
+    })
+  }, [isStreaming, sendMessageInternal, currentSessionId])
+
+  // Process queue when streaming completes (status changes from streaming/submitted to ready)
+  // This ensures we wait for the full response before processing the next message
+  useEffect(() => {
+    if (!isStreaming) {
+      // Streaming has completed, clear the processing flag
+      if (isProcessingQueueRef.current) {
+        isProcessingQueueRef.current = false
+      }
+      // Process next message in queue if available and session is valid
+      if (!isProcessingQueueRef.current && messageQueue.length > 0 && currentSessionId) {
+        processMessageQueue()
+      }
+    }
+  }, [isStreaming, messageQueue.length, processMessageQueue, currentSessionId])
+
+  // Clear queue when session changes to prevent sending to wrong session
+  useEffect(() => {
+    if (messageQueue.length > 0) {
+      setMessageQueue([])
+      isProcessingQueueRef.current = false
+    }
+  }, [currentSessionId])
+
+  // Queue action callbacks for UI
+  const handleSendQueuedMessageNow = useCallback(
+    async (messageId: string) => {
+      // Prevent sending if already streaming or if no session
+      if (isStreaming || !currentSessionId) {
+        return
+      }
+
+      const message = messageQueue.find((m) => m.id === messageId)
+      if (!message) return
+
+      // Remove from queue first to prevent duplicate processing
+      setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
+
+      // Send immediately (bypass queue)
+      try {
+        await sendMessageInternal(message.content, message.imageData, message.selectedAgentMode)
+      } catch (err) {
+        // If send fails, don't re-add to queue (user can retry manually)
+        console.error("[ChatPanel] Failed to send queued message now:", err)
+      }
+    },
+    [messageQueue, sendMessageInternal, isStreaming, currentSessionId]
+  )
+
+  const handleRemoveQueuedMessage = useCallback((messageId: string) => {
+    setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
+  }, [])
+
+  const handleReorderQueuedMessage = useCallback(
+    (messageId: string, direction: 'up' | 'down') => {
+      setMessageQueue((queue) => {
+        const index = queue.findIndex((m) => m.id === messageId)
+        if (index === -1) return queue
+
+        const newQueue = [...queue]
+        if (direction === 'up' && index > 0) {
+          ;[newQueue[index - 1], newQueue[index]] = [newQueue[index], newQueue[index - 1]]
+        } else if (direction === 'down' && index < newQueue.length - 1) {
+          ;[newQueue[index], newQueue[index + 1]] = [newQueue[index + 1], newQueue[index]]
+        }
+        return newQueue
+      })
+    },
+    []
+  )
+
+  // chat-session-sync-fix: Handle message submission using v3 sendMessage() API
+  // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
+  // task-chatpanel-sendmessage: Extended to support imageData parameter
+  // Support multiple images: imageData is always an array (or undefined)
+  // agent-mode: Extended to support agentMode parameter for model selection
+  // message-queue: Messages are now queued and processed sequentially
+  const handleSendMessage = useCallback(
+    async (content: string, imageData?: string[], selectedAgentMode?: AgentMode) => {
+      // Validate session exists
+      if (!currentSessionId) {
+        console.warn("[ChatPanel] No session ID - message will be lost!")
+        return
+      }
+
+      // Normalize imageData to array for processing (backward compatibility)
+      const imageArray = imageData || []
+
+      if (!content.trim() && imageArray.length === 0) {
+        return
+      }
+
+      const trimmedContent = content.trim()
+
+      // If currently streaming or sending, add to queue
+      if (isStreaming || isProcessingQueueRef.current || isSendingMessageRef.current) {
+        setMessageQueue((queue) => [
+          ...queue,
+          {
+            id: `queue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            content: trimmedContent,
+            imageData: imageArray,
+            selectedAgentMode,
+          },
+        ])
+        return
+      }
+
+      // If not streaming, send immediately
+      await sendMessageInternal(trimmedContent, imageArray, selectedAgentMode)
+    },
+    [isStreaming, sendMessageInternal, currentSessionId]
   )
 
   // Handle form submit from ChatInput
@@ -2329,6 +2500,10 @@ export const ChatPanel = observer(function ChatPanel({
             onAgentModeChange={setAgentMode}
             isPro={hasActiveSubscription}
             onUpgradeClick={handleUpgradeClick}
+            queuedMessages={messageQueue}
+            onSendQueuedMessageNow={handleSendQueuedMessageNow}
+            onRemoveQueuedMessage={handleRemoveQueuedMessage}
+            onReorderQueuedMessage={handleReorderQueuedMessage}
           />
         </div>
       </div>
