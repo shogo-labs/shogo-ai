@@ -17,6 +17,7 @@
 import { parseArgs } from 'util'
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
 import { resolve, dirname } from 'path'
+import { execSync } from 'child_process'
 import { generateFromPrisma, type GenerateOptions, type OutputConfig } from '../src/generators/prisma-generator'
 import { 
   transformSchemaFile, 
@@ -74,6 +75,10 @@ const { values, positionals } = parseArgs({
       type: 'boolean',
       short: 'v',
     },
+    // Docs-specific options
+    'no-docs-build': {
+      type: 'boolean',
+    },
     // DB-specific options
     push: {
       type: 'boolean',
@@ -100,7 +105,7 @@ Usage:
   shogo <command> [options]
 
 Commands:
-  generate              Generate routes, types, and stores from Prisma schema
+  generate              Generate routes, types, stores, and docs from Prisma schema
   db switch <provider>  Switch Prisma schema provider (sqlite | postgres)
   db status             Show current schema provider
 
@@ -110,6 +115,7 @@ Generate Options:
   -o, --output <path>    Output directory (legacy single-dir mode)
   -m, --models <list>    Comma-separated list of models to include
   -e, --exclude <list>   Comma-separated list of models to exclude
+  --no-docs-build        Skip building the Docusaurus docs site after generation
 
 DB Options:
   -s, --schema <path>    Path to Prisma schema (default: ./prisma/schema.prisma)
@@ -149,6 +155,10 @@ Config File (shogo.config.json):
         "dir": "./apps/web/src/generated",
         "generate": ["types", "stores"],
         "perModel": true
+      },
+      {
+        "dir": "./dev-docs",
+        "generate": ["docs"]
       }
     ]
   }
@@ -458,18 +468,73 @@ async function main() {
       }
     }
 
+    // Build Docusaurus docs site if docs were generated
+    if (outputs) {
+      const docsOutput = outputs.find(o => o.generate.includes('docs'))
+      const skipDocsBuild = values['no-docs-build'] as boolean
+
+      if (docsOutput && !skipDocsBuild) {
+        const docsDir = docsOutput.dir
+        const absDocsDir = docsDir.startsWith('/') ? docsDir : resolve(cwd, docsDir)
+
+        console.log('')
+        console.log('📖 Building documentation site...')
+
+        try {
+          // Install dependencies if node_modules doesn't exist
+          const nodeModulesPath = resolve(absDocsDir, 'node_modules')
+          if (!existsSync(nodeModulesPath)) {
+            console.log('   Installing dependencies...')
+            execSync('bun install', {
+              cwd: absDocsDir,
+              stdio: values.verbose ? 'inherit' : 'pipe',
+            })
+            console.log('   ✓ Dependencies installed')
+          }
+
+          // Build the static site
+          console.log('   Building static site...')
+          execSync('bunx docusaurus build', {
+            cwd: absDocsDir,
+            stdio: values.verbose ? 'inherit' : 'pipe',
+          })
+
+          console.log(`   ✓ Static site built at ${docsDir}/build`)
+          console.log('')
+          console.log(`📄 Docs available at: ${docsDir}/build/index.html`)
+          console.log(`   Serve locally: bunx serve ${docsDir}/build`)
+        } catch (buildError) {
+          console.log('')
+          console.log('⚠️  Docs build failed (docs files were still generated):')
+          console.log(`   ${buildError instanceof Error ? buildError.message : buildError}`)
+          console.log(`   You can build manually: cd ${docsDir} && bun install && bunx docusaurus build`)
+        }
+      }
+    }
+
     console.log('')
     console.log('Next steps:')
     if (outputs) {
       const hasRoutes = outputs.some(o => o.generate.includes('routes'))
       const hasStores = outputs.some(o => o.generate.includes('stores'))
+      const hasDocs = outputs.some(o => o.generate.includes('docs'))
+      const skipDocsBuild = values['no-docs-build'] as boolean
+      let step = 1
       
       if (hasRoutes) {
-        console.log('  1. Customize hooks in your API generated/*.hooks.ts files')
-        console.log('  2. Mount routes with createAllRoutes(prisma) in your server')
+        console.log(`  ${step++}. Customize hooks in your API generated/*.hooks.ts files`)
+        console.log(`  ${step++}. Mount routes with createAllRoutes(prisma) in your server`)
       }
       if (hasStores) {
-        console.log('  3. Import stores and use with DomainProvider in your app')
+        console.log(`  ${step++}. Import stores and use with DomainProvider in your app`)
+      }
+      if (hasDocs && skipDocsBuild) {
+        const docsDir = outputs.find(o => o.generate.includes('docs'))?.dir || './docs'
+        console.log(`  ${step++}. Install docs dependencies: cd ${docsDir} && bun install`)
+        console.log(`  ${step++}. Build docs site: cd ${docsDir} && bunx docusaurus build`)
+      } else if (hasDocs) {
+        const docsDir = outputs.find(o => o.generate.includes('docs'))?.dir || './docs'
+        console.log(`  ${step++}. Serve docs: bunx serve ${docsDir}/build`)
       }
     } else {
       console.log('  1. Review generated hooks in hooks.ts')

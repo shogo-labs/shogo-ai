@@ -54,10 +54,10 @@ function toRoutePath(name: string): string {
 /**
  * Generate MST collection file for a single Prisma model
  */
-export function generateMSTCollection(model: PrismaModel): GeneratedMSTCollectionFile {
+export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 'tsx' = 'tsx'): GeneratedMSTCollectionFile {
   const modelName = model.name
   const modelLower = toCamelCase(modelName)
-  const fileName = `${toFileName(modelName)}.collection.ts`
+  const fileName = `${toFileName(modelName)}.collection.${fileExtension}`
   const routePath = toRoutePath(modelName)
 
   // Get relation field names for transformForMST
@@ -450,8 +450,8 @@ export function generateMSTCollection(model: PrismaModel): GeneratedMSTCollectio
 /**
  * Generate MST collections for all Prisma models
  */
-export function generateMSTCollections(models: PrismaModel[]): GeneratedMSTCollectionFile[] {
+export function generateMSTCollections(models: PrismaModel[], fileExtension: 'ts' | 'tsx' = 'tsx'): GeneratedMSTCollectionFile[] {
   return models
     .filter(model => getIdField(model))
-    .map(model => generateMSTCollection(model))
+    .map(model => generateMSTCollection(model, fileExtension))
 }

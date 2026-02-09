@@ -61,36 +61,54 @@ if [ ! -f "$PROJECT_DIR/package.json" ]; then
   cat > "$PROJECT_DIR/package.json" << 'EOF'
 {
   "name": "project",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently \"bun run dev:server\" \"bun run dev:client\"",
+    "dev:server": "bun --watch run server.tsx",
+    "dev:client": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "start": "bun run server.tsx",
+    "generate": "bun scripts/generate.ts",
+    "db:generate": "bunx --bun prisma generate",
+    "db:push": "bunx --bun prisma db push",
+    "db:reset": "bunx --bun prisma db push --force-reset --accept-data-loss",
+    "db:studio": "bunx --bun prisma studio"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "@prisma/adapter-pg": "^7.3.0",
+    "@prisma/client": "^7.3.0",
+    "hono": "^4.0.0",
+    "mobx": "^6.13.0",
+    "mobx-react-lite": "^4.0.0",
+    "pg": "^8.11.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.1",
-    "vite": "^5.4.2"
+    "@prisma/internals": "^7.3.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.1.2",
+    "concurrently": "^8.2.0",
+    "prisma": "^7.3.0",
+    "typescript": "^5.0.0",
+    "vite": "^7.3.1",
+    "vite-tsconfig-paths": "^5.0.0"
   }
 }
 EOF
   
   cat > "$PROJECT_DIR/src/main.tsx" << 'EOF'
-import React from 'react'
-import ReactDOM from 'react-dom/client'
+import { createRoot } from 'react-dom/client'
 import App from './App'
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-)
+const root = document.getElementById('root')
+if (root) {
+  createRoot(root).render(<App />)
+}
 EOF
   
   cat > "$PROJECT_DIR/src/App.tsx" << 'EOF'
@@ -110,7 +128,7 @@ EOF
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Project</title>
+    <title>Shogo App</title>
   </head>
   <body>
     <div id="root"></div>
@@ -204,53 +222,14 @@ fi
 
 # Step 2: Detect project type
 bg_log "Step 2: Detecting project type..."
-IS_TANSTACK_START=false
-if grep -q "@tanstack/react-start" "$PROJECT_DIR/package.json" 2>/dev/null; then
-  IS_TANSTACK_START=true
-  bg_log "TanStack Start project detected"
-else
-  bg_log "Plain Vite project detected"
-  
-  # Generate vite config (only if not restored from S3)
-  if [ "$RESTORED_FROM_S3" = false ]; then
-    PREVIEW_BASE="/api/projects/${PROJECT_ID}/preview/"
-    cat > "$PROJECT_DIR/vite.config.ts" << EOF
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-
-// HMR configuration for iframe embedding:
-// - In production (HTTPS): use wss:// on port 443 via proxy, path '/' avoids base path in WS URL
-// - Locally: let Vite auto-detect (ws:// on dev server port)
-const isProduction = process.env.NODE_ENV === 'production' || process.env.SHOGO_RUNTIME === 'true'
-const hmrConfig = isProduction ? { clientPort: 443, protocol: 'wss' as const, path: '/' } : undefined
-
-export default defineConfig({
-  plugins: [react()],
-  base: '${PREVIEW_BASE}',
-  server: {
-    host: '0.0.0.0',
-    port: 5173,
-    cors: true,
-    headers: { 'X-Frame-Options': 'ALLOWALL' },
-    hmr: hmrConfig,
-  },
-  build: {
-    target: 'esnext',
-    minify: false,
-  },
-})
-EOF
-  fi
-fi
+bg_log "Vite + Hono project detected"
 
 # Step 3: Build (skip if restored from S3 with existing build)
 bg_log "Step 3: Checking build status..."
 STEP_START=$(date +%s%3N)
 
 BUILD_EXISTS=false
-if [ "$IS_TANSTACK_START" = true ] && [ -f "$PROJECT_DIR/.output/server/index.mjs" ]; then
-  BUILD_EXISTS=true
-elif [ "$IS_TANSTACK_START" = false ] && [ -d "$PROJECT_DIR/dist" ]; then
+if [ -d "$PROJECT_DIR/dist" ]; then
   BUILD_EXISTS=true
 fi
 
@@ -278,18 +257,27 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
   bg_log "Step 4: Running prisma db push..."
   STEP_START=$(date +%s%3N)
   
-  # FIXED: Wait for PostgreSQL to be ready before running Prisma commands
-  # This prevents "Connection reset by peer" errors during startup race condition
-  bg_log "Waiting for PostgreSQL to be ready..."
+  # Wait for PostgreSQL to be ready before running Prisma commands
+  # Supports both local sidecar (localhost) and remote shared cluster (CloudNativePG)
+  # Parse host from DATABASE_URL, fallback to localhost
+  PG_HOST="localhost"
+  PG_PORT="5432"
+  if [ -n "$DATABASE_URL" ]; then
+    # Extract host and port from postgres://user:pass@host:port/db
+    PG_HOST=$(echo "$DATABASE_URL" | sed -n 's|.*@\([^:/]*\).*|\1|p')
+    PG_PORT=$(echo "$DATABASE_URL" | sed -n 's|.*@[^:]*:\([0-9]*\)/.*|\1|p')
+    PG_PORT="${PG_PORT:-5432}"
+  fi
+  bg_log "Waiting for PostgreSQL at ${PG_HOST}:${PG_PORT}..."
   MAX_RETRIES=30
   RETRY_COUNT=0
   PG_READY=false
   
   while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    # Try connecting to postgres - use simple query to verify readiness
-    if psql -h localhost -U postgres -d postgres -c "SELECT 1" > /dev/null 2>&1; then
+    # Try TCP connection check (works for both local and remote postgres)
+    if nc -z "$PG_HOST" "$PG_PORT" 2>/dev/null || (echo > /dev/tcp/"$PG_HOST"/"$PG_PORT") 2>/dev/null; then
       PG_READY=true
-      bg_log "PostgreSQL is ready (attempt $((RETRY_COUNT + 1)))"
+      bg_log "PostgreSQL is ready at ${PG_HOST}:${PG_PORT} (attempt $((RETRY_COUNT + 1)))"
       break
     fi
     RETRY_COUNT=$((RETRY_COUNT + 1))
@@ -297,7 +285,7 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
   done
   
   if [ "$PG_READY" = false ]; then
-    bg_log "WARNING: PostgreSQL readiness check timed out after ${MAX_RETRIES} attempts"
+    bg_log "WARNING: PostgreSQL readiness check timed out after ${MAX_RETRIES} attempts at ${PG_HOST}:${PG_PORT}"
     bg_log "Continuing anyway - Prisma may fail"
   fi
   
@@ -325,45 +313,7 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
   fi
 fi
 
-# Step 5: Start Nitro server if TanStack Start
-if [ "$IS_TANSTACK_START" = true ] && [ -f "$PROJECT_DIR/.output/server/index.mjs" ]; then
-  bg_log "Step 5: Starting TanStack Start server..."
-  STEP_START=$(date +%s%3N)
-  
-  # FIXED: Verify build assets exist before starting Nitro server
-  ASSETS_DIR="$PROJECT_DIR/.output/public/assets"
-  if [ ! -d "$ASSETS_DIR" ]; then
-    bg_log "ERROR: Build assets missing (.output/public/assets not found)"
-    bg_log "Triggering rebuild to fix missing assets..."
-    bun --bun vite build 2>&1 || true
-  else
-    # Check for required JS bundles
-    ROUTES_COUNT=$(ls -1 "$ASSETS_DIR"/routes-*.js 2>/dev/null | wc -l)
-    MAIN_COUNT=$(ls -1 "$ASSETS_DIR"/main-*.js 2>/dev/null | wc -l)
-    
-    if [ "$ROUTES_COUNT" -eq 0 ] || [ "$MAIN_COUNT" -eq 0 ]; then
-      bg_log "ERROR: Build assets incomplete (routes: $ROUTES_COUNT, main: $MAIN_COUNT)"
-      bg_log "Triggering rebuild to fix incomplete assets..."
-      bun --bun vite build 2>&1 || true
-    else
-      bg_log "Build assets verified: routes=$ROUTES_COUNT, main=$MAIN_COUNT"
-    fi
-  fi
-  
-  PORT=3000 bun run "$PROJECT_DIR/.output/server/index.mjs" &
-  
-  # Wait for server to be ready (max 2s with exponential backoff)
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    if curl -sf http://localhost:3000/ > /dev/null 2>&1; then
-      bg_log "Nitro server ready after $i attempt(s)"
-      break
-    fi
-    sleep 0.$((i * 10))  # 0.1s, 0.2s, 0.3s, etc.
-  done
-  
-  STEP_END=$(date +%s%3N)
-  bg_log "Nitro server started (took $((STEP_END - STEP_START))ms)"
-fi
+# Step 5: Complete (no separate server needed - Hono runs standalone)
 
 echo "ready" > "$BUILD_STATUS_FILE"
 TOTAL_END=$(date +%s%3N)

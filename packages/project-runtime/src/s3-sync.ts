@@ -87,7 +87,7 @@ export class S3Sync {
       region: config.region || process.env.S3_REGION || 'us-east-1',
       forcePathStyle: config.forcePathStyle ?? (process.env.S3_FORCE_PATH_STYLE === 'true'),
       // Exclude patterns - these won't be included in the zip
-      // IMPORTANT: We INCLUDE node_modules, .output, dist, build, .nitro
+      // IMPORTANT: We INCLUDE node_modules and dist
       // This eliminates the need for bun install and vite build on cold start
       exclude: config.exclude || [
         '.DS_Store',      // macOS metadata
@@ -215,7 +215,7 @@ export class S3Sync {
       const fileCount = await this.countFiles(this.config.localDir)
       const allFiles = await this.listLocalFiles()
       const hasNodeModules = allFiles.some(f => f.includes('/node_modules/'))
-      const hasBuildOutput = allFiles.some(f => f.includes('/.output/') || f.includes('/dist/'))
+      const hasBuildOutput = allFiles.some(f => f.includes('/dist/'))
       
       this.stats.downloaded = fileCount
       this.stats.lastSync = new Date()
@@ -242,7 +242,7 @@ export class S3Sync {
 
   /**
    * Create and upload project archive to S3.
-   * INCLUDES: node_modules, .output, dist, build (for fast cold starts)
+   * INCLUDES: node_modules, dist (for fast cold starts)
    */
   async uploadAll(deleteOrphans: boolean = false): Promise<SyncStats> {
     const archiveKey = this.getArchiveKey()
@@ -270,7 +270,7 @@ export class S3Sync {
 
       // Log breakdown of what's being archived
       const nodeModulesFiles = filesToInclude.filter(f => f.includes('/node_modules/')).length
-      const outputFiles = filesToInclude.filter(f => f.includes('/.output/') || f.includes('/dist/')).length
+      const outputFiles = filesToInclude.filter(f => f.includes('/dist/')).length
       const sourceFiles = filesToInclude.length - nodeModulesFiles - outputFiles
       console.log(`[S3Sync] Archive contents: ${sourceFiles} source, ${nodeModulesFiles} node_modules, ${outputFiles} build output`)
 

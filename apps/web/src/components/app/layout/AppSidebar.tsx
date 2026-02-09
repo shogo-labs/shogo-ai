@@ -6,7 +6,7 @@
  * - Workspace switcher
  * - Navigation sections (Home, Search)
  * - Projects section with expandable Recent and All projects
- * - Resources section (Discover, Templates, Learn)
+ * - Resources section (Templates)
  * - User avatar and inbox at bottom
  *
  * Inspired by Lovable.dev's sidebar design for better navigation UX.
@@ -22,9 +22,7 @@ import {
   LayoutGrid,
   Star,
   Users,
-  Compass,
   FileCode2,
-  BookOpen,
   ChevronDown,
   ChevronRight,
   PanelLeftClose,
@@ -40,8 +38,10 @@ import {
   X,
   Building2,
   Loader2,
+  Shield,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useSessionContext } from "@/contexts/SessionProvider"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -727,6 +727,7 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
   const store = useSDKDomain() as IDomainStore
   const actions = useDomainActions()
   const { auth } = useDomains() // auth stays with legacy for now
+  const sessionCtx = useSessionContext()
 
   // Sidebar collapse state - persisted to localStorage
   const [internalCollapsed, setInternalCollapsed] = useState(() => {
@@ -879,36 +880,48 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
         collapsed ? "justify-center px-2" : "justify-between px-4"
       )}>
         {!collapsed && (
-          <Link to="/" className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-              <span className="text-white font-bold text-sm">S</span>
-            </div>
-            <span className="font-semibold">Shogo</span>
-          </Link>
+          <>
+            <Link to="/" className="flex items-center gap-2">
+              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+                <span className="text-white font-bold text-sm">S</span>
+              </div>
+              <span className="font-semibold">Shogo</span>
+            </Link>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleCollapse}
+              className="h-8 w-8"
+              title="Collapse sidebar"
+            >
+              <PanelLeftClose className="h-4 w-4" />
+            </Button>
+          </>
         )}
         {collapsed && (
-          <Link to="/" className="flex items-center justify-center">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-              <span className="text-white font-bold text-sm">S</span>
-            </div>
-          </Link>
+          <div className="group relative flex items-center justify-center w-full">
+            <Link 
+              to="/" 
+              className="flex items-center justify-center transition-opacity duration-150 opacity-100 group-hover:opacity-0"
+            >
+              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+                <span className="text-white font-bold text-sm">S</span>
+              </div>
+            </Link>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleCollapse}
+              className={cn(
+                "h-8 w-8 absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card border border-border rounded-full shadow-sm",
+                "opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+              )}
+              title="Expand sidebar"
+            >
+              <PanelLeft className="h-4 w-4" />
+            </Button>
+          </div>
         )}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={toggleCollapse}
-          className={cn(
-            "h-8 w-8",
-            collapsed && "absolute -right-3 top-1/2 -translate-y-1/2 bg-card border border-border rounded-full z-10 shadow-sm"
-          )}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-        >
-          {collapsed ? (
-            <PanelLeft className="h-4 w-4" />
-          ) : (
-            <PanelLeftClose className="h-4 w-4" />
-          )}
-        </Button>
       </div>
 
       {/* Workspace switcher */}
@@ -1021,25 +1034,11 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
         <NavSection title="Resources" collapsed={collapsed}>
           <div className="px-2">
             <NavItem
-              icon={Compass}
-              label="Discover"
-              to="/discover"
-              active={isActive("/discover")}
-              collapsed={collapsed}
-            />
-            <NavItem
               icon={FileCode2}
               label="Templates"
               to="/templates"
               active={isActive("/templates")}
               collapsed={collapsed}
-            />
-            <NavItem
-              icon={BookOpen}
-              label="Learn"
-              href="https://docs.shogo.ai"
-              collapsed={collapsed}
-              external
             />
           </div>
         </NavSection>
@@ -1047,8 +1046,8 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
 
       {/* Bottom section - promotional cards and user avatar */}
       <div className="mt-auto border-t border-border">
-        {/* Share card */}
-        {!collapsed && (
+        {/* Share card - not functional yet, no backend for referral/credits */}
+        {/* {!collapsed && (
           <div className="p-2">
             <button className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-card hover:bg-accent/50 transition-colors text-left">
               <div className="flex-1 min-w-0">
@@ -1058,7 +1057,7 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
               <Gift className="h-4 w-4 text-muted-foreground" />
             </button>
           </div>
-        )}
+        )} */}
 
         {/* Upgrade CTA (hidden for paid plans) */}
         {!collapsed && !isPaidPlan && (
@@ -1116,6 +1115,16 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
                   <span>Profile</span>
                 </Link>
               </DropdownMenuItem>
+
+              {/* Admin Portal link (super admins only) */}
+              {sessionCtx?.isSuperAdmin && (
+                <DropdownMenuItem asChild className="cursor-pointer">
+                  <Link to="/admin">
+                    <Shield className="mr-2 h-4 w-4" />
+                    <span>Admin Portal</span>
+                  </Link>
+                </DropdownMenuItem>
+              )}
 
               {/* Appearance submenu */}
               <DropdownMenuSub>

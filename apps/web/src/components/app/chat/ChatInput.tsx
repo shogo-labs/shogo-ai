@@ -28,11 +28,13 @@ import {
   Plus,
   Square,
   X,
-  BarChart3,
   Zap,
   Rocket,
   Lock,
   Crown,
+  File,
+  FileText,
+  Image as ImageIcon,
 } from "lucide-react"
 
 // Agent mode configuration
@@ -48,10 +50,19 @@ export interface AgentModeConfig {
   requiresPro?: boolean
 }
 
-// Maximum file size in bytes (4MB)
-const MAX_IMAGE_SIZE = 4 * 1024 * 1024
-// Maximum number of images that can be attached
-const MAX_IMAGES = 10
+// Maximum file size in bytes (10MB for all files)
+const MAX_FILE_SIZE = 10 * 1024 * 1024
+// Maximum number of files that can be attached
+const MAX_FILES = 10
+
+// File attachment type
+interface AttachedFile {
+  id: string
+  dataUrl: string
+  name: string
+  type: string
+  size: number
+}
 
 // Skills loaded from VITE_SHOGO_SKILLS env var (set at build time)
 interface SkillOption {
@@ -120,20 +131,20 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Image attachment state - support multiple images
-  // Store images with unique IDs for better key management
-  const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string }>>([])
-  const [imageError, setImageError] = useState<string | null>(null)
-  const [isProcessingImages, setIsProcessingImages] = useState(false)
+  // File attachment state - support multiple files
+  // Store files with unique IDs and metadata for better key management
+  const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
+  const [fileError, setFileError] = useState<string | null>(null)
+  const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   
-  // Use ref to track current images for sequential processing
-  const pendingImagesRef = useRef<Array<{ id: string; dataUrl: string }>>([])
+  // Use ref to track current files for sequential processing
+  const pendingFilesRef = useRef<AttachedFile[]>([])
   
   // Sync ref with state
   useEffect(() => {
-    pendingImagesRef.current = pendingImages
-  }, [pendingImages])
+    pendingFilesRef.current = pendingFiles
+  }, [pendingFiles])
 
   // Agent mode state (controlled or uncontrolled)
   // Default to "basic" for free users, "advanced" for Pro users
@@ -195,87 +206,35 @@ export function ChatInput({
   }, [])
 
   /**
-   * Generate a unique ID from a data URL
-   * Uses a hash of the entire data URL to ensure uniqueness
-   * Same image will get same ID (for duplicate detection), different images get different IDs
+   * Generate a unique ID from a file
+   * Uses file name, size, and last modified for uniqueness
    */
-  const generateImageId = useCallback((dataUrl: string): string => {
-    // Hash the entire data URL to ensure each unique image gets a unique ID
-    // This prevents false positives when different images have the same prefix
-    // Same image will always produce the same hash (for duplicate detection)
+  const generateFileId = useCallback((file: File, dataUrl: string): string => {
+    // Use file name, size, and last modified for uniqueness
     let hash = 0
-    // Use a larger sample for better uniqueness, but not the entire URL for performance
-    // Sample from beginning, middle, and end to capture image uniqueness
-    const sampleSize = Math.min(dataUrl.length, 10000) // Sample up to 10k chars
-    const step = Math.max(1, Math.floor(dataUrl.length / sampleSize))
+    const str = `${file.name}-${file.size}-${file.lastModified}`
     
-    for (let i = 0; i < dataUrl.length; i += step) {
-      const char = dataUrl.charCodeAt(i)
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i)
       hash = ((hash << 5) - hash) + char
-      hash = hash & hash // Convert to 32-bit integer
+      hash = hash & hash
     }
     
-    // Also include length to differentiate images of different sizes
-    hash = ((hash << 5) - hash) + dataUrl.length
-    hash = hash & hash
-    
-    return `img-${Math.abs(hash)}-${dataUrl.length}`
+    return `file-${Math.abs(hash)}-${file.size}`
   }, [])
 
   /**
-   * Process an image file and convert to base64 data URL
-   * Appends to the existing images array instead of replacing
-   * Includes deduplication check
+   * Format file size for display
    */
-  const processImageFile = useCallback((file: File): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      // Validate file size
-      if (file.size > MAX_IMAGE_SIZE) {
-        const error = `Image "${file.name}" must be smaller than 4MB (current: ${(file.size / 1024 / 1024).toFixed(1)}MB)`
-        reject(new Error(error))
-        return
-      }
-
-      // Validate file type
-      if (!file.type.startsWith("image/")) {
-        const error = `"${file.name}" is not an image file. Only image files are supported.`
-        reject(new Error(error))
-        return
-      }
-
-      // Read file as data URL
-      const reader = new FileReader()
-      reader.onload = () => {
-        const dataUrl = reader.result as string
-        const imageId = generateImageId(dataUrl)
-        
-        // Check for duplicates
-        setPendingImages((prev) => {
-          const isDuplicate = prev.some((img) => img.id === imageId)
-          if (isDuplicate) {
-            reject(new Error(`Image "${file.name}" is already attached`))
-            return prev
-          }
-          
-          // Check max limit
-          if (prev.length >= MAX_IMAGES) {
-            reject(new Error(`Maximum ${MAX_IMAGES} images allowed. Please remove some images first.`))
-            return prev
-          }
-          
-          return [...prev, { id: imageId, dataUrl }]
-        })
-        resolve()
-      }
-      reader.onerror = () => {
-        reject(new Error(`Failed to read image file "${file.name}"`))
-      }
-      reader.readAsDataURL(file)
-    })
-  }, [generateImageId])
+  const formatFileSize = useCallback((bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }, [])
 
   /**
    * Handle paste events to capture images from clipboard
+   * Note: Only images can be pasted from clipboard, other files need to be selected via file picker
    */
   const handlePaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items
@@ -288,26 +247,20 @@ export function ChatInput({
         const file = item.getAsFile()
         if (file) {
           e.preventDefault() // Prevent default paste behavior for images
-          setIsProcessingImages(true)
-          setImageError(null)
+          setIsProcessingFiles(true)
+          setFileError(null)
           
           try {
             // Validate file size
-            if (file.size > MAX_IMAGE_SIZE) {
-              setImageError(`Image must be smaller than 4MB (current: ${(file.size / 1024 / 1024).toFixed(1)}MB)`)
+            if (file.size > MAX_FILE_SIZE) {
+              setFileError(`File must be smaller than ${formatFileSize(MAX_FILE_SIZE)} (current: ${formatFileSize(file.size)})`)
               return
             }
 
-            // Validate file type
-            if (!file.type.startsWith("image/")) {
-              setImageError("Only image files are supported")
-              return
-            }
-
-            // Check current pending images count
-            setPendingImages((prev) => {
-              if (prev.length >= MAX_IMAGES) {
-                setImageError(`Maximum ${MAX_IMAGES} images allowed. Please remove some images first.`)
+            // Check current pending files count
+            setPendingFiles((prev) => {
+              if (prev.length >= MAX_FILES) {
+                setFileError(`Maximum ${MAX_FILES} files allowed. Please remove some files first.`)
                 return prev
               }
               return prev
@@ -320,38 +273,44 @@ export function ChatInput({
                 resolve(reader.result as string)
               }
               reader.onerror = () => {
-                reject(new Error("Failed to read image file"))
+                reject(new Error("Failed to read file"))
               }
               reader.readAsDataURL(file)
             })
 
-            // Add to pending images
-            const imageId = generateImageId(dataUrl)
-            setPendingImages((prev) => {
-              const isDuplicate = prev.some((img) => img.id === imageId)
+            // Add to pending files
+            const fileId = generateFileId(file, dataUrl)
+            setPendingFiles((prev) => {
+              const isDuplicate = prev.some((f) => f.name === file.name && f.size === file.size)
               if (isDuplicate) {
-                setImageError("Image is already attached")
+                setFileError("File is already attached")
                 return prev
               }
               
-              if (prev.length >= MAX_IMAGES) {
-                setImageError(`Maximum ${MAX_IMAGES} images allowed. Please remove some images first.`)
+              if (prev.length >= MAX_FILES) {
+                setFileError(`Maximum ${MAX_FILES} files allowed. Please remove some files first.`)
                 return prev
               }
               
-              return [...prev, { id: imageId, dataUrl }]
+              return [...prev, {
+                id: fileId,
+                dataUrl,
+                name: file.name,
+                type: file.type || "image/png",
+                size: file.size,
+              }]
             })
           } catch (error) {
-            setImageError(error instanceof Error ? error.message : "Failed to process image")
+            setFileError(error instanceof Error ? error.message : "Failed to process file")
           } finally {
-            setIsProcessingImages(false)
+            setIsProcessingFiles(false)
           }
           return
         }
       }
     }
     // For non-image content, let the default paste behavior handle it
-  }, [generateImageId])
+  }, [generateFileId, formatFileSize])
 
   /**
    * Process dropped files - shared logic for both file input and drag-drop
@@ -360,24 +319,18 @@ export function ChatInput({
     const fileArray = Array.from(files)
     if (fileArray.length === 0) return
 
-    setIsProcessingImages(true)
-    setImageError(null)
+    setIsProcessingFiles(true)
+    setFileError(null)
 
     const errors: string[] = []
-    const newImages: Array<{ id: string; dataUrl: string }> = []
+    const newFiles: AttachedFile[] = []
 
-    // Process all files and collect valid images, then update state once
+    // Process all files and collect valid files, then update state once
     for (const file of fileArray) {
       try {
         // Validate file size
-        if (file.size > MAX_IMAGE_SIZE) {
-          errors.push(`Image "${file.name}" must be smaller than 4MB (current: ${(file.size / 1024 / 1024).toFixed(1)}MB)`)
-          continue
-        }
-
-        // Validate file type
-        if (!file.type.startsWith("image/")) {
-          errors.push(`"${file.name}" is not an image file. Only image files are supported.`)
+        if (file.size > MAX_FILE_SIZE) {
+          errors.push(`File "${file.name}" must be smaller than ${formatFileSize(MAX_FILE_SIZE)} (current: ${formatFileSize(file.size)})`)
           continue
         }
 
@@ -388,59 +341,65 @@ export function ChatInput({
             resolve(reader.result as string)
           }
           reader.onerror = () => {
-            reject(new Error(`Failed to read image file "${file.name}"`))
+            reject(new Error(`Failed to read file "${file.name}"`))
           }
           reader.readAsDataURL(file)
         })
 
         // Generate ID and check for duplicates
-        const imageId = generateImageId(dataUrl)
+        const fileId = generateFileId(file, dataUrl)
         
-        // Check against already processed images in this batch (by data URL, not just ID)
-        const isDuplicateInBatch = newImages.some((img) => img.dataUrl === dataUrl)
+        // Check against already processed files in this batch (by name and size)
+        const isDuplicateInBatch = newFiles.some((f) => f.name === file.name && f.size === file.size)
         if (isDuplicateInBatch) {
-          errors.push(`Image "${file.name}" is already being added`)
+          errors.push(`File "${file.name}" is already being added`)
           continue
         }
 
-        // Check against current pending images using ref (by data URL for accuracy)
-        const currentImages = pendingImagesRef.current
-        const isDuplicateInPending = currentImages.some((img) => img.dataUrl === dataUrl)
+        // Check against current pending files using ref
+        const currentFiles = pendingFilesRef.current
+        const isDuplicateInPending = currentFiles.some((f) => f.name === file.name && f.size === file.size)
         if (isDuplicateInPending) {
-          errors.push(`Image "${file.name}" is already attached`)
+          errors.push(`File "${file.name}" is already attached`)
           continue
         }
         
         // Check max limit
-        const totalCount = currentImages.length + newImages.length
-        if (totalCount >= MAX_IMAGES) {
-          errors.push(`Maximum ${MAX_IMAGES} images allowed. Please remove some images first.`)
+        const totalCount = currentFiles.length + newFiles.length
+        if (totalCount >= MAX_FILES) {
+          errors.push(`Maximum ${MAX_FILES} files allowed. Please remove some files first.`)
           continue
         }
 
-        // Add to new images batch
-        newImages.push({ id: imageId, dataUrl })
+        // Add to new files batch
+        newFiles.push({
+          id: fileId,
+          dataUrl,
+          name: file.name,
+          type: file.type || "application/octet-stream",
+          size: file.size,
+        })
       } catch (error) {
         errors.push(error instanceof Error ? error.message : `Failed to process "${file.name}"`)
       }
     }
 
-    // Update state once with all new images (single state update to avoid race conditions)
-    if (newImages.length > 0) {
-      setPendingImages((prev) => [...prev, ...newImages])
+    // Update state once with all new files (single state update to avoid race conditions)
+    if (newFiles.length > 0) {
+      setPendingFiles((prev) => [...prev, ...newFiles])
     }
 
     // Show errors if any
     if (errors.length > 0) {
       if (errors.length === 1) {
-        setImageError(errors[0])
+        setFileError(errors[0])
       } else {
-        setImageError(`${errors.length} errors: ${errors.join('; ')}`)
+        setFileError(`${errors.length} errors: ${errors.join('; ')}`)
       }
     }
 
-    setIsProcessingImages(false)
-  }, [generateImageId])
+    setIsProcessingFiles(false)
+  }, [generateFileId, formatFileSize])
 
   /**
    * Handle file input change - support multiple file selection
@@ -504,11 +463,11 @@ export function ChatInput({
   }, [processFiles])
 
   /**
-   * Remove a specific attached image by ID
+   * Remove a specific attached file by ID
    */
-  const handleRemoveImage = useCallback((imageId: string) => {
-    setPendingImages((prev) => prev.filter((img) => img.id !== imageId))
-    setImageError(null)
+  const handleRemoveFile = useCallback((fileId: string) => {
+    setPendingFiles((prev) => prev.filter((f) => f.id !== fileId))
+    setFileError(null)
   }, [])
 
   /**
@@ -554,24 +513,24 @@ export function ChatInput({
     if (!textarea) return
 
     const trimmedContent = textarea.value.trim()
-    if ((!trimmedContent && pendingImages.length === 0) || disabled || isProcessingImages) return
+    if ((!trimmedContent && pendingFiles.length === 0) || disabled || isProcessingFiles) return
 
     // Always pass array format for consistency (even if empty or single item)
-    const imageData = pendingImages.length > 0 
-      ? pendingImages.map((img) => img.dataUrl)
+    const fileData = pendingFiles.length > 0 
+      ? pendingFiles.map((f) => f.dataUrl)
       : undefined
 
-    onSubmit(trimmedContent, imageData, agentMode)
+    onSubmit(trimmedContent, fileData, agentMode)
     textarea.value = ""
-    setPendingImages([])
-    setImageError(null)
+    setPendingFiles([])
+    setFileError(null)
 
     // Focus textarea after submit
     textarea.focus()
     
     // Reset textarea height after clearing
     resizeTextarea()
-  }, [disabled, onSubmit, pendingImages, resizeTextarea, isProcessingImages, agentMode])
+  }, [disabled, onSubmit, pendingFiles, resizeTextarea, isProcessingFiles, agentMode])
 
   /**
    * Resize textarea on mount and when dependencies change
@@ -614,53 +573,88 @@ export function ChatInput({
     [handleSubmit, showSkillPicker, filteredSkills, selectedIndex, selectSkill]
   )
 
+  /**
+   * Get file icon based on file type
+   */
+  const getFileIcon = useCallback((fileType: string) => {
+    if (fileType.startsWith("image/")) {
+      return <ImageIcon className="h-4 w-4" />
+    }
+    if (fileType.includes("pdf") || fileType.includes("document") || fileType.includes("text")) {
+      return <FileText className="h-4 w-4" />
+    }
+    return <File className="h-4 w-4" />
+  }, [])
+
   return (
     <div className="p-3">
-      {/* Image previews - shown above the input container */}
-      {pendingImages.length > 0 && (
+      {/* File previews - shown above the input container */}
+      {pendingFiles.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
-          {pendingImages.map((image, index) => (
-            <div
-              key={image.id}
-              data-testid="image-preview"
-              className="relative inline-block max-w-[200px]"
-            >
-              <img
-                src={image.dataUrl}
-                alt={`Attached image ${index + 1}`}
-                className="max-h-[100px] rounded-lg border border-border object-cover"
-              />
-              <Button
-                type="button"
-                variant="destructive"
-                size="icon"
-                className="absolute -right-2 -top-2 h-6 w-6"
-                onClick={() => handleRemoveImage(image.id)}
-                data-testid="remove-image-button"
-                disabled={isProcessingImages}
+          {pendingFiles.map((file) => {
+            const isImage = file.type.startsWith("image/")
+            return (
+              <div
+                key={file.id}
+                data-testid="file-preview"
+                className={cn(
+                  "relative rounded-lg border border-border bg-muted/50 p-2",
+                  isImage ? "max-w-[200px]" : "min-w-[150px] max-w-[250px]"
+                )}
               >
-                <X className="h-4 w-4" />
-                <span className="sr-only">Remove image</span>
-              </Button>
-            </div>
-          ))}
+                {isImage ? (
+                  <img
+                    src={file.dataUrl}
+                    alt={file.name}
+                    className="max-h-[100px] rounded border border-border object-cover w-full"
+                  />
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <div className="flex-shrink-0 text-muted-foreground">
+                      {getFileIcon(file.type)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium truncate" title={file.name}>
+                        {file.name}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {formatFileSize(file.size)}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="icon"
+                  className="absolute -right-2 -top-2 h-6 w-6"
+                  onClick={() => handleRemoveFile(file.id)}
+                  data-testid="remove-file-button"
+                  disabled={isProcessingFiles}
+                >
+                  <X className="h-4 w-4" />
+                  <span className="sr-only">Remove file</span>
+                </Button>
+              </div>
+            )
+          })}
         </div>
       )}
 
-      {/* Loading indicator while processing images */}
-      {isProcessingImages && (
-        <div className="text-xs text-muted-foreground mb-2" data-testid="image-processing">
-          Processing images...
+      {/* Loading indicator while processing files */}
+      {isProcessingFiles && (
+        <div className="text-xs text-muted-foreground mb-2" data-testid="file-processing">
+          Processing files...
         </div>
       )}
 
       {/* Error message */}
-      {imageError && (
+      {fileError && (
         <div
-          data-testid="image-error"
+          data-testid="file-error"
           className="text-sm text-destructive mb-2"
         >
-          {imageError}
+          {fileError}
         </div>
       )}
 
@@ -697,11 +691,10 @@ export function ChatInput({
           </div>
         )}
 
-        {/* Hidden file input - allow multiple selection */}
+        {/* Hidden file input - allow multiple selection, all file types */}
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
           multiple
           onChange={handleFileChange}
           className="hidden"
@@ -717,7 +710,7 @@ export function ChatInput({
           disabled={disabled}
           className={cn(
             "min-h-[60px] max-h-[200px] resize-none w-full overflow-y-auto",
-            "border-0 bg-transparent shadow-none focus-visible:ring-0",
+            "border-0 bg-transparent shadow-none !ring-0 !ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:outline-none focus-visible:border-0 focus:!ring-0 focus:!ring-offset-0 focus:outline-none focus:border-0 outline-none",
             "px-4 pt-4 pb-2 text-xs",
             disabled && "cursor-not-allowed opacity-50"
           )}
@@ -734,10 +727,10 @@ export function ChatInput({
               variant="ghost"
               size="icon"
               onClick={handleAttachClick}
-              disabled={disabled || isProcessingImages || pendingImages.length >= MAX_IMAGES}
+              disabled={disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES}
               className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
-              data-testid="attach-image-button"
-              title={pendingImages.length >= MAX_IMAGES ? `Maximum ${MAX_IMAGES} images allowed` : "Attach image"}
+              data-testid="attach-file-button"
+              title={pendingFiles.length >= MAX_FILES ? `Maximum ${MAX_FILES} files allowed` : "Attach file"}
             >
               <Plus className="h-4 w-4" />
               <span className="sr-only">Attach</span>
@@ -804,18 +797,6 @@ export function ChatInput({
 
           {/* Right side buttons */}
           <div className="flex items-center gap-1">
-            {/* Activity button */}
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              disabled={disabled}
-              className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
-            >
-              <BarChart3 className="h-4 w-4" />
-              <span className="sr-only">Activity</span>
-            </Button>
-
             {/* Send/Stop button */}
             {isStreaming ? (
               <Button
@@ -832,11 +813,11 @@ export function ChatInput({
               <Button
                 type="submit"
                 onClick={handleSubmit}
-                disabled={disabled || isProcessingImages}
+                disabled={disabled || isProcessingFiles}
                 size="icon"
                 className={cn(
                   "h-8 w-8 rounded-full",
-                  (disabled || isProcessingImages) && "pointer-events-none opacity-50"
+                  (disabled || isProcessingFiles) && "pointer-events-none opacity-50"
                 )}
               >
                 <ArrowUp className="h-4 w-4" />

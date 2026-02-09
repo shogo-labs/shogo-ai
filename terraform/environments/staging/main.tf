@@ -73,30 +73,39 @@ locals {
 data "aws_eks_cluster" "cluster" {
   count = var.bootstrap_mode ? 0 : 1
   name  = local.eks_cluster_name
-
-  depends_on = [module.eks]
 }
 
 data "aws_eks_cluster_auth" "cluster" {
   count = var.bootstrap_mode ? 0 : 1
   name  = local.eks_cluster_name
-
-  depends_on = [module.eks]
 }
 
 # Note: In bootstrap mode, these providers use dummy values since EKS doesn't exist yet.
 # After initial EKS creation, set bootstrap_mode = false and re-apply.
+#
+# Uses exec-based auth for stable provider initialization
+# (avoids chicken-and-egg issue with data source evaluation timing)
 provider "kubernetes" {
   host                   = var.bootstrap_mode ? "https://localhost" : data.aws_eks_cluster.cluster[0].endpoint
   cluster_ca_certificate = var.bootstrap_mode ? "" : base64decode(data.aws_eks_cluster.cluster[0].certificate_authority[0].data)
-  token                  = var.bootstrap_mode ? "" : data.aws_eks_cluster_auth.cluster[0].token
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", local.eks_cluster_name, "--region", var.aws_region]
+  }
 }
 
 provider "helm" {
   kubernetes {
     host                   = var.bootstrap_mode ? "https://localhost" : data.aws_eks_cluster.cluster[0].endpoint
     cluster_ca_certificate = var.bootstrap_mode ? "" : base64decode(data.aws_eks_cluster.cluster[0].certificate_authority[0].data)
-    token                  = var.bootstrap_mode ? "" : data.aws_eks_cluster_auth.cluster[0].token
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", local.eks_cluster_name, "--region", var.aws_region]
+    }
   }
 }
 
@@ -217,7 +226,11 @@ module "eks" {
 }
 
 # -----------------------------------------------------------------------------
-# RDS PostgreSQL
+# RDS PostgreSQL (LEGACY - kept during migration to CloudNativePG)
+# -----------------------------------------------------------------------------
+# This RDS instance is kept alive during the migration period.
+# Once data is migrated to CloudNativePG and verified, this module
+# and its resources can be removed.
 # -----------------------------------------------------------------------------
 module "rds" {
   source = "../../modules/rds"
@@ -226,26 +239,43 @@ module "rds" {
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnet_ids
-  # Include ALL EKS security groups: custom cluster SG, node SG, AND EKS-managed SG
   security_group_ids = [
     module.eks.cluster_security_group_id,
     module.eks.node_security_group_id,
     module.eks.eks_managed_security_group_id
   ]
 
-  instance_class          = var.rds_instance_class
-  allocated_storage       = var.rds_allocated_storage
-  backup_retention_period = var.rds_backup_retention_period
+  instance_class          = "db.t3.micro"
+  allocated_storage       = 20
+  backup_retention_period = 0
 
   database_name = "shogo"
   username      = "shogo"
 
-  # Enable encryption
-  storage_encrypted = true
-
-  # Backup configuration (Free Tier accounts need 0 retention)
+  storage_encrypted  = true
   backup_window      = "03:00-04:00"
   maintenance_window = "Mon:04:00-Mon:05:00"
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CloudNativePG Operator (new - replaces RDS)
+# -----------------------------------------------------------------------------
+# Installs the CloudNativePG operator which manages PostgreSQL clusters
+# as Kubernetes-native resources. Works identically on EKS, k3s, and bare metal.
+# PostgreSQL clusters are defined in k8s/cnpg/staging/ and applied below.
+# -----------------------------------------------------------------------------
+module "cnpg" {
+  count  = var.bootstrap_mode ? 0 : 1
+  source = "../../modules/cnpg"
+
+  depends_on = [module.eks]
+
+  chart_version = "0.23.0"
+  namespace     = "cnpg-system"
 
   tags = {
     Environment = var.environment
@@ -277,66 +307,8 @@ module "elasticache" {
   }
 }
 
-# -----------------------------------------------------------------------------
-# EFS (Elastic File System) for Project PostgreSQL Sidecars
-# -----------------------------------------------------------------------------
-# EFS supports multi-attach unlike EBS, preventing Multi-Attach errors
-# when project pods restart or scale. Used for PostgreSQL data persistence.
-module "efs" {
-  source = "../../modules/efs"
-
-  name   = "${var.project_name}-${var.environment}-projects"
-  vpc_id = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnet_ids
-  
-  # Allow access from all EKS security groups
-  security_group_ids = [
-    module.eks.cluster_security_group_id,
-    module.eks.node_security_group_id,
-    module.eks.eks_managed_security_group_id
-  ]
-
-  # Elastic throughput for variable workloads
-  throughput_mode  = "elastic"
-  performance_mode = "generalPurpose"
-
-  tags = {
-    Environment = var.environment
-    Purpose     = "project-postgres-data"
-  }
-}
-
-# -----------------------------------------------------------------------------
-# EFS StorageClass for Kubernetes
-# -----------------------------------------------------------------------------
-# This StorageClass enables dynamic provisioning of EFS volumes
-# for project PostgreSQL sidecars
-resource "kubernetes_storage_class" "efs" {
-  metadata {
-    name = "efs-sc"
-    annotations = {
-      "storageclass.kubernetes.io/is-default-class" = "false"
-    }
-  }
-
-  storage_provisioner = "efs.csi.aws.com"
-  
-  parameters = {
-    provisioningMode = "efs-ap"  # EFS Access Point mode
-    fileSystemId     = module.efs.file_system_id
-    directoryPerms   = "700"
-    # PostgreSQL runs as UID/GID 999 - set access point to match
-    uid              = "999"
-    gid              = "999"
-    basePath         = "/projects"
-  }
-
-  reclaim_policy         = "Delete"
-  volume_binding_mode    = "Immediate"
-  allow_volume_expansion = true
-
-  depends_on = [module.efs]
-}
+# NOTE: EFS module removed. PostgreSQL sidecars replaced by shared CloudNativePG cluster.
+# EFS is no longer needed for per-project database storage.
 
 # -----------------------------------------------------------------------------
 # VPC Endpoints (for private subnet access to AWS services)
@@ -523,6 +495,136 @@ module "signoz" {
 }
 
 # -----------------------------------------------------------------------------
+# CloudNativePG PostgreSQL Clusters
+# Deploy platform-pg and projects-pg clusters via kubectl
+# -----------------------------------------------------------------------------
+resource "null_resource" "cnpg_clusters" {
+  count = var.bootstrap_mode ? 0 : 1
+
+  depends_on = [
+    module.cnpg[0],
+    module.eks,
+  ]
+
+  triggers = {
+    # Re-apply when cluster manifests change
+    platform_hash = filemd5("${path.module}/../../../k8s/cnpg/staging/platform-cluster.yaml")
+    projects_hash = filemd5("${path.module}/../../../k8s/cnpg/staging/projects-cluster.yaml")
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      echo "Waiting for CloudNativePG operator to be ready..."
+      kubectl wait --for=condition=Available deployment -l app.kubernetes.io/name=cloudnative-pg -n cnpg-system --timeout=120s || true
+
+      # Ensure the target namespace exists
+      kubectl get namespace shogo-staging-system || kubectl create namespace shogo-staging-system
+
+      echo "Deploying CloudNativePG clusters..."
+      kubectl apply -f ${path.module}/../../../k8s/cnpg/staging/platform-cluster.yaml
+      kubectl apply -f ${path.module}/../../../k8s/cnpg/staging/projects-cluster.yaml
+
+      echo "Waiting for clusters to be ready..."
+      kubectl wait --for=condition=Ready cluster/platform-pg -n shogo-staging-system --timeout=300s || true
+      kubectl wait --for=condition=Ready cluster/projects-pg -n shogo-staging-system --timeout=300s || true
+
+      echo "CloudNativePG clusters deployed successfully"
+    EOT
+  }
+}
+
+# S3 bucket for CloudNativePG backups (Barman WAL archiving)
+resource "aws_s3_bucket" "pg_backups" {
+  bucket = "shogo-pg-backups-${var.environment}"
+
+  tags = {
+    Name        = "shogo-pg-backups-${var.environment}"
+    Environment = var.environment
+    Purpose     = "cloudnativepg-backups"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "pg_backups" {
+  bucket = aws_s3_bucket.pg_backups.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "pg_backups" {
+  bucket = aws_s3_bucket.pg_backups.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "pg_backups" {
+  bucket = aws_s3_bucket.pg_backups.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "pg_backups" {
+  bucket = aws_s3_bucket.pg_backups.id
+
+  rule {
+    id     = "cleanup-old-backups"
+    status = "Enabled"
+
+    filter {}
+
+    # Move old backups to cheaper storage after 30 days
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+
+    # Delete backups older than 90 days
+    expiration {
+      days = 90
+    }
+  }
+}
+
+# IAM Policy for CloudNativePG to access S3 backups
+resource "aws_iam_policy" "cnpg_s3_backup" {
+  name        = "shogo-cnpg-s3-backup-${var.environment}"
+  description = "Allow CloudNativePG pods to read/write S3 backups"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
+        ]
+        Resource = [
+          aws_s3_bucket.pg_backups.arn,
+          "${aws_s3_bucket.pg_backups.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_cnpg_s3_access" {
+  policy_arn = aws_iam_policy.cnpg_s3_backup.arn
+  role       = module.eks.node_role_name
+}
+
+# -----------------------------------------------------------------------------
 # Kubernetes Resources (Namespaces, Secrets, etc.)
 # Note: Staging uses different namespace names
 # Note: These are skipped in bootstrap_mode since kubernetes provider isn't configured
@@ -553,35 +655,108 @@ resource "kubernetes_namespace" "shogo_workspaces" {
   }
 }
 
-# Database credentials secret (shogo-staging-system namespace)
-resource "kubernetes_secret" "postgres_credentials" {
+# NOTE: Platform database credentials are auto-generated by CloudNativePG
+# The operator creates secrets: platform-pg-superuser, platform-pg-app
+# with keys: username, password, host, port, dbname, uri
+#
+# We create a bridge secret that references the CNPG-generated URI
+# so existing K8s manifests can use the same postgres-credentials secret name.
+# After CNPG clusters are created (via null_resource below), the secrets exist.
+
+resource "null_resource" "postgres_credentials" {
+  count = var.bootstrap_mode ? 0 : 1
+
+  depends_on = [
+    kubernetes_namespace.shogo_system,
+    kubernetes_namespace.shogo_workspaces,
+    null_resource.cnpg_clusters,
+  ]
+
+  triggers = {
+    timestamp = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Wait for CNPG to create the platform-pg-app secret
+      echo "Waiting for CloudNativePG platform-pg-app secret..."
+      for i in $(seq 1 60); do
+        if kubectl get secret platform-pg-app -n shogo-staging-system > /dev/null 2>&1; then
+          echo "Secret platform-pg-app found"
+          break
+        fi
+        echo "Waiting... (attempt $i)"
+        sleep 5
+      done
+
+      # Extract the connection URI from the CNPG-generated secret
+      PLATFORM_URI=$(kubectl get secret platform-pg-app -n shogo-staging-system -o jsonpath='{.data.uri}' | base64 -d)
+      
+      if [ -z "$PLATFORM_URI" ]; then
+        echo "ERROR: Could not extract platform-pg URI"
+        exit 1
+      fi
+
+      echo "Platform DB URI extracted successfully"
+
+      # Create postgres-credentials secret in system namespace
+      kubectl create secret generic postgres-credentials \
+        --namespace shogo-staging-system \
+        --from-literal=DATABASE_URL="$PLATFORM_URI" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      # Create postgres-credentials secret in workspaces namespace
+      kubectl create secret generic postgres-credentials \
+        --namespace shogo-staging-workspaces \
+        --from-literal=DATABASE_URL="$PLATFORM_URI" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      # Wait for projects-pg-superuser secret
+      echo "Waiting for CloudNativePG projects-pg-superuser secret..."
+      for i in $(seq 1 60); do
+        if kubectl get secret projects-pg-superuser -n shogo-staging-system > /dev/null 2>&1; then
+          echo "Secret projects-pg-superuser found"
+          break
+        fi
+        echo "Waiting... (attempt $i)"
+        sleep 5
+      done
+
+      # Extract projects cluster admin URI
+      PROJECTS_ADMIN_URI=$(kubectl get secret projects-pg-superuser -n shogo-staging-system -o jsonpath='{.data.uri}' | base64 -d)
+      
+      # Create projects-db-admin secret for the API to use for database provisioning
+      if [ -n "$PROJECTS_ADMIN_URI" ]; then
+        kubectl create secret generic projects-db-admin \
+          --namespace shogo-staging-system \
+          --from-literal=PROJECTS_DB_ADMIN_URL="$PROJECTS_ADMIN_URI" \
+          --from-literal=PROJECTS_DB_HOST="projects-pg-rw.shogo-staging-system.svc.cluster.local" \
+          --from-literal=PROJECTS_DB_PORT="5432" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        echo "Projects DB admin secret created"
+      fi
+
+      echo "All database secrets created successfully"
+    EOT
+  }
+}
+
+# S3 credentials for CloudNativePG backups (Barman)
+resource "kubernetes_secret" "cnpg_s3_credentials" {
   count      = var.bootstrap_mode ? 0 : 1
   depends_on = [kubernetes_namespace.shogo_system]
 
   metadata {
-    name      = "postgres-credentials"
+    name      = "cnpg-s3-credentials"
     namespace = "shogo-staging-system"
   }
 
   data = {
-    # Include sslmode=require for AWS RDS SSL connections
-    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}?sslmode=require"
-  }
-}
-
-# Database credentials secret (shogo-staging-workspaces namespace)
-resource "kubernetes_secret" "postgres_credentials_workspaces" {
-  count      = var.bootstrap_mode ? 0 : 1
-  depends_on = [kubernetes_namespace.shogo_workspaces]
-
-  metadata {
-    name      = "postgres-credentials"
-    namespace = "shogo-staging-workspaces"
-  }
-
-  data = {
-    # Include sslmode=require for AWS RDS SSL connections
-    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}?sslmode=require"
+    # These are populated by the EKS node role (IRSA) or can be set explicitly
+    # For bare metal with MinIO, set these to MinIO credentials
+    ACCESS_KEY_ID     = var.cnpg_s3_access_key_id
+    SECRET_ACCESS_KEY = var.cnpg_s3_secret_access_key
+    REGION            = var.aws_region
   }
 }
 
@@ -795,8 +970,8 @@ resource "null_resource" "knative_services" {
     module.knative[0],
     kubernetes_namespace.shogo_system[0],
     kubernetes_namespace.shogo_workspaces[0],
-    kubernetes_secret.postgres_credentials[0],
-    kubernetes_secret.postgres_credentials_workspaces[0],
+    null_resource.postgres_credentials[0],
+    null_resource.cnpg_clusters[0],
     kubernetes_secret.redis_credentials[0],
     kubernetes_secret.api_secrets[0]
   ]
@@ -918,17 +1093,19 @@ resource "null_resource" "knative_services" {
                         name: api-secrets
                         key: ANTHROPIC_API_KEY
                         optional: true
-                  # PostgreSQL sidecar configuration for project runtimes
+                  # Shared PostgreSQL configuration (CloudNativePG)
                   - name: POSTGRES_ENABLED
-                    value: "${var.project_runtime_postgres_enabled}"
-                  - name: POSTGRES_IMAGE
-                    value: "${var.project_runtime_postgres_image}"
-                  - name: POSTGRES_STORAGE_SIZE
-                    value: "${var.project_runtime_postgres_storage_size}"
-                  - name: POSTGRES_MEMORY_LIMIT
-                    value: "${var.project_runtime_postgres_memory_limit}"
-                  - name: POSTGRES_CPU_LIMIT
-                    value: "${var.project_runtime_postgres_cpu_limit}"
+                    value: "true"
+                  - name: PROJECTS_DB_ADMIN_URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: projects-db-admin
+                        key: PROJECTS_DB_ADMIN_URL
+                        optional: true
+                  - name: PROJECTS_DB_HOST
+                    value: "projects-pg-rw.shogo-staging-system.svc.cluster.local"
+                  - name: PROJECTS_DB_PORT
+                    value: "5432"
                   - name: PROJECT_IDLE_TIMEOUT
                     value: "${var.project_runtime_idle_timeout}"
                   # S3 configuration for workspace file persistence (emptyDir + S3 sync)

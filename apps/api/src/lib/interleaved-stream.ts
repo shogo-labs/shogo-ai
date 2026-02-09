@@ -212,26 +212,53 @@ function* processEvent<TOOLS extends ToolSet>(
     }
 
     case 'tool-result': {
-      // Tool result available - yield tool-output-available
-      // Note: AI SDK uses 'output' not 'result'
-      yield {
-        type: 'tool-output-available',
-        toolCallId: event.toolCallId,
-        output: event.output
+      const ev = event as any
+      // When provider sends tool-result with isError: true (e.g. Bash non-zero exit),
+      // yield tool-output-error so UI shows error; extract content from output when present
+      if (ev.isError === true) {
+        let errorText = 'Tool execution failed'
+        if (ev.output != null) {
+          if (typeof ev.output === 'string') {
+            errorText = ev.output
+          } else if (typeof ev.output === 'object' && ev.output?.stderr) {
+            errorText = String(ev.output.stderr)
+          } else {
+            errorText = JSON.stringify(ev.output)
+          }
+        }
+        yield {
+          type: 'tool-output-error',
+          toolCallId: event.toolCallId,
+          errorText
+        }
+      } else {
+        yield {
+          type: 'tool-output-available',
+          toolCallId: event.toolCallId,
+          output: event.output
+        }
       }
-      // Remove from active tool calls
       state.activeToolCalls.delete(event.toolCallId)
       break
     }
 
     case 'tool-error': {
-      // Tool error - yield tool-output-error
+      const ev = event as any
+      // Extract error from all known provider fields (Claude Code uses rawError in providerMetadata)
+      const rawError = ev.providerMetadata?.['claude-code']?.rawError
+      let errorContent = ev.error ?? rawError
+      if (errorContent != null && typeof errorContent === 'object') {
+        errorContent = errorContent?.message ?? JSON.stringify(errorContent)
+      }
+      const errorText =
+        errorContent != null && String(errorContent).trim()
+          ? String(errorContent)
+          : 'Tool execution failed'
       yield {
         type: 'tool-output-error',
         toolCallId: event.toolCallId,
-        errorText: String((event as any).error || 'Tool execution failed')
+        errorText
       }
-      // Remove from active tool calls
       state.activeToolCalls.delete(event.toolCallId)
       break
     }

@@ -3,8 +3,9 @@
 // This is NOT a form builder - it's an example of a specific form implementation
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = ""
 }
 
 datasource db {

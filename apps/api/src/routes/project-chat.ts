@@ -14,6 +14,8 @@ import { Hono } from "hono"
 import { getProjectPodUrl } from "../lib/knative-project-manager"
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
+import { calculateCreditCost, proxyModelToBillingModel } from "../lib/credit-cost"
+import * as billingService from "../services/billing.service"
 
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
@@ -27,6 +29,206 @@ export interface ProjectChatRoutesConfig {
    * Local runtime manager (used in non-K8s environments).
    */
   runtimeManager?: IRuntimeManager
+}
+
+// =============================================================================
+// Stream Usage Tracking
+// =============================================================================
+
+/**
+ * Scan a teed copy of the AI SDK stream for usage/tool-call data.
+ *
+ * The Vercel AI SDK UI protocol uses newline-delimited messages.  Key prefixes:
+ *   e: (finish)  — JSON with usage { promptTokens, completionTokens }
+ *   9: (tool_call) — tool invocations
+ *   d: (finish_message/finish_step) — JSON with usage
+ *
+ * We consume the entire tracking stream, count tool calls, and extract the
+ * final usage object. Then we charge credits via the billing service and
+ * log a `ToolCallLog` entry per tool call.
+ */
+async function trackUsageFromStream(
+  stream: ReadableStream<Uint8Array>,
+  requestBody: any,
+  project: { id: string; workspaceId: string }
+) {
+  const decoder = new TextDecoder()
+  const reader = stream.getReader()
+  let buffer = ''
+  let toolCallCount = 0
+  const toolCalls: { toolName: string; args: string }[] = []
+  let lastUsage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null = null
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      // Process complete lines
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || '' // Keep the incomplete last line
+
+      for (const line of lines) {
+        if (!line.trim()) continue
+
+        // The project runtime uses toUIMessageStreamResponse() which produces
+        // Server-Sent Events (SSE) format: "data: {json}\n\n"
+        // Parse SSE data lines
+        let payload = line
+        if (line.startsWith('data: ')) {
+          payload = line.slice(6) // Strip "data: " prefix
+        } else if (line.startsWith('data:')) {
+          payload = line.slice(5)
+        }
+
+        // Skip SSE control lines and [DONE] marker
+        if (payload === '[DONE]' || line.startsWith('event:') || line.startsWith('id:') || line.startsWith('retry:')) {
+          continue
+        }
+
+        // Try to parse as JSON
+        let data: any
+        try {
+          data = JSON.parse(payload)
+        } catch {
+          // Also try legacy data stream protocol (e.g. "e:{json}", "9:{json}")
+          const prefix = line.slice(0, 2)
+          if (prefix === '9:' || prefix === 'e:' || prefix === 'd:') {
+            try { data = JSON.parse(line.slice(2)) } catch { continue }
+            // Legacy data stream: mark type based on prefix
+            if (prefix === '9:' && !data.type) data.type = 'tool-call'
+            if ((prefix === 'e:' || prefix === 'd:') && !data.type) data.type = 'finish'
+          } else {
+            continue
+          }
+        }
+
+        if (!data || typeof data !== 'object') continue
+
+        // UI Message Stream protocol uses { type: "..." } format
+        const type = data.type
+
+        // Track tool calls
+        if (type === 'tool-call-start' || type === 'tool-call') {
+          toolCallCount++
+          toolCalls.push({
+            toolName: data.toolName || data.name || 'unknown',
+            args: typeof data.args === 'string' ? data.args : JSON.stringify(data.args || {}),
+          })
+        }
+
+        // Track usage from finish events or dedicated usage events
+        if (type === 'finish' || type === 'finish-step' || type === 'usage' || type === 'data-usage') {
+          // Custom data-usage event from project-runtime puts data in `data` field
+          const usageData = data.usage || data.data
+          if (usageData && (usageData.inputTokens || usageData.outputTokens || usageData.promptTokens || usageData.completionTokens || usageData.totalTokens)) {
+            lastUsage = {
+              // Support both v5 (promptTokens) and v6 (inputTokens) naming
+              promptTokens: usageData.promptTokens || usageData.inputTokens || 0,
+              completionTokens: usageData.completionTokens || usageData.outputTokens || 0,
+              totalTokens: usageData.totalTokens || ((usageData.promptTokens || usageData.inputTokens || 0) + (usageData.completionTokens || usageData.outputTokens || 0)),
+            }
+          }
+          // Sometimes usage is at top level
+          if (data.promptTokens || data.completionTokens || data.inputTokens || data.outputTokens) {
+            lastUsage = {
+              promptTokens: data.promptTokens || data.inputTokens || 0,
+              completionTokens: data.completionTokens || data.outputTokens || 0,
+              totalTokens: data.totalTokens || ((data.promptTokens || data.inputTokens || 0) + (data.completionTokens || data.outputTokens || 0)),
+            }
+          }
+        }
+
+        // Legacy: handle array-style tool calls (data stream protocol "9:[{...}]")
+        if (Array.isArray(data)) {
+          for (const tc of data) {
+            if (tc.toolName || tc.name) {
+              toolCallCount++
+              toolCalls.push({
+                toolName: tc.toolName || tc.name || 'unknown',
+                args: typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args || {}),
+              })
+            }
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  // Extract billing context
+  const workspaceId = requestBody?.workspaceId || project.workspaceId
+  const userId = requestBody?.userId || 'system'
+  const agentMode = requestBody?.agentMode || 'advanced'
+  const chatSessionId = requestBody?.ccSessionId || null
+
+  const inputTokens = lastUsage?.promptTokens || 0
+  const outputTokens = lastUsage?.completionTokens || 0
+  const totalTokens = lastUsage?.totalTokens || (inputTokens + outputTokens)
+
+  console.log(
+    `[ProjectChat] 📊 Stream complete — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
+  )
+
+  // Charge credits if we have token data
+  if (totalTokens > 0 && workspaceId) {
+    const billingModel = proxyModelToBillingModel(agentMode === 'basic' ? 'haiku' : 'sonnet')
+    const creditCost = calculateCreditCost(totalTokens, billingModel)
+    const modelUsed = agentMode === 'basic' ? 'haiku' : 'sonnet'
+
+    try {
+      const result = await billingService.consumeCredits(
+        workspaceId,
+        project.id,
+        userId,
+        'chat_message',
+        creditCost,
+        {
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          agentMode,
+          modelUsed,
+          toolCallCount,
+          ccSessionId: chatSessionId,
+        }
+      )
+
+      if (result.success) {
+        console.log(
+          `[ProjectChat] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${modelUsed}) for workspace ${workspaceId} — remaining: ${result.remainingCredits}`
+        )
+      } else {
+        console.warn(`[ProjectChat] ⚠️ Could not charge credits: ${result.error}`)
+      }
+    } catch (err) {
+      console.error("[ProjectChat] Failed to charge credits:", err)
+    }
+  }
+
+  // Log tool calls to the database
+  if (toolCalls.length > 0 && chatSessionId) {
+    try {
+      // Ensure the chat session exists
+      const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
+      if (session) {
+        await prisma.toolCallLog.createMany({
+          data: toolCalls.map((tc) => ({
+            chatSessionId,
+            toolName: tc.toolName,
+            args: tc.args,
+            status: 'complete',
+            messageId: '',
+          })),
+        })
+        console.log(`[ProjectChat] 🔧 Logged ${toolCalls.length} tool calls for session ${chatSessionId}`)
+      }
+    } catch (err) {
+      console.error("[ProjectChat] Failed to log tool calls:", err)
+    }
+  }
 }
 
 // =============================================================================
@@ -164,8 +366,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       console.log(`[ProjectChat] Proxying to: ${podUrl}/agent/chat`)
 
-      // Get the request body
+      // Get the request body and parse for billing context
       const body = await c.req.text()
+      let parsedBody: any = {}
+      try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
 
       // Forward headers
       const headers: Record<string, string> = {
@@ -235,8 +439,16 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           responseHeaders.set("Access-Control-Allow-Methods", "POST, OPTIONS")
           responseHeaders.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Session-Id")
 
-          // Return the streaming response
-          return new Response(response.body, {
+          // Tee the stream: one for the client, one for usage tracking
+          const [clientStream, trackingStream] = response.body!.tee()
+
+          // Fire-and-forget: scan the tracking stream for usage data
+          trackUsageFromStream(trackingStream, parsedBody, project).catch((err) =>
+            console.error("[ProjectChat] Usage tracking error:", err)
+          )
+
+          // Return the client stream
+          return new Response(clientStream, {
             status: response.status,
             headers: responseHeaders,
           })

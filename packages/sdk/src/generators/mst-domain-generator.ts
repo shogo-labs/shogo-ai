@@ -37,7 +37,7 @@ function toFileName(name: string): string {
 /**
  * Generate MST domain (root store) file
  */
-export function generateMSTDomain(models: PrismaModel[]): GeneratedMSTDomainFile {
+export function generateMSTDomain(models: PrismaModel[], fileExtension: 'ts' | 'tsx' = 'tsx'): GeneratedMSTDomainFile {
   const validModels = models.filter(model => getIdField(model))
 
   const lines: string[] = [
@@ -201,7 +201,7 @@ export function generateMSTDomain(models: PrismaModel[]): GeneratedMSTDomainFile
   lines.push('')
 
   return {
-    fileName: 'domain.ts',
+    fileName: `domain.${fileExtension}`,
     code: lines.join('\n'),
   }
 }

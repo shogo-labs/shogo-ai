@@ -2,7 +2,7 @@
  * Shogo SDK Generators
  *
  * Generate server functions, domain stores, and types from Prisma schema.
- * Supports both TanStack Start (server functions) and Expo (HTTP API).
+ * Supports both web (Hono server) and Expo (HTTP API).
  */
 
 // Main generator
@@ -71,6 +71,45 @@ export {
   generateMSTDomain,
   type GeneratedMSTDomainFile,
 } from './mst-domain-generator'
+
+// Server generator (Hono)
+export {
+  generateServer,
+  generateDbModule,
+  type ServerGeneratorConfig,
+} from './server-generator'
+
+// Auth store generator
+export {
+  generateAuthStore,
+  getUserModel,
+  hasUserModel,
+  type AuthStoreGeneratorOptions,
+} from './auth-store-generator'
+
+// Docs generator (Docusaurus)
+export {
+  generateDocs,
+  generateModelDoc,
+  generateModelsIndex,
+  generateApiOverview,
+  type GeneratedDocFile,
+  type DocsGeneratorConfig,
+} from './docs-generator'
+
+// Docs site scaffolding (Docusaurus 3.9)
+export {
+  generateDocsSiteScaffold,
+  generateDocsTsConfig,
+  type DocsSiteConfig,
+} from './docs-site-generator'
+
+// Admin routes generator
+export {
+  generateAdminRoutes,
+  type AdminRoutesGeneratorConfig,
+  type GeneratedAdminRoutesFile,
+} from './admin-routes-generator'
 
 // Legacy exports (for backward compatibility)
 export { generateServerFunctions } from './server-functions'

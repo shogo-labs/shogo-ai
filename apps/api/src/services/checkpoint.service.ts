@@ -177,6 +177,9 @@ export async function createCheckpoint(
       },
     });
 
+    // Auto-sync to GitHub if connected (fire-and-forget)
+    syncAfterCheckpoint(projectId, workspacePath).catch(() => {});
+
     return {
       id: checkpoint.id,
       commitSha: checkpoint.commitSha,
@@ -220,6 +223,9 @@ export async function createCheckpoint(
       createdBy,
     },
   });
+
+  // Auto-sync to GitHub if connected (fire-and-forget)
+  syncAfterCheckpoint(projectId, workspacePath).catch(() => {});
 
   return {
     id: checkpoint.id,
@@ -675,4 +681,44 @@ export async function pruneCheckpoints(
   });
 
   return deleteIds.length;
+}
+
+// =============================================================================
+// GitHub Auto-Sync
+// =============================================================================
+
+/**
+ * Auto-push to GitHub after a checkpoint is created.
+ * Only pushes if the project has a GitHub connection with syncEnabled=true.
+ * Uses lazy import to avoid hard dependency on github.service / jsonwebtoken.
+ * This is fire-and-forget -- errors are logged but do not propagate.
+ */
+export async function syncAfterCheckpoint(
+  projectId: string,
+  workspacePath: string
+): Promise<void> {
+  try {
+    // Check if project has a GitHub connection with sync enabled
+    const connection = await prisma.gitHubConnection.findUnique({
+      where: { projectId },
+    });
+
+    if (!connection || !connection.syncEnabled) {
+      return; // No connection or sync disabled -- nothing to do
+    }
+
+    // Lazy import github service to avoid loading jsonwebtoken when not needed
+    const githubService = await import('./github.service');
+
+    if (!githubService.isConfigured()) {
+      return; // GitHub App not configured on this server
+    }
+
+    // Push in the background (fire-and-forget)
+    githubService.pushToGitHub(projectId, workspacePath).catch((err) => {
+      console.warn('[Checkpoint] Auto-sync to GitHub failed:', err.message);
+    });
+  } catch (err: any) {
+    console.warn('[Checkpoint] syncAfterCheckpoint error:', err.message);
+  }
 }

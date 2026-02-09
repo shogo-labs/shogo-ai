@@ -53,6 +53,11 @@ export function generateApiClient(models: PrismaModel[]): string {
   lines.push('export interface ApiResponse<T> {')
   lines.push('  ok: boolean')
   lines.push('  data?: T')
+  lines.push('  error?: { code: string; message: string }')
+  lines.push('}')
+  lines.push('')
+  lines.push('export interface ApiListResponse<T> {')
+  lines.push('  ok: boolean')
   lines.push('  items?: T[]')
   lines.push('  error?: { code: string; message: string }')
   lines.push('}')
@@ -176,7 +181,7 @@ function generateModelClient(model: PrismaModel): string[] {
     `   * @param options.offset - Number of records to skip`,
     `   * @param options.params - Additional query parameters to append to the request`,
     `   */`,
-    `  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiResponse<${name}Type[]>> {`,
+    `  async list(options?: { where?: Record<string, unknown>; limit?: number; offset?: number; params?: Record<string, string | number | boolean> }): Promise<ApiListResponse<${name}Type>> {`,
     `    const params = new URLSearchParams()`,
     `    `,
     `    // Add where filters as query params`,
@@ -203,8 +208,7 @@ function generateModelClient(model: PrismaModel): string[] {
     `    if (config.userId) params.set('userId', config.userId)`,
     `    `,
     `    const query = params.toString() ? \`?\${params.toString()}\` : ''`,
-    `    const result = await request<${name}Type>('GET', \`/${routePath}\${query}\`)`,
-    `    return { ok: result.ok, items: result.items, error: result.error }`,
+    `    return request<${name}Type>('GET', \`/${routePath}\${query}\`) as Promise<ApiListResponse<${name}Type>>`,
     `  },`,
     '',
     `  /**`,

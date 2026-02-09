@@ -78,6 +78,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
+import { UsageTable, type UsageSummaryData, type UsageLogData } from "@/components/admin/analytics/UsageTable"
 import { useWorkspaceData } from "@/components/app/workspace"
 import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
@@ -86,6 +87,46 @@ import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
 import { PlanSelector } from "@/components/app/billing/PlanSelector"
 import { useBillingData } from "@/hooks/useBillingData"
+
+// =============================================================================
+// Workspace-scoped usage hooks (reuse the same UsageTable component as admin)
+// =============================================================================
+
+interface ApiResponse<T> { ok: boolean; data: T }
+
+function useWorkspaceUsageSummary(basePath: string, period: string) {
+  const [data, setData] = useState<UsageSummaryData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const url = basePath ? `${basePath}/analytics/usage-summary?period=${period}` : ''
+
+  useEffect(() => {
+    if (!url) { setLoading(false); return }
+    setLoading(true)
+    fetch(url, { credentials: 'include' })
+      .then((r) => r.json())
+      .then((res: ApiResponse<UsageSummaryData>) => { setData(res.data); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [url])
+
+  return { data, loading }
+}
+
+function useWorkspaceUsageLog(basePath: string, period: string, page: number) {
+  const [data, setData] = useState<UsageLogData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const url = basePath ? `${basePath}/analytics/usage-log?period=${period}&page=${page}&limit=50` : ''
+
+  useEffect(() => {
+    if (!url) { setLoading(false); return }
+    setLoading(true)
+    fetch(url, { credentials: 'include' })
+      .then((r) => r.json())
+      .then((res: ApiResponse<UsageLogData>) => { setData(res.data); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [url])
+
+  return { data, loading }
+}
 
 // Tab types
 type TabId =
@@ -1199,9 +1240,19 @@ function BillingTab() {
 }
 
 // ============================================================================
-// USAGE TAB (Cloud & AI Balance)
+// USAGE TAB (Cloud & AI Balance + Team Usage Table)
 // ============================================================================
 function UsageTab() {
+  const { currentWorkspace } = useWorkspaceData()
+  const workspaceId = currentWorkspace?.id
+  const [period, setPeriod] = useState<"7d" | "30d" | "90d" | "1y">("30d")
+  const [logPage, setLogPage] = useState(1)
+
+  // Workspace-scoped usage data
+  const basePath = workspaceId ? `/api/workspaces/${workspaceId}` : ''
+  const summaryResult = useWorkspaceUsageSummary(basePath, period)
+  const logResult = useWorkspaceUsageLog(basePath, period, logPage)
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between">
@@ -1265,6 +1316,39 @@ function UsageTab() {
           </div>
         </div>
       </div>
+
+      {/* Team AI Usage Table */}
+      {workspaceId && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="font-medium">Team AI Usage</h4>
+            <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs">
+              {(["7d", "30d", "90d", "1y"] as const).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => { setPeriod(p); setLogPage(1) }}
+                  className={`px-3 py-1.5 transition-colors ${
+                    period === p
+                      ? 'bg-primary text-primary-foreground'
+                      : 'hover:bg-muted/50 text-muted-foreground'
+                  }`}
+                >
+                  {p === '7d' ? '7 days' : p === '30d' ? '30 days' : p === '90d' ? '90 days' : '1 year'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <UsageTable
+            summaryData={summaryResult.data}
+            logData={logResult.data}
+            summaryLoading={summaryResult.loading}
+            logLoading={logResult.loading}
+            onPageChange={setLogPage}
+            currentPage={logPage}
+            hideTokens
+          />
+        </div>
+      )}
 
       {/* Project breakdown */}
       <div className="p-4 bg-card rounded-lg border border-border">
@@ -1985,7 +2069,7 @@ export const SettingsPage = observer(function SettingsPage() {
     {
       title: "Connectors",
       items: [
-        { id: "connectors", label: "Connectors", icon: Plug },
+        // { id: "connectors", label: "Connectors", icon: Plug }, // not functional yet
         { id: "github", label: "GitHub", icon: Github },
       ],
     },
@@ -2038,7 +2122,7 @@ export const SettingsPage = observer(function SettingsPage() {
           {activeTab === "privacy" && <PrivacyTab />}
           {activeTab === "account" && <AccountTab />}
           {activeTab === "labs" && <LabsTab />}
-          {activeTab === "connectors" && <ConnectorsTab />}
+          {/* {activeTab === "connectors" && <ConnectorsTab />} */} {/* not functional yet */}
           {activeTab === "github" && <GitHubTab />}
         </div>
       </div>

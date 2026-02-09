@@ -2,8 +2,9 @@
 // Demonstrates ordering/position patterns, many-to-many with labels
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = ""
 }
 
 datasource db {

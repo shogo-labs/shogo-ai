@@ -33,8 +33,6 @@ import { Outlet, useSearchParams } from "react-router-dom"
 import { AppHeader } from "./AppHeader"
 import { AppSidebar } from "./AppSidebar"
 import { BindingEditorPanel } from "./BindingEditorPanel"
-import { ComponentRegistryProvider } from "@/components/rendering"
-import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
 import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
 import { CommandPalette, useCommandPalette, SettingsModalProvider } from "../shared"
@@ -71,7 +69,13 @@ const SidebarCollapseContext = createContext<SidebarCollapseContextValue | null>
 export function useSidebarCollapseContext() {
   const context = useContext(SidebarCollapseContext)
   if (!context) {
-    throw new Error("useSidebarCollapseContext must be used within AppShell")
+    // Return a safe fallback instead of throwing to prevent crashes
+    // This can happen during initial render or in certain routing scenarios
+    return {
+      collapseSidebar: () => {},
+      releaseSidebar: () => {},
+      isForceCollapsed: false,
+    }
   }
   return context
 }
@@ -199,38 +203,8 @@ export const AppShell = observer(function AppShell() {
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [toggleBindingEditor])
 
-  // Create domain-driven registry with ref-based memoization
-  // PERF FIX: Use refs to track both the key AND the registry.
-  // The registry is expensive to create (iterates all bindings, creates ComponentEntry objects).
-  // Without proper memoization, any re-render cascading from polling would recreate the registry,
-  // triggering re-renders of all children using ComponentRegistryProvider.
-  //
-  // CRITICAL: useMemo with ref.current in deps doesn't work - React sees the changed value.
-  // Instead, we manually compare the key and only recreate the registry when it actually changes.
-  // This ensures the registry object is stable unless bindings truly change.
-  //
-  // REACTIVITY: componentBuilder alone is a stable MST reference. We observe binding data
-  // via the key to trigger recreation when MCP updates bindings.
-  // NOTE: Avoid including defaultConfig in serialization - it may contain circular MST refs.
-  const prevBindingsKeyRef = useRef<string>('')
-  const registryRef = useRef<ReturnType<typeof createRegistryFromDomain> | null>(null)
-
-  // Compute current key from bindings
-  const bindings = componentBuilder?.rendererBindingCollection?.all() ?? []
-  const currentBindingsKey = bindings.map((b: any) =>
-    `${b.id}:${b.updatedAt ?? ''}`
-  ).join('|')
-
-  // Only recreate registry when key actually changes (or on first render)
-  if (currentBindingsKey !== prevBindingsKeyRef.current || !registryRef.current) {
-    prevBindingsKeyRef.current = currentBindingsKey
-    registryRef.current = createRegistryFromDomain(componentBuilder)
-  }
-
-  const registry = registryRef.current
-
   return (
-    <ComponentRegistryProvider registry={registry}>
+    <div>
       <SettingsModalProvider>
         <CommandPaletteContext.Provider value={commandPaletteContextValue}>
           <SidebarCollapseContext.Provider value={sidebarCollapseContextValue}>
@@ -262,6 +236,6 @@ export const AppShell = observer(function AppShell() {
           </SidebarCollapseContext.Provider>
         </CommandPaletteContext.Provider>
       </SettingsModalProvider>
-    </ComponentRegistryProvider>
+    </div>
   )
 })

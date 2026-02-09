@@ -48,11 +48,24 @@ export interface ProjectHooks {
 }
 
 /**
+ * Check if the current user is a super admin.
+ */
+async function isSuperAdmin(ctx: HookContext): Promise<boolean> {
+  if (!ctx.userId) return false
+  const user = await ctx.prisma.user.findUnique({
+    where: { id: ctx.userId },
+    select: { role: true },
+  })
+  return user?.role === 'super_admin'
+}
+
+/**
  * Default Project hooks (customize as needed)
  */
 export const projectHooks: ProjectHooks = {
   /**
    * Filter projects to only those the user has access to via workspace membership.
+   * Super admins can see all projects.
    * Include workspace and folder in list responses.
    */
   beforeList: async (ctx) => {
@@ -61,6 +74,18 @@ export const projectHooks: ProjectHooks = {
       return {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Super admins can see all projects
+    if (await isSuperAdmin(ctx)) {
+      const workspaceId = ctx.query.workspaceId
+      return {
+        ok: true,
+        data: {
+          where: workspaceId ? { workspaceId } : {},
+          include: { workspace: true, folder: true },
+        },
       }
     }
 
@@ -106,7 +131,8 @@ export const projectHooks: ProjectHooks = {
   },
 
   /**
-   * Verify user has access to the project's workspace before returning
+   * Verify user has access to the project's workspace before returning.
+   * Super admins can access any project.
    */
   beforeGet: async (id, ctx) => {
     const userId = ctx.userId
@@ -115,6 +141,11 @@ export const projectHooks: ProjectHooks = {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
       }
+    }
+
+    // Super admins can access any project
+    if (await isSuperAdmin(ctx)) {
+      return { ok: true }
     }
 
     // Get project and check workspace membership

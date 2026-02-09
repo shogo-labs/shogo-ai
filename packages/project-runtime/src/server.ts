@@ -28,7 +28,7 @@ logTiming('Server module loading...')
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText, tool, type CoreMessage } from 'ai'
+import { streamText, tool, type ModelMessage } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
@@ -112,23 +112,28 @@ const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
   }
 })()
 
-// Initialize PostgreSQL S3 backup in background (after postgres sidecar is ready)
-// This provides persistence for postgres data when using emptyDir volumes
-;(async () => {
-  // Wait a bit for postgres sidecar to start (it runs in the same pod)
-  await new Promise(resolve => setTimeout(resolve, 5000))
-  
-  try {
-    postgresBackup = await initializePostgresBackup()
-    if (postgresBackup) {
-      logTiming('PostgreSQL S3 backup initialized')
-    } else {
-      logTiming('PostgreSQL S3 backup not configured or postgres not detected')
+// PostgreSQL S3 backup initialization
+// NOTE: With CloudNativePG shared cluster, postgres backup is handled by the operator
+// via Barman WAL archiving. The S3 backup module is only used for legacy sidecar mode.
+if (process.env.POSTGRES_S3_BACKUP_ENABLED !== 'false') {
+  ;(async () => {
+    // Wait a bit for postgres to be reachable
+    await new Promise(resolve => setTimeout(resolve, 5000))
+    
+    try {
+      postgresBackup = await initializePostgresBackup()
+      if (postgresBackup) {
+        logTiming('PostgreSQL S3 backup initialized (legacy sidecar mode)')
+      } else {
+        logTiming('PostgreSQL S3 backup not configured')
+      }
+    } catch (error) {
+      console.error(`[project-runtime] PostgreSQL backup initialization failed:`, error)
     }
-  } catch (error) {
-    console.error(`[project-runtime] PostgreSQL backup initialization failed:`, error)
-  }
-})()
+  })()
+} else {
+  logTiming('PostgreSQL S3 backup disabled (using CloudNativePG managed backups)')
+}
 
 // =============================================================================
 // Template Tools (Native - no MCP required)
@@ -151,15 +156,15 @@ interface TemplateInfo extends TemplateMetadata {
 
 // Embedded template metadata (used when running from Docker with archived templates)
 const EMBEDDED_TEMPLATES: TemplateInfo[] = [
-  { name: 'todo-app', description: 'Simple task management with lists', path: 'todo-app', complexity: 'beginner', tags: ['productivity', 'tasks'], features: ['CRUD', 'lists'], useCases: ['personal task tracking'], models: ['Todo', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'expense-tracker', description: 'Personal finance with categories', path: 'expense-tracker', complexity: 'beginner', tags: ['finance', 'budgeting'], features: ['categories', 'charts'], useCases: ['expense tracking'], models: ['Expense', 'Category', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'crm', description: 'Customer relationship management', path: 'crm', complexity: 'intermediate', tags: ['business', 'sales'], features: ['contacts', 'deals', 'pipeline'], useCases: ['sales management'], models: ['Contact', 'Deal', 'Company', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'inventory', description: 'Stock and product management', path: 'inventory', complexity: 'intermediate', tags: ['business', 'warehouse'], features: ['products', 'stock', 'suppliers'], useCases: ['inventory management'], models: ['Product', 'Supplier', 'StockMovement', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'kanban', description: 'Project boards with drag-and-drop', path: 'kanban', complexity: 'intermediate', tags: ['productivity', 'project-management'], features: ['boards', 'columns', 'cards', 'drag-drop'], useCases: ['project management'], models: ['Board', 'Column', 'Card', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'ai-chat', description: 'AI chatbot with conversation history', path: 'ai-chat', complexity: 'intermediate', tags: ['ai', 'chatbot'], features: ['chat', 'ai-responses', 'history'], useCases: ['ai assistant'], models: ['Conversation', 'Message', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL', ai: 'Anthropic Claude' } },
-  { name: 'form-builder', description: 'Build custom forms and collect responses', path: 'form-builder', complexity: 'intermediate', tags: ['forms', 'surveys'], features: ['form-builder', 'responses'], useCases: ['surveys', 'data collection'], models: ['Form', 'Field', 'Response', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'feedback-form', description: 'Collect user feedback', path: 'feedback-form', complexity: 'beginner', tags: ['feedback', 'forms'], features: ['feedback', 'ratings'], useCases: ['user feedback'], models: ['Feedback', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'booking-app', description: 'Schedule appointments', path: 'booking-app', complexity: 'intermediate', tags: ['scheduling', 'appointments'], features: ['calendar', 'bookings', 'availability'], useCases: ['appointment scheduling'], models: ['Booking', 'TimeSlot', 'Service', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+  { name: 'todo-app', description: 'Simple task management with lists', path: 'todo-app', complexity: 'beginner', tags: ['productivity', 'tasks'], features: ['CRUD', 'lists'], useCases: ['personal task tracking'], models: ['Todo', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'expense-tracker', description: 'Personal finance with categories', path: 'expense-tracker', complexity: 'beginner', tags: ['finance', 'budgeting'], features: ['categories', 'charts'], useCases: ['expense tracking'], models: ['Expense', 'Category', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'crm', description: 'Customer relationship management', path: 'crm', complexity: 'intermediate', tags: ['business', 'sales'], features: ['contacts', 'deals', 'pipeline'], useCases: ['sales management'], models: ['Contact', 'Deal', 'Company', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'inventory', description: 'Stock and product management', path: 'inventory', complexity: 'intermediate', tags: ['business', 'warehouse'], features: ['products', 'stock', 'suppliers'], useCases: ['inventory management'], models: ['Product', 'Supplier', 'StockMovement', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'kanban', description: 'Project boards with drag-and-drop', path: 'kanban', complexity: 'intermediate', tags: ['productivity', 'project-management'], features: ['boards', 'columns', 'cards', 'drag-drop'], useCases: ['project management'], models: ['Board', 'Column', 'Card', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'ai-chat', description: 'AI chatbot with conversation history', path: 'ai-chat', complexity: 'intermediate', tags: ['ai', 'chatbot'], features: ['chat', 'ai-responses', 'history'], useCases: ['ai assistant'], models: ['Conversation', 'Message', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL', ai: 'Anthropic Claude' } },
+  { name: 'form-builder', description: 'Build custom forms and collect responses', path: 'form-builder', complexity: 'intermediate', tags: ['forms', 'surveys'], features: ['form-builder', 'responses'], useCases: ['surveys', 'data collection'], models: ['Form', 'Field', 'Response', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'feedback-form', description: 'Collect user feedback', path: 'feedback-form', complexity: 'beginner', tags: ['feedback', 'forms'], features: ['feedback', 'ratings'], useCases: ['user feedback'], models: ['Feedback', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'booking-app', description: 'Schedule appointments', path: 'booking-app', complexity: 'intermediate', tags: ['scheduling', 'appointments'], features: ['calendar', 'bookings', 'availability'], useCases: ['appointment scheduling'], models: ['Booking', 'TimeSlot', 'Service', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
   { name: 'expo-app', description: 'Mobile app with Expo and React Native', path: 'expo-app', complexity: 'beginner', tags: ['mobile', 'expo', 'react-native'], features: ['CRUD', 'mobile', 'expo-router'], useCases: ['mobile todo app', 'cross-platform app'], models: ['Todo', 'User'], techStack: { frontend: 'React Native', backend: 'Hono', database: 'PostgreSQL', bundler: 'Metro' } },
 ]
 
@@ -460,6 +465,44 @@ function createPathRestrictor(projectDir: string) {
 
 const pathRestrictor = createPathRestrictor(PROJECT_DIR)
 
+// AI Proxy Configuration
+// When AI_PROXY_URL and AI_PROXY_TOKEN are set, route Claude Code CLI through
+// the proxy instead of directly to Anthropic. This prevents exposing the raw
+// ANTHROPIC_API_KEY to the project pod.
+//
+// How it works:
+// - ANTHROPIC_BASE_URL is set to the proxy's Anthropic-native endpoint
+// - ANTHROPIC_API_KEY is set to the proxy token (proxy validates it)
+// - The proxy forwards requests to the real Anthropic API with server-side keys
+const AI_PROXY_URL = process.env.AI_PROXY_URL
+const AI_PROXY_TOKEN = process.env.AI_PROXY_TOKEN
+const useAIProxy = !!(AI_PROXY_URL && AI_PROXY_TOKEN)
+
+if (useAIProxy) {
+  // Derive the Anthropic-native proxy base URL from AI_PROXY_URL
+  // AI_PROXY_URL is like: http://api-server/api/ai/v1
+  // Anthropic base URL should be: http://api-server/api/ai/anthropic
+  const anthropicProxyBase = AI_PROXY_URL.replace(/\/v1$/, '/anthropic')
+  console.log(`[project-runtime] AI Proxy enabled: Claude Code → ${anthropicProxyBase}`)
+  console.log(`[project-runtime] Proxy token: ${AI_PROXY_TOKEN.slice(0, 20)}...`)
+} else {
+  console.log(`[project-runtime] AI Proxy not configured, using direct ANTHROPIC_API_KEY`)
+}
+
+// Build environment overrides for Claude Code process
+// When proxy is enabled, override ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY
+// IMPORTANT: Spread process.env first so DATABASE_URL and other runtime vars are inherited
+const claudeCodeEnv: Record<string, string> = {
+  ...Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+  ),
+}
+if (useAIProxy) {
+  const anthropicProxyBase = AI_PROXY_URL!.replace(/\/v1$/, '/anthropic')
+  claudeCodeEnv.ANTHROPIC_BASE_URL = anthropicProxyBase
+  claudeCodeEnv.ANTHROPIC_API_KEY = AI_PROXY_TOKEN!
+}
+
 const claudeCode = createClaudeCode({
   defaultSettings: {
     // Enable streaming (required for hooks)
@@ -472,6 +515,9 @@ const claudeCode = createClaudeCode({
     canUseTool: pathRestrictor,
     // Load project settings (.claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
+    // Environment for Claude Code process
+    // Inherits all runtime env vars (DATABASE_URL, etc.) plus AI proxy overrides
+    env: claudeCodeEnv,
     // MCP server configuration
     mcpServers: {
       wavesmith: {
@@ -617,6 +663,20 @@ function wrapStreamWithKeepalive(
 }
 
 // =============================================================================
+// Image Handling Helpers
+// =============================================================================
+
+/**
+ * Parse a data URL to extract mediaType and base64 data.
+ * Example: "data:image/png;base64,iVBORw0..." -> { mimeType: "image/png", base64Data: "iVBORw0..." }
+ */
+function parseDataUrl(dataUrl: string): { mimeType: string; base64Data: string } | null {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
+  if (!match) return null
+  return { mimeType: match[1], base64Data: match[2] }
+}
+
+// =============================================================================
 // Request Schemas
 // =============================================================================
 
@@ -676,51 +736,16 @@ function getBuildStatus(): { status: string; ready: boolean; details?: string } 
       
       // If build status file says "ready", also verify actual build artifacts exist
       if (status === 'ready') {
-        const isTanStackStart = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
+        // Verify dist/ exists and has index.html
+        const distDir = join(PROJECT_DIR, 'dist')
+        if (!existsSync(distDir)) {
+          console.log('[project-runtime] Build status says ready but dist/ missing')
+          return { status: 'dist_missing', ready: false, details: 'Build artifacts missing - dist/ not found' }
+        }
         
-        if (isTanStackStart) {
-          // TanStack Start: verify .output/public/assets has actual files
-          const assetsDir = join(PROJECT_DIR, '.output', 'public', 'assets')
-          if (!existsSync(assetsDir)) {
-            console.log('[project-runtime] Build status says ready but .output/public/assets missing')
-            return { status: 'assets_missing', ready: false, details: 'Build artifacts missing - .output/public/assets not found' }
-          }
-          
-          try {
-            const assetFiles = readdirSync(assetsDir)
-            if (assetFiles.length === 0) {
-              console.log('[project-runtime] Build status says ready but .output/public/assets is empty')
-              return { status: 'assets_empty', ready: false, details: 'Build artifacts empty - no files in .output/public/assets' }
-            }
-            
-            // Check for required JS files (routes and main bundles)
-            const hasRoutes = assetFiles.some(f => f.startsWith('routes-') && f.endsWith('.js'))
-            const hasMain = assetFiles.some(f => f.startsWith('main-') && f.endsWith('.js'))
-            
-            if (!hasRoutes || !hasMain) {
-              console.log(`[project-runtime] Build assets incomplete - hasRoutes: ${hasRoutes}, hasMain: ${hasMain}`)
-              return { 
-                status: 'assets_incomplete', 
-                ready: false, 
-                details: `Build assets incomplete - routes: ${hasRoutes}, main: ${hasMain}` 
-              }
-            }
-          } catch (e) {
-            console.log('[project-runtime] Error reading assets directory:', e)
-            return { status: 'assets_error', ready: false, details: 'Cannot read assets directory' }
-          }
-        } else {
-          // Plain Vite: verify dist/ exists and has index.html
-          const distDir = join(PROJECT_DIR, 'dist')
-          if (!existsSync(distDir)) {
-            console.log('[project-runtime] Build status says ready but dist/ missing')
-            return { status: 'dist_missing', ready: false, details: 'Build artifacts missing - dist/ not found' }
-          }
-          
-          if (!existsSync(join(distDir, 'index.html'))) {
-            console.log('[project-runtime] Build status says ready but dist/index.html missing')
-            return { status: 'dist_incomplete', ready: false, details: 'Build incomplete - dist/index.html not found' }
-          }
+        if (!existsSync(join(distDir, 'index.html'))) {
+          console.log('[project-runtime] Build status says ready but dist/index.html missing')
+          return { status: 'dist_incomplete', ready: false, details: 'Build incomplete - dist/index.html not found' }
         }
       }
       
@@ -795,7 +820,6 @@ app.get('/ready', (c) => {
     logTiming(`READY! First ready after ${firstReadyTime}ms (${readyCheckCount} checks)`)
     
     // Auto-start vite watch mode for automatic rebuilds (don't block response)
-    // Works for both plain Vite and TanStack Start (both use vite build)
     // Expo uses Metro bundler, so watch mode doesn't apply
     const isExpo = existsSync(join(PROJECT_DIR, 'app.json')) || existsSync(join(PROJECT_DIR, 'expo.json'))
     
@@ -947,37 +971,87 @@ app.post('/agent/chat', async (c) => {
       return buildSystemPrompt(PROJECT_DIR, themeContext, buildContext)
     }
     
-    // Convert to CoreMessage format, handling both string and parts content
-    const coreMessages: CoreMessage[] = messages.map((msg) => {
-      let content: string
-      
+    // Convert to ModelMessage format, handling both string and parts content
+    // Preserves image parts for multimodal AI processing
+    type ContentPart = { type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }
+
+    const coreMessages: ModelMessage[] = messages.map((msg) => {
+      // If message already has content string, pass through
       if (typeof msg.content === 'string') {
-        content = msg.content
-      } else if (Array.isArray(msg.content)) {
-        // Extract text from content parts
-        content = msg.content
-          .filter((part): part is { type: 'text'; text: string } => 
-            part && typeof part === 'object' && part.type === 'text')
-          .map(part => part.text)
-          .join('')
-      } else if (Array.isArray(msg.parts)) {
-        // AI SDK v4 parts format
-        content = msg.parts
-          .filter((part): part is { type: 'text'; text: string } => 
-            part && typeof part === 'object' && part.type === 'text')
-          .map(part => part.text)
-          .join('')
-      } else {
-        content = ''
+        return { role: msg.role, content: msg.content }
       }
-      
-      return {
-        role: msg.role,
-        content,
+
+      // If message has parts array (AI SDK v4 UIMessage format), process all part types including images
+      if (Array.isArray(msg.parts)) {
+        const contentParts: ContentPart[] = []
+
+        for (const part of msg.parts) {
+          if (part.type === 'text' && part.text) {
+            contentParts.push({ type: 'text', text: part.text })
+          } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
+            // File parts with image mediaType: convert to ImagePart
+            // The url field contains the data URL (data:image/png;base64,...)
+            const parsed = parseDataUrl(part.url || '')
+            if (parsed) {
+              contentParts.push({
+                type: 'image',
+                image: parsed.base64Data,
+                mimeType: parsed.mimeType,
+              })
+            }
+          }
+        }
+
+        // Return appropriate format based on content
+        if (contentParts.length === 1 && contentParts[0].type === 'text') {
+          return { role: msg.role, content: contentParts[0].text }
+        }
+        if (contentParts.length > 0) {
+          return { role: msg.role, content: contentParts }
+        }
+        return { role: msg.role, content: '' }
       }
+
+      // Also handle content array format (alternative message format)
+      if (Array.isArray(msg.content)) {
+        const contentParts: ContentPart[] = []
+
+        for (const part of msg.content) {
+          if (part.type === 'text' && part.text) {
+            contentParts.push({ type: 'text', text: part.text })
+          } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
+            const parsed = parseDataUrl(part.url || '')
+            if (parsed) {
+              contentParts.push({
+                type: 'image',
+                image: parsed.base64Data,
+                mimeType: parsed.mimeType,
+              })
+            }
+          } else if (part.type === 'image' && part.image) {
+            // Already in image format, pass through
+            contentParts.push({ type: 'image', image: part.image, mimeType: part.mimeType || 'image/png' })
+          }
+        }
+
+        if (contentParts.length === 1 && contentParts[0].type === 'text') {
+          return { role: msg.role, content: contentParts[0].text }
+        }
+        if (contentParts.length > 0) {
+          return { role: msg.role, content: contentParts }
+        }
+      }
+
+      return { role: msg.role, content: msg.content ?? '' }
     })
     
-    console.log(`[project-runtime] Processing ${messages.length} messages`)
+    // Debug: Log message structure to verify image handling
+    const messageStats = coreMessages.map(m => ({
+      role: m.role,
+      contentType: typeof m.content === 'string' ? 'string' : Array.isArray(m.content) ? `array(${m.content.length})` : typeof m.content,
+      hasImages: Array.isArray(m.content) ? m.content.some((p: any) => p.type === 'image') : false,
+    }))
+    console.log(`[project-runtime] Processing ${messages.length} messages:`, JSON.stringify(messageStats))
     
     // Retry configuration for transient API errors
     const MAX_RETRIES = 3
@@ -1034,8 +1108,44 @@ app.post('/agent/chat', async (c) => {
         
         // Wrap the stream with keep-alive messages to prevent ALB/proxy timeouts
         // This is critical for long-running operations like template.copy (45+ seconds)
+        // Also appends a custom usage SSE event after the stream finishes
         if (response.body) {
-          const wrappedStream = wrapStreamWithKeepalive(response.body, 15000)
+          const originalStream = response.body
+          const usagePromise = result.usage
+          
+          // Create a new stream that wraps the original with keep-alive AND appends usage
+          const wrappedStream = new ReadableStream({
+            async start(controller) {
+              const reader = wrapStreamWithKeepalive(originalStream, 15000).getReader()
+              try {
+                while (true) {
+                  const { done, value } = await reader.read()
+                  if (done) break
+                  controller.enqueue(value)
+                }
+              } catch (err) {
+                console.error('[project-runtime] Stream read error:', err)
+              } finally {
+                reader.releaseLock()
+              }
+              
+              // After the main stream finishes, append usage data as a custom SSE event
+              // Using "data-" prefix so @ai-sdk/react's stream validator accepts it
+              try {
+                const usage = await usagePromise
+                console.log('[project-runtime] Usage from streamText:', JSON.stringify(usage))
+                if (usage) {
+                  const usageEvent = `data: ${JSON.stringify({ type: 'data-usage', data: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } })}\n\n`
+                  controller.enqueue(new TextEncoder().encode(usageEvent))
+                }
+              } catch (err) {
+                console.error('[project-runtime] Failed to get usage:', err)
+              }
+              
+              controller.close()
+            },
+          })
+          
           return new Response(wrappedStream, {
             status: response.status,
             headers: response.headers,
@@ -1089,6 +1199,40 @@ app.get('/info', (c) => {
     } : {
       enabled: false,
     },
+    aiProxy: {
+      url: process.env.AI_PROXY_URL || null,
+      configured: !!process.env.AI_PROXY_TOKEN,
+    },
+  })
+})
+
+// =============================================================================
+// AI Proxy Configuration Endpoint
+// =============================================================================
+// Exposes AI proxy credentials to user-created apps running in this project.
+// User apps call this endpoint to get the proxy URL and token without needing
+// raw API keys in their environment.
+
+app.get('/ai/config', (c) => {
+  const proxyUrl = process.env.AI_PROXY_URL
+  const proxyToken = process.env.AI_PROXY_TOKEN
+
+  if (!proxyUrl || !proxyToken) {
+    return c.json({
+      configured: false,
+      message: 'AI proxy not configured for this project runtime.',
+    })
+  }
+
+  return c.json({
+    configured: true,
+    proxyUrl,
+    proxyToken,
+    // OpenAI-compatible base URL that AI SDKs can use directly
+    baseUrl: proxyUrl,
+    // Models available through the proxy
+    modelsUrl: `${proxyUrl}/models`,
+    completionsUrl: `${proxyUrl}/chat/completions`,
   })
 })
 
@@ -1162,12 +1306,15 @@ app.post('/sync/download', async (c) => {
 // =============================================================================
 
 const DIST_DIR = join(PROJECT_DIR, 'dist')
-const NITRO_SERVER_PORT = parseInt(process.env.NITRO_SERVER_PORT || '3000', 10)
+
+// Port configuration: Vite UI on 3000, Backend API on 3001
+const VITE_DEV_PORT = parseInt(process.env.VITE_DEV_PORT || '3000', 10)
+const SERVER_PORT = parseInt(process.env.SERVER_PORT || '3001', 10)
+const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '8081', 10)
 
 // Track current preview mode and server processes
-let isTanStackStart = process.env.IS_TANSTACK_START === 'true'
 let isExpo = process.env.IS_EXPO === 'true'
-let nitroProcess: ReturnType<typeof Bun.spawn> | null = null
+let serverProcess: ReturnType<typeof Bun.spawn> | null = null
 let expoServerProcess: ReturnType<typeof Bun.spawn> | null = null
 
 // Dev mode: use vite dev server with HMR instead of production builds
@@ -1175,8 +1322,6 @@ let isDevMode = false
 let viteDevProcess: ReturnType<typeof Bun.spawn> | null = null
 let expoDevProcess: ReturnType<typeof Bun.spawn> | null = null
 let devModeStarting = false  // Track if dev mode is currently being started
-const VITE_DEV_PORT = parseInt(process.env.VITE_DEV_PORT || '3001', 10)
-const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '3000', 10)
 
 // Circuit breaker state for dev mode auto-start
 let devModeFailureCount = 0
@@ -1248,7 +1393,7 @@ function analyzeBuildError(errorLine: string): BuildErrorContext {
     typescriptError: /TS\d+:|error TS\d+|Type '.*' is not assignable/i,
     syntaxError: /SyntaxError|Unexpected token|Parse error/i,
     prismaError: /PrismaClient|prisma.*generate|@prisma\/client/i,
-    nitroError: /nitro|bundle.*size|chunk.*size/i,
+    buildToolError: /bundle.*size|chunk.*size/i,
     invalidExtension: /Invalid.*extension|\.jsx.*not supported/i,
     reactNotDefined: /React is not defined|'React' is not defined/i,
     importError: /Cannot resolve|wrong.*path|import.*error/i,
@@ -1373,10 +1518,10 @@ function analyzeBuildError(errorLine: string): BuildErrorContext {
       'STEP 4: Wait for automatic rebuild and verify success'
     )
   }
-  // Check for build tool errors (Nitro, Vite)
-  else if (patterns.nitroError.test(fullLog)) {
+  // Check for build tool errors (Vite)
+  else if (patterns.buildToolError.test(fullLog)) {
     category = 'build_tool'
-    rootCause = 'Build tool error (Nitro/Vite)'
+    rootCause = 'Build tool error (Vite)'
     canSelfFix = false  // These often need user intervention
     detectedIssues.push({
       type: 'build_tool_error',
@@ -1384,7 +1529,7 @@ function analyzeBuildError(errorLine: string): BuildErrorContext {
     })
     recoverySteps.push(
       'STEP 1: Read the full build log: `cat .build.log`',
-      'STEP 2: Check for specific Nitro/Vite error messages',
+      'STEP 2: Check for specific Vite error messages',
       'STEP 3: This may require manual investigation - explain the issue to the user'
     )
   }
@@ -1715,8 +1860,8 @@ async function checkTcpPort(host: string, port: number, timeoutMs: number = 1000
 /**
  * Wait for PostgreSQL to be ready to accept connections.
  * Uses direct TCP socket connection for reliability - no external tools needed.
- * This is critical when using postgres sidecar - we need to wait for it to start
- * before running prisma commands.
+ * Supports both local sidecar (localhost) and remote shared cluster (CloudNativePG).
+ * Parses DATABASE_URL to determine the host and port.
  * 
  * @param timeoutMs - Maximum time to wait (default 30s)
  * @returns true if postgres is ready, false if timeout
@@ -1725,21 +1870,35 @@ async function waitForPostgresReady(timeoutMs: number = 30000): Promise<boolean>
   const startTime = Date.now()
   const checkInterval = 500
   
-  console.log('[project-runtime] Waiting for PostgreSQL to be ready...')
+  // Parse host and port from DATABASE_URL, fallback to localhost:5432
+  let pgHost = 'localhost'
+  let pgPort = 5432
+  const dbUrl = process.env.DATABASE_URL
+  if (dbUrl) {
+    try {
+      const url = new URL(dbUrl)
+      pgHost = url.hostname
+      pgPort = parseInt(url.port, 10) || 5432
+    } catch {
+      // Invalid URL, use defaults
+    }
+  }
+  
+  console.log(`[project-runtime] Waiting for PostgreSQL at ${pgHost}:${pgPort}...`)
   
   while (Date.now() - startTime < timeoutMs) {
     // Direct TCP connection check - most reliable method
-    const isReady = await checkTcpPort('localhost', 5432, 1000)
+    const isReady = await checkTcpPort(pgHost, pgPort, 1000)
     if (isReady) {
       const elapsed = Date.now() - startTime
-      console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms (TCP check)`)
+      console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms (TCP check on ${pgHost}:${pgPort})`)
       return true
     }
     
     await new Promise(resolve => setTimeout(resolve, checkInterval))
   }
   
-  console.error(`[project-runtime] PostgreSQL not ready after ${timeoutMs}ms`)
+  console.error(`[project-runtime] PostgreSQL not ready after ${timeoutMs}ms at ${pgHost}:${pgPort}`)
   return false
 }
 
@@ -1808,7 +1967,7 @@ function notifyBuildStateChange() {
 /**
  * Start Vite in watch mode with rebuild detection.
  * Monitors stdout for rebuild events and notifies SSE clients.
- * Automatically recovers from crashes (like the nitro plugin Object.entries bug).
+ * Automatically recovers from crashes (like the Object.entries bug).
  */
 async function startViteBuildWatch(): Promise<void> {
   if (buildWatchProcess) {
@@ -1845,13 +2004,13 @@ async function startViteBuildWatch(): Promise<void> {
     lastWatchCrashTime = now
     watchCrashCount++
     
-    // Check if this was likely the nitro plugin Object.entries bug
-    const isNitroBug = buildError?.includes('Object.entries') || 
+    // Check if this was likely a known Object.entries crash
+    const isKnownCrash = buildError?.includes('Object.entries') || 
                        buildLogLines.some(l => l.includes('Object.entries'))
     
-    if (isNitroBug) {
-      console.log('[project-runtime] 🔧 Detected nitro plugin Object.entries bug - will auto-recover')
-      appendToBuildLog('⚠️ Watch process crashed (known nitro plugin issue)')
+    if (isKnownCrash) {
+      console.log('[project-runtime] 🔧 Detected Object.entries crash - will auto-recover')
+      appendToBuildLog('⚠️ Watch process crashed (known issue)')
     }
     
     // Notify frontend of crash
@@ -1859,16 +2018,16 @@ async function startViteBuildWatch(): Promise<void> {
     buildError = buildError || `Watch process crashed (exit code ${exitCode})`
     buildErrorContext = {
       errorMessage: buildError,
-      errorCategory: isNitroBug ? 'build_tool' : 'unknown',
-      rootCause: isNitroBug 
-        ? 'TanStack nitro plugin bug in watch mode (Object.entries on null)'
+      errorCategory: isKnownCrash ? 'build_tool' : 'unknown',
+      rootCause: isKnownCrash 
+        ? 'Vite watch mode crash (Object.entries on null)'
         : 'Watch process exited unexpectedly',
       canSelfFix: true,
       logFilePath: '.build.log',
       logExcerpt: buildLogLines.slice(-30).join('\n'),
-      detectedIssues: isNitroBug ? [{
-        type: 'nitro_watch_crash',
-        suggestion: 'This is a known bug in the nitro plugin. Auto-recovery in progress.'
+      detectedIssues: isKnownCrash ? [{
+        type: 'vite_watch_crash',
+        suggestion: 'This is a known Vite watch mode bug. Auto-recovery in progress.'
       }] : [],
       recoverySteps: ['Automatic restart in progress...']
     }
@@ -2012,12 +2171,12 @@ function stopViteBuildWatch(): void {
 /**
  * Restart the preview server after template changes.
  * This will:
- * 1. Kill any existing Nitro server process
+ * 1. Kill any existing server processes
  * 2. Install dependencies
- * 3. Wait for PostgreSQL sidecar to be ready (if prisma is present)
+ * 3. Wait for PostgreSQL to be ready (if prisma is present)
  * 4. Run prisma generate/push if needed
- * 5. Build with Vite (Nitro produces .output/server/index.mjs)
- * 6. Start the Nitro server (for TanStack Start) or serve static files (plain Vite)
+ * 5. Build with Vite
+ * 6. Start the Hono server (for Expo) or serve static files (plain Vite)
  */
 app.post('/preview/restart', async (c) => {
   const startTime = performance.now()
@@ -2035,11 +2194,11 @@ app.post('/preview/restart', async (c) => {
   console.log(`[project-runtime] ⏱️  Starting preview restart for project ${PROJECT_ID}...`)
   
   try {
-    // 1. Kill existing servers (Nitro, Vite dev, Expo if running)
-    if (nitroProcess) {
-      console.log('[project-runtime] Stopping existing Nitro server...')
-      nitroProcess.kill()
-      nitroProcess = null
+    // 1. Kill existing servers (Hono, Vite dev, Expo if running)
+    if (serverProcess) {
+      console.log('[project-runtime] Stopping existing backend server...')
+      serverProcess.kill()
+      serverProcess = null
     }
     if (expoServerProcess) {
       console.log('[project-runtime] Stopping existing Expo server...')
@@ -2063,7 +2222,7 @@ app.post('/preview/restart', async (c) => {
     stopViteBuildWatch()
     markStep('killExistingServer')
     
-    // 2. Check if this is a TanStack Start project
+    // 2. Check project type
     const packageJsonPath = join(PROJECT_DIR, 'package.json')
     if (!existsSync(packageJsonPath)) {
       const totalMs = Math.round(performance.now() - startTime)
@@ -2072,12 +2231,11 @@ app.post('/preview/restart', async (c) => {
     
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
-    isTanStackStart = !!deps['@tanstack/react-start']
     isExpo = !!deps['expo']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
     markStep('parsePackageJson')
 
-    const projectType = isExpo ? 'Expo (React Native)' : isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'
+    const projectType = isExpo ? 'Expo (React Native)' : 'Vite + Hono'
     console.log(`[project-runtime] Project type: ${projectType}`)
     
     // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
@@ -2209,19 +2367,17 @@ app.post('/preview/restart', async (c) => {
     const url = new URL(c.req.url)
     const forceRebuild = url.searchParams.get('force') === 'true'
     
-    const nitroOutputPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
     const viteDistPath = join(PROJECT_DIR, 'dist', 'index.html')
     const expoDistPath = join(PROJECT_DIR, 'dist', 'index.html')
     const expoServerPath = join(PROJECT_DIR, 'server.ts')
-    const nitroOutputExists = existsSync(nitroOutputPath)
     const viteDistExists = existsSync(viteDistPath)
     const expoDistExists = existsSync(expoDistPath) && existsSync(expoServerPath) && isExpo
-    const buildExists = isExpo ? expoDistExists : isTanStackStart ? nitroOutputExists : viteDistExists
+    const buildExists = isExpo ? expoDistExists : viteDistExists
     
     // Check if source files have been modified since the last build
     let sourceFilesModified = false
     if (buildExists && !forceRebuild) {
-      const buildPath = isTanStackStart ? nitroOutputPath : viteDistPath
+      const buildPath = viteDistPath
       const buildMtime = statSync(buildPath).mtimeMs
       
       // Check if any source files are newer than the build
@@ -2297,7 +2453,6 @@ app.post('/preview/restart', async (c) => {
     }
     
     // After initial build completes, start watch mode for future automatic rebuilds
-    // Works for both plain Vite and TanStack Start (both use vite build)
     // Expo uses Metro bundler, so watch mode doesn't apply
     if (!isExpo) {
       console.log('[project-runtime] 🔄 Starting Vite watch mode for automatic rebuilds...')
@@ -2305,7 +2460,7 @@ app.post('/preview/restart', async (c) => {
       markStep('startViteBuildWatch')
     }
     
-    // 6. Start Nitro server for TanStack Start or Hono server for Expo
+    // 6. Start Hono server for Expo
     if (isExpo) {
       const serverPath = join(PROJECT_DIR, 'server.ts')
       if (!existsSync(serverPath)) {
@@ -2347,48 +2502,6 @@ app.post('/preview/restart', async (c) => {
       if (!serverReady) {
         console.warn('[project-runtime] Expo Hono server may still be starting after health checks...')
       }
-    } else if (isTanStackStart) {
-      const serverPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
-      if (!existsSync(serverPath)) {
-        const totalMs = Math.round(performance.now() - startTime)
-        return c.json({ success: false, error: 'Nitro build output not found at .output/server/index.mjs', timings: { steps: timings, totalMs } }, 500)
-      }
-
-      console.log(`[project-runtime] ⏱️  Starting Nitro server on port ${NITRO_SERVER_PORT}...`)
-      appendToConsoleLog(`--- Server starting on port ${NITRO_SERVER_PORT} ---`, 'stdout')
-      nitroProcess = Bun.spawn(['bun', 'run', serverPath], {
-        cwd: PROJECT_DIR,
-        env: { ...process.env, PORT: String(NITRO_SERVER_PORT) },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      streamProcessOutput(nitroProcess, 'app')
-
-      // Wait for server to be ready with exponential backoff (max ~2s total)
-      let serverReady = false
-      const maxAttempts = 10
-      const baseDelayMs = 100
-
-      for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
-        try {
-          const healthCheck = await fetch(`http://localhost:${NITRO_SERVER_PORT}/`, {
-            signal: AbortSignal.timeout(500),
-          })
-          if (healthCheck.ok || healthCheck.status < 500) {
-            serverReady = true
-            console.log(`[project-runtime] ⏱️  Nitro server ready after ${attempt} attempt(s)`)
-          }
-        } catch (e) {
-          // Server not ready yet, wait with exponential backoff
-          const delay = Math.min(baseDelayMs * attempt, 500)
-          await new Promise(resolve => setTimeout(resolve, delay))
-        }
-      }
-      markStep('startNitroServer')
-
-      if (!serverReady) {
-        console.warn('[project-runtime] Nitro server may still be starting after health checks...')
-      }
     }
 
     const totalMs = Math.round(performance.now() - startTime)
@@ -2401,8 +2514,8 @@ app.post('/preview/restart', async (c) => {
     }
     console.log('[project-runtime] ════════════════════════════════════════')
 
-    const mode = isExpo ? 'expo' : isTanStackStart ? 'nitro' : 'static'
-    const port = isExpo ? EXPO_SERVER_PORT : isTanStackStart ? NITRO_SERVER_PORT : null
+    const mode = isExpo ? 'expo' : 'static'
+    const port = isExpo ? EXPO_SERVER_PORT : null
 
     return c.json({
       success: true,
@@ -2552,8 +2665,8 @@ app.get('/build-log', (c) => {
  * - Subsequent updates: instant (HMR)
  * 
  * Steps:
- * 1. Kill any existing build/nitro/vite processes
- * 2. Check if this is a TanStack Start project
+ * 1. Kill any existing build/vite processes
+ * 2. Check project type
  * 3. Install dependencies if needed
  * 4. Run prisma generate/push if needed
  * 5. Start vite dev server
@@ -2576,10 +2689,10 @@ app.post('/preview/dev', async (c) => {
   
   try {
     // 1. Kill existing processes
-    if (nitroProcess) {
-      console.log('[project-runtime] Stopping existing Nitro server...')
-      nitroProcess.kill()
-      nitroProcess = null
+    if (serverProcess) {
+      console.log('[project-runtime] Stopping existing backend server...')
+      serverProcess.kill()
+      serverProcess = null
     }
     if (expoServerProcess) {
       console.log('[project-runtime] Stopping existing Expo server...')
@@ -2599,7 +2712,7 @@ app.post('/preview/dev', async (c) => {
     }
     markStep('killExistingServers')
     
-    // 2. Check if this is a TanStack Start project
+    // 2. Check project type
     const packageJsonPath = join(PROJECT_DIR, 'package.json')
     if (!existsSync(packageJsonPath)) {
       devModeStarting = false  // Reset flag on failure
@@ -2610,12 +2723,11 @@ app.post('/preview/dev', async (c) => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
     // Use local variables first, only update globals after successful start
-    const detectedTanStackStart = !!deps['@tanstack/react-start']
     const detectedExpo = !!deps['expo']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
     markStep('parsePackageJson')
 
-    const projectType = detectedExpo ? 'Expo (React Native)' : detectedTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'
+    const projectType = detectedExpo ? 'Expo (React Native)' : 'Vite + Hono'
     console.log(`[project-runtime] Project type: ${projectType}`)
     
     // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
@@ -2823,7 +2935,6 @@ app.post('/preview/dev', async (c) => {
 
     // Only update globals after successful start
     // This prevents state inconsistency when dev mode fails to start
-    isTanStackStart = detectedTanStackStart
     isExpo = detectedExpo
     isDevMode = true
     devModeStarting = false
@@ -2903,7 +3014,7 @@ app.post('/__console', async (c) => {
   }
 })
 
-const previewMode = isExpo ? 'Expo (Hono server)' : isTanStackStart ? 'TanStack Start (proxy)' : 'Static files'
+const previewMode = isExpo ? 'Expo (Hono server)' : 'Static files'
 console.log(`[project-runtime] Preview mode: ${previewMode}`)
 
 /**
@@ -2970,7 +3081,7 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   html = html.replace(/<link([^>]*)\s+href="\/src\/([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}src/$2"$3>`)
 
-  // Rewrite Vite dev server paths (/@vite, /@react-refresh, /@tanstack-start, /@id, /node_modules)
+  // Rewrite Vite dev server paths (/@vite, /@react-refresh, /@id, /node_modules)
   html = html.replace(/<link([^>]*)\s+href="\/@([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}@$2"$3>`)
 
@@ -3073,11 +3184,7 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
 }
 
 /**
- * Preview handler - proxies to TanStack Start server or serves static files.
- * 
- * For TanStack Start projects:
- * - Proxies all requests to the running TanStack Start server on port 3000
- * - Full SSR, server functions, and routing handled by TanStack
+ * Preview handler - serves static files from dist/.
  * 
  * For plain Vite projects:
  * - Serves pre-built static assets from dist/
@@ -3160,86 +3267,6 @@ app.get('/preview/*', async (c) => {
     }
   }
   
-  // TanStack Start: proxy to the running server
-  if (isTanStackStart) {
-    const targetUrl = `http://localhost:${NITRO_SERVER_PORT}${relativePath}`
-    console.log(`[project-runtime] Proxying preview to TanStack: ${targetUrl}`)
-    
-    try {
-      const response = await fetch(targetUrl, {
-        method: c.req.method,
-        headers: {
-          'Host': `localhost:${NITRO_SERVER_PORT}`,
-          'Accept': c.req.header('Accept') || '*/*',
-          'Accept-Encoding': c.req.header('Accept-Encoding') || '',
-        },
-      })
-      
-      // Get response body
-      const contentType = response.headers.get('Content-Type') || 'text/html'
-      const body = await response.arrayBuffer()
-      
-      // Rewrite HTML responses to fix asset paths when accessed through proxy
-      if (contentType.includes('text/html')) {
-        const html = new TextDecoder().decode(body)
-        const rewrittenHtml = rewritePreviewHtml(html, externalBasePath)
-        return new Response(rewrittenHtml, {
-          status: response.status,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(Buffer.byteLength(rewrittenHtml)),
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
-      }
-      
-      // Rewrite JavaScript responses to fix dynamic import paths
-      // Vite generates code like import('/assets/...') which needs to be rewritten
-      if (contentType.includes('javascript') || contentType.includes('application/javascript')) {
-        let js = new TextDecoder().decode(body)
-        // Rewrite absolute paths in dynamic imports: import("/assets/...") and import('/assets/...')
-        js = js.replace(/import\(["']\/assets\//g, `import("${externalBasePath}assets/`)
-        js = js.replace(/import\(["']\/src\//g, `import("${externalBasePath}src/`)
-        // Also handle other common patterns: __vite_ssr_dynamic_import__, etc.
-        js = js.replace(/"\/assets\//g, `"${externalBasePath}assets/`)
-        js = js.replace(/'\/assets\//g, `'${externalBasePath}assets/`)
-        js = js.replace(/"\/src\//g, `"${externalBasePath}src/`)
-        js = js.replace(/'\/src\//g, `'${externalBasePath}src/`)
-        return new Response(js, {
-          status: response.status,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(Buffer.byteLength(js)),
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
-      }
-      
-      return new Response(body, {
-        status: response.status,
-        headers: {
-          'Content-Type': contentType,
-          'Cache-Control': 'no-cache',
-          'Access-Control-Allow-Origin': '*',
-        },
-      })
-    } catch (error: any) {
-      console.error('[project-runtime] TanStack proxy error:', error)
-      return c.html(`
-        <html>
-          <body style="font-family: system-ui; padding: 2rem;">
-            <h1>Preview Loading...</h1>
-            <p>The TanStack Start server is starting up. Please wait a moment and refresh.</p>
-            <p style="color: #666; font-size: 0.9em;">Error: ${error.message}</p>
-            <script>setTimeout(() => location.reload(), 3000)</script>
-          </body>
-        </html>
-      `, 503)
-    }
-  }
-
   // Expo: proxy to the Expo Hono server (serves both API routes and static files)
   if (isExpo && expoServerProcess) {
     const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
@@ -3715,8 +3742,8 @@ app.all('/*', async (c, next) => {
   // Use build+restart approach instead of dev mode for reliability and simplicity
   // This avoids HMR complexity and provides consistent preview updates
   // For plain Vite: only auto-start if dist/ doesn't exist (prevents redundant builds)
-  // For TanStack Start/Expo: always auto-start if process isn't running
-  const needsAutoStart = !nitroProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
+  // For Expo: always auto-start if process isn't running
+  const needsAutoStart = !serverProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
   
   if (needsAutoStart) {
     console.log('[project-runtime] Auto-starting build mode on first subdomain request...')
@@ -3755,11 +3782,10 @@ app.all('/*', async (c, next) => {
   
   // Show loading page while build is starting
   // For plain Vite: only show loading if dist/ doesn't exist yet
-  // For TanStack Start/Expo: show loading if respective process isn't running
-  const isTanstackStart = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
-  const needsProcess = isTanstackStart || existsSync(join(PROJECT_DIR, 'app.json')) // TanStack Start or Expo
+  // For Expo: show loading if respective process isn't running
+  const needsProcess = existsSync(join(PROJECT_DIR, 'app.json')) // Expo
   
-  if (devModeStarting || (!distExists && !nitroProcess && !expoServerProcess && !isInBackoff)) {
+  if (devModeStarting || (!distExists && !serverProcess && !expoServerProcess && !isInBackoff)) {
     return c.html(`
 <!DOCTYPE html>
 <html lang="en">
@@ -3882,88 +3908,6 @@ app.all('/*', async (c, next) => {
     }
   }
   
-  // TanStack Start: proxy to the running server
-  if (isTanStackStart) {
-    const targetUrl = `http://localhost:${NITRO_SERVER_PORT}${relativePath}`
-    const method = c.req.method
-    console.log(`[project-runtime] Subdomain: proxying ${method} to TanStack at ${targetUrl}`)
-    
-    try {
-      // Build headers for the proxy request
-      const proxyHeaders: Record<string, string> = {
-        'Host': `localhost:${NITRO_SERVER_PORT}`,
-        'Accept': c.req.header('Accept') || '*/*',
-        'Accept-Encoding': c.req.header('Accept-Encoding') || '',
-      }
-      
-      // Forward Content-Type for POST/PUT/PATCH requests
-      const contentType = c.req.header('Content-Type')
-      if (contentType) {
-        proxyHeaders['Content-Type'] = contentType
-      }
-      
-      // Forward cookies for auth
-      const cookies = c.req.header('Cookie')
-      if (cookies) {
-        proxyHeaders['Cookie'] = cookies
-      }
-      
-      // Build fetch options
-      const fetchOptions: RequestInit = {
-        method,
-        headers: proxyHeaders,
-      }
-      
-      // Forward request body for POST/PUT/PATCH
-      if (method !== 'GET' && method !== 'HEAD') {
-        try {
-          const bodyBuffer = await c.req.arrayBuffer()
-          if (bodyBuffer.byteLength > 0) {
-            fetchOptions.body = bodyBuffer
-          }
-        } catch {
-          // No body or couldn't read body - that's ok
-        }
-      }
-      
-      const response = await fetch(targetUrl, fetchOptions)
-      
-      const responseContentType = response.headers.get('Content-Type') || 'text/html'
-      const body = await response.arrayBuffer()
-      
-      // Build response headers
-      const responseHeaders: Record<string, string> = {
-        'Content-Type': responseContentType,
-        'Cache-Control': 'no-cache',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Credentials': 'true',
-      }
-      
-      // Forward Set-Cookie headers for auth
-      const setCookie = response.headers.get('Set-Cookie')
-      if (setCookie) {
-        responseHeaders['Set-Cookie'] = setCookie
-      }
-      
-      // No rewriting needed for subdomain access - serve directly!
-      return new Response(body, {
-        status: response.status,
-        headers: responseHeaders,
-      })
-    } catch (error: any) {
-      console.error('[project-runtime] Subdomain TanStack proxy error:', error)
-      return c.html(`
-        <html>
-          <body style="font-family: system-ui; padding: 2rem;">
-            <h1>Preview Loading...</h1>
-            <p>The server is starting up. Please wait a moment and refresh.</p>
-            <script>setTimeout(() => location.reload(), 3000)</script>
-          </body>
-        </html>
-      `, 503)
-    }
-  }
-
   // Expo: proxy to the Expo Hono server (serves both API routes and static files)
   if (isExpo && expoServerProcess) {
     const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
@@ -4975,6 +4919,14 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
 (function() {
   var proxyBase = ${JSON.stringify(basePath)};
   
+  // Helper to extract URL string from various input types (string, URL, Request)
+  function extractUrlString(input) {
+    if (typeof input === 'string') return input;
+    if (input instanceof URL) return input.toString();
+    if (input instanceof Request) return input.url;
+    return null;
+  }
+  
   // Helper to rewrite URL for proxy
   function rewriteUrl(url) {
     if (typeof url !== 'string') return url;
@@ -4997,7 +4949,6 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
             if (path.startsWith('/')) path = path.substring(1);
             url = proxyBase + path + urlObj.search;
           }
-          console.log('[Prisma Studio Proxy] Rewrote full URL to:', url);
         }
       } catch(e) {
         // Invalid URL, leave as-is
@@ -5005,7 +4956,6 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
     }
     // Handle protocol-relative URLs (//...) - leave unchanged
     else if (url.startsWith('//')) {
-      // Protocol-relative URLs should not be rewritten
       return url;
     }
     // Handle /api/ calls - but check if already proxied
@@ -5027,17 +4977,62 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
   
   // Store original fetch
   var originalFetch = window.fetch;
-  window.fetch = function(url, options) {
-    url = rewriteUrl(url);
-    return originalFetch.call(this, url, options);
+  window.fetch = function(input, init) {
+    // fix-prisma-proxy: Handle Request, URL, and string inputs
+    // Modern frameworks (including Prisma Studio) may pass Request or URL objects
+    // instead of plain strings, which previously bypassed URL rewriting entirely.
+    if (input instanceof Request) {
+      var rewrittenUrl = rewriteUrl(input.url);
+      if (rewrittenUrl !== input.url) {
+        // Create a new Request with rewritten URL, preserving all other properties
+        input = new Request(rewrittenUrl, input);
+      }
+      return originalFetch.call(this, input, init);
+    }
+    if (input instanceof URL) {
+      var urlStr = rewriteUrl(input.toString());
+      return originalFetch.call(this, urlStr, init);
+    }
+    var rewritten = rewriteUrl(input);
+    return originalFetch.call(this, rewritten, init);
   };
   
   // Store original XMLHttpRequest.open
   var originalOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {
     var args = Array.prototype.slice.call(arguments, 2);
-    url = rewriteUrl(url);
+    // fix-prisma-proxy: Handle URL objects in XHR too
+    var urlStr = extractUrlString(url);
+    if (urlStr !== null) {
+      url = rewriteUrl(urlStr);
+    }
     return originalOpen.apply(this, [method, url].concat(args));
+  };
+  
+  // fix-prisma-proxy: Prevent Prisma Studio SPA router from changing location
+  // If Prisma Studio pushes history state, it changes location.pathname which
+  // breaks subsequent relative URL resolution. Lock the pathname to the proxy base.
+  var originalPushState = history.pushState;
+  var originalReplaceState = history.replaceState;
+  history.pushState = function(state, title, url) {
+    // Only allow if URL stays within proxy base path, otherwise no-op
+    if (url) {
+      var urlStr = typeof url === 'string' ? url : url.toString();
+      if (!urlStr.startsWith(proxyBase) && urlStr.startsWith('/')) {
+        // Redirect to proxy-prefixed path
+        url = proxyBase + urlStr.substring(1);
+      }
+    }
+    return originalPushState.call(this, state, title, url);
+  };
+  history.replaceState = function(state, title, url) {
+    if (url) {
+      var urlStr = typeof url === 'string' ? url : url.toString();
+      if (!urlStr.startsWith(proxyBase) && urlStr.startsWith('/')) {
+        url = proxyBase + urlStr.substring(1);
+      }
+    }
+    return originalReplaceState.call(this, state, title, url);
   };
   
   // Patch dynamically created script/link elements
@@ -5055,11 +5050,7 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
         var originalSetter = descriptor.set;
         Object.defineProperty(element, 'src', {
           set: function(value) {
-            var rewritten = rewriteUrl(value);
-            if (rewritten !== value) {
-              console.log('[Prisma Studio Proxy] Rewrote element src:', value, '->', rewritten);
-            }
-            return originalSetter.call(this, rewritten);
+            return originalSetter.call(this, rewriteUrl(value));
           },
           get: descriptor.get
         });
@@ -5071,11 +5062,7 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
         var originalLinkSetter = linkDescriptor.set;
         Object.defineProperty(element, 'href', {
           set: function(value) {
-            var rewritten = rewriteUrl(value);
-            if (rewritten !== value) {
-              console.log('[Prisma Studio Proxy] Rewrote link href:', value, '->', rewritten);
-            }
-            return originalLinkSetter.call(this, rewritten);
+            return originalLinkSetter.call(this, rewriteUrl(value));
           },
           get: linkDescriptor.get
         });

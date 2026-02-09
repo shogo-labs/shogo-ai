@@ -76,24 +76,20 @@ variable "enable_secondary_node_group" {
 }
 
 # -----------------------------------------------------------------------------
-# RDS Configuration
+# CloudNativePG Configuration (replaces RDS)
 # -----------------------------------------------------------------------------
-variable "rds_instance_class" {
-  description = "RDS instance class"
+variable "cnpg_s3_access_key_id" {
+  description = "AWS Access Key ID for CloudNativePG S3 backups (leave empty to use node IAM role)"
   type        = string
-  default     = "db.t3.micro" # Smaller than production
+  default     = ""
+  sensitive   = true
 }
 
-variable "rds_allocated_storage" {
-  description = "Allocated storage for RDS in GB"
-  type        = number
-  default     = 20
-}
-
-variable "rds_backup_retention_period" {
-  description = "RDS backup retention period in days (0 for Free Tier accounts)"
-  type        = number
-  default     = 0
+variable "cnpg_s3_secret_access_key" {
+  description = "AWS Secret Access Key for CloudNativePG S3 backups (leave empty to use node IAM role)"
+  type        = string
+  default     = ""
+  sensitive   = true
 }
 
 # -----------------------------------------------------------------------------
@@ -161,38 +157,8 @@ variable "anthropic_api_key" {
 }
 
 # -----------------------------------------------------------------------------
-# Project Runtime Configuration (Per-Project PostgreSQL Sidecar)
+# Project Runtime Configuration
 # -----------------------------------------------------------------------------
-variable "project_runtime_postgres_enabled" {
-  description = "Enable PostgreSQL sidecar for project runtimes"
-  type        = bool
-  default     = true
-}
-
-variable "project_runtime_postgres_image" {
-  description = "PostgreSQL image for project runtime sidecar"
-  type        = string
-  default     = "postgres:16-alpine"
-}
-
-variable "project_runtime_postgres_storage_size" {
-  description = "Storage size for PostgreSQL data PVC per project"
-  type        = string
-  default     = "1Gi"
-}
-
-variable "project_runtime_postgres_memory_limit" {
-  description = "Memory limit for PostgreSQL sidecar container"
-  type        = string
-  default     = "512Mi"
-}
-
-variable "project_runtime_postgres_cpu_limit" {
-  description = "CPU limit for PostgreSQL sidecar container"
-  type        = string
-  default     = "250m"
-}
-
 variable "project_runtime_idle_timeout" {
   description = "Idle timeout in seconds before project pods scale to zero"
   type        = number

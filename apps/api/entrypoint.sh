@@ -15,7 +15,7 @@ fi
 if [ -n "$DATABASE_URL" ]; then
   echo "Running Prisma migrations..."
   cd /app
-  bunx prisma migrate deploy
+  npx prisma migrate deploy
   cd /app/apps/api
   echo "Migrations complete"
 fi

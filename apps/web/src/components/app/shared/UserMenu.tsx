@@ -15,6 +15,7 @@
 import { useState, useCallback } from "react"
 import { observer } from "mobx-react-lite"
 import { useDomains } from "@/contexts/DomainProvider"
+import { clearUserLocalStorage } from "@/lib/clear-user-storage"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -106,53 +107,6 @@ export const UserMenu = observer(function UserMenu() {
       // This ensures no stale data from previous user remains
       // Use finally to ensure reload happens even if signOut fails
       window.location.reload()
-    }
-  }
-
-  /**
-   * Clear all user-specific localStorage data on sign out.
-   * This includes:
-   * - Current workspace selection (shogo-current-workspace)
-   * - Chat session history (shogo:lastChatSession:*)
-   * - Advanced chat preferences
-   * - Any other user-specific cached data
-   */
-  function clearUserLocalStorage() {
-    try {
-      const keysToRemove: string[] = []
-      
-      // Find all keys that should be cleared on sign out
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i)
-        if (key) {
-          // Clear current workspace selection (critical for workspace access errors)
-          if (key === "shogo-current-workspace") {
-            keysToRemove.push(key)
-          }
-          // Clear chat session history for all projects
-          if (key.startsWith("shogo:lastChatSession:")) {
-            keysToRemove.push(key)
-          }
-          // Clear advanced chat preference
-          if (key === "advanced-chat-preferred") {
-            keysToRemove.push(key)
-          }
-          // Clear any workspace-related cached data (both : and - prefixes)
-          if (key.startsWith("shogo:workspace:") || key.startsWith("shogo-workspace")) {
-            keysToRemove.push(key)
-          }
-        }
-      }
-      
-      // Remove all identified keys
-      keysToRemove.forEach(key => {
-        localStorage.removeItem(key)
-      })
-      
-      console.log("[UserMenu] Cleared", keysToRemove.length, "user-specific localStorage items on sign out")
-    } catch (error) {
-      // Ignore localStorage errors (e.g., in incognito mode)
-      console.warn("[UserMenu] Could not clear localStorage:", error)
     }
   }
 

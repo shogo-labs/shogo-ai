@@ -19,7 +19,7 @@
  * - Closes modal and triggers onSuccess callback on success
  */
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { Loader2 } from "lucide-react"
 
 import {
@@ -72,6 +72,12 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // fix-double-submit: Use a ref for immediate synchronous guard against double submission.
+  // React state updates (setIsSubmitting) are async and batched, so two rapid events
+  // (button click + Enter keypress) can both pass the `isSubmitting` state check before
+  // the state update takes effect. A ref update is synchronous and immediate.
+  const isSubmittingRef = useRef(false)
+
   // Form validation - name is required
   const isValid = name.trim().length > 0
 
@@ -80,7 +86,8 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
    * Creates new project in the workspace via MCP domain
    */
   const handleSubmit = async () => {
-    if (!isValid || isSubmitting) return
+    if (!isValid || isSubmitting || isSubmittingRef.current) return
+    isSubmittingRef.current = true
 
     const userId = session?.user?.id
     if (!userId) {
@@ -117,6 +124,7 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
       setError(err instanceof Error ? err.message : "Failed to create project")
     } finally {
       setIsSubmitting(false)
+      isSubmittingRef.current = false
     }
   }
 
@@ -129,6 +137,7 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
       setName("")
       setDescription("")
       setError(null)
+      isSubmittingRef.current = false
     }
     onOpenChange(newOpen)
   }

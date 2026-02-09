@@ -12,16 +12,17 @@ vpc_cidr = "10.1.0.0/16"
 
 # EKS Configuration (smaller than production)
 eks_cluster_version         = "1.33"
-node_instance_types         = ["t3.medium"]  # 17 pod limit per node, 4GB RAM
+node_instance_types         = ["t3.large"]   # 35 pod limit per node, 8GB RAM
 node_desired_size           = 2              # Need 2 nodes for system + app pods
 node_min_size               = 2              # Keep 2 minimum to avoid scheduling issues
-node_max_size               = 5
-enable_secondary_node_group = true           # Secondary node group for additional capacity
+node_max_size               = 6
+enable_secondary_node_group = false          # Disabled - was duplicate of main nodegroup, wasting vCPU quota
 
-# RDS Configuration (smaller than production)
-rds_instance_class         = "db.t3.micro"
-rds_allocated_storage      = 20
-rds_backup_retention_period = 0  # Free Tier limitation
+# CloudNativePG Configuration
+# S3 credentials for backups (leave empty to use EKS node IAM role)
+# For bare metal with MinIO, set these to your MinIO credentials
+# cnpg_s3_access_key_id     = ""
+# cnpg_s3_secret_access_key = ""
 
 # Redis Configuration
 redis_node_type = "cache.t3.micro"
@@ -42,6 +43,7 @@ ssl_certificate_domain_preview = "*.staging.shogo.ai"  # ACM certificate for pre
 
 # Application Secrets
 better_auth_secret = "shogo-staging-secret-key-must-be-at-least-32-characters-long"
+anthropic_api_key  = "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"
 
 # GitHub Actions CI/CD
 github_org  = "CodeGlo"

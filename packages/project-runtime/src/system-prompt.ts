@@ -33,7 +33,9 @@ ${TAILWIND_STYLING}
 
 ${CODE_QUALITY}
 
-${BUILD_FAILURE_RECOVERY}`
+${BUILD_FAILURE_RECOVERY}
+
+${ENVIRONMENT_AWARENESS}`
 
   let prompt = basePrompt
   
@@ -357,3 +359,47 @@ When you see a "BUILD ERROR" in the Current Build Status section:
 4. **Wait** for the automatic rebuild to verify success
 
 The build log contains the complete error context. Read it before attempting any fix.`
+
+// =============================================================================
+// Build Verification
+// =============================================================================
+
+export const ENVIRONMENT_AWARENESS = `## Runtime Environment
+
+**This project runs inside a managed Shogo runtime container.** Key facts:
+
+### Database
+- **DATABASE_URL** is pre-configured as an environment variable pointing to a provisioned PostgreSQL database.
+- Do NOT install, run, or configure a local database (no Docker, no SQLite fallback).
+- Do NOT modify DATABASE_URL — it is managed by the platform.
+- Use \`process.env.DATABASE_URL\` in Prisma schema and application code.
+- The database is PostgreSQL 17 (CloudNativePG managed).
+
+### Runtime
+- **Node.js** and **bun** are available.
+- The dev server runs on **port 3001** (Hono server serving the API + built frontend).
+- The project uses **Vite** for building the frontend (SPA mode, \`vite build --watch\`).
+- **Do NOT start a separate dev server** — the build watcher and server are already running.
+
+### Architecture
+- **Server**: Hono server (\`server.tsx\`) serves REST API routes at \`/api/*\` and static files from \`dist/\`.
+- **Client**: Vite SPA built to \`dist/\`. Route files import fetch-based client functions (NOT Prisma directly).
+- **Generated code**: \`src/generated/server-functions.ts\` contains fetch-based functions that call the REST API. These are safe for browser bundles — they do NOT import Prisma or Node.js modules.
+- **Prisma** is only used on the server side (\`server.tsx\`, \`src/lib/db.ts\`). NEVER import Prisma in route files, components, or client-side code.
+
+### Important: Server/Client Code Separation
+- Route files (\`src/routes/*.tsx\`) and component files (\`src/components/*.tsx\`) run in the BROWSER.
+- NEVER import from \`src/lib/db.ts\`, \`src/lib/shogo.ts\`, or \`@prisma/client\` in browser code.
+- Use the generated functions in \`src/generated/server-functions.ts\` for data access — they use \`fetch()\` to call the server API.
+
+## Build Verification (CRITICAL)
+
+After making code changes, ALWAYS verify the build succeeded by checking \`.build.log\`:
+
+\`\`\`bash
+tail -5 .build.log
+\`\`\`
+
+- Look for "built in" (success) or "Build failed" / "error" (failure).
+- Do NOT tell the user changes are complete until you've confirmed the build succeeded.
+- If the build failed, read the full log with \`cat .build.log\` and fix the error before reporting success.`

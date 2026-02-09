@@ -19,8 +19,6 @@ import { useParams, useLocation } from "react-router-dom"
 import { useDomains, useSchemaLoadingState, useSDKDomain, useSDKReady, useSDKHttp } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
-import { ComponentRegistryProvider } from "@/components/rendering"
-import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
 import { ChatPanel } from "../chat/ChatPanel"
 import { ChatPanelTransitionOverlay } from "../chat/ChatPanelTransitionOverlay"
 import { useChatSessionNavigation } from "../advanced-chat/hooks/useChatSessionNavigation"
@@ -64,8 +62,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const location = useLocation()
   const { data: session } = useSession()
 
-  // Extract state passed from homepage transition (for instant render + warm-start)
-  const transitionState = location.state as TransitionLocationState | null
+  // Capture transition state from navigation so it survives replaceState (which would clear location.state)
+  // Without this, first message and overlay start rect are lost before ChatPanel can use them
+  const [capturedTransition] = useState<TransitionLocationState | null>(
+    () => (location.state as TransitionLocationState | null) ?? null
+  )
+  const transitionState = capturedTransition
 
   // Use SDK store for data loading
   const store = useSDKDomain() as IDomainStore
@@ -73,29 +75,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const actions = useDomainActions()
   const http = useSDKHttp()
 
-  // Legacy domains for componentBuilder (rendering) and platformFeatures
-  const { platformFeatures, componentBuilder, studioChat, billing } = useDomains<{
+  // Legacy domains for platformFeatures
+  const { platformFeatures, studioChat, billing } = useDomains<{
     platformFeatures: any
-    componentBuilder: any
     studioChat: any
     billing: any
   }>()
-
-  // Create component registry from domain (same pattern as AppShell)
-  const prevBindingsKeyRef = useRef<string>('')
-  const registryRef = useRef<ReturnType<typeof createRegistryFromDomain> | null>(null)
-
-  const bindings = componentBuilder?.rendererBindingCollection?.all() ?? []
-  const currentBindingsKey = bindings.map((b: any) =>
-    `${b.id}:${b.updatedAt ?? ''}`
-  ).join('|')
-
-  if (currentBindingsKey !== prevBindingsKeyRef.current || !registryRef.current) {
-    prevBindingsKeyRef.current = currentBindingsKey
-    registryRef.current = createRegistryFromDomain(componentBuilder)
-  }
-
-  const registry = registryRef.current
 
   // Track current chat session in URL
   const { chatSessionId, setChatSessionId } = useChatSessionNavigation()
@@ -116,6 +101,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
+
+  // Template copy state - tracks when template_copy tool is running for preview overlay
+  const [isTemplateCopying, setIsTemplateCopying] = useState(false)
+
+  // Chat error state - passed to RuntimePreviewPanel to stop loading on project creation failure
+  const [chatError, setChatError] = useState<Error | null>(null)
 
   // Build error state - shared between RuntimePreviewPanel and TerminalPanel
   const [buildError, setBuildError] = useState<string | null>(null)
@@ -157,6 +148,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
   // Transition overlay state - for animating from homepage to chat panel
   const chatInputContainerRef = useRef<HTMLDivElement>(null)
+  const messageContainerRef = useRef<HTMLDivElement>(null)
   const [transitionOverlayActive, setTransitionOverlayActive] = useState(false)
   const [transitionEndRect, setTransitionEndRect] = useState<DOMRect | null>(null)
   const transitionMeasuredRef = useRef(false)
@@ -171,40 +163,76 @@ export const ProjectLayout = observer(function ProjectLayout() {
       )
     : null
 
-  // Clear location state after consuming initialMessage to prevent re-injection on refresh
+  // Clear location state after transition is consumed to prevent re-injection on refresh
+  // We use captured transition state above, so clearing here only affects back-button behavior
   useEffect(() => {
     if (transitionState?.initialMessage) {
-      // Replace current history entry without the state
       window.history.replaceState({}, document.title)
     }
   }, []) // Only run on mount
 
-  // Measure ChatPanel input and activate transition overlay
-  // This runs once when we have a start rect and the ChatPanel has mounted
+  // Measure ChatPanel message container and activate transition overlay
+  // Animation should target the message area (top of chat) not the input (bottom)
+  // Delay measurement so layout is stable; chat panel is on the LEFT so reject rects in the right half
   useEffect(() => {
     if (
       !transitionStartRect ||
-      !chatInputContainerRef.current ||
+      !messageContainerRef.current ||
       transitionMeasuredRef.current ||
       isChatCollapsed
     ) {
       return
     }
 
-    // Wait for layout to settle
+    const el = messageContainerRef.current
+    let retryTimeoutId: ReturnType<typeof setTimeout> | null = null
+
     const measureAndActivate = () => {
-      const endRect = chatInputContainerRef.current?.getBoundingClientRect()
-      if (endRect) {
+      if (!el || transitionMeasuredRef.current) return
+      const endRect = el.getBoundingClientRect()
+      const hasSize = endRect && endRect.width > 0 && endRect.height > 0
+      // Chat panel is on the left: endRect.left should be in the left half of the viewport
+      // Reject (0,0) or right-side coords that would put the overlay in the wrong place
+      const inLeftHalf = typeof window !== 'undefined' && endRect.left < window.innerWidth * 0.6
+      const sanePosition = endRect.top >= 0 && endRect.left >= 0
+      const isValid = hasSize && inLeftHalf && sanePosition
+
+      if (isValid) {
         transitionMeasuredRef.current = true
         setTransitionEndRect(endRect)
         setTransitionOverlayActive(true)
       }
     }
 
-    // Use requestAnimationFrame to ensure layout is complete
-    requestAnimationFrame(() => {
-      requestAnimationFrame(measureAndActivate)
-    })
+    const RETRY_MS = 80
+    const MAX_RETRIES = 25
+
+    const scheduleRetry = (attempt: number) => {
+      if (transitionMeasuredRef.current || attempt >= MAX_RETRIES) return
+      retryTimeoutId = setTimeout(() => {
+        measureAndActivate()
+        if (!transitionMeasuredRef.current) scheduleRetry(attempt + 1)
+      }, RETRY_MS)
+    }
+
+    const observer = new ResizeObserver(() => measureAndActivate())
+    observer.observe(el)
+
+    // Wait for layout to settle before first measure (avoids wrong position / bottom-right flash)
+    const startDelay = setTimeout(() => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          measureAndActivate()
+          if (!transitionMeasuredRef.current) scheduleRetry(0)
+        })
+      })
+    }, 150)
+
+    return () => {
+      clearTimeout(startDelay)
+      observer.disconnect()
+      if (retryTimeoutId != null) clearTimeout(retryTimeoutId)
+    }
   }, [transitionStartRect, isChatCollapsed])
 
   // Handle transition overlay completion
@@ -217,7 +245,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const domainsReady = sdkReady && !!store?.projectCollection
 
   // Load project data using SDK store with retry logic
+  // CRITICAL FIX: Skip SDK loading if we already have project from navigation state
   useEffect(() => {
+    // If we already have a valid project from transition state, skip loading
+    if (project?.id === projectId) {
+      console.log('[ProjectLayout] Using project from navigation state:', projectId)
+      setIsLoading(false)
+      return
+    }
+
     if (!projectId || !domainsReady || !session?.user?.id) {
       return
     }
@@ -225,6 +261,22 @@ export const ProjectLayout = observer(function ProjectLayout() {
     let cancelled = false
     const MAX_RETRIES = 10
     const RETRY_DELAY_MS = 500
+
+    // Direct API fallback - used when SDK store fails
+    const fetchProjectFromAPI = async (): Promise<any | null> => {
+      try {
+        console.log('[ProjectLayout] Fetching project directly from API...')
+        const response = await fetch(`/api/projects/${projectId}`)
+        if (response.ok) {
+          const data = await response.json()
+          console.log('[ProjectLayout] Got project from API:', data.id)
+          return data
+        }
+      } catch (err) {
+        console.warn('[ProjectLayout] Direct API fetch failed:', err)
+      }
+      return null
+    }
 
     const loadProjectData = async (attempt = 1): Promise<void> => {
       if (cancelled) return
@@ -248,7 +300,17 @@ export const ProjectLayout = observer(function ProjectLayout() {
           setIsLoading(false)
         } else {
           // Project not found - could be race condition during creation
-          // Retry a few times before giving up
+          // After 3 attempts, try direct API fetch as fallback
+          if (attempt === 3) {
+            const apiProject = await fetchProjectFromAPI()
+            if (apiProject && !cancelled) {
+              setProject(apiProject)
+              setIsLoading(false)
+              return
+            }
+          }
+          
+          // Retry a few more times via SDK
           if (attempt < MAX_RETRIES) {
             // Only log at higher attempts to reduce noise
             if (attempt > 3) {
@@ -257,6 +319,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt))
             return loadProjectData(attempt + 1)
           }
+          
+          // Final fallback: try API one more time
+          const apiProject = await fetchProjectFromAPI()
+          if (apiProject && !cancelled) {
+            setProject(apiProject)
+            setIsLoading(false)
+            return
+          }
+          
           // Only warn after all retries exhausted
           console.warn("[ProjectLayout] Project not found after retries:", projectId)
           setIsLoading(false)
@@ -277,6 +348,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
         }
 
         console.error("[ProjectLayout] Failed to load project:", err)
+        
+        // Last resort: try direct API fetch on error
+        const apiProject = await fetchProjectFromAPI()
+        if (apiProject && !cancelled) {
+          setProject(apiProject)
+          setIsLoading(false)
+          return
+        }
+        
         setIsLoading(false)
       }
     }
@@ -286,7 +366,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
     return () => {
       cancelled = true
     }
-  }, [projectId, domainsReady, store, session?.user?.id])
+  }, [projectId, domainsReady, store, session?.user?.id, project?.id])
 
   // Get chat sessions for this project (synchronous - uses in-memory data from SDK store)
   const projectChatSessions: ChatSessionItem[] = projectId
@@ -626,42 +706,52 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const userInitial = session?.user?.name?.charAt(0).toUpperCase() || "U"
 
   // Get workspace ID for credit lookup
-  const workspaceId = project
-    ? (typeof project.workspace === 'string' ? project.workspace : project.workspace?.id)
-    : null
+  // Use workspaceId (plain string) instead of workspace reference to avoid MST InvalidReferenceError
+  const workspaceId = project?.workspaceId || null
 
-  // Get credits from SDK store
+  // Load and get credits from SDK store
+  useEffect(() => {
+    if (workspaceId && store?.creditLedgerCollection) {
+      store.creditLedgerCollection.loadAll({ workspaceId }).catch((err: any) => {
+        console.error("[ProjectLayout] Failed to load credit ledger:", err)
+      })
+    }
+  }, [workspaceId, store])
+
   const creditLedger = workspaceId
     ? store?.creditLedgerCollection?.all.find((l: any) => l.workspaceId === workspaceId)
     : null
-  const effectiveBalance = creditLedger?.effectiveBalance
+  // Compute effective balance from raw credit ledger fields
+  const effectiveBalance = creditLedger ? {
+    dailyCredits: creditLedger.dailyCredits ?? 0,
+    monthlyCredits: creditLedger.monthlyCredits ?? 0,
+    rolloverCredits: creditLedger.rolloverCredits ?? 0,
+    total: (creditLedger.dailyCredits ?? 0) + (creditLedger.monthlyCredits ?? 0) + (creditLedger.rolloverCredits ?? 0),
+  } : null
   const creditsRemaining = effectiveBalance?.total ?? 5
   const maxCredits = effectiveBalance ? (effectiveBalance.dailyCredits + effectiveBalance.monthlyCredits + effectiveBalance.rolloverCredits) : 5
 
   // Loading state
   if (isLoading || !project) {
     return (
-      <ComponentRegistryProvider registry={registry}>
-        <div className="h-screen flex flex-col bg-background">
-          <ProjectTopBar
-            projectName="Loading..."
-            projectId={projectId || ""}
-            showChatSessions={showChatSessions}
-            isChatCollapsed={isChatCollapsed}
-            onChatSessionsToggle={handleChatSessionsToggle}
-            onChatCollapseToggle={handleChatCollapseToggle}
-          />
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-muted-foreground animate-pulse">Loading project...</div>
-          </div>
+      <div className="h-screen flex flex-col bg-background">
+        <ProjectTopBar
+          projectName="Loading..."
+          projectId={projectId || ""}
+          showChatSessions={showChatSessions}
+          isChatCollapsed={isChatCollapsed}
+          onChatSessionsToggle={handleChatSessionsToggle}
+          onChatCollapseToggle={handleChatCollapseToggle}
+        />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-muted-foreground animate-pulse">Loading project...</div>
         </div>
-      </ComponentRegistryProvider>
+      </div>
     )
   }
 
   return (
-    <ComponentRegistryProvider registry={registry}>
-      <div className="h-screen flex flex-col bg-background">
+    <div className="h-screen flex flex-col bg-background">
         {/* Project top bar - Lovable.dev style */}
         <ProjectTopBar
           projectName={project.name}
@@ -687,7 +777,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
           currentRoute={currentRoute}
           onRouteChange={handleRouteChange}
           onRefresh={handleRefresh}
+          onOpenPreview={() => setPreviewMode('runtime')}
           onOpenExternal={handleOpenExternal}
+          onOpenCode={() => setPreviewMode('code')}
           // Publish callbacks
           onPublish={handlePublish}
           onUnpublish={handleUnpublish}
@@ -741,17 +833,24 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 isCollapsed={isChatCollapsed}
                 onCollapsedChange={setIsChatCollapsed}
                 onWidthChange={setChatWidth}
-                workspaceId={typeof project.workspace === 'string' ? project.workspace : project.workspace?.id}
+                workspaceId={project?.workspaceId}
                 userId={session?.user?.id}
                 projectId={projectId}
                 className="flex-1 min-h-0"
                 initialMessage={transitionState?.initialMessage}
                 inputContainerRef={chatInputContainerRef}
+                messageContainerRef={messageContainerRef}
+              onChatError={setChatError}
               onFilesChanged={(paths) => {
                 console.log('[ProjectLayout] 📁 Agent modified files:', paths)
                 // Increment refresh trigger to reload code editor
                 // Preview auto-refresh is handled by SSE build events from Vite
                 setCodeRefreshTrigger(prev => prev + 1)
+              }}
+              onActiveToolCall={(toolName) => {
+                // Track template_copy for preview overlay
+                const isTemplateTool = toolName?.includes('template_copy') || toolName?.includes('template.copy')
+                setIsTemplateCopying(isTemplateTool === true)
               }}
               />
             </div>
@@ -848,6 +947,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   onLoad={handleRuntimeLoad}
                   viewport={currentViewport}
                   onBuildError={handleBuildError}
+                  forceRefresh={codeRefreshTrigger}
+                  isTemplateCopying={isTemplateCopying}
+                  chatError={chatError}
                 />
               </div>
               {/* Code Editor - stays mounted to preserve editor state */}
@@ -962,6 +1064,5 @@ export const ProjectLayout = observer(function ProjectLayout() {
           />
         )}
       </div>
-    </ComponentRegistryProvider>
   )
 })

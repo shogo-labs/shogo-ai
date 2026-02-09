@@ -18,6 +18,17 @@ spec:
 apiVersion: serving.knative.dev/v1beta1
 kind: DomainMapping
 metadata:
+  name: docs.shogo.ai
+  namespace: shogo-system
+spec:
+  ref:
+    name: docs
+    kind: Service
+    apiVersion: serving.knative.dev/v1
+---
+apiVersion: serving.knative.dev/v1beta1
+kind: DomainMapping
+metadata:
   name: mcp.shogo.ai
   namespace: shogo-workspaces
 spec:

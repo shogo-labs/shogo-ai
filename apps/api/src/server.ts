@@ -12,6 +12,7 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join, extname, relative, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
+import { existsSync, mkdirSync } from 'fs'
 import { auth } from './auth'
 import { PERSONA_PROMPTS, isAgentPersona, type AgentPersona } from './prompts/persona-prompts'
 import { getPriceId } from './config/stripe-prices'
@@ -27,6 +28,13 @@ import { testsRoutes } from './routes/tests'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { githubRoutes } from './routes/github'
+import { aiProxyRoutes } from './routes/ai-proxy'
+import { calculateCreditCost, agentModeToModel, MODEL_CREDIT_CONFIG, type ModelName, type AgentMode } from './lib/credit-cost'
+import { adminRoutes } from './routes/admin'
+import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
+import { requireSuperAdmin } from './middleware/super-admin'
+// Generated admin CRUD routes (unrestricted, middleware-protected)
+import { createAdminRoutes } from './generated/admin-routes'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
 import { createRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
@@ -144,20 +152,20 @@ function parseDataUrl(dataUrl: string): { mimeType: string; base64Data: string }
 }
 
 /**
- * Convert UIMessage format (from @ai-sdk/react v3) to CoreMessage format (for streamText).
+ * Convert UIMessage format (from @ai-sdk/react v3) to ModelMessage format (for streamText).
  *
  * UIMessage uses `parts` array: { parts: [{ type: "text", text: "..." }], role, id }
- * CoreMessage uses `content` string or array: { role, content: "..." | Array<TextPart | ImagePart> }
+ * ModelMessage uses `content` string or array: { role, content: "..." | Array<TextPart | ImagePart> }
  *
  * chat-session-sync-fix: Required because v3 sendMessage() sends UIMessage format,
- * but streamText() expects CoreMessage format.
+ * but streamText() expects ModelMessage format.
  *
  * task-api-convert-images: Extended to handle file parts with image mediaTypes.
  * File parts with image/* mediaType are converted to ImagePart format for Claude API.
  */
-function convertUIMessagesToCoreMessages(messages: any[]): ModelMessage[] {
+function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
   return messages.map((msg) => {
-    // If message already has content string (CoreMessage format), pass through
+    // If message already has content string (ModelMessage format), pass through
     if (typeof msg.content === 'string') {
       return { role: msg.role, content: msg.content }
     }
@@ -557,18 +565,22 @@ function createProjectScopedClaudeCode(projectId?: string) {
 
   if (projectId) {
     const resolvedProjectDir = resolve(WORKSPACES_DIR, projectId)
-    // Check if project directory exists - if not, fall back to project root
-    // This handles the case where a project record exists but workspace hasn't been created yet
+    // PROACTIVELY create workspace directory if it doesn't exist
+    // This ensures template.copy and AI edits write to the correct location
+    // Critical fix: Without this, cwd falls back to PROJECT_ROOT and edits go to wrong place
     try {
-      const fs = require('fs')
-      if (fs.existsSync(resolvedProjectDir)) {
-        cwd = resolvedProjectDir
-        projectDir = resolvedProjectDir // Enable path restriction
-      } else {
-        console.warn(`[ClaudeCode] Project workspace not found: ${resolvedProjectDir}, using project root (no path restriction)`)
+      if (!existsSync(resolvedProjectDir)) {
+        console.log(`[ClaudeCode] Creating workspace directory: ${resolvedProjectDir}`)
+        mkdirSync(resolvedProjectDir, { recursive: true })
       }
+      // Always use project workspace as cwd when projectId is provided
+      cwd = resolvedProjectDir
+      projectDir = resolvedProjectDir // Enable path restriction
+      console.log(`[ClaudeCode] Using project workspace: ${resolvedProjectDir}`)
     } catch (e) {
-      console.warn(`[ClaudeCode] Error checking project workspace: ${e}, using project root (no path restriction)`)
+      console.error(`[ClaudeCode] Error creating/checking project workspace: ${e}`)
+      // Fall back to project root only on error
+      console.warn(`[ClaudeCode] Falling back to project root (no path restriction)`)
     }
   }
 
@@ -594,9 +606,18 @@ function createProjectScopedClaudeCode(projectId?: string) {
     mcpServers: {
       wavesmith: {
         // Run MCP server as subprocess (packages/mcp included in Docker build)
-        // Use absolute path since cwd is set to project workspace, not app root
+        // Path varies between local dev and Docker:
+        // - Local: PROJECT_ROOT/packages/mcp/src/server-templates.ts
+        // - Docker: /app/packages/mcp/src/server-templates.ts
         command: 'bun',
-        args: ['run', '/app/packages/mcp/src/server.ts'],
+        args: ['run', resolve(PROJECT_ROOT, 'packages/mcp/src/server-templates.ts')],
+        // Pass PROJECT_ID and PROJECT_DIR so template.copy writes to correct location
+        env: {
+          ...(projectId && {
+            PROJECT_ID: projectId,
+            PROJECT_DIR: projectDir || resolve(WORKSPACES_DIR, projectId),
+          }),
+        },
       },
       // SDK MCP server for virtual tools (in-process, defined above)
       'virtual-tools': virtualToolsServer,
@@ -877,6 +898,40 @@ export function buildSystemPrompt(
 }
 
 const app = new Hono()
+
+// =============================================================================
+// Global Error Handling
+// =============================================================================
+// Hono-level error handler: catches unhandled errors in route handlers and
+// returns a structured JSON response instead of crashing the Bun process.
+app.onError((err, c) => {
+  console.error(`[API] Unhandled route error on ${c.req.method} ${c.req.path}:`, err.message)
+  // Don't expose internal error details in production
+  const isProduction = process.env.NODE_ENV === 'production'
+  return c.json({
+    error: {
+      code: 'internal_error',
+      message: isProduction ? 'An internal error occurred' : err.message,
+    },
+  }, 500)
+})
+
+// Process-level handlers: catch unhandled promise rejections and uncaught
+// exceptions that escape Hono's error boundary. Log them instead of crashing.
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[API] Unhandled promise rejection:', reason?.message || reason)
+  if (reason?.stack) {
+    console.error('[API] Stack:', reason.stack)
+  }
+})
+
+process.on('uncaughtException', (err: Error) => {
+  console.error('[API] Uncaught exception:', err.message)
+  if (err.stack) {
+    console.error('[API] Stack:', err.stack)
+  }
+  // For truly fatal errors (OOM, etc.), still crash — but DB/network errors should not kill the process
+})
 
 // CORS origins from environment - supports comma-separated list
 // Defaults to localhost for development
@@ -2649,10 +2704,20 @@ app.delete('/api/admin/projects/:projectId', async (c) => {
  */
 function fallbackGenerateProjectName(prompt: string): string {
   const fillerWords = new Set([
+    // articles & pronouns
     "a", "an", "the", "to", "for", "with", "that", "this", "is", "are",
-    "create", "build", "make", "design", "develop", "implement",
+    "my", "me", "its", "it", "our", "your", "their",
+    // verbs (action words from prompts)
+    "create", "build", "make", "design", "develop", "implement", "add", "include",
+    "show", "showing", "display", "have", "has", "using", "use",
+    // polite / conversational
     "please", "can", "you", "i", "want", "need", "would", "like",
-    "simple", "basic", "web", "app", "application", "website", "page"
+    // generic tech words
+    "simple", "basic", "web", "app", "application", "website", "page",
+    // conjunctions & prepositions that slip through
+    "where", "when", "how", "what", "which", "each", "every", "some",
+    "and", "but", "also", "then", "from", "into", "about", "just",
+    "nice", "good", "new", "should", "could",
   ])
 
   const words = prompt.toLowerCase()
@@ -2721,80 +2786,7 @@ Examples:
   }
 })
 
-/**
- * Model-specific credit pricing configuration.
- * 
- * Pricing is based on Anthropic's model costs:
- * - Haiku: ~$0.80/$4 per 1M tokens (input/output) - cheapest
- * - Sonnet: ~$3/$15 per 1M tokens (input/output) - 4x more than Haiku
- * 
- * Credit rates (per 5000 tokens):
- * - Haiku (basic): 0.025 credits
- * - Sonnet (advanced): 0.1 credits
- * 
- * Minimum charges:
- * - Haiku (basic): 0.2 credits
- * - Sonnet (advanced): 0.5 credits
- */
-const MODEL_CREDIT_CONFIG = {
-  haiku: {
-    creditsPerTokenBatch: 0.025, // 0.025 credits per 5000 tokens
-    tokenBatchSize: 5000,
-    minimumCharge: 0.2,
-  },
-  sonnet: {
-    creditsPerTokenBatch: 0.1, // 0.1 credits per 5000 tokens
-    tokenBatchSize: 5000,
-    minimumCharge: 0.5,
-  },
-  opus: {
-    creditsPerTokenBatch: 0.5, // 0.5 credits per 5000 tokens (5x Sonnet)
-    tokenBatchSize: 5000,
-    minimumCharge: 1.0,
-  },
-} as const
-
-type ModelName = keyof typeof MODEL_CREDIT_CONFIG
-type AgentMode = 'basic' | 'advanced'
-
-/**
- * Map agent mode to model name for credit calculation.
- */
-function agentModeToModel(agentMode?: AgentMode): ModelName {
-  if (agentMode === 'basic') return 'haiku'
-  return 'sonnet' // default for 'advanced' or undefined
-}
-
-/**
- * Calculate credit cost based on total tokens consumed and model used.
- * 
- * @param totalTokens - Combined input + output tokens
- * @param modelOrAgentMode - Model name ('haiku', 'sonnet', 'opus') or agent mode ('basic', 'advanced')
- * @returns Credits to charge (with model-specific minimum)
- */
-function calculateCreditCost(
-  totalTokens: number,
-  modelOrAgentMode?: ModelName | AgentMode
-): number {
-  // Determine the model from input
-  let model: ModelName = 'sonnet' // default
-  if (modelOrAgentMode === 'basic' || modelOrAgentMode === 'advanced') {
-    model = agentModeToModel(modelOrAgentMode as AgentMode)
-  } else if (modelOrAgentMode && modelOrAgentMode in MODEL_CREDIT_CONFIG) {
-    model = modelOrAgentMode as ModelName
-  }
-  
-  const config = MODEL_CREDIT_CONFIG[model]
-  
-  // Calculate raw credits based on tokens
-  const rawCredits = (totalTokens / config.tokenBatchSize) * config.creditsPerTokenBatch
-  
-  // Round up to nearest 0.1
-  const rounded = Math.ceil(rawCredits * 10) / 10
-  
-  // Enforce model-specific minimum
-  return Math.max(rounded, config.minimumCharge)
-}
+// Credit cost calculation imported from ./lib/credit-cost
 
 /**
  * AI Chat endpoint using Vercel AI SDK with Claude Code provider
@@ -2879,9 +2871,9 @@ Use the Read, Write, and Edit tools to view and modify these files. All file pat
     // This enables session continuity in Claude Code
     const modelSettings = ccSessionId ? { resume: ccSessionId } : {}
 
-    // chat-session-sync-fix: Convert UIMessage format to CoreMessage format
-    // v3 @ai-sdk/react sends UIMessage with parts array, but streamText expects CoreMessage with content string
-    const coreMessages = convertUIMessagesToCoreMessages(messages)
+    // chat-session-sync-fix: Convert UIMessage format to ModelMessage format
+    // v3 @ai-sdk/react sends UIMessage with parts array, but streamText expects ModelMessage with content string
+    const coreMessages = convertUIMessagesToModelMessages(messages)
 
     // task-subagent-progress-streaming: Buffer events BEFORE starting streamText
     // This fixes the race condition where SubagentStart fires before the stream listener is attached
@@ -3403,10 +3395,64 @@ app.post('/api/webhooks/stripe', async (c) => {
 })
 
 // =============================================================================
+// AI Model Proxy Routes (OpenAI-compatible, project-scoped token auth)
+// =============================================================================
+
+// Mount AI proxy routes BEFORE the general auth middleware.
+// The proxy uses its own project-scoped token authentication.
+const aiProxy = aiProxyRoutes()
+app.route('/api', aiProxy)
+
+// =============================================================================
 // Domain API routes - For APIPersistence layer
 // =============================================================================
 
 // Note: Domain routes are now served via generated Prisma CRUD routes at /api
+
+// =============================================================================
+// Super Admin Routes (self-contained auth middleware)
+// =============================================================================
+
+// Generated admin CRUD routes - full model CRUD with pagination/search/sorting
+// Protected by auth + requireSuperAdmin middleware stack
+app.route('/api/admin', createAdminRoutes({
+  prisma,
+  middleware: [authMiddleware, requireAuth, requireSuperAdmin],
+}))
+
+// Hand-written admin routes for custom analytics endpoints
+app.route('/api/admin', adminRoutes())
+
+// Scoped analytics routes handle their own auth (workspace/project membership checks)
+app.route('/api', scopedAnalyticsRoutes())
+
+// =============================================================================
+// Current User Route (/api/me) - Returns user profile with role
+// =============================================================================
+
+app.get('/api/me', authMiddleware, requireAuth, async (c) => {
+  const authCtx = c.get('auth')
+  if (!authCtx?.userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+  }
+  const user = await prisma.user.findUnique({
+    where: { id: authCtx.userId },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      emailVerified: true,
+      image: true,
+      role: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  })
+  if (!user) {
+    return c.json({ error: { code: 'not_found', message: 'User not found' } }, 404)
+  }
+  return c.json({ ok: true, data: user })
+})
 
 // =============================================================================
 // Generated API Routes - Auto-generated from Prisma schema with hooks
@@ -3463,7 +3509,11 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 console.log(`🚀 API server running on http://localhost:${API_PORT}`)
 console.log(`   Chat endpoint: POST http://localhost:${API_PORT}/api/chat`)
 console.log(`   Runtime endpoints: POST/GET http://localhost:${API_PORT}/api/projects/:id/runtime/*`)
+console.log(`   AI Proxy: POST http://localhost:${API_PORT}/api/ai/v1/chat/completions`)
+console.log(`   AI Models: GET  http://localhost:${API_PORT}/api/ai/v1/models`)
+console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/health`)
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
+console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}`)
 
 export default {
   port: API_PORT,

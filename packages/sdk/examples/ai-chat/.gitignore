@@ -1,25 +1,28 @@
-# Database
-prisma/dev.db
-prisma/dev.db-journal
-
 # Dependencies
 node_modules
 
-# Build
-.output
+# Build output
 dist
 
-# Env
+# Environment
 .env
 .env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
 
 # IDE
 .idea
 .vscode
+*.swp
+*.swo
 
-# Playwright
+# Testing
 test-results
 playwright-report
+.playwright
 
-# TanStack
-src/routeTree.gen.ts
+# Generated Prisma client
+src/generated/prisma
