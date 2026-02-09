@@ -2,7 +2,7 @@
  * Shogo SDK Generators
  *
  * Generate server functions, domain stores, and types from Prisma schema.
- * Supports both TanStack Start (server functions) and Expo (HTTP API).
+ * Supports both web (Hono server) and Expo (HTTP API).
  */
 
 // Main generator

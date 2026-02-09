@@ -156,15 +156,15 @@ interface TemplateInfo extends TemplateMetadata {
 
 // Embedded template metadata (used when running from Docker with archived templates)
 const EMBEDDED_TEMPLATES: TemplateInfo[] = [
-  { name: 'todo-app', description: 'Simple task management with lists', path: 'todo-app', complexity: 'beginner', tags: ['productivity', 'tasks'], features: ['CRUD', 'lists'], useCases: ['personal task tracking'], models: ['Todo', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'expense-tracker', description: 'Personal finance with categories', path: 'expense-tracker', complexity: 'beginner', tags: ['finance', 'budgeting'], features: ['categories', 'charts'], useCases: ['expense tracking'], models: ['Expense', 'Category', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'crm', description: 'Customer relationship management', path: 'crm', complexity: 'intermediate', tags: ['business', 'sales'], features: ['contacts', 'deals', 'pipeline'], useCases: ['sales management'], models: ['Contact', 'Deal', 'Company', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'inventory', description: 'Stock and product management', path: 'inventory', complexity: 'intermediate', tags: ['business', 'warehouse'], features: ['products', 'stock', 'suppliers'], useCases: ['inventory management'], models: ['Product', 'Supplier', 'StockMovement', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'kanban', description: 'Project boards with drag-and-drop', path: 'kanban', complexity: 'intermediate', tags: ['productivity', 'project-management'], features: ['boards', 'columns', 'cards', 'drag-drop'], useCases: ['project management'], models: ['Board', 'Column', 'Card', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'ai-chat', description: 'AI chatbot with conversation history', path: 'ai-chat', complexity: 'intermediate', tags: ['ai', 'chatbot'], features: ['chat', 'ai-responses', 'history'], useCases: ['ai assistant'], models: ['Conversation', 'Message', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL', ai: 'Anthropic Claude' } },
-  { name: 'form-builder', description: 'Build custom forms and collect responses', path: 'form-builder', complexity: 'intermediate', tags: ['forms', 'surveys'], features: ['form-builder', 'responses'], useCases: ['surveys', 'data collection'], models: ['Form', 'Field', 'Response', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'feedback-form', description: 'Collect user feedback', path: 'feedback-form', complexity: 'beginner', tags: ['feedback', 'forms'], features: ['feedback', 'ratings'], useCases: ['user feedback'], models: ['Feedback', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'booking-app', description: 'Schedule appointments', path: 'booking-app', complexity: 'intermediate', tags: ['scheduling', 'appointments'], features: ['calendar', 'bookings', 'availability'], useCases: ['appointment scheduling'], models: ['Booking', 'TimeSlot', 'Service', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+  { name: 'todo-app', description: 'Simple task management with lists', path: 'todo-app', complexity: 'beginner', tags: ['productivity', 'tasks'], features: ['CRUD', 'lists'], useCases: ['personal task tracking'], models: ['Todo', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'expense-tracker', description: 'Personal finance with categories', path: 'expense-tracker', complexity: 'beginner', tags: ['finance', 'budgeting'], features: ['categories', 'charts'], useCases: ['expense tracking'], models: ['Expense', 'Category', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'crm', description: 'Customer relationship management', path: 'crm', complexity: 'intermediate', tags: ['business', 'sales'], features: ['contacts', 'deals', 'pipeline'], useCases: ['sales management'], models: ['Contact', 'Deal', 'Company', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'inventory', description: 'Stock and product management', path: 'inventory', complexity: 'intermediate', tags: ['business', 'warehouse'], features: ['products', 'stock', 'suppliers'], useCases: ['inventory management'], models: ['Product', 'Supplier', 'StockMovement', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'kanban', description: 'Project boards with drag-and-drop', path: 'kanban', complexity: 'intermediate', tags: ['productivity', 'project-management'], features: ['boards', 'columns', 'cards', 'drag-drop'], useCases: ['project management'], models: ['Board', 'Column', 'Card', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'ai-chat', description: 'AI chatbot with conversation history', path: 'ai-chat', complexity: 'intermediate', tags: ['ai', 'chatbot'], features: ['chat', 'ai-responses', 'history'], useCases: ['ai assistant'], models: ['Conversation', 'Message', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL', ai: 'Anthropic Claude' } },
+  { name: 'form-builder', description: 'Build custom forms and collect responses', path: 'form-builder', complexity: 'intermediate', tags: ['forms', 'surveys'], features: ['form-builder', 'responses'], useCases: ['surveys', 'data collection'], models: ['Form', 'Field', 'Response', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'feedback-form', description: 'Collect user feedback', path: 'feedback-form', complexity: 'beginner', tags: ['feedback', 'forms'], features: ['feedback', 'ratings'], useCases: ['user feedback'], models: ['Feedback', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'booking-app', description: 'Schedule appointments', path: 'booking-app', complexity: 'intermediate', tags: ['scheduling', 'appointments'], features: ['calendar', 'bookings', 'availability'], useCases: ['appointment scheduling'], models: ['Booking', 'TimeSlot', 'Service', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
   { name: 'expo-app', description: 'Mobile app with Expo and React Native', path: 'expo-app', complexity: 'beginner', tags: ['mobile', 'expo', 'react-native'], features: ['CRUD', 'mobile', 'expo-router'], useCases: ['mobile todo app', 'cross-platform app'], models: ['Todo', 'User'], techStack: { frontend: 'React Native', backend: 'Hono', database: 'PostgreSQL', bundler: 'Metro' } },
 ]
 
@@ -736,51 +736,16 @@ function getBuildStatus(): { status: string; ready: boolean; details?: string } 
       
       // If build status file says "ready", also verify actual build artifacts exist
       if (status === 'ready') {
-        const isTanStackStart = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
+        // Verify dist/ exists and has index.html
+        const distDir = join(PROJECT_DIR, 'dist')
+        if (!existsSync(distDir)) {
+          console.log('[project-runtime] Build status says ready but dist/ missing')
+          return { status: 'dist_missing', ready: false, details: 'Build artifacts missing - dist/ not found' }
+        }
         
-        if (isTanStackStart) {
-          // TanStack Start: verify .output/public/assets has actual files
-          const assetsDir = join(PROJECT_DIR, '.output', 'public', 'assets')
-          if (!existsSync(assetsDir)) {
-            console.log('[project-runtime] Build status says ready but .output/public/assets missing')
-            return { status: 'assets_missing', ready: false, details: 'Build artifacts missing - .output/public/assets not found' }
-          }
-          
-          try {
-            const assetFiles = readdirSync(assetsDir)
-            if (assetFiles.length === 0) {
-              console.log('[project-runtime] Build status says ready but .output/public/assets is empty')
-              return { status: 'assets_empty', ready: false, details: 'Build artifacts empty - no files in .output/public/assets' }
-            }
-            
-            // Check for required JS files (routes and main bundles)
-            const hasRoutes = assetFiles.some(f => f.startsWith('routes-') && f.endsWith('.js'))
-            const hasMain = assetFiles.some(f => f.startsWith('main-') && f.endsWith('.js'))
-            
-            if (!hasRoutes || !hasMain) {
-              console.log(`[project-runtime] Build assets incomplete - hasRoutes: ${hasRoutes}, hasMain: ${hasMain}`)
-              return { 
-                status: 'assets_incomplete', 
-                ready: false, 
-                details: `Build assets incomplete - routes: ${hasRoutes}, main: ${hasMain}` 
-              }
-            }
-          } catch (e) {
-            console.log('[project-runtime] Error reading assets directory:', e)
-            return { status: 'assets_error', ready: false, details: 'Cannot read assets directory' }
-          }
-        } else {
-          // Plain Vite: verify dist/ exists and has index.html
-          const distDir = join(PROJECT_DIR, 'dist')
-          if (!existsSync(distDir)) {
-            console.log('[project-runtime] Build status says ready but dist/ missing')
-            return { status: 'dist_missing', ready: false, details: 'Build artifacts missing - dist/ not found' }
-          }
-          
-          if (!existsSync(join(distDir, 'index.html'))) {
-            console.log('[project-runtime] Build status says ready but dist/index.html missing')
-            return { status: 'dist_incomplete', ready: false, details: 'Build incomplete - dist/index.html not found' }
-          }
+        if (!existsSync(join(distDir, 'index.html'))) {
+          console.log('[project-runtime] Build status says ready but dist/index.html missing')
+          return { status: 'dist_incomplete', ready: false, details: 'Build incomplete - dist/index.html not found' }
         }
       }
       
@@ -855,7 +820,6 @@ app.get('/ready', (c) => {
     logTiming(`READY! First ready after ${firstReadyTime}ms (${readyCheckCount} checks)`)
     
     // Auto-start vite watch mode for automatic rebuilds (don't block response)
-    // Works for both plain Vite and TanStack Start (both use vite build)
     // Expo uses Metro bundler, so watch mode doesn't apply
     const isExpo = existsSync(join(PROJECT_DIR, 'app.json')) || existsSync(join(PROJECT_DIR, 'expo.json'))
     
@@ -1349,7 +1313,6 @@ const SERVER_PORT = parseInt(process.env.SERVER_PORT || '3001', 10)
 const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '8081', 10)
 
 // Track current preview mode and server processes
-let isTanStackStart = process.env.IS_TANSTACK_START === 'true'
 let isExpo = process.env.IS_EXPO === 'true'
 let serverProcess: ReturnType<typeof Bun.spawn> | null = null
 let expoServerProcess: ReturnType<typeof Bun.spawn> | null = null
@@ -1430,7 +1393,7 @@ function analyzeBuildError(errorLine: string): BuildErrorContext {
     typescriptError: /TS\d+:|error TS\d+|Type '.*' is not assignable/i,
     syntaxError: /SyntaxError|Unexpected token|Parse error/i,
     prismaError: /PrismaClient|prisma.*generate|@prisma\/client/i,
-    nitroError: /nitro|bundle.*size|chunk.*size/i,
+    buildToolError: /bundle.*size|chunk.*size/i,
     invalidExtension: /Invalid.*extension|\.jsx.*not supported/i,
     reactNotDefined: /React is not defined|'React' is not defined/i,
     importError: /Cannot resolve|wrong.*path|import.*error/i,
@@ -1555,10 +1518,10 @@ function analyzeBuildError(errorLine: string): BuildErrorContext {
       'STEP 4: Wait for automatic rebuild and verify success'
     )
   }
-  // Check for build tool errors (Nitro, Vite)
-  else if (patterns.nitroError.test(fullLog)) {
+  // Check for build tool errors (Vite)
+  else if (patterns.buildToolError.test(fullLog)) {
     category = 'build_tool'
-    rootCause = 'Build tool error (Nitro/Vite)'
+    rootCause = 'Build tool error (Vite)'
     canSelfFix = false  // These often need user intervention
     detectedIssues.push({
       type: 'build_tool_error',
@@ -1566,7 +1529,7 @@ function analyzeBuildError(errorLine: string): BuildErrorContext {
     })
     recoverySteps.push(
       'STEP 1: Read the full build log: `cat .build.log`',
-      'STEP 2: Check for specific Nitro/Vite error messages',
+      'STEP 2: Check for specific Vite error messages',
       'STEP 3: This may require manual investigation - explain the issue to the user'
     )
   }
@@ -2004,7 +1967,7 @@ function notifyBuildStateChange() {
 /**
  * Start Vite in watch mode with rebuild detection.
  * Monitors stdout for rebuild events and notifies SSE clients.
- * Automatically recovers from crashes (like the nitro plugin Object.entries bug).
+ * Automatically recovers from crashes (like the Object.entries bug).
  */
 async function startViteBuildWatch(): Promise<void> {
   if (buildWatchProcess) {
@@ -2041,13 +2004,13 @@ async function startViteBuildWatch(): Promise<void> {
     lastWatchCrashTime = now
     watchCrashCount++
     
-    // Check if this was likely the nitro plugin Object.entries bug
-    const isNitroBug = buildError?.includes('Object.entries') || 
+    // Check if this was likely a known Object.entries crash
+    const isKnownCrash = buildError?.includes('Object.entries') || 
                        buildLogLines.some(l => l.includes('Object.entries'))
     
-    if (isNitroBug) {
-      console.log('[project-runtime] 🔧 Detected nitro plugin Object.entries bug - will auto-recover')
-      appendToBuildLog('⚠️ Watch process crashed (known nitro plugin issue)')
+    if (isKnownCrash) {
+      console.log('[project-runtime] 🔧 Detected Object.entries crash - will auto-recover')
+      appendToBuildLog('⚠️ Watch process crashed (known issue)')
     }
     
     // Notify frontend of crash
@@ -2055,16 +2018,16 @@ async function startViteBuildWatch(): Promise<void> {
     buildError = buildError || `Watch process crashed (exit code ${exitCode})`
     buildErrorContext = {
       errorMessage: buildError,
-      errorCategory: isNitroBug ? 'build_tool' : 'unknown',
-      rootCause: isNitroBug 
-        ? 'TanStack nitro plugin bug in watch mode (Object.entries on null)'
+      errorCategory: isKnownCrash ? 'build_tool' : 'unknown',
+      rootCause: isKnownCrash 
+        ? 'Vite watch mode crash (Object.entries on null)'
         : 'Watch process exited unexpectedly',
       canSelfFix: true,
       logFilePath: '.build.log',
       logExcerpt: buildLogLines.slice(-30).join('\n'),
-      detectedIssues: isNitroBug ? [{
-        type: 'nitro_watch_crash',
-        suggestion: 'This is a known bug in the nitro plugin. Auto-recovery in progress.'
+      detectedIssues: isKnownCrash ? [{
+        type: 'vite_watch_crash',
+        suggestion: 'This is a known Vite watch mode bug. Auto-recovery in progress.'
       }] : [],
       recoverySteps: ['Automatic restart in progress...']
     }
@@ -2208,12 +2171,12 @@ function stopViteBuildWatch(): void {
 /**
  * Restart the preview server after template changes.
  * This will:
- * 1. Kill any existing Nitro server process
+ * 1. Kill any existing server processes
  * 2. Install dependencies
- * 3. Wait for PostgreSQL sidecar to be ready (if prisma is present)
+ * 3. Wait for PostgreSQL to be ready (if prisma is present)
  * 4. Run prisma generate/push if needed
- * 5. Build with Vite (Nitro produces .output/server/index.mjs)
- * 6. Start the Nitro server (for TanStack Start) or serve static files (plain Vite)
+ * 5. Build with Vite
+ * 6. Start the Hono server (for Expo) or serve static files (plain Vite)
  */
 app.post('/preview/restart', async (c) => {
   const startTime = performance.now()
@@ -2231,7 +2194,7 @@ app.post('/preview/restart', async (c) => {
   console.log(`[project-runtime] ⏱️  Starting preview restart for project ${PROJECT_ID}...`)
   
   try {
-    // 1. Kill existing servers (Nitro, Vite dev, Expo if running)
+    // 1. Kill existing servers (Hono, Vite dev, Expo if running)
     if (serverProcess) {
       console.log('[project-runtime] Stopping existing backend server...')
       serverProcess.kill()
@@ -2259,7 +2222,7 @@ app.post('/preview/restart', async (c) => {
     stopViteBuildWatch()
     markStep('killExistingServer')
     
-    // 2. Check if this is a TanStack Start project
+    // 2. Check project type
     const packageJsonPath = join(PROJECT_DIR, 'package.json')
     if (!existsSync(packageJsonPath)) {
       const totalMs = Math.round(performance.now() - startTime)
@@ -2268,12 +2231,11 @@ app.post('/preview/restart', async (c) => {
     
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
-    isTanStackStart = !!deps['@tanstack/react-start']
     isExpo = !!deps['expo']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
     markStep('parsePackageJson')
 
-    const projectType = isExpo ? 'Expo (React Native)' : isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'
+    const projectType = isExpo ? 'Expo (React Native)' : 'Vite + Hono'
     console.log(`[project-runtime] Project type: ${projectType}`)
     
     // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
@@ -2405,19 +2367,17 @@ app.post('/preview/restart', async (c) => {
     const url = new URL(c.req.url)
     const forceRebuild = url.searchParams.get('force') === 'true'
     
-    const nitroOutputPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
     const viteDistPath = join(PROJECT_DIR, 'dist', 'index.html')
     const expoDistPath = join(PROJECT_DIR, 'dist', 'index.html')
     const expoServerPath = join(PROJECT_DIR, 'server.ts')
-    const nitroOutputExists = existsSync(nitroOutputPath)
     const viteDistExists = existsSync(viteDistPath)
     const expoDistExists = existsSync(expoDistPath) && existsSync(expoServerPath) && isExpo
-    const buildExists = isExpo ? expoDistExists : isTanStackStart ? nitroOutputExists : viteDistExists
+    const buildExists = isExpo ? expoDistExists : viteDistExists
     
     // Check if source files have been modified since the last build
     let sourceFilesModified = false
     if (buildExists && !forceRebuild) {
-      const buildPath = isTanStackStart ? nitroOutputPath : viteDistPath
+      const buildPath = viteDistPath
       const buildMtime = statSync(buildPath).mtimeMs
       
       // Check if any source files are newer than the build
@@ -2493,7 +2453,6 @@ app.post('/preview/restart', async (c) => {
     }
     
     // After initial build completes, start watch mode for future automatic rebuilds
-    // Works for both plain Vite and TanStack Start (both use vite build)
     // Expo uses Metro bundler, so watch mode doesn't apply
     if (!isExpo) {
       console.log('[project-runtime] 🔄 Starting Vite watch mode for automatic rebuilds...')
@@ -2501,7 +2460,7 @@ app.post('/preview/restart', async (c) => {
       markStep('startViteBuildWatch')
     }
     
-    // 6. Start Nitro server for TanStack Start or Hono server for Expo
+    // 6. Start Hono server for Expo
     if (isExpo) {
       const serverPath = join(PROJECT_DIR, 'server.ts')
       if (!existsSync(serverPath)) {
@@ -2543,48 +2502,6 @@ app.post('/preview/restart', async (c) => {
       if (!serverReady) {
         console.warn('[project-runtime] Expo Hono server may still be starting after health checks...')
       }
-    } else if (isTanStackStart) {
-      const serverPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
-      if (!existsSync(serverPath)) {
-        const totalMs = Math.round(performance.now() - startTime)
-        return c.json({ success: false, error: 'Nitro build output not found at .output/server/index.mjs', timings: { steps: timings, totalMs } }, 500)
-      }
-
-      console.log(`[project-runtime] ⏱️  Starting backend server on port ${SERVER_PORT}...`)
-      appendToConsoleLog(`--- Server starting on port ${SERVER_PORT} ---`, 'stdout')
-      serverProcess = Bun.spawn(['bun', 'run', serverPath], {
-        cwd: PROJECT_DIR,
-        env: { ...process.env, PORT: String(SERVER_PORT) },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      streamProcessOutput(serverProcess, 'app')
-
-      // Wait for server to be ready with exponential backoff (max ~2s total)
-      let serverReady = false
-      const maxAttempts = 10
-      const baseDelayMs = 100
-
-      for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
-        try {
-          const healthCheck = await fetch(`http://localhost:${SERVER_PORT}/`, {
-            signal: AbortSignal.timeout(500),
-          })
-          if (healthCheck.ok || healthCheck.status < 500) {
-            serverReady = true
-            console.log(`[project-runtime] ⏱️  Backend server ready after ${attempt} attempt(s)`)
-          }
-        } catch (e) {
-          // Server not ready yet, wait with exponential backoff
-          const delay = Math.min(baseDelayMs * attempt, 500)
-          await new Promise(resolve => setTimeout(resolve, delay))
-        }
-      }
-      markStep('startNitroServer')
-
-      if (!serverReady) {
-        console.warn('[project-runtime] Backend server may still be starting after health checks...')
-      }
     }
 
     const totalMs = Math.round(performance.now() - startTime)
@@ -2597,8 +2514,8 @@ app.post('/preview/restart', async (c) => {
     }
     console.log('[project-runtime] ════════════════════════════════════════')
 
-    const mode = isExpo ? 'expo' : isTanStackStart ? 'nitro' : 'static'
-    const port = isExpo ? EXPO_SERVER_PORT : isTanStackStart ? SERVER_PORT : null
+    const mode = isExpo ? 'expo' : 'static'
+    const port = isExpo ? EXPO_SERVER_PORT : null
 
     return c.json({
       success: true,
@@ -2748,8 +2665,8 @@ app.get('/build-log', (c) => {
  * - Subsequent updates: instant (HMR)
  * 
  * Steps:
- * 1. Kill any existing build/nitro/vite processes
- * 2. Check if this is a TanStack Start project
+ * 1. Kill any existing build/vite processes
+ * 2. Check project type
  * 3. Install dependencies if needed
  * 4. Run prisma generate/push if needed
  * 5. Start vite dev server
@@ -2795,7 +2712,7 @@ app.post('/preview/dev', async (c) => {
     }
     markStep('killExistingServers')
     
-    // 2. Check if this is a TanStack Start project
+    // 2. Check project type
     const packageJsonPath = join(PROJECT_DIR, 'package.json')
     if (!existsSync(packageJsonPath)) {
       devModeStarting = false  // Reset flag on failure
@@ -2806,12 +2723,11 @@ app.post('/preview/dev', async (c) => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
     // Use local variables first, only update globals after successful start
-    const detectedTanStackStart = !!deps['@tanstack/react-start']
     const detectedExpo = !!deps['expo']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
     markStep('parsePackageJson')
 
-    const projectType = detectedExpo ? 'Expo (React Native)' : detectedTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'
+    const projectType = detectedExpo ? 'Expo (React Native)' : 'Vite + Hono'
     console.log(`[project-runtime] Project type: ${projectType}`)
     
     // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
@@ -3019,7 +2935,6 @@ app.post('/preview/dev', async (c) => {
 
     // Only update globals after successful start
     // This prevents state inconsistency when dev mode fails to start
-    isTanStackStart = detectedTanStackStart
     isExpo = detectedExpo
     isDevMode = true
     devModeStarting = false
@@ -3099,7 +3014,7 @@ app.post('/__console', async (c) => {
   }
 })
 
-const previewMode = isExpo ? 'Expo (Hono server)' : isTanStackStart ? 'TanStack Start (proxy)' : 'Static files'
+const previewMode = isExpo ? 'Expo (Hono server)' : 'Static files'
 console.log(`[project-runtime] Preview mode: ${previewMode}`)
 
 /**
@@ -3166,7 +3081,7 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   html = html.replace(/<link([^>]*)\s+href="\/src\/([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}src/$2"$3>`)
 
-  // Rewrite Vite dev server paths (/@vite, /@react-refresh, /@tanstack-start, /@id, /node_modules)
+  // Rewrite Vite dev server paths (/@vite, /@react-refresh, /@id, /node_modules)
   html = html.replace(/<link([^>]*)\s+href="\/@([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}@$2"$3>`)
 
@@ -3269,11 +3184,7 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
 }
 
 /**
- * Preview handler - proxies to TanStack Start server or serves static files.
- * 
- * For TanStack Start projects:
- * - Proxies all requests to the running TanStack Start server on port 3000
- * - Full SSR, server functions, and routing handled by TanStack
+ * Preview handler - serves static files from dist/.
  * 
  * For plain Vite projects:
  * - Serves pre-built static assets from dist/
@@ -3356,86 +3267,6 @@ app.get('/preview/*', async (c) => {
     }
   }
   
-  // TanStack Start: proxy to the running server
-  if (isTanStackStart) {
-    const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
-    console.log(`[project-runtime] Proxying preview to TanStack: ${targetUrl}`)
-    
-    try {
-      const response = await fetch(targetUrl, {
-        method: c.req.method,
-        headers: {
-          'Host': `localhost:${SERVER_PORT}`,
-          'Accept': c.req.header('Accept') || '*/*',
-          'Accept-Encoding': c.req.header('Accept-Encoding') || '',
-        },
-      })
-      
-      // Get response body
-      const contentType = response.headers.get('Content-Type') || 'text/html'
-      const body = await response.arrayBuffer()
-      
-      // Rewrite HTML responses to fix asset paths when accessed through proxy
-      if (contentType.includes('text/html')) {
-        const html = new TextDecoder().decode(body)
-        const rewrittenHtml = rewritePreviewHtml(html, externalBasePath)
-        return new Response(rewrittenHtml, {
-          status: response.status,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(Buffer.byteLength(rewrittenHtml)),
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
-      }
-      
-      // Rewrite JavaScript responses to fix dynamic import paths
-      // Vite generates code like import('/assets/...') which needs to be rewritten
-      if (contentType.includes('javascript') || contentType.includes('application/javascript')) {
-        let js = new TextDecoder().decode(body)
-        // Rewrite absolute paths in dynamic imports: import("/assets/...") and import('/assets/...')
-        js = js.replace(/import\(["']\/assets\//g, `import("${externalBasePath}assets/`)
-        js = js.replace(/import\(["']\/src\//g, `import("${externalBasePath}src/`)
-        // Also handle other common patterns: __vite_ssr_dynamic_import__, etc.
-        js = js.replace(/"\/assets\//g, `"${externalBasePath}assets/`)
-        js = js.replace(/'\/assets\//g, `'${externalBasePath}assets/`)
-        js = js.replace(/"\/src\//g, `"${externalBasePath}src/`)
-        js = js.replace(/'\/src\//g, `'${externalBasePath}src/`)
-        return new Response(js, {
-          status: response.status,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(Buffer.byteLength(js)),
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
-      }
-      
-      return new Response(body, {
-        status: response.status,
-        headers: {
-          'Content-Type': contentType,
-          'Cache-Control': 'no-cache',
-          'Access-Control-Allow-Origin': '*',
-        },
-      })
-    } catch (error: any) {
-      console.error('[project-runtime] TanStack proxy error:', error)
-      return c.html(`
-        <html>
-          <body style="font-family: system-ui; padding: 2rem;">
-            <h1>Preview Loading...</h1>
-            <p>The TanStack Start server is starting up. Please wait a moment and refresh.</p>
-            <p style="color: #666; font-size: 0.9em;">Error: ${error.message}</p>
-            <script>setTimeout(() => location.reload(), 3000)</script>
-          </body>
-        </html>
-      `, 503)
-    }
-  }
-
   // Expo: proxy to the Expo Hono server (serves both API routes and static files)
   if (isExpo && expoServerProcess) {
     const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
@@ -3911,7 +3742,7 @@ app.all('/*', async (c, next) => {
   // Use build+restart approach instead of dev mode for reliability and simplicity
   // This avoids HMR complexity and provides consistent preview updates
   // For plain Vite: only auto-start if dist/ doesn't exist (prevents redundant builds)
-  // For TanStack Start/Expo: always auto-start if process isn't running
+  // For Expo: always auto-start if process isn't running
   const needsAutoStart = !serverProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
   
   if (needsAutoStart) {
@@ -3951,9 +3782,8 @@ app.all('/*', async (c, next) => {
   
   // Show loading page while build is starting
   // For plain Vite: only show loading if dist/ doesn't exist yet
-  // For TanStack Start/Expo: show loading if respective process isn't running
-  const isTanstackStart = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
-  const needsProcess = isTanstackStart || existsSync(join(PROJECT_DIR, 'app.json')) // TanStack Start or Expo
+  // For Expo: show loading if respective process isn't running
+  const needsProcess = existsSync(join(PROJECT_DIR, 'app.json')) // Expo
   
   if (devModeStarting || (!distExists && !serverProcess && !expoServerProcess && !isInBackoff)) {
     return c.html(`
@@ -4078,88 +3908,6 @@ app.all('/*', async (c, next) => {
     }
   }
   
-  // TanStack Start: proxy to the running server
-  if (isTanStackStart) {
-    const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
-    const method = c.req.method
-    console.log(`[project-runtime] Subdomain: proxying ${method} to TanStack at ${targetUrl}`)
-    
-    try {
-      // Build headers for the proxy request
-      const proxyHeaders: Record<string, string> = {
-        'Host': `localhost:${SERVER_PORT}`,
-        'Accept': c.req.header('Accept') || '*/*',
-        'Accept-Encoding': c.req.header('Accept-Encoding') || '',
-      }
-      
-      // Forward Content-Type for POST/PUT/PATCH requests
-      const contentType = c.req.header('Content-Type')
-      if (contentType) {
-        proxyHeaders['Content-Type'] = contentType
-      }
-      
-      // Forward cookies for auth
-      const cookies = c.req.header('Cookie')
-      if (cookies) {
-        proxyHeaders['Cookie'] = cookies
-      }
-      
-      // Build fetch options
-      const fetchOptions: RequestInit = {
-        method,
-        headers: proxyHeaders,
-      }
-      
-      // Forward request body for POST/PUT/PATCH
-      if (method !== 'GET' && method !== 'HEAD') {
-        try {
-          const bodyBuffer = await c.req.arrayBuffer()
-          if (bodyBuffer.byteLength > 0) {
-            fetchOptions.body = bodyBuffer
-          }
-        } catch {
-          // No body or couldn't read body - that's ok
-        }
-      }
-      
-      const response = await fetch(targetUrl, fetchOptions)
-      
-      const responseContentType = response.headers.get('Content-Type') || 'text/html'
-      const body = await response.arrayBuffer()
-      
-      // Build response headers
-      const responseHeaders: Record<string, string> = {
-        'Content-Type': responseContentType,
-        'Cache-Control': 'no-cache',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Credentials': 'true',
-      }
-      
-      // Forward Set-Cookie headers for auth
-      const setCookie = response.headers.get('Set-Cookie')
-      if (setCookie) {
-        responseHeaders['Set-Cookie'] = setCookie
-      }
-      
-      // No rewriting needed for subdomain access - serve directly!
-      return new Response(body, {
-        status: response.status,
-        headers: responseHeaders,
-      })
-    } catch (error: any) {
-      console.error('[project-runtime] Subdomain TanStack proxy error:', error)
-      return c.html(`
-        <html>
-          <body style="font-family: system-ui; padding: 2rem;">
-            <h1>Preview Loading...</h1>
-            <p>The server is starting up. Please wait a moment and refresh.</p>
-            <script>setTimeout(() => location.reload(), 3000)</script>
-          </body>
-        </html>
-      `, 503)
-    }
-  }
-
   // Expo: proxy to the Expo Hono server (serves both API routes and static files)
   if (isExpo && expoServerProcess) {
     const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`

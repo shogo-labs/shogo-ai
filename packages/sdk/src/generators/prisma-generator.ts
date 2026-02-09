@@ -519,7 +519,7 @@ function generateIndexFile(models: PrismaModel[]): string {
     '// Types',
     'export * from \'./types\'',
     '',
-    '// Server Functions (TanStack Start)',
+    '// Server Functions',
     'export * from \'./server-functions\'',
     '',
     '// Domain Store (MST/MobX)',

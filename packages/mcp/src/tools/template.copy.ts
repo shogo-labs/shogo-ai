@@ -621,8 +621,8 @@ export async function executeTemplateCopy(
         }
       }
       
-      // Remove files that might conflict with TanStack Start templates
-      // TanStack Start generates its own HTML, so remove any existing index.html
+      // Remove files that might conflict with template files
+      // Templates generate their own HTML, so remove any existing index.html
       const filesToClean = ["index.html"]
       for (const file of filesToClean) {
         const filePath = join(projectDir, file)
@@ -920,7 +920,7 @@ IMPORTANT: This tool handles EVERYTHING automatically:
 2. Runs "bun install" to install dependencies
 3. Runs "prisma generate" to generate Prisma client
 4. Runs "prisma db push" to set up the database
-5. Builds the project with "vite build" (using Nitro for TanStack Start)
+5. Builds the project with "vite build"
 6. Starts the production server
 7. The preview will automatically show the running app
 

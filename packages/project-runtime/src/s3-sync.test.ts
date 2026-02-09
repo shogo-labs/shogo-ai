@@ -31,8 +31,8 @@ describe('S3 Sync Tar/Untar', () => {
     writeFileSync(join(PROJECT_DIR, 'node_modules', 'react', 'index.js'), 'module.exports = {}')
     
     // Create simulated build output
-    mkdirSync(join(PROJECT_DIR, '.output', 'server'), { recursive: true })
-    writeFileSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'), 'export default {}')
+    mkdirSync(join(PROJECT_DIR, 'dist'), { recursive: true })
+    writeFileSync(join(PROJECT_DIR, 'dist', 'index.html'), '<!DOCTYPE html><html></html>')
   })
 
   afterAll(() => {
@@ -78,7 +78,7 @@ describe('S3 Sync Tar/Untar', () => {
     expect(existsSync(join(EXTRACT_DIR, 'node_modules', 'react', 'index.js'))).toBe(true)
     
     // Verify build output was included
-    expect(existsSync(join(EXTRACT_DIR, '.output', 'server', 'index.mjs'))).toBe(true)
+    expect(existsSync(join(EXTRACT_DIR, 'dist', 'index.html'))).toBe(true)
 
     // Verify content is correct
     const pkg = JSON.parse(readFileSync(join(EXTRACT_DIR, 'package.json'), 'utf-8'))
@@ -110,7 +110,7 @@ describe('S3 Sync Tar/Untar', () => {
     }
 
     // This simulates what S3Sync.listLocalFiles does
-    const files = ['package.json', 'index.ts', 'src/main.ts', 'node_modules/react/index.js', '.output/server/index.mjs']
+    const files = ['package.json', 'index.ts', 'src/main.ts', 'node_modules/react/index.js', 'dist/index.html']
       .filter(f => !shouldExclude(f))
 
     await tar.create(
