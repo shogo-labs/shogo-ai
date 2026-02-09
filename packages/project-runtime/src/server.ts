@@ -491,7 +491,12 @@ if (useAIProxy) {
 
 // Build environment overrides for Claude Code process
 // When proxy is enabled, override ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY
-const claudeCodeEnv: Record<string, string> = {}
+// IMPORTANT: Spread process.env first so DATABASE_URL and other runtime vars are inherited
+const claudeCodeEnv: Record<string, string> = {
+  ...Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+  ),
+}
 if (useAIProxy) {
   const anthropicProxyBase = AI_PROXY_URL!.replace(/\/v1$/, '/anthropic')
   claudeCodeEnv.ANTHROPIC_BASE_URL = anthropicProxyBase
@@ -510,9 +515,9 @@ const claudeCode = createClaudeCode({
     canUseTool: pathRestrictor,
     // Load project settings (.claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
-    // Environment overrides for Claude Code process
-    // When AI proxy is enabled, this routes all API calls through the proxy
-    ...(Object.keys(claudeCodeEnv).length > 0 && { env: claudeCodeEnv }),
+    // Environment for Claude Code process
+    // Inherits all runtime env vars (DATABASE_URL, etc.) plus AI proxy overrides
+    env: claudeCodeEnv,
     // MCP server configuration
     mcpServers: {
       wavesmith: {
@@ -5166,6 +5171,14 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
 (function() {
   var proxyBase = ${JSON.stringify(basePath)};
   
+  // Helper to extract URL string from various input types (string, URL, Request)
+  function extractUrlString(input) {
+    if (typeof input === 'string') return input;
+    if (input instanceof URL) return input.toString();
+    if (input instanceof Request) return input.url;
+    return null;
+  }
+  
   // Helper to rewrite URL for proxy
   function rewriteUrl(url) {
     if (typeof url !== 'string') return url;
@@ -5188,7 +5201,6 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
             if (path.startsWith('/')) path = path.substring(1);
             url = proxyBase + path + urlObj.search;
           }
-          console.log('[Prisma Studio Proxy] Rewrote full URL to:', url);
         }
       } catch(e) {
         // Invalid URL, leave as-is
@@ -5196,7 +5208,6 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
     }
     // Handle protocol-relative URLs (//...) - leave unchanged
     else if (url.startsWith('//')) {
-      // Protocol-relative URLs should not be rewritten
       return url;
     }
     // Handle /api/ calls - but check if already proxied
@@ -5218,17 +5229,62 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
   
   // Store original fetch
   var originalFetch = window.fetch;
-  window.fetch = function(url, options) {
-    url = rewriteUrl(url);
-    return originalFetch.call(this, url, options);
+  window.fetch = function(input, init) {
+    // fix-prisma-proxy: Handle Request, URL, and string inputs
+    // Modern frameworks (including Prisma Studio) may pass Request or URL objects
+    // instead of plain strings, which previously bypassed URL rewriting entirely.
+    if (input instanceof Request) {
+      var rewrittenUrl = rewriteUrl(input.url);
+      if (rewrittenUrl !== input.url) {
+        // Create a new Request with rewritten URL, preserving all other properties
+        input = new Request(rewrittenUrl, input);
+      }
+      return originalFetch.call(this, input, init);
+    }
+    if (input instanceof URL) {
+      var urlStr = rewriteUrl(input.toString());
+      return originalFetch.call(this, urlStr, init);
+    }
+    var rewritten = rewriteUrl(input);
+    return originalFetch.call(this, rewritten, init);
   };
   
   // Store original XMLHttpRequest.open
   var originalOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {
     var args = Array.prototype.slice.call(arguments, 2);
-    url = rewriteUrl(url);
+    // fix-prisma-proxy: Handle URL objects in XHR too
+    var urlStr = extractUrlString(url);
+    if (urlStr !== null) {
+      url = rewriteUrl(urlStr);
+    }
     return originalOpen.apply(this, [method, url].concat(args));
+  };
+  
+  // fix-prisma-proxy: Prevent Prisma Studio SPA router from changing location
+  // If Prisma Studio pushes history state, it changes location.pathname which
+  // breaks subsequent relative URL resolution. Lock the pathname to the proxy base.
+  var originalPushState = history.pushState;
+  var originalReplaceState = history.replaceState;
+  history.pushState = function(state, title, url) {
+    // Only allow if URL stays within proxy base path, otherwise no-op
+    if (url) {
+      var urlStr = typeof url === 'string' ? url : url.toString();
+      if (!urlStr.startsWith(proxyBase) && urlStr.startsWith('/')) {
+        // Redirect to proxy-prefixed path
+        url = proxyBase + urlStr.substring(1);
+      }
+    }
+    return originalPushState.call(this, state, title, url);
+  };
+  history.replaceState = function(state, title, url) {
+    if (url) {
+      var urlStr = typeof url === 'string' ? url : url.toString();
+      if (!urlStr.startsWith(proxyBase) && urlStr.startsWith('/')) {
+        url = proxyBase + urlStr.substring(1);
+      }
+    }
+    return originalReplaceState.call(this, state, title, url);
   };
   
   // Patch dynamically created script/link elements
@@ -5246,11 +5302,7 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
         var originalSetter = descriptor.set;
         Object.defineProperty(element, 'src', {
           set: function(value) {
-            var rewritten = rewriteUrl(value);
-            if (rewritten !== value) {
-              console.log('[Prisma Studio Proxy] Rewrote element src:', value, '->', rewritten);
-            }
-            return originalSetter.call(this, rewritten);
+            return originalSetter.call(this, rewriteUrl(value));
           },
           get: descriptor.get
         });
@@ -5262,11 +5314,7 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
         var originalLinkSetter = linkDescriptor.set;
         Object.defineProperty(element, 'href', {
           set: function(value) {
-            var rewritten = rewriteUrl(value);
-            if (rewritten !== value) {
-              console.log('[Prisma Studio Proxy] Rewrote link href:', value, '->', rewritten);
-            }
-            return originalLinkSetter.call(this, rewritten);
+            return originalLinkSetter.call(this, rewriteUrl(value));
           },
           get: linkDescriptor.get
         });

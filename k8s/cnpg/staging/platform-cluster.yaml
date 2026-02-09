@@ -13,8 +13,8 @@ metadata:
     app.kubernetes.io/part-of: shogo
     environment: staging
 spec:
-  # HA: 2 instances (primary + 1 replica) for staging
-  instances: 2
+  # Single instance for staging (no HA replica needed)
+  instances: 1
 
   # PostgreSQL configuration
   postgresql:

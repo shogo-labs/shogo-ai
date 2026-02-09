@@ -660,8 +660,12 @@ export const ChatPanel = observer(function ChatPanel({
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const isUserAtBottomRef = useRef(true)
 
-  // Chat session state
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  // Chat session state - initialize from prop to avoid null→valid transition on reload
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(chatSessionId ?? null)
+
+  // Track whether we've finished the initial message load from the API
+  // Prevents showing "Start Discovery" empty state while messages are loading
+  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
 
   // Agent mode state for switching between basic (Haiku) and advanced (Sonnet) models
   const [agentMode, setAgentMode] = useState<AgentMode>("advanced")
@@ -1651,22 +1655,62 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Effect 1: Trigger data loading for chat messages from API
   // loadAll() calls APIPersistence which fetches from REST API with sessionId filter
-  // MobX reactivity then updates persistedMessagesFromMobX which syncs to AI SDK
-  // fix-chat-history: Use loadAll with sessionId filter to load messages from API
+  // fix-chat-history-reload: After loading, directly sync to AI SDK to avoid
+  // relying on the reactive MobX chain which has many guards that can prevent sync.
   useEffect(() => {
     if (currentSessionId && !isLoadingMessagesRef.current) {
       isLoadingMessagesRef.current = true
+      setIsInitialLoadComplete(false)
       console.log('[ChatPanel] Loading messages for session:', currentSessionId)
       studioChat.chatMessageCollection.loadAll({ sessionId: currentSessionId })
         .then((result: any) => {
           // SDK collection returns array directly
           const count = Array.isArray(result) ? result.length : 0
           console.log('[ChatPanel] Loaded', count, 'messages for session:', currentSessionId)
+
+          // fix-chat-history-reload: Directly sync loaded messages to AI SDK
+          // This is more reliable than depending on the reactive MobX → Effect 2 chain
+          // which has guards (isStreaming, isSending, messages.length > 0) that can block sync.
+          if (count > 0 && !isStreamingRef.current && !isSendingMessageRef.current) {
+            const loaded = studioChat.chatMessageCollection.all
+              .filter((msg: any) => msg.sessionId === currentSessionId)
+              .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+
+            if (loaded.length > 0) {
+              const aiMessages = loaded.map((msg: any) => {
+                const baseMessage: any = {
+                  id: msg.id,
+                  role: msg.role as "user" | "assistant",
+                  content: msg.content,
+                }
+                if (msg.parts) {
+                  try {
+                    baseMessage.parts = JSON.parse(msg.parts)
+                  } catch (err) {
+                    console.warn("[ChatPanel] Failed to parse message parts:", err)
+                  }
+                }
+                return baseMessage
+              })
+              console.log('[ChatPanel] Direct sync: setting', aiMessages.length, 'messages to AI SDK')
+              setMessages(aiMessages)
+              // Scroll to bottom after messages load
+              setTimeout(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
+              }, 50)
+            }
+          }
         })
         .catch((err: any) => console.error('[ChatPanel] Failed to load messages:', err))
-        .finally(() => { isLoadingMessagesRef.current = false })
+        .finally(() => {
+          isLoadingMessagesRef.current = false
+          setIsInitialLoadComplete(true)
+        })
+    } else if (!currentSessionId) {
+      // No session yet - mark load as complete so we show empty state
+      setIsInitialLoadComplete(true)
     }
-  }, [currentSessionId, studioChat])
+  }, [currentSessionId, studioChat, setMessages])
 
   // feat-chat-tool-interleaving: Track if we've received messages with parts (tool calls)
   // Once we have parts from streaming, we shouldn't overwrite with persisted data
@@ -1686,6 +1730,8 @@ export const ChatPanel = observer(function ChatPanel({
   useEffect(() => {
     hasReceivedPartsRef.current = false
     processedProgressEventsRef.current.clear()
+    // Reset loading state so we show loading indicator for new session
+    setIsInitialLoadComplete(false)
   }, [currentSessionId])
 
   // Effect 2: Sync MobX → AI SDK state when data arrives
@@ -2199,6 +2245,17 @@ export const ChatPanel = observer(function ChatPanel({
               {/* Scroll anchor - invisible element at bottom for auto-scroll */}
               <div ref={messagesEndRef} />
             </>
+          ) : !isStreaming && !isInitialLoadComplete && currentSessionId ? (
+            /* fix-chat-history-reload: Show loading indicator while fetching messages from API
+               This prevents flashing "Start Discovery" before messages arrive on page reload */
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
+              <div className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.2s]" />
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.4s]" />
+              </div>
+              <span className="text-xs">Loading conversation...</span>
+            </div>
           ) : !isStreaming ? (
             /* Phase-contextual empty state (task-chat-008) */
             <PhaseEmptyState
