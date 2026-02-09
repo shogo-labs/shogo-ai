@@ -726,13 +726,18 @@ function PeopleTab() {
 }
 
 // Billing Tab
-function BillingTab() {
+function BillingTab({ onClose }: { onClose?: () => void }) {
   const navigate = useNavigate()
 
   // Mock data - would come from billing domain
   const planType = "Free"
   const creditsUsed = 0
   const creditsTotal = 5
+
+  const handleNavigateToBilling = () => {
+    onClose?.()
+    navigate("/billing")
+  }
 
   return (
     <div className="space-y-6">
@@ -753,7 +758,7 @@ function BillingTab() {
             <div className="font-medium">You're on {planType} Plan</div>
             <div className="text-sm text-muted-foreground">Upgrade anytime</div>
           </div>
-          <Button className="ml-auto" onClick={() => navigate("/billing")}>
+          <Button className="ml-auto" onClick={handleNavigateToBilling}>
             Manage
           </Button>
         </div>
@@ -774,7 +779,7 @@ function BillingTab() {
       </div>
 
       {/* View plans button */}
-      <Button variant="outline" className="w-full" onClick={() => navigate("/billing")}>
+      <Button variant="outline" className="w-full" onClick={handleNavigateToBilling}>
         View all plans
         <ExternalLink className="h-4 w-4 ml-2" />
       </Button>
@@ -1022,7 +1027,7 @@ export const SettingsModal = observer(function SettingsModal({
           <div className="flex-1 overflow-y-auto p-6">
             {activeTab === "workspace" && <WorkspaceTab onClose={() => onOpenChange(false)} />}
             {activeTab === "people" && <PeopleTab />}
-            {activeTab === "billing" && <BillingTab />}
+            {activeTab === "billing" && <BillingTab onClose={() => onOpenChange(false)} />}
             {activeTab === "account" && <AccountTab />}
             {activeTab === "integrations" && <IntegrationsTab />}
           </div>
