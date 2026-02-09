@@ -1850,7 +1850,8 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Auto-scroll effect - respects user position
   // First message at top: when only one message, scroll to top so first message is at top and agent builds below
-  // When 2+ messages (e.g. first response arrived), scroll to bottom so response is visible (including when streaming)
+  // When 2+ messages (e.g. first response arrived), scroll to bottom so response is visible
+  // If user has scrolled up (isUserAtBottomRef=false), we do NOT force-scroll back down
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container) return
@@ -1865,7 +1866,7 @@ export const ChatPanel = observer(function ChatPanel({
 
     const shouldScrollToBottom =
       displayMessages.length > 1 &&
-      (isFirstLoadRef.current || isUserAtBottomRef.current || isStreaming)
+      (isFirstLoadRef.current || isUserAtBottomRef.current)
 
     if (messagesEndRef.current && shouldScrollToBottom) {
       requestAnimationFrame(() => {
@@ -1874,7 +1875,7 @@ export const ChatPanel = observer(function ChatPanel({
         isFirstLoadRef.current = false
       })
     }
-  }, [displayMessages.length, messages, isStreaming, currentSessionId])
+  }, [displayMessages.length, messages, currentSessionId])
 
   // Detect if there's a pending AskUserQuestion in the messages
   // Used to show a hint in the chat input
