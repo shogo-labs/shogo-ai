@@ -64,7 +64,7 @@ export function createContactRoutes(): Hono {
       const query = ctx.query
       
       // Build initial where from query params (exclude pagination/meta params)
-      const reservedParams = ["limit", "offset", "userId", "include", "orderBy"]
+      const reservedParams = ["limit", "offset", "include", "orderBy"]
       let where: any = {}
       
       for (const [key, value] of Object.entries(query)) {

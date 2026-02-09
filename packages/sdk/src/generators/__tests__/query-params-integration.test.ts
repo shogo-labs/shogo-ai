@@ -78,7 +78,7 @@ function createMockApiClient() {
  */
 function createMockRouteHandler() {
   function parseQueryParams(query: Record<string, string>) {
-    const reservedParams = ['limit', 'offset', 'userId', 'include', 'orderBy']
+    const reservedParams = ['limit', 'offset', 'include', 'orderBy']
     const where: any = {}
 
     for (const [key, value] of Object.entries(query)) {
@@ -272,10 +272,10 @@ describe('Query Parameters Integration', () => {
       }
       const where = handler.parseQueryParams(query)
 
-      expect(where).toEqual({ workspaceId: 'abc-123' })
+      // userId is NOT reserved - it should be included as a filter
+      expect(where).toEqual({ workspaceId: 'abc-123', userId: 'user-456' })
       expect(where.limit).toBeUndefined()
       expect(where.offset).toBeUndefined()
-      expect(where.userId).toBeUndefined()
       expect(where.include).toBeUndefined()
       expect(where.orderBy).toBeUndefined()
     })
