@@ -38,7 +38,7 @@ import {
   ChevronDown,
   ChevronUp,
   Trash2,
-  ArrowLeft,
+
 } from "lucide-react"
 
 // Agent mode configuration
@@ -128,8 +128,6 @@ export interface ChatInputProps {
   onUpgradeClick?: () => void
   /** Queued messages waiting to be sent */
   queuedMessages?: QueuedMessage[]
-  /** Callback to send a queued message immediately (skip queue) */
-  onSendQueuedMessageNow?: (messageId: string) => void
   /** Callback to remove a message from queue */
   onRemoveQueuedMessage?: (messageId: string) => void
   /** Callback to reorder queued messages */
@@ -147,7 +145,6 @@ export function ChatInput({
   isPro = false,
   onUpgradeClick,
   queuedMessages = [],
-  onSendQueuedMessageNow,
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
 }: ChatInputProps) {
@@ -714,17 +711,6 @@ export function ChatInput({
                     </div>
                   </div>
                   <div className="flex items-center gap-0.5">
-                    {onSendQueuedMessageNow && (
-                      <button
-                        type="button"
-                        onClick={() => onSendQueuedMessageNow(msg.id)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                        title="Send now"
-                      >
-                        <ArrowLeft className="h-3 w-3" />
-                        <span>to send now</span>
-                      </button>
-                    )}
                     {onReorderQueuedMessage && (
                       <>
                         <Button

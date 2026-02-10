@@ -2047,6 +2047,8 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Queue processor: processes messages one at a time, waiting for each to complete
   // This ensures messages are sent sequentially like in Cursor
+  // IMPORTANT: sendMessageInternal must be called OUTSIDE setState updaters because
+  // React StrictMode calls updater functions twice, which would duplicate sends.
   const processMessageQueue = useCallback(async () => {
     // Prevent concurrent processing
     if (isProcessingQueueRef.current) {
@@ -2063,47 +2065,45 @@ export const ChatPanel = observer(function ChatPanel({
       return
     }
 
-    // Get current queue state
-    setMessageQueue((queue) => {
-      if (queue.length === 0) {
-        return queue
-      }
+    // Nothing to process
+    if (messageQueue.length === 0) {
+      return
+    }
 
-      // Process the first message in the queue
-      const [nextMessage, ...remainingQueue] = queue
-      
-      // Mark as processing
-      isProcessingQueueRef.current = true
+    // Mark as processing to prevent re-entrant calls
+    isProcessingQueueRef.current = true
 
-      // Process the message asynchronously
-      // Note: sendMessageInternal returns when the request is sent, not when streaming completes
-      // We rely on the useEffect below to detect when streaming completes and process the next message
-      sendMessageInternal(
+    // Read the first message from the current state
+    const nextMessage = messageQueue[0]
+
+    // Remove it from the queue (pure updater — no side effects)
+    setMessageQueue((queue) => queue.slice(1))
+
+    // Send the message OUTSIDE the updater to avoid StrictMode double-invocation
+    try {
+      await sendMessageInternal(
         nextMessage.content,
         nextMessage.imageData,
         nextMessage.selectedAgentMode
       )
-        .catch((err) => {
-          console.error("[ChatPanel] Error processing queued message:", err)
-          // On error, clear processing flag so queue can continue
-          isProcessingQueueRef.current = false
-        })
+    } catch (err) {
+      console.error("[ChatPanel] Error processing queued message:", err)
+      // On error, clear processing flag so queue can continue
+      isProcessingQueueRef.current = false
+    }
+  }, [isStreaming, sendMessageInternal, currentSessionId, messageQueue])
 
-      // Return remaining queue (message is now being sent)
-      return remainingQueue
-    })
-  }, [isStreaming, sendMessageInternal, currentSessionId])
-
-  // Process queue when streaming completes (status changes from streaming/submitted to ready)
+  // Process queue when streaming completes (status transitions from true → false)
   // This ensures we wait for the full response before processing the next message
+  const queueStreamingRef = useRef(false)
   useEffect(() => {
-    if (!isStreaming) {
-      // Streaming has completed, clear the processing flag
-      if (isProcessingQueueRef.current) {
-        isProcessingQueueRef.current = false
-      }
-      // Process next message in queue if available and session is valid
-      if (!isProcessingQueueRef.current && messageQueue.length > 0 && currentSessionId) {
+    const wasStreaming = queueStreamingRef.current
+    queueStreamingRef.current = isStreaming
+
+    // Only act on a true → false transition (stream just finished)
+    if (wasStreaming && !isStreaming) {
+      isProcessingQueueRef.current = false
+      if (messageQueue.length > 0 && currentSessionId) {
         processMessageQueue()
       }
     }
@@ -2116,31 +2116,6 @@ export const ChatPanel = observer(function ChatPanel({
       isProcessingQueueRef.current = false
     }
   }, [currentSessionId])
-
-  // Queue action callbacks for UI
-  const handleSendQueuedMessageNow = useCallback(
-    async (messageId: string) => {
-      // Prevent sending if already streaming or if no session
-      if (isStreaming || !currentSessionId) {
-        return
-      }
-
-      const message = messageQueue.find((m) => m.id === messageId)
-      if (!message) return
-
-      // Remove from queue first to prevent duplicate processing
-      setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
-
-      // Send immediately (bypass queue)
-      try {
-        await sendMessageInternal(message.content, message.imageData, message.selectedAgentMode)
-      } catch (err) {
-        // If send fails, don't re-add to queue (user can retry manually)
-        console.error("[ChatPanel] Failed to send queued message now:", err)
-      }
-    },
-    [messageQueue, sendMessageInternal, isStreaming, currentSessionId]
-  )
 
   const handleRemoveQueuedMessage = useCallback((messageId: string) => {
     setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
@@ -2501,7 +2476,6 @@ export const ChatPanel = observer(function ChatPanel({
             isPro={hasActiveSubscription}
             onUpgradeClick={handleUpgradeClick}
             queuedMessages={messageQueue}
-            onSendQueuedMessageNow={handleSendQueuedMessageNow}
             onRemoveQueuedMessage={handleRemoveQueuedMessage}
             onReorderQueuedMessage={handleReorderQueuedMessage}
           />
