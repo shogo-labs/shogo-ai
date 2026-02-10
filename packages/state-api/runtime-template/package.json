@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"bun run dev:server\" \"bun run dev:client\"",
+    "dev": "vite",
+    "dev:full": "concurrently \"bun run dev:server\" \"bun run dev:client\"",
     "dev:server": "bun --watch run server.tsx",
     "dev:client": "vite",
     "build": "vite build",
