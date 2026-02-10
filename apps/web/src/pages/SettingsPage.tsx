@@ -866,7 +866,7 @@ function PeopleTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a href="https://docs-staging.shogo.ai/" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
             <BookOpen className="h-3 w-3" />
             Docs
           </a>

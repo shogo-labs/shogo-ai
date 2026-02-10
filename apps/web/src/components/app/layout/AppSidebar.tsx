@@ -1032,12 +1032,18 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
 
         {/* Resources section */}
         <NavSection title="Resources" collapsed={collapsed}>
-          <div className="px-2">
+          <div className="px-2 space-y-0.5">
             <NavItem
               icon={FileCode2}
               label="Templates"
               to="/templates"
               active={isActive("/templates")}
+              collapsed={collapsed}
+            />
+            <NavItem
+              icon={ExternalLink}
+              label="Docs"
+              href="https://docs-staging.shogo.ai/"
               collapsed={collapsed}
             />
           </div>
