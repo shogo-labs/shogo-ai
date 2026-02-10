@@ -75,7 +75,9 @@ export function ThemeSelector({
             disabled={disabled}
           >
             <Palette className="h-4 w-4" />
-            <span className="hidden sm:inline text-xs">Theme</span>
+            <span className="hidden sm:inline text-xs">
+              {selectedTheme ? selectedTheme.name : "Theme"}
+            </span>
             <ChevronDown className="h-3 w-3 opacity-50" />
           </Button>
         ) : (

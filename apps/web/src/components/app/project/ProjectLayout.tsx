@@ -568,8 +568,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
   }, [])
 
   const handleRefresh = useCallback(() => {
-    // TODO: Refresh preview iframe
-    console.log("Refresh preview")
+    setCodeRefreshTrigger((prev) => prev + 1)
   }, [])
 
   const handleOpenExternal = useCallback(async () => {
