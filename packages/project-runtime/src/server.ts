@@ -4449,6 +4449,26 @@ app.post('/terminal/exec', async (c) => {
     if (!cmdConfig) {
       return c.json({ error: { code: 'command_not_found', message: 'Command configuration not found' } }, 500)
     }
+
+    // For Playwright tests, ensure dependencies are installed (workspaces from template may have no node_modules)
+    if (commandId === 'playwright-test') {
+      const nodeModulesDir = join(PROJECT_DIR, 'node_modules')
+      if (!existsSync(nodeModulesDir)) {
+        console.log(`[project-runtime] Running bun install before playwright (node_modules missing)`)
+        const installResult = Bun.spawnSync(['bun', 'install'], {
+          cwd: PROJECT_DIR,
+          env: { ...process.env, CI: 'true' },
+          stdout: 'inherit',
+          stderr: 'inherit',
+        })
+        if (installResult.exitCode !== 0) {
+          return c.json(
+            { error: { code: 'install_failed', message: 'bun install failed. Run "bun install" in the project and try again.' } },
+            500
+          )
+        }
+      }
+    }
     
     console.log(`[project-runtime] Executing terminal command: ${cmdConfig.command}`)
     
@@ -4674,7 +4694,8 @@ app.get('/tests/list', (c) => {
  * 
  * Request body:
  * - file?: string - Specific test file to run (relative path)
- * - testName?: string - Specific test name pattern (grep)
+ * - testName?: string - Test name pattern (grep), ignored when line is set
+ * - line?: number - Run only the test at this line (file:line); takes precedence over testName
  * - headed?: boolean - Run in headed mode
  * - reporter?: 'list' | 'json' | 'line' - Reporter to use
  */
@@ -4685,6 +4706,7 @@ app.post('/tests/run', async (c) => {
   let body: { 
     file?: string
     testName?: string
+    line?: number
     headed?: boolean
     reporter?: 'list' | 'json' | 'line'
   } = {}
@@ -4695,19 +4717,23 @@ app.post('/tests/run', async (c) => {
     // Empty body is fine, use defaults
   }
 
-  const { file, testName, headed, reporter = 'list' } = body
+  const { file, testName, line, headed, reporter = 'list' } = body
 
   // Build command
   let command = 'bunx playwright test'
   
-  // Add specific file
+  // Add specific file (or file:line to run a single test)
   if (file) {
-    command += ` "${file}"`
+    if (line != null && line > 0) {
+      command += ` "${file}:${line}"`
+    } else {
+      command += ` "${file}"`
+    }
   }
   
-  // Add test name filter (grep)
-  if (testName) {
-    command += ` --grep "${testName}"`
+  // Add test name filter (grep) only when not targeting by line
+  if (testName && (line == null || line <= 0)) {
+    command += ` --grep "${testName.replace(/"/g, '\\"')}"`
   }
   
   // Add headed mode
@@ -4717,6 +4743,24 @@ app.post('/tests/run', async (c) => {
   
   // Add reporter
   command += ` --reporter=${reporter}`
+
+  // Ensure dependencies are installed (workspaces created from template may have no node_modules)
+  const nodeModulesDir = join(PROJECT_DIR, 'node_modules')
+  if (!existsSync(nodeModulesDir)) {
+    console.log(`[project-runtime] Running bun install before tests (node_modules missing)`)
+    const installResult = Bun.spawnSync(['bun', 'install'], {
+      cwd: PROJECT_DIR,
+      env: { ...process.env, CI: 'true' },
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    if (installResult.exitCode !== 0) {
+      return c.json(
+        { error: { code: 'install_failed', message: 'bun install failed. Run "bun install" in the project and try again.' } },
+        500
+      )
+    }
+  }
 
   console.log(`[project-runtime] Executing: ${command}`)
 
@@ -4760,6 +4804,32 @@ app.post('/tests/run', async (c) => {
       }
 
       const exitCode = await proc.exited
+
+      // Append any test-result attachments (screenshots, traces, videos)
+      // Playwright only prints these for failures; we surface them for all runs
+      const resultsDir = join(PROJECT_DIR, 'test-results')
+      if (existsSync(resultsDir)) {
+        const attachments: string[] = []
+        function walkResults(dir: string) {
+          try {
+            for (const entry of readdirSync(dir, { withFileTypes: true })) {
+              const full = join(dir, entry.name)
+              if (entry.isDirectory()) walkResults(full)
+              else if (entry.name.endsWith('.png') || entry.name === 'trace.zip' || entry.name.endsWith('.webm')) {
+                attachments.push(full.replace(PROJECT_DIR + '/', ''))
+              }
+            }
+          } catch { /* ignore */ }
+        }
+        walkResults(resultsDir)
+        if (attachments.length > 0) {
+          await writer.write(encoder.encode('\n--- Test Artifacts ---\n'))
+          for (const a of attachments) {
+            await writer.write(encoder.encode(`${a}\n`))
+          }
+        }
+      }
+
       await writer.write(encoder.encode(`\n\n[Process exited with code ${exitCode}]\n`))
       await writer.close()
     } catch (err: any) {

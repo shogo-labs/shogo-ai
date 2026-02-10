@@ -18,23 +18,30 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000'
 async function ensureTodoListView(page: Page, testName: string) {
   await page.goto(BASE_URL)
   
-  // Check if we're on the todo list or setup form
+  // Check if we're on the todo list or login form
   const todoInput = page.getByPlaceholder('What needs to be done?')
   const emailInput = page.getByPlaceholder('Email address')
   
-  // Wait for either the todo list or setup form to be visible
+  // Wait for either the todo list or login form to be visible
   const isTodoList = await todoInput.isVisible({ timeout: 5000 }).catch(() => false)
   
   if (isTodoList) {
-    // Already on todo list - user exists
+    // Already on todo list - user is signed in
     return
   }
   
-  // Need to create a user
+  // Need to sign up a new user
+  // Switch to signup mode if not already there
+  const signUpLink = page.getByRole('button', { name: 'Sign up' })
+  if (await signUpLink.isVisible({ timeout: 2000 }).catch(() => false)) {
+    await signUpLink.click()
+  }
+  
   const testEmail = `test-${testName}-${Date.now()}@example.com`
-  await emailInput.fill(testEmail)
   await page.getByPlaceholder('Name (optional)').fill('E2E Test User')
-  await page.getByRole('button', { name: 'Get Started' }).click()
+  await emailInput.fill(testEmail)
+  await page.getByPlaceholder('Password').fill('test1234')
+  await page.getByRole('button', { name: 'Create Account' }).click()
   
   // Wait for todo list to appear
   await expect(todoInput).toBeVisible({ timeout: 10000 })
@@ -79,22 +86,29 @@ test.describe('Todo App - Shogo SDK Example', () => {
   test('should handle user setup or existing user', async ({ page }) => {
     await page.goto(BASE_URL)
 
-    // Wait for either setup form or todo list
+    // Wait for either login form or todo list
     const todoInput = page.getByPlaceholder('What needs to be done?')
     const emailInput = page.getByPlaceholder('Email address')
     
     // One of these should be visible
     const isTodoList = await todoInput.isVisible({ timeout: 5000 }).catch(() => false)
-    const isSetupForm = await emailInput.isVisible({ timeout: 1000 }).catch(() => false)
+    const isLoginForm = await emailInput.isVisible({ timeout: 1000 }).catch(() => false)
     
-    expect(isTodoList || isSetupForm).toBeTruthy()
+    expect(isTodoList || isLoginForm).toBeTruthy()
     
-    // If setup form, create user
-    if (isSetupForm) {
+    // If login form, sign up a new user
+    if (isLoginForm) {
+      // Switch to signup mode
+      const signUpLink = page.getByRole('button', { name: 'Sign up' })
+      if (await signUpLink.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await signUpLink.click()
+      }
+      
       const testEmail = `test-${Date.now()}@example.com`
-      await emailInput.fill(testEmail)
       await page.getByPlaceholder('Name (optional)').fill('E2E Test User')
-      await page.getByRole('button', { name: 'Get Started' }).click()
+      await emailInput.fill(testEmail)
+      await page.getByPlaceholder('Password').fill('test1234')
+      await page.getByRole('button', { name: 'Create Account' }).click()
       
       // Should transition to todo list
       await expect(todoInput).toBeVisible({ timeout: 10000 })
