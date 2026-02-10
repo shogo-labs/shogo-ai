@@ -8,11 +8,13 @@
  * Now renders tool calls interleaved within assistant content.
  */
 
+import { useState, useCallback } from "react"
+import { Copy, Check } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
 import type { ConversationTurn } from "./types"
 import { TurnHeader } from "./TurnHeader"
-import { MessageContent } from "./MessageContent"
+import { MessageContent, extractTextContent } from "./MessageContent"
 import { AssistantContent } from "./AssistantContent"
 import { ToolTimeline } from "../tools"
 import { SubagentPanel, type SubagentProgress, type RecentTool } from "../subagent"
@@ -30,6 +32,54 @@ export interface TurnGroupProps {
   showToolTimeline?: boolean
   /** Optional class name */
   className?: string
+}
+
+/**
+ * Small copy button that appears on hover over a message.
+ * Shows a checkmark briefly after copying.
+ */
+function CopyButton({ text, className }: { text: string; className?: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = useCallback(async () => {
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Fallback for older browsers
+      const textarea = document.createElement("textarea")
+      textarea.value = text
+      textarea.style.position = "fixed"
+      textarea.style.opacity = "0"
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand("copy")
+      document.body.removeChild(textarea)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+  }, [text])
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className={cn(
+        "inline-flex items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+        "opacity-0 group-hover:opacity-100 focus:opacity-100",
+        className
+      )}
+      aria-label={copied ? "Copied" : "Copy message"}
+    >
+      {copied ? (
+        <Check className="h-3.5 w-3.5 text-green-500" />
+      ) : (
+        <Copy className="h-3.5 w-3.5" />
+      )}
+    </button>
+  )
 }
 
 /**
@@ -52,6 +102,7 @@ export interface TurnGroupProps {
  * - Optional separate tool timeline (legacy mode)
  * - Subagent panel integration
  * - Streaming support for assistant message
+ * - Copy button on hover for user and assistant messages
  *
  * @example
  * ```tsx
@@ -83,9 +134,12 @@ export function TurnGroup({
     >
       {/* User message */}
       {turn.userMessage && (
-        <div className="space-y-0.5">
+        <div className="group relative space-y-0.5">
           {/* <TurnHeader role="user" /> */}
           <MessageContent message={turn.userMessage} />
+          <div className="flex justify-end">
+            <CopyButton text={extractTextContent(turn.userMessage)} />
+          </div>
         </div>
       )}
 
@@ -108,7 +162,7 @@ export function TurnGroup({
 
       {/* Assistant message with interleaved tools (default) or plain content (legacy) */}
       {turn.assistantMessage && (
-        <div className="space-y-0.5">
+        <div className="group relative space-y-0.5">
           <TurnHeader role="assistant" phase={phase} />
           {showToolTimeline ? (
             <MessageContent
@@ -120,6 +174,11 @@ export function TurnGroup({
               message={turn.assistantMessage}
               isStreaming={turn.isStreaming}
             />
+          )}
+          {!turn.isStreaming && (
+            <div className="flex justify-start pl-3">
+              <CopyButton text={extractTextContent(turn.assistantMessage)} />
+            </div>
           )}
         </div>
       )}
