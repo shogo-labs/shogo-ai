@@ -90,6 +90,7 @@ import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useToast } from "@/hooks/use-toast"
 import { LogOut, User, Sun, Moon, Monitor } from "lucide-react"
 
 /**
@@ -728,6 +729,7 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
   const actions = useDomainActions()
   const { auth } = useDomains() // auth stays with legacy for now
   const sessionCtx = useSessionContext()
+  const { toast } = useToast()
 
   // Sidebar collapse state - persisted to localStorage
   const [internalCollapsed, setInternalCollapsed] = useState(() => {
@@ -828,8 +830,10 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
       setCreateFolderOpen(false)
       setNewFolderName("")
       refetchFolders()
+      toast({ title: "Folder created", description: `"${newFolderName.trim()}" has been created.` })
     } catch (error) {
       console.error("Failed to create folder:", error)
+      toast({ title: "Failed to create folder", description: String(error), variant: "destructive" })
     }
   }
 
@@ -841,20 +845,25 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
       setFolderToRename(null)
       setRenameFolderName("")
       refetchFolders()
+      toast({ title: "Folder renamed" })
     } catch (error) {
       console.error("Failed to rename folder:", error)
+      toast({ title: "Failed to rename folder", description: String(error), variant: "destructive" })
     }
   }
 
   // Handle delete folder - using SDK domain actions
   const handleDeleteFolder = async () => {
     if (!folderToDelete) return
+    const folderName = folderToDelete.name
     try {
       await actions.deleteFolder(folderToDelete.id)
       setFolderToDelete(null)
       refetchFolders()
+      toast({ title: "Folder deleted", description: `"${folderName}" has been deleted.` })
     } catch (error) {
       console.error("Failed to delete folder:", error)
+      toast({ title: "Failed to delete folder", description: String(error), variant: "destructive" })
     }
   }
 
