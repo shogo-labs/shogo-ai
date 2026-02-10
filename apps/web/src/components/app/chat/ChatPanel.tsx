@@ -186,8 +186,10 @@ export interface ChatPanelProps {
   onWidthChange?: (width: number) => void
   /** Initial message to send on mount (for homepage transition warm-start) */
   initialMessage?: string
+  /** Initial image data to send with the initial message (homepage transition) */
+  initialImageData?: string[]
   /** Callback when submit happens in compact mode (before session exists) */
-  onCompactSubmit?: (prompt: string) => void
+  onCompactSubmit?: (prompt: string, imageData?: string[]) => void
   /** Ref to expose the input container for transition animation measurement */
   inputContainerRef?: React.RefObject<HTMLDivElement>
   /** Ref to expose the message container for transition animation measurement (targets first message area) */
@@ -610,6 +612,7 @@ export const ChatPanel = observer(function ChatPanel({
   onCollapsedChange,
   onWidthChange,
   initialMessage,
+  initialImageData,
   onCompactSubmit,
   inputContainerRef,
   messageContainerRef,
@@ -2063,9 +2066,9 @@ export const ChatPanel = observer(function ChatPanel({
       hasInjectedInitialMessageRef.current = true
       setPendingInitialMessage(initialMessage)
       console.log('[ChatPanel] Injecting initial message from homepage transition:', initialMessage.slice(0, 50))
-      handleSendMessage(initialMessage)
+      handleSendMessage(initialMessage, initialImageData)
     }
-  }, [initialMessage, currentSessionId, handleSendMessage])
+  }, [initialMessage, initialImageData, currentSessionId, handleSendMessage])
 
   // Collapse toggle - persist to localStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {
@@ -2154,9 +2157,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Handle compact mode submit - delegates to parent since no session exists yet
   const handleCompactSubmit = useCallback((prompt: string, imageData?: string[]) => {
-    // For now, only pass prompt to maintain backward compatibility
-    // Image data handling can be added to onCompactSubmit interface if needed
-    onCompactSubmit?.(prompt)
+    onCompactSubmit?.(prompt, imageData)
   }, [onCompactSubmit])
 
   // Render compact mode (homepage)

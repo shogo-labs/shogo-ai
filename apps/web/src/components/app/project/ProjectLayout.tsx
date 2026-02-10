@@ -52,6 +52,7 @@ interface TransitionLocationState {
   project?: any
   chatSessionId?: string
   initialMessage?: string
+  initialImageData?: string[]
   // Transition animation data
   transitionStartRect?: SerializedRect
   transitionPromptText?: string
@@ -838,6 +839,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 projectId={projectId}
                 className="flex-1 min-h-0"
                 initialMessage={transitionState?.initialMessage}
+                initialImageData={transitionState?.initialImageData}
                 inputContainerRef={chatInputContainerRef}
                 messageContainerRef={messageContainerRef}
               onChatError={setChatError}

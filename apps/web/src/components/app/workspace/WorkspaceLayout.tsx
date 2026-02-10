@@ -120,7 +120,7 @@ export function WorkspaceLayout() {
    * Handle prompt submission from home page.
    * Creates a project + chat session via API, then navigates with the initial prompt.
    */
-  const handlePromptSubmit = useCallback(async (prompt: string) => {
+  const handlePromptSubmit = useCallback(async (prompt: string, imageData?: string[]) => {
     const userId = session?.user?.id
     const workspaceId = currentWorkspace?.id
     if (!userId || !workspaceId) return
@@ -146,6 +146,7 @@ export function WorkspaceLayout() {
           project: { id: newProject.id, name: newProject.name },
           chatSessionId: chatSession.id,
           initialMessage: prompt,
+          initialImageData: imageData,
         },
       })
     } catch (error) {
