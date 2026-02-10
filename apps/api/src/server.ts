@@ -446,19 +446,33 @@ async function listProjectFilesRecursive(
 /**
  * Get a formatted list of project files for inclusion in the system prompt.
  * Returns null if the project directory doesn't exist.
+ *
+ * perf: Results are cached per projectId with a 30-second TTL to avoid
+ * expensive recursive filesystem walks on every message in a conversation.
  */
+const projectFileListCache = new Map<string, { result: string | null; timestamp: number }>()
+const PROJECT_FILE_LIST_TTL_MS = 30_000 // 30 seconds
+
 async function getProjectFileList(projectId: string): Promise<string | null> {
+  // Check cache first
+  const cached = projectFileListCache.get(projectId)
+  if (cached && (Date.now() - cached.timestamp) < PROJECT_FILE_LIST_TTL_MS) {
+    return cached.result
+  }
+
   const projectDir = resolve(WORKSPACES_DIR, projectId)
 
   try {
     await stat(projectDir)
   } catch {
+    projectFileListCache.set(projectId, { result: null, timestamp: Date.now() })
     return null // Project directory doesn't exist
   }
 
   const files = await listProjectFilesRecursive(projectDir, projectDir)
 
   if (files.length === 0) {
+    projectFileListCache.set(projectId, { result: null, timestamp: Date.now() })
     return null
   }
 
@@ -466,7 +480,9 @@ async function getProjectFileList(projectId: string): Promise<string | null> {
   files.sort()
 
   // Format as a simple list
-  return files.map(f => `  ${f}`).join('\n')
+  const result = files.map(f => `  ${f}`).join('\n')
+  projectFileListCache.set(projectId, { result, timestamp: Date.now() })
+  return result
 }
 
 /**
@@ -593,8 +609,9 @@ function createProjectScopedClaudeCode(projectId?: string) {
     // Enable streaming input - REQUIRED for hooks to fire
     // See: https://ai-sdk.dev/providers/claude-code (hooks require streaming input)
     streamingInput: 'always',
-    // Enable verbose logging for debugging
-    verbose: true,
+    // perf: Disable verbose logging to reduce I/O overhead in production
+    // Set to true temporarily when debugging Claude Code provider issues
+    verbose: false,
     // Set working directory - project workspace or project root
     cwd,
     // Path restriction for project-scoped sessions (prevents access outside workspace)
@@ -800,8 +817,24 @@ function createProjectScopedClaudeCode(projectId?: string) {
   })
 }
 
+// perf: Cache Claude Code provider instances per projectId to avoid re-creating
+// the provider (and spawning MCP subprocesses) on every /api/chat request.
+// The platform-level instance (no projectId) is always cached as the default.
+const claudeCodeCache = new Map<string, ReturnType<typeof createProjectScopedClaudeCode>>()
+
+function getOrCreateScopedClaudeCode(projectId?: string) {
+  const cacheKey = projectId || '__platform__'
+  let instance = claudeCodeCache.get(cacheKey)
+  if (!instance) {
+    instance = createProjectScopedClaudeCode(projectId)
+    claudeCodeCache.set(cacheKey, instance)
+    console.log(`[ClaudeCode] Cached provider for key: ${cacheKey}`)
+  }
+  return instance
+}
+
 // Default Claude Code instance for platform-level operations (skills, non-project chats)
-const claudeCode = createProjectScopedClaudeCode()
+const claudeCode = getOrCreateScopedClaudeCode()
 
 /**
  * Base system prompt for the Wavesmith app builder assistant.
@@ -2808,17 +2841,26 @@ app.post('/api/chat', async (c) => {
   try {
     const { messages, ccSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
 
-    // Create project-scoped Claude Code instance if projectId is provided
-    // This sets the cwd to the project's workspace directory for file operations
+    // perf: Use cached Claude Code instance instead of creating a new one per request
     const scopedClaudeCode = projectId
-      ? createProjectScopedClaudeCode(projectId)
+      ? getOrCreateScopedClaudeCode(projectId)
       : claudeCode
+
+    // perf: Run credit check and file list scan in parallel instead of sequentially.
+    // Both are independent I/O operations (DB query + filesystem walk).
+    const creditCheckPromise = workspaceId
+      ? billingService.getCreditLedger(workspaceId)
+      : Promise.resolve(null)
+    const fileListPromise = projectId
+      ? getProjectFileList(projectId)
+      : Promise.resolve(null)
+
+    const [ledgerResult, projectFileList] = await Promise.all([creditCheckPromise, fileListPromise])
 
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
     // This prevents users from sending messages when they have no credits remaining
     if (workspaceId) {
-      // Get credit ledger via Prisma service
-      let ledger = await billingService.getCreditLedger(workspaceId)
+      let ledger = ledgerResult
 
       // If no ledger exists, allocate free tier credits
       if (!ledger) {
@@ -2854,17 +2896,14 @@ app.post('/api/chat', async (c) => {
     let systemPrompt = buildSystemPrompt(agentPersona)
 
     // Include project file list in the prompt so agent knows what files exist
-    if (projectId) {
-      const projectFileList = await getProjectFileList(projectId)
-      if (projectFileList) {
-        systemPrompt = `${systemPrompt}
+    if (projectFileList) {
+      systemPrompt = `${systemPrompt}
 
 **Project Files:**
 You are working in a project workspace. Here are the files in the project:
 ${projectFileList}
 
 Use the Read, Write, and Edit tools to view and modify these files. All file paths are relative to the project root.`
-      }
     }
 
     // Pass resume parameter if ccSessionId provided (task-cc-api-endpoint)
