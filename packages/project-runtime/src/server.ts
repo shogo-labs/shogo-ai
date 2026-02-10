@@ -602,8 +602,16 @@ function wrapStreamWithKeepalive(
   
   let keepAliveInterval: ReturnType<typeof setInterval> | null = null
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null
+  let streamClosed = false
   
   const reader = stream.getReader()
+  
+  function cleanupInterval() {
+    if (keepAliveInterval) {
+      clearInterval(keepAliveInterval)
+      keepAliveInterval = null
+    }
+  }
   
   return new ReadableStream({
     start(ctrl) {
@@ -611,17 +619,17 @@ function wrapStreamWithKeepalive(
       
       // Start keep-alive interval
       keepAliveInterval = setInterval(() => {
+        if (streamClosed || !controller) {
+          cleanupInterval()
+          return
+        }
         try {
-          if (controller) {
-            controller.enqueue(keepAliveMessage)
-            console.log('[project-runtime] Sent keep-alive')
-          }
+          controller.enqueue(keepAliveMessage)
+          console.log('[project-runtime] Sent keep-alive')
         } catch {
           // Stream closed, stop sending
-          if (keepAliveInterval) {
-            clearInterval(keepAliveInterval)
-            keepAliveInterval = null
-          }
+          streamClosed = true
+          cleanupInterval()
         }
       }, intervalMs)
     },
@@ -631,11 +639,9 @@ function wrapStreamWithKeepalive(
         const { done, value } = await reader.read()
         
         if (done) {
-          // Clean up and close
-          if (keepAliveInterval) {
-            clearInterval(keepAliveInterval)
-            keepAliveInterval = null
-          }
+          // Mark as closed BEFORE closing to prevent keep-alive race
+          streamClosed = true
+          cleanupInterval()
           ctrl.close()
           return
         }
@@ -643,20 +649,17 @@ function wrapStreamWithKeepalive(
         ctrl.enqueue(value)
       } catch (error) {
         // Clean up on error
-        if (keepAliveInterval) {
-          clearInterval(keepAliveInterval)
-          keepAliveInterval = null
-        }
+        streamClosed = true
+        cleanupInterval()
         ctrl.error(error)
       }
     },
     
     cancel() {
       // Clean up on cancel
-      if (keepAliveInterval) {
-        clearInterval(keepAliveInterval)
-        keepAliveInterval = null
-      }
+      streamClosed = true
+      cleanupInterval()
+      controller = null
       reader.cancel()
     },
   })
@@ -736,7 +739,6 @@ function getBuildStatus(): { status: string; ready: boolean; details?: string } 
       
       // If build status file says "ready", also verify actual build artifacts exist
       if (status === 'ready') {
-        // Verify dist/ exists and has index.html
         const distDir = join(PROJECT_DIR, 'dist')
         if (!existsSync(distDir)) {
           console.log('[project-runtime] Build status says ready but dist/ missing')
@@ -744,7 +746,19 @@ function getBuildStatus(): { status: string; ready: boolean; details?: string } 
         }
         
         if (!existsSync(join(distDir, 'index.html'))) {
-          console.log('[project-runtime] Build status says ready but dist/index.html missing')
+          // Race condition: entrypoint.sh may have written "ready" before build fully completed.
+          // Wait briefly for the file to appear before declaring incomplete.
+          const waitStart = Date.now()
+          const MAX_WAIT_MS = 3000
+          const POLL_INTERVAL_MS = 100
+          while (Date.now() - waitStart < MAX_WAIT_MS) {
+            Bun.sleepSync(POLL_INTERVAL_MS)
+            if (existsSync(join(distDir, 'index.html'))) {
+              // File appeared, we're good
+              return { status: 'ready', ready: true }
+            }
+          }
+          console.log(`[project-runtime] Build status says ready but dist/index.html missing after ${MAX_WAIT_MS}ms wait`)
           return { status: 'dist_incomplete', ready: false, details: 'Build incomplete - dist/index.html not found' }
         }
       }
@@ -893,6 +907,7 @@ app.get('/build-events', (c) => {
   c.header('Connection', 'keep-alive')
   
   let clientController: ReadableStreamDefaultController | null = null
+  let isClosed = false
   
   const stream = new ReadableStream({
     start(controller) {
@@ -912,13 +927,21 @@ app.get('/build-events', (c) => {
         timestamp: Date.now(),
       })
       const encoder = new TextEncoder()
-      controller.enqueue(encoder.encode(`data: ${initialState}\n\n`))
+      try {
+        controller.enqueue(encoder.encode(`data: ${initialState}\n\n`))
+      } catch {
+        // Controller may already be closed
+        isClosed = true
+        buildEventClients.delete(controller)
+      }
       
       console.log(`[project-runtime] Build events client connected (total: ${buildEventClients.size})`)
     },
     cancel() {
+      isClosed = true
       if (clientController) {
         buildEventClients.delete(clientController)
+        clientController = null
         console.log(`[project-runtime] Build events client disconnected (remaining: ${buildEventClients.size})`)
       }
     },
@@ -1116,6 +1139,7 @@ app.post('/agent/chat', async (c) => {
           // Create a new stream that wraps the original with keep-alive AND appends usage
           const wrappedStream = new ReadableStream({
             async start(controller) {
+              let closed = false
               const reader = wrapStreamWithKeepalive(originalStream, 15000).getReader()
               try {
                 while (true) {
@@ -1131,18 +1155,25 @@ app.post('/agent/chat', async (c) => {
               
               // After the main stream finishes, append usage data as a custom SSE event
               // Using "data-" prefix so @ai-sdk/react's stream validator accepts it
-              try {
-                const usage = await usagePromise
-                console.log('[project-runtime] Usage from streamText:', JSON.stringify(usage))
-                if (usage) {
-                  const usageEvent = `data: ${JSON.stringify({ type: 'data-usage', data: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } })}\n\n`
-                  controller.enqueue(new TextEncoder().encode(usageEvent))
+              if (!closed) {
+                try {
+                  const usage = await usagePromise
+                  console.log('[project-runtime] Usage from streamText:', JSON.stringify(usage))
+                  if (usage) {
+                    const usageEvent = `data: ${JSON.stringify({ type: 'data-usage', data: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } })}\n\n`
+                    controller.enqueue(new TextEncoder().encode(usageEvent))
+                  }
+                } catch (err) {
+                  console.error('[project-runtime] Failed to get usage:', err)
                 }
-              } catch (err) {
-                console.error('[project-runtime] Failed to get usage:', err)
               }
               
-              controller.close()
+              try {
+                controller.close()
+              } catch {
+                // Controller may already be closed if the client disconnected
+              }
+              closed = true
             },
           })
           
@@ -1949,14 +1980,19 @@ function notifyBuildStateChange() {
   const encoder = new TextEncoder()
   const message = encoder.encode(`data: ${payload}\n\n`)
   
-  // Notify all connected clients
+  // Notify all connected clients - collect dead controllers to avoid modifying Set during iteration
+  const deadControllers: ReadableStreamDefaultController[] = []
   for (const controller of buildEventClients) {
     try {
       controller.enqueue(message)
     } catch (e) {
-      // Client disconnected - will be removed by the stream's cancel callback
-      buildEventClients.delete(controller)
+      // Client disconnected
+      deadControllers.push(controller)
     }
+  }
+  // Clean up dead controllers after iteration
+  for (const dead of deadControllers) {
+    buildEventClients.delete(dead)
   }
   
   if (buildEventClients.size > 0) {
@@ -2088,7 +2124,12 @@ async function startViteBuildWatch(): Promise<void> {
             notifyBuildStateChange()
           } else if (event === 'success') {
             buildState = 'success'
-            buildDuration = buildStartTime ? Date.now() - buildStartTime : null
+            // If we missed the 'start' event (race condition during startup), 
+            // use the watch start time or estimate duration from Vite's own output
+            if (!buildStartTime) {
+              buildStartTime = Date.now() - 5000 // Estimate 5s if we missed the start
+            }
+            buildDuration = Date.now() - buildStartTime
             lastBuildTime = Date.now()
             if (buildDuration) recordBuildTime(buildDuration)
             appendToBuildLog(`✅ Build complete (${buildDuration}ms)`)
@@ -2121,7 +2162,8 @@ async function startViteBuildWatch(): Promise<void> {
     }
   })()
   
-  // Also stream stderr
+  // Also stream stderr - but only treat actual errors as build failures
+  // Vite commonly outputs warnings and informational messages to stderr
   ;(async () => {
     if (!currentProcess.stderr) return
     const stderr = currentProcess.stderr
@@ -2138,11 +2180,18 @@ async function startViteBuildWatch(): Promise<void> {
           console.error(`[vite:error] ${output}`)
           appendToBuildLog(`[error] ${output}`)
           
-          // Treat any stderr as potential error
-          if (buildState === 'building') {
+          // Only treat stderr as a build error if it contains actual error indicators
+          // AND we're currently building. Vite outputs warnings/deprecations to stderr
+          // that shouldn't be treated as build failures.
+          const isActualError = output.includes('Error:') || 
+                               output.includes('error:') ||
+                               output.includes('ENOENT') ||
+                               output.includes('SIGTERM') ||
+                               output.includes('Failed to')
+          if (buildState === 'building' && isActualError) {
             buildState = 'error'
             buildError = output
-            buildErrorContext = analyzeBuildError(output)  // Create rich error context
+            buildErrorContext = analyzeBuildError(output)
             notifyBuildStateChange()
           }
         }
