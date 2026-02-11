@@ -2509,10 +2509,12 @@ app.post('/preview/restart', async (c) => {
       markStep('startViteBuildWatch')
     }
     
-    // 6. Start Hono/API server if server.ts exists
+    // 6. Start Hono/API server if server.ts or server.tsx exists
     // For Expo: required (serves both API routes and static files)
     // For plain Vite: optional (serves API routes like /api/* if the project has a backend)
-    const serverPath = join(PROJECT_DIR, 'server.ts')
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverPath = existsSync(serverTsxPath) ? serverTsxPath : serverTsPath
     const hasServerFile = existsSync(serverPath)
     
     if (isExpo) {
