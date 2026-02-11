@@ -6,8 +6,8 @@
  * instead of importing Prisma directly, keeping Node.js modules out of the
  * browser bundle.
  *
- * The generated functions maintain the same call signature as the previous
- * createServerFn-based versions so domain.ts doesn't need changes.
+ * The generated functions maintain the same call signature as domain.ts
+ * expects, so no changes are needed there.
  */
 
 import type { PrismaModel, PrismaField } from './prisma-generator'

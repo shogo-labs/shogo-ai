@@ -1,13 +1,18 @@
 /**
  * Hono Server
  *
- * API server with auto-generated routes from Prisma schema.
+ * API server with auto-generated CRUD routes from Prisma schema.
  * Customize this file to add middleware, auth, or custom routes.
+ *
+ * The SDK generates per-model route files with full CRUD operations.
+ * Run `bun run generate` after schema changes to regenerate routes.
  */
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { serveStatic } from 'hono/bun'
+import { createAllRoutes } from './src/generated/routes'
+import { prisma } from './src/lib/db'
 
 const app = new Hono()
 
@@ -24,6 +29,9 @@ app.use(
 
 // Health check endpoint
 app.get('/health', (c) => c.json({ ok: true, timestamp: new Date().toISOString() }))
+
+// Mount SDK-generated API routes (CRUD for all Prisma models)
+app.route('/api', createAllRoutes(prisma))
 
 // Serve static files in production
 app.use('/*', serveStatic({ root: './dist' }))

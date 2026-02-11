@@ -2705,6 +2705,53 @@ app.post('/preview/rebuild', async (c) => {
     console.log(`[project-runtime] ✅ Manual rebuild complete (${durationMs}ms)`)
     notifyBuildStateChange()
     
+    // 4b. Restart the backend server process if server.tsx exists
+    // This is critical: when the AI modifies server.tsx or generates new API routes,
+    // the old serverProcess is stale and must be restarted to pick up changes.
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const rebuildServerPath = existsSync(serverTsxPath) ? serverTsxPath : (existsSync(serverTsPath) ? serverTsPath : null)
+    
+    if (rebuildServerPath && !isExpo) {
+      console.log(`[project-runtime] 🔄 Restarting backend API server (${rebuildServerPath})...`)
+      appendToBuildLog('🔄 Restarting backend API server...')
+      
+      if (serverProcess) {
+        serverProcess.kill()
+        serverProcess = null
+      }
+      
+      serverProcess = Bun.spawn(['bun', 'run', rebuildServerPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(SERVER_PORT) },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      streamProcessOutput(serverProcess, 'api-server')
+      
+      // Wait for server to be ready
+      let serverReady = false
+      for (let attempt = 1; attempt <= 10 && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${SERVER_PORT}/health`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ✅ Backend API server ready after ${attempt} attempt(s)`)
+            appendToBuildLog(`✅ Backend API server ready`)
+          }
+        } catch (e) {
+          await new Promise(resolve => setTimeout(resolve, Math.min(100 * attempt, 500)))
+        }
+      }
+      
+      if (!serverReady) {
+        console.warn('[project-runtime] ⚠️ Backend API server may still be starting...')
+        appendToBuildLog('⚠️ Backend API server may still be starting...')
+      }
+    }
+    
     // 5. Restart watch mode for future changes
     console.log('[project-runtime] 🔄 Restarting watch mode...')
     await startViteBuildWatch()
