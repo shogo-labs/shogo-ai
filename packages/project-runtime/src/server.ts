@@ -369,6 +369,12 @@ Available templates:
       console.log(`[project-runtime] template.copy called: ${templateName}`)
       const result = copyTemplate(templateName, projectName || templateName)
       
+      // If successful, trigger S3 sync immediately to persist the template files
+      if (result.ok && s3Sync) {
+        console.log(`[project-runtime] Triggering S3 sync after template copy`)
+        s3Sync.triggerSync(true) // immediate=true since template copy is a critical operation
+      }
+      
       // If successful, automatically rebuild and restart the preview
       if (result.ok) {
         let restartResult: { success: boolean; message: string; mode?: string; port?: number | null } = {
@@ -1166,6 +1172,14 @@ app.post('/agent/chat', async (c) => {
                 } catch (err) {
                   console.error('[project-runtime] Failed to get usage:', err)
                 }
+              }
+              
+              // Trigger S3 sync after agent chat completes.
+              // The agent may have written/modified project files via tool calls.
+              // The file watcher's debounce will also catch these, but this explicit
+              // trigger ensures we don't miss anything if the watcher is delayed.
+              if (s3Sync) {
+                s3Sync.triggerSync()
               }
               
               try {
@@ -2757,6 +2771,12 @@ app.post('/preview/rebuild', async (c) => {
     // 5. Restart watch mode for future changes
     console.log('[project-runtime] 🔄 Restarting watch mode...')
     await startViteBuildWatch()
+    
+    // 6. Trigger S3 sync to persist the build output
+    if (s3Sync) {
+      console.log('[project-runtime] 📦 Triggering S3 sync after rebuild')
+      s3Sync.triggerSync()
+    }
     
     // Return to idle after short delay
     setTimeout(() => {
