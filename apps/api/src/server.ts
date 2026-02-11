@@ -9,7 +9,7 @@ import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
 import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
 import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-provider-claude-code'
 import { createAnthropic } from '@ai-sdk/anthropic'
-import { resolve, join, extname, relative, isAbsolute } from 'path'
+import { resolve, join, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { existsSync, mkdirSync } from 'fs'
@@ -389,101 +389,6 @@ const virtualToolsServer = createSdkMcpServer({
 
 // Get workspaces directory for project-scoped operations
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-
-/**
- * File extensions to include in the project file list.
- */
-const PROJECT_FILE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.json', '.css', '.html', '.md', '.svg'
-])
-
-/**
- * Directories to exclude from project file listing.
- */
-const EXCLUDED_DIRS = new Set([
-  'node_modules', '.git', 'dist', 'build', '.vite', '.cache', '.claude'
-])
-
-/**
- * Recursively list files in a project directory.
- * Returns a flat list of relative file paths.
- */
-async function listProjectFilesRecursive(
-  dir: string,
-  basePath: string,
-  files: string[] = []
-): Promise<string[]> {
-  try {
-    const entries = await readdir(dir, { withFileTypes: true })
-
-    for (const entry of entries) {
-      const entryPath = join(dir, entry.name)
-      const relativePath = relative(basePath, entryPath)
-
-      if (entry.isDirectory()) {
-        // Skip excluded directories
-        if (EXCLUDED_DIRS.has(entry.name)) {
-          continue
-        }
-        // Recurse into subdirectories
-        await listProjectFilesRecursive(entryPath, basePath, files)
-      } else {
-        const ext = extname(entry.name).toLowerCase()
-        // Only include files with allowed extensions
-        if (PROJECT_FILE_EXTENSIONS.has(ext)) {
-          files.push(relativePath)
-        }
-      }
-    }
-
-    return files
-  } catch (err) {
-    console.error('[getProjectFiles] Error listing directory:', dir, err)
-    return files
-  }
-}
-
-/**
- * Get a formatted list of project files for inclusion in the system prompt.
- * Returns null if the project directory doesn't exist.
- *
- * perf: Results are cached per projectId with a 30-second TTL to avoid
- * expensive recursive filesystem walks on every message in a conversation.
- */
-const projectFileListCache = new Map<string, { result: string | null; timestamp: number }>()
-const PROJECT_FILE_LIST_TTL_MS = 30_000 // 30 seconds
-
-async function getProjectFileList(projectId: string): Promise<string | null> {
-  // Check cache first
-  const cached = projectFileListCache.get(projectId)
-  if (cached && (Date.now() - cached.timestamp) < PROJECT_FILE_LIST_TTL_MS) {
-    return cached.result
-  }
-
-  const projectDir = resolve(WORKSPACES_DIR, projectId)
-
-  try {
-    await stat(projectDir)
-  } catch {
-    projectFileListCache.set(projectId, { result: null, timestamp: Date.now() })
-    return null // Project directory doesn't exist
-  }
-
-  const files = await listProjectFilesRecursive(projectDir, projectDir)
-
-  if (files.length === 0) {
-    projectFileListCache.set(projectId, { result: null, timestamp: Date.now() })
-    return null
-  }
-
-  // Sort files for consistent output
-  files.sort()
-
-  // Format as a simple list
-  const result = files.map(f => `  ${f}`).join('\n')
-  projectFileListCache.set(projectId, { result, timestamp: Date.now() })
-  return result
-}
 
 /**
  * Type for canUseTool permission result.
@@ -2846,21 +2751,11 @@ app.post('/api/chat', async (c) => {
       ? getOrCreateScopedClaudeCode(projectId)
       : claudeCode
 
-    // perf: Run credit check and file list scan in parallel instead of sequentially.
-    // Both are independent I/O operations (DB query + filesystem walk).
-    const creditCheckPromise = workspaceId
-      ? billingService.getCreditLedger(workspaceId)
-      : Promise.resolve(null)
-    const fileListPromise = projectId
-      ? getProjectFileList(projectId)
-      : Promise.resolve(null)
-
-    const [ledgerResult, projectFileList] = await Promise.all([creditCheckPromise, fileListPromise])
-
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
     // This prevents users from sending messages when they have no credits remaining
     if (workspaceId) {
-      let ledger = ledgerResult
+      // Get credit ledger via Prisma service
+      let ledger = await billingService.getCreditLedger(workspaceId)
 
       // If no ledger exists, allocate free tier credits
       if (!ledger) {
@@ -2894,17 +2789,6 @@ app.post('/api/chat', async (c) => {
     // Build dynamic system prompt based on agent persona (env var)
     const agentPersona = process.env.SHOGO_AGENT as AgentPersona | undefined
     let systemPrompt = buildSystemPrompt(agentPersona)
-
-    // Include project file list in the prompt so agent knows what files exist
-    if (projectFileList) {
-      systemPrompt = `${systemPrompt}
-
-**Project Files:**
-You are working in a project workspace. Here are the files in the project:
-${projectFileList}
-
-Use the Read, Write, and Edit tools to view and modify these files. All file paths are relative to the project root.`
-    }
 
     // Pass resume parameter if ccSessionId provided (task-cc-api-endpoint)
     // This enables session continuity in Claude Code
