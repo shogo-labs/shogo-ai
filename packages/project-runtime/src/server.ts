@@ -585,6 +585,31 @@ const claudeCode = createClaudeCode({
 })
 
 // =============================================================================
+// Model Instance Cache — "keep the CLI warm"
+// =============================================================================
+// Cache ClaudeCodeLanguageModel instances by model name so the internal sessionId
+// persists across HTTP requests.  After the first streamText() call the SDK stores
+// the sessionId; subsequent calls automatically pass `resume: <sessionId>` to the
+// Claude Code CLI subprocess.  This means the CLI loads the existing session from
+// disk (~/.claude/projects/) instead of cold-starting a brand-new conversation,
+// saving 1-2 s of MCP/skill initialisation per message.
+//
+// Only 3 possible keys (haiku | sonnet | opus) so memory is bounded.
+const cachedModels = new Map<string, ReturnType<typeof claudeCode>>()
+
+function getOrCreateModel(modelName: 'haiku' | 'sonnet' | 'opus') {
+  let model = cachedModels.get(modelName)
+  if (!model) {
+    model = claudeCode(modelName, {
+      streamingInput: 'always',
+    })
+    cachedModels.set(modelName, model)
+    console.log(`[project-runtime] Cached model instance for: ${modelName} (session will auto-resume on next call)`)
+  }
+  return model
+}
+
+// =============================================================================
 // Stream Keep-Alive Utility
 // =============================================================================
 
@@ -1121,9 +1146,10 @@ app.post('/agent/chat', async (c) => {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const result = streamText({
-          model: claudeCode(modelName, {
-            streamingInput: 'always',
-          }) as Parameters<typeof streamText>[0]['model'],
+          // perf: Use cached model instance to preserve sessionId across requests.
+          // After the first call the model auto-resumes the previous session,
+          // avoiding a full CLI cold-start on every message.
+          model: getOrCreateModel(modelName) as Parameters<typeof streamText>[0]['model'],
           system: getSystemPrompt(),
           messages: coreMessages,
           tools: templateTools,
