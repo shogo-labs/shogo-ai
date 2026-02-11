@@ -386,7 +386,7 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
   PUSH_SUCCESS=false
   
   for i in $(seq 1 $PUSH_RETRIES); do
-    if bunx prisma db push --skip-generate 2>&1; then
+    if bunx prisma db push 2>&1; then
       PUSH_SUCCESS=true
       STEP_END=$(date +%s%3N)
       bg_log "Prisma db push completed (took $((STEP_END - STEP_START))ms)"
