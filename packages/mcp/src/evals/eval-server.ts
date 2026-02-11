@@ -26,8 +26,10 @@ import {
   LEVEL_5_BUSINESS_EVALS,
   LEVEL_6_BUSINESS_EVALS,
 } from './test-cases-business-user'
+import { RUNTIME_SAFETY_EVALS } from './test-cases-runtime-safety'
 import type { AgentEval, EvalResult } from './types'
 import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs'
+import { resolve } from 'path'
 
 // Checkpoint file for resuming
 const CHECKPOINT_FILE = '/tmp/eval-checkpoint.json'
@@ -153,8 +155,10 @@ function calculateCost(inputTokens: number, outputTokens: number): number {
 }
 
 const BASE_PORT = 6300
-const MCP_SERVER = '/Users/russell/git/shogo-ai/packages/mcp/src/server-templates.ts'
-const PROJECT_RUNTIME = '/Users/russell/git/shogo-ai/packages/project-runtime/src/server.ts'
+// Resolve paths dynamically from this file's location (packages/mcp/src/evals/)
+const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..', '..')
+const MCP_SERVER = resolve(REPO_ROOT, 'packages/mcp/src/server-templates.ts')
+const PROJECT_RUNTIME = resolve(REPO_ROOT, 'packages/project-runtime/src/server.ts')
 
 // State
 interface Worker {
@@ -205,7 +209,8 @@ function getEvals(template: string): AgentEval[] {
     case 'vague': return VAGUE_BUSINESS_LANGUAGE_EVALS
     case 'level5': return LEVEL_5_BUSINESS_EVALS
     case 'level6': return LEVEL_6_BUSINESS_EVALS
-    case 'all': return [...ALL_CRM_EVALS, ...ALL_INVENTORY_EVALS, ...ALL_HARD_EVALS, ...ALL_BUSINESS_USER_EVALS]
+    case 'runtime-safety': return RUNTIME_SAFETY_EVALS
+    case 'all': return [...ALL_CRM_EVALS, ...ALL_INVENTORY_EVALS, ...ALL_HARD_EVALS, ...ALL_BUSINESS_USER_EVALS, ...RUNTIME_SAFETY_EVALS]
     default:
       throw new Error(`Unknown template: ${template}`)
   }

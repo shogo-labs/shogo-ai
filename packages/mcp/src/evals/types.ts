@@ -50,6 +50,8 @@ export type EvalCategory =
   | 'conditional-logic'
   | 'migration-concerns'
   | 'framework-specific'
+  // Runtime safety (agent should not restart servers, run builds, etc.)
+  | 'runtime-safety'
 
 /**
  * A conversation turn for multi-turn evals

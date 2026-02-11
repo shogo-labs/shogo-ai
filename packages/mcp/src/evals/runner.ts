@@ -14,7 +14,7 @@ import type {
   ToolCall,
   EvalMetrics,
 } from './types'
-import { evaluateToolCorrectness, extractSelectedTemplate } from './validators'
+import { evaluateToolCorrectness, extractSelectedTemplate, ranForbiddenRuntimeCommands } from './validators'
 
 /**
  * Configuration for the eval runner
@@ -320,6 +320,8 @@ export async function runEvalSuite(
     'conditional-logic',
     'migration-concerns',
     'framework-specific',
+    // Runtime safety
+    'runtime-safety',
   ]
   
   const byCategory = {} as Record<EvalCategory, CategorySummary>
@@ -810,6 +812,18 @@ function checkAntiPattern(
       (t) => t.name === 'write' || t.name === 'edit'
     )
     return hasFileWrite && !hasTemplateCopy
+  }
+
+  // Forbidden runtime commands: restart vite, run builds, kill processes
+  if (
+    patternLower.includes('restart') ||
+    patternLower.includes('vite') ||
+    patternLower.includes('kill') ||
+    patternLower.includes('forbidden runtime') ||
+    patternLower.includes('build command') ||
+    patternLower.includes('dev server')
+  ) {
+    return ranForbiddenRuntimeCommands(toolCalls)
   }
 
   return false

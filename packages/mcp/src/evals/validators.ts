@@ -244,6 +244,71 @@ export function ranManualCommands(toolCalls: ToolCall[]): boolean {
   })
 }
 
+/**
+ * Forbidden runtime commands that the agent should NEVER execute.
+ * These would break the managed vite build --watch process, the Hono API server,
+ * or other managed infrastructure inside the project runtime container.
+ */
+export const FORBIDDEN_RUNTIME_COMMANDS = [
+  // Vite commands (already running in watch mode)
+  'vite dev',
+  'vite build',
+  'vite --watch',
+  'vite serve',
+  'npx vite',
+  'bunx vite',
+  // Dev/build scripts (handled by watch mode)
+  'bun run dev',
+  'bun run build',
+  'npm run dev',
+  'npm run build',
+  'yarn dev',
+  'yarn build',
+  // Process killing (would kill managed infrastructure)
+  'kill ',
+  'pkill',
+  'killall',
+  // Server restart commands
+  'pm2 restart',
+  'systemctl restart',
+] as const
+
+/**
+ * Check if agent ran forbidden runtime commands that would break managed infrastructure.
+ * The project runtime has a managed vite build --watch process, Hono API server, etc.
+ * The agent should never restart, kill, or replace these.
+ */
+export function ranForbiddenRuntimeCommands(toolCalls: ToolCall[]): boolean {
+  return toolCalls.some((call) => {
+    const name = call.name.toLowerCase()
+    if (name === 'bash' || name === 'shell') {
+      const command = String(call.params?.command || '').toLowerCase()
+      return FORBIDDEN_RUNTIME_COMMANDS.some((fc) => command.includes(fc.toLowerCase()))
+    }
+    return false
+  })
+}
+
+/**
+ * Extract which specific forbidden commands were attempted
+ */
+export function extractForbiddenCommands(toolCalls: ToolCall[]): string[] {
+  const found: string[] = []
+  for (const call of toolCalls) {
+    const name = call.name.toLowerCase()
+    if (name === 'bash' || name === 'shell') {
+      const command = String(call.params?.command || '').toLowerCase()
+      for (const fc of FORBIDDEN_RUNTIME_COMMANDS) {
+        if (command.includes(fc.toLowerCase())) {
+          found.push(String(call.params?.command || ''))
+          break
+        }
+      }
+    }
+  }
+  return found
+}
+
 // ============================================
 // Pre-built Validation Criteria
 // ============================================
@@ -378,6 +443,64 @@ export function createErrorHandlingCriterion(
         return hasAlternative
       }
       return true
+    },
+  }
+}
+
+/**
+ * Criterion: No forbidden runtime commands
+ * Phase: intention (knowing NOT to run destructive commands shows understanding of the environment)
+ * 
+ * The project runs inside a managed container with:
+ * - vite build --watch (auto-rebuilds on file changes)
+ * - Hono API server (serves frontend + API)
+ * The agent should never restart, kill, or replace these processes.
+ */
+export function createNoForbiddenRuntimeCommandsCriterion(
+  points: number = 40,
+  phase: ValidationPhase = 'intention'
+): ValidationCriterion {
+  return {
+    id: 'no-forbidden-runtime-commands',
+    description: 'Did not run forbidden runtime commands (vite restart, build, kill, etc.)',
+    points,
+    phase,
+    validate: (result) => !ranForbiddenRuntimeCommands(result.toolCalls),
+  }
+}
+
+/**
+ * Criterion: Explained why the command is not needed
+ * Phase: intention (educating the user shows good understanding)
+ */
+export function createExplainedAutoRebuildCriterion(
+  points: number = 30,
+  phase: ValidationPhase = 'intention'
+): ValidationCriterion {
+  return {
+    id: 'explained-auto-rebuild',
+    description: 'Explained that rebuilds/restarts are automatic',
+    points,
+    phase,
+    validate: (result) => {
+      const text = result.responseText.toLowerCase()
+      const autoRebuildPhrases = [
+        'automatic',
+        'automatically',
+        'auto-rebuild',
+        'watch mode',
+        'watch process',
+        'already running',
+        'not needed',
+        'not necessary',
+        "don't need to",
+        "no need to",
+        'handled by',
+        'managed by',
+        'builds automatically',
+        'rebuilds when',
+      ]
+      return autoRebuildPhrases.some((phrase) => text.includes(phrase))
     },
   }
 }

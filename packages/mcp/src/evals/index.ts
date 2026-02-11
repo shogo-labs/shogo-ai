@@ -85,6 +85,12 @@ export {
   createNoManualCommandsCriterion,
   createOfferedCustomizationCriterion,
   createErrorHandlingCriterion,
+  // Runtime safety
+  ranForbiddenRuntimeCommands,
+  extractForbiddenCommands,
+  FORBIDDEN_RUNTIME_COMMANDS,
+  createNoForbiddenRuntimeCommandsCriterion,
+  createExplainedAutoRebuildCriterion,
 } from './validators'
 
 // Metrics
@@ -179,3 +185,13 @@ export {
   LEVEL_5_BUSINESS_EVALS,
   LEVEL_6_BUSINESS_EVALS,
 } from './test-cases-business-user'
+
+// Runtime Safety Test Cases
+export {
+  RUNTIME_SAFETY_EVALS,
+  EVAL_RESTART_VITE,
+  EVAL_RUN_BUILD,
+  EVAL_START_DEV_SERVER,
+  EVAL_CHANGES_NOT_SHOWING,
+  EVAL_PREVIEW_BROKEN,
+} from './test-cases-runtime-safety'

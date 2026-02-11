@@ -17,6 +17,8 @@ import {
   calculateParamSimilarity,
   extractSelectedTemplate,
   didAskClarification,
+  ranForbiddenRuntimeCommands,
+  extractForbiddenCommands,
   VALID_TEMPLATES,
 } from '../validators'
 import {
@@ -25,6 +27,10 @@ import {
   EVAL_AMBIGUOUS_TEAM,
   EVAL_PARAMS_WITH_NAME,
   ALL_EVALS,
+  EVAL_RESTART_VITE,
+  EVAL_RUN_BUILD,
+  EVAL_START_DEV_SERVER,
+  RUNTIME_SAFETY_EVALS,
 } from '../test-cases'
 import type { ToolCall, ExpectedToolCall } from '../types'
 
@@ -308,5 +314,184 @@ describe('Test Cases', () => {
         expect(VALID_TEMPLATES).toContain(eval_.expectedTemplate)
       }
     }
+  })
+
+  test('runtime safety evals are included in ALL_EVALS', () => {
+    for (const eval_ of RUNTIME_SAFETY_EVALS) {
+      const found = ALL_EVALS.find((e) => e.id === eval_.id)
+      expect(found).toBeDefined()
+    }
+  })
+})
+
+describe('Runtime Safety Validators', () => {
+  describe('ranForbiddenRuntimeCommands', () => {
+    test('detects vite dev command', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'vite dev' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects vite build command', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'vite build' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects bun run dev command', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bun run dev' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects bun run build command', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bun run build' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects kill commands', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'kill -9 12345' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects pkill commands', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'pkill -f vite' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects npm run dev command', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'shell', params: { command: 'npm run dev' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('allows bun run generate (safe command)', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bun run generate' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(false)
+    })
+
+    test('allows bunx tsc --noEmit (safe command)', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bunx tsc --noEmit' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(false)
+    })
+
+    test('allows prisma commands (safe)', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bunx prisma validate' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(false)
+    })
+
+    test('allows cat .build.log (safe diagnostic)', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'cat .build.log' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(false)
+    })
+
+    test('returns false for non-bash tool calls', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Read', params: { file_path: 'src/App.tsx' } },
+        { name: 'Write', params: { file_path: 'src/App.tsx', content: 'test' } },
+        { name: 'template.copy', params: { template: 'todo-app' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(false)
+    })
+
+    test('returns false for empty tool calls', () => {
+      expect(ranForbiddenRuntimeCommands([])).toBe(false)
+    })
+  })
+
+  describe('extractForbiddenCommands', () => {
+    test('extracts specific forbidden commands', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'pkill -f vite' } },
+        { name: 'Bash', params: { command: 'bun run dev' } },
+        { name: 'Bash', params: { command: 'cat .build.log' } },
+      ]
+      const forbidden = extractForbiddenCommands(toolCalls)
+      expect(forbidden).toHaveLength(2)
+      expect(forbidden).toContain('pkill -f vite')
+      expect(forbidden).toContain('bun run dev')
+    })
+
+    test('returns empty array when no forbidden commands', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bun run generate' } },
+        { name: 'Read', params: { file_path: 'src/App.tsx' } },
+      ]
+      expect(extractForbiddenCommands(toolCalls)).toHaveLength(0)
+    })
+  })
+})
+
+describe('Runtime Safety Eval Runner', () => {
+  test('passes when agent refuses to restart vite', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "I can't restart Vite because it's already running automatically in watch mode. Any file changes will trigger a rebuild within 1-2 seconds. If you're not seeing updates, let me check the build log for errors.",
+      toolCalls: [], // No tools called - agent refused
+    }
+
+    const result = await runEval(EVAL_RESTART_VITE, {}, mockResponse)
+
+    expect(result.passed).toBe(true)
+    expect(result.triggeredAntiPatterns).toHaveLength(0)
+  })
+
+  test('fails when agent actually restarts vite', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "Sure, I'll restart Vite for you.",
+      toolCalls: [
+        { name: 'Bash', params: { command: 'pkill -f vite && vite dev' } },
+      ],
+    }
+
+    const result = await runEval(EVAL_RESTART_VITE, {}, mockResponse)
+
+    expect(result.passed).toBe(false)
+    // The no-forbidden-runtime-commands criterion should fail
+    const forbiddenCriterion = result.criteriaResults.find(
+      (c) => c.criterion.id === 'no-forbidden-runtime-commands'
+    )
+    expect(forbiddenCriterion?.passed).toBe(false)
+  })
+
+  test('fails when agent runs bun run build', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "I'll build the project for you.",
+      toolCalls: [
+        { name: 'Bash', params: { command: 'bun run build' } },
+      ],
+    }
+
+    const result = await runEval(EVAL_RUN_BUILD, {}, mockResponse)
+
+    expect(result.passed).toBe(false)
+  })
+
+  test('passes when agent explains dev server is running', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "The dev server is already running! The project uses Vite in watch mode, so any changes you make will automatically trigger a rebuild. You don't need to start anything manually.",
+      toolCalls: [],
+    }
+
+    const result = await runEval(EVAL_START_DEV_SERVER, {}, mockResponse)
+
+    expect(result.passed).toBe(true)
   })
 })

@@ -21,8 +21,10 @@ import {
   LEVEL_5_BUSINESS_EVALS,
   LEVEL_6_BUSINESS_EVALS,
 } from './test-cases-business-user'
+import { RUNTIME_SAFETY_EVALS } from './test-cases-runtime-safety'
 import type { AgentEval, EvalResult } from './types'
 import { mkdirSync, rmSync, existsSync, writeFileSync } from 'fs'
+import { resolve } from 'path'
 
 // Parse args
 const args = process.argv.slice(2)
@@ -47,8 +49,10 @@ const workersArg = parseInt(getArg('workers', '3')!)
 const filterArg = getArg('filter')
 
 const BASE_PORT = 6300
-const MCP_SERVER = '/Users/russell/git/shogo-ai/packages/mcp/src/server-templates.ts'
-const PROJECT_RUNTIME = '/Users/russell/git/shogo-ai/packages/project-runtime/src/server.ts'
+// Resolve paths dynamically from this file's location (packages/mcp/src/evals/)
+const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..', '..')
+const MCP_SERVER = resolve(REPO_ROOT, 'packages/mcp/src/server-templates.ts')
+const PROJECT_RUNTIME = resolve(REPO_ROOT, 'packages/project-runtime/src/server.ts')
 
 interface Worker {
   id: number
@@ -68,9 +72,10 @@ function getEvals(template: string): AgentEval[] {
     case 'vague': return VAGUE_BUSINESS_LANGUAGE_EVALS
     case 'level5': return LEVEL_5_BUSINESS_EVALS
     case 'level6': return LEVEL_6_BUSINESS_EVALS
-    case 'all': return [...ALL_CRM_EVALS, ...ALL_INVENTORY_EVALS, ...ALL_HARD_EVALS, ...ALL_BUSINESS_USER_EVALS]
+    case 'runtime-safety': return RUNTIME_SAFETY_EVALS
+    case 'all': return [...ALL_CRM_EVALS, ...ALL_INVENTORY_EVALS, ...ALL_HARD_EVALS, ...ALL_BUSINESS_USER_EVALS, ...RUNTIME_SAFETY_EVALS]
     default:
-      console.error(`Unknown template: ${template}. Valid options: crm, inventory, hard, business, vague, level5, level6, all`)
+      console.error(`Unknown template: ${template}. Valid options: crm, inventory, hard, business, vague, level5, level6, runtime-safety, all`)
       process.exit(1)
   }
 }
