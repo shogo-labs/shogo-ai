@@ -111,6 +111,13 @@ export {
   type GeneratedAdminRoutesFile,
 } from './admin-routes-generator'
 
+// Tests generator (Playwright E2E)
+export {
+  generateTests,
+  type GeneratedTestFile,
+  type TestGeneratorConfig,
+} from './tests-generator'
+
 // Legacy exports (for backward compatibility)
 export { generateServerFunctions } from './server-functions'
 export { generateDomainStore } from './domain-store'

@@ -283,6 +283,7 @@ export function testsRoutes(config: TestsRoutesConfig) {
       testName?: string
       line?: number
       headed?: boolean
+      watch?: boolean
       reporter?: 'list' | 'json' | 'line'
     } = {}
     
@@ -292,7 +293,7 @@ export function testsRoutes(config: TestsRoutesConfig) {
       // Empty body is fine, use defaults
     }
 
-    const { file, testName, line, headed, reporter = 'list' } = body
+    const { file, testName, line, headed, watch, reporter = 'list' } = body
 
     // Ensure dependencies are installed (workspaces created from template may have no node_modules)
     const nodeModulesDir = join(projectDir, 'node_modules')
@@ -328,6 +329,11 @@ export function testsRoutes(config: TestsRoutesConfig) {
     // Add headed mode
     if (headed) {
       command += ' --headed'
+    }
+
+    // Watch mode: use the watch config for video recording + slowMo
+    if (watch && existsSync(join(projectDir, 'playwright.watch.config.ts'))) {
+      command += ' --config playwright.watch.config.ts'
     }
     
     // Add reporter

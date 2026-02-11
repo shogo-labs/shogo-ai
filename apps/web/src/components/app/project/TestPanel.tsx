@@ -33,6 +33,8 @@ import {
   Download,
   ExternalLink,
   X,
+  Monitor,
+  Square,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -67,6 +69,7 @@ interface TestExecution {
   file?: string
   testName?: string
   line?: number
+  watch?: boolean
 }
 
 /**
@@ -209,16 +212,26 @@ function highlightOutput(output: string, projectId?: string): React.ReactNode[] 
       continue
     }
 
-    // --- Video attachment link ---
+    // --- Video attachment - inline player ---
     const videoMatch = line.match(/^\s*(test-results\/\S+\.webm)\s*$/)
     if (videoMatch && projectId) {
       const videoPath = videoMatch[1]
       const videoUrl = `/api/projects/${projectId}/files/${videoPath}`
       nodes.push(
-        <span key={i} className="block my-1">
-          <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline text-xs">
-            View video: {videoPath.split('/').pop()}
-          </a>
+        <span key={i} className="block my-2">
+          <span className="text-blue-400 text-xs flex items-center gap-1 mb-1">
+            <Film className="h-3 w-3 inline" />
+            Test Recording: {videoPath.split('/').pop()}
+          </span>
+          <video
+            src={videoUrl}
+            controls
+            autoPlay
+            muted
+            playsInline
+            className="max-w-full rounded border border-zinc-700"
+            style={{ maxHeight: '400px' }}
+          />
           {'\n'}
         </span>
       )
@@ -324,6 +337,15 @@ export function TestPanel({
   const [activeTrace, setActiveTrace] = useState<TraceFile | null>(null)
   const [showTraceViewer, setShowTraceViewer] = useState(false)
   const [traceViewerUrl, setTraceViewerUrl] = useState<string | null>(null)
+
+  // Playwright UI mode state
+  const [playwrightUI, setPlaywrightUI] = useState<{
+    status: 'idle' | 'starting' | 'running' | 'stopping' | 'error'
+    url?: string
+    error?: string
+  }>({ status: 'idle' })
+  // Fallback proxy URL for K8s mode (when direct URL isn't available)
+  const playwrightUIProxyUrl = useMemo(() => `/api/projects/${projectId}/tests/ui/app/`, [projectId])
   
   const outputRef = useRef<HTMLPreElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -400,7 +422,8 @@ export function TestPanel({
     
     // Construct the full URL to the trace file
     // trace.playwright.dev accepts a trace URL parameter
-    const traceFileUrl = `${window.location.origin}/api/projects/${projectId}/tests/traces/${encodeURIComponent(trace.path)}`
+    // Encode each path segment individually to preserve '/' separators
+    const traceFileUrl = `${window.location.origin}/api/projects/${projectId}/tests/traces/${trace.path.split('/').map(encodeURIComponent).join('/')}`
     const viewerUrl = `https://trace.playwright.dev/?trace=${encodeURIComponent(traceFileUrl)}`
     setTraceViewerUrl(viewerUrl)
   }, [projectId])
@@ -442,6 +465,81 @@ export function TestPanel({
       setTraces([])
     } catch (err) {
       console.error('[TestPanel] Failed to clear traces:', err)
+    }
+  }, [projectId])
+
+  // Start Playwright UI mode
+  const startPlaywrightUI = useCallback(async () => {
+    if (playwrightUI.status === 'running' || playwrightUI.status === 'starting') return
+
+    setPlaywrightUI({ status: 'starting' })
+
+    try {
+      const response = await fetch(`/api/projects/${projectId}/tests/ui/start`, {
+        method: 'POST',
+      })
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({ error: { message: 'Failed to start Playwright UI' } }))
+        setPlaywrightUI({ status: 'error', error: data.error?.message || 'Failed to start' })
+        return
+      }
+
+      const data = await response.json()
+      // The API returns a direct URL to the Playwright UI server (e.g. http://localhost:9323)
+      // Using the direct URL avoids proxy issues with absolute asset paths in the Playwright SPA
+      const uiUrl = data.url || undefined
+      if (data.status === 'running') {
+        setPlaywrightUI({ status: 'running', url: uiUrl })
+      } else if (data.status === 'error') {
+        setPlaywrightUI({ status: 'error', error: data.error || 'Failed to start' })
+      } else {
+        // Still starting, poll for status
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusRes = await fetch(`/api/projects/${projectId}/tests/ui/status`)
+            const statusData = await statusRes.json()
+            if (statusData.status === 'running') {
+              setPlaywrightUI({ status: 'running', url: uiUrl })
+              clearInterval(pollInterval)
+            } else if (statusData.status === 'error' || statusData.status === 'idle') {
+              setPlaywrightUI({ status: 'error', error: statusData.error || 'Failed to start' })
+              clearInterval(pollInterval)
+            }
+          } catch {
+            clearInterval(pollInterval)
+            setPlaywrightUI({ status: 'error', error: 'Lost connection' })
+          }
+        }, 1000)
+        // Timeout after 15 seconds
+        setTimeout(() => {
+          clearInterval(pollInterval)
+          setPlaywrightUI(prev => prev.status === 'starting' ? { status: 'error', error: 'Startup timed out' } : prev)
+        }, 15000)
+      }
+    } catch (err: any) {
+      setPlaywrightUI({ status: 'error', error: err.message || 'Failed to start' })
+    }
+  }, [projectId, playwrightUI.status])
+
+  // Stop Playwright UI mode
+  const stopPlaywrightUI = useCallback(async () => {
+    setPlaywrightUI({ status: 'stopping' })
+    try {
+      await fetch(`/api/projects/${projectId}/tests/ui/stop`, { method: 'POST' })
+    } catch {
+      // Ignore errors when stopping
+    }
+    setPlaywrightUI({ status: 'idle' })
+  }, [projectId])
+
+  const isPlaywrightUIActive = playwrightUI.status === 'running' || playwrightUI.status === 'starting'
+
+  // Cleanup Playwright UI on unmount
+  useEffect(() => {
+    return () => {
+      // Stop Playwright UI when component unmounts
+      fetch(`/api/projects/${projectId}/tests/ui/stop`, { method: 'POST' }).catch(() => {})
     }
   }, [projectId])
 
@@ -562,7 +660,7 @@ export function TestPanel({
    * Run specific test file or test case (Option B).
    * When line is provided, Playwright runs only the test at that line (file:line); otherwise uses file + optional testName (grep).
    */
-  const runSpecificTest = useCallback(async (file?: string, testName?: string, headed?: boolean, line?: number) => {
+  const runSpecificTest = useCallback(async (file?: string, testName?: string, headed?: boolean, line?: number, watch?: boolean) => {
     // Cancel any existing execution
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
@@ -577,13 +675,14 @@ export function TestPanel({
 
     const newExecution: TestExecution = {
       commandId: 'specific-test',
-      label: headed ? `${label} (Headed)` : label,
+      label: watch ? `${label} (Watch)` : headed ? `${label} (Headed)` : label,
       startTime: Date.now(),
       output: '',
       status: 'running',
       file,
       testName,
       line,
+      watch,
     }
 
     setExecution(newExecution)
@@ -593,7 +692,7 @@ export function TestPanel({
       const response = await fetch(`/api/projects/${projectId}/tests/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file, testName, headed, line }),
+        body: JSON.stringify({ file, testName, headed, line, watch }),
         signal: abortController.signal,
       })
 
@@ -815,6 +914,18 @@ export function TestPanel({
             <XCircle className="h-4 w-4" />
             Stop Tests
           </button>
+        ) : playwrightUI.status === 'running' ? (
+          <button
+            onClick={stopPlaywrightUI}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md",
+              "bg-purple-500/10 text-purple-600 dark:text-purple-400",
+              "hover:bg-purple-500/20 transition-colors"
+            )}
+          >
+            <Square className="h-4 w-4" />
+            Close UI Mode
+          </button>
         ) : (
           <>
             <button
@@ -829,16 +940,23 @@ export function TestPanel({
               Run Tests
             </button>
             <button
-              onClick={() => runTests('playwright-test-headed', 'Run Tests (Visible)')}
+              onClick={startPlaywrightUI}
+              disabled={playwrightUI.status === 'starting' || playwrightUI.status === 'stopping'}
               className={cn(
                 "flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-md",
                 "border border-border",
-                "hover:bg-muted transition-colors"
+                "hover:bg-muted transition-colors",
+                "disabled:opacity-50 disabled:cursor-not-allowed",
+                playwrightUI.status === 'starting' && "animate-pulse"
               )}
-              title="Run tests with browser visible"
+              title="Open interactive Playwright UI with visible browser"
             >
-              <Eye className="h-4 w-4" />
-              Headed
+              {playwrightUI.status === 'starting' ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Monitor className="h-4 w-4" />
+              )}
+              {playwrightUI.status === 'starting' ? 'Starting UI...' : 'UI Mode'}
             </button>
             {execution.status === 'error' && execution.commandId && (
               <button
@@ -874,8 +992,8 @@ export function TestPanel({
 
       {/* Main content: Sidebar + Output */}
       <div className="flex flex-1 min-h-0">
-        {/* Test files sidebar */}
-        {showSidebar && (
+        {/* Test files sidebar - hidden in Playwright UI mode since it has its own test list */}
+        {showSidebar && !isPlaywrightUIActive && playwrightUI.status !== 'running' && (
           <div className="w-56 border-r overflow-y-auto bg-muted/10 shrink-0">
             {isLoadingFiles ? (
               <div className="flex items-center justify-center h-20">
@@ -921,17 +1039,6 @@ export function TestPanel({
                           {file.tests.length}
                         </span>
                       </button>
-                      <button
-                        onClick={() => runSpecificTest(file.path, undefined, true)}
-                        disabled={isRunning}
-                        className={cn(
-                          "p-1 text-muted-foreground hover:text-foreground transition-colors",
-                          "disabled:opacity-50 disabled:cursor-not-allowed"
-                        )}
-                        title="Run headed"
-                      >
-                        <Eye className="h-3 w-3" />
-                      </button>
                     </div>
 
                     {/* Individual tests */}
@@ -949,24 +1056,20 @@ export function TestPanel({
                             <button
                               onClick={() => runSpecificTest(file.path, test.title, false, test.line)}
                               disabled={isRunning}
-                              className="flex items-center gap-2 flex-1 min-w-0 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                               title={`Run: ${test.fullTitle}`}
                             >
-                              <Play className="h-2.5 w-2.5 shrink-0" />
-                              <span className="truncate">{test.title}</span>
+                              <Play className="h-2.5 w-2.5" />
                             </button>
                             <button
-                              onClick={() => runSpecificTest(file.path, test.title, true, test.line)}
+                              onClick={() => runSpecificTest(file.path, test.title, false, test.line, true)}
                               disabled={isRunning}
-                              className={cn(
-                                "p-0.5 rounded opacity-0 group-hover/test:opacity-100 transition-opacity",
-                                "text-muted-foreground hover:text-foreground",
-                                "disabled:opacity-50 disabled:cursor-not-allowed"
-                              )}
-                              title={`Run headed: ${test.fullTitle}`}
+                              className="p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                              title={`Watch: ${test.fullTitle}`}
                             >
-                              <Eye className="h-2.5 w-2.5" />
+                              <Film className="h-2.5 w-2.5" />
                             </button>
+                            <span className="truncate flex-1 min-w-0">{test.title}</span>
                             {test.line && (
                               <span className="text-[10px] text-muted-foreground/50 shrink-0">
                                 :{test.line}
@@ -1040,104 +1143,200 @@ export function TestPanel({
 
         {/* Output area */}
         <div className="flex-1 flex flex-col min-w-0">
-          <pre
-            ref={outputRef}
-            className={cn(
-              "flex-1 p-4 overflow-auto font-mono text-xs leading-relaxed",
-              "bg-zinc-950 text-zinc-100",
-              "whitespace-pre-wrap break-all"
-            )}
-          >
-            {hasOutput ? (
-              highlightOutput(execution.output, projectId)
-            ) : (
-              <span className="text-zinc-500">
-                {hasTestFiles ? (
-                  <>
-                    Click "Run Tests" to execute all tests, or select a specific test from the sidebar.
-                    {'\n\n'}
-                    Options:{'\n'}
-                    • Run Tests - Execute all tests in headless mode{'\n'}
-                    • Headed - Run with visible browser (useful for debugging){'\n'}
-                    • Click a file - Run all tests in that file{'\n'}
-                    • Click a test - Run just that test{'\n'}
-                    • Retry - Re-run the last test after failures{'\n'}
-                  </>
-                ) : (
-                  <>
-                    No test files found in your project.
-                    {'\n\n'}
-                    To add tests:{'\n'}
-                    • Create a /tests directory{'\n'}
-                    • Add files matching *.test.ts or *.spec.ts{'\n'}
-                    • Use Playwright test framework{'\n'}
-                    {'\n'}
-                    Example: tests/e2e.test.ts
-                  </>
-                )}
-              </span>
-            )}
-            {isRunning && (
-              <span className="inline-flex items-center gap-1 text-blue-400">
-                <Loader2 className="h-3 w-3 animate-spin inline" />
-                {' '}Running...
-              </span>
-            )}
-          </pre>
-
-          {/* Status bar */}
-          {execution.status !== 'idle' && (
-            <div className={cn(
-              "px-4 py-2 text-xs border-t flex items-center justify-between",
-              execution.status === 'running' && "bg-blue-500/10 border-blue-500/20",
-              execution.status === 'success' && "bg-green-500/10 border-green-500/20",
-              execution.status === 'error' && "bg-red-500/10 border-red-500/20"
-            )}>
-              <div className="flex items-center gap-3">
-                <span className={cn(
-                  "font-medium flex items-center gap-1.5",
-                  execution.status === 'running' && "text-blue-600 dark:text-blue-400",
-                  execution.status === 'success' && "text-green-600 dark:text-green-400",
-                  execution.status === 'error' && "text-red-600 dark:text-red-400"
-                )}>
-                  {execution.status === 'running' && (
-                    <>
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      Running tests...
-                    </>
-                  )}
-                  {execution.status === 'success' && (
-                    <>
-                      <CheckCircle2 className="h-3 w-3" />
-                      All tests passed
-                    </>
-                  )}
-                  {execution.status === 'error' && (
-                    <>
-                      <XCircle className="h-3 w-3" />
-                      {testSummary?.failed 
-                        ? `${testSummary.failed} test${testSummary.failed > 1 ? 's' : ''} failed`
-                        : 'Tests failed'
-                      }
-                    </>
-                  )}
+          {/* Playwright UI iframe mode */}
+          {playwrightUI.status === 'running' ? (
+            <div className="flex-1 flex flex-col min-h-0">
+              <iframe
+                src={playwrightUI.url || playwrightUIProxyUrl}
+                className="flex-1 w-full border-0"
+                title="Playwright UI"
+                allow="clipboard-read; clipboard-write"
+              />
+              <div className="px-4 py-2 text-xs border-t flex items-center justify-between bg-purple-500/10 border-purple-500/20">
+                <span className="font-medium text-purple-600 dark:text-purple-400 flex items-center gap-1.5">
+                  <Monitor className="h-3 w-3" />
+                  Playwright UI Mode
                 </span>
-                
-                {/* Summary badges */}
-                {testSummary && execution.status !== 'running' && (
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <span>{testSummary.total} total</span>
-                    {testSummary.duration && (
-                      <span>in {testSummary.duration}</span>
+                <span className="text-muted-foreground text-[10px]">
+                  Interactive test runner with visible browser
+                </span>
+              </div>
+            </div>
+          ) : playwrightUI.status === 'starting' ? (
+            <div className="flex-1 flex items-center justify-center bg-zinc-950">
+              <div className="flex flex-col items-center gap-4">
+                <Loader2 className="h-8 w-8 animate-spin text-purple-400" />
+                <div className="text-center">
+                  <p className="text-sm font-medium text-zinc-200">Starting Playwright UI...</p>
+                  <p className="text-xs text-zinc-500 mt-1">This may take a few seconds on first launch</p>
+                </div>
+              </div>
+            </div>
+          ) : playwrightUI.status === 'error' ? (
+            <div className="flex-1 flex items-center justify-center bg-zinc-950">
+              <div className="flex flex-col items-center gap-4">
+                <XCircle className="h-8 w-8 text-red-400" />
+                <div className="text-center">
+                  <p className="text-sm font-medium text-zinc-200">Failed to start Playwright UI</p>
+                  <p className="text-xs text-red-400 mt-1">{playwrightUI.error}</p>
+                  <button
+                    onClick={startPlaywrightUI}
+                    className={cn(
+                      "mt-3 flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md",
+                      "border border-border hover:bg-muted transition-colors"
+                    )}
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    Retry
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : execution.watch && execution.status !== 'idle' ? (
+            <>
+              {/* Watch mode: show only video player(s) */}
+              <div className="flex-1 flex flex-col items-center justify-center bg-zinc-950 p-6 overflow-auto">
+                {execution.status === 'running' ? (
+                  <div className="flex flex-col items-center gap-4">
+                    <Loader2 className="h-8 w-8 animate-spin text-blue-400" />
+                    <div className="text-center">
+                      <p className="text-sm font-medium text-zinc-200">Recording test...</p>
+                      <p className="text-xs text-zinc-500 mt-1">{execution.label}</p>
+                    </div>
+                  </div>
+                ) : (() => {
+                  // Extract video paths from output
+                  const videoUrls = (execution.output.match(/test-results\/\S+\.webm/g) || [])
+                    .map(p => `/api/projects/${projectId}/files/${p}`)
+                  return videoUrls.length > 0 ? (
+                    <div className="w-full max-w-2xl space-y-4">
+                      {videoUrls.map((url, i) => (
+                        <div key={i} className="rounded-lg overflow-hidden border border-zinc-700">
+                          <video
+                            src={url}
+                            controls
+                            autoPlay
+                            muted
+                            playsInline
+                            className="w-full"
+                          />
+                        </div>
+                      ))}
+                      <p className="text-center text-xs text-zinc-500">{execution.label}</p>
+                    </div>
+                  ) : (
+                    <div className="text-center">
+                      <p className="text-sm text-zinc-400">No video recorded</p>
+                      <p className="text-xs text-zinc-600 mt-1">
+                        The project may need a playwright.watch.config.ts file
+                      </p>
+                    </div>
+                  )
+                })()}
+              </div>
+            </>
+          ) : (
+            <>
+              <pre
+                ref={outputRef}
+                className={cn(
+                  "flex-1 p-4 overflow-auto font-mono text-xs leading-relaxed",
+                  "bg-zinc-950 text-zinc-100",
+                  "whitespace-pre-wrap break-all"
+                )}
+              >
+                {hasOutput ? (
+                  highlightOutput(execution.output, projectId)
+                ) : (
+                  <span className="text-zinc-500">
+                    {hasTestFiles ? (
+                      <>
+                        Click "Run Tests" to execute all tests, or select a specific test from the sidebar.
+                        {'\n\n'}
+                        Options:{'\n'}
+                        • Run Tests - Execute all tests in headless mode{'\n'}
+                        • UI Mode - Open interactive Playwright UI with visible browser{'\n'}
+                        • Click a file - Run all tests in that file{'\n'}
+                        • Click a test - Run just that test{'\n'}
+                        • Retry - Re-run the last test after failures{'\n'}
+                      </>
+                    ) : (
+                      <>
+                        No test files found in your project.
+                        {'\n\n'}
+                        To add tests:{'\n'}
+                        • Create a /tests directory{'\n'}
+                        • Add files matching *.test.ts or *.spec.ts{'\n'}
+                        • Use Playwright test framework{'\n'}
+                        {'\n'}
+                        Example: tests/e2e.test.ts
+                      </>
+                    )}
+                  </span>
+                )}
+                {isRunning && (
+                  <span className="inline-flex items-center gap-1 text-blue-400">
+                    <Loader2 className="h-3 w-3 animate-spin inline" />
+                    {' '}Running...
+                  </span>
+                )}
+              </pre>
+
+              {/* Status bar */}
+              {execution.status !== 'idle' && (
+                <div className={cn(
+                  "px-4 py-2 text-xs border-t flex items-center justify-between",
+                  execution.status === 'running' && "bg-blue-500/10 border-blue-500/20",
+                  execution.status === 'success' && "bg-green-500/10 border-green-500/20",
+                  execution.status === 'error' && "bg-red-500/10 border-red-500/20"
+                )}>
+                  <div className="flex items-center gap-3">
+                    <span className={cn(
+                      "font-medium flex items-center gap-1.5",
+                      execution.status === 'running' && "text-blue-600 dark:text-blue-400",
+                      execution.status === 'success' && "text-green-600 dark:text-green-400",
+                      execution.status === 'error' && "text-red-600 dark:text-red-400"
+                    )}>
+                      {execution.status === 'running' && (
+                        <>
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Running tests...
+                        </>
+                      )}
+                      {execution.status === 'success' && (
+                        <>
+                          <CheckCircle2 className="h-3 w-3" />
+                          All tests passed
+                        </>
+                      )}
+                      {execution.status === 'error' && (
+                        <>
+                          <XCircle className="h-3 w-3" />
+                          {testSummary?.failed 
+                            ? `${testSummary.failed} test${testSummary.failed > 1 ? 's' : ''} failed`
+                            : 'Tests failed'
+                          }
+                        </>
+                      )}
+                    </span>
+                    
+                    {/* Summary badges */}
+                    {testSummary && execution.status !== 'running' && (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <span>{testSummary.total} total</span>
+                        {testSummary.duration && (
+                          <span>in {testSummary.duration}</span>
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
-              </div>
-              
-              <span className="text-muted-foreground">
-                {execution.label}
-              </span>
-            </div>
+                  
+                  <span className="text-muted-foreground">
+                    {execution.label}
+                  </span>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

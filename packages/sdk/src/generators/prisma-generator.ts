@@ -21,6 +21,7 @@ import { generateAuthStore, getUserModel, hasUserModel } from './auth-store-gene
 import { generateDocs } from './docs-generator'
 import { generateDocsSiteScaffold, generateDocsTsConfig } from './docs-site-generator'
 import { generateAdminRoutes } from './admin-routes-generator'
+import { generateTests } from './tests-generator'
 
 // ============================================================================
 // Types
@@ -30,7 +31,7 @@ export interface OutputConfig {
   /** Output directory */
   dir: string
   /** What to generate */
-  generate: ('routes' | 'hooks' | 'types' | 'stores' | 'mst' | 'server' | 'db' | 'api-client' | 'auth' | 'docs' | 'admin-routes')[]
+  generate: ('routes' | 'hooks' | 'types' | 'stores' | 'mst' | 'server' | 'db' | 'api-client' | 'auth' | 'docs' | 'admin-routes' | 'tests')[]
   /** Generate per-model files (default: true) */
   perModel?: boolean
   /** File extension for generated files: 'ts' or 'tsx' (default: 'tsx') */
@@ -422,6 +423,16 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
         files.push({
           path: `${dir}/${adminFile.fileName}`,
           content: adminFile.code,
+        })
+      }
+
+      // Generate Playwright E2E tests (always regenerated, coexists with user tests)
+      if (output.generate.includes('tests')) {
+        const testFile = generateTests(models, enums)
+        files.push({
+          path: `${dir}/tests/${testFile.fileName}`,
+          content: testFile.content,
+          // Always regenerate -- this is the "generated" test file
         })
       }
     }

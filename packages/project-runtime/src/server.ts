@@ -312,6 +312,9 @@ function copyTemplate(templateName: string, projectName: string): { ok: boolean;
     // Sanitize .env file to remove DATABASE_URL (K8s provides it via env var)
     sanitizeEnvFile(PROJECT_DIR)
 
+    // Run project generate so generated files (e.g. tests/e2e.generated.test.ts) exist in the code tab
+    runProjectGenerateAfterCopy(PROJECT_DIR)
+
     return {
       ok: true,
       message: hasArchive 
@@ -321,6 +324,47 @@ function copyTemplate(templateName: string, projectName: string): { ok: boolean;
     }
   } catch (error: any) {
     return { ok: false, error: error.message || 'Failed to copy template' }
+  }
+}
+
+/**
+ * After template copy, run the project's generate script so that generated files
+ * (e.g. tests/e2e.generated.test.ts) exist. Non-fatal: logs and continues on failure.
+ */
+function runProjectGenerateAfterCopy(projectDir: string): void {
+  try {
+    const pkgPath = join(projectDir, 'package.json')
+    if (!existsSync(pkgPath)) return
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    if (!pkg.scripts?.generate) return
+
+    const nodeModulesDir = join(projectDir, 'node_modules')
+    if (!existsSync(nodeModulesDir)) {
+      console.log('[project-runtime] Running bun install before generate...')
+      const installResult = Bun.spawnSync(['bun', 'install'], {
+        cwd: projectDir,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      if (installResult.exitCode !== 0) {
+        console.warn('[project-runtime] bun install failed, skipping generate')
+        return
+      }
+    }
+
+    console.log('[project-runtime] Running bun run generate (e.g. e2e.generated.test.ts)...')
+    const genResult = Bun.spawnSync(['bun', 'run', 'generate'], {
+      cwd: projectDir,
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    if (genResult.exitCode === 0) {
+      console.log('[project-runtime] Generate completed')
+    } else {
+      console.warn('[project-runtime] Generate failed (exit code', genResult.exitCode, '), continuing')
+    }
+  } catch (err: any) {
+    console.warn('[project-runtime] runProjectGenerateAfterCopy:', err.message)
   }
 }
 
@@ -4971,6 +5015,7 @@ app.post('/tests/run', async (c) => {
     testName?: string
     line?: number
     headed?: boolean
+    watch?: boolean
     reporter?: 'list' | 'json' | 'line'
   } = {}
   
@@ -4980,7 +5025,7 @@ app.post('/tests/run', async (c) => {
     // Empty body is fine, use defaults
   }
 
-  const { file, testName, line, headed, reporter = 'list' } = body
+  const { file, testName, line, headed, watch, reporter = 'list' } = body
 
   // Build command
   let command = 'bunx playwright test'
@@ -5002,6 +5047,11 @@ app.post('/tests/run', async (c) => {
   // Add headed mode
   if (headed) {
     command += ' --headed'
+  }
+
+  // Watch mode: use the watch config for video recording + slowMo
+  if (watch && existsSync(join(PROJECT_DIR, 'playwright.watch.config.ts'))) {
+    command += ' --config playwright.watch.config.ts'
   }
   
   // Add reporter
@@ -5114,6 +5164,260 @@ app.post('/tests/run', async (c) => {
       'X-Content-Type-Options': 'nosniff',
     },
   })
+})
+
+// =============================================================================
+// Playwright UI Mode - Interactive test runner with visible browser in iframe
+// =============================================================================
+
+const PLAYWRIGHT_UI_PORT = 9323
+let playwrightUIProcess: ReturnType<typeof Bun.spawn> | null = null
+let playwrightUIStatus: 'idle' | 'starting' | 'running' | 'error' = 'idle'
+let playwrightUIError: string | null = null
+
+/**
+ * POST /tests/ui/start - Start Playwright UI mode
+ *
+ * Launches `bunx playwright test --ui` on a dedicated port.
+ * The UI is then accessible via the /tests/ui/app/* proxy route.
+ */
+app.post('/tests/ui/start', async (c) => {
+  console.log(`[project-runtime] Starting Playwright UI for project ${PROJECT_ID}`)
+
+  // If already running, return current status
+  if (playwrightUIProcess && playwrightUIStatus === 'running') {
+    return c.json({
+      status: 'running',
+      port: PLAYWRIGHT_UI_PORT,
+    })
+  }
+
+  // Kill existing process if in error/starting state
+  if (playwrightUIProcess) {
+    try { playwrightUIProcess.kill() } catch {}
+    playwrightUIProcess = null
+  }
+
+  playwrightUIStatus = 'starting'
+  playwrightUIError = null
+
+  // Ensure dependencies are installed
+  const nodeModulesDir = join(PROJECT_DIR, 'node_modules')
+  if (!existsSync(nodeModulesDir)) {
+    console.log(`[project-runtime] Running bun install before Playwright UI`)
+    const installResult = Bun.spawnSync(['bun', 'install'], {
+      cwd: PROJECT_DIR,
+      env: { ...process.env, CI: 'true' },
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    if (installResult.exitCode !== 0) {
+      playwrightUIStatus = 'error'
+      playwrightUIError = 'bun install failed'
+      return c.json({ status: 'error', error: 'bun install failed' }, 500)
+    }
+  }
+
+  try {
+    const proc = Bun.spawn(
+      ['bunx', 'playwright', 'test', '--ui', `--ui-port=${PLAYWRIGHT_UI_PORT}`, '--ui-host=0.0.0.0'],
+      {
+        cwd: PROJECT_DIR,
+        env: {
+          ...process.env,
+          // Prevent Playwright from auto-opening a browser tab
+          BROWSER: 'none',
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    )
+
+    playwrightUIProcess = proc
+
+    // Monitor stdout for ready signal
+    ;(async () => {
+      const reader = proc.stdout.getReader()
+      const decoder = new TextDecoder()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const text = decoder.decode(value)
+          console.log(`[Playwright UI] ${text.trim()}`)
+          if (text.includes('localhost:') || text.includes('Listening on') || text.includes('ready')) {
+            playwrightUIStatus = 'running'
+          }
+        }
+      } catch { /* stream closed */ }
+    })()
+
+    // Monitor stderr
+    ;(async () => {
+      const reader = proc.stderr.getReader()
+      const decoder = new TextDecoder()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const text = decoder.decode(value)
+          console.error(`[Playwright UI stderr] ${text.trim()}`)
+        }
+      } catch { /* stream closed */ }
+    })()
+
+    // Handle process exit
+    proc.exited.then((code) => {
+      console.log(`[Playwright UI] Process exited with code ${code}`)
+      if (playwrightUIProcess === proc) {
+        playwrightUIProcess = null
+        playwrightUIStatus = code === 0 ? 'idle' : 'error'
+        if (code !== 0) {
+          playwrightUIError = `Process exited with code ${code}`
+        }
+      }
+    })
+
+    // Wait for the UI server to start (up to 8 seconds)
+    const startTime = Date.now()
+    while (Date.now() - startTime < 8000) {
+      if (playwrightUIStatus === 'running') break
+      // Try to connect to check if server is ready
+      try {
+        const probe = await fetch(`http://localhost:${PLAYWRIGHT_UI_PORT}/`, { signal: AbortSignal.timeout(500) })
+        if (probe.ok || probe.status === 200) {
+          playwrightUIStatus = 'running'
+          break
+        }
+      } catch { /* not ready yet */ }
+      await new Promise(r => setTimeout(r, 500))
+    }
+
+    // If still not detected as running but process is alive, assume it's running
+    if (playwrightUIStatus === 'starting' && playwrightUIProcess) {
+      playwrightUIStatus = 'running'
+    }
+
+    return c.json({
+      status: playwrightUIStatus,
+      port: PLAYWRIGHT_UI_PORT,
+      url: `http://localhost:${PLAYWRIGHT_UI_PORT}`,
+    })
+  } catch (err: any) {
+    playwrightUIStatus = 'error'
+    playwrightUIError = err.message
+    return c.json({ status: 'error', error: err.message }, 500)
+  }
+})
+
+/**
+ * GET /tests/ui/status - Get Playwright UI status
+ */
+app.get('/tests/ui/status', (c) => {
+  return c.json({
+    status: playwrightUIStatus,
+    port: playwrightUIStatus === 'running' ? PLAYWRIGHT_UI_PORT : null,
+    error: playwrightUIError,
+  })
+})
+
+/**
+ * POST /tests/ui/stop - Stop Playwright UI
+ */
+app.post('/tests/ui/stop', (c) => {
+  console.log(`[project-runtime] Stopping Playwright UI for project ${PROJECT_ID}`)
+  if (playwrightUIProcess) {
+    try { playwrightUIProcess.kill() } catch {}
+    playwrightUIProcess = null
+  }
+  playwrightUIStatus = 'idle'
+  playwrightUIError = null
+  return c.json({ status: 'stopped' })
+})
+
+/**
+ * Proxy all requests to the Playwright UI server.
+ * The iframe points to /tests/ui/app/ which gets proxied here.
+ */
+app.all('/tests/ui/app/*', async (c) => {
+  if (playwrightUIStatus !== 'running') {
+    return c.json({ error: { code: 'ui_not_running', message: 'Playwright UI is not running' } }, 503)
+  }
+
+  // Strip the proxy prefix to get the actual path
+  const path = c.req.path.replace('/tests/ui/app', '') || '/'
+  const url = new URL(c.req.url)
+  const queryString = url.search || ''
+  const targetUrl = `http://localhost:${PLAYWRIGHT_UI_PORT}${path}${queryString}`
+
+  try {
+    const headers = new Headers()
+    // Copy relevant request headers
+    const reqHeaders = c.req.raw.headers
+    reqHeaders.forEach((value, key) => {
+      const lower = key.toLowerCase()
+      if (!['host', 'connection', 'keep-alive'].includes(lower)) {
+        headers.set(key, value)
+      }
+    })
+
+    const requestInit: RequestInit = {
+      method: c.req.method,
+      headers,
+    }
+
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+      requestInit.body = await c.req.arrayBuffer()
+    }
+
+    const response = await fetch(targetUrl, requestInit)
+
+    const responseHeaders = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+        responseHeaders.set(key, value)
+      }
+    })
+
+    return new Response(response.body, {
+      status: response.status,
+      headers: responseHeaders,
+    })
+  } catch (err: any) {
+    return c.json({
+      error: { code: 'proxy_error', message: err.message || 'Failed to proxy to Playwright UI' }
+    }, 502)
+  }
+})
+
+// Also handle the base route without trailing path
+app.all('/tests/ui/app', async (c) => {
+  if (playwrightUIStatus !== 'running') {
+    return c.json({ error: { code: 'ui_not_running', message: 'Playwright UI is not running' } }, 503)
+  }
+
+  const url = new URL(c.req.url)
+  const queryString = url.search || ''
+  const targetUrl = `http://localhost:${PLAYWRIGHT_UI_PORT}/${queryString}`
+
+  try {
+    const response = await fetch(targetUrl)
+    const responseHeaders = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+        responseHeaders.set(key, value)
+      }
+    })
+
+    return new Response(response.body, {
+      status: response.status,
+      headers: responseHeaders,
+    })
+  } catch (err: any) {
+    return c.json({
+      error: { code: 'proxy_error', message: err.message || 'Failed to proxy to Playwright UI' }
+    }, 502)
+  }
 })
 
 // =============================================================================

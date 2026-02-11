@@ -610,7 +610,9 @@ export function CodeEditorPanel({
       }
 
       setFiles(data.files || [])
-      setExpandedDirs(new Set(['src']))
+      // Expand src and tests by default so test files are visible
+      const hasTests = data.files?.some((f: FileInfo) => f.path.startsWith('tests/'))
+      setExpandedDirs(new Set(hasTests ? ['src', 'tests'] : ['src']))
 
       // Auto-select App.tsx or first file (only on initial load)
       if (autoSelect) {

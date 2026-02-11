@@ -885,7 +885,11 @@ const getAllowedOrigins = (): string[] => {
 // Enable CORS for development and production
 const allowedOrigins = getAllowedOrigins()
 app.use('/*', cors({
-  origin: (origin) => {
+  origin: (origin, c) => {
+    // Allow trace.playwright.dev to access trace/test-results files
+    if (origin === 'https://trace.playwright.dev') {
+      return origin
+    }
     // Allow requests with no origin (like mobile apps or curl)
     if (!origin) return `http://localhost:${VITE_PORT}`
     // In dev mode, allow any localhost origin (for playwright, vite, etc.)
@@ -2026,8 +2030,39 @@ app.get('/api/projects/:projectId/tests/traces', async (c) => {
     }
   }
   
-  // Local development: Return empty for now
-  return c.json({ traces: [] })
+  // Local development: Scan test-results directory for trace files
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const testResultsDir = join(workspacesDir, projectId, 'test-results')
+
+  if (!existsSync(testResultsDir)) {
+    return c.json({ traces: [] })
+  }
+
+  const traces: { name: string; path: string; size: number; modified: string }[] = []
+
+  async function findTraces(dir: string) {
+    try {
+      const entries = await readdir(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          await findTraces(fullPath)
+        } else if (entry.name === 'trace.zip') {
+          const fileStat = await stat(fullPath)
+          const relativePath = fullPath.replace(join(workspacesDir, projectId) + '/', '')
+          traces.push({
+            name: entry.name,
+            path: relativePath,
+            size: fileStat.size,
+            modified: fileStat.mtime.toISOString(),
+          })
+        }
+      }
+    } catch { /* ignore errors */ }
+  }
+
+  await findTraces(testResultsDir)
+  return c.json({ traces })
 })
 
 // CORS headers for trace viewer (trace.playwright.dev)
@@ -2050,7 +2085,7 @@ app.options('/api/projects/:projectId/tests/traces/*', (c) => {
 app.get('/api/projects/:projectId/tests/traces/*', async (c) => {
   const projectId = c.req.param('projectId')
   // Get the trace path from the URL (everything after /tests/traces/)
-  const tracePath = c.req.path.replace(`/api/projects/${projectId}/tests/traces/`, '')
+  const tracePath = decodeURIComponent(c.req.path.replace(`/api/projects/${projectId}/tests/traces/`, ''))
   
   if (isKubernetes()) {
     // In Kubernetes: Proxy to project-runtime pod
@@ -2086,8 +2121,36 @@ app.get('/api/projects/:projectId/tests/traces/*', async (c) => {
     }
   }
   
-  // Local development: Not implemented
-  return c.json({ error: 'Not implemented' }, 501)
+  // Local development: Serve trace file directly with CORS headers
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const fullPath = join(workspacesDir, projectId, tracePath)
+
+  // Security: prevent directory traversal
+  if (tracePath.includes('..') || !tracePath.startsWith('test-results/')) {
+    return c.json({ error: { code: 'invalid_path', message: 'Invalid trace path' } }, 400)
+  }
+
+  if (!existsSync(fullPath)) {
+    return c.json({ error: { code: 'not_found', message: 'Trace file not found' } }, 404)
+  }
+
+  try {
+    const { readFile } = await import('fs/promises')
+    const fileStat = await stat(fullPath)
+    const buffer = await readFile(fullPath)
+    return new Response(buffer, {
+      status: 200,
+      headers: {
+        ...traceViewerCorsHeaders,
+        'Content-Type': 'application/zip',
+        'Content-Length': String(fileStat.size),
+        'Content-Disposition': `inline; filename="trace.zip"`,
+        'Cache-Control': 'no-cache',
+      },
+    })
+  } catch (err: any) {
+    return c.json({ error: { code: 'read_failed', message: err.message } }, 500)
+  }
 })
 
 // Clear all traces
@@ -2123,8 +2186,423 @@ app.delete('/api/projects/:projectId/tests/traces', async (c) => {
     }
   }
   
-  // Local development: Not implemented
-  return c.json({ ok: true, message: 'Not implemented in local mode' })
+  // Local development: Delete test-results directory
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const testResultsDir = join(workspacesDir, projectId, 'test-results')
+
+  if (existsSync(testResultsDir)) {
+    try {
+      const { rm } = await import('fs/promises')
+      await rm(testResultsDir, { recursive: true, force: true })
+    } catch (err: any) {
+      return c.json({ error: { code: 'delete_failed', message: err.message } }, 500)
+    }
+  }
+
+  return c.json({ ok: true })
+})
+
+// =============================================================================
+// Playwright UI Mode - Interactive test runner with visible browser in iframe
+// =============================================================================
+
+// Track Playwright UI processes per project for local dev mode
+const playwrightUIProcesses = new Map<string, {
+  process: ReturnType<typeof import('child_process').spawn>
+  port: number
+  status: 'starting' | 'running' | 'error'
+  error?: string
+}>()
+
+const PLAYWRIGHT_UI_BASE_PORT = 9323
+
+function getPlaywrightUIPort(projectId: string): number {
+  // Use a consistent port per project (hash-based offset to avoid collisions)
+  const existing = playwrightUIProcesses.get(projectId)
+  if (existing) return existing.port
+  // Simple approach: use base port + offset based on active count
+  return PLAYWRIGHT_UI_BASE_PORT + playwrightUIProcesses.size
+}
+
+// Start Playwright UI
+app.post('/api/projects/:projectId/tests/ui/start', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/tests/ui/start`
+
+      console.log(`[TestsUIProxy] Proxying UI start to ${targetUrl}`)
+
+      const response = await fetch(targetUrl, { method: 'POST' })
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error(`[TestsUIProxy] Error proxying UI start:`, error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
+      }, 502)
+    }
+  }
+
+  // Local development mode
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const projectDir = join(workspacesDir, projectId)
+
+  if (!existsSync(projectDir)) {
+    return c.json({ error: { code: 'project_not_found', message: 'Project not found' } }, 404)
+  }
+
+  // Check if already running
+  const existing = playwrightUIProcesses.get(projectId)
+  if (existing && existing.status === 'running') {
+    return c.json({
+      status: 'running',
+      port: existing.port,
+    })
+  }
+
+  // Kill existing process if in error state
+  if (existing) {
+    try { existing.process.kill() } catch {}
+    playwrightUIProcesses.delete(projectId)
+  }
+
+  const port = getPlaywrightUIPort(projectId)
+
+  try {
+    // Ensure dependencies are installed
+    const nodeModulesDir = join(projectDir, 'node_modules')
+    if (!existsSync(nodeModulesDir)) {
+      console.log(`[TestsUI] Running bun install in ${projectDir} before Playwright UI`)
+      const { execSync } = await import('child_process')
+      execSync('bun install', { cwd: projectDir, stdio: 'pipe', timeout: 120000 })
+    }
+
+    const { spawn: spawnProcess } = await import('child_process')
+    const child = spawnProcess('bunx', ['playwright', 'test', '--ui', `--ui-port=${port}`, '--ui-host=0.0.0.0'], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        // Prevent Playwright from auto-opening a browser tab.
+        // 'none' tells the `open` npm package to skip.
+        // /usr/bin/true is a fallback: if Playwright uses BROWSER as a command, it runs a no-op.
+        BROWSER: process.platform === 'win32' ? 'echo' : '/usr/bin/true',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+
+    const entry = {
+      process: child,
+      port,
+      status: 'starting' as const,
+    }
+    playwrightUIProcesses.set(projectId, entry)
+
+    // Monitor stdout for ready signal
+    child.stdout?.on('data', (data: Buffer) => {
+      const text = data.toString()
+      console.log(`[TestsUI:${projectId}] ${text.trim()}`)
+      if (text.includes('localhost:') || text.includes('Listening on') || text.includes('ready')) {
+        const e = playwrightUIProcesses.get(projectId)
+        if (e) e.status = 'running'
+      }
+    })
+
+    child.stderr?.on('data', (data: Buffer) => {
+      console.error(`[TestsUI:${projectId} stderr] ${data.toString().trim()}`)
+    })
+
+    child.on('exit', (code) => {
+      console.log(`[TestsUI:${projectId}] Process exited with code ${code}`)
+      playwrightUIProcesses.delete(projectId)
+    })
+
+    child.on('error', (err) => {
+      console.error(`[TestsUI:${projectId}] Process error:`, err)
+      const e = playwrightUIProcesses.get(projectId)
+      if (e) {
+        e.status = 'error'
+        ;(e as any).error = err.message
+      }
+    })
+
+    // Wait for the UI server to start (up to 8 seconds)
+    const startTime = Date.now()
+    while (Date.now() - startTime < 8000) {
+      const e = playwrightUIProcesses.get(projectId)
+      if (e?.status === 'running') break
+      try {
+        const probe = await fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(500) })
+        if (probe.ok) {
+          const e2 = playwrightUIProcesses.get(projectId)
+          if (e2) e2.status = 'running'
+          break
+        }
+      } catch { /* not ready yet */ }
+      await new Promise(r => setTimeout(r, 500))
+    }
+
+    // If still starting but process alive, assume running
+    const final = playwrightUIProcesses.get(projectId)
+    if (final && final.status === 'starting') {
+      final.status = 'running'
+    }
+
+    return c.json({
+      status: final?.status || 'error',
+      port,
+      url: `http://localhost:${port}`,
+    })
+  } catch (err: any) {
+    playwrightUIProcesses.delete(projectId)
+    return c.json({ status: 'error', error: err.message }, 500)
+  }
+})
+
+// Get Playwright UI status
+app.get('/api/projects/:projectId/tests/ui/status', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/tests/ui/status`
+
+      const response = await fetch(targetUrl)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
+      }, 502)
+    }
+  }
+
+  // Local mode
+  const existing = playwrightUIProcesses.get(projectId)
+  return c.json({
+    status: existing?.status || 'idle',
+    port: existing?.status === 'running' ? existing.port : null,
+    error: (existing as any)?.error || null,
+  })
+})
+
+// Stop Playwright UI
+app.post('/api/projects/:projectId/tests/ui/stop', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/tests/ui/stop`
+
+      const response = await fetch(targetUrl, { method: 'POST' })
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
+      }, 502)
+    }
+  }
+
+  // Local mode
+  const existing = playwrightUIProcesses.get(projectId)
+  if (existing) {
+    try { existing.process.kill() } catch {}
+    playwrightUIProcesses.delete(projectId)
+  }
+  return c.json({ status: 'stopped' })
+})
+
+// Proxy Playwright UI content (all methods, all paths)
+app.all('/api/projects/:projectId/tests/ui/app/*', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const path = c.req.path.replace(`/api/projects/${projectId}/tests/ui/app`, '') || '/'
+      const url = new URL(c.req.url)
+      const queryString = url.search || ''
+      const targetUrl = `${podUrl}/tests/ui/app${path}${queryString}`
+
+      console.log(`[TestsUIProxy] Proxying UI request to ${targetUrl}`)
+
+      const headers = new Headers()
+      const contentType = c.req.header('content-type')
+      if (contentType) headers.set('content-type', contentType)
+      const accept = c.req.header('accept')
+      if (accept) headers.set('accept', accept)
+
+      const requestInit: RequestInit = {
+        method: c.req.method,
+        headers,
+      }
+      if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+        requestInit.body = await c.req.arrayBuffer()
+      }
+
+      const response = await fetch(targetUrl, requestInit)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error(`[TestsUIProxy] Error proxying UI content:`, error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
+      }, 502)
+    }
+  }
+
+  // Local mode: proxy directly to the Playwright UI port
+  const existing = playwrightUIProcesses.get(projectId)
+  if (!existing || existing.status !== 'running') {
+    return c.json({ error: { code: 'ui_not_running', message: 'Playwright UI is not running' } }, 503)
+  }
+
+  const path = c.req.path.replace(`/api/projects/${projectId}/tests/ui/app`, '') || '/'
+  const url = new URL(c.req.url)
+  const queryString = url.search || ''
+  const targetUrl = `http://localhost:${existing.port}${path}${queryString}`
+
+  try {
+    const headers = new Headers()
+    const reqHeaders = c.req.raw.headers
+    reqHeaders.forEach((value, key) => {
+      const lower = key.toLowerCase()
+      if (!['host', 'connection', 'keep-alive'].includes(lower)) {
+        headers.set(key, value)
+      }
+    })
+
+    const requestInit: RequestInit = {
+      method: c.req.method,
+      headers,
+    }
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+      requestInit.body = await c.req.arrayBuffer()
+    }
+
+    const response = await fetch(targetUrl, requestInit)
+    const responseHeaders = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+        responseHeaders.set(key, value)
+      }
+    })
+
+    return new Response(response.body, {
+      status: response.status,
+      headers: responseHeaders,
+    })
+  } catch (err: any) {
+    return c.json({
+      error: { code: 'proxy_error', message: err.message || 'Failed to proxy to Playwright UI' }
+    }, 502)
+  }
+})
+
+// Handle the base route without trailing wildcard
+app.all('/api/projects/:projectId/tests/ui/app', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const url = new URL(c.req.url)
+      const queryString = url.search || ''
+      const targetUrl = `${podUrl}/tests/ui/app${queryString}`
+
+      const response = await fetch(targetUrl)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy' }
+      }, 502)
+    }
+  }
+
+  // Local mode
+  const existing = playwrightUIProcesses.get(projectId)
+  if (!existing || existing.status !== 'running') {
+    return c.json({ error: { code: 'ui_not_running', message: 'Playwright UI is not running' } }, 503)
+  }
+
+  const url = new URL(c.req.url)
+  const queryString = url.search || ''
+  const targetUrl = `http://localhost:${existing.port}/${queryString}`
+
+  try {
+    const response = await fetch(targetUrl)
+    const responseHeaders = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+        responseHeaders.set(key, value)
+      }
+    })
+
+    return new Response(response.body, {
+      status: response.status,
+      headers: responseHeaders,
+    })
+  } catch (err: any) {
+    return c.json({
+      error: { code: 'proxy_error', message: err.message || 'Failed to proxy to Playwright UI' }
+    }, 502)
+  }
 })
 
 // =============================================================================

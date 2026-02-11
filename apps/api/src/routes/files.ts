@@ -222,14 +222,27 @@ export function filesRoutes(config: FilesRoutesConfig) {
 
       // Try to list src directory first
       try {
-        files = await listFilesRecursive(srcPath, srcPath)
+        const srcFiles = await listFilesRecursive(srcPath, srcPath)
         // Prefix paths with src/
-        files = files.map(f => ({
+        files = srcFiles.map(f => ({
           ...f,
           path: `src/${f.path}`,
         }))
       } catch {
         // src doesn't exist, try listing from project root
+      }
+
+      // Also list tests directory (Playwright e2e tests)
+      const testsPath = join(projectPath, "tests")
+      try {
+        const testsFiles = await listFilesRecursive(testsPath, testsPath)
+        const testsEntries = testsFiles.map(f => ({
+          ...f,
+          path: `tests/${f.path}`,
+        }))
+        files.push(...testsEntries)
+      } catch {
+        // tests directory doesn't exist, skip
       }
 
       // Also include root config files
@@ -264,6 +277,22 @@ export function filesRoutes(config: FilesRoutesConfig) {
         500
       )
     }
+  })
+
+  /**
+   * OPTIONS /projects/:projectId/files/* - CORS preflight for test-results files
+   * Required for trace.playwright.dev to fetch trace.zip files
+   */
+  router.options("/projects/:projectId/files/*", (c) => {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Range',
+        'Access-Control-Expose-Headers': 'Content-Length, Content-Range',
+      },
+    })
   })
 
   /**
@@ -307,14 +336,19 @@ export function filesRoutes(config: FilesRoutesConfig) {
         if (mimeType) {
           // Serve binary files with correct content type (images, videos, zips)
           const buffer = await readFile(fullPath)
-          return new Response(buffer, {
-            status: 200,
-            headers: {
-              'Content-Type': mimeType,
-              'Content-Length': String(buffer.byteLength),
-              'Cache-Control': 'public, max-age=60',
-            },
-          })
+          const headers: Record<string, string> = {
+            'Content-Type': mimeType,
+            'Content-Length': String(buffer.byteLength),
+            'Cache-Control': 'public, max-age=60',
+          }
+          // Add CORS headers for test-results files so trace.playwright.dev can fetch traces
+          if (filePath.startsWith('test-results/')) {
+            headers['Access-Control-Allow-Origin'] = '*'
+            headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+            headers['Access-Control-Allow-Headers'] = 'Content-Type, Range'
+            headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
+          }
+          return new Response(buffer, { status: 200, headers })
         }
 
         // Text files: return as JSON (existing behavior)
