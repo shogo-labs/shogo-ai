@@ -1191,6 +1191,25 @@ app.post('/api/projects/:projectId/runtime/restart', async (c) => {
   return router.fetch(newReq)
 })
 
+/**
+ * Sanitize raw Knative/Kubernetes status messages for end-user display.
+ * Technical messages (e.g. "Configuration ... does not have any ready Revision")
+ * are replaced with friendly text. Raw messages are still logged server-side.
+ */
+function friendlyRuntimeMessage(raw: string | undefined, fallback: string): string {
+  if (!raw) return fallback
+  // Knative revision not ready yet — most common during cold start
+  if (raw.includes('does not have any ready Revision')) return 'Your project is starting up — this usually takes a few seconds...'
+  // Container still being created
+  if (raw.includes('ContainerCreating') || raw.includes('PodInitializing')) return 'Setting up your project environment...'
+  // Image pull in progress
+  if (raw.includes('ImagePull') || raw.includes('Pulling image')) return 'Preparing your project environment...'
+  // Catch-all for other Knative internals (Revision, Configuration, namespace references)
+  if (raw.includes('Revision') || raw.includes('Configuration "')) return fallback
+  // Message looks safe for users — pass it through
+  return raw
+}
+
 // Get project runtime status
 // This is a lightweight endpoint that doesn't create or wait for pods.
 // Frontend should poll this to check if the pod is ready before making other requests.
@@ -1214,10 +1233,14 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
         })
       } else if (!status.ready) {
         // Pod exists but Knative says it's not ready
+        // Log raw Knative message for debugging, send friendly message to user
+        if (status.message) {
+          console.log(`[Runtime] Raw Knative status for ${projectId}: ${status.message}`)
+        }
         return c.json({
           projectId,
           status: 'starting',
-          message: status.message || 'Project runtime is starting...',
+          message: friendlyRuntimeMessage(status.message, 'Project runtime is starting...'),
           ready: false,
           replicas: status.replicas,
         })
@@ -1251,7 +1274,7 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
       return c.json({
         projectId,
         status: 'error',
-        message: error.message || 'Failed to check project status',
+        message: friendlyRuntimeMessage(error.message, 'Failed to check project status'),
         ready: false,
       }, 500)
     }
