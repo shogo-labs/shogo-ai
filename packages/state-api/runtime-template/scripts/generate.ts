@@ -46,7 +46,7 @@ function generateHooksTemplate(models: PrismaModel[]): string {
     ' * Server Function Hooks',
     ' *',
     ' * Customize CRUD behavior with before/after hooks.',
-    ' * This file is safe to edit - it will not be overwritten by `bun run generate`.',
+    ' * This file is safe to edit - it will not be overwritten by `bunx shogo generate`.',
     ' */',
     '',
     'import type { ServerFunctionHooks } from \'./types\'',
@@ -77,7 +77,7 @@ function generateIndexFile(): string {
   return `/**
  * Generated Shogo SDK Code
  *
- * DO NOT EDIT - regenerate with \`bun run generate\`
+ * DO NOT EDIT - regenerate with \`bunx shogo generate\`
  */
 
 // Types
@@ -97,6 +97,50 @@ export { createAllRoutes } from './routes'
 `
 }
 
+/**
+ * Pause the Vite build watcher before writing generated files.
+ * This prevents the watcher from crashing due to rapid file writes.
+ * If the runtime server isn't available (e.g. running locally), this is a no-op.
+ */
+async function pauseWatcher(): Promise<boolean> {
+  const runtimePort = process.env.RUNTIME_PORT || process.env.PORT || '8080'
+  try {
+    const res = await fetch(`http://localhost:${runtimePort}/preview/watch/pause`, { method: 'POST' })
+    if (res.ok) {
+      const data = await res.json() as { paused: boolean }
+      if (data.paused) {
+        console.log('   ⏸️  Paused build watcher')
+        return true
+      }
+    }
+  } catch {
+    // Runtime server not available (local dev, etc.) - that's fine
+  }
+  return false
+}
+
+/**
+ * Resume the Vite build watcher after writing generated files.
+ * This triggers a fresh build and restarts watch mode.
+ */
+async function resumeWatcher(): Promise<void> {
+  const runtimePort = process.env.RUNTIME_PORT || process.env.PORT || '8080'
+  try {
+    console.log('   ▶️  Resuming build watcher...')
+    const res = await fetch(`http://localhost:${runtimePort}/preview/watch/resume`, { method: 'POST' })
+    if (res.ok) {
+      const data = await res.json() as { resumed: boolean; buildSuccess?: boolean; durationMs?: number }
+      if (data.buildSuccess) {
+        console.log(`   ✅ Build complete (${data.durationMs}ms)`)
+      } else {
+        console.log('   ⚠️  Build had errors - check .build.log')
+      }
+    }
+  } catch {
+    // Runtime server not available - that's fine
+  }
+}
+
 async function main() {
   console.log('Regenerating SDK files from schema.prisma...')
 
@@ -108,6 +152,9 @@ async function main() {
   if (!existsSync(OUTPUT_DIR)) {
     mkdirSync(OUTPUT_DIR, { recursive: true })
   }
+
+  // Pause the Vite watcher before writing files to prevent crashes
+  const watcherWasPaused = await pauseWatcher()
 
   try {
     const dmmf = await parsePrismaSchema(SCHEMA_PATH)
@@ -213,10 +260,20 @@ async function main() {
     }
     console.log('   Database schema updated')
 
-    console.log('')
-    console.log('Generation complete! The app will auto-rebuild.')
+    // Resume the watcher (triggers fresh build + restarts watch mode)
+    if (watcherWasPaused) {
+      console.log('')
+      await resumeWatcher()
+    } else {
+      console.log('')
+      console.log('Generation complete! The app will auto-rebuild.')
+    }
 
   } catch (error: any) {
+    // Resume watcher even on failure so it's not stuck paused
+    if (watcherWasPaused) {
+      await resumeWatcher()
+    }
     console.error('Generation failed:', error.message)
     process.exit(1)
   }

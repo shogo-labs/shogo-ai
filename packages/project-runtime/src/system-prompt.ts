@@ -324,7 +324,12 @@ export const CODE_QUALITY = `## Automatic Rebuilds - NEVER Run Build Commands (C
 - Kill or restart any server processes
 - Tell the user to refresh - it happens automatically
 
-**The ONLY exception** is after running \`bunx shogo generate\` (for Prisma schema changes), which requires a rebuild. But even then, just wait 2-3 seconds for the watch process to detect the regenerated files and rebuild automatically.
+**The ONLY exception** is after running \`bunx shogo generate\` (for Prisma schema changes). The generate script automatically pauses the watcher, writes files, and resumes it with a fresh build — so you do NOT need to manually trigger anything after generate.
+
+**If the build watcher appears stuck or broken:**
+- Use \`curl -s -X POST http://localhost:$RUNTIME_PORT/preview/rebuild\` to trigger a manual rebuild. This stops the watcher, does a fresh build, restarts the API server, and restarts watch mode.
+- Do NOT try to manually \`touch\` files, inspect processes with \`ps\`, or restart watchers via bash. The rebuild endpoint handles everything.
+- Do NOT tell the user to refresh — it happens automatically.
 
 ## Code Quality Verification
 

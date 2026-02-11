@@ -2258,6 +2258,125 @@ function stopViteBuildWatch(): void {
 }
 
 /**
+ * Pause/resume watcher API endpoints.
+ * Used by `bunx shogo generate` (scripts/generate.ts) to prevent the watcher
+ * from crashing due to rapid file writes during code generation.
+ * 
+ * Flow: pause → write generated files → resume (triggers fresh build + restart watch)
+ */
+let watcherPausedForGenerate = false
+let watcherPauseTimeout: ReturnType<typeof setTimeout> | null = null
+
+app.post('/preview/watch/pause', async (c) => {
+  if (buildWatchProcess) {
+    console.log('[project-runtime] ⏸️  Pausing watcher for code generation...')
+    stopViteBuildWatch()
+    watcherPausedForGenerate = true
+    
+    // Safety: auto-resume after 60s in case generate crashes without resuming
+    if (watcherPauseTimeout) clearTimeout(watcherPauseTimeout)
+    watcherPauseTimeout = setTimeout(() => {
+      if (watcherPausedForGenerate) {
+        console.log('[project-runtime] ⚠️ Watcher pause timeout - auto-resuming')
+        watcherPausedForGenerate = false
+        startViteBuildWatch()
+      }
+    }, 60000)
+    
+    return c.json({ paused: true })
+  }
+  return c.json({ paused: false, message: 'No watcher running' })
+})
+
+app.post('/preview/watch/resume', async (c) => {
+  if (watcherPauseTimeout) {
+    clearTimeout(watcherPauseTimeout)
+    watcherPauseTimeout = null
+  }
+  watcherPausedForGenerate = false
+  
+  // Reset crash count since this is a controlled restart
+  watchCrashCount = 0
+  lastWatchCrashTime = null
+  
+  console.log('[project-runtime] ▶️  Resuming watcher after code generation...')
+  
+  // Run a fresh build first, then start watch mode
+  try {
+    console.log('[project-runtime] 🔨 Running fresh build after generation...')
+    appendToBuildLog('🔨 Building after code generation...')
+    buildState = 'building'
+    buildStartTime = Date.now()
+    notifyBuildStateChange()
+    
+    const buildProc = Bun.spawnSync(['bun', '--bun', 'vite', 'build'], {
+      cwd: PROJECT_DIR,
+      env: process.env,
+    })
+    
+    const stdout = buildProc.stdout?.toString() || ''
+    const stderr = buildProc.stderr?.toString() || ''
+    if (stdout.trim()) appendToBuildLog(stdout)
+    if (stderr.trim()) appendToBuildLog(`[error] ${stderr}`)
+    
+    const durationMs = Date.now() - (buildStartTime || Date.now())
+    
+    if (buildProc.exitCode === 0) {
+      buildState = 'success'
+      buildDuration = durationMs
+      lastBuildTime = Date.now()
+      recordBuildTime(durationMs)
+      appendToBuildLog(`✅ Build complete (${durationMs}ms)`)
+      console.log(`[project-runtime] ✅ Post-generate build complete (${durationMs}ms)`)
+    } else {
+      buildState = 'error'
+      buildError = stderr || 'Build failed'
+      buildErrorContext = analyzeBuildError(buildError)
+      appendToBuildLog(`❌ Build failed: ${stderr}`)
+      console.error(`[project-runtime] ❌ Post-generate build failed:`, stderr)
+    }
+    notifyBuildStateChange()
+    
+    // Restart the backend server to pick up new generated routes
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const serverPath = existsSync(serverTsxPath) ? serverTsxPath : (existsSync(serverTsPath) ? serverTsPath : null)
+    
+    if (serverPath && serverProcess) {
+      console.log('[project-runtime] 🔄 Restarting backend API server...')
+      serverProcess.kill()
+      serverProcess = null
+      serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(SERVER_PORT) },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      streamProcessOutput(serverProcess, 'api-server')
+    }
+    
+    // Restart watch mode
+    await startViteBuildWatch()
+    
+    // Trigger S3 sync
+    if (s3Sync) {
+      s3Sync.triggerSync()
+    }
+    
+    return c.json({ 
+      resumed: true, 
+      buildSuccess: buildProc.exitCode === 0,
+      durationMs,
+    })
+  } catch (err: any) {
+    console.error('[project-runtime] Error resuming watcher:', err)
+    // Still try to restart watch mode even if build failed
+    await startViteBuildWatch()
+    return c.json({ resumed: true, error: err.message }, 500)
+  }
+})
+
+/**
  * Restart the preview server after template changes.
  * This will:
  * 1. Kill any existing server processes
