@@ -9,7 +9,7 @@ import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
 import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
 import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-provider-claude-code'
 import { createAnthropic } from '@ai-sdk/anthropic'
-import { resolve, join, extname, relative, isAbsolute } from 'path'
+import { resolve, join, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { existsSync, mkdirSync } from 'fs'
@@ -391,85 +391,6 @@ const virtualToolsServer = createSdkMcpServer({
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
 
 /**
- * File extensions to include in the project file list.
- */
-const PROJECT_FILE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.json', '.css', '.html', '.md', '.svg'
-])
-
-/**
- * Directories to exclude from project file listing.
- */
-const EXCLUDED_DIRS = new Set([
-  'node_modules', '.git', 'dist', 'build', '.vite', '.cache', '.claude'
-])
-
-/**
- * Recursively list files in a project directory.
- * Returns a flat list of relative file paths.
- */
-async function listProjectFilesRecursive(
-  dir: string,
-  basePath: string,
-  files: string[] = []
-): Promise<string[]> {
-  try {
-    const entries = await readdir(dir, { withFileTypes: true })
-
-    for (const entry of entries) {
-      const entryPath = join(dir, entry.name)
-      const relativePath = relative(basePath, entryPath)
-
-      if (entry.isDirectory()) {
-        // Skip excluded directories
-        if (EXCLUDED_DIRS.has(entry.name)) {
-          continue
-        }
-        // Recurse into subdirectories
-        await listProjectFilesRecursive(entryPath, basePath, files)
-      } else {
-        const ext = extname(entry.name).toLowerCase()
-        // Only include files with allowed extensions
-        if (PROJECT_FILE_EXTENSIONS.has(ext)) {
-          files.push(relativePath)
-        }
-      }
-    }
-
-    return files
-  } catch (err) {
-    console.error('[getProjectFiles] Error listing directory:', dir, err)
-    return files
-  }
-}
-
-/**
- * Get a formatted list of project files for inclusion in the system prompt.
- * Returns null if the project directory doesn't exist.
- */
-async function getProjectFileList(projectId: string): Promise<string | null> {
-  const projectDir = resolve(WORKSPACES_DIR, projectId)
-
-  try {
-    await stat(projectDir)
-  } catch {
-    return null // Project directory doesn't exist
-  }
-
-  const files = await listProjectFilesRecursive(projectDir, projectDir)
-
-  if (files.length === 0) {
-    return null
-  }
-
-  // Sort files for consistent output
-  files.sort()
-
-  // Format as a simple list
-  return files.map(f => `  ${f}`).join('\n')
-}
-
-/**
  * Type for canUseTool permission result.
  * See: https://docs.anthropic.com/en/docs/claude-code/sdk
  */
@@ -593,8 +514,9 @@ function createProjectScopedClaudeCode(projectId?: string) {
     // Enable streaming input - REQUIRED for hooks to fire
     // See: https://ai-sdk.dev/providers/claude-code (hooks require streaming input)
     streamingInput: 'always',
-    // Enable verbose logging for debugging
-    verbose: true,
+    // perf: Disable verbose logging to reduce I/O overhead in production
+    // Set to true temporarily when debugging Claude Code provider issues
+    verbose: false,
     // Set working directory - project workspace or project root
     cwd,
     // Path restriction for project-scoped sessions (prevents access outside workspace)
@@ -800,8 +722,24 @@ function createProjectScopedClaudeCode(projectId?: string) {
   })
 }
 
+// perf: Cache Claude Code provider instances per projectId to avoid re-creating
+// the provider (and spawning MCP subprocesses) on every /api/chat request.
+// The platform-level instance (no projectId) is always cached as the default.
+const claudeCodeCache = new Map<string, ReturnType<typeof createProjectScopedClaudeCode>>()
+
+function getOrCreateScopedClaudeCode(projectId?: string) {
+  const cacheKey = projectId || '__platform__'
+  let instance = claudeCodeCache.get(cacheKey)
+  if (!instance) {
+    instance = createProjectScopedClaudeCode(projectId)
+    claudeCodeCache.set(cacheKey, instance)
+    console.log(`[ClaudeCode] Cached provider for key: ${cacheKey}`)
+  }
+  return instance
+}
+
 // Default Claude Code instance for platform-level operations (skills, non-project chats)
-const claudeCode = createProjectScopedClaudeCode()
+const claudeCode = getOrCreateScopedClaudeCode()
 
 /**
  * Base system prompt for the Wavesmith app builder assistant.
@@ -2808,10 +2746,9 @@ app.post('/api/chat', async (c) => {
   try {
     const { messages, ccSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
 
-    // Create project-scoped Claude Code instance if projectId is provided
-    // This sets the cwd to the project's workspace directory for file operations
+    // perf: Use cached Claude Code instance instead of creating a new one per request
     const scopedClaudeCode = projectId
-      ? createProjectScopedClaudeCode(projectId)
+      ? getOrCreateScopedClaudeCode(projectId)
       : claudeCode
 
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
@@ -2852,20 +2789,6 @@ app.post('/api/chat', async (c) => {
     // Build dynamic system prompt based on agent persona (env var)
     const agentPersona = process.env.SHOGO_AGENT as AgentPersona | undefined
     let systemPrompt = buildSystemPrompt(agentPersona)
-
-    // Include project file list in the prompt so agent knows what files exist
-    if (projectId) {
-      const projectFileList = await getProjectFileList(projectId)
-      if (projectFileList) {
-        systemPrompt = `${systemPrompt}
-
-**Project Files:**
-You are working in a project workspace. Here are the files in the project:
-${projectFileList}
-
-Use the Read, Write, and Edit tools to view and modify these files. All file paths are relative to the project root.`
-      }
-    }
 
     // Pass resume parameter if ccSessionId provided (task-cc-api-endpoint)
     // This enables session continuity in Claude Code
