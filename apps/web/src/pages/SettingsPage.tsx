@@ -876,6 +876,31 @@ function PeopleTab() {
     return true
   })
 
+  const handleExportMembers = useCallback(() => {
+    const csvRows: string[] = []
+    csvRows.push("Name,Email,Role,Joined Date")
+
+    filteredMembers.forEach((member) => {
+      const isCurrentUser = member.userId === currentUserId
+      const name = isCurrentUser ? currentUserName : `User ${member.userId.slice(0, 8)}`
+      const email = isCurrentUser ? currentUserEmail : member.userId
+      const role = member.role.charAt(0).toUpperCase() + member.role.slice(1)
+      const joined = format(new Date(member.createdAt), "MMM d, yyyy")
+      csvRows.push(`"${name}","${email}","${role}","${joined}"`)
+    })
+
+    const csvContent = csvRows.join("\n")
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `members-${format(new Date(), "yyyy-MM-dd")}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }, [filteredMembers, currentUserId, currentUserName, currentUserEmail])
+
   const canManageMember = (member: Member): boolean => {
     if (member.userId === currentUserId) return false
     const memberLevel = RoleLevels[member.role] ?? 0
@@ -975,7 +1000,7 @@ function PeopleTab() {
               </DropdownMenuContent>
             </DropdownMenu>
 
-            <Button variant="outline" size="sm" className="h-8 gap-1">
+            <Button variant="outline" size="sm" className="h-8 gap-1" onClick={handleExportMembers}>
               <Download className="h-3.5 w-3.5" />
               Export
             </Button>
