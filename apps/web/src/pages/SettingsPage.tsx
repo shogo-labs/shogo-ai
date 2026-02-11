@@ -8,7 +8,7 @@
  * - Connectors: Connectors, GitHub
  */
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { observer } from "mobx-react-lite"
 import { useNavigate, useSearchParams, useParams } from "react-router-dom"
 import { format } from "date-fns"
@@ -81,6 +81,8 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { UsageTable, type UsageSummaryData, type UsageLogData } from "@/components/admin/analytics/UsageTable"
+import { useUsageLog } from "@/components/admin/hooks/useAdminApi"
+import type { AnalyticsPeriod } from "@/components/admin/analytics/PeriodSelector"
 import { useWorkspaceData } from "@/components/app/workspace"
 import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
@@ -137,56 +139,52 @@ interface ProjectUsageData {
 }
 
 function useProjectUsageBreakdown(workspaceId: string | undefined, period: string) {
-  const [data, setData] = useState<ProjectUsageData[]>([])
-  const [loading, setLoading] = useState(true)
+  // Get projects from SDK domain store (already loaded by useWorkspaceData)
+  const store = useSDKDomain() as IDomainStore
 
-  useEffect(() => {
-    if (!workspaceId) { setLoading(false); return }
-    
-    setLoading(true)
-    
-    // Fetch projects and their usage
-    Promise.all([
-      // Fetch projects
-      fetch(`/api/projects?workspaceId=${workspaceId}`, { credentials: 'include' })
-        .then((r) => r.json())
-        .then((res: { ok: boolean; items?: Array<{ id: string; name: string }> }) => res.items || []),
-      // Fetch usage events for the period
-      fetch(`/api/workspaces/${workspaceId}/analytics/usage-log?period=${period}&limit=1000`, { credentials: 'include' })
-        .then((r) => r.json())
-        .then((res: ApiResponse<UsageLogData>) => res.data?.entries || [])
-    ])
-      .then(([projects, usageEvents]) => {
-        // Aggregate AI credits by project
-        const projectCreditsMap = new Map<string, number>()
-        
-        // Initialize all projects with 0 credits
-        projects.forEach((project: { id: string; name: string }) => {
-          projectCreditsMap.set(project.id, 0)
-        })
-        
-        // Sum creditCost from usage events per project
-        usageEvents.forEach((event: any) => {
-          if (event.projectId) {
-            const existing = projectCreditsMap.get(event.projectId) || 0
-            projectCreditsMap.set(event.projectId, existing + (event.creditCost || 0))
-          }
-        })
-        
-        // Convert to array format
-        const result: ProjectUsageData[] = projects.map((project: { id: string; name: string }) => ({
-          projectId: project.id,
-          projectName: project.name,
-          aiCredits: projectCreditsMap.get(project.id) || 0,
-        }))
-        
-        setData(result)
-        setLoading(false)
-      })
-      .catch(() => {
-        setLoading(false)
-      })
-  }, [workspaceId, period])
+  // Fetch usage events via the centralized useUsageLog hook
+  const basePath = workspaceId ? `/api/workspaces/${workspaceId}` : ''
+  const { data: usageLogData, loading: usageLoading } = useUsageLog(
+    period as AnalyticsPeriod,
+    1,
+    basePath,
+    1000
+  )
+
+  // Derive project usage breakdown from SDK store + usage log data
+  const projects = workspaceId && store?.projectCollection
+    ? store.projectCollection.all.filter((p: any) => p.workspaceId === workspaceId)
+    : []
+
+  const data: ProjectUsageData[] = useMemo(() => {
+    if (!projects.length) return []
+
+    // Aggregate AI credits by project
+    const projectCreditsMap = new Map<string, number>()
+
+    // Initialize all projects with 0 credits
+    projects.forEach((project: any) => {
+      projectCreditsMap.set(project.id, 0)
+    })
+
+    // Sum creditCost from usage events per project
+    const entries = usageLogData?.entries || []
+    entries.forEach((event: any) => {
+      if (event.projectId) {
+        const existing = projectCreditsMap.get(event.projectId) || 0
+        projectCreditsMap.set(event.projectId, existing + (event.creditCost || 0))
+      }
+    })
+
+    // Convert to array format
+    return projects.map((project: any) => ({
+      projectId: project.id,
+      projectName: project.name,
+      aiCredits: projectCreditsMap.get(project.id) || 0,
+    }))
+  }, [projects, usageLogData])
+
+  const loading = usageLoading
 
   return { data, loading }
 }
