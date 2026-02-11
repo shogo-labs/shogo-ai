@@ -1540,12 +1540,12 @@ function analyzeBuildError(errorLine: string): BuildErrorContext {
     rootCause = 'Prisma schema out of sync with generated files'
     detectedIssues.push({
       type: 'schema_sync',
-      suggestion: 'Run `bun run generate` to regenerate types from schema.prisma'
+      suggestion: 'Run `bunx shogo generate` to regenerate types from schema.prisma'
     })
     recoverySteps.push(
       'STEP 1: Read the full build log: `cat .build.log`',
       'STEP 2: Check if schema was recently modified: `cat prisma/schema.prisma`',
-      'STEP 3: Regenerate all SDK files: `bun run generate`',
+      'STEP 3: Regenerate all SDK files: `bunx shogo generate`',
       'STEP 4: Wait for automatic rebuild and verify success'
     )
   }

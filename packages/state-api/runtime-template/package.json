@@ -10,7 +10,7 @@
     "dev:client": "vite",
     "build": "vite build",
     "start": "bun run server.tsx",
-    "generate": "bun scripts/generate.ts",
+    "generate": "bunx shogo generate",
     "db:generate": "bunx --bun prisma generate",
     "db:push": "bunx --bun prisma db push",
     "db:reset": "bunx --bun prisma db push --force-reset --accept-data-loss",
