@@ -194,12 +194,13 @@ export function useUsageSummary(period: AnalyticsPeriod = '30d', basePath: strin
 export function useUsageLog(
   period: AnalyticsPeriod = '30d',
   page: number = 1,
-  basePath: string = API_BASE
+  basePath: string = API_BASE,
+  limit: number = 50
 ) {
   return useScopedFetch<UsageLogData>(`${basePath}/analytics/usage-log`, {
     period,
     page: String(page),
-    limit: '50',
+    limit: String(limit),
   })
 }
 
