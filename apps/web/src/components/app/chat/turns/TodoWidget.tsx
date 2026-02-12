@@ -55,28 +55,69 @@ export interface TodoWidgetProps {
 // Helper Functions
 // ============================================================
 
-/**
- * Validate a todo item has required fields
- */
-function isValidTodoItem(item: unknown): item is TodoItem {
-  if (!item || typeof item !== "object") return false
-  const t = item as Record<string, unknown>
-  return (
-    typeof t.id === "string" &&
-    typeof t.content === "string" &&
-    typeof t.status === "string" &&
-    ["pending", "in_progress", "completed", "cancelled"].includes(t.status as string)
-  )
-}
+// Note: isValidTodoItem was removed - parseTodos now handles validation inline
+// with lenient parsing (id is auto-generated, status defaults to 'pending')
 
 /**
- * Parse todos from tool args with validation
+ * Parse todos from tool args with validation.
+ * Claude Code sends TodoWrite with this structure:
+ *   { todos: [{ content: string, status: string, activeForm?: string }], merge?: boolean }
+ * Note: items may NOT have an 'id' field - we generate one if missing.
+ * During streaming, items may be partially populated (e.g., { content: "Cre" } with no status).
  */
 function parseTodos(args?: Record<string, unknown>): TodoItem[] {
-  if (!args?.todos || !Array.isArray(args.todos)) {
+  if (!args) {
     return []
   }
-  return args.todos.filter(isValidTodoItem)
+
+  // Try to find todos array from various possible structures
+  let todosArray: unknown[] | undefined
+
+  // Standard: args.todos is an array
+  if (Array.isArray(args.todos)) {
+    todosArray = args.todos
+  }
+  // Stringified JSON in args
+  else if (typeof args.todos === 'string') {
+    try {
+      const parsed = JSON.parse(args.todos)
+      if (Array.isArray(parsed)) todosArray = parsed
+    } catch { /* ignore parse errors */ }
+  }
+  // Nested input wrapper (some AI SDK versions)
+  else if (args.input && typeof args.input === 'object') {
+    const input = args.input as Record<string, unknown>
+    if (Array.isArray(input.todos)) {
+      todosArray = input.todos
+    }
+  }
+
+  if (!todosArray || todosArray.length === 0) {
+    return []
+  }
+
+  // Parse items leniently - only require 'content' (the minimum useful field)
+  // Generate 'id' if missing, default 'status' to 'pending' if missing/invalid
+  return todosArray
+    .filter((item): item is Record<string, unknown> => {
+      if (!item || typeof item !== "object") return false
+      const t = item as Record<string, unknown>
+      // Require at least content with a non-empty string value
+      return typeof t.content === "string" && t.content.length > 0
+    })
+    .map((item, index): TodoItem => {
+      const t = item as Record<string, unknown>
+      const rawStatus = typeof t.status === 'string' ? t.status : ''
+      const validStatuses: TodoStatus[] = ["pending", "in_progress", "completed", "cancelled"]
+      
+      return {
+        id: typeof t.id === 'string' ? t.id : `todo-${index}`,
+        content: t.content as string,
+        status: validStatuses.includes(rawStatus as TodoStatus)
+          ? rawStatus as TodoStatus
+          : "pending",
+      }
+    })
 }
 
 /**
@@ -226,7 +267,8 @@ export function TodoWidget({
     return { total, completed, inProgress }
   }, [todos])
   
-  // Streaming state - show loading while args are being populated
+  // Streaming state - show loading only when no content is available yet
+  // Once we have at least one todo item, show the list even while streaming
   const isStreaming = tool.state === "streaming" && todos.length === 0
   
   if (isStreaming) {

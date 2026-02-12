@@ -72,17 +72,31 @@ try {
   process.exit(1)
 }
 
-// Step 2: prisma db push (if DATABASE_URL is set)
-if (process.env.DATABASE_URL) {
+// Step 2: Run project-level generate script if it exists
+// scripts/generate.ts generates SDK files (types, server-functions, domain store,
+// routes, hooks, index) from the Prisma schema AND handles db:push itself.
+// When present, this is the full generation pipeline.
+const generateScript = resolve(cwd, 'scripts/generate.ts')
+if (existsSync(generateScript)) {
   try {
-    console.log('[shogo] Step 2/2: prisma db push')
-    execSync('bunx --bun prisma db push --accept-data-loss', { cwd, stdio: 'inherit' })
+    execSync(`bun ${generateScript}`, { cwd, stdio: 'inherit' })
   } catch (err) {
-    console.error('[shogo] prisma db push failed (database may not be ready)')
-    // Don't exit - generation still succeeded
+    console.error('[shogo] SDK generation failed (scripts/generate.ts)')
+    process.exit(1)
   }
 } else {
-  console.log('[shogo] Step 2/2: skipped prisma db push (no DATABASE_URL)')
+  // No project-level script - fall back to prisma db push only
+  if (process.env.DATABASE_URL) {
+    try {
+      console.log('[shogo] Step 2/2: prisma db push')
+      execSync('bunx --bun prisma db push --accept-data-loss', { cwd, stdio: 'inherit' })
+    } catch (err) {
+      console.error('[shogo] prisma db push failed (database may not be ready)')
+      // Don't exit - generation still succeeded
+    }
+  } else {
+    console.log('[shogo] Step 2/2: skipped prisma db push (no DATABASE_URL)')
+  }
 }
 
 console.log('[shogo] Generation complete')

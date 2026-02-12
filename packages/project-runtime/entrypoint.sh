@@ -54,11 +54,28 @@ fi
 # =============================================================================
 # Quick project initialization (just create minimal structure if needed)
 # =============================================================================
+# Uses the bundled runtime-template (single source of truth) which includes:
+# - vite.config.ts (React plugin, tsconfig paths)
+# - tsconfig.json (TypeScript configuration)
+# - server.tsx (Hono API server)
+# - prisma/ (schema + config)
+# - src/ (App.tsx, main.tsx, index.css, lib/db.ts)
+# =============================================================================
+BUNDLED_TEMPLATE="/app/packages/state-api/runtime-template"
+
 if [ ! -f "$PROJECT_DIR/package.json" ]; then
-  log_timing "Creating minimal project structure..."
-  mkdir -p "$PROJECT_DIR/src"
-  
-  cat > "$PROJECT_DIR/package.json" << 'EOF'
+  if [ -d "$BUNDLED_TEMPLATE" ] && [ -f "$BUNDLED_TEMPLATE/package.json" ]; then
+    log_timing "Copying bundled runtime-template to project directory..."
+    mkdir -p "$PROJECT_DIR"
+    cp -r "$BUNDLED_TEMPLATE/"* "$PROJECT_DIR/"
+    # Copy dotfiles separately (cp * doesn't include them)
+    cp "$BUNDLED_TEMPLATE/.gitignore" "$PROJECT_DIR/" 2>/dev/null || true
+    log_timing "Project initialized from bundled template"
+  else
+    log_timing "WARNING: Bundled template not found at $BUNDLED_TEMPLATE, creating minimal fallback..."
+    mkdir -p "$PROJECT_DIR/src"
+    
+    cat > "$PROJECT_DIR/package.json" << 'EOF'
 {
   "name": "project",
   "version": "0.1.0",
@@ -100,18 +117,72 @@ if [ ! -f "$PROJECT_DIR/package.json" ]; then
   }
 }
 EOF
-  
-  cat > "$PROJECT_DIR/src/main.tsx" << 'EOF'
+    
+    cat > "$PROJECT_DIR/vite.config.ts" << 'EOF'
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tsConfigPaths from 'vite-tsconfig-paths'
+
+export default defineConfig({
+  server: {
+    port: 3000,
+    host: '0.0.0.0',
+    cors: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+    },
+  },
+  plugins: [
+    tsConfigPaths({
+      projects: ['./tsconfig.json'],
+    }),
+    react(),
+  ],
+  build: {
+    target: 'esnext',
+    minify: false,
+  },
+})
+EOF
+    
+    cat > "$PROJECT_DIR/tsconfig.json" << 'EOF'
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "paths": {
+      "~/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*", "*.config.ts"]
+}
+EOF
+    
+    cat > "$PROJECT_DIR/src/main.tsx" << 'EOF'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import './index.css'
 
 const root = document.getElementById('root')
 if (root) {
   createRoot(root).render(<App />)
 }
 EOF
-  
-  cat > "$PROJECT_DIR/src/App.tsx" << 'EOF'
+    
+    cat > "$PROJECT_DIR/src/App.tsx" << 'EOF'
 export default function App() {
   return (
     <div style={{ padding: '2rem', fontFamily: 'system-ui' }}>
@@ -121,8 +192,25 @@ export default function App() {
   )
 }
 EOF
-  
-  cat > "$PROJECT_DIR/index.html" << 'EOF'
+
+    cat > "$PROJECT_DIR/src/index.css" << 'EOF'
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.6;
+  color: #333;
+  background-color: #f9fafb;
+}
+EOF
+    
+    cat > "$PROJECT_DIR/index.html" << 'EOF'
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -136,8 +224,9 @@ EOF
   </body>
 </html>
 EOF
-  
-  log_timing "Minimal project created"
+    
+    log_timing "Minimal fallback project created"
+  fi
 fi
 
 # =============================================================================
@@ -297,7 +386,7 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
   PUSH_SUCCESS=false
   
   for i in $(seq 1 $PUSH_RETRIES); do
-    if bunx prisma db push --skip-generate 2>&1; then
+    if bunx prisma db push 2>&1; then
       PUSH_SUCCESS=true
       STEP_END=$(date +%s%3N)
       bg_log "Prisma db push completed (took $((STEP_END - STEP_START))ms)"

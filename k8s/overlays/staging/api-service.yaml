@@ -73,6 +73,12 @@ spec:
               value: "shogo-staging-workspaces"
             - name: PROJECT_RUNTIME_IMAGE
               value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/project-runtime:staging-latest"
+            # S3 configuration for project file persistence
+            # knative-project-manager injects this into project runtime pods
+            - name: S3_WORKSPACES_BUCKET
+              value: "shogo-workspaces-staging"
+            - name: S3_REGION
+              value: "us-east-1"
             # Publishing configuration - namespace and domain for DomainMappings
             # Note: PUBLISH_NAMESPACE must match where the "studio" service lives
             # because DomainMappings must be in the same namespace as their target

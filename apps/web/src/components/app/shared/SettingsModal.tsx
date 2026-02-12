@@ -452,6 +452,31 @@ function PeopleTab() {
     return true
   })
 
+  const handleExportMembers = useCallback(() => {
+    const csvRows: string[] = []
+    csvRows.push("Name,Email,Role,Joined Date")
+
+    filteredMembers.forEach((member) => {
+      const isCurrentUser = member.userId === currentUserId
+      const name = isCurrentUser ? currentUserName : `User ${member.userId.slice(0, 8)}`
+      const email = isCurrentUser ? currentUserEmail : member.userId
+      const role = member.role.charAt(0).toUpperCase() + member.role.slice(1)
+      const joined = format(new Date(member.createdAt), "MMM d, yyyy")
+      csvRows.push(`"${name}","${email}","${role}","${joined}"`)
+    })
+
+    const csvContent = csvRows.join("\n")
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `members-${format(new Date(), "yyyy-MM-dd")}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }, [filteredMembers, currentUserId, currentUserName, currentUserEmail])
+
   // Check if current user can manage a specific member
   const canManageMember = (member: Member): boolean => {
     if (member.userId === currentUserId) return false
@@ -579,7 +604,7 @@ function PeopleTab() {
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              <Button variant="outline" size="sm" className="h-8 gap-1" onClick={handleExport}>
+              <Button variant="outline" size="sm" className="h-8 gap-1" onClick={handleExport} onClick={handleExportMembers}>
                 <Download className="h-3.5 w-3.5" />
                 Export
               </Button>
@@ -754,13 +779,18 @@ function PeopleTab() {
 }
 
 // Billing Tab
-function BillingTab() {
+function BillingTab({ onClose }: { onClose?: () => void }) {
   const navigate = useNavigate()
 
   // Mock data - would come from billing domain
   const planType = "Free"
   const creditsUsed = 0
   const creditsTotal = 5
+
+  const handleNavigateToBilling = () => {
+    onClose?.()
+    navigate("/billing")
+  }
 
   return (
     <div className="space-y-6">
@@ -781,7 +811,7 @@ function BillingTab() {
             <div className="font-medium">You're on {planType} Plan</div>
             <div className="text-sm text-muted-foreground">Upgrade anytime</div>
           </div>
-          <Button className="ml-auto" onClick={() => navigate("/billing")}>
+          <Button className="ml-auto" onClick={handleNavigateToBilling}>
             Manage
           </Button>
         </div>
@@ -802,7 +832,7 @@ function BillingTab() {
       </div>
 
       {/* View plans button */}
-      <Button variant="outline" className="w-full" onClick={() => navigate("/billing")}>
+      <Button variant="outline" className="w-full" onClick={handleNavigateToBilling}>
         View all plans
         <ExternalLink className="h-4 w-4 ml-2" />
       </Button>
@@ -1050,7 +1080,7 @@ export const SettingsModal = observer(function SettingsModal({
           <div className="flex-1 overflow-y-auto p-6">
             {activeTab === "workspace" && <WorkspaceTab onClose={() => onOpenChange(false)} />}
             {activeTab === "people" && <PeopleTab />}
-            {activeTab === "billing" && <BillingTab />}
+            {activeTab === "billing" && <BillingTab onClose={() => onOpenChange(false)} />}
             {activeTab === "account" && <AccountTab />}
             {activeTab === "integrations" && <IntegrationsTab />}
           </div>

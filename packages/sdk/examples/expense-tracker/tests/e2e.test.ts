@@ -35,8 +35,8 @@ test.describe('Expense Tracker - Shogo SDK Example', () => {
     await page.goto(BASE_URL)
     await page.waitForLoadState('networkidle')
     
-    // Should have some attribution text (TanStack/Prisma)
-    const attr = page.getByText(/TanStack|Prisma/i)
+    // Should have some attribution text (Shogo/Prisma)
+    const attr = page.getByText(/Shogo|Prisma/i)
     await expect(attr.first()).toBeVisible({ timeout: 15000 })
   })
 

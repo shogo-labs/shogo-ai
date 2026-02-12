@@ -122,10 +122,19 @@ export function createDomainActions(store: IDomainStore) {
     },
 
     /**
-     * Move a project to a folder
+     * Move a project to a folder (or to root when folderId is null)
      */
     moveProjectToFolder: async (projectId: string, folderId: string | null) => {
-      return store.projectCollection.update(projectId, { folderId })
+      if (folderId) {
+        // Moving to a specific folder - standard optimistic update
+        return store.projectCollection.update(projectId, { folderId })
+      }
+      // Moving to root (remove from folder):
+      // MST models use types.optional(types.string, "") so they can't accept null.
+      // Use direct HTTP call to send null to the API, then reload to sync MST.
+      const env = getEnv<ISDKEnvironment>(store)
+      await env.http.patch(`/api/projects/${projectId}`, { folderId: null })
+      return store.projectCollection.loadById(projectId)
     },
 
     // =========================================================================
@@ -140,11 +149,13 @@ export function createDomainActions(store: IDomainStore) {
       workspaceId: string,
       parentId: string | null
     ) => {
-      return store.folderCollection.create({
-        name,
-        workspaceId,
-        parentId,
-      })
+      // Build input without null values - MST models use types.optional(types.string, "")
+      // for parentId, so null causes MST validation errors during optimistic updates
+      const input: Record<string, any> = { name, workspaceId }
+      if (parentId) {
+        input.parentId = parentId
+      }
+      return store.folderCollection.create(input)
     },
 
     /**
