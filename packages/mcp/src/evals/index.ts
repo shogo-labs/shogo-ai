@@ -186,6 +186,19 @@ export {
   LEVEL_6_BUSINESS_EVALS,
 } from './test-cases-business-user'
 
+// API Client Usage Evals (prefer api.* over raw fetch)
+export {
+  ALL_API_CLIENT_EVALS,
+  API_CLIENT_CRUD_EVALS,
+  API_CLIENT_MIXED_EVALS,
+  EVAL_API_CLIENT_TODO_CRUD,
+  EVAL_API_CLIENT_CRM_MIXED,
+  EVAL_API_CLIENT_ADD_DELETE,
+  EVAL_API_CLIENT_EXPENSE,
+  EVAL_API_CLIENT_CUSTOM_ENDPOINT_OK,
+  EVAL_API_CLIENT_INVENTORY,
+} from './test-cases-api-client'
+
 // Runtime Safety Test Cases
 export {
   RUNTIME_SAFETY_EVALS,
