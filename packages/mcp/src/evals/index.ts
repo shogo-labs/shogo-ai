@@ -179,3 +179,10 @@ export {
   LEVEL_5_BUSINESS_EVALS,
   LEVEL_6_BUSINESS_EVALS,
 } from './test-cases-business-user'
+
+// shadcn/UI Component Usage Test Cases
+export {
+  ALL_SHADCN_EVALS,
+  SHADCN_COMPONENT_EVALS,
+  SHADCN_IMPORT_EVALS,
+} from './test-cases-shadcn'
