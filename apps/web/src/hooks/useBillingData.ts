@@ -181,11 +181,19 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     }
   }, [workspaceId, store, isLoadingCreditLedger])
 
-  // Get effective balance (computed view from domain)
+  // Compute effective balance from raw credit ledger fields
   const effectiveBalance = useMemo(() => {
     if (!creditLedger) return undefined
     try {
-      return creditLedger.effectiveBalance
+      const daily = creditLedger.dailyCredits ?? 0
+      const monthly = creditLedger.monthlyCredits ?? 0
+      const rollover = creditLedger.rolloverCredits ?? 0
+      return {
+        dailyCredits: daily,
+        monthlyCredits: monthly,
+        rolloverCredits: rollover,
+        total: daily + monthly + rollover,
+      }
     } catch {
       return undefined
     }

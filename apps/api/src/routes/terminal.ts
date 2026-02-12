@@ -10,7 +10,7 @@
  */
 
 import { Hono } from "hono"
-import { spawn } from "child_process"
+import { spawn, execSync } from "child_process"
 import { existsSync } from "fs"
 import { join } from "path"
 
@@ -220,6 +220,22 @@ export function terminalRoutes(config: TerminalRoutesConfig) {
     }
 
     const timeout = preset.timeout || 60000
+
+    // For Playwright tests, ensure dependencies are installed (workspaces from template may have no node_modules)
+    if (commandId === 'playwright-test' || commandId === 'playwright-test-headed') {
+      const nodeModulesDir = join(projectDir, 'node_modules')
+      if (!existsSync(nodeModulesDir)) {
+        console.log(`[Terminal] Running bun install in ${projectDir} before playwright`)
+        try {
+          execSync('bun install', { cwd: projectDir, stdio: 'pipe', timeout: 120000 })
+        } catch (err: any) {
+          return c.json(
+            { error: { code: 'install_failed', message: err.message || 'bun install failed. Run "bun install" in the project and try again.' } },
+            500
+          )
+        }
+      }
+    }
 
     console.log(`[Terminal] Executing command: ${preset.command} in ${projectDir}`)
 

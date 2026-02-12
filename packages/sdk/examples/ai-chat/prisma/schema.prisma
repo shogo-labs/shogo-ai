@@ -1,5 +1,5 @@
 // Prisma schema for AI Chat
-// Based on Vercel AI Chatbot Drizzle schema
+// Shogo AI Chat schema
 
 generator client {
   provider            = "prisma-client"

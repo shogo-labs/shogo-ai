@@ -226,6 +226,8 @@ export interface RuntimePreviewPanelProps {
   forceRefresh?: number
   /** Whether template copy is in progress - shows animated overlay */
   isTemplateCopying?: boolean
+  /** Chat error from ChatPanel - stops loading animation when project creation fails */
+  chatError?: Error | null
 }
 
 export function RuntimePreviewPanel({
@@ -237,6 +239,7 @@ export function RuntimePreviewPanel({
   onBuildError,
   forceRefresh,
   isTemplateCopying = false,
+  chatError,
 }: RuntimePreviewPanelProps) {
   const [sandboxUrl, setSandboxUrl] = useState<string | null>(null)
   const [sandboxAttributes, setSandboxAttributes] = useState<string>('')
@@ -259,9 +262,13 @@ export function RuntimePreviewPanel({
   const autoRetryTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const statusPollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const buildEventSourceRef = useRef<EventSource | null>(null)
+  // Track build state inside SSE handler via ref (avoids stale closure issues)
+  const buildStateForSSERef = useRef<BuildWatchState['state'] | null>(null)
   // Shared ref to track last refresh time - used by both SSE handler and forceRefresh to prevent double-refreshes
   const lastForceRefreshRef = useRef<number>(0)
   const forceRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Track the last forceRefresh value we processed to prevent re-firing on dependency changes
+  const lastProcessedForceRefreshRef = useRef<number>(0)
 
   /**
    * Poll runtime status to check if pod is ready.
@@ -497,7 +504,10 @@ export function RuntimePreviewPanel({
           
           console.log('[RuntimePreviewPanel] Build state changed:', data.state, data.error ? `(error: ${data.error})` : '')
           
-          const prevState = buildState
+          // Use ref for previous state to avoid stale closure issues
+          // (both 'building' and 'success' events can arrive within one React render)
+          const prevState = buildStateForSSERef.current
+          buildStateForSSERef.current = data.state
           setBuildState(data.state)
           setLastBuildTime(data.lastBuildTime)
           
@@ -515,7 +525,13 @@ export function RuntimePreviewPanel({
             setBuildError(null)
             setBuildErrorContext(null)
             
-            // Throttle: Skip if a refresh happened in the last 2 seconds (forceRefresh may have already triggered)
+            // Cancel any pending forceRefresh fallback timeout — SSE delivered the success event
+            if (forceRefreshTimeoutRef.current) {
+              clearTimeout(forceRefreshTimeoutRef.current)
+              forceRefreshTimeoutRef.current = null
+            }
+            
+            // Throttle: Skip if a refresh happened in the last 2 seconds
             const now = Date.now()
             const timeSinceLastRefresh = now - lastForceRefreshRef.current
             const SSE_THROTTLE_MS = 2000
@@ -580,7 +596,7 @@ export function RuntimePreviewPanel({
     } catch (e) {
       console.error('[RuntimePreviewPanel] Failed to subscribe to build events:', e)
     }
-  }, [sandboxUrl, buildState])
+  }, [sandboxUrl])
 
   /**
    * Unsubscribe from build events
@@ -732,17 +748,30 @@ export function RuntimePreviewPanel({
     }
   }, [isRebuilding])
 
-  // Force refresh handler - backup mechanism when SSE fails
-  // Parent component (ProjectLayout) increments forceRefresh when AI modifies files
-  // Throttled to prevent excessive refreshes that cause flickering (refs defined at top of component)
+  // Force refresh handler - refreshes preview when AI modifies files.
+  // Parent component (ProjectLayout) increments forceRefresh when onFilesChanged fires.
+  // 
+  // IMPORTANT: onFilesChanged fires at the END of the AI's full response (not per-tool-call),
+  // so by the time this triggers, the build/HMR has likely already completed.
+  // In local dev: Vite HMR handles updates in real-time (no SSE needed)
+  // In production: SSE build-events handles updates (cancels fallback if it fires first)
+  //
+  // NOTE: This effect ONLY depends on [forceRefresh, sandboxUrl]. We deliberately exclude
+  // iframeLoaded and buildState to prevent a continuous refresh loop where dependency changes
+  // re-trigger the effect even though forceRefresh hasn't changed.
   useEffect(() => {
     // Skip initial render (forceRefresh starts at 0)
     if (!forceRefresh || forceRefresh === 0) return
     
-    // Throttle: ignore if a refresh happened in the last 3 seconds
+    // Skip if we already processed this forceRefresh value
+    // This prevents re-firing when other state (iframeLoaded, buildState) changes
+    if (forceRefresh === lastProcessedForceRefreshRef.current) return
+    lastProcessedForceRefreshRef.current = forceRefresh
+    
+    // Throttle: ignore if a refresh happened in the last 2 seconds
     const now = Date.now()
     const timeSinceLastRefresh = now - lastForceRefreshRef.current
-    const THROTTLE_MS = 3000 // 3 second throttle
+    const THROTTLE_MS = 2000
     
     console.log('[RuntimePreviewPanel] 📥 FORCE_REFRESH received:', {
       forceRefresh,
@@ -750,7 +779,6 @@ export function RuntimePreviewPanel({
       throttleMs: THROTTLE_MS,
       willThrottle: timeSinceLastRefresh < THROTTLE_MS,
       sandboxUrl: !!sandboxUrl,
-      iframeLoaded,
     })
     
     if (timeSinceLastRefresh < THROTTLE_MS) {
@@ -758,37 +786,102 @@ export function RuntimePreviewPanel({
       return
     }
     
-    // Only refresh if we have a sandbox URL and the iframe is loaded
-    if (iframeRef.current && sandboxUrl && iframeLoaded) {
-      console.log('[RuntimePreviewPanel] 🔄 FORCE_REFRESH EXECUTING - refreshing iframe')
-      
+    // Act if we have a sandbox URL (don't require iframeLoaded - first load may not have completed)
+    if (iframeRef.current && sandboxUrl) {
       // Clear any pending refresh timeout
       if (forceRefreshTimeoutRef.current) {
         clearTimeout(forceRefreshTimeoutRef.current)
       }
       
-      setIframeLoaded(false)
+      // Show "rebuilding" overlay briefly while we wait for the refresh
       setIsRebuilding(true)
-      setStatusMessage('Files changed, refreshing preview...')
-      lastForceRefreshRef.current = now
+      setStatusMessage('Updating preview...')
       
-      // Wait a moment for file changes to be picked up by Vite
+      // Trigger a full rebuild on the server since Vite watch mode may not detect
+      // AI-written file changes reliably. The SSE handler will pick up the build
+      // completion and refresh the iframe, but we also set a fallback timeout.
+      const url = new URL(sandboxUrl)
+      const baseUrl = `${url.protocol}//${url.host}`
+      fetch(`${baseUrl}/preview/rebuild`, { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            console.log('[RuntimePreviewPanel] 🔄 FORCE_REFRESH rebuild succeeded, SSE will refresh iframe')
+          } else {
+            console.warn('[RuntimePreviewPanel] ⚠️ FORCE_REFRESH rebuild failed:', data.error)
+            // Rebuild failed, but SSE may not fire success - fall back to direct refresh
+            if (iframeRef.current && sandboxUrl) {
+              lastForceRefreshRef.current = Date.now()
+              setIframeLoaded(false)
+              const cacheBuster = Date.now()
+              const separator = sandboxUrl.includes('?') ? '&' : '?'
+              iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
+            }
+          }
+        })
+        .catch(err => {
+          console.error('[RuntimePreviewPanel] ⚠️ FORCE_REFRESH rebuild request failed:', err)
+          // Network error - refresh iframe directly as fallback
+          if (iframeRef.current && sandboxUrl) {
+            lastForceRefreshRef.current = Date.now()
+            setIframeLoaded(false)
+            const cacheBuster = Date.now()
+            const separator = sandboxUrl.includes('?') ? '&' : '?'
+            iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
+          }
+        })
+      
+      // Fallback: if SSE doesn't fire within 10 seconds, refresh iframe directly.
+      // This is a safety net; normally the SSE BUILD_SUCCESS handler refreshes the iframe.
       forceRefreshTimeoutRef.current = setTimeout(() => {
         if (iframeRef.current && sandboxUrl) {
+          console.log('[RuntimePreviewPanel] 🔄 FORCE_REFRESH fallback - refreshing iframe directly')
+          lastForceRefreshRef.current = Date.now()
+          setIframeLoaded(false)
           const cacheBuster = Date.now()
           const separator = sandboxUrl.includes('?') ? '&' : '?'
-          console.log('[RuntimePreviewPanel] 🔄 FORCE_REFRESH setting iframe src with cacheBuster:', cacheBuster)
           iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
         }
-      }, 1000) // 1 second delay to allow Vite to pick up changes
+      }, 10000) // 10 second fallback - normally SSE fires much sooner
     } else {
       console.log('[RuntimePreviewPanel] ⚠️ FORCE_REFRESH skipped - conditions not met:', {
         hasIframeRef: !!iframeRef.current,
         sandboxUrl: !!sandboxUrl,
-        iframeLoaded,
       })
     }
-  }, [forceRefresh, sandboxUrl, iframeLoaded])
+  }, [forceRefresh, sandboxUrl])
+
+  // When template copy completes (isTemplateCopying transitions false → true → false),
+  // trigger an immediate iframe refresh. The template replaced all source files,
+  // so HMR won't help - we need a full reload.
+  const prevIsTemplateCopyingRef = useRef(isTemplateCopying)
+  useEffect(() => {
+    const wasTemplateCopying = prevIsTemplateCopyingRef.current
+    prevIsTemplateCopyingRef.current = isTemplateCopying
+    
+    // Detect transition: was copying → now done
+    if (wasTemplateCopying && !isTemplateCopying && iframeRef.current && sandboxUrl) {
+      console.log('[RuntimePreviewPanel] 🎯 Template copy completed - refreshing iframe after build delay')
+      setIsRebuilding(true)
+      setStatusMessage('Building from template...')
+      
+      // Template copy triggers a full rebuild. Wait a bit for it to complete.
+      // SSE will cancel this if it fires a success event first.
+      if (forceRefreshTimeoutRef.current) {
+        clearTimeout(forceRefreshTimeoutRef.current)
+      }
+      forceRefreshTimeoutRef.current = setTimeout(() => {
+        if (iframeRef.current && sandboxUrl) {
+          console.log('[RuntimePreviewPanel] 🔄 Template copy fallback - refreshing iframe')
+          lastForceRefreshRef.current = Date.now()
+          setIframeLoaded(false)
+          const cacheBuster = Date.now()
+          const separator = sandboxUrl.includes('?') ? '&' : '?'
+          iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
+        }
+      }, 3000) // 3 second delay for template builds
+    }
+  }, [isTemplateCopying, sandboxUrl])
 
   // Cleanup on unmount
   useEffect(() => {
@@ -829,6 +922,38 @@ export function RuntimePreviewPanel({
             </h3>
             <p className="text-sm text-muted-foreground mt-1">
               {error}
+            </p>
+          </div>
+          <button
+            onClick={handleRetry}
+            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Retry
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // If a chat error occurred during project creation, stop the loading animation
+  // and show a user-friendly error state instead of spinning forever
+  if (isLoading && !sandboxUrl && chatError) {
+    return (
+      <div className={cn(
+        "flex flex-col items-center justify-center h-full w-full bg-gradient-to-b from-background to-destructive/5",
+        className
+      )}>
+        <div className="flex flex-col items-center gap-4 max-w-md text-center px-6">
+          <div className="bg-destructive/10 p-4 rounded-full border border-destructive/20">
+            <AlertCircle className="h-10 w-10 text-destructive" />
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-lg font-semibold text-foreground">
+              Environment setup failed
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              There was a problem starting your project. Check the chat panel for details, or try again.
             </p>
           </div>
           <button

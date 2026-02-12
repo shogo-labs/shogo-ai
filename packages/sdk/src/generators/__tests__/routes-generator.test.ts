@@ -90,7 +90,7 @@ describe('Routes Generator', () => {
       it('should define reserved parameters', () => {
         const result = generateModelRoutes(mockProjectModel)
 
-        expect(result!.code).toContain('const reservedParams = ["limit", "offset", "userId", "include", "orderBy"]')
+        expect(result!.code).toContain('const reservedParams = ["limit", "offset", "include", "orderBy"]')
       })
 
       it('should build where clause from query params', () => {
@@ -330,7 +330,7 @@ describe('Routes Generator', () => {
 
       expect(result.code).toContain('/**')
       expect(result.code).toContain('* Called before listing records. Can modify where/include.')
-      expect(result.code).toContain('* Note: Query parameters (except limit, offset, userId, include, orderBy) are automatically')
+      expect(result.code).toContain('* Note: Query parameters (except limit, offset, include, orderBy) are automatically')
       expect(result.code).toContain('* added to the where clause. This hook receives them and can override/extend them.')
       expect(result.code).toContain('*/')
       expect(result.code).toContain('beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any }> | void>')

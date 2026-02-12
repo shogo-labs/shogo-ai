@@ -17,7 +17,6 @@
 import { observer } from "mobx-react-lite";
 import { useEffect, useCallback, useState } from "react";
 import { useDomains } from "@/contexts/DomainProvider";
-import { ComposablePhaseView } from "../../rendering/composition/ComposablePhaseView";
 import { ChatPanel } from "../chat/ChatPanel";
 import {
   ChatSessionPicker,
@@ -162,13 +161,11 @@ export const AdvancedChatLayout = observer(function AdvancedChatLayout() {
 
   return (
     <div className="flex h-full">
-      {/* Dynamic Workspace - ComposablePhaseView renders the workspace Composition */}
+      {/* Dynamic Workspace - placeholder for removed ComposablePhaseView */}
       <div className="flex-1 min-w-0 overflow-hidden">
-        <ComposablePhaseView
-          phaseName={WORKSPACE_COMPOSITION_NAME}
-          feature={testbedSession}
-          className="h-full"
-        />
+        <div className="h-full flex items-center justify-center text-muted-foreground">
+          Workspace view (ComposablePhaseView removed)
+        </div>
       </div>
 
       {/* Chat Panel Container - dynamic width controlled by ChatPanel resize */}

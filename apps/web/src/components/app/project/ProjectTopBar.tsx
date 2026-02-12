@@ -7,7 +7,7 @@
  * - Right: Share (avatar + text), GitHub icon, Upgrade link, Publish button
  */
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { History, Zap, Github, PanelLeftClose, PanelLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useNavigate } from "react-router-dom"
@@ -15,6 +15,7 @@ import { ProjectNameDropdown } from "./ProjectNameDropdown"
 import { PreviewControls, type ViewportSize } from "./PreviewControls"
 // import { ShareDropdown } from "./ShareDropdown"
 import { PublishDropdown, type AccessLevel } from "./PublishDropdown"
+import { GitHubConnectDialog } from "./GitHubConnectDialog"
 import { cn } from "@/lib/utils"
 
 export interface ProjectTopBarProps {
@@ -62,6 +63,7 @@ export interface ProjectTopBarProps {
   currentRoute?: string
   onRouteChange?: (route: string) => void
   onRefresh?: () => void
+  onOpenPreview?: () => void
   onOpenExternal?: () => void
   onOpenCode?: () => void
   className?: string
@@ -101,15 +103,57 @@ export function ProjectTopBar({
   currentRoute = "/",
   onRouteChange,
   onRefresh,
+  onOpenPreview,
   onOpenExternal,
   onOpenCode,
   className,
 }: ProjectTopBarProps) {
   const navigate = useNavigate()
 
+  // GitHub connection state
+  const [githubConnection, setGithubConnection] = useState<{
+    repoFullName: string
+  } | null>(null)
+  const [isLoadingGitHub, setIsLoadingGitHub] = useState(false)
+  const [showGitHubDialog, setShowGitHubDialog] = useState(false)
+
+  // Fetch GitHub connection on mount
+  const fetchGitHubConnection = useCallback(async () => {
+    if (!projectId) return
+
+    setIsLoadingGitHub(true)
+    try {
+      const response = await fetch(`/api/projects/${projectId}/github`)
+      const data = await response.json()
+
+      if (data.ok && data.connected && data.connection) {
+        setGithubConnection({
+          repoFullName: data.connection.repoFullName,
+        })
+      } else {
+        setGithubConnection(null)
+      }
+    } catch {
+      setGithubConnection(null)
+    } finally {
+      setIsLoadingGitHub(false)
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    fetchGitHubConnection()
+  }, [fetchGitHubConnection])
+
   const handleOpenGitHub = useCallback(() => {
-    console.log("Open GitHub")
-  }, [])
+    if (githubConnection) {
+      // Open GitHub repository in new tab
+      const githubUrl = `https://github.com/${githubConnection.repoFullName}`
+      window.open(githubUrl, "_blank")
+    } else {
+      // Open the GitHub connect dialog
+      setShowGitHubDialog(true)
+    }
+  }, [githubConnection])
 
   // Get user initial for avatar
   const initial = userInitial || currentUserName?.charAt(0).toUpperCase() || "U"
@@ -181,6 +225,7 @@ export function ProjectTopBar({
           currentRoute={currentRoute}
           onRouteChange={onRouteChange}
           onRefresh={onRefresh}
+          onOpenPreview={onOpenPreview}
           onOpenExternal={onOpenExternal}
           onOpenCode={onOpenCode}
         />
@@ -199,9 +244,17 @@ export function ProjectTopBar({
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8 text-muted-foreground hover:text-foreground"
+          className={cn(
+            "h-8 w-8 text-muted-foreground hover:text-foreground",
+            githubConnection && "text-foreground"
+          )}
           onClick={handleOpenGitHub}
-          title="View on GitHub"
+          disabled={isLoadingGitHub}
+          title={
+            githubConnection
+              ? `View on GitHub: ${githubConnection.repoFullName}`
+              : "Connect GitHub repository"
+          }
         >
           <Github className="h-4 w-4" />
         </Button>
@@ -233,6 +286,19 @@ export function ProjectTopBar({
           onViewPublished={(url) => window.open(url, '_blank')}
         />
       </div>
+
+      {/* GitHub Connect Dialog */}
+      <GitHubConnectDialog
+        projectId={projectId}
+        open={showGitHubDialog}
+        onOpenChange={setShowGitHubDialog}
+        onConnected={() => {
+          fetchGitHubConnection()
+        }}
+        onDisconnected={() => {
+          setGithubConnection(null)
+        }}
+      />
     </nav>
   )
 }

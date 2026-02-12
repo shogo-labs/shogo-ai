@@ -131,10 +131,11 @@ export function generateMSTModel(
   model: PrismaModel,
   allModels: PrismaModel[],
   enums: PrismaEnum[],
-  includedModelNames?: Set<string>
+  includedModelNames?: Set<string>,
+  fileExtension: 'ts' | 'tsx' = 'tsx'
 ): GeneratedMSTModelFile {
   const modelName = model.name
-  const fileName = `${toFileName(modelName)}.model.tsx`
+  const fileName = `${toFileName(modelName)}.model.${fileExtension}`
   
   const scalarFields = getScalarFields(model)
   const relationFields = getRelationFields(model)
@@ -288,7 +289,8 @@ function getDefaultValue(field: PrismaField): string {
 export function generateMSTModels(
   models: PrismaModel[],
   allModels?: PrismaModel[],
-  enums: PrismaEnum[] = []
+  enums: PrismaEnum[] = [],
+  fileExtension: 'ts' | 'tsx' = 'tsx'
 ): GeneratedMSTModelFile[] {
   // Create a set of included model names for reference filtering
   const includedModelNames = new Set(models.map(m => m.name))
@@ -296,5 +298,5 @@ export function generateMSTModels(
 
   return models
     .filter(model => getIdField(model)) // Only models with @id
-    .map(model => generateMSTModel(model, modelsForReference, enums, includedModelNames))
+    .map(model => generateMSTModel(model, modelsForReference, enums, includedModelNames, fileExtension))
 }

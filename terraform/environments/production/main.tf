@@ -146,6 +146,7 @@ module "ecr" {
     "shogo-mcp",
     "shogo-api",
     "shogo-web",
+    "shogo-docs",
     "project-runtime"
   ]
 }
@@ -183,35 +184,15 @@ module "eks" {
 }
 
 # -----------------------------------------------------------------------------
-# RDS PostgreSQL
+# CloudNativePG Operator (replaces RDS)
 # -----------------------------------------------------------------------------
-module "rds" {
-  source = "../../modules/rds"
+module "cnpg" {
+  source = "../../modules/cnpg"
 
-  identifier = "${var.project_name}-${var.environment}"
+  depends_on = [module.eks]
 
-  vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnet_ids
-  # Include ALL EKS security groups: custom cluster SG, node SG, AND EKS-managed SG
-  security_group_ids = [
-    module.eks.cluster_security_group_id,
-    module.eks.node_security_group_id,
-    module.eks.eks_managed_security_group_id
-  ]
-
-  instance_class    = var.rds_instance_class
-  allocated_storage = var.rds_allocated_storage
-
-  database_name = "shogo"
-  username      = "shogo"
-
-  # Enable encryption
-  storage_encrypted = true
-
-  # Backup configuration
-  backup_retention_period = 7
-  backup_window           = "03:00-04:00"
-  maintenance_window      = "Mon:04:00-Mon:05:00"
+  chart_version = "0.23.0"
+  namespace     = "cnpg-system"
 
   tags = {
     Environment = var.environment
@@ -404,34 +385,197 @@ resource "kubernetes_namespace" "shogo_workspaces" {
   }
 }
 
-# Database credentials secret (shogo-system namespace)
-resource "kubernetes_secret" "postgres_credentials" {
+# CloudNativePG PostgreSQL Clusters
+resource "null_resource" "cnpg_clusters" {
+  depends_on = [
+    module.cnpg,
+    module.eks,
+    kubernetes_namespace.shogo_system,
+  ]
+
+  triggers = {
+    platform_hash = filemd5("${path.module}/../../k8s/cnpg/production/platform-cluster.yaml")
+    projects_hash = filemd5("${path.module}/../../k8s/cnpg/production/projects-cluster.yaml")
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      echo "Waiting for CloudNativePG operator to be ready..."
+      kubectl wait --for=condition=Available deployment -l app.kubernetes.io/name=cloudnative-pg -n cnpg-system --timeout=120s || true
+
+      echo "Deploying CloudNativePG clusters..."
+      kubectl apply -f ${path.module}/../../k8s/cnpg/production/platform-cluster.yaml
+      kubectl apply -f ${path.module}/../../k8s/cnpg/production/projects-cluster.yaml
+
+      echo "Waiting for clusters to be ready..."
+      kubectl wait --for=condition=Ready cluster/platform-pg -n shogo-system --timeout=300s || true
+      kubectl wait --for=condition=Ready cluster/projects-pg -n shogo-system --timeout=300s || true
+
+      echo "CloudNativePG clusters deployed successfully"
+    EOT
+  }
+}
+
+# Database credentials bridge secrets (from CNPG auto-generated secrets)
+resource "null_resource" "postgres_credentials" {
+  depends_on = [
+    kubernetes_namespace.shogo_system,
+    kubernetes_namespace.shogo_workspaces,
+    null_resource.cnpg_clusters,
+  ]
+
+  triggers = {
+    timestamp = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      echo "Waiting for CloudNativePG platform-pg-app secret..."
+      for i in $(seq 1 60); do
+        if kubectl get secret platform-pg-app -n shogo-system > /dev/null 2>&1; then
+          echo "Secret platform-pg-app found"
+          break
+        fi
+        echo "Waiting... (attempt $i)"
+        sleep 5
+      done
+
+      PLATFORM_URI=$(kubectl get secret platform-pg-app -n shogo-system -o jsonpath='{.data.uri}' | base64 -d)
+      
+      if [ -z "$PLATFORM_URI" ]; then
+        echo "ERROR: Could not extract platform-pg URI"
+        exit 1
+      fi
+
+      kubectl create secret generic postgres-credentials \
+        --namespace shogo-system \
+        --from-literal=DATABASE_URL="$PLATFORM_URI" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      kubectl create secret generic postgres-credentials \
+        --namespace shogo-workspaces \
+        --from-literal=DATABASE_URL="$PLATFORM_URI" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      echo "Waiting for CloudNativePG projects-pg-superuser secret..."
+      for i in $(seq 1 60); do
+        if kubectl get secret projects-pg-superuser -n shogo-system > /dev/null 2>&1; then
+          echo "Secret projects-pg-superuser found"
+          break
+        fi
+        sleep 5
+      done
+
+      PROJECTS_ADMIN_URI=$(kubectl get secret projects-pg-superuser -n shogo-system -o jsonpath='{.data.uri}' | base64 -d)
+      
+      if [ -n "$PROJECTS_ADMIN_URI" ]; then
+        kubectl create secret generic projects-db-admin \
+          --namespace shogo-system \
+          --from-literal=PROJECTS_DB_ADMIN_URL="$PROJECTS_ADMIN_URI" \
+          --from-literal=PROJECTS_DB_HOST="projects-pg-rw.shogo-system.svc.cluster.local" \
+          --from-literal=PROJECTS_DB_PORT="5432" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      fi
+
+      echo "All database secrets created successfully"
+    EOT
+  }
+}
+
+# S3 credentials for CloudNativePG backups
+resource "kubernetes_secret" "cnpg_s3_credentials" {
   depends_on = [kubernetes_namespace.shogo_system]
 
   metadata {
-    name      = "postgres-credentials"
+    name      = "cnpg-s3-credentials"
     namespace = "shogo-system"
   }
 
   data = {
-    # Include sslmode=require for AWS RDS SSL connections
-    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}?sslmode=require"
+    ACCESS_KEY_ID     = var.cnpg_s3_access_key_id
+    SECRET_ACCESS_KEY = var.cnpg_s3_secret_access_key
+    REGION            = var.aws_region
   }
 }
 
-# Database credentials secret (shogo-workspaces namespace)
-resource "kubernetes_secret" "postgres_credentials_workspaces" {
-  depends_on = [kubernetes_namespace.shogo_workspaces]
+# S3 bucket for CloudNativePG backups
+resource "aws_s3_bucket" "pg_backups" {
+  bucket = "shogo-pg-backups-${var.environment}"
 
-  metadata {
-    name      = "postgres-credentials"
-    namespace = "shogo-workspaces"
+  tags = {
+    Name        = "shogo-pg-backups-${var.environment}"
+    Environment = var.environment
+    Purpose     = "cloudnativepg-backups"
   }
+}
 
-  data = {
-    # Include sslmode=require for AWS RDS SSL connections
-    DATABASE_URL = "postgres://${module.rds.username}:${module.rds.password}@${module.rds.endpoint}/${module.rds.database_name}?sslmode=require"
+resource "aws_s3_bucket_versioning" "pg_backups" {
+  bucket = aws_s3_bucket.pg_backups.id
+  versioning_configuration {
+    status = "Enabled"
   }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "pg_backups" {
+  bucket = aws_s3_bucket.pg_backups.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "pg_backups" {
+  bucket = aws_s3_bucket.pg_backups.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "pg_backups" {
+  bucket = aws_s3_bucket.pg_backups.id
+  rule {
+    id     = "cleanup-old-backups"
+    status = "Enabled"
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+    expiration {
+      days = 180
+    }
+  }
+}
+
+resource "aws_iam_policy" "cnpg_s3_backup" {
+  name        = "shogo-cnpg-s3-backup-${var.environment}"
+  description = "Allow CloudNativePG pods to read/write S3 backups"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
+        ]
+        Resource = [
+          aws_s3_bucket.pg_backups.arn,
+          "${aws_s3_bucket.pg_backups.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_cnpg_s3_access" {
+  policy_arn = aws_iam_policy.cnpg_s3_backup.arn
+  role       = module.eks.node_role_name
 }
 
 # Redis credentials secret (shogo-system namespace)
@@ -522,8 +666,8 @@ resource "null_resource" "knative_services" {
     module.knative,
     kubernetes_namespace.shogo_system,
     kubernetes_namespace.shogo_workspaces,
-    kubernetes_secret.postgres_credentials,
-    kubernetes_secret.postgres_credentials_workspaces,
+    null_resource.postgres_credentials,
+    null_resource.cnpg_clusters,
     kubernetes_secret.redis_credentials,
     kubernetes_secret.api_secrets
   ]
@@ -643,17 +787,19 @@ resource "null_resource" "knative_services" {
                         name: api-secrets
                         key: ANTHROPIC_API_KEY
                         optional: true
-                  # PostgreSQL sidecar configuration for project runtimes
+                  # Shared PostgreSQL configuration (CloudNativePG)
                   - name: POSTGRES_ENABLED
-                    value: "${var.project_runtime_postgres_enabled}"
-                  - name: POSTGRES_IMAGE
-                    value: "${var.project_runtime_postgres_image}"
-                  - name: POSTGRES_STORAGE_SIZE
-                    value: "${var.project_runtime_postgres_storage_size}"
-                  - name: POSTGRES_MEMORY_LIMIT
-                    value: "${var.project_runtime_postgres_memory_limit}"
-                  - name: POSTGRES_CPU_LIMIT
-                    value: "${var.project_runtime_postgres_cpu_limit}"
+                    value: "true"
+                  - name: PROJECTS_DB_ADMIN_URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: projects-db-admin
+                        key: PROJECTS_DB_ADMIN_URL
+                        optional: true
+                  - name: PROJECTS_DB_HOST
+                    value: "projects-pg-rw.shogo-system.svc.cluster.local"
+                  - name: PROJECTS_DB_PORT
+                    value: "5432"
                   - name: PROJECT_IDLE_TIMEOUT
                     value: "${var.project_runtime_idle_timeout}"
                 resources:

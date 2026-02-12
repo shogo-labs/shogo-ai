@@ -17,6 +17,17 @@ import { observer } from "mobx-react-lite"
 import { useNavigate, Link, useSearchParams } from "react-router-dom"
 import { formatDistanceToNow } from "date-fns"
 import {
+  DndContext,
+  DragOverlay,
+  useDraggable,
+  useDroppable,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragStartEvent,
+  type DragEndEvent,
+} from "@dnd-kit/core"
+import {
   Search,
   Plus,
   Star,
@@ -37,6 +48,7 @@ import {
   ArrowLeft,
   Copy,
   X,
+  GripVertical,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -73,6 +85,7 @@ import { useSDKDomain } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
 import { useSession } from "@/contexts/SessionProvider"
+import { useToast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
 
 // Types
@@ -123,9 +136,91 @@ function getPlaceholderGradient(name: string): string {
   return colors[index]
 }
 
+// ============================================================================
+// Drag & Drop Components
+// ============================================================================
+
+/** Wrapper that makes a project card draggable */
+function DraggableProjectCard({ project, children }: { project: Project; children: React.ReactNode }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: `project-${project.id}`,
+    data: { type: "project", project },
+  })
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ opacity: isDragging ? 0.4 : 1 }}
+      className="relative"
+    >
+      {/* Drag handle overlay - visible on hover */}
+      <div
+        {...listeners}
+        {...attributes}
+        className="absolute top-2 left-2 z-10 p-1 rounded-md bg-black/40 text-white/80 opacity-0 hover:opacity-100 cursor-grab active:cursor-grabbing transition-opacity"
+        title="Drag to move to a folder"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <GripVertical className="h-3.5 w-3.5" />
+      </div>
+      {children}
+    </div>
+  )
+}
+
+/** Wrapper that makes a folder card a drop target */
+function DroppableFolderCard({
+  folder,
+  children,
+}: {
+  folder: Folder
+  children: (isOver: boolean) => React.ReactNode
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `folder-${folder.id}`,
+    data: { type: "folder", folderId: folder.id, folderName: folder.name },
+  })
+
+  return <div ref={setNodeRef}>{children(isOver)}</div>
+}
+
+/** Drop target for moving projects to root (no folder) */
+function DroppableRoot({ children }: { children: (isOver: boolean) => React.ReactNode }) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: "root",
+    data: { type: "root" },
+  })
+
+  return <div ref={setNodeRef}>{children(isOver)}</div>
+}
+
+/** Preview card shown while dragging */
+function DragOverlayCard({ project }: { project: Project }) {
+  return (
+    <div className="w-64 rounded-xl bg-card shadow-2xl border border-border overflow-hidden pointer-events-none">
+      <div className={cn(
+        "aspect-[16/10] bg-gradient-to-br",
+        getPlaceholderGradient(project.name)
+      )}>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <FolderOpen className="h-10 w-10 text-white/30" />
+        </div>
+      </div>
+      <div className="p-3">
+        <p className="font-medium text-sm truncate">{project.name}</p>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// Main Component
+// ============================================================================
+
 export const AllProjectsPage = observer(function AllProjectsPage() {
   const navigate = useNavigate()
   const { data: session } = useSession()
+  const { toast } = useToast()
   const actions = useDomainActions()
   const { currentWorkspace, projects, folders, currentFolder, folderBreadcrumbs, refetchProjects, refetchFolders, starredProjectIds, toggleStarProject: toggleStar } = useWorkspaceData()
   const { folderId, setFolderId, clearFolder } = useWorkspaceNavigation()
@@ -172,6 +267,60 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   // Multi-select mode state
   const [isSelectMode, setIsSelectMode] = useState(false)
   const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set())
+
+  // Drag & drop state
+  const [activeProject, setActiveProject] = useState<Project | null>(null)
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      // Require 8px of movement before starting drag to avoid conflicts with clicks
+      activationConstraint: { distance: 8 },
+    })
+  )
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    const { active } = event
+    if (active.data.current?.type === "project") {
+      setActiveProject(active.data.current.project as Project)
+    }
+  }, [])
+
+  const handleDragEnd = useCallback(async (event: DragEndEvent) => {
+    const { active, over } = event
+    setActiveProject(null)
+
+    if (!over || !active.data.current) return
+
+    const project = active.data.current.project as Project
+    const overData = over.data.current
+
+    if (!overData) return
+
+    // Determine the target folder
+    let newFolderId: string | null = null
+    let folderName = "root"
+    if (overData.type === "folder") {
+      newFolderId = overData.folderId as string
+      folderName = overData.folderName as string
+    }
+    // overData.type === "root" → newFolderId stays null
+
+    // Skip if project is already in the target folder
+    if ((project.folderId || null) === newFolderId) return
+
+    try {
+      await actions.moveProjectToFolder(project.id, newFolderId)
+      refetchProjects()
+      toast({
+        title: "Project moved",
+        description: newFolderId
+          ? `"${project.name}" moved to "${folderName}"`
+          : `"${project.name}" moved to root`,
+      })
+    } catch (error) {
+      console.error("Failed to move project:", error)
+      toast({ title: "Failed to move project", description: String(error), variant: "destructive" })
+    }
+  }, [actions, refetchProjects, toast])
 
   // Get sort label
   const sortLabel = useMemo(() => {
@@ -329,12 +478,14 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
       refetchFolders()
       setCreateFolderDialogOpen(false)
       setNewFolderName("")
+      toast({ title: "Folder created", description: `"${newFolderName.trim()}" has been created.` })
     } catch (error) {
       console.error("Failed to create folder:", error)
+      toast({ title: "Failed to create folder", description: String(error), variant: "destructive" })
     } finally {
       setIsCreatingFolder(false)
     }
-  }, [newFolderName, actions, currentWorkspace?.id, folderId, refetchFolders])
+  }, [newFolderName, actions, currentWorkspace?.id, folderId, refetchFolders, toast])
 
   const handleRenameFolder = useCallback(async () => {
     if (!folderToRename || !renameFolderName.trim()) return
@@ -346,29 +497,34 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
       setRenameFolderDialogOpen(false)
       setFolderToRename(null)
       setRenameFolderName("")
+      toast({ title: "Folder renamed" })
     } catch (error) {
       console.error("Failed to rename folder:", error)
+      toast({ title: "Failed to rename folder", description: String(error), variant: "destructive" })
     } finally {
       setIsRenamingFolder(false)
     }
-  }, [folderToRename, renameFolderName, actions, refetchFolders])
+  }, [folderToRename, renameFolderName, actions, refetchFolders, toast])
 
   const handleDeleteFolder = useCallback(async () => {
     if (!folderToDelete) return
 
     setIsDeletingFolder(true)
+    const folderName = folderToDelete.name
     try {
       await actions.deleteFolder(folderToDelete.id)
       refetchFolders()
       refetchProjects() // Projects may have moved
       setDeleteFolderDialogOpen(false)
       setFolderToDelete(null)
+      toast({ title: "Folder deleted", description: `"${folderName}" has been deleted.` })
     } catch (error) {
       console.error("Failed to delete folder:", error)
+      toast({ title: "Failed to delete folder", description: String(error), variant: "destructive" })
     } finally {
       setIsDeletingFolder(false)
     }
-  }, [folderToDelete, actions, refetchFolders, refetchProjects])
+  }, [folderToDelete, actions, refetchFolders, refetchProjects, toast])
 
   const handleMoveProjectToFolder = useCallback(async () => {
     if (!projectToMove) return
@@ -380,12 +536,14 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
       setMoveProjectDialogOpen(false)
       setProjectToMove(null)
       setTargetFolderId(null)
+      toast({ title: "Project moved" })
     } catch (error) {
       console.error("Failed to move project:", error)
+      toast({ title: "Failed to move project", description: String(error), variant: "destructive" })
     } finally {
       setIsMovingProject(false)
     }
-  }, [projectToMove, targetFolderId, actions, refetchProjects])
+  }, [projectToMove, targetFolderId, actions, refetchProjects, toast])
 
   const openRenameFolderDialog = (folder: Folder, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -503,6 +661,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   }, [folders])
 
   return (
+    <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
     <div className="flex flex-col h-full">
       {/* Header */}
       <nav className="px-6 pt-4 pb-2">
@@ -527,15 +686,22 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
       {/* Breadcrumb Navigation */}
       {(currentFolder || folderBreadcrumbs.length > 0) && (
         <div className="flex items-center gap-1 px-6 py-2 border-b text-sm">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleBackToRoot}
-            className="h-7 px-2 gap-1 text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            All Projects
-          </Button>
+          <DroppableRoot>
+            {(isOver) => (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleBackToRoot}
+                className={cn(
+                  "h-7 px-2 gap-1 text-muted-foreground hover:text-foreground transition-all",
+                  isOver && "ring-2 ring-primary bg-primary/10 text-foreground"
+                )}
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                All Projects
+              </Button>
+            )}
+          </DroppableRoot>
           {folderBreadcrumbs.map((folder: Folder) => (
             <div key={folder.id} className="flex items-center gap-1">
               <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
@@ -773,230 +939,48 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
               </div>
             </Link>
 
-            {/* Folder cards */}
+            {/* Folder cards (drop targets) */}
             {currentFolders.map((folder) => (
-              <div
-                key={folder.id}
-                onClick={() => handleFolderClick(folder)}
-                className="group flex flex-col rounded-xl bg-card overflow-hidden hover:shadow-md transition-all cursor-pointer"
-              >
-                {/* Folder preview area */}
-                <div className="relative aspect-[16/10] bg-muted flex items-center justify-center">
-                  <FolderOpen className="h-12 w-12 text-muted-foreground/40" />
-                </div>
-
-                {/* Info area */}
-                <div className="flex items-start gap-2.5 p-3">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm truncate leading-tight">{folder.name}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {(projects as Project[]).filter(p => p.folderId === folder.id).length} projects
-                    </p>
-                  </div>
-
-                  {/* Folder actions menu */}
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={(e) => openRenameFolderDialog(folder, e as any)}>
-                        <Pencil className="mr-2 h-4 w-4" />
-                        Rename
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        onClick={(e) => openDeleteFolderDialog(folder, e as any)}
-                        className="text-destructive"
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
-            ))}
-
-            {/* Project cards */}
-            {filteredProjects.map((project) => (
-              <div
-                key={project.id}
-                onClick={() => {
-                  if (isSelectMode) {
-                    handleToggleProjectSelection(project.id)
-                  } else {
-                    handleProjectClick(project)
-                  }
-                }}
-                className={cn(
-                  "group flex flex-col rounded-xl bg-card overflow-hidden hover:shadow-md transition-all",
-                  isSelectMode ? "cursor-pointer" : "cursor-pointer",
-                  isSelectMode && selectedProjectIds.has(project.id) && "ring-2 ring-primary"
-                )}
-              >
-                {/* Preview area */}
-                <div className={cn(
-                  "relative aspect-[16/10] bg-gradient-to-br",
-                  getPlaceholderGradient(project.name)
-                )}>
-                  {/* Project icon */}
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <FolderOpen className="h-10 w-10 text-white/30" />
-                  </div>
-
-                  {/* Checkbox in select mode */}
-                  {isSelectMode && (
-                    <div className="absolute top-2 left-2">
-                      <Checkbox
-                        checked={selectedProjectIds.has(project.id)}
-                        onCheckedChange={() => handleToggleProjectSelection(project.id)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="bg-white/90 border-white/20"
-                      />
-                    </div>
-                  )}
-
-                  {/* Star button - shows on hover (hidden in select mode) */}
-                  {!isSelectMode && (
-                    <button
-                      onClick={(e) => handleToggleStar(project.id, e)}
-                      className={cn(
-                        "absolute top-2 right-2 p-1.5 rounded-md transition-all",
-                        starredProjectIds.has(project.id)
-                          ? "bg-yellow-500/90 text-white opacity-100"
-                          : "bg-black/30 text-white/90 opacity-0 group-hover:opacity-100 hover:bg-black/50"
-                      )}
-                      title={starredProjectIds.has(project.id) ? "Remove from favorites" : "Add to favorites"}
-                    >
-                      <Star className={cn("h-3.5 w-3.5", starredProjectIds.has(project.id) && "fill-current")} />
-                    </button>
-                  )}
-                </div>
-
-                {/* Info area */}
-                <div className="flex items-start gap-2.5 p-3">
-                  {/* Creator avatar - clickable */}
-                  <Link
-                    to="#"
-                    onClick={(e) => e.stopPropagation()}
-                    className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-[10px] font-medium hover:ring-2 hover:ring-primary/20 transition-all"
+              <DroppableFolderCard key={folder.id} folder={folder}>
+                {(isOver) => (
+                  <div
+                    onClick={() => handleFolderClick(folder)}
+                    className={cn(
+                      "group flex flex-col rounded-xl bg-card overflow-hidden hover:shadow-md transition-all cursor-pointer",
+                      isOver && "ring-2 ring-primary shadow-lg scale-[1.02]"
+                    )}
                   >
-                    {session?.user?.name?.charAt(0) || "U"}
-                  </Link>
-
-                  {/* Name and time */}
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm truncate leading-tight">{project.name}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Edited {getTimeAgo(project.updatedAt || project.createdAt)}
-                    </p>
-                  </div>
-
-                  {/* Actions menu - hidden in select mode */}
-                  {!isSelectMode && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={(e) => openMoveProjectDialog(project, e as any)}>
-                          <FolderInput className="mr-2 h-4 w-4" />
-                          Move to folder
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={(e) => openRenameDialog(project, e as any)}>
-                          <Pencil className="mr-2 h-4 w-4" />
-                          Rename
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={(e) => {
-                          e.stopPropagation()
-                          handleProjectClick(project)
-                        }}>
-                          <Settings className="mr-2 h-4 w-4" />
-                          Settings
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          onClick={(e) => openDeleteDialog(project, e as any)}
-                          className="text-destructive"
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          // List View
-          <div className="space-y-0">
-            {/* Header row */}
-            <div className="grid grid-cols-[1fr_120px_140px] gap-4 px-3 py-2 text-xs font-medium text-muted-foreground">
-              <div>Name</div>
-              <div>Created at</div>
-              <div>Created by</div>
-            </div>
-
-            {/* Folder rows */}
-            <div className="space-y-0">
-              {currentFolders.map((folder) => (
-                <div
-                  key={folder.id}
-                  onClick={() => handleFolderClick(folder)}
-                  className="group grid grid-cols-[1fr_120px_140px] gap-4 px-3 py-2.5 rounded-lg hover:bg-accent/50 transition-colors items-center cursor-pointer"
-                >
-                  {/* Name column with folder icon */}
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="flex-shrink-0 w-12 h-8 rounded-md bg-muted flex items-center justify-center">
-                      <FolderOpen className="h-4 w-4 text-muted-foreground" />
+                    {/* Folder preview area */}
+                    <div className={cn(
+                      "relative aspect-[16/10] bg-muted flex items-center justify-center transition-colors",
+                      isOver && "bg-primary/10"
+                    )}>
+                      <FolderOpen className={cn(
+                        "h-12 w-12 transition-colors",
+                        isOver ? "text-primary/60" : "text-muted-foreground/40"
+                      )} />
+                      {isOver && (
+                        <p className="absolute bottom-2 text-xs font-medium text-primary">Drop to move here</p>
+                      )}
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium text-sm truncate">{folder.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {(projects as Project[]).filter(p => p.folderId === folder.id).length} projects
-                      </p>
-                    </div>
-                  </div>
 
-                  {/* Created at column */}
-                  <div className="text-sm text-muted-foreground">
-                    {folder.createdAt ? getTimeAgo(folder.createdAt) : "—"}
-                  </div>
+                    {/* Info area */}
+                    <div className="flex items-start gap-2.5 p-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm truncate leading-tight">{folder.name}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {(projects as Project[]).filter(p => p.folderId === folder.id).length} projects
+                        </p>
+                      </div>
 
-                  {/* Actions column */}
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">—</span>
-                    
-                    {/* Actions */}
-                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {/* Folder actions menu */}
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7"
-                            onClick={(e) => {
-                              e.preventDefault()
-                              e.stopPropagation()
-                            }}
+                            className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={(e) => e.stopPropagation()}
                           >
                             <MoreHorizontal className="h-4 w-4" />
                           </Button>
@@ -1018,7 +1002,218 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                       </DropdownMenu>
                     </div>
                   </div>
+                )}
+              </DroppableFolderCard>
+            ))}
+
+            {/* Project cards (draggable) */}
+            {filteredProjects.map((project) => (
+              <DraggableProjectCard key={project.id} project={project}>
+                <div
+                  onClick={() => {
+                  if (isSelectMode) {
+                    handleToggleProjectSelection(project.id)
+                  } else {
+                    handleProjectClick(project)
+                  }
+                }}
+                  className={cn(
+                  "group flex flex-col rounded-xl bg-card overflow-hidden hover:shadow-md transition-all",
+                  isSelectMode ? "cursor-pointer" : "cursor-pointer",
+                  isSelectMode && selectedProjectIds.has(project.id) && "ring-2 ring-primary"
+                )}
+                >
+                  {/* Preview area */}
+                  <div className={cn(
+                    "relative aspect-[16/10] bg-gradient-to-br",
+                    getPlaceholderGradient(project.name)
+                  )}>
+                    {/* Project icon */}
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <FolderOpen className="h-10 w-10 text-white/30" />
+                    </div>
+
+                    {/* Checkbox in select mode */}
+                  {isSelectMode && (
+                    <div className="absolute top-2 left-2">
+                      <Checkbox
+                        checked={selectedProjectIds.has(project.id)}
+                        onCheckedChange={() => handleToggleProjectSelection(project.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white/90 border-white/20"
+                      />
+                    </div>
+                  )}
+
+                  {/* Star button - shows on hover (hidden in select mode) */}
+                  {!isSelectMode && (
+                      <button
+                        onClick={(e) => handleToggleStar(project.id, e)}
+                        className={cn(
+                          "absolute top-2 right-2 p-1.5 rounded-md transition-all",
+                          starredProjectIds.has(project.id)
+                            ? "bg-yellow-500/90 text-white opacity-100"
+                            : "bg-black/30 text-white/90 opacity-0 group-hover:opacity-100 hover:bg-black/50"
+                        )}
+                        title={starredProjectIds.has(project.id) ? "Remove from favorites" : "Add to favorites"}
+                      >
+                        <Star className={cn("h-3.5 w-3.5", starredProjectIds.has(project.id) && "fill-current")} />
+                      </button>
+                  )}
+                  </div>
+
+                  {/* Info area */}
+                  <div className="flex items-start gap-2.5 p-3">
+                    {/* Creator avatar - clickable */}
+                    <Link
+                      to="#"
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-[10px] font-medium hover:ring-2 hover:ring-primary/20 transition-all"
+                    >
+                      {session?.user?.name?.charAt(0) || "U"}
+                    </Link>
+
+                    {/* Name and time */}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate leading-tight">{project.name}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Edited {getTimeAgo(project.updatedAt || project.createdAt)}
+                      </p>
+                    </div>
+
+                    {/* Actions menu - hidden in select mode */}
+                  {!isSelectMode && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={(e) => openMoveProjectDialog(project, e as any)}>
+                            <FolderInput className="mr-2 h-4 w-4" />
+                            Move to folder
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={(e) => openRenameDialog(project, e as any)}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Rename
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={(e) => {
+                            e.stopPropagation()
+                            handleProjectClick(project)
+                          }}>
+                            <Settings className="mr-2 h-4 w-4" />
+                            Settings
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={(e) => openDeleteDialog(project, e as any)}
+                            className="text-destructive"
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                  )}
+                  </div>
                 </div>
+              </DraggableProjectCard>
+            ))}
+          </div>
+        ) : (
+          // List View
+          <div className="space-y-0">
+            {/* Header row */}
+            <div className="grid grid-cols-[1fr_120px_140px] gap-4 px-3 py-2 text-xs font-medium text-muted-foreground">
+              <div>Name</div>
+              <div>Created at</div>
+              <div>Created by</div>
+            </div>
+
+            {/* Folder rows (drop targets) */}
+            <div className="space-y-0">
+              {currentFolders.map((folder) => (
+                <DroppableFolderCard key={folder.id} folder={folder}>
+                  {(isOver) => (
+                    <div
+                      onClick={() => handleFolderClick(folder)}
+                      className={cn(
+                        "group grid grid-cols-[1fr_120px_140px] gap-4 px-3 py-2.5 rounded-lg hover:bg-accent/50 transition-all items-center cursor-pointer",
+                        isOver && "ring-2 ring-primary bg-primary/10"
+                      )}
+                    >
+                      {/* Name column with folder icon */}
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={cn(
+                          "flex-shrink-0 w-12 h-8 rounded-md bg-muted flex items-center justify-center transition-colors",
+                          isOver && "bg-primary/20"
+                        )}>
+                          <FolderOpen className={cn(
+                            "h-4 w-4 transition-colors",
+                            isOver ? "text-primary" : "text-muted-foreground"
+                          )} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium text-sm truncate">{folder.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {(projects as Project[]).filter(p => p.folderId === folder.id).length} projects
+                            {isOver && " · Drop to move here"}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Created at column */}
+                      <div className="text-sm text-muted-foreground">
+                        {folder.createdAt ? getTimeAgo(folder.createdAt) : "—"}
+                      </div>
+
+                      {/* Actions column */}
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-muted-foreground">—</span>
+                        
+                        {/* Actions */}
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                }}
+                              >
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={(e) => openRenameFolderDialog(folder, e as any)}>
+                                <Pencil className="mr-2 h-4 w-4" />
+                                Rename
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                onClick={(e) => openDeleteFolderDialog(folder, e as any)}
+                                className="text-destructive"
+                              >
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Delete
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </DroppableFolderCard>
               ))}
             </div>
 
@@ -1368,6 +1563,12 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Drag overlay - floating preview card that follows the cursor */}
+      <DragOverlay dropAnimation={null}>
+        {activeProject ? <DragOverlayCard project={activeProject} /> : null}
+      </DragOverlay>
     </div>
+    </DndContext>
   )
 })

@@ -13,13 +13,19 @@ import { StarredProjectsPage } from './pages/StarredProjectsPage'
 import { SharedWithMePage } from './pages/SharedWithMePage'
 import { TemplatesPage } from './pages/TemplatesPage'
 import { SettingsPage } from './pages/SettingsPage'
-import { MonacoTestPage } from './pages/MonacoTestPage'
-import { TodoWidgetTestPage } from './pages/TodoWidgetTestPage'
 import { AuthProvider } from './contexts/AuthContext'
+// Admin portal
+import { AdminGuard } from './components/admin/AdminGuard'
+import { AdminShell } from './components/admin/AdminShell'
+import { AdminDashboard } from './components/admin/pages/AdminDashboard'
+import { AdminUsers } from './components/admin/pages/AdminUsers'
+import { AdminUserDetail } from './components/admin/pages/AdminUserDetail'
+import { AdminWorkspaces } from './components/admin/pages/AdminWorkspaces'
+import { AdminAnalytics } from './components/admin/pages/AdminAnalytics'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
 import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
 import { SessionProvider, useSessionContext } from './contexts/SessionProvider'
-import { SupabaseAuthService, createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService, MemoryBackend } from '@shogo/state-api'
+import { createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService, MemoryBackend } from '@shogo/state-api'
 import { APIPersistence } from './persistence/APIPersistence'
 // SDK-based provider for new/migrated code
 import { SDKDomainProvider as SDKProvider } from './contexts/SDKDomainProvider'
@@ -126,11 +132,18 @@ function AppWithSession() {
             <WavesmithMetaStoreProvider>
               <AuthProvider authService={betterAuthService}>
                 <Routes>
-                  {/* Monaco Test Page - accessible without auth for debugging */}
-                  <Route path="/monaco-test" element={<MonacoTestPage />} />
-                  
-                  {/* TodoWidget Test Page - accessible without auth for testing */}
-                  <Route path="/todo-test" element={<TodoWidgetTestPage />} />
+                  {/* Super Admin Portal - separate layout */}
+                  <Route path="/admin" element={
+                    <AdminGuard>
+                      <AdminShell />
+                    </AdminGuard>
+                  }>
+                    <Route index element={<AdminDashboard />} />
+                    <Route path="users" element={<AdminUsers />} />
+                    <Route path="users/:userId" element={<AdminUserDetail />} />
+                    <Route path="workspaces" element={<AdminWorkspaces />} />
+                    <Route path="analytics" element={<AdminAnalytics />} />
+                  </Route>
 
                   {/* Project view route - full screen without sidebar */}
                   <Route path="/projects/:projectId" element={

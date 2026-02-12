@@ -202,6 +202,7 @@ export type WorkspaceWhereInput = {
   subscriptions?: Prisma.SubscriptionListRelationFilter
   creditLedgers?: Prisma.CreditLedgerListRelationFilter
   usageEvents?: Prisma.UsageEventListRelationFilter
+  starredProjects?: Prisma.StarredProjectListRelationFilter
 }
 
 export type WorkspaceOrderByWithRelationInput = {
@@ -220,6 +221,7 @@ export type WorkspaceOrderByWithRelationInput = {
   subscriptions?: Prisma.SubscriptionOrderByRelationAggregateInput
   creditLedgers?: Prisma.CreditLedgerOrderByRelationAggregateInput
   usageEvents?: Prisma.UsageEventOrderByRelationAggregateInput
+  starredProjects?: Prisma.StarredProjectOrderByRelationAggregateInput
 }
 
 export type WorkspaceWhereUniqueInput = Prisma.AtLeast<{
@@ -241,6 +243,7 @@ export type WorkspaceWhereUniqueInput = Prisma.AtLeast<{
   subscriptions?: Prisma.SubscriptionListRelationFilter
   creditLedgers?: Prisma.CreditLedgerListRelationFilter
   usageEvents?: Prisma.UsageEventListRelationFilter
+  starredProjects?: Prisma.StarredProjectListRelationFilter
 }, "id" | "slug">
 
 export type WorkspaceOrderByWithAggregationInput = {
@@ -285,6 +288,7 @@ export type WorkspaceCreateInput = {
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceUncheckedCreateInput = {
@@ -303,6 +307,7 @@ export type WorkspaceUncheckedCreateInput = {
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceUpdateInput = {
@@ -321,6 +326,7 @@ export type WorkspaceUpdateInput = {
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceUncheckedUpdateInput = {
@@ -339,6 +345,7 @@ export type WorkspaceUncheckedUpdateInput = {
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceCreateManyInput = {
@@ -421,6 +428,20 @@ export type WorkspaceUpdateOneRequiredWithoutProjectsNestedInput = {
   upsert?: Prisma.WorkspaceUpsertWithoutProjectsInput
   connect?: Prisma.WorkspaceWhereUniqueInput
   update?: Prisma.XOR<Prisma.XOR<Prisma.WorkspaceUpdateToOneWithWhereWithoutProjectsInput, Prisma.WorkspaceUpdateWithoutProjectsInput>, Prisma.WorkspaceUncheckedUpdateWithoutProjectsInput>
+}
+
+export type WorkspaceCreateNestedOneWithoutStarredProjectsInput = {
+  create?: Prisma.XOR<Prisma.WorkspaceCreateWithoutStarredProjectsInput, Prisma.WorkspaceUncheckedCreateWithoutStarredProjectsInput>
+  connectOrCreate?: Prisma.WorkspaceCreateOrConnectWithoutStarredProjectsInput
+  connect?: Prisma.WorkspaceWhereUniqueInput
+}
+
+export type WorkspaceUpdateOneRequiredWithoutStarredProjectsNestedInput = {
+  create?: Prisma.XOR<Prisma.WorkspaceCreateWithoutStarredProjectsInput, Prisma.WorkspaceUncheckedCreateWithoutStarredProjectsInput>
+  connectOrCreate?: Prisma.WorkspaceCreateOrConnectWithoutStarredProjectsInput
+  upsert?: Prisma.WorkspaceUpsertWithoutStarredProjectsInput
+  connect?: Prisma.WorkspaceWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.WorkspaceUpdateToOneWithWhereWithoutStarredProjectsInput, Prisma.WorkspaceUpdateWithoutStarredProjectsInput>, Prisma.WorkspaceUncheckedUpdateWithoutStarredProjectsInput>
 }
 
 export type WorkspaceCreateNestedOneWithoutMembersInput = {
@@ -540,6 +561,7 @@ export type WorkspaceCreateWithoutProjectsInput = {
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceUncheckedCreateWithoutProjectsInput = {
@@ -557,6 +579,7 @@ export type WorkspaceUncheckedCreateWithoutProjectsInput = {
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceCreateOrConnectWithoutProjectsInput = {
@@ -590,6 +613,7 @@ export type WorkspaceUpdateWithoutProjectsInput = {
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceUncheckedUpdateWithoutProjectsInput = {
@@ -600,6 +624,95 @@ export type WorkspaceUncheckedUpdateWithoutProjectsInput = {
   ssoSettings?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
+  billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
+  invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
+  folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
+  subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
+  creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
+  usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
+}
+
+export type WorkspaceCreateWithoutStarredProjectsInput = {
+  id?: string
+  name: string
+  slug: string
+  description?: string | null
+  ssoSettings?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  projects?: Prisma.ProjectCreateNestedManyWithoutWorkspaceInput
+  members?: Prisma.MemberCreateNestedManyWithoutWorkspaceInput
+  billingAccounts?: Prisma.BillingAccountCreateNestedManyWithoutWorkspaceInput
+  invitations?: Prisma.InvitationCreateNestedManyWithoutWorkspaceInput
+  folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
+  subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
+  creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
+  usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
+}
+
+export type WorkspaceUncheckedCreateWithoutStarredProjectsInput = {
+  id?: string
+  name: string
+  slug: string
+  description?: string | null
+  ssoSettings?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  projects?: Prisma.ProjectUncheckedCreateNestedManyWithoutWorkspaceInput
+  members?: Prisma.MemberUncheckedCreateNestedManyWithoutWorkspaceInput
+  billingAccounts?: Prisma.BillingAccountUncheckedCreateNestedManyWithoutWorkspaceInput
+  invitations?: Prisma.InvitationUncheckedCreateNestedManyWithoutWorkspaceInput
+  folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
+  subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
+  creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
+  usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
+}
+
+export type WorkspaceCreateOrConnectWithoutStarredProjectsInput = {
+  where: Prisma.WorkspaceWhereUniqueInput
+  create: Prisma.XOR<Prisma.WorkspaceCreateWithoutStarredProjectsInput, Prisma.WorkspaceUncheckedCreateWithoutStarredProjectsInput>
+}
+
+export type WorkspaceUpsertWithoutStarredProjectsInput = {
+  update: Prisma.XOR<Prisma.WorkspaceUpdateWithoutStarredProjectsInput, Prisma.WorkspaceUncheckedUpdateWithoutStarredProjectsInput>
+  create: Prisma.XOR<Prisma.WorkspaceCreateWithoutStarredProjectsInput, Prisma.WorkspaceUncheckedCreateWithoutStarredProjectsInput>
+  where?: Prisma.WorkspaceWhereInput
+}
+
+export type WorkspaceUpdateToOneWithWhereWithoutStarredProjectsInput = {
+  where?: Prisma.WorkspaceWhereInput
+  data: Prisma.XOR<Prisma.WorkspaceUpdateWithoutStarredProjectsInput, Prisma.WorkspaceUncheckedUpdateWithoutStarredProjectsInput>
+}
+
+export type WorkspaceUpdateWithoutStarredProjectsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  slug?: Prisma.StringFieldUpdateOperationsInput | string
+  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  ssoSettings?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  projects?: Prisma.ProjectUpdateManyWithoutWorkspaceNestedInput
+  members?: Prisma.MemberUpdateManyWithoutWorkspaceNestedInput
+  billingAccounts?: Prisma.BillingAccountUpdateManyWithoutWorkspaceNestedInput
+  invitations?: Prisma.InvitationUpdateManyWithoutWorkspaceNestedInput
+  folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
+  subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
+  creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
+  usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
+}
+
+export type WorkspaceUncheckedUpdateWithoutStarredProjectsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  slug?: Prisma.StringFieldUpdateOperationsInput | string
+  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  ssoSettings?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  projects?: Prisma.ProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
   members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -624,6 +737,7 @@ export type WorkspaceCreateWithoutMembersInput = {
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceUncheckedCreateWithoutMembersInput = {
@@ -641,6 +755,7 @@ export type WorkspaceUncheckedCreateWithoutMembersInput = {
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceCreateOrConnectWithoutMembersInput = {
@@ -674,6 +789,7 @@ export type WorkspaceUpdateWithoutMembersInput = {
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceUncheckedUpdateWithoutMembersInput = {
@@ -691,6 +807,7 @@ export type WorkspaceUncheckedUpdateWithoutMembersInput = {
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceCreateWithoutBillingAccountsInput = {
@@ -708,6 +825,7 @@ export type WorkspaceCreateWithoutBillingAccountsInput = {
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceUncheckedCreateWithoutBillingAccountsInput = {
@@ -725,6 +843,7 @@ export type WorkspaceUncheckedCreateWithoutBillingAccountsInput = {
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceCreateOrConnectWithoutBillingAccountsInput = {
@@ -758,6 +877,7 @@ export type WorkspaceUpdateWithoutBillingAccountsInput = {
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceUncheckedUpdateWithoutBillingAccountsInput = {
@@ -775,6 +895,7 @@ export type WorkspaceUncheckedUpdateWithoutBillingAccountsInput = {
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceCreateWithoutInvitationsInput = {
@@ -792,6 +913,7 @@ export type WorkspaceCreateWithoutInvitationsInput = {
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceUncheckedCreateWithoutInvitationsInput = {
@@ -809,6 +931,7 @@ export type WorkspaceUncheckedCreateWithoutInvitationsInput = {
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceCreateOrConnectWithoutInvitationsInput = {
@@ -842,6 +965,7 @@ export type WorkspaceUpdateWithoutInvitationsInput = {
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceUncheckedUpdateWithoutInvitationsInput = {
@@ -859,6 +983,7 @@ export type WorkspaceUncheckedUpdateWithoutInvitationsInput = {
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceCreateWithoutFoldersInput = {
@@ -876,6 +1001,7 @@ export type WorkspaceCreateWithoutFoldersInput = {
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceUncheckedCreateWithoutFoldersInput = {
@@ -893,6 +1019,7 @@ export type WorkspaceUncheckedCreateWithoutFoldersInput = {
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceCreateOrConnectWithoutFoldersInput = {
@@ -926,6 +1053,7 @@ export type WorkspaceUpdateWithoutFoldersInput = {
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceUncheckedUpdateWithoutFoldersInput = {
@@ -943,6 +1071,7 @@ export type WorkspaceUncheckedUpdateWithoutFoldersInput = {
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceCreateWithoutSubscriptionsInput = {
@@ -960,6 +1089,7 @@ export type WorkspaceCreateWithoutSubscriptionsInput = {
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceUncheckedCreateWithoutSubscriptionsInput = {
@@ -977,6 +1107,7 @@ export type WorkspaceUncheckedCreateWithoutSubscriptionsInput = {
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceCreateOrConnectWithoutSubscriptionsInput = {
@@ -1010,6 +1141,7 @@ export type WorkspaceUpdateWithoutSubscriptionsInput = {
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceUncheckedUpdateWithoutSubscriptionsInput = {
@@ -1027,6 +1159,7 @@ export type WorkspaceUncheckedUpdateWithoutSubscriptionsInput = {
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceCreateWithoutCreditLedgersInput = {
@@ -1044,6 +1177,7 @@ export type WorkspaceCreateWithoutCreditLedgersInput = {
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceUncheckedCreateWithoutCreditLedgersInput = {
@@ -1061,6 +1195,7 @@ export type WorkspaceUncheckedCreateWithoutCreditLedgersInput = {
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceCreateOrConnectWithoutCreditLedgersInput = {
@@ -1094,6 +1229,7 @@ export type WorkspaceUpdateWithoutCreditLedgersInput = {
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceUncheckedUpdateWithoutCreditLedgersInput = {
@@ -1111,6 +1247,7 @@ export type WorkspaceUncheckedUpdateWithoutCreditLedgersInput = {
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceCreateWithoutUsageEventsInput = {
@@ -1128,6 +1265,7 @@ export type WorkspaceCreateWithoutUsageEventsInput = {
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceUncheckedCreateWithoutUsageEventsInput = {
@@ -1145,6 +1283,7 @@ export type WorkspaceUncheckedCreateWithoutUsageEventsInput = {
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutWorkspaceInput
 }
 
 export type WorkspaceCreateOrConnectWithoutUsageEventsInput = {
@@ -1178,6 +1317,7 @@ export type WorkspaceUpdateWithoutUsageEventsInput = {
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutWorkspaceNestedInput
 }
 
 export type WorkspaceUncheckedUpdateWithoutUsageEventsInput = {
@@ -1195,6 +1335,7 @@ export type WorkspaceUncheckedUpdateWithoutUsageEventsInput = {
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
 }
 
 
@@ -1211,6 +1352,7 @@ export type WorkspaceCountOutputType = {
   subscriptions: number
   creditLedgers: number
   usageEvents: number
+  starredProjects: number
 }
 
 export type WorkspaceCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
@@ -1222,6 +1364,7 @@ export type WorkspaceCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensi
   subscriptions?: boolean | WorkspaceCountOutputTypeCountSubscriptionsArgs
   creditLedgers?: boolean | WorkspaceCountOutputTypeCountCreditLedgersArgs
   usageEvents?: boolean | WorkspaceCountOutputTypeCountUsageEventsArgs
+  starredProjects?: boolean | WorkspaceCountOutputTypeCountStarredProjectsArgs
 }
 
 /**
@@ -1290,6 +1433,13 @@ export type WorkspaceCountOutputTypeCountUsageEventsArgs<ExtArgs extends runtime
   where?: Prisma.UsageEventWhereInput
 }
 
+/**
+ * WorkspaceCountOutputType without action
+ */
+export type WorkspaceCountOutputTypeCountStarredProjectsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  where?: Prisma.StarredProjectWhereInput
+}
+
 
 export type WorkspaceSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
   id?: boolean
@@ -1307,6 +1457,7 @@ export type WorkspaceSelect<ExtArgs extends runtime.Types.Extensions.InternalArg
   subscriptions?: boolean | Prisma.Workspace$subscriptionsArgs<ExtArgs>
   creditLedgers?: boolean | Prisma.Workspace$creditLedgersArgs<ExtArgs>
   usageEvents?: boolean | Prisma.Workspace$usageEventsArgs<ExtArgs>
+  starredProjects?: boolean | Prisma.Workspace$starredProjectsArgs<ExtArgs>
   _count?: boolean | Prisma.WorkspaceCountOutputTypeDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["workspace"]>
 
@@ -1350,6 +1501,7 @@ export type WorkspaceInclude<ExtArgs extends runtime.Types.Extensions.InternalAr
   subscriptions?: boolean | Prisma.Workspace$subscriptionsArgs<ExtArgs>
   creditLedgers?: boolean | Prisma.Workspace$creditLedgersArgs<ExtArgs>
   usageEvents?: boolean | Prisma.Workspace$usageEventsArgs<ExtArgs>
+  starredProjects?: boolean | Prisma.Workspace$starredProjectsArgs<ExtArgs>
   _count?: boolean | Prisma.WorkspaceCountOutputTypeDefaultArgs<ExtArgs>
 }
 export type WorkspaceIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {}
@@ -1366,6 +1518,7 @@ export type $WorkspacePayload<ExtArgs extends runtime.Types.Extensions.InternalA
     subscriptions: Prisma.$SubscriptionPayload<ExtArgs>[]
     creditLedgers: Prisma.$CreditLedgerPayload<ExtArgs>[]
     usageEvents: Prisma.$UsageEventPayload<ExtArgs>[]
+    starredProjects: Prisma.$StarredProjectPayload<ExtArgs>[]
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
@@ -1777,6 +1930,7 @@ export interface Prisma__WorkspaceClient<T, Null = never, ExtArgs extends runtim
   subscriptions<T extends Prisma.Workspace$subscriptionsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Workspace$subscriptionsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$SubscriptionPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   creditLedgers<T extends Prisma.Workspace$creditLedgersArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Workspace$creditLedgersArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$CreditLedgerPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   usageEvents<T extends Prisma.Workspace$usageEventsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Workspace$usageEventsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$UsageEventPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
+  starredProjects<T extends Prisma.Workspace$starredProjectsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Workspace$starredProjectsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$StarredProjectPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -2390,6 +2544,30 @@ export type Workspace$usageEventsArgs<ExtArgs extends runtime.Types.Extensions.I
   take?: number
   skip?: number
   distinct?: Prisma.UsageEventScalarFieldEnum | Prisma.UsageEventScalarFieldEnum[]
+}
+
+/**
+ * Workspace.starredProjects
+ */
+export type Workspace$starredProjectsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the StarredProject
+   */
+  select?: Prisma.StarredProjectSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the StarredProject
+   */
+  omit?: Prisma.StarredProjectOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StarredProjectInclude<ExtArgs> | null
+  where?: Prisma.StarredProjectWhereInput
+  orderBy?: Prisma.StarredProjectOrderByWithRelationInput | Prisma.StarredProjectOrderByWithRelationInput[]
+  cursor?: Prisma.StarredProjectWhereUniqueInput
+  take?: number
+  skip?: number
+  distinct?: Prisma.StarredProjectScalarFieldEnum | Prisma.StarredProjectScalarFieldEnum[]
 }
 
 /**

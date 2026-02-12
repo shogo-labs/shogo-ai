@@ -28,9 +28,13 @@ COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
 # Copy package.json files for dependency resolution (cached layer)
+# All workspace members must be present for bun install to succeed
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY apps/web/package.json ./apps/web/
+COPY apps/api/package.json ./apps/api/
 
 # Install all dependencies (with BuildKit cache mount for faster rebuilds)
 RUN --mount=type=cache,target=/root/.bun/install/cache \
@@ -128,13 +132,17 @@ WORKDIR /app
 
 # Install required system packages:
 # - curl: health checks
-# - nodejs + npm: Claude Code CLI
+# - nodejs + npm: Claude Code CLI (need Node 22+ for Prisma 7.x)
 # - bash: Claude Code requires SHELL=/bin/bash
 # - git: for project operations
 # - tar: for S3 archive sync
 # - Chromium dependencies for Playwright E2E tests
-RUN apk add --no-cache \
-    curl nodejs npm bash git tar gzip \
+# NOTE: oven/bun:1.2-alpine is based on Alpine 3.20 which only has Node 20.15.
+# Prisma 7.x requires Node 20.19+, so we pull nodejs from Alpine 3.21 repos.
+RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" >> /etc/apk/repositories && \
+    apk add --no-cache \
+    curl bash git tar gzip \
+    'nodejs>22' npm \
     # Playwright/Chromium dependencies
     chromium \
     nss \

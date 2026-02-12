@@ -259,9 +259,9 @@ function generateHookTypes(models: PrismaModel[]): string[] {
 /**
  * Generate types file for a single model
  */
-export function generateModelTypes(model: PrismaModel, enums: PrismaEnum[] = []): GeneratedTypeFile {
+export function generateModelTypes(model: PrismaModel, enums: PrismaEnum[] = [], fileExtension: 'ts' | 'tsx' = 'tsx'): GeneratedTypeFile {
   const modelName = model.name
-  const fileName = `${toFileName(modelName)}.types.tsx`
+  const fileName = `${toFileName(modelName)}.types.${fileExtension}`
 
   const lines: string[] = [
     '/**',
@@ -305,9 +305,10 @@ export function generateModelTypes(model: PrismaModel, enums: PrismaEnum[] = [])
  */
 export function generateTypesPerModel(
   models: PrismaModel[],
-  enums: PrismaEnum[] = []
+  enums: PrismaEnum[] = [],
+  fileExtension: 'ts' | 'tsx' = 'tsx'
 ): GeneratedTypeFile[] {
-  return models.map(model => generateModelTypes(model, enums))
+  return models.map(model => generateModelTypes(model, enums, fileExtension))
 }
 
 /**

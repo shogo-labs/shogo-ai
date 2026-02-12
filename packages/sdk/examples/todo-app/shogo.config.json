@@ -12,6 +12,10 @@
     {
       "dir": "./src/lib",
       "generate": ["db"]
+    },
+    {
+      "dir": "./dev-docs",
+      "generate": ["docs"]
     }
   ]
 }

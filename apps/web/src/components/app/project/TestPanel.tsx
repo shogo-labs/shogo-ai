@@ -66,6 +66,7 @@ interface TestExecution {
   exitCode?: number
   file?: string
   testName?: string
+  line?: number
 }
 
 /**
@@ -101,11 +102,13 @@ export interface TestPanelProps {
  * Looks for patterns like "2 passed" or "1 failed"
  */
 function parseTestSummary(output: string): TestSummary | null {
+  // Strip ANSI codes before matching so patterns work reliably
+  const clean = stripAnsi(output)
   // Playwright outputs: "X passed", "X failed", "X skipped"
-  const passedMatch = output.match(/(\d+)\s+passed/)
-  const failedMatch = output.match(/(\d+)\s+failed/)
-  const skippedMatch = output.match(/(\d+)\s+skipped/)
-  const durationMatch = output.match(/\((\d+(?:\.\d+)?[ms]+)\)/)
+  const passedMatch = clean.match(/(\d+)\s+passed/)
+  const failedMatch = clean.match(/(\d+)\s+failed/)
+  const skippedMatch = clean.match(/(\d+)\s+skipped/)
+  const durationMatch = clean.match(/\((\d+(?:\.\d+)?[ms]+)\)/)
   
   const passed = passedMatch ? parseInt(passedMatch[1], 10) : 0
   const failed = failedMatch ? parseInt(failedMatch[1], 10) : 0
@@ -141,61 +144,157 @@ function getTimeAgo(date: Date): string {
 }
 
 /**
- * Add ANSI color highlighting for test output
- * Highlights pass/fail indicators
+ * Strip ANSI escape codes from a string.
+ * Handles color, style, cursor movement, and other terminal sequences.
  */
-function highlightOutput(output: string): React.ReactNode[] {
-  const lines = output.split('\n')
-  
-  return lines.map((line, i) => {
-    // Highlight passed tests (green checkmark or "passed")
-    if (line.includes('✓') || line.includes('passed') || line.match(/^\s*✔/)) {
-      return (
-        <span key={i} className="text-green-400">
-          {line}
+function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1B(?:\[[0-9;]*[a-zA-Z]|\([A-Z])/g, '')
+}
+
+/**
+ * Render test output with syntax highlighting and inline attachments.
+ * 1. Strips ANSI escape codes so output is clean.
+ * 2. Highlights pass/fail/skip/error lines with appropriate colors.
+ * 3. Detects Playwright attachment references (screenshot, trace, video)
+ *    and renders them as clickable links or inline images.
+ */
+function highlightOutput(output: string, projectId?: string): React.ReactNode[] {
+  const clean = stripAnsi(output)
+  const lines = clean.split('\n')
+  const nodes: React.ReactNode[] = []
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+
+    // --- Inline screenshot attachment ---
+    // Playwright outputs lines like:
+    //   test-results/test-name-chromium/test-failed-1.png
+    const screenshotMatch = line.match(/^\s*(test-results\/\S+\.png)\s*$/)
+    if (screenshotMatch && projectId) {
+      const imgPath = screenshotMatch[1]
+      const imgUrl = `/api/projects/${projectId}/files/${imgPath}`
+      nodes.push(
+        <span key={i} className="block my-2">
+          <a href={imgUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline text-xs">
+            View screenshot: {imgPath.split('/').pop()}
+          </a>
+          <img
+            src={imgUrl}
+            alt="Test screenshot"
+            className="mt-1 max-w-full max-h-64 rounded border border-zinc-700"
+            loading="lazy"
+          />
           {'\n'}
         </span>
       )
+      continue
     }
-    
-    // Highlight failed tests (red x or "failed")
-    if (line.includes('✗') || line.includes('failed') || line.includes('Error:') || line.match(/^\s*✘/)) {
-      return (
-        <span key={i} className="text-red-400">
-          {line}
+
+    // --- Trace attachment link ---
+    const traceMatch = line.match(/^\s*(test-results\/\S+\/trace\.zip)\s*$/)
+    if (traceMatch && projectId) {
+      const tracePath = traceMatch[1]
+      const traceFileUrl = `/api/projects/${projectId}/files/${tracePath}`
+      const viewerUrl = `https://trace.playwright.dev/?trace=${encodeURIComponent(window.location.origin + traceFileUrl)}`
+      nodes.push(
+        <span key={i} className="block my-1">
+          <a href={viewerUrl} target="_blank" rel="noopener noreferrer" className="text-purple-400 underline text-xs inline-flex items-center gap-1">
+            <Film className="h-3 w-3 inline" />
+            View trace
+          </a>
           {'\n'}
         </span>
       )
+      continue
     }
-    
-    // Highlight skipped tests (yellow)
+
+    // --- Video attachment link ---
+    const videoMatch = line.match(/^\s*(test-results\/\S+\.webm)\s*$/)
+    if (videoMatch && projectId) {
+      const videoPath = videoMatch[1]
+      const videoUrl = `/api/projects/${projectId}/files/${videoPath}`
+      nodes.push(
+        <span key={i} className="block my-1">
+          <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline text-xs">
+            View video: {videoPath.split('/').pop()}
+          </a>
+          {'\n'}
+        </span>
+      )
+      continue
+    }
+
+    // --- Highlight passed tests ---
+    if (line.includes('✓') || line.includes('✔') || /\d+\s+passed/.test(line)) {
+      nodes.push(<span key={i} className="text-green-400">{line}{'\n'}</span>)
+      continue
+    }
+
+    // --- Highlight failed tests ---
+    if (line.includes('✘') || line.includes('✗') || /\d+\s+failed/.test(line)) {
+      nodes.push(<span key={i} className="text-red-400">{line}{'\n'}</span>)
+      continue
+    }
+
+    // --- Highlight errors and stack traces ---
+    if (/Error[:.]/.test(line) || /^\s+at\s/.test(line)) {
+      nodes.push(<span key={i} className="text-red-300">{line}{'\n'}</span>)
+      continue
+    }
+
+    // --- Highlight retry lines ---
+    if (/retry #\d+/i.test(line)) {
+      nodes.push(<span key={i} className="text-yellow-400">{line}{'\n'}</span>)
+      continue
+    }
+
+    // --- Highlight skipped tests ---
     if (line.includes('skipped') || line.includes('⊘')) {
-      return (
-        <span key={i} className="text-yellow-400">
-          {line}
-          {'\n'}
-        </span>
-      )
+      nodes.push(<span key={i} className="text-yellow-400">{line}{'\n'}</span>)
+      continue
     }
-    
-    // Highlight test file names
-    if (line.match(/^\s*[▶►]\s+/) || line.match(/\.test\.(ts|js|tsx|jsx)/)) {
-      return (
-        <span key={i} className="text-blue-300">
-          {line}
-          {'\n'}
-        </span>
-      )
+
+    // --- Highlight source code lines (line numbers from error output) ---
+    if (/^\s*\d+\s*\|/.test(line)) {
+      // Error pointer line
+      if (line.includes('>') || line.includes('^')) {
+        nodes.push(<span key={i} className="text-red-300 font-semibold">{line}{'\n'}</span>)
+      } else {
+        nodes.push(<span key={i} className="text-zinc-400">{line}{'\n'}</span>)
+      }
+      continue
     }
-    
-    // Default
-    return (
-      <span key={i}>
-        {line}
-        {'\n'}
-      </span>
-    )
-  })
+
+    // --- Highlight attachment header lines (dim them) ---
+    if (/attachment #\d+:/.test(line) || /^[\s─]+$/.test(line) || /^-+\s*Test Artifacts\s*-+$/.test(line)) {
+      nodes.push(<span key={i} className="text-zinc-500">{line}{'\n'}</span>)
+      continue
+    }
+
+    // --- Highlight "Running N test" header ---
+    if (/Running \d+ test/.test(line)) {
+      nodes.push(<span key={i} className="text-blue-300">{line}{'\n'}</span>)
+      continue
+    }
+
+    // --- Highlight test file paths ---
+    if (/\.test\.(ts|js|tsx|jsx)/.test(line) && /›/.test(line)) {
+      nodes.push(<span key={i} className="text-blue-300">{line}{'\n'}</span>)
+      continue
+    }
+
+    // --- Command echo line ---
+    if (/^\$\s/.test(line)) {
+      nodes.push(<span key={i} className="text-zinc-400 font-semibold">{line}{'\n'}</span>)
+      continue
+    }
+
+    // --- Default ---
+    nodes.push(<span key={i}>{line}{'\n'}</span>)
+  }
+
+  return nodes
 }
 
 export function TestPanel({
@@ -460,9 +559,10 @@ export function TestPanel({
   }, [projectId])
 
   /**
-   * Run specific test file or test case (Option B)
+   * Run specific test file or test case (Option B).
+   * When line is provided, Playwright runs only the test at that line (file:line); otherwise uses file + optional testName (grep).
    */
-  const runSpecificTest = useCallback(async (file?: string, testName?: string, headed?: boolean) => {
+  const runSpecificTest = useCallback(async (file?: string, testName?: string, headed?: boolean, line?: number) => {
     // Cancel any existing execution
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
@@ -483,6 +583,7 @@ export function TestPanel({
       status: 'running',
       file,
       testName,
+      line,
     }
 
     setExecution(newExecution)
@@ -492,7 +593,7 @@ export function TestPanel({
       const response = await fetch(`/api/projects/${projectId}/tests/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file, testName, headed }),
+        body: JSON.stringify({ file, testName, headed, line }),
         signal: abortController.signal,
       })
 
@@ -743,7 +844,7 @@ export function TestPanel({
               <button
                 onClick={() => {
                   if (execution.file) {
-                    runSpecificTest(execution.file, execution.testName)
+                    runSpecificTest(execution.file, execution.testName, false, execution.line)
                   } else {
                     runTests(execution.commandId, execution.label)
                   }
@@ -837,25 +938,41 @@ export function TestPanel({
                     {expandedFiles.has(file.path) && file.tests.length > 0 && (
                       <div className="ml-6 border-l border-border/50">
                         {file.tests.map((test, idx) => (
-                          <button
+                          <div
                             key={`${file.path}-${idx}`}
-                            onClick={() => runSpecificTest(file.path, test.title)}
-                            disabled={isRunning}
                             className={cn(
-                              "flex items-center gap-2 w-full px-3 py-1 text-xs text-left transition-colors",
-                              "hover:bg-muted/50 disabled:opacity-50 disabled:cursor-not-allowed",
+                              "flex items-center gap-1 w-full px-3 py-1 text-xs transition-colors group/test",
+                              "hover:bg-muted/50",
                               "text-muted-foreground hover:text-foreground"
                             )}
-                            title={test.fullTitle}
                           >
-                            <Play className="h-2.5 w-2.5 shrink-0" />
-                            <span className="truncate">{test.title}</span>
+                            <button
+                              onClick={() => runSpecificTest(file.path, test.title, false, test.line)}
+                              disabled={isRunning}
+                              className="flex items-center gap-2 flex-1 min-w-0 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                              title={`Run: ${test.fullTitle}`}
+                            >
+                              <Play className="h-2.5 w-2.5 shrink-0" />
+                              <span className="truncate">{test.title}</span>
+                            </button>
+                            <button
+                              onClick={() => runSpecificTest(file.path, test.title, true, test.line)}
+                              disabled={isRunning}
+                              className={cn(
+                                "p-0.5 rounded opacity-0 group-hover/test:opacity-100 transition-opacity",
+                                "text-muted-foreground hover:text-foreground",
+                                "disabled:opacity-50 disabled:cursor-not-allowed"
+                              )}
+                              title={`Run headed: ${test.fullTitle}`}
+                            >
+                              <Eye className="h-2.5 w-2.5" />
+                            </button>
                             {test.line && (
-                              <span className="ml-auto text-[10px] text-muted-foreground/50">
+                              <span className="text-[10px] text-muted-foreground/50 shrink-0">
                                 :{test.line}
                               </span>
                             )}
-                          </button>
+                          </div>
                         ))}
                       </div>
                     )}
@@ -932,7 +1049,7 @@ export function TestPanel({
             )}
           >
             {hasOutput ? (
-              highlightOutput(execution.output)
+              highlightOutput(execution.output, projectId)
             ) : (
               <span className="text-zinc-500">
                 {hasTestFiles ? (

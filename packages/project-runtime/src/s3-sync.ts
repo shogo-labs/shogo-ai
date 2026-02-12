@@ -11,8 +11,9 @@
  *
  * Features:
  * - Download project zip from S3 on startup
- * - Upload changed files to S3 periodically (as zip)
- * - Incremental file tracking for efficient syncs
+ * - Upload changed files to S3 periodically (as zip, safety net)
+ * - Event-driven sync: file watcher triggers debounced upload on changes
+ * - Explicit sync trigger via triggerSync() for critical write operations
  */
 
 import { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
@@ -62,6 +63,9 @@ export interface SyncStats {
 // S3 Sync Class (Zip-based)
 // =============================================================================
 
+/** Default debounce delay for event-driven sync (ms) */
+const SYNC_DEBOUNCE_MS = 3000
+
 export class S3Sync {
   private client: S3Client
   private config: Required<S3SyncConfig>
@@ -77,6 +81,8 @@ export class S3Sync {
   private pendingUploads: Set<string> = new Set()
   private uploadDebounceTimer: ReturnType<typeof setTimeout> | null = null
   private lastUploadHash: string = ''
+  private isUploading: boolean = false
+  private uploadRequestedDuringUpload: boolean = false
 
   constructor(config: S3SyncConfig) {
     this.config = {
@@ -87,7 +93,7 @@ export class S3Sync {
       region: config.region || process.env.S3_REGION || 'us-east-1',
       forcePathStyle: config.forcePathStyle ?? (process.env.S3_FORCE_PATH_STYLE === 'true'),
       // Exclude patterns - these won't be included in the zip
-      // IMPORTANT: We INCLUDE node_modules, .output, dist, build, .nitro
+      // IMPORTANT: We INCLUDE node_modules and dist
       // This eliminates the need for bun install and vite build on cold start
       exclude: config.exclude || [
         '.DS_Store',      // macOS metadata
@@ -215,7 +221,7 @@ export class S3Sync {
       const fileCount = await this.countFiles(this.config.localDir)
       const allFiles = await this.listLocalFiles()
       const hasNodeModules = allFiles.some(f => f.includes('/node_modules/'))
-      const hasBuildOutput = allFiles.some(f => f.includes('/.output/') || f.includes('/dist/'))
+      const hasBuildOutput = allFiles.some(f => f.includes('/dist/'))
       
       this.stats.downloaded = fileCount
       this.stats.lastSync = new Date()
@@ -242,9 +248,23 @@ export class S3Sync {
 
   /**
    * Create and upload project archive to S3.
-   * INCLUDES: node_modules, .output, dist, build (for fast cold starts)
+   * INCLUDES: node_modules, dist (for fast cold starts)
+   *
+   * Uses an upload lock to prevent concurrent uploads. If called while an
+   * upload is already in progress, it will be re-run after the current upload
+   * finishes (to capture any changes made during the upload).
    */
   async uploadAll(deleteOrphans: boolean = false): Promise<SyncStats> {
+    // Prevent concurrent uploads - if one is running, flag for re-run after it finishes
+    if (this.isUploading) {
+      console.log(`[S3Sync] Upload already in progress, will re-run after completion`)
+      this.uploadRequestedDuringUpload = true
+      return this.getStats()
+    }
+
+    this.isUploading = true
+    this.uploadRequestedDuringUpload = false
+
     const archiveKey = this.getArchiveKey()
     console.log(`[S3Sync] Uploading archive to s3://${this.config.bucket}/${archiveKey}`)
 
@@ -270,9 +290,13 @@ export class S3Sync {
 
       // Log breakdown of what's being archived
       const nodeModulesFiles = filesToInclude.filter(f => f.includes('/node_modules/')).length
-      const outputFiles = filesToInclude.filter(f => f.includes('/.output/') || f.includes('/dist/')).length
+      const outputFiles = filesToInclude.filter(f => f.includes('/dist/')).length
       const sourceFiles = filesToInclude.length - nodeModulesFiles - outputFiles
       console.log(`[S3Sync] Archive contents: ${sourceFiles} source, ${nodeModulesFiles} node_modules, ${outputFiles} build output`)
+
+      // Clear pending uploads before archiving (any changes after this point
+      // will trigger a new debounced sync)
+      this.pendingUploads.clear()
 
       // Create archive
       await tar.create(
@@ -314,6 +338,16 @@ export class S3Sync {
     } catch (error: any) {
       console.error(`[S3Sync] Upload failed:`, error)
       this.stats.errors.push(`Upload failed: ${error.message}`)
+    } finally {
+      this.isUploading = false
+
+      // If another upload was requested while we were uploading, run it now
+      if (this.uploadRequestedDuringUpload) {
+        this.uploadRequestedDuringUpload = false
+        console.log(`[S3Sync] Re-running upload (changes occurred during previous upload)`)
+        // Use setImmediate to avoid deep recursion
+        setTimeout(() => this.uploadAll(false), 0)
+      }
     }
 
     return this.getStats()
@@ -349,10 +383,23 @@ export class S3Sync {
 
   /**
    * Start file watcher for detecting changes.
+   *
+   * The watcher triggers a debounced upload on every source file change.
+   * This means files are synced to S3 within ~3 seconds of modification,
+   * dramatically reducing the data-loss window compared to the 30s periodic sync.
+   *
+   * The periodic sync (startPeriodicSync) acts as a safety net for any
+   * changes the watcher might miss.
    */
   startWatcher(): void {
     if (!this.config.watchEnabled) {
       console.log(`[S3Sync] File watcher disabled`)
+      return
+    }
+
+    // If watcher is already running, don't start another one
+    if (this.watcher) {
+      console.log(`[S3Sync] File watcher already running`)
       return
     }
 
@@ -368,7 +415,7 @@ export class S3Sync {
       return
     }
 
-    console.log(`[S3Sync] Starting file watcher on ${this.config.localDir}`)
+    console.log(`[S3Sync] Starting file watcher on ${this.config.localDir} (debounce: ${SYNC_DEBOUNCE_MS}ms)`)
 
     try {
       this.watcher = watch(
@@ -378,8 +425,29 @@ export class S3Sync {
           try {
             if (!filename || this.shouldExclude(filename)) return
 
-            // Mark that we have pending changes (will be uploaded on next periodic sync)
+            // Skip node_modules and dist changes for debounced sync triggers.
+            // These are large directories that change during bun install / vite build,
+            // not during AI file edits. They'll be captured by the periodic sync.
+            if (filename.startsWith('node_modules/') || filename.startsWith('dist/')) return
+
+            // Mark that we have pending changes
             this.pendingUploads.add(filename)
+
+            // Debounced upload: resets on every change, fires SYNC_DEBOUNCE_MS
+            // after the last change. This batches rapid successive writes
+            // (e.g., AI writing multiple files) into a single upload.
+            if (this.uploadDebounceTimer) {
+              clearTimeout(this.uploadDebounceTimer)
+            }
+            this.uploadDebounceTimer = setTimeout(() => {
+              const pendingCount = this.pendingUploads.size
+              if (pendingCount > 0) {
+                console.log(`[S3Sync] 📦 File changes detected (${pendingCount} files), triggering sync...`)
+                this.uploadAll(false).catch(err => {
+                  console.error(`[S3Sync] Debounced upload failed:`, err)
+                })
+              }
+            }, SYNC_DEBOUNCE_MS)
           } catch (error: any) {
             // Ignore errors in watcher callback
           }
@@ -408,10 +476,47 @@ export class S3Sync {
   }
 
   /**
+   * Explicitly trigger an S3 sync (debounced).
+   *
+   * Call this after critical file write operations (e.g., template copy,
+   * agent file writes, build output) to ensure changes are persisted promptly.
+   * Uses the same debounce mechanism as the file watcher to batch rapid calls.
+   *
+   * @param immediate - If true, skips debounce and uploads immediately.
+   */
+  triggerSync(immediate: boolean = false): void {
+    if (immediate) {
+      console.log(`[S3Sync] 📦 Immediate sync triggered`)
+      this.uploadAll(false).catch(err => {
+        console.error(`[S3Sync] Immediate sync failed:`, err)
+      })
+      return
+    }
+
+    // Debounced trigger (same as watcher)
+    if (this.uploadDebounceTimer) {
+      clearTimeout(this.uploadDebounceTimer)
+    }
+    this.uploadDebounceTimer = setTimeout(() => {
+      console.log(`[S3Sync] 📦 Explicit sync triggered`)
+      this.uploadAll(false).catch(err => {
+        console.error(`[S3Sync] Explicit sync upload failed:`, err)
+      })
+    }, SYNC_DEBOUNCE_MS)
+  }
+
+  /**
    * Get sync statistics.
    */
   getStats(): SyncStats {
     return { ...this.stats }
+  }
+
+  /**
+   * Check if there are pending changes waiting to be synced.
+   */
+  hasPendingChanges(): boolean {
+    return this.pendingUploads.size > 0 || this.uploadDebounceTimer !== null
   }
 
   /**
@@ -422,6 +527,7 @@ export class S3Sync {
     this.stopWatcher()
     if (this.uploadDebounceTimer) {
       clearTimeout(this.uploadDebounceTimer)
+      this.uploadDebounceTimer = null
     }
   }
 
@@ -532,6 +638,10 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
 /**
  * Initialize S3 sync: download archive and start background sync.
  * Returns null if S3 is not configured OR if initial download fails critically.
+ *
+ * Starts both periodic sync (30s safety net) and file watcher (debounced event-driven sync).
+ * The watcher is started for ALL projects, including new ones, to catch the first
+ * file writes (e.g., template copy, AI code generation).
  */
 export async function initializeS3Sync(localDir: string): Promise<S3Sync | null> {
   const sync = createS3SyncFromEnv(localDir)
@@ -557,16 +667,13 @@ export async function initializeS3Sync(localDir: string): Promise<S3Sync | null>
     return null
   }
 
-  // Start periodic sync (upload changes)
+  // Start periodic sync (30s safety net - catches anything the watcher misses)
   sync.startPeriodicSync()
 
-  // Start file watcher if there are files
-  if (downloadStats.downloaded > 0) {
-    sync.startWatcher()
-  } else {
-    console.log('[S3Sync] Skipping file watcher (no files downloaded - new project)')
-    console.log('[S3Sync] Watcher will be started after files are added')
-  }
+  // Always start file watcher - including for new projects.
+  // This ensures the first file writes (template copy, AI code generation)
+  // trigger an immediate debounced sync to S3, rather than waiting up to 30s.
+  sync.startWatcher()
 
   return sync
 }

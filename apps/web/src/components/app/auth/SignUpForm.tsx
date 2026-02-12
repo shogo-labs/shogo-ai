@@ -13,6 +13,7 @@ import { useState, useMemo, type FormEvent } from "react"
 import { observer } from "mobx-react-lite"
 import { useDomains } from "@/contexts/DomainProvider"
 import { useSession } from "@/contexts/SessionProvider"
+import { clearUserLocalStorage } from "@/lib/clear-user-storage"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -149,6 +150,10 @@ export const SignUpForm = observer(function SignUpForm() {
     }
 
     try {
+      // Clear stale user data from any previous session before signing up
+      // This prevents race conditions where components load a previous user's workspace
+      clearUserLocalStorage()
+      
       // Submit to auth.signUp
       await auth.signUp({ name, email, password })
       // Refetch session to update better-auth nanostore

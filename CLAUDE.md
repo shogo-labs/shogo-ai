@@ -96,7 +96,7 @@ cd packages/sdk && bun run test:e2e
        ├── @shogo/api (Hono API server, Better Auth, Prisma)
        ├── @shogo/web (React app, Vite, MobX)
        ├── @shogo/project-runtime (isolated project pods)
-       └── @shogo-ai/sdk (TanStack Start SDK, publishable)
+       └── @shogo-ai/sdk (Vite + Hono SDK, publishable)
 ```
 
 ### Transformation Pipeline
@@ -169,7 +169,6 @@ const store = RootStoreModel.create({}, {
 
 ### apps/web/src/
 - `persistence/MCPPersistence.ts` — Browser HTTP adapter
-- `components/rendering/` — Dynamic component rendering system
 - `components/app/` — Main application components
 
 ### apps/api/src/

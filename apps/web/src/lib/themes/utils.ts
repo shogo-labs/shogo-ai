@@ -136,41 +136,79 @@ export function themeToMinimalCSS(theme: ThemeConfig, mode: 'light' | 'dark' = '
 }
 
 /**
- * Generate a summary of theme colors for AI prompt context
+ * Generate a summary of theme colors for AI prompt context.
+ * This is appended to the system prompt so the AI knows which theme to apply.
  */
 export function themeToPromptContext(theme: ThemeConfig): string {
   const { light, dark } = theme
+  const themeId = theme.id ?? 'default'
   
-  return `## Current Theme: ${theme.name}
+  return `## 🎨 MANDATORY Theme: "${theme.name}" (id: ${themeId})
 
-### Light Mode Colors
-- Background: ${light.background}
-- Foreground (text): ${light.foreground}
-- Primary: ${light.primary.DEFAULT}
-- Primary Text: ${light.primary.foreground}
-- Secondary: ${light.secondary.DEFAULT}
-- Accent: ${light.accent.DEFAULT}
-- Muted: ${light.muted.DEFAULT}
-- Border: ${light.border}
-- Radius: ${theme.effects?.radius ?? '0.5'}rem
+**CRITICAL: The user has selected the "${theme.name}" theme. You MUST apply this theme to ALL generated code.**
 
-### Dark Mode Colors
-- Background: ${dark.background}
-- Foreground (text): ${dark.foreground}
-- Primary: ${dark.primary.DEFAULT}
-- Primary Text: ${dark.primary.foreground}
-- Secondary: ${dark.secondary.DEFAULT}
-- Accent: ${dark.accent.DEFAULT}
-- Muted: ${dark.muted.DEFAULT}
-- Border: ${dark.border}
+### When using \`template_copy\` tool:
+Always pass \`theme: "${themeId}"\` as a parameter. Example:
+\`\`\`json
+{ "template": "...", "name": "...", "theme": "${themeId}" }
+\`\`\`
 
-### How to Update Theme
-To change the theme, modify the CSS variables in \`src/index.css\`.
-All color values must be in HSL format without the hsl() wrapper.
-Example: "--primary: 222.2 47.4% 11.2%;"
+### When writing \`src/index.css\` manually (for non-template projects):
+You MUST use these exact CSS variables instead of default values:
 
-The Tailwind classes like \`bg-primary\`, \`text-foreground\`, etc. 
-automatically use these CSS variables.`
+#### Light Mode (:root)
+\`\`\`css
+:root {
+  --background: ${light.background};
+  --foreground: ${light.foreground};
+  --card: ${light.card.DEFAULT};
+  --card-foreground: ${light.card.foreground};
+  --popover: ${light.popover.DEFAULT};
+  --popover-foreground: ${light.popover.foreground};
+  --primary: ${light.primary.DEFAULT};
+  --primary-foreground: ${light.primary.foreground};
+  --secondary: ${light.secondary.DEFAULT};
+  --secondary-foreground: ${light.secondary.foreground};
+  --muted: ${light.muted.DEFAULT};
+  --muted-foreground: ${light.muted.foreground};
+  --accent: ${light.accent.DEFAULT};
+  --accent-foreground: ${light.accent.foreground};
+  --destructive: ${light.destructive.DEFAULT};
+  --destructive-foreground: ${light.destructive.foreground};
+  --border: ${light.border};
+  --input: ${light.input};
+  --ring: ${light.ring};
+  --radius: ${theme.effects?.radius ?? '0.5'}rem;
+}
+\`\`\`
+
+#### Dark Mode (.dark)
+\`\`\`css
+.dark {
+  --background: ${dark.background};
+  --foreground: ${dark.foreground};
+  --card: ${dark.card.DEFAULT};
+  --card-foreground: ${dark.card.foreground};
+  --popover: ${dark.popover.DEFAULT};
+  --popover-foreground: ${dark.popover.foreground};
+  --primary: ${dark.primary.DEFAULT};
+  --primary-foreground: ${dark.primary.foreground};
+  --secondary: ${dark.secondary.DEFAULT};
+  --secondary-foreground: ${dark.secondary.foreground};
+  --muted: ${dark.muted.DEFAULT};
+  --muted-foreground: ${dark.muted.foreground};
+  --accent: ${dark.accent.DEFAULT};
+  --accent-foreground: ${dark.accent.foreground};
+  --destructive: ${dark.destructive.DEFAULT};
+  --destructive-foreground: ${dark.destructive.foreground};
+  --border: ${dark.border};
+  --input: ${dark.input};
+  --ring: ${dark.ring};
+}
+\`\`\`
+
+All color values are HSL without the hsl() wrapper. Tailwind classes like \`bg-primary\`, \`text-foreground\`, etc. automatically use these CSS variables.
+Do NOT use the default shadcn theme colors — use the "${theme.name}" colors above.`
 }
 
 /**

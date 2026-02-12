@@ -74,8 +74,11 @@ tfplan
 k8s/**/secrets.yaml
 
 apps/web/playwright-report/
-
 apps/web/test-results/
+
+# Docusaurus
+apps/docs/build/
+apps/docs/.docusaurus/
 
 workspaces/
 
@@ -86,6 +89,9 @@ workspaces/
 /packages/sdk/examples/*/playwright-report
 /packages/sdk/examples/*/.output
 /packages/sdk/examples/*/.nitro
+/packages/sdk/examples/*/dev-docs/build
+/packages/sdk/examples/*/dev-docs/node_modules
+/packages/sdk/examples/*/dev-docs/.docusaurus
 
 # Vite/TanStack generated timestamp files (bust Docker cache)
 app.config.timestamp*.js
@@ -93,3 +99,5 @@ app.config.timestamp*.js
 # Chat export logs (auto-generated agent outputs)
 shogo-chats/
 packages/mcp/src/evals/dspy/__pycache__/
+
+*.png

@@ -8,7 +8,7 @@
  * - Connectors: Connectors, GitHub
  */
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { observer } from "mobx-react-lite"
 import { useNavigate, useSearchParams, useParams } from "react-router-dom"
 import { format } from "date-fns"
@@ -34,6 +34,8 @@ import {
   Loader2,
   Trash2,
   ChevronDown,
+  ChevronRight,
+  ChevronLeft,
   Check,
   Eye,
   EyeOff,
@@ -78,6 +80,9 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
+import { UsageTable, type UsageSummaryData, type UsageLogData } from "@/components/admin/analytics/UsageTable"
+import { useUsageLog } from "@/components/admin/hooks/useAdminApi"
+import type { AnalyticsPeriod } from "@/components/admin/analytics/PeriodSelector"
 import { useWorkspaceData } from "@/components/app/workspace"
 import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
@@ -86,6 +91,103 @@ import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
 import { PlanSelector } from "@/components/app/billing/PlanSelector"
 import { useBillingData } from "@/hooks/useBillingData"
+
+// =============================================================================
+// Workspace-scoped usage hooks (reuse the same UsageTable component as admin)
+// =============================================================================
+
+interface ApiResponse<T> { ok: boolean; data: T }
+
+function useWorkspaceUsageSummary(basePath: string, period: string) {
+  const [data, setData] = useState<UsageSummaryData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const url = basePath ? `${basePath}/analytics/usage-summary?period=${period}` : ''
+
+  useEffect(() => {
+    if (!url) { setLoading(false); return }
+    setLoading(true)
+    fetch(url, { credentials: 'include' })
+      .then((r) => r.json())
+      .then((res: ApiResponse<UsageSummaryData>) => { setData(res.data); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [url])
+
+  return { data, loading }
+}
+
+function useWorkspaceUsageLog(basePath: string, period: string, page: number) {
+  const [data, setData] = useState<UsageLogData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const url = basePath ? `${basePath}/analytics/usage-log?period=${period}&page=${page}&limit=50` : ''
+
+  useEffect(() => {
+    if (!url) { setLoading(false); return }
+    setLoading(true)
+    fetch(url, { credentials: 'include' })
+      .then((r) => r.json())
+      .then((res: ApiResponse<UsageLogData>) => { setData(res.data); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [url])
+
+  return { data, loading }
+}
+
+interface ProjectUsageData {
+  projectId: string
+  projectName: string
+  aiCredits: number
+}
+
+function useProjectUsageBreakdown(workspaceId: string | undefined, period: string) {
+  // Get projects from SDK domain store (already loaded by useWorkspaceData)
+  const store = useSDKDomain() as IDomainStore
+
+  // Fetch usage events via the centralized useUsageLog hook
+  const basePath = workspaceId ? `/api/workspaces/${workspaceId}` : ''
+  const { data: usageLogData, loading: usageLoading } = useUsageLog(
+    period as AnalyticsPeriod,
+    1,
+    basePath,
+    1000
+  )
+
+  // Derive project usage breakdown from SDK store + usage log data
+  const projects = workspaceId && store?.projectCollection
+    ? store.projectCollection.all.filter((p: any) => p.workspaceId === workspaceId)
+    : []
+
+  const data: ProjectUsageData[] = useMemo(() => {
+    if (!projects.length) return []
+
+    // Aggregate AI credits by project
+    const projectCreditsMap = new Map<string, number>()
+
+    // Initialize all projects with 0 credits
+    projects.forEach((project: any) => {
+      projectCreditsMap.set(project.id, 0)
+    })
+
+    // Sum creditCost from usage events per project
+    const entries = usageLogData?.entries || []
+    entries.forEach((event: any) => {
+      if (event.projectId) {
+        const existing = projectCreditsMap.get(event.projectId) || 0
+        projectCreditsMap.set(event.projectId, existing + (event.creditCost || 0))
+      }
+    })
+
+    // Convert to array format
+    return projects.map((project: any) => ({
+      projectId: project.id,
+      projectName: project.name,
+      aiCredits: projectCreditsMap.get(project.id) || 0,
+    }))
+  }, [projects, usageLogData])
+
+  const loading = usageLoading
+
+  return { data, loading }
+}
 
 // Tab types
 type TabId =
@@ -774,6 +876,31 @@ function PeopleTab() {
     return true
   })
 
+  const handleExportMembers = useCallback(() => {
+    const csvRows: string[] = []
+    csvRows.push("Name,Email,Role,Joined Date")
+
+    filteredMembers.forEach((member) => {
+      const isCurrentUser = member.userId === currentUserId
+      const name = isCurrentUser ? currentUserName : `User ${member.userId.slice(0, 8)}`
+      const email = isCurrentUser ? currentUserEmail : member.userId
+      const role = member.role.charAt(0).toUpperCase() + member.role.slice(1)
+      const joined = format(new Date(member.createdAt), "MMM d, yyyy")
+      csvRows.push(`"${name}","${email}","${role}","${joined}"`)
+    })
+
+    const csvContent = csvRows.join("\n")
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `members-${format(new Date(), "yyyy-MM-dd")}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }, [filteredMembers, currentUserId, currentUserName, currentUserEmail])
+
   const canManageMember = (member: Member): boolean => {
     if (member.userId === currentUserId) return false
     const memberLevel = RoleLevels[member.role] ?? 0
@@ -825,7 +952,7 @@ function PeopleTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a href="https://docs-staging.shogo.ai/" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -873,7 +1000,7 @@ function PeopleTab() {
               </DropdownMenuContent>
             </DropdownMenu>
 
-            <Button variant="outline" size="sm" className="h-8 gap-1">
+            <Button variant="outline" size="sm" className="h-8 gap-1" onClick={handleExportMembers}>
               <Download className="h-3.5 w-3.5" />
               Export
             </Button>
@@ -1156,9 +1283,122 @@ function BillingTab() {
 }
 
 // ============================================================================
-// USAGE TAB (Cloud & AI Balance)
+// PROJECT BREAKDOWN COMPONENT
+// ============================================================================
+function ProjectBreakdown({ workspaceId, period }: { workspaceId: string | undefined; period: string }) {
+  const [isExpanded, setIsExpanded] = useState(false)
+  const [currentPage, setCurrentPage] = useState(1)
+  const itemsPerPage = 10
+  
+  const { data: projectUsage, loading } = useProjectUsageBreakdown(workspaceId, period)
+  
+  // Reset to page 1 when period changes
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [period])
+  
+  const totalPages = Math.ceil((projectUsage?.length || 0) / itemsPerPage)
+  const startIndex = (currentPage - 1) * itemsPerPage
+  const endIndex = startIndex + itemsPerPage
+  const paginatedProjects = projectUsage?.slice(startIndex, endIndex) || []
+  
+  const formatCredits = (credits: number) => {
+    return credits % 1 === 0 ? `${credits}` : credits.toFixed(1)
+  }
+  
+  return (
+    <div className="bg-card rounded-lg border border-border">
+      <button
+        type="button"
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full p-4 flex items-center justify-between hover:bg-muted/30 transition-colors cursor-pointer"
+      >
+        <span className="font-medium">Project breakdown</span>
+        {isExpanded ? (
+          <ChevronDown className="h-4 w-4" />
+        ) : (
+          <ChevronRight className="h-4 w-4" />
+        )}
+      </button>
+      
+      {isExpanded && (
+        <div className="border-t border-border">
+          {loading ? (
+            <div className="p-8 flex items-center justify-center">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : projectUsage && projectUsage.length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted-foreground">
+              No projects found
+            </div>
+          ) : (
+            <>
+              {/* Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left p-4 text-sm font-medium text-muted-foreground">Project</th>
+                      <th className="text-right p-4 text-sm font-medium text-muted-foreground">AI usage (credits)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedProjects.map((project) => (
+                      <tr key={project.projectId} className="border-b border-border last:border-b-0">
+                        <td className="p-4 text-sm">{project.projectName}</td>
+                        <td className="p-4 text-sm text-right">{formatCredits(project.aiCredits)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              
+              {/* Pagination */}
+              <div className="p-4 border-t border-border flex items-center justify-between">
+                <div className="text-sm text-muted-foreground">
+                  Page {currentPage}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="p-1.5 rounded border border-border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="p-1.5 rounded border border-border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// USAGE TAB (Cloud & AI Balance + Team Usage Table)
 // ============================================================================
 function UsageTab() {
+  const { currentWorkspace } = useWorkspaceData()
+  const workspaceId = currentWorkspace?.id
+  const [period, setPeriod] = useState<"7d" | "30d" | "90d" | "1y">("30d")
+  const [logPage, setLogPage] = useState(1)
+
+  // Workspace-scoped usage data
+  const basePath = workspaceId ? `/api/workspaces/${workspaceId}` : ''
+  const summaryResult = useWorkspaceUsageSummary(basePath, period)
+  const logResult = useWorkspaceUsageLog(basePath, period, logPage)
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between">
@@ -1218,13 +1458,41 @@ function UsageTab() {
         </div>
       </div>
 
+      {/* Team AI Usage Table */}
+      {workspaceId && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="font-medium">Team AI Usage</h4>
+            <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs">
+              {(["7d", "30d", "90d", "1y"] as const).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => { setPeriod(p); setLogPage(1) }}
+                  className={`px-3 py-1.5 transition-colors ${
+                    period === p
+                      ? 'bg-primary text-primary-foreground'
+                      : 'hover:bg-muted/50 text-muted-foreground'
+                  }`}
+                >
+                  {p === '7d' ? '7 days' : p === '30d' ? '30 days' : p === '90d' ? '90 days' : '1 year'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <UsageTable
+            summaryData={summaryResult.data}
+            logData={logResult.data}
+            summaryLoading={summaryResult.loading}
+            logLoading={logResult.loading}
+            onPageChange={setLogPage}
+            currentPage={logPage}
+            hideTokens
+          />
+        </div>
+      )}
+
       {/* Project breakdown */}
-      <div className="p-4 bg-card rounded-lg border border-border">
-        <Button variant="ghost" className="w-full justify-between">
-          <span>Project breakdown</span>
-          <ChevronDown className="h-4 w-4" />
-        </Button>
-      </div>
+      <ProjectBreakdown workspaceId={workspaceId} period={period} />
 
       <p className="text-sm text-muted-foreground">
         This is a temporary offering until the beginning of 2026 as we refine our pricing model.{" "}
@@ -1927,7 +2195,7 @@ export const SettingsPage = observer(function SettingsPage() {
     {
       title: "Connectors",
       items: [
-        { id: "connectors", label: "Connectors", icon: Plug },
+        // { id: "connectors", label: "Connectors", icon: Plug }, // not functional yet
         { id: "github", label: "GitHub", icon: Github },
       ],
     },
@@ -1980,7 +2248,7 @@ export const SettingsPage = observer(function SettingsPage() {
           {activeTab === "privacy" && <PrivacyTab />}
           {activeTab === "account" && <AccountTab />}
           {activeTab === "labs" && <LabsTab />}
-          {activeTab === "connectors" && <ConnectorsTab />}
+          {/* {activeTab === "connectors" && <ConnectorsTab />} */} {/* not functional yet */}
           {activeTab === "github" && <GitHubTab />}
         </div>
       </div>

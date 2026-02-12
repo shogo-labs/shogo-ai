@@ -166,6 +166,8 @@ export function useWorkspaceData(): WorkspaceDataState {
 
   // Track previous userId to detect user change (sign-up, sign-in, sign-out)
   const prevUserIdRef = useRef<string | null | undefined>(undefined)
+  // Track whether we're in a user transition to block stale API requests
+  const [userTransitioning, setUserTransitioning] = useState(false)
 
   // Clear cached data when user changes to prevent stale workspace access errors
   // This handles the race condition during sign-up where old workspace data
@@ -175,8 +177,9 @@ export function useWorkspaceData(): WorkspaceDataState {
 
     // Skip on initial mount (prevUserId is undefined)
     if (prevUserId !== undefined && prevUserId !== userId) {
-      // User has changed - clear all cached workspace data
+      // User has changed - block all API requests until new data loads
       console.log("[useWorkspaceData] User changed, clearing cached data")
+      setUserTransitioning(true)
       
       // Reset auto-select state for the new user
       autoSelectState.selectedSlug = null
@@ -192,28 +195,72 @@ export function useWorkspaceData(): WorkspaceDataState {
     prevUserIdRef.current = userId
   }, [userId, workspaceSlug, setWorkspaceSlug])
 
-  // Reload workspaces from API when user changes or refetch is triggered
+  // Reload workspaces from API when user changes or refetch is triggered.
+  // Uses retry-with-backoff to handle the race condition where the personal workspace
+  // hasn't been created yet after signup (the server creates it asynchronously).
   useEffect(() => {
+    let cancelled = false
+    
     const loadWorkspaces = async () => {
       if (!userId || !store?.workspaceCollection) {
         setIsLoadingWorkspaces(false)
         return
       }
 
-      try {
-        setIsLoadingWorkspaces(true)
-        // Use the SDK collections (APIPersistence -> v2 API routes)
-        // Load workspaces first (filtered by user), then members
-        await store.workspaceCollection.loadAll({ userId })
-        await store.memberCollection.loadAll({ userId })
-      } catch (error) {
-        console.error("[useWorkspaceData] Error loading workspaces:", error)
-      } finally {
+      // Generous retry window to handle async workspace creation after signup.
+      // The server's Better Auth `after` hook creates the workspace asynchronously,
+      // so it may not exist when the first request fires.
+      const maxRetries = 8
+      const backoffMs = [0, 300, 600, 1000, 1500, 2000, 3000, 4000] // ~12.4s total window
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        if (cancelled) return
+        
+        try {
+          if (attempt > 0) {
+            console.log(`[useWorkspaceData] Retry ${attempt}/${maxRetries - 1} loading workspaces (backoff: ${backoffMs[attempt]}ms)`)
+            await new Promise(resolve => setTimeout(resolve, backoffMs[attempt]))
+            if (cancelled) return
+          }
+
+          setIsLoadingWorkspaces(true)
+          // Use the SDK collections (APIPersistence -> v2 API routes)
+          // Load workspaces first (filtered by user), then members
+          await store.workspaceCollection.loadAll({ userId })
+          await store.memberCollection.loadAll({ userId })
+
+          // Success — check if we got any workspaces. If not and this is a fresh signup,
+          // the personal workspace may not have been created yet. Retry.
+          const hasWorkspaces = store.workspaceCollection.all.length > 0 ||
+            store.memberCollection.all.filter((m: any) => m.userId === userId).length > 0
+          if (!hasWorkspaces && attempt < maxRetries - 1) {
+            console.log(`[useWorkspaceData] No workspaces found for user, retrying (workspace may still be creating)`)
+            continue
+          }
+
+          // Done — either we have workspaces or we've exhausted retries
+          break
+        } catch (error) {
+          // On 400/network errors, retry silently (workspace may not exist yet after signup)
+          if (attempt < maxRetries - 1) {
+            // Only log at debug level during retries to avoid console error spam
+            console.debug(`[useWorkspaceData] Workspace load attempt ${attempt + 1} failed, will retry:`, error)
+            continue
+          }
+          console.error("[useWorkspaceData] Error loading workspaces (final attempt):", error)
+        }
+      }
+
+      if (!cancelled) {
         setIsLoadingWorkspaces(false)
+        // User transition complete - safe to make workspace-scoped requests
+        setUserTransitioning(false)
       }
     }
 
     loadWorkspaces()
+    
+    return () => { cancelled = true }
   }, [userId, store, workspacesRefetchCounter])
 
   // Function to trigger a refetch of workspaces
@@ -247,6 +294,9 @@ export function useWorkspaceData(): WorkspaceDataState {
   }, [workspaces])
 
   // Get current workspace ID by slug - use ID to avoid holding stale MST node references
+  // Guard: only return a workspace that belongs to the CURRENT user's membership list.
+  // This prevents stale localStorage slugs from resolving to a previous user's workspace
+  // during the brief period between sign-up and collection refresh.
   const currentWorkspaceId = useMemo(() => {
     if (!workspaceSlug || workspaces.length === 0) return undefined
     const ws = workspaces.find((ws: any) => ws.slug === workspaceSlug)
@@ -333,7 +383,7 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Reload projects from API when workspace changes or refetch is triggered
   useEffect(() => {
     const loadProjects = async () => {
-      if (!currentWorkspaceId || !store?.projectCollection) {
+      if (!currentWorkspaceId || !store?.projectCollection || userTransitioning) {
         setIsLoadingProjects(false)
         return
       }
@@ -358,7 +408,7 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
 
     loadProjects()
-  }, [currentWorkspaceId, store, projectsRefetchCounter, workspaces])
+  }, [currentWorkspaceId, store, projectsRefetchCounter, workspaces, userTransitioning])
 
   // Function to trigger a refetch of projects
   const refetchProjects = useCallback(() => {
@@ -368,7 +418,7 @@ export function useWorkspaceData(): WorkspaceDataState {
   // Reload folders from API when workspace changes or refetch is triggered
   useEffect(() => {
     const loadFolders = async () => {
-      if (!currentWorkspaceId || !store?.folderCollection) {
+      if (!currentWorkspaceId || !store?.folderCollection || userTransitioning) {
         setIsLoadingFolders(false)
         return
       }
@@ -393,18 +443,27 @@ export function useWorkspaceData(): WorkspaceDataState {
     }
 
     loadFolders()
-  }, [currentWorkspaceId, store, foldersRefetchCounter, workspaces])
+  }, [currentWorkspaceId, store, foldersRefetchCounter, workspaces, userTransitioning])
 
   // Function to trigger a refetch of folders
   const refetchFolders = useCallback(() => {
     setFoldersRefetchCounter((c) => c + 1)
   }, [])
 
-  // Reload starred projects from API when user changes or refetch is triggered
+  // Reload starred projects from API when user changes or refetch is triggered.
+  // Deferred until workspaces are loaded to avoid race condition on signup where
+  // the workspace hasn't been created yet (the server creates it asynchronously).
   useEffect(() => {
     const loadStarred = async () => {
-      if (!userId || !store?.starredProjectCollection) {
+      if (!userId || !store?.starredProjectCollection || userTransitioning) {
         setIsLoadingStarred(false)
+        return
+      }
+
+      // Wait until workspaces have loaded before fetching starred projects.
+      // On fresh signup, the workspace may not exist yet which can cause 400 errors
+      // on starred-projects API since auth/membership isn't established.
+      if (isLoadingWorkspaces) {
         return
       }
 
@@ -413,14 +472,15 @@ export function useWorkspaceData(): WorkspaceDataState {
         // Use SDK collection (v2 API routes)
         await store.starredProjectCollection.loadAll({ userId })
       } catch (error) {
-        console.error("[useWorkspaceData] Error loading starred projects:", error)
+        // Silently handle errors during initial load — starred projects are non-critical
+        console.debug("[useWorkspaceData] Error loading starred projects:", error)
       } finally {
         setIsLoadingStarred(false)
       }
     }
 
     loadStarred()
-  }, [userId, store, starredRefetchCounter])
+  }, [userId, store, starredRefetchCounter, userTransitioning, isLoadingWorkspaces])
 
   // Function to trigger a refetch of starred projects
   const refetchStarredProjects = useCallback(() => {
@@ -528,9 +588,11 @@ export function useWorkspaceData(): WorkspaceDataState {
   }
 
   // Get projects from shared workspaces
+  // Use p.workspaceId (plain string) instead of p.workspace?.id (safeReference)
+  // to avoid MST InvalidReferenceError when workspace isn't loaded yet
   const sharedWorkspaceIds = new Set(sharedWorkspaces.map((ws: any) => ws.id))
   const sharedProjects = allProjects.filter((p: any) =>
-    sharedWorkspaceIds.has(p.workspace?.id)
+    sharedWorkspaceIds.has(p.workspaceId)
   )
 
   // Helper function to check if a project is starred

@@ -118,7 +118,7 @@ export const SharedWithMePage = observer(function SharedWithMePage() {
 
   const handleToggleStar = useCallback(async (project: any, e: React.MouseEvent) => {
     e.stopPropagation()
-    const workspaceId = project.workspace?.id
+    const workspaceId = project.workspaceId
     if (workspaceId) {
       await toggleStarProject(project.id, workspaceId)
     }
@@ -126,7 +126,7 @@ export const SharedWithMePage = observer(function SharedWithMePage() {
 
   // Get workspace name for a project
   const getWorkspaceName = useCallback((project: any) => {
-    const workspaceId = project.workspace?.id
+    const workspaceId = project.workspaceId
     const workspace = sharedWorkspaces.find((ws: any) => ws.id === workspaceId)
     return workspace?.name || "Unknown workspace"
   }, [sharedWorkspaces])

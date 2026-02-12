@@ -81,6 +81,7 @@ export function TemplateCard({
       className={cn(
         "group flex flex-col text-left transition-all duration-200",
         "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
+        "cursor-pointer",
         isLoading && "opacity-50 cursor-wait pointer-events-none"
       )}
     >

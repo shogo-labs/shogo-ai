@@ -3,21 +3,30 @@
  *
  * Manages the lifecycle of per-project Knative Services:
  * - Creates Knative Services for projects on demand
- * - Creates PVCs for project storage and PostgreSQL data
+ * - Provisions per-project databases on shared CloudNativePG cluster
  * - Provides URLs for routing to project pods
  * - Handles scale-to-zero and cold starts
- * - Includes PostgreSQL sidecar container for per-project database
  *
  * Architecture:
- * Each project pod contains two containers:
+ * Each project pod contains a single container:
  * 1. project-runtime: The main application (Claude Code, MCP, Vite)
- * 2. postgres: PostgreSQL 16 sidecar for project data
+ *
+ * Database:
+ * Projects use a shared CloudNativePG PostgreSQL cluster (projects-pg).
+ * Each project gets its own database (project_{uuid}) provisioned on demand.
+ * This replaces the previous PostgreSQL sidecar pattern for:
+ * - Better resource utilization (no per-pod postgres overhead)
+ * - Faster cold starts (no postgres startup wait)
+ * - Centralized backups (CloudNativePG handles WAL archiving)
+ * - Portable across EKS, k3s, and bare metal
  *
  * Used by the API to proxy requests to project-specific runtimes.
  */
 
 import * as k8s from "@kubernetes/client-node"
 import * as fs from "fs"
+import { generateProxyToken } from './ai-proxy-token'
+import * as databaseService from '../services/database.service'
 
 // =============================================================================
 // Configuration
@@ -155,24 +164,10 @@ export interface KnativeProjectManagerConfig {
   s3Region?: string
   /** Enable S3 path-style access (for MinIO) */
   s3ForcePathStyle?: boolean
-  /** PostgreSQL sidecar configuration */
+  /** Shared PostgreSQL configuration (CloudNativePG) */
   postgres?: {
-    /** Enable PostgreSQL sidecar (default: true) */
+    /** Enable shared PostgreSQL database provisioning (default: true) */
     enabled?: boolean
-    /** PostgreSQL image (default: postgres:16-alpine) */
-    image?: string
-    /** PostgreSQL user (default: shogo) */
-    user?: string
-    /** PostgreSQL password (default: shogo) */
-    password?: string
-    /** PostgreSQL database name (default: project) */
-    database?: string
-    /** Memory limit for PostgreSQL container (default: 512Mi) */
-    memoryLimit?: string
-    /** CPU limit for PostgreSQL container (default: 250m) */
-    cpuLimit?: string
-    /** Storage size for PostgreSQL PVC (default: 1Gi) */
-    storageSize?: string
   }
 }
 
@@ -190,15 +185,8 @@ export class KnativeProjectManager {
   private s3Endpoint: string | null
   private s3Region: string
   private s3ForcePathStyle: boolean
-  // PostgreSQL sidecar configuration
+  // Shared PostgreSQL configuration (CloudNativePG)
   private postgresEnabled: boolean
-  private postgresImage: string
-  private postgresUser: string
-  private postgresPassword: string
-  private postgresDatabase: string
-  private postgresMemoryLimit: string
-  private postgresCpuLimit: string
-  private postgresStorageSize: string
 
   constructor(config: KnativeProjectManagerConfig = {}) {
     this.namespace = config.namespace || NAMESPACE
@@ -210,15 +198,8 @@ export class KnativeProjectManager {
     this.s3Endpoint = config.s3Endpoint || process.env.S3_ENDPOINT || null
     this.s3Region = config.s3Region || process.env.S3_REGION || "us-east-1"
     this.s3ForcePathStyle = config.s3ForcePathStyle ?? (process.env.S3_FORCE_PATH_STYLE === "true")
-    // PostgreSQL sidecar configuration - read from env vars or config
+    // Shared PostgreSQL configuration (CloudNativePG cluster)
     this.postgresEnabled = config.postgres?.enabled ?? (process.env.POSTGRES_ENABLED !== "false")
-    this.postgresImage = config.postgres?.image || process.env.POSTGRES_IMAGE || "postgres:16-alpine"
-    this.postgresUser = config.postgres?.user || process.env.POSTGRES_USER || "shogo"
-    this.postgresPassword = config.postgres?.password || process.env.POSTGRES_PASSWORD || "shogo"
-    this.postgresDatabase = config.postgres?.database || process.env.POSTGRES_DATABASE || "project"
-    this.postgresMemoryLimit = config.postgres?.memoryLimit || process.env.POSTGRES_MEMORY_LIMIT || "512Mi"
-    this.postgresCpuLimit = config.postgres?.cpuLimit || process.env.POSTGRES_CPU_LIMIT || "250m"
-    this.postgresStorageSize = config.postgres?.storageSize || process.env.POSTGRES_STORAGE_SIZE || "1Gi"
   }
 
   /**
@@ -227,8 +208,7 @@ export class KnativeProjectManager {
    */
   getProjectPodUrl(projectId: string): string {
     if (!isKubernetes()) {
-      // Local development - use localhost with dynamic port
-      // In local mode, the RuntimeManager handles this
+      // Local development requires Knative
       throw new Error("KnativeProjectManager requires Kubernetes environment")
     }
 
@@ -401,8 +381,49 @@ export class KnativeProjectManager {
   /**
    * Create a Knative Service for a project.
    * Also creates the PVC for project storage if it doesn't exist.
+   *
+   * Deduplicates concurrent calls — if multiple requests arrive for the same project,
+   * they share a single creation promise (prevents duplicate DB provisioning and K8s resource races).
    */
   async createProject(projectId: string): Promise<string> {
+    // Check if there's already a pending creation for this project
+    const pending = pendingCreateRequests.get(projectId)
+    if (pending) {
+      const waitTime = Date.now() - pending.startTime
+      console.log(`[KnativeProjectManager] Joining existing createProject for ${projectId} (already in progress ${waitTime}ms)`)
+      return pending.promise
+    }
+
+    const startTime = Date.now()
+    const createPromise = this._doCreateProject(projectId)
+
+    // Store the pending request so concurrent callers can join
+    pendingCreateRequests.set(projectId, {
+      promise: createPromise,
+      startTime,
+    })
+
+    // Ensure cleanup happens regardless of outcome
+    createPromise.finally(() => {
+      pendingCreateRequests.delete(projectId)
+    })
+
+    // Safety cleanup for stale entries (in case of memory leaks)
+    setTimeout(() => {
+      const entry = pendingCreateRequests.get(projectId)
+      if (entry && Date.now() - entry.startTime > 5 * 60 * 1000) {
+        console.log(`[KnativeProjectManager] Cleaning up stale createProject request for ${projectId}`)
+        pendingCreateRequests.delete(projectId)
+      }
+    }, 5 * 60 * 1000)
+
+    return createPromise
+  }
+
+  /**
+   * Internal implementation of project creation (called once per project, guarded by dedup map).
+   */
+  private async _doCreateProject(projectId: string): Promise<string> {
     const createStartTime = Date.now()
     console.log(`[KnativeProjectManager] Creating project: ${projectId}`)
 
@@ -423,7 +444,7 @@ export class KnativeProjectManager {
 
     // Create Knative Service
     const ksvcStartTime = Date.now()
-    const service = this.buildKnativeService(projectId)
+    const service = await this.buildKnativeService(projectId)
     const api = getCustomApi()
 
     try {
@@ -690,18 +711,12 @@ export class KnativeProjectManager {
    * Build the Knative Service spec for a project.
    * Includes PostgreSQL sidecar container for per-project database.
    */
-  private buildKnativeService(projectId: string): any {
+  private async buildKnativeService(projectId: string): Promise<any> {
     // Build environment variables for project-runtime container
     const env: any[] = [
       { name: "PROJECT_ID", value: projectId },
       { name: "PROJECT_DIR", value: "/app/project" },
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
-      {
-        name: "ANTHROPIC_API_KEY",
-        valueFrom: {
-          secretKeyRef: { name: "anthropic-credentials", key: "api-key" },
-        },
-      },
       // Auth secret for validating preview JWT tokens
       {
         name: "BETTER_AUTH_SECRET",
@@ -711,20 +726,87 @@ export class KnativeProjectManager {
       },
     ]
 
-    // Add PostgreSQL DATABASE_URL if postgres sidecar is enabled
-    // Uses localhost since postgres runs in the same pod
-    if (this.postgresEnabled) {
-      env.push({
-        name: "DATABASE_URL",
-        value: `postgres://${this.postgresUser}:${this.postgresPassword}@localhost:5432/${this.postgresDatabase}`,
+    // AI Proxy configuration
+    // When the proxy is configured, the project-runtime routes ALL AI calls
+    // (including Claude Code CLI) through the proxy. No raw API keys are exposed.
+    //
+    // How it works:
+    // - AI_PROXY_URL + AI_PROXY_TOKEN are injected into the pod
+    // - project-runtime sets ANTHROPIC_BASE_URL → proxy's Anthropic-native endpoint
+    // - project-runtime sets ANTHROPIC_API_KEY → proxy token (validated by proxy)
+    // - The proxy forwards to the real Anthropic API using server-side keys
+    //
+    // Fallback: If proxy token generation fails, inject the raw ANTHROPIC_API_KEY
+    // from K8s secrets so the pod can still function.
+    // Derive the API service URL from the pod's own namespace (e.g., shogo-staging-system)
+    // The API is a Knative service exposed on port 80 via kourier
+    const systemNamespace = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
+    const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || `http://api.${systemNamespace}.svc.cluster.local`
+    env.push({ name: "AI_PROXY_URL", value: `${apiUrl}/api/ai/v1` })
+
+    let proxyTokenGenerated = false
+
+    // Generate a long-lived proxy token for this project (7 days, refreshed on pod creation)
+    try {
+      // Look up the project's workspace for billing context
+      const { prisma } = await import('./prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspaceId: true },
       })
-      // Add postgres credentials for backup script (pg_dump/psql)
-      env.push({ name: "POSTGRES_USER", value: this.postgresUser })
-      env.push({ name: "POSTGRES_PASSWORD", value: this.postgresPassword })
-      env.push({ name: "POSTGRES_DB", value: this.postgresDatabase })
-      // Enable postgres S3 backup (uses same S3 bucket as project files)
-      // Backup interval: 10 minutes (600000ms)
-      env.push({ name: "POSTGRES_BACKUP_INTERVAL", value: "600000" })
+      if (project) {
+        const proxyToken = await generateProxyToken(
+          projectId,
+          project.workspaceId,
+          'system', // System-generated token for the runtime
+          7 * 24 * 60 * 60 * 1000 // 7 days
+        )
+        env.push({ name: "AI_PROXY_TOKEN", value: proxyToken })
+        proxyTokenGenerated = true
+        console.log(`[KnativeProjectManager] Generated AI proxy token for project ${projectId} (no raw API key exposed)`)
+      } else {
+        console.warn(`[KnativeProjectManager] Project ${projectId} not found, skipping AI proxy token`)
+      }
+    } catch (err: any) {
+      console.error(`[KnativeProjectManager] Failed to generate AI proxy token for ${projectId}:`, err.message)
+    }
+
+    // If proxy token generation failed, AI features will be unavailable in the pod.
+    // We intentionally do NOT fall back to injecting the raw ANTHROPIC_API_KEY secret
+    // to prevent exposing API keys to user code running inside project pods.
+    if (!proxyTokenGenerated) {
+      console.warn(`[KnativeProjectManager] AI proxy token not generated for ${projectId} — AI features will be unavailable in this pod`)
+    }
+
+    // Add PostgreSQL DATABASE_URL for shared CloudNativePG cluster
+    // Database is provisioned per-project on the shared projects-pg cluster
+    if (this.postgresEnabled) {
+      // Retry database provisioning up to 3 times (CNPG cluster may be briefly unavailable)
+      let dbInfo: Awaited<ReturnType<typeof databaseService.provisionDatabase>> | null = null
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          dbInfo = await databaseService.provisionDatabase(projectId)
+          break
+        } catch (err: any) {
+          console.error(`[KnativeProjectManager] Database provisioning attempt ${attempt}/3 failed for ${projectId}:`, err.message)
+          if (attempt < 3) {
+            await new Promise(resolve => setTimeout(resolve, 2000 * attempt))
+          }
+        }
+      }
+
+      if (dbInfo) {
+        env.push({
+          name: "DATABASE_URL",
+          value: dbInfo.connectionUrl,
+        })
+        console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId}`)
+      } else {
+        // DATABASE_URL is required for all templates — fail the project creation
+        throw new Error(`Failed to provision database for project ${projectId} after 3 attempts. Check CloudNativePG cluster health.`)
+      }
+      // Disable postgres S3 backup (CloudNativePG handles backups via Barman)
+      env.push({ name: "POSTGRES_S3_BACKUP_ENABLED", value: "false" })
     }
 
     // Add S3 configuration if bucket is specified
@@ -802,30 +884,9 @@ export class KnativeProjectManager {
       },
     ]
 
-    // Add PostgreSQL sidecar container if enabled
-    // NOTE: Knative doesn't allow probes on sidecar containers (only on the main container)
-    // The main project-runtime container handles all probing; postgres sidecar just runs alongside
-    if (this.postgresEnabled) {
-      containers.push({
-        name: "postgres",
-        image: this.postgresImage,
-        env: [
-          { name: "POSTGRES_USER", value: this.postgresUser },
-          { name: "POSTGRES_PASSWORD", value: this.postgresPassword },
-          { name: "POSTGRES_DB", value: this.postgresDatabase },
-          // PGDATA must be a subdirectory of the volume mount
-          { name: "PGDATA", value: "/var/lib/postgresql/data/pgdata" },
-        ],
-        resources: {
-          requests: { memory: "128Mi", cpu: "50m" },
-          limits: { memory: this.postgresMemoryLimit, cpu: this.postgresCpuLimit },
-        },
-        volumeMounts: [
-          { name: "postgres-data", mountPath: "/var/lib/postgresql/data" },
-        ],
-        // No probes allowed on sidecar containers in Knative Serving
-      })
-    }
+    // NOTE: PostgreSQL sidecar removed. Projects now use shared CloudNativePG cluster.
+    // Database is provisioned per-project via databaseService.provisionDatabase()
+    // and the DATABASE_URL env var points to the shared cluster.
 
     // Build volumes array
     // Project data uses emptyDir for faster cold starts (~6s faster than EBS)
@@ -837,17 +898,7 @@ export class KnativeProjectManager {
       },
     ]
 
-    // Add PostgreSQL data volume if enabled
-    // Uses emptyDir + S3 backup pattern to avoid:
-    // - EBS Multi-Attach errors (EBS is ReadWriteOnce)
-    // - EFS permission issues (chown errors)
-    // Data is backed up to S3 using pg_dump and restored on startup
-    if (this.postgresEnabled) {
-      volumes.push({
-        name: "postgres-data",
-        emptyDir: { sizeLimit: this.postgresStorageSize },
-      })
-    }
+    // NOTE: postgres-data volume removed. Database is on shared CloudNativePG cluster.
 
     return {
       apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
@@ -906,6 +957,17 @@ export function getKnativeProjectManager(): KnativeProjectManager {
 // =============================================================================
 
 /**
+ * Request deduplication cache for createProject.
+ * When multiple requests try to create the same project simultaneously,
+ * they share a single creation promise. This prevents duplicate database
+ * provisioning and Kubernetes resource creation races.
+ */
+const pendingCreateRequests = new Map<string, {
+  promise: Promise<string>
+  startTime: number
+}>()
+
+/**
  * Request deduplication cache for getProjectPodUrl.
  * When multiple requests come in for the same project during cold start,
  * they all share the same promise instead of each creating separate waits.
@@ -922,7 +984,7 @@ const PENDING_REQUEST_CLEANUP_MS = 5 * 60 * 1000
 /**
  * Get the URL for a project pod.
  * In Kubernetes, creates the pod if it doesn't exist and waits for it to be ready.
- * In local dev, throws an error (use RuntimeManager instead).
+ * In local dev without Knative, throws an error.
  * 
  * This function deduplicates concurrent requests - if multiple requests come in
  * for the same project while it's starting, they all share the same wait promise.

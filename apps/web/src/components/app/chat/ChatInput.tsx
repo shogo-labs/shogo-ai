@@ -28,7 +28,6 @@ import {
   Plus,
   Square,
   X,
-  BarChart3,
   Zap,
   Rocket,
   Lock,
@@ -36,6 +35,10 @@ import {
   File,
   FileText,
   Image as ImageIcon,
+  ChevronDown,
+  ChevronUp,
+  Trash2,
+
 } from "lucide-react"
 
 // Agent mode configuration
@@ -100,6 +103,13 @@ const AGENT_MODES: AgentModeConfig[] = [
   },
 ]
 
+export type QueuedMessage = {
+  id: string
+  content: string
+  imageData?: string[]
+  selectedAgentMode?: AgentMode
+}
+
 export interface ChatInputProps {
   onSubmit: (content: string, imageData?: string | string[], agentMode?: AgentMode) => void
   disabled?: boolean
@@ -116,6 +126,12 @@ export interface ChatInputProps {
   isPro?: boolean
   /** Callback when user clicks upgrade (for locked features) */
   onUpgradeClick?: () => void
+  /** Queued messages waiting to be sent */
+  queuedMessages?: QueuedMessage[]
+  /** Callback to remove a message from queue */
+  onRemoveQueuedMessage?: (messageId: string) => void
+  /** Callback to reorder queued messages */
+  onReorderQueuedMessage?: (messageId: string, direction: 'up' | 'down') => void
 }
 
 export function ChatInput({
@@ -128,6 +144,9 @@ export function ChatInput({
   onAgentModeChange,
   isPro = false,
   onUpgradeClick,
+  queuedMessages = [],
+  onRemoveQueuedMessage,
+  onReorderQueuedMessage,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -138,6 +157,7 @@ export function ChatInput({
   const [fileError, setFileError] = useState<string | null>(null)
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
+  const [queueExpanded, setQueueExpanded] = useState(true)
   
   // Use ref to track current files for sequential processing
   const pendingFilesRef = useRef<AttachedFile[]>([])
@@ -659,6 +679,84 @@ export function ChatInput({
         </div>
       )}
 
+      {/* Queued messages section - Cursor style */}
+      {queuedMessages.length > 0 && (
+        <div className="mb-2 rounded-lg border border-border/60 bg-muted/30 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setQueueExpanded((prev) => !prev)}
+            className="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/50 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 text-muted-foreground transition-transform",
+                  !queueExpanded && "-rotate-90"
+                )}
+              />
+              <span className="font-medium">{queuedMessages.length} Queued</span>
+            </div>
+          </button>
+          {queueExpanded && (
+            <div className="border-t border-border/60">
+              {queuedMessages.map((msg, index) => (
+                <div
+                  key={msg.id}
+                  className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30 border-b border-border/40 last:border-b-0"
+                >
+                  <div className="h-4 w-4 rounded-full border-2 border-muted-foreground/30 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-foreground truncate">
+                      {msg.content || (msg.imageData && msg.imageData.length > 0 ? `${msg.imageData.length} image(s)` : 'Empty message')}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-0.5">
+                    {onReorderQueuedMessage && (
+                      <>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={() => onReorderQueuedMessage(msg.id, 'up')}
+                          disabled={index === 0}
+                          title="Move up"
+                        >
+                          <ChevronUp className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={() => onReorderQueuedMessage(msg.id, 'down')}
+                          disabled={index === queuedMessages.length - 1}
+                          title="Move down"
+                        >
+                          <ChevronDown className="h-3 w-3" />
+                        </Button>
+                      </>
+                    )}
+                    {onRemoveQueuedMessage && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                        onClick={() => onRemoveQueuedMessage(msg.id)}
+                        title="Remove"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Main input container - Lovable.dev style */}
       <div 
         className={cn(
@@ -711,7 +809,7 @@ export function ChatInput({
           disabled={disabled}
           className={cn(
             "min-h-[60px] max-h-[200px] resize-none w-full overflow-y-auto",
-            "border-0 bg-transparent shadow-none focus-visible:ring-0",
+            "border-0 bg-transparent shadow-none !ring-0 !ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:outline-none focus-visible:border-0 focus:!ring-0 focus:!ring-offset-0 focus:outline-none focus:border-0 outline-none",
             "px-4 pt-4 pb-2 text-xs",
             disabled && "cursor-not-allowed opacity-50"
           )}
@@ -798,18 +896,6 @@ export function ChatInput({
 
           {/* Right side buttons */}
           <div className="flex items-center gap-1">
-            {/* Activity button */}
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              disabled={disabled}
-              className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
-            >
-              <BarChart3 className="h-4 w-4" />
-              <span className="sr-only">Activity</span>
-            </Button>
-
             {/* Send/Stop button */}
             {isStreaming ? (
               <Button

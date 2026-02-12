@@ -114,13 +114,24 @@ export async function consumeCredits(
   actionMetadata?: Record<string, unknown>
 ): Promise<{ success: boolean; error?: string; remainingCredits?: number }> {
   return prisma.$transaction(async (tx) => {
-    // Get current ledger
-    const ledger = await tx.creditLedger.findUnique({
+    // Get current ledger (or lazy-create free tier for new workspaces)
+    let ledger = await tx.creditLedger.findUnique({
       where: { workspaceId },
     });
 
     if (!ledger) {
-      return { success: false, error: 'No credit ledger found for workspace' };
+      // Lazy-create free tier ledger if none exists (handles new workspaces)
+      try {
+        await allocateFreeCredits(workspaceId);
+        ledger = await tx.creditLedger.findUnique({
+          where: { workspaceId },
+        });
+      } catch {
+        // allocation failed, fall through
+      }
+      if (!ledger) {
+        return { success: false, error: 'No credit ledger found for workspace' };
+      }
     }
 
     // Check for daily reset

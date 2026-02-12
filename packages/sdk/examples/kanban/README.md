@@ -8,26 +8,26 @@ Cards and columns use a `position` field for ordering. When items are reordered 
 
 ```typescript
 // Move a card to a new column and position
-export const moveCard = createServerFn({ method: 'POST' })
-  .validator((data: { cardId: string; targetColumnId: string; targetPosition: number }) => data)
-  .handler(async ({ data }) => {
-    const { cardId, targetColumnId, targetPosition } = data
-    
-    // Shift cards in target column to make room
-    await shogo.db.card.updateMany({
-      where: {
-        columnId: targetColumnId,
-        position: { gte: targetPosition }
-      },
-      data: { position: { increment: 1 } }
-    })
-    
-    // Move the card
-    await shogo.db.card.update({
-      where: { id: cardId },
-      data: { columnId: targetColumnId, position: targetPosition }
-    })
+export async function moveCard(args: {
+  data: { cardId: string; targetColumnId: string; targetPosition: number }
+}) {
+  const { cardId, targetColumnId, targetPosition } = args.data
+
+  // Shift cards in target column to make room
+  await shogo.db.card.updateMany({
+    where: {
+      columnId: targetColumnId,
+      position: { gte: targetPosition }
+    },
+    data: { position: { increment: 1 } }
   })
+
+  // Move the card
+  await shogo.db.card.update({
+    where: { id: cardId },
+    data: { columnId: targetColumnId, position: targetPosition }
+  })
+}
 ```
 
 ## Features

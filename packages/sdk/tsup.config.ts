@@ -20,7 +20,6 @@ export default defineConfig({
     'react',
     'mobx',
     'mobx-react-lite',
-    '@tanstack/react-start',
     '@prisma/client',
     '@prisma/internals',
     '@prisma/adapter-pg',

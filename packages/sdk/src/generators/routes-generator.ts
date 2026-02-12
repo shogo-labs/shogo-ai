@@ -15,6 +15,8 @@ import { toCamelCase, getIdField } from './prisma-generator'
 export interface RouteGeneratorConfig {
   /** Base path for routes (default: '/api') */
   basePath?: string
+  /** File extension: 'ts' or 'tsx' (default: 'tsx') */
+  fileExtension?: 'ts' | 'tsx'
 }
 
 export interface GeneratedRouteFile {
@@ -77,7 +79,8 @@ export function generateModelRoutes(
 
   const modelName = model.name
   const modelLower = toCamelCase(modelName)
-  const fileName = `${toFileName(modelName)}.routes.tsx`
+  const ext = config.fileExtension || 'tsx'
+  const fileName = `${toFileName(modelName)}.routes.${ext}`
 
   const lines: string[] = [
     '/**',
@@ -149,7 +152,7 @@ export function generateModelRoutes(
   lines.push('      const query = ctx.query')
   lines.push('      ')
   lines.push('      // Build initial where from query params (exclude pagination/meta params)')
-  lines.push('      const reservedParams = ["limit", "offset", "userId", "include", "orderBy"]')
+  lines.push('      const reservedParams = ["limit", "offset", "include", "orderBy"]')
   lines.push('      let where: any = {}')
   lines.push('      ')
   lines.push('      for (const [key, value] of Object.entries(query)) {')
@@ -346,9 +349,10 @@ export function generateModelRoutes(
 /**
  * Generate hooks file for a single model
  */
-export function generateModelHooks(model: PrismaModel): GeneratedHooksFile {
+export function generateModelHooks(model: PrismaModel, config: RouteGeneratorConfig = {}): GeneratedHooksFile {
   const modelName = model.name
-  const fileName = `${toFileName(modelName)}.hooks.tsx`
+  const ext = config.fileExtension || 'tsx'
+  const fileName = `${toFileName(modelName)}.hooks.${ext}`
 
   const lines: string[] = [
     '/**',
@@ -384,7 +388,7 @@ export function generateModelHooks(model: PrismaModel): GeneratedHooksFile {
     `export interface ${modelName}Hooks {`,
     '  /**',
     '   * Called before listing records. Can modify where/include.',
-    '   * Note: Query parameters (except limit, offset, userId, include, orderBy) are automatically',
+    '   * Note: Query parameters (except limit, offset, include, orderBy) are automatically',
     '   * added to the where clause. This hook receives them and can override/extend them.',
     '   */',
     '  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any }> | void>',
@@ -444,7 +448,7 @@ export function generateRoutes(
     const routeFile = generateModelRoutes(model, config)
     if (routeFile) {
       routes.push(routeFile)
-      hooks.push(generateModelHooks(model))
+      hooks.push(generateModelHooks(model, config))
     }
   }
 

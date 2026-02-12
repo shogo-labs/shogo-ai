@@ -19,8 +19,6 @@ import { useParams, useLocation } from "react-router-dom"
 import { useDomains, useSchemaLoadingState, useSDKDomain, useSDKReady, useSDKHttp } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
-import { ComponentRegistryProvider } from "@/components/rendering"
-import { createRegistryFromDomain } from "@/components/rendering/registryFactory"
 import { ChatPanel } from "../chat/ChatPanel"
 import { ChatPanelTransitionOverlay } from "../chat/ChatPanelTransitionOverlay"
 import { useChatSessionNavigation } from "../advanced-chat/hooks/useChatSessionNavigation"
@@ -77,29 +75,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const actions = useDomainActions()
   const http = useSDKHttp()
 
-  // Legacy domains for componentBuilder (rendering) and platformFeatures
-  const { platformFeatures, componentBuilder, studioChat, billing } = useDomains<{
+  // Legacy domains for platformFeatures
+  const { platformFeatures, studioChat, billing } = useDomains<{
     platformFeatures: any
-    componentBuilder: any
     studioChat: any
     billing: any
   }>()
-
-  // Create component registry from domain (same pattern as AppShell)
-  const prevBindingsKeyRef = useRef<string>('')
-  const registryRef = useRef<ReturnType<typeof createRegistryFromDomain> | null>(null)
-
-  const bindings = componentBuilder?.rendererBindingCollection?.all() ?? []
-  const currentBindingsKey = bindings.map((b: any) =>
-    `${b.id}:${b.updatedAt ?? ''}`
-  ).join('|')
-
-  if (currentBindingsKey !== prevBindingsKeyRef.current || !registryRef.current) {
-    prevBindingsKeyRef.current = currentBindingsKey
-    registryRef.current = createRegistryFromDomain(componentBuilder)
-  }
-
-  const registry = registryRef.current
 
   // Track current chat session in URL
   const { chatSessionId, setChatSessionId } = useChatSessionNavigation()
@@ -123,6 +104,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
   // Template copy state - tracks when template_copy tool is running for preview overlay
   const [isTemplateCopying, setIsTemplateCopying] = useState(false)
+
+  // Chat error state - passed to RuntimePreviewPanel to stop loading on project creation failure
+  const [chatError, setChatError] = useState<Error | null>(null)
 
   // Build error state - shared between RuntimePreviewPanel and TerminalPanel
   const [buildError, setBuildError] = useState<string | null>(null)
@@ -584,8 +568,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
   }, [])
 
   const handleRefresh = useCallback(() => {
-    // TODO: Refresh preview iframe
-    console.log("Refresh preview")
+    setCodeRefreshTrigger((prev) => prev + 1)
   }, [])
 
   const handleOpenExternal = useCallback(async () => {
@@ -722,42 +705,52 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const userInitial = session?.user?.name?.charAt(0).toUpperCase() || "U"
 
   // Get workspace ID for credit lookup
-  const workspaceId = project
-    ? (typeof project.workspace === 'string' ? project.workspace : project.workspace?.id)
-    : null
+  // Use workspaceId (plain string) instead of workspace reference to avoid MST InvalidReferenceError
+  const workspaceId = project?.workspaceId || null
 
-  // Get credits from SDK store
+  // Load and get credits from SDK store
+  useEffect(() => {
+    if (workspaceId && store?.creditLedgerCollection) {
+      store.creditLedgerCollection.loadAll({ workspaceId }).catch((err: any) => {
+        console.error("[ProjectLayout] Failed to load credit ledger:", err)
+      })
+    }
+  }, [workspaceId, store])
+
   const creditLedger = workspaceId
     ? store?.creditLedgerCollection?.all.find((l: any) => l.workspaceId === workspaceId)
     : null
-  const effectiveBalance = creditLedger?.effectiveBalance
+  // Compute effective balance from raw credit ledger fields
+  const effectiveBalance = creditLedger ? {
+    dailyCredits: creditLedger.dailyCredits ?? 0,
+    monthlyCredits: creditLedger.monthlyCredits ?? 0,
+    rolloverCredits: creditLedger.rolloverCredits ?? 0,
+    total: (creditLedger.dailyCredits ?? 0) + (creditLedger.monthlyCredits ?? 0) + (creditLedger.rolloverCredits ?? 0),
+  } : null
   const creditsRemaining = effectiveBalance?.total ?? 5
   const maxCredits = effectiveBalance ? (effectiveBalance.dailyCredits + effectiveBalance.monthlyCredits + effectiveBalance.rolloverCredits) : 5
 
   // Loading state
   if (isLoading || !project) {
     return (
-      <ComponentRegistryProvider registry={registry}>
-        <div className="h-screen flex flex-col bg-background">
-          <ProjectTopBar
-            projectName="Loading..."
-            projectId={projectId || ""}
-            showChatSessions={showChatSessions}
-            isChatCollapsed={isChatCollapsed}
-            onChatSessionsToggle={handleChatSessionsToggle}
-            onChatCollapseToggle={handleChatCollapseToggle}
-          />
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-muted-foreground animate-pulse">Loading project...</div>
-          </div>
+      <div className="h-screen flex flex-col bg-background">
+        <ProjectTopBar
+          projectName="Loading..."
+          projectId={projectId || ""}
+          showChatSessions={showChatSessions}
+          isChatCollapsed={isChatCollapsed}
+          onChatSessionsToggle={handleChatSessionsToggle}
+          onChatCollapseToggle={handleChatCollapseToggle}
+        />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-muted-foreground animate-pulse">Loading project...</div>
         </div>
-      </ComponentRegistryProvider>
+      </div>
     )
   }
 
   return (
-    <ComponentRegistryProvider registry={registry}>
-      <div className="h-screen flex flex-col bg-background">
+    <div className="h-screen flex flex-col bg-background">
         {/* Project top bar - Lovable.dev style */}
         <ProjectTopBar
           projectName={project.name}
@@ -783,6 +776,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
           currentRoute={currentRoute}
           onRouteChange={handleRouteChange}
           onRefresh={handleRefresh}
+          onOpenPreview={() => setPreviewMode('runtime')}
           onOpenExternal={handleOpenExternal}
           onOpenCode={() => setPreviewMode('code')}
           // Publish callbacks
@@ -838,13 +832,14 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 isCollapsed={isChatCollapsed}
                 onCollapsedChange={setIsChatCollapsed}
                 onWidthChange={setChatWidth}
-                workspaceId={typeof project.workspace === 'string' ? project.workspace : project.workspace?.id}
+                workspaceId={project?.workspaceId}
                 userId={session?.user?.id}
                 projectId={projectId}
                 className="flex-1 min-h-0"
                 initialMessage={transitionState?.initialMessage}
                 inputContainerRef={chatInputContainerRef}
                 messageContainerRef={messageContainerRef}
+              onChatError={setChatError}
               onFilesChanged={(paths) => {
                 console.log('[ProjectLayout] 📁 Agent modified files:', paths)
                 // Increment refresh trigger to reload code editor
@@ -953,6 +948,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   onBuildError={handleBuildError}
                   forceRefresh={codeRefreshTrigger}
                   isTemplateCopying={isTemplateCopying}
+                  chatError={chatError}
                 />
               </div>
               {/* Code Editor - stays mounted to preserve editor state */}
@@ -1067,6 +1063,5 @@ export const ProjectLayout = observer(function ProjectLayout() {
           />
         )}
       </div>
-    </ComponentRegistryProvider>
   )
 })

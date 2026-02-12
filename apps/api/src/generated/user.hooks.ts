@@ -48,11 +48,25 @@ export interface UserHooks {
 }
 
 /**
+ * Check if the current user is a super admin.
+ * Super admins bypass normal access restrictions.
+ */
+async function isSuperAdmin(ctx: HookContext): Promise<boolean> {
+  if (!ctx.userId) return false
+  const user = await ctx.prisma.user.findUnique({
+    where: { id: ctx.userId },
+    select: { role: true },
+  })
+  return user?.role === 'super_admin'
+}
+
+/**
  * Default User hooks (customize as needed)
  */
 export const userHooks: UserHooks = {
   /**
-   * Restrict listing users - only return users in shared workspaces
+   * Restrict listing users - only return users in shared workspaces.
+   * Super admins can see all users.
    */
   beforeList: async (ctx) => {
     const userId = ctx.userId
@@ -61,6 +75,11 @@ export const userHooks: UserHooks = {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
       }
+    }
+
+    // Super admins can list all users
+    if (await isSuperAdmin(ctx)) {
+      return { ok: true, data: { where: {} } }
     }
 
     // Only show users who are in the same workspaces as the current user
@@ -83,7 +102,8 @@ export const userHooks: UserHooks = {
   },
 
   /**
-   * Users can view their own profile or profiles of users in shared workspaces
+   * Users can view their own profile or profiles of users in shared workspaces.
+   * Super admins can view any user.
    */
   beforeGet: async (id, ctx) => {
     const userId = ctx.userId
@@ -96,6 +116,11 @@ export const userHooks: UserHooks = {
 
     // Allow viewing own profile
     if (id === userId) {
+      return { ok: true }
+    }
+
+    // Super admins can view any user
+    if (await isSuperAdmin(ctx)) {
       return { ok: true }
     }
 
@@ -134,7 +159,8 @@ export const userHooks: UserHooks = {
   },
 
   /**
-   * Users can only update their own profile
+   * Users can only update their own profile.
+   * Super admins can update any user.
    */
   beforeUpdate: async (id, input, ctx) => {
     const userId = ctx.userId
@@ -145,7 +171,7 @@ export const userHooks: UserHooks = {
       }
     }
 
-    if (id !== userId) {
+    if (id !== userId && !await isSuperAdmin(ctx)) {
       return {
         ok: false,
         error: { code: "forbidden", message: "Can only update your own profile" },
@@ -156,7 +182,8 @@ export const userHooks: UserHooks = {
   },
 
   /**
-   * Users can only delete their own account
+   * Users can only delete their own account.
+   * Super admins can delete any account (except their own via this route).
    */
   beforeDelete: async (id, ctx) => {
     const userId = ctx.userId
@@ -167,7 +194,7 @@ export const userHooks: UserHooks = {
       }
     }
 
-    if (id !== userId) {
+    if (id !== userId && !await isSuperAdmin(ctx)) {
       return {
         ok: false,
         error: { code: "forbidden", message: "Can only delete your own account" },
@@ -179,7 +206,7 @@ export const userHooks: UserHooks = {
       where: {
         members: {
           some: {
-            userId,
+            userId: id,
             role: 'owner',
           },
         },
@@ -191,7 +218,7 @@ export const userHooks: UserHooks = {
       },
     })
 
-    const isLastOwner = ownedWorkspaces.some(ws => ws.members.length === 1)
+    const isLastOwner = ownedWorkspaces.some((ws: any) => ws.members.length === 1)
     if (isLastOwner) {
       return {
         ok: false,

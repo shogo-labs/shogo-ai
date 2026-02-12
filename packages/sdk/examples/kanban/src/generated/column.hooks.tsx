@@ -31,7 +31,7 @@ export interface HookContext {
 export interface ColumnHooks {
   /**
    * Called before listing records. Can modify where/include.
-   * Note: Query parameters (except limit, offset, userId, include, orderBy) are automatically
+   * Note: Query parameters (except limit, offset, include, orderBy) are automatically
    * added to the where clause. This hook receives them and can override/extend them.
    */
   beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any }> | void>

@@ -1,51 +1,55 @@
 /**
- * User Server Functions
+ * User Client Functions
  * 
- * Custom user functions that aren't CRUD - like getCurrentUser.
+ * Custom user functions that aren't standard CRUD - like getCurrentUser.
+ * Uses fetch to call the REST API (no server-side imports needed).
  * The basic CRUD operations are in ../generated/server-functions.ts
  */
 
-import { createServerFn } from '@tanstack/react-start'
-import { shogo } from '../lib/shogo'
 import type { UserType } from '../generated/types'
 
 // Re-export the type for convenience
 export type { UserType }
 
+/** Get the API base URL */
+function getApiBase(): string {
+  if (typeof window !== 'undefined') {
+    return window.location.origin
+  }
+  return process.env.API_URL || 'http://localhost:3001'
+}
+
 /**
  * Get current user - finds the first user (demo app simplicity)
  * In a real app, this would use session/auth
  */
-export const getCurrentUser = createServerFn({ method: 'GET' })
-  .handler(async () => {
-    const user = await shogo.db.user.findFirst({
-      orderBy: { createdAt: 'asc' },
-    })
-    return user as UserType | null
-  })
+export async function getCurrentUser(): Promise<UserType | null> {
+  try {
+    const url = `${getApiBase()}/api/users?limit=1`
+    const response = await fetch(url)
+    if (!response.ok) return null
+    const json = await response.json()
+    const items = json.items || []
+    return items.length > 0 ? (items[0] as UserType) : null
+  } catch {
+    return null
+  }
+}
 
 /**
  * Create user - custom because we need to check for existing
  */
-export const createUser = createServerFn({ method: 'POST' })
-  .inputValidator((data: { email: string; name?: string }) => data)
-  .handler(async ({ data }) => {
-    // Check if user exists
-    const existing = await shogo.db.user.findUnique({
-      where: { email: data.email },
-    })
-    
-    if (existing) {
-      throw new Error('User already exists')
-    }
-
-    // Create user
-    const user = await shogo.db.user.create({
-      data: {
-        email: data.email,
-        name: data.name,
-      },
-    })
-    
-    return user as UserType
+export async function createUser(args: { data: { email: string; name?: string } }): Promise<UserType> {
+  const url = `${getApiBase()}/api/users`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(args.data),
   })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: { message: response.statusText } }))
+    throw new Error(err.error?.message || 'Failed to create user')
+  }
+  const json = await response.json()
+  return json.data as UserType
+}

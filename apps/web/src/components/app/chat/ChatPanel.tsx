@@ -9,7 +9,7 @@
  * - useChat from @ai-sdk/react with /api/chat endpoint
  * - Persists user messages optimistically before sending
  * - Persists assistant messages in onFinish callback
- * - Records tool calls via actions.recordToolCall
+ * - Tool call data is embedded in chat messages (logging to separate table disabled)
  * - Auto-creates ChatSession if none exists for feature
  * - Collapse/expand with manual resize
  * - localStorage persistence for collapse state and width
@@ -109,6 +109,36 @@ function getToolCategory(name: string): 'mcp' | 'file' | 'skill' | 'other' {
   return 'other'
 }
 
+// Friendly error code mapping for chat errors
+const ERROR_CODE_MESSAGES: Record<string, string> = {
+  pod_unavailable: "We're having trouble starting your project environment. Please try again in a moment.",
+  rate_limit_exceeded: "You're sending messages too quickly. Please wait a moment and try again.",
+  insufficient_credits: "You've run out of credits. Please upgrade your plan to continue.",
+  session_expired: "Your session has expired. Please refresh the page.",
+  internal_error: "Something went wrong on our end. Please try again.",
+}
+
+// Parse potentially JSON error messages into user-friendly text
+function formatErrorMessage(rawMessage: string): string {
+  try {
+    const parsed = JSON.parse(rawMessage)
+    // Handle { error: { code, message } } format
+    if (parsed?.error?.code && ERROR_CODE_MESSAGES[parsed.error.code]) {
+      return ERROR_CODE_MESSAGES[parsed.error.code]
+    }
+    if (parsed?.error?.message) {
+      return parsed.error.message
+    }
+    // Handle { message } format
+    if (parsed?.message) {
+      return parsed.message
+    }
+  } catch {
+    // Not JSON, use as-is
+  }
+  return rawMessage
+}
+
 // Re-export WorkspacePanelData from advanced-chat for workspace integration (task-testbed-chat-integration)
 import type { WorkspacePanelData } from "../advanced-chat/WorkspacePanel"
 export type { WorkspacePanelData }
@@ -166,6 +196,8 @@ export interface ChatPanelProps {
   compactValue?: string
   /** Callback when compact mode input value changes */
   onCompactValueChange?: (value: string) => void
+  /** Callback when chat encounters an error (for RuntimePreviewPanel to stop loading) */
+  onChatError?: (error: Error | null) => void
   /** Callback when agent modifies files (Write, Edit, StrReplace tools) - for code panel refresh */
   onFilesChanged?: (paths: string[]) => void
   /** Callback when a tool call becomes active/inactive - for preview overlay during template_copy */
@@ -583,6 +615,7 @@ export const ChatPanel = observer(function ChatPanel({
   messageContainerRef,
   compactValue,
   onCompactValueChange,
+  onChatError,
   onFilesChanged,
   onActiveToolCall,
   selectedThemeId,
@@ -604,8 +637,8 @@ export const ChatPanel = observer(function ChatPanel({
   // Navigation for upgrade flow
   const navigate = useNavigate()
 
-  // Billing data for Pro subscription check
-  const { hasActiveSubscription } = useBillingData(workspaceId)
+  // Billing data for Pro subscription check and credit refresh after messages
+  const { hasActiveSubscription, refetchCreditLedger } = useBillingData(workspaceId)
 
   // Handle upgrade click - navigate to billing settings
   const handleUpgradeClick = useCallback(() => {
@@ -627,8 +660,12 @@ export const ChatPanel = observer(function ChatPanel({
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const isUserAtBottomRef = useRef(true)
 
-  // Chat session state
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  // Chat session state - initialize from prop to avoid null→valid transition on reload
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(chatSessionId ?? null)
+
+  // Track whether we've finished the initial message load from the API
+  // Prevents showing "Start Discovery" empty state while messages are loading
+  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
 
   // Agent mode state for switching between basic (Haiku) and advanced (Sonnet) models
   const [agentMode, setAgentMode] = useState<AgentMode>("advanced")
@@ -766,6 +803,17 @@ export const ChatPanel = observer(function ChatPanel({
   // Store last user input for retry functionality (task-chat-retry-fix)
   // This allows retry to work even if AI SDK's reload() fails
   const lastUserInputRef = useRef<{ content: string; imageData?: string[] } | null>(null)
+
+  // Message queue for sequential processing (like Cursor)
+  // Messages are queued and processed one at a time, waiting for each to complete
+  type QueuedMessage = {
+    id: string
+    content: string
+    imageData?: string[]
+    selectedAgentMode?: AgentMode
+  }
+  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([])
+  const isProcessingQueueRef = useRef(false)
 
   // Initialize ccSessionId from existing session (task-cc-chatpanel-integration)
   // This ensures session continuity when reloading the page or switching sessions
@@ -1229,31 +1277,14 @@ export const ChatPanel = observer(function ChatPanel({
           console.warn("[ChatPanel] Failed to persist assistant message:", err)
         })
 
-        // Record tool calls from the message (fire-and-forget)
-        // task-toolcall-warning-fix: Ensure args and result are serializable
-        const toolCalls = extractToolCalls(message)
-        for (const toolCall of toolCalls) {
-          // Ensure args and result are not null/undefined (can cause DB errors)
-          const safeArgs = toolCall.args ?? {}
-          const safeResult = toolCall.result !== undefined ? toolCall.result : null
-          
-          actions.recordToolCall({
-            sessionId: currentSessionId,
-            toolName: toolCall.toolName,
-            status: toolCall.state === "output-available" ? "complete" :
-              toolCall.state === "output-error" ? "error" : "executing",
-            args: safeArgs,
-            result: safeResult,
-          }).catch((err) => {
-            // Only log in debug - these are fire-and-forget operations
-            if (process.env.NODE_ENV === 'development') {
-              console.debug("[ChatPanel] Failed to record tool call:", err)
-            }
-          })
-        }
+        // Refresh credit balance after every message (credits are deducted server-side)
+        // Fire-and-forget: this updates the MobX store which reactively updates
+        // WorkspaceSwitcher, ProjectNameDropdown, and other credit displays
+        refetchCreditLedger()
 
         // Smart Query Triggers (task-3-1-004)
         // After streaming completes, detect tool calls and trigger targeted data refreshes
+        const toolCalls = extractToolCalls(message)
         if (toolCalls.length > 0) {
           // Collect refresh targets by schema
           const platformFeaturesCollections: string[] = []
@@ -1328,6 +1359,11 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Derive isStreaming from v3 status for backward compatibility
   const isStreaming = status === 'streaming' || status === 'submitted'
+
+  // Notify parent when chat error changes (for RuntimePreviewPanel to stop loading)
+  useEffect(() => {
+    onChatError?.(error ?? null)
+  }, [error, onChatError])
 
   // Optimistic first message for homepage transition: show user message before useChat adds it
   const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
@@ -1630,22 +1666,62 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Effect 1: Trigger data loading for chat messages from API
   // loadAll() calls APIPersistence which fetches from REST API with sessionId filter
-  // MobX reactivity then updates persistedMessagesFromMobX which syncs to AI SDK
-  // fix-chat-history: Use loadAll with sessionId filter to load messages from API
+  // fix-chat-history-reload: After loading, directly sync to AI SDK to avoid
+  // relying on the reactive MobX chain which has many guards that can prevent sync.
   useEffect(() => {
     if (currentSessionId && !isLoadingMessagesRef.current) {
       isLoadingMessagesRef.current = true
+      setIsInitialLoadComplete(false)
       console.log('[ChatPanel] Loading messages for session:', currentSessionId)
       studioChat.chatMessageCollection.loadAll({ sessionId: currentSessionId })
         .then((result: any) => {
           // SDK collection returns array directly
           const count = Array.isArray(result) ? result.length : 0
           console.log('[ChatPanel] Loaded', count, 'messages for session:', currentSessionId)
+
+          // fix-chat-history-reload: Directly sync loaded messages to AI SDK
+          // This is more reliable than depending on the reactive MobX → Effect 2 chain
+          // which has guards (isStreaming, isSending, messages.length > 0) that can block sync.
+          if (count > 0 && !isStreamingRef.current && !isSendingMessageRef.current) {
+            const loaded = studioChat.chatMessageCollection.all
+              .filter((msg: any) => msg.sessionId === currentSessionId)
+              .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+
+            if (loaded.length > 0) {
+              const aiMessages = loaded.map((msg: any) => {
+                const baseMessage: any = {
+                  id: msg.id,
+                  role: msg.role as "user" | "assistant",
+                  content: msg.content,
+                }
+                if (msg.parts) {
+                  try {
+                    baseMessage.parts = JSON.parse(msg.parts)
+                  } catch (err) {
+                    console.warn("[ChatPanel] Failed to parse message parts:", err)
+                  }
+                }
+                return baseMessage
+              })
+              console.log('[ChatPanel] Direct sync: setting', aiMessages.length, 'messages to AI SDK')
+              setMessages(aiMessages)
+              // Scroll to bottom after messages load
+              setTimeout(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
+              }, 50)
+            }
+          }
         })
         .catch((err: any) => console.error('[ChatPanel] Failed to load messages:', err))
-        .finally(() => { isLoadingMessagesRef.current = false })
+        .finally(() => {
+          isLoadingMessagesRef.current = false
+          setIsInitialLoadComplete(true)
+        })
+    } else if (!currentSessionId) {
+      // No session yet - mark load as complete so we show empty state
+      setIsInitialLoadComplete(true)
     }
-  }, [currentSessionId, studioChat])
+  }, [currentSessionId, studioChat, setMessages])
 
   // feat-chat-tool-interleaving: Track if we've received messages with parts (tool calls)
   // Once we have parts from streaming, we shouldn't overwrite with persisted data
@@ -1665,6 +1741,8 @@ export const ChatPanel = observer(function ChatPanel({
   useEffect(() => {
     hasReceivedPartsRef.current = false
     processedProgressEventsRef.current.clear()
+    // Reset loading state so we show loading indicator for new session
+    setIsInitialLoadComplete(false)
   }, [currentSessionId])
 
   // Effect 2: Sync MobX → AI SDK state when data arrives
@@ -1783,7 +1861,8 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Auto-scroll effect - respects user position
   // First message at top: when only one message, scroll to top so first message is at top and agent builds below
-  // When 2+ messages (e.g. first response arrived), scroll to bottom so response is visible (including when streaming)
+  // When 2+ messages (e.g. first response arrived), scroll to bottom so response is visible
+  // If user has scrolled up (isUserAtBottomRef=false), we do NOT force-scroll back down
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container) return
@@ -1798,7 +1877,7 @@ export const ChatPanel = observer(function ChatPanel({
 
     const shouldScrollToBottom =
       displayMessages.length > 1 &&
-      (isFirstLoadRef.current || isUserAtBottomRef.current || isStreaming)
+      (isFirstLoadRef.current || isUserAtBottomRef.current)
 
     if (messagesEndRef.current && shouldScrollToBottom) {
       requestAnimationFrame(() => {
@@ -1807,7 +1886,7 @@ export const ChatPanel = observer(function ChatPanel({
         isFirstLoadRef.current = false
       })
     }
-  }, [displayMessages.length, messages, isStreaming, currentSessionId])
+  }, [displayMessages.length, messages, currentSessionId])
 
   // Detect if there's a pending AskUserQuestion in the messages
   // Used to show a hint in the chat input
@@ -1856,12 +1935,9 @@ export const ChatPanel = observer(function ChatPanel({
     return match?.[1] || "image/png" // Default to PNG if parsing fails
   }, [])
 
-  // chat-session-sync-fix: Handle message submission using v3 sendMessage() API
-  // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
-  // task-chatpanel-sendmessage: Extended to support imageData parameter
-  // Support multiple images: imageData is always an array (or undefined)
-  // agent-mode: Extended to support agentMode parameter for model selection
-  const handleSendMessage = useCallback(
+  // Internal function that actually sends a message (used by queue processor)
+  // This is extracted from handleSendMessage to allow queue processing
+  const sendMessageInternal = useCallback(
     async (content: string, imageData?: string[], selectedAgentMode?: AgentMode) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
@@ -1958,6 +2034,7 @@ export const ChatPanel = observer(function ChatPanel({
         )
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
+        throw err // Re-throw to allow queue processor to handle errors
       } finally {
         // Clear the flag after sendMessage completes (AI SDK has added the message)
         // Since we await sendMessage, the AI SDK should have already added the message
@@ -1965,7 +2042,144 @@ export const ChatPanel = observer(function ChatPanel({
         isSendingMessageRef.current = false
       }
     },
-    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId, projectId, agentMode]
+    [currentSessionId, studioChat, sendMessage, featureId, phase, extractMediaType, workspaceId, userId, projectId, agentMode, actions]
+  )
+
+  // Queue processor: processes messages one at a time, waiting for each to complete
+  // This ensures messages are sent sequentially like in Cursor
+  // IMPORTANT: sendMessageInternal must be called OUTSIDE setState updaters because
+  // React StrictMode calls updater functions twice, which would duplicate sends.
+  const processMessageQueue = useCallback(async () => {
+    // Prevent concurrent processing
+    if (isProcessingQueueRef.current) {
+      return
+    }
+
+    // Wait for current streaming to complete
+    if (isStreaming) {
+      return
+    }
+
+    // Validate session exists before processing
+    if (!currentSessionId) {
+      return
+    }
+
+    // Nothing to process
+    if (messageQueue.length === 0) {
+      return
+    }
+
+    // Mark as processing to prevent re-entrant calls
+    isProcessingQueueRef.current = true
+
+    // Read the first message from the current state
+    const nextMessage = messageQueue[0]
+
+    // Remove it from the queue (pure updater — no side effects)
+    setMessageQueue((queue) => queue.slice(1))
+
+    // Send the message OUTSIDE the updater to avoid StrictMode double-invocation
+    try {
+      await sendMessageInternal(
+        nextMessage.content,
+        nextMessage.imageData,
+        nextMessage.selectedAgentMode
+      )
+    } catch (err) {
+      console.error("[ChatPanel] Error processing queued message:", err)
+      // On error, clear processing flag so queue can continue
+      isProcessingQueueRef.current = false
+    }
+  }, [isStreaming, sendMessageInternal, currentSessionId, messageQueue])
+
+  // Process queue when streaming completes (status transitions from true → false)
+  // This ensures we wait for the full response before processing the next message
+  const queueStreamingRef = useRef(false)
+  useEffect(() => {
+    const wasStreaming = queueStreamingRef.current
+    queueStreamingRef.current = isStreaming
+
+    // Only act on a true → false transition (stream just finished)
+    if (wasStreaming && !isStreaming) {
+      isProcessingQueueRef.current = false
+      if (messageQueue.length > 0 && currentSessionId) {
+        processMessageQueue()
+      }
+    }
+  }, [isStreaming, messageQueue.length, processMessageQueue, currentSessionId])
+
+  // Clear queue when session changes to prevent sending to wrong session
+  useEffect(() => {
+    if (messageQueue.length > 0) {
+      setMessageQueue([])
+      isProcessingQueueRef.current = false
+    }
+  }, [currentSessionId])
+
+  const handleRemoveQueuedMessage = useCallback((messageId: string) => {
+    setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
+  }, [])
+
+  const handleReorderQueuedMessage = useCallback(
+    (messageId: string, direction: 'up' | 'down') => {
+      setMessageQueue((queue) => {
+        const index = queue.findIndex((m) => m.id === messageId)
+        if (index === -1) return queue
+
+        const newQueue = [...queue]
+        if (direction === 'up' && index > 0) {
+          ;[newQueue[index - 1], newQueue[index]] = [newQueue[index], newQueue[index - 1]]
+        } else if (direction === 'down' && index < newQueue.length - 1) {
+          ;[newQueue[index], newQueue[index + 1]] = [newQueue[index + 1], newQueue[index]]
+        }
+        return newQueue
+      })
+    },
+    []
+  )
+
+  // chat-session-sync-fix: Handle message submission using v3 sendMessage() API
+  // v3 uses sendMessage({ text }) instead of the old append-with-role pattern
+  // task-chatpanel-sendmessage: Extended to support imageData parameter
+  // Support multiple images: imageData is always an array (or undefined)
+  // agent-mode: Extended to support agentMode parameter for model selection
+  // message-queue: Messages are now queued and processed sequentially
+  const handleSendMessage = useCallback(
+    async (content: string, imageData?: string[], selectedAgentMode?: AgentMode) => {
+      // Validate session exists
+      if (!currentSessionId) {
+        console.warn("[ChatPanel] No session ID - message will be lost!")
+        return
+      }
+
+      // Normalize imageData to array for processing (backward compatibility)
+      const imageArray = imageData || []
+
+      if (!content.trim() && imageArray.length === 0) {
+        return
+      }
+
+      const trimmedContent = content.trim()
+
+      // If currently streaming or sending, add to queue
+      if (isStreaming || isProcessingQueueRef.current || isSendingMessageRef.current) {
+        setMessageQueue((queue) => [
+          ...queue,
+          {
+            id: `queue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            content: trimmedContent,
+            imageData: imageArray,
+            selectedAgentMode,
+          },
+        ])
+        return
+      }
+
+      // If not streaming, send immediately
+      await sendMessageInternal(trimmedContent, imageArray, selectedAgentMode)
+    },
+    [isStreaming, sendMessageInternal, currentSessionId]
   )
 
   // Handle form submit from ChatInput
@@ -2054,21 +2268,16 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Error retry handler (task-chat-retry-fix)
   // AI SDK v3: reload() regenerates the last assistant message
-  // If reload isn't available or no messages, fallback to resending last user input
+  // Only use reload() to avoid duplicating user messages
   const handleRetry = useCallback(() => {
     if (typeof reload === 'function' && messages.length > 0) {
       reload()
-    } else if (lastUserInputRef.current) {
-      // Fallback: resend the last user message
-      console.log('[ChatPanel] Using fallback retry - resending last input')
-      handleSendMessage(
-        lastUserInputRef.current.content,
-        lastUserInputRef.current.imageData
-      )
     } else {
-      console.warn('[ChatPanel] Cannot retry: no messages or last input available')
+      // Don't resend via handleSendMessage as it duplicates the user message.
+      // Instead, suggest refreshing.
+      console.warn('[ChatPanel] Cannot retry via reload. Please refresh the page.')
     }
-  }, [reload, messages.length, handleSendMessage])
+  }, [reload, messages.length])
 
   // Convert messages for MessageList
   const messageListMessages = messages.map((msg) => ({
@@ -2183,6 +2392,17 @@ export const ChatPanel = observer(function ChatPanel({
               {/* Scroll anchor - invisible element at bottom for auto-scroll */}
               <div ref={messagesEndRef} />
             </>
+          ) : !isStreaming && !isInitialLoadComplete && currentSessionId ? (
+            /* fix-chat-history-reload: Show loading indicator while fetching messages from API
+               This prevents flashing "Start Discovery" before messages arrive on page reload */
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
+              <div className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.2s]" />
+                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-pulse [animation-delay:0.4s]" />
+              </div>
+              <span className="text-xs">Loading conversation...</span>
+            </div>
           ) : !isStreaming ? (
             /* Phase-contextual empty state (task-chat-008) */
             <PhaseEmptyState
@@ -2223,7 +2443,7 @@ export const ChatPanel = observer(function ChatPanel({
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
               <AlertDescription className="flex items-center justify-between gap-2">
-                <span className="text-sm">{error.message}</span>
+                <span className="text-sm">{formatErrorMessage(error.message)}</span>
                 <Button
                   variant="outline"
                   size="sm"
@@ -2255,6 +2475,9 @@ export const ChatPanel = observer(function ChatPanel({
             onAgentModeChange={setAgentMode}
             isPro={hasActiveSubscription}
             onUpgradeClick={handleUpgradeClick}
+            queuedMessages={messageQueue}
+            onRemoveQueuedMessage={handleRemoveQueuedMessage}
+            onReorderQueuedMessage={handleReorderQueuedMessage}
           />
         </div>
       </div>

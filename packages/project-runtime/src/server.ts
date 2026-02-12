@@ -28,7 +28,7 @@ logTiming('Server module loading...')
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText, tool, type CoreMessage } from 'ai'
+import { streamText, tool, type ModelMessage } from 'ai'
 import { createClaudeCode } from 'ai-sdk-provider-claude-code'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
@@ -112,23 +112,28 @@ const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
   }
 })()
 
-// Initialize PostgreSQL S3 backup in background (after postgres sidecar is ready)
-// This provides persistence for postgres data when using emptyDir volumes
-;(async () => {
-  // Wait a bit for postgres sidecar to start (it runs in the same pod)
-  await new Promise(resolve => setTimeout(resolve, 5000))
-  
-  try {
-    postgresBackup = await initializePostgresBackup()
-    if (postgresBackup) {
-      logTiming('PostgreSQL S3 backup initialized')
-    } else {
-      logTiming('PostgreSQL S3 backup not configured or postgres not detected')
+// PostgreSQL S3 backup initialization
+// NOTE: With CloudNativePG shared cluster, postgres backup is handled by the operator
+// via Barman WAL archiving. The S3 backup module is only used for legacy sidecar mode.
+if (process.env.POSTGRES_S3_BACKUP_ENABLED !== 'false') {
+  ;(async () => {
+    // Wait a bit for postgres to be reachable
+    await new Promise(resolve => setTimeout(resolve, 5000))
+    
+    try {
+      postgresBackup = await initializePostgresBackup()
+      if (postgresBackup) {
+        logTiming('PostgreSQL S3 backup initialized (legacy sidecar mode)')
+      } else {
+        logTiming('PostgreSQL S3 backup not configured')
+      }
+    } catch (error) {
+      console.error(`[project-runtime] PostgreSQL backup initialization failed:`, error)
     }
-  } catch (error) {
-    console.error(`[project-runtime] PostgreSQL backup initialization failed:`, error)
-  }
-})()
+  })()
+} else {
+  logTiming('PostgreSQL S3 backup disabled (using CloudNativePG managed backups)')
+}
 
 // =============================================================================
 // Template Tools (Native - no MCP required)
@@ -151,15 +156,15 @@ interface TemplateInfo extends TemplateMetadata {
 
 // Embedded template metadata (used when running from Docker with archived templates)
 const EMBEDDED_TEMPLATES: TemplateInfo[] = [
-  { name: 'todo-app', description: 'Simple task management with lists', path: 'todo-app', complexity: 'beginner', tags: ['productivity', 'tasks'], features: ['CRUD', 'lists'], useCases: ['personal task tracking'], models: ['Todo', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'expense-tracker', description: 'Personal finance with categories', path: 'expense-tracker', complexity: 'beginner', tags: ['finance', 'budgeting'], features: ['categories', 'charts'], useCases: ['expense tracking'], models: ['Expense', 'Category', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'crm', description: 'Customer relationship management', path: 'crm', complexity: 'intermediate', tags: ['business', 'sales'], features: ['contacts', 'deals', 'pipeline'], useCases: ['sales management'], models: ['Contact', 'Deal', 'Company', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'inventory', description: 'Stock and product management', path: 'inventory', complexity: 'intermediate', tags: ['business', 'warehouse'], features: ['products', 'stock', 'suppliers'], useCases: ['inventory management'], models: ['Product', 'Supplier', 'StockMovement', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'kanban', description: 'Project boards with drag-and-drop', path: 'kanban', complexity: 'intermediate', tags: ['productivity', 'project-management'], features: ['boards', 'columns', 'cards', 'drag-drop'], useCases: ['project management'], models: ['Board', 'Column', 'Card', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'ai-chat', description: 'AI chatbot with conversation history', path: 'ai-chat', complexity: 'intermediate', tags: ['ai', 'chatbot'], features: ['chat', 'ai-responses', 'history'], useCases: ['ai assistant'], models: ['Conversation', 'Message', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL', ai: 'Anthropic Claude' } },
-  { name: 'form-builder', description: 'Build custom forms and collect responses', path: 'form-builder', complexity: 'intermediate', tags: ['forms', 'surveys'], features: ['form-builder', 'responses'], useCases: ['surveys', 'data collection'], models: ['Form', 'Field', 'Response', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'feedback-form', description: 'Collect user feedback', path: 'feedback-form', complexity: 'beginner', tags: ['feedback', 'forms'], features: ['feedback', 'ratings'], useCases: ['user feedback'], models: ['Feedback', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
-  { name: 'booking-app', description: 'Schedule appointments', path: 'booking-app', complexity: 'intermediate', tags: ['scheduling', 'appointments'], features: ['calendar', 'bookings', 'availability'], useCases: ['appointment scheduling'], models: ['Booking', 'TimeSlot', 'Service', 'User'], techStack: { frontend: 'React', backend: 'TanStack Start', database: 'PostgreSQL' } },
+  { name: 'todo-app', description: 'Simple task management with lists', path: 'todo-app', complexity: 'beginner', tags: ['productivity', 'tasks'], features: ['CRUD', 'lists'], useCases: ['personal task tracking'], models: ['Todo', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'expense-tracker', description: 'Personal finance with categories', path: 'expense-tracker', complexity: 'beginner', tags: ['finance', 'budgeting'], features: ['categories', 'charts'], useCases: ['expense tracking'], models: ['Expense', 'Category', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'crm', description: 'Customer relationship management', path: 'crm', complexity: 'intermediate', tags: ['business', 'sales'], features: ['contacts', 'deals', 'pipeline'], useCases: ['sales management'], models: ['Contact', 'Deal', 'Company', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'inventory', description: 'Stock and product management', path: 'inventory', complexity: 'intermediate', tags: ['business', 'warehouse'], features: ['products', 'stock', 'suppliers'], useCases: ['inventory management'], models: ['Product', 'Supplier', 'StockMovement', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'kanban', description: 'Project boards with drag-and-drop', path: 'kanban', complexity: 'intermediate', tags: ['productivity', 'project-management'], features: ['boards', 'columns', 'cards', 'drag-drop'], useCases: ['project management'], models: ['Board', 'Column', 'Card', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'ai-chat', description: 'AI chatbot with conversation history', path: 'ai-chat', complexity: 'intermediate', tags: ['ai', 'chatbot'], features: ['chat', 'ai-responses', 'history'], useCases: ['ai assistant'], models: ['Conversation', 'Message', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL', ai: 'Anthropic Claude' } },
+  { name: 'form-builder', description: 'Build custom forms and collect responses', path: 'form-builder', complexity: 'intermediate', tags: ['forms', 'surveys'], features: ['form-builder', 'responses'], useCases: ['surveys', 'data collection'], models: ['Form', 'Field', 'Response', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'feedback-form', description: 'Collect user feedback', path: 'feedback-form', complexity: 'beginner', tags: ['feedback', 'forms'], features: ['feedback', 'ratings'], useCases: ['user feedback'], models: ['Feedback', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'booking-app', description: 'Schedule appointments', path: 'booking-app', complexity: 'intermediate', tags: ['scheduling', 'appointments'], features: ['calendar', 'bookings', 'availability'], useCases: ['appointment scheduling'], models: ['Booking', 'TimeSlot', 'Service', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
   { name: 'expo-app', description: 'Mobile app with Expo and React Native', path: 'expo-app', complexity: 'beginner', tags: ['mobile', 'expo', 'react-native'], features: ['CRUD', 'mobile', 'expo-router'], useCases: ['mobile todo app', 'cross-platform app'], models: ['Todo', 'User'], techStack: { frontend: 'React Native', backend: 'Hono', database: 'PostgreSQL', bundler: 'Metro' } },
 ]
 
@@ -364,6 +369,12 @@ Available templates:
       console.log(`[project-runtime] template.copy called: ${templateName}`)
       const result = copyTemplate(templateName, projectName || templateName)
       
+      // If successful, trigger S3 sync immediately to persist the template files
+      if (result.ok && s3Sync) {
+        console.log(`[project-runtime] Triggering S3 sync after template copy`)
+        s3Sync.triggerSync(true) // immediate=true since template copy is a critical operation
+      }
+      
       // If successful, automatically rebuild and restart the preview
       if (result.ok) {
         let restartResult: { success: boolean; message: string; mode?: string; port?: number | null } = {
@@ -460,6 +471,44 @@ function createPathRestrictor(projectDir: string) {
 
 const pathRestrictor = createPathRestrictor(PROJECT_DIR)
 
+// AI Proxy Configuration
+// When AI_PROXY_URL and AI_PROXY_TOKEN are set, route Claude Code CLI through
+// the proxy instead of directly to Anthropic. This prevents exposing the raw
+// ANTHROPIC_API_KEY to the project pod.
+//
+// How it works:
+// - ANTHROPIC_BASE_URL is set to the proxy's Anthropic-native endpoint
+// - ANTHROPIC_API_KEY is set to the proxy token (proxy validates it)
+// - The proxy forwards requests to the real Anthropic API with server-side keys
+const AI_PROXY_URL = process.env.AI_PROXY_URL
+const AI_PROXY_TOKEN = process.env.AI_PROXY_TOKEN
+const useAIProxy = !!(AI_PROXY_URL && AI_PROXY_TOKEN)
+
+if (useAIProxy) {
+  // Derive the Anthropic-native proxy base URL from AI_PROXY_URL
+  // AI_PROXY_URL is like: http://api-server/api/ai/v1
+  // Anthropic base URL should be: http://api-server/api/ai/anthropic
+  const anthropicProxyBase = AI_PROXY_URL.replace(/\/v1$/, '/anthropic')
+  console.log(`[project-runtime] AI Proxy enabled: Claude Code → ${anthropicProxyBase}`)
+  console.log(`[project-runtime] Proxy token: ${AI_PROXY_TOKEN.slice(0, 20)}...`)
+} else {
+  console.log(`[project-runtime] AI Proxy not configured, using direct ANTHROPIC_API_KEY`)
+}
+
+// Build environment overrides for Claude Code process
+// When proxy is enabled, override ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY
+// IMPORTANT: Spread process.env first so DATABASE_URL and other runtime vars are inherited
+const claudeCodeEnv: Record<string, string> = {
+  ...Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+  ),
+}
+if (useAIProxy) {
+  const anthropicProxyBase = AI_PROXY_URL!.replace(/\/v1$/, '/anthropic')
+  claudeCodeEnv.ANTHROPIC_BASE_URL = anthropicProxyBase
+  claudeCodeEnv.ANTHROPIC_API_KEY = AI_PROXY_TOKEN!
+}
+
 const claudeCode = createClaudeCode({
   defaultSettings: {
     // Enable streaming (required for hooks)
@@ -472,6 +521,9 @@ const claudeCode = createClaudeCode({
     canUseTool: pathRestrictor,
     // Load project settings (.claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
+    // Environment for Claude Code process
+    // Inherits all runtime env vars (DATABASE_URL, etc.) plus AI proxy overrides
+    env: claudeCodeEnv,
     // MCP server configuration
     mcpServers: {
       wavesmith: {
@@ -533,6 +585,31 @@ const claudeCode = createClaudeCode({
 })
 
 // =============================================================================
+// Model Instance Cache — "keep the CLI warm"
+// =============================================================================
+// Cache ClaudeCodeLanguageModel instances by model name so the internal sessionId
+// persists across HTTP requests.  After the first streamText() call the SDK stores
+// the sessionId; subsequent calls automatically pass `resume: <sessionId>` to the
+// Claude Code CLI subprocess.  This means the CLI loads the existing session from
+// disk (~/.claude/projects/) instead of cold-starting a brand-new conversation,
+// saving 1-2 s of MCP/skill initialisation per message.
+//
+// Only 3 possible keys (haiku | sonnet | opus) so memory is bounded.
+const cachedModels = new Map<string, ReturnType<typeof claudeCode>>()
+
+function getOrCreateModel(modelName: 'haiku' | 'sonnet' | 'opus') {
+  let model = cachedModels.get(modelName)
+  if (!model) {
+    model = claudeCode(modelName, {
+      streamingInput: 'always',
+    })
+    cachedModels.set(modelName, model)
+    console.log(`[project-runtime] Cached model instance for: ${modelName} (session will auto-resume on next call)`)
+  }
+  return model
+}
+
+// =============================================================================
 // Stream Keep-Alive Utility
 // =============================================================================
 
@@ -556,8 +633,16 @@ function wrapStreamWithKeepalive(
   
   let keepAliveInterval: ReturnType<typeof setInterval> | null = null
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null
+  let streamClosed = false
   
   const reader = stream.getReader()
+  
+  function cleanupInterval() {
+    if (keepAliveInterval) {
+      clearInterval(keepAliveInterval)
+      keepAliveInterval = null
+    }
+  }
   
   return new ReadableStream({
     start(ctrl) {
@@ -565,17 +650,17 @@ function wrapStreamWithKeepalive(
       
       // Start keep-alive interval
       keepAliveInterval = setInterval(() => {
+        if (streamClosed || !controller) {
+          cleanupInterval()
+          return
+        }
         try {
-          if (controller) {
-            controller.enqueue(keepAliveMessage)
-            console.log('[project-runtime] Sent keep-alive')
-          }
+          controller.enqueue(keepAliveMessage)
+          console.log('[project-runtime] Sent keep-alive')
         } catch {
           // Stream closed, stop sending
-          if (keepAliveInterval) {
-            clearInterval(keepAliveInterval)
-            keepAliveInterval = null
-          }
+          streamClosed = true
+          cleanupInterval()
         }
       }, intervalMs)
     },
@@ -585,11 +670,9 @@ function wrapStreamWithKeepalive(
         const { done, value } = await reader.read()
         
         if (done) {
-          // Clean up and close
-          if (keepAliveInterval) {
-            clearInterval(keepAliveInterval)
-            keepAliveInterval = null
-          }
+          // Mark as closed BEFORE closing to prevent keep-alive race
+          streamClosed = true
+          cleanupInterval()
           ctrl.close()
           return
         }
@@ -597,20 +680,17 @@ function wrapStreamWithKeepalive(
         ctrl.enqueue(value)
       } catch (error) {
         // Clean up on error
-        if (keepAliveInterval) {
-          clearInterval(keepAliveInterval)
-          keepAliveInterval = null
-        }
+        streamClosed = true
+        cleanupInterval()
         ctrl.error(error)
       }
     },
     
     cancel() {
       // Clean up on cancel
-      if (keepAliveInterval) {
-        clearInterval(keepAliveInterval)
-        keepAliveInterval = null
-      }
+      streamClosed = true
+      cleanupInterval()
+      controller = null
       reader.cancel()
     },
   })
@@ -690,51 +770,27 @@ function getBuildStatus(): { status: string; ready: boolean; details?: string } 
       
       // If build status file says "ready", also verify actual build artifacts exist
       if (status === 'ready') {
-        const isTanStackStart = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
+        const distDir = join(PROJECT_DIR, 'dist')
+        if (!existsSync(distDir)) {
+          console.log('[project-runtime] Build status says ready but dist/ missing')
+          return { status: 'dist_missing', ready: false, details: 'Build artifacts missing - dist/ not found' }
+        }
         
-        if (isTanStackStart) {
-          // TanStack Start: verify .output/public/assets has actual files
-          const assetsDir = join(PROJECT_DIR, '.output', 'public', 'assets')
-          if (!existsSync(assetsDir)) {
-            console.log('[project-runtime] Build status says ready but .output/public/assets missing')
-            return { status: 'assets_missing', ready: false, details: 'Build artifacts missing - .output/public/assets not found' }
-          }
-          
-          try {
-            const assetFiles = readdirSync(assetsDir)
-            if (assetFiles.length === 0) {
-              console.log('[project-runtime] Build status says ready but .output/public/assets is empty')
-              return { status: 'assets_empty', ready: false, details: 'Build artifacts empty - no files in .output/public/assets' }
+        if (!existsSync(join(distDir, 'index.html'))) {
+          // Race condition: entrypoint.sh may have written "ready" before build fully completed.
+          // Wait briefly for the file to appear before declaring incomplete.
+          const waitStart = Date.now()
+          const MAX_WAIT_MS = 3000
+          const POLL_INTERVAL_MS = 100
+          while (Date.now() - waitStart < MAX_WAIT_MS) {
+            Bun.sleepSync(POLL_INTERVAL_MS)
+            if (existsSync(join(distDir, 'index.html'))) {
+              // File appeared, we're good
+              return { status: 'ready', ready: true }
             }
-            
-            // Check for required JS files (routes and main bundles)
-            const hasRoutes = assetFiles.some(f => f.startsWith('routes-') && f.endsWith('.js'))
-            const hasMain = assetFiles.some(f => f.startsWith('main-') && f.endsWith('.js'))
-            
-            if (!hasRoutes || !hasMain) {
-              console.log(`[project-runtime] Build assets incomplete - hasRoutes: ${hasRoutes}, hasMain: ${hasMain}`)
-              return { 
-                status: 'assets_incomplete', 
-                ready: false, 
-                details: `Build assets incomplete - routes: ${hasRoutes}, main: ${hasMain}` 
-              }
-            }
-          } catch (e) {
-            console.log('[project-runtime] Error reading assets directory:', e)
-            return { status: 'assets_error', ready: false, details: 'Cannot read assets directory' }
           }
-        } else {
-          // Plain Vite: verify dist/ exists and has index.html
-          const distDir = join(PROJECT_DIR, 'dist')
-          if (!existsSync(distDir)) {
-            console.log('[project-runtime] Build status says ready but dist/ missing')
-            return { status: 'dist_missing', ready: false, details: 'Build artifacts missing - dist/ not found' }
-          }
-          
-          if (!existsSync(join(distDir, 'index.html'))) {
-            console.log('[project-runtime] Build status says ready but dist/index.html missing')
-            return { status: 'dist_incomplete', ready: false, details: 'Build incomplete - dist/index.html not found' }
-          }
+          console.log(`[project-runtime] Build status says ready but dist/index.html missing after ${MAX_WAIT_MS}ms wait`)
+          return { status: 'dist_incomplete', ready: false, details: 'Build incomplete - dist/index.html not found' }
         }
       }
       
@@ -809,7 +865,6 @@ app.get('/ready', (c) => {
     logTiming(`READY! First ready after ${firstReadyTime}ms (${readyCheckCount} checks)`)
     
     // Auto-start vite watch mode for automatic rebuilds (don't block response)
-    // Works for both plain Vite and TanStack Start (both use vite build)
     // Expo uses Metro bundler, so watch mode doesn't apply
     const isExpo = existsSync(join(PROJECT_DIR, 'app.json')) || existsSync(join(PROJECT_DIR, 'expo.json'))
     
@@ -883,6 +938,7 @@ app.get('/build-events', (c) => {
   c.header('Connection', 'keep-alive')
   
   let clientController: ReadableStreamDefaultController | null = null
+  let isClosed = false
   
   const stream = new ReadableStream({
     start(controller) {
@@ -902,13 +958,21 @@ app.get('/build-events', (c) => {
         timestamp: Date.now(),
       })
       const encoder = new TextEncoder()
-      controller.enqueue(encoder.encode(`data: ${initialState}\n\n`))
+      try {
+        controller.enqueue(encoder.encode(`data: ${initialState}\n\n`))
+      } catch {
+        // Controller may already be closed
+        isClosed = true
+        buildEventClients.delete(controller)
+      }
       
       console.log(`[project-runtime] Build events client connected (total: ${buildEventClients.size})`)
     },
     cancel() {
+      isClosed = true
       if (clientController) {
         buildEventClients.delete(clientController)
+        clientController = null
         console.log(`[project-runtime] Build events client disconnected (remaining: ${buildEventClients.size})`)
       }
     },
@@ -961,11 +1025,11 @@ app.post('/agent/chat', async (c) => {
       return buildSystemPrompt(PROJECT_DIR, themeContext, buildContext)
     }
     
-    // Convert to CoreMessage format, handling both string and parts content
+    // Convert to ModelMessage format, handling both string and parts content
     // Preserves image parts for multimodal AI processing
     type ContentPart = { type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }
 
-    const coreMessages: CoreMessage[] = messages.map((msg) => {
+    const coreMessages: ModelMessage[] = messages.map((msg) => {
       // If message already has content string, pass through
       if (typeof msg.content === 'string') {
         return { role: msg.role, content: msg.content }
@@ -1082,9 +1146,10 @@ app.post('/agent/chat', async (c) => {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const result = streamText({
-          model: claudeCode(modelName, {
-            streamingInput: 'always',
-          }) as Parameters<typeof streamText>[0]['model'],
+          // perf: Use cached model instance to preserve sessionId across requests.
+          // After the first call the model auto-resumes the previous session,
+          // avoiding a full CLI cold-start on every message.
+          model: getOrCreateModel(modelName) as Parameters<typeof streamText>[0]['model'],
           system: getSystemPrompt(),
           messages: coreMessages,
           tools: templateTools,
@@ -1098,8 +1163,60 @@ app.post('/agent/chat', async (c) => {
         
         // Wrap the stream with keep-alive messages to prevent ALB/proxy timeouts
         // This is critical for long-running operations like template.copy (45+ seconds)
+        // Also appends a custom usage SSE event after the stream finishes
         if (response.body) {
-          const wrappedStream = wrapStreamWithKeepalive(response.body, 15000)
+          const originalStream = response.body
+          const usagePromise = result.usage
+          
+          // Create a new stream that wraps the original with keep-alive AND appends usage
+          const wrappedStream = new ReadableStream({
+            async start(controller) {
+              let closed = false
+              const reader = wrapStreamWithKeepalive(originalStream, 15000).getReader()
+              try {
+                while (true) {
+                  const { done, value } = await reader.read()
+                  if (done) break
+                  controller.enqueue(value)
+                }
+              } catch (err) {
+                console.error('[project-runtime] Stream read error:', err)
+              } finally {
+                reader.releaseLock()
+              }
+              
+              // After the main stream finishes, append usage data as a custom SSE event
+              // Using "data-" prefix so @ai-sdk/react's stream validator accepts it
+              if (!closed) {
+                try {
+                  const usage = await usagePromise
+                  console.log('[project-runtime] Usage from streamText:', JSON.stringify(usage))
+                  if (usage) {
+                    const usageEvent = `data: ${JSON.stringify({ type: 'data-usage', data: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } })}\n\n`
+                    controller.enqueue(new TextEncoder().encode(usageEvent))
+                  }
+                } catch (err) {
+                  console.error('[project-runtime] Failed to get usage:', err)
+                }
+              }
+              
+              // Trigger S3 sync after agent chat completes.
+              // The agent may have written/modified project files via tool calls.
+              // The file watcher's debounce will also catch these, but this explicit
+              // trigger ensures we don't miss anything if the watcher is delayed.
+              if (s3Sync) {
+                s3Sync.triggerSync()
+              }
+              
+              try {
+                controller.close()
+              } catch {
+                // Controller may already be closed if the client disconnected
+              }
+              closed = true
+            },
+          })
+          
           return new Response(wrappedStream, {
             status: response.status,
             headers: response.headers,
@@ -1153,6 +1270,40 @@ app.get('/info', (c) => {
     } : {
       enabled: false,
     },
+    aiProxy: {
+      url: process.env.AI_PROXY_URL || null,
+      configured: !!process.env.AI_PROXY_TOKEN,
+    },
+  })
+})
+
+// =============================================================================
+// AI Proxy Configuration Endpoint
+// =============================================================================
+// Exposes AI proxy credentials to user-created apps running in this project.
+// User apps call this endpoint to get the proxy URL and token without needing
+// raw API keys in their environment.
+
+app.get('/ai/config', (c) => {
+  const proxyUrl = process.env.AI_PROXY_URL
+  const proxyToken = process.env.AI_PROXY_TOKEN
+
+  if (!proxyUrl || !proxyToken) {
+    return c.json({
+      configured: false,
+      message: 'AI proxy not configured for this project runtime.',
+    })
+  }
+
+  return c.json({
+    configured: true,
+    proxyUrl,
+    proxyToken,
+    // OpenAI-compatible base URL that AI SDKs can use directly
+    baseUrl: proxyUrl,
+    // Models available through the proxy
+    modelsUrl: `${proxyUrl}/models`,
+    completionsUrl: `${proxyUrl}/chat/completions`,
   })
 })
 
@@ -1233,7 +1384,6 @@ const SERVER_PORT = parseInt(process.env.SERVER_PORT || '3001', 10)
 const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '8081', 10)
 
 // Track current preview mode and server processes
-let isTanStackStart = process.env.IS_TANSTACK_START === 'true'
 let isExpo = process.env.IS_EXPO === 'true'
 let serverProcess: ReturnType<typeof Bun.spawn> | null = null
 let expoServerProcess: ReturnType<typeof Bun.spawn> | null = null
@@ -1314,7 +1464,7 @@ function analyzeBuildError(errorLine: string): BuildErrorContext {
     typescriptError: /TS\d+:|error TS\d+|Type '.*' is not assignable/i,
     syntaxError: /SyntaxError|Unexpected token|Parse error/i,
     prismaError: /PrismaClient|prisma.*generate|@prisma\/client/i,
-    nitroError: /nitro|bundle.*size|chunk.*size/i,
+    buildToolError: /bundle.*size|chunk.*size/i,
     invalidExtension: /Invalid.*extension|\.jsx.*not supported/i,
     reactNotDefined: /React is not defined|'React' is not defined/i,
     importError: /Cannot resolve|wrong.*path|import.*error/i,
@@ -1390,12 +1540,12 @@ function analyzeBuildError(errorLine: string): BuildErrorContext {
     rootCause = 'Prisma schema out of sync with generated files'
     detectedIssues.push({
       type: 'schema_sync',
-      suggestion: 'Run `bun run generate` to regenerate types from schema.prisma'
+      suggestion: 'Run `bunx shogo generate` to regenerate types from schema.prisma'
     })
     recoverySteps.push(
       'STEP 1: Read the full build log: `cat .build.log`',
       'STEP 2: Check if schema was recently modified: `cat prisma/schema.prisma`',
-      'STEP 3: Regenerate all SDK files: `bun run generate`',
+      'STEP 3: Regenerate all SDK files: `bunx shogo generate`',
       'STEP 4: Wait for automatic rebuild and verify success'
     )
   }
@@ -1439,10 +1589,10 @@ function analyzeBuildError(errorLine: string): BuildErrorContext {
       'STEP 4: Wait for automatic rebuild and verify success'
     )
   }
-  // Check for build tool errors (Nitro, Vite)
-  else if (patterns.nitroError.test(fullLog)) {
+  // Check for build tool errors (Vite)
+  else if (patterns.buildToolError.test(fullLog)) {
     category = 'build_tool'
-    rootCause = 'Build tool error (Nitro/Vite)'
+    rootCause = 'Build tool error (Vite)'
     canSelfFix = false  // These often need user intervention
     detectedIssues.push({
       type: 'build_tool_error',
@@ -1450,7 +1600,7 @@ function analyzeBuildError(errorLine: string): BuildErrorContext {
     })
     recoverySteps.push(
       'STEP 1: Read the full build log: `cat .build.log`',
-      'STEP 2: Check for specific Nitro/Vite error messages',
+      'STEP 2: Check for specific Vite error messages',
       'STEP 3: This may require manual investigation - explain the issue to the user'
     )
   }
@@ -1781,8 +1931,8 @@ async function checkTcpPort(host: string, port: number, timeoutMs: number = 1000
 /**
  * Wait for PostgreSQL to be ready to accept connections.
  * Uses direct TCP socket connection for reliability - no external tools needed.
- * This is critical when using postgres sidecar - we need to wait for it to start
- * before running prisma commands.
+ * Supports both local sidecar (localhost) and remote shared cluster (CloudNativePG).
+ * Parses DATABASE_URL to determine the host and port.
  * 
  * @param timeoutMs - Maximum time to wait (default 30s)
  * @returns true if postgres is ready, false if timeout
@@ -1791,21 +1941,35 @@ async function waitForPostgresReady(timeoutMs: number = 30000): Promise<boolean>
   const startTime = Date.now()
   const checkInterval = 500
   
-  console.log('[project-runtime] Waiting for PostgreSQL to be ready...')
+  // Parse host and port from DATABASE_URL, fallback to localhost:5432
+  let pgHost = 'localhost'
+  let pgPort = 5432
+  const dbUrl = process.env.DATABASE_URL
+  if (dbUrl) {
+    try {
+      const url = new URL(dbUrl)
+      pgHost = url.hostname
+      pgPort = parseInt(url.port, 10) || 5432
+    } catch {
+      // Invalid URL, use defaults
+    }
+  }
+  
+  console.log(`[project-runtime] Waiting for PostgreSQL at ${pgHost}:${pgPort}...`)
   
   while (Date.now() - startTime < timeoutMs) {
     // Direct TCP connection check - most reliable method
-    const isReady = await checkTcpPort('localhost', 5432, 1000)
+    const isReady = await checkTcpPort(pgHost, pgPort, 1000)
     if (isReady) {
       const elapsed = Date.now() - startTime
-      console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms (TCP check)`)
+      console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms (TCP check on ${pgHost}:${pgPort})`)
       return true
     }
     
     await new Promise(resolve => setTimeout(resolve, checkInterval))
   }
   
-  console.error(`[project-runtime] PostgreSQL not ready after ${timeoutMs}ms`)
+  console.error(`[project-runtime] PostgreSQL not ready after ${timeoutMs}ms at ${pgHost}:${pgPort}`)
   return false
 }
 
@@ -1856,14 +2020,19 @@ function notifyBuildStateChange() {
   const encoder = new TextEncoder()
   const message = encoder.encode(`data: ${payload}\n\n`)
   
-  // Notify all connected clients
+  // Notify all connected clients - collect dead controllers to avoid modifying Set during iteration
+  const deadControllers: ReadableStreamDefaultController[] = []
   for (const controller of buildEventClients) {
     try {
       controller.enqueue(message)
     } catch (e) {
-      // Client disconnected - will be removed by the stream's cancel callback
-      buildEventClients.delete(controller)
+      // Client disconnected
+      deadControllers.push(controller)
     }
+  }
+  // Clean up dead controllers after iteration
+  for (const dead of deadControllers) {
+    buildEventClients.delete(dead)
   }
   
   if (buildEventClients.size > 0) {
@@ -1874,7 +2043,7 @@ function notifyBuildStateChange() {
 /**
  * Start Vite in watch mode with rebuild detection.
  * Monitors stdout for rebuild events and notifies SSE clients.
- * Automatically recovers from crashes (like the nitro plugin Object.entries bug).
+ * Automatically recovers from crashes (like the Object.entries bug).
  */
 async function startViteBuildWatch(): Promise<void> {
   if (buildWatchProcess) {
@@ -1911,13 +2080,13 @@ async function startViteBuildWatch(): Promise<void> {
     lastWatchCrashTime = now
     watchCrashCount++
     
-    // Check if this was likely the nitro plugin Object.entries bug
-    const isNitroBug = buildError?.includes('Object.entries') || 
+    // Check if this was likely a known Object.entries crash
+    const isKnownCrash = buildError?.includes('Object.entries') || 
                        buildLogLines.some(l => l.includes('Object.entries'))
     
-    if (isNitroBug) {
-      console.log('[project-runtime] 🔧 Detected nitro plugin Object.entries bug - will auto-recover')
-      appendToBuildLog('⚠️ Watch process crashed (known nitro plugin issue)')
+    if (isKnownCrash) {
+      console.log('[project-runtime] 🔧 Detected Object.entries crash - will auto-recover')
+      appendToBuildLog('⚠️ Watch process crashed (known issue)')
     }
     
     // Notify frontend of crash
@@ -1925,16 +2094,16 @@ async function startViteBuildWatch(): Promise<void> {
     buildError = buildError || `Watch process crashed (exit code ${exitCode})`
     buildErrorContext = {
       errorMessage: buildError,
-      errorCategory: isNitroBug ? 'build_tool' : 'unknown',
-      rootCause: isNitroBug 
-        ? 'TanStack nitro plugin bug in watch mode (Object.entries on null)'
+      errorCategory: isKnownCrash ? 'build_tool' : 'unknown',
+      rootCause: isKnownCrash 
+        ? 'Vite watch mode crash (Object.entries on null)'
         : 'Watch process exited unexpectedly',
       canSelfFix: true,
       logFilePath: '.build.log',
       logExcerpt: buildLogLines.slice(-30).join('\n'),
-      detectedIssues: isNitroBug ? [{
-        type: 'nitro_watch_crash',
-        suggestion: 'This is a known bug in the nitro plugin. Auto-recovery in progress.'
+      detectedIssues: isKnownCrash ? [{
+        type: 'vite_watch_crash',
+        suggestion: 'This is a known Vite watch mode bug. Auto-recovery in progress.'
       }] : [],
       recoverySteps: ['Automatic restart in progress...']
     }
@@ -1995,7 +2164,12 @@ async function startViteBuildWatch(): Promise<void> {
             notifyBuildStateChange()
           } else if (event === 'success') {
             buildState = 'success'
-            buildDuration = buildStartTime ? Date.now() - buildStartTime : null
+            // If we missed the 'start' event (race condition during startup), 
+            // use the watch start time or estimate duration from Vite's own output
+            if (!buildStartTime) {
+              buildStartTime = Date.now() - 5000 // Estimate 5s if we missed the start
+            }
+            buildDuration = Date.now() - buildStartTime
             lastBuildTime = Date.now()
             if (buildDuration) recordBuildTime(buildDuration)
             appendToBuildLog(`✅ Build complete (${buildDuration}ms)`)
@@ -2028,7 +2202,8 @@ async function startViteBuildWatch(): Promise<void> {
     }
   })()
   
-  // Also stream stderr
+  // Also stream stderr - but only treat actual errors as build failures
+  // Vite commonly outputs warnings and informational messages to stderr
   ;(async () => {
     if (!currentProcess.stderr) return
     const stderr = currentProcess.stderr
@@ -2045,11 +2220,18 @@ async function startViteBuildWatch(): Promise<void> {
           console.error(`[vite:error] ${output}`)
           appendToBuildLog(`[error] ${output}`)
           
-          // Treat any stderr as potential error
-          if (buildState === 'building') {
+          // Only treat stderr as a build error if it contains actual error indicators
+          // AND we're currently building. Vite outputs warnings/deprecations to stderr
+          // that shouldn't be treated as build failures.
+          const isActualError = output.includes('Error:') || 
+                               output.includes('error:') ||
+                               output.includes('ENOENT') ||
+                               output.includes('SIGTERM') ||
+                               output.includes('Failed to')
+          if (buildState === 'building' && isActualError) {
             buildState = 'error'
             buildError = output
-            buildErrorContext = analyzeBuildError(output)  // Create rich error context
+            buildErrorContext = analyzeBuildError(output)
             notifyBuildStateChange()
           }
         }
@@ -2076,14 +2258,133 @@ function stopViteBuildWatch(): void {
 }
 
 /**
+ * Pause/resume watcher API endpoints.
+ * Used by `bunx shogo generate` (scripts/generate.ts) to prevent the watcher
+ * from crashing due to rapid file writes during code generation.
+ * 
+ * Flow: pause → write generated files → resume (triggers fresh build + restart watch)
+ */
+let watcherPausedForGenerate = false
+let watcherPauseTimeout: ReturnType<typeof setTimeout> | null = null
+
+app.post('/preview/watch/pause', async (c) => {
+  if (buildWatchProcess) {
+    console.log('[project-runtime] ⏸️  Pausing watcher for code generation...')
+    stopViteBuildWatch()
+    watcherPausedForGenerate = true
+    
+    // Safety: auto-resume after 60s in case generate crashes without resuming
+    if (watcherPauseTimeout) clearTimeout(watcherPauseTimeout)
+    watcherPauseTimeout = setTimeout(() => {
+      if (watcherPausedForGenerate) {
+        console.log('[project-runtime] ⚠️ Watcher pause timeout - auto-resuming')
+        watcherPausedForGenerate = false
+        startViteBuildWatch()
+      }
+    }, 60000)
+    
+    return c.json({ paused: true })
+  }
+  return c.json({ paused: false, message: 'No watcher running' })
+})
+
+app.post('/preview/watch/resume', async (c) => {
+  if (watcherPauseTimeout) {
+    clearTimeout(watcherPauseTimeout)
+    watcherPauseTimeout = null
+  }
+  watcherPausedForGenerate = false
+  
+  // Reset crash count since this is a controlled restart
+  watchCrashCount = 0
+  lastWatchCrashTime = null
+  
+  console.log('[project-runtime] ▶️  Resuming watcher after code generation...')
+  
+  // Run a fresh build first, then start watch mode
+  try {
+    console.log('[project-runtime] 🔨 Running fresh build after generation...')
+    appendToBuildLog('🔨 Building after code generation...')
+    buildState = 'building'
+    buildStartTime = Date.now()
+    notifyBuildStateChange()
+    
+    const buildProc = Bun.spawnSync(['bun', '--bun', 'vite', 'build'], {
+      cwd: PROJECT_DIR,
+      env: process.env,
+    })
+    
+    const stdout = buildProc.stdout?.toString() || ''
+    const stderr = buildProc.stderr?.toString() || ''
+    if (stdout.trim()) appendToBuildLog(stdout)
+    if (stderr.trim()) appendToBuildLog(`[error] ${stderr}`)
+    
+    const durationMs = Date.now() - (buildStartTime || Date.now())
+    
+    if (buildProc.exitCode === 0) {
+      buildState = 'success'
+      buildDuration = durationMs
+      lastBuildTime = Date.now()
+      recordBuildTime(durationMs)
+      appendToBuildLog(`✅ Build complete (${durationMs}ms)`)
+      console.log(`[project-runtime] ✅ Post-generate build complete (${durationMs}ms)`)
+    } else {
+      buildState = 'error'
+      buildError = stderr || 'Build failed'
+      buildErrorContext = analyzeBuildError(buildError)
+      appendToBuildLog(`❌ Build failed: ${stderr}`)
+      console.error(`[project-runtime] ❌ Post-generate build failed:`, stderr)
+    }
+    notifyBuildStateChange()
+    
+    // Restart the backend server to pick up new generated routes
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const serverPath = existsSync(serverTsxPath) ? serverTsxPath : (existsSync(serverTsPath) ? serverTsPath : null)
+    
+    if (serverPath && serverProcess) {
+      console.log('[project-runtime] 🔄 Restarting backend API server...')
+      serverProcess.kill()
+      serverProcess = null
+      serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(SERVER_PORT) },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      streamProcessOutput(serverProcess, 'api-server')
+    }
+    
+    // Restart watch mode
+    await startViteBuildWatch()
+    
+    // Trigger S3 sync
+    if (s3Sync) {
+      s3Sync.triggerSync()
+    }
+    
+    return c.json({ 
+      resumed: true, 
+      buildSuccess: buildProc.exitCode === 0,
+      durationMs,
+    })
+  } catch (err: any) {
+    console.error('[project-runtime] Error resuming watcher:', err)
+    // Still try to restart watch mode even if build failed
+    await startViteBuildWatch()
+    return c.json({ resumed: true, error: err.message }, 500)
+  }
+})
+
+/**
  * Restart the preview server after template changes.
  * This will:
- * 1. Kill any existing Nitro server process
+ * 1. Kill any existing server processes
  * 2. Install dependencies
- * 3. Wait for PostgreSQL sidecar to be ready (if prisma is present)
+ * 3. Wait for PostgreSQL to be ready (if prisma is present)
  * 4. Run prisma generate/push if needed
- * 5. Build with Vite (Nitro produces .output/server/index.mjs)
- * 6. Start the Nitro server (for TanStack Start) or serve static files (plain Vite)
+ * 5. Build with Vite
+ * 6. Start the Hono server (for Expo) or serve static files (plain Vite)
  */
 app.post('/preview/restart', async (c) => {
   const startTime = performance.now()
@@ -2101,7 +2402,7 @@ app.post('/preview/restart', async (c) => {
   console.log(`[project-runtime] ⏱️  Starting preview restart for project ${PROJECT_ID}...`)
   
   try {
-    // 1. Kill existing servers (Nitro, Vite dev, Expo if running)
+    // 1. Kill existing servers (Hono, Vite dev, Expo if running)
     if (serverProcess) {
       console.log('[project-runtime] Stopping existing backend server...')
       serverProcess.kill()
@@ -2129,7 +2430,7 @@ app.post('/preview/restart', async (c) => {
     stopViteBuildWatch()
     markStep('killExistingServer')
     
-    // 2. Check if this is a TanStack Start project
+    // 2. Check project type
     const packageJsonPath = join(PROJECT_DIR, 'package.json')
     if (!existsSync(packageJsonPath)) {
       const totalMs = Math.round(performance.now() - startTime)
@@ -2138,12 +2439,11 @@ app.post('/preview/restart', async (c) => {
     
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
-    isTanStackStart = !!deps['@tanstack/react-start']
     isExpo = !!deps['expo']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
     markStep('parsePackageJson')
 
-    const projectType = isExpo ? 'Expo (React Native)' : isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'
+    const projectType = isExpo ? 'Expo (React Native)' : 'Vite + Hono'
     console.log(`[project-runtime] Project type: ${projectType}`)
     
     // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
@@ -2275,19 +2575,17 @@ app.post('/preview/restart', async (c) => {
     const url = new URL(c.req.url)
     const forceRebuild = url.searchParams.get('force') === 'true'
     
-    const nitroOutputPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
     const viteDistPath = join(PROJECT_DIR, 'dist', 'index.html')
     const expoDistPath = join(PROJECT_DIR, 'dist', 'index.html')
     const expoServerPath = join(PROJECT_DIR, 'server.ts')
-    const nitroOutputExists = existsSync(nitroOutputPath)
     const viteDistExists = existsSync(viteDistPath)
     const expoDistExists = existsSync(expoDistPath) && existsSync(expoServerPath) && isExpo
-    const buildExists = isExpo ? expoDistExists : isTanStackStart ? nitroOutputExists : viteDistExists
+    const buildExists = isExpo ? expoDistExists : viteDistExists
     
     // Check if source files have been modified since the last build
     let sourceFilesModified = false
     if (buildExists && !forceRebuild) {
-      const buildPath = isTanStackStart ? nitroOutputPath : viteDistPath
+      const buildPath = viteDistPath
       const buildMtime = statSync(buildPath).mtimeMs
       
       // Check if any source files are newer than the build
@@ -2363,7 +2661,6 @@ app.post('/preview/restart', async (c) => {
     }
     
     // After initial build completes, start watch mode for future automatic rebuilds
-    // Works for both plain Vite and TanStack Start (both use vite build)
     // Expo uses Metro bundler, so watch mode doesn't apply
     if (!isExpo) {
       console.log('[project-runtime] 🔄 Starting Vite watch mode for automatic rebuilds...')
@@ -2371,10 +2668,16 @@ app.post('/preview/restart', async (c) => {
       markStep('startViteBuildWatch')
     }
     
-    // 6. Start Nitro server for TanStack Start or Hono server for Expo
+    // 6. Start Hono/API server if server.ts or server.tsx exists
+    // For Expo: required (serves both API routes and static files)
+    // For plain Vite: optional (serves API routes like /api/* if the project has a backend)
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverPath = existsSync(serverTsxPath) ? serverTsxPath : serverTsPath
+    const hasServerFile = existsSync(serverPath)
+    
     if (isExpo) {
-      const serverPath = join(PROJECT_DIR, 'server.ts')
-      if (!existsSync(serverPath)) {
+      if (!hasServerFile) {
         const totalMs = Math.round(performance.now() - startTime)
         return c.json({ success: false, error: 'Expo server.ts not found', timings: { steps: timings, totalMs } }, 500)
       }
@@ -2413,24 +2716,28 @@ app.post('/preview/restart', async (c) => {
       if (!serverReady) {
         console.warn('[project-runtime] Expo Hono server may still be starting after health checks...')
       }
-    } else if (isTanStackStart) {
-      const serverPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
-      if (!existsSync(serverPath)) {
-        const totalMs = Math.round(performance.now() - startTime)
-        return c.json({ success: false, error: 'Nitro build output not found at .output/server/index.mjs', timings: { steps: timings, totalMs } }, 500)
+    } else if (hasServerFile) {
+      // Plain Vite project with server.ts — start it for API route handling
+      // This allows projects with a Hono backend (e.g., /api/* routes) to work correctly.
+      // Without this, /api/* requests fall through to static file serving and return HTML.
+      console.log(`[project-runtime] ⏱️  Starting project API server on port ${SERVER_PORT}...`)
+      appendToConsoleLog(`--- Project API server starting on port ${SERVER_PORT} ---`, 'stdout')
+      
+      // Kill existing server process if any
+      if (serverProcess) {
+        serverProcess.kill()
+        serverProcess = null
       }
-
-      console.log(`[project-runtime] ⏱️  Starting backend server on port ${SERVER_PORT}...`)
-      appendToConsoleLog(`--- Server starting on port ${SERVER_PORT} ---`, 'stdout')
+      
       serverProcess = Bun.spawn(['bun', 'run', serverPath], {
         cwd: PROJECT_DIR,
         env: { ...process.env, PORT: String(SERVER_PORT) },
         stdout: 'pipe',
         stderr: 'pipe',
       })
-      streamProcessOutput(serverProcess, 'app')
+      streamProcessOutput(serverProcess, 'api-server')
 
-      // Wait for server to be ready with exponential backoff (max ~2s total)
+      // Wait for server to be ready with exponential backoff
       let serverReady = false
       const maxAttempts = 10
       const baseDelayMs = 100
@@ -2442,18 +2749,17 @@ app.post('/preview/restart', async (c) => {
           })
           if (healthCheck.ok || healthCheck.status < 500) {
             serverReady = true
-            console.log(`[project-runtime] ⏱️  Backend server ready after ${attempt} attempt(s)`)
+            console.log(`[project-runtime] ⏱️  Project API server ready after ${attempt} attempt(s)`)
           }
         } catch (e) {
-          // Server not ready yet, wait with exponential backoff
           const delay = Math.min(baseDelayMs * attempt, 500)
           await new Promise(resolve => setTimeout(resolve, delay))
         }
       }
-      markStep('startNitroServer')
+      markStep('startProjectApiServer')
 
       if (!serverReady) {
-        console.warn('[project-runtime] Backend server may still be starting after health checks...')
+        console.warn('[project-runtime] Project API server may still be starting after health checks...')
       }
     }
 
@@ -2467,8 +2773,8 @@ app.post('/preview/restart', async (c) => {
     }
     console.log('[project-runtime] ════════════════════════════════════════')
 
-    const mode = isExpo ? 'expo' : isTanStackStart ? 'nitro' : 'static'
-    const port = isExpo ? EXPO_SERVER_PORT : isTanStackStart ? SERVER_PORT : null
+    const mode = isExpo ? 'expo' : (serverProcess ? 'static+api' : 'static')
+    const port = isExpo ? EXPO_SERVER_PORT : (serverProcess ? SERVER_PORT : null)
 
     return c.json({
       success: true,
@@ -2560,9 +2866,62 @@ app.post('/preview/rebuild', async (c) => {
     console.log(`[project-runtime] ✅ Manual rebuild complete (${durationMs}ms)`)
     notifyBuildStateChange()
     
+    // 4b. Restart the backend server process if server.tsx exists
+    // This is critical: when the AI modifies server.tsx or generates new API routes,
+    // the old serverProcess is stale and must be restarted to pick up changes.
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const rebuildServerPath = existsSync(serverTsxPath) ? serverTsxPath : (existsSync(serverTsPath) ? serverTsPath : null)
+    
+    if (rebuildServerPath && !isExpo) {
+      console.log(`[project-runtime] 🔄 Restarting backend API server (${rebuildServerPath})...`)
+      appendToBuildLog('🔄 Restarting backend API server...')
+      
+      if (serverProcess) {
+        serverProcess.kill()
+        serverProcess = null
+      }
+      
+      serverProcess = Bun.spawn(['bun', 'run', rebuildServerPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(SERVER_PORT) },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      streamProcessOutput(serverProcess, 'api-server')
+      
+      // Wait for server to be ready
+      let serverReady = false
+      for (let attempt = 1; attempt <= 10 && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${SERVER_PORT}/health`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ✅ Backend API server ready after ${attempt} attempt(s)`)
+            appendToBuildLog(`✅ Backend API server ready`)
+          }
+        } catch (e) {
+          await new Promise(resolve => setTimeout(resolve, Math.min(100 * attempt, 500)))
+        }
+      }
+      
+      if (!serverReady) {
+        console.warn('[project-runtime] ⚠️ Backend API server may still be starting...')
+        appendToBuildLog('⚠️ Backend API server may still be starting...')
+      }
+    }
+    
     // 5. Restart watch mode for future changes
     console.log('[project-runtime] 🔄 Restarting watch mode...')
     await startViteBuildWatch()
+    
+    // 6. Trigger S3 sync to persist the build output
+    if (s3Sync) {
+      console.log('[project-runtime] 📦 Triggering S3 sync after rebuild')
+      s3Sync.triggerSync()
+    }
     
     // Return to idle after short delay
     setTimeout(() => {
@@ -2618,8 +2977,8 @@ app.get('/build-log', (c) => {
  * - Subsequent updates: instant (HMR)
  * 
  * Steps:
- * 1. Kill any existing build/nitro/vite processes
- * 2. Check if this is a TanStack Start project
+ * 1. Kill any existing build/vite processes
+ * 2. Check project type
  * 3. Install dependencies if needed
  * 4. Run prisma generate/push if needed
  * 5. Start vite dev server
@@ -2665,7 +3024,7 @@ app.post('/preview/dev', async (c) => {
     }
     markStep('killExistingServers')
     
-    // 2. Check if this is a TanStack Start project
+    // 2. Check project type
     const packageJsonPath = join(PROJECT_DIR, 'package.json')
     if (!existsSync(packageJsonPath)) {
       devModeStarting = false  // Reset flag on failure
@@ -2676,12 +3035,11 @@ app.post('/preview/dev', async (c) => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
     // Use local variables first, only update globals after successful start
-    const detectedTanStackStart = !!deps['@tanstack/react-start']
     const detectedExpo = !!deps['expo']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
     markStep('parsePackageJson')
 
-    const projectType = detectedExpo ? 'Expo (React Native)' : detectedTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'
+    const projectType = detectedExpo ? 'Expo (React Native)' : 'Vite + Hono'
     console.log(`[project-runtime] Project type: ${projectType}`)
     
     // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
@@ -2889,7 +3247,6 @@ app.post('/preview/dev', async (c) => {
 
     // Only update globals after successful start
     // This prevents state inconsistency when dev mode fails to start
-    isTanStackStart = detectedTanStackStart
     isExpo = detectedExpo
     isDevMode = true
     devModeStarting = false
@@ -2969,7 +3326,7 @@ app.post('/__console', async (c) => {
   }
 })
 
-const previewMode = isExpo ? 'Expo (Hono server)' : isTanStackStart ? 'TanStack Start (proxy)' : 'Static files'
+const previewMode = isExpo ? 'Expo (Hono server)' : 'Static files'
 console.log(`[project-runtime] Preview mode: ${previewMode}`)
 
 /**
@@ -3036,7 +3393,7 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   html = html.replace(/<link([^>]*)\s+href="\/src\/([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}src/$2"$3>`)
 
-  // Rewrite Vite dev server paths (/@vite, /@react-refresh, /@tanstack-start, /@id, /node_modules)
+  // Rewrite Vite dev server paths (/@vite, /@react-refresh, /@id, /node_modules)
   html = html.replace(/<link([^>]*)\s+href="\/@([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}@$2"$3>`)
 
@@ -3139,11 +3496,7 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
 }
 
 /**
- * Preview handler - proxies to TanStack Start server or serves static files.
- * 
- * For TanStack Start projects:
- * - Proxies all requests to the running TanStack Start server on port 3000
- * - Full SSR, server functions, and routing handled by TanStack
+ * Preview handler - serves static files from dist/.
  * 
  * For plain Vite projects:
  * - Serves pre-built static assets from dist/
@@ -3226,86 +3579,6 @@ app.get('/preview/*', async (c) => {
     }
   }
   
-  // TanStack Start: proxy to the running server
-  if (isTanStackStart) {
-    const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
-    console.log(`[project-runtime] Proxying preview to TanStack: ${targetUrl}`)
-    
-    try {
-      const response = await fetch(targetUrl, {
-        method: c.req.method,
-        headers: {
-          'Host': `localhost:${SERVER_PORT}`,
-          'Accept': c.req.header('Accept') || '*/*',
-          'Accept-Encoding': c.req.header('Accept-Encoding') || '',
-        },
-      })
-      
-      // Get response body
-      const contentType = response.headers.get('Content-Type') || 'text/html'
-      const body = await response.arrayBuffer()
-      
-      // Rewrite HTML responses to fix asset paths when accessed through proxy
-      if (contentType.includes('text/html')) {
-        const html = new TextDecoder().decode(body)
-        const rewrittenHtml = rewritePreviewHtml(html, externalBasePath)
-        return new Response(rewrittenHtml, {
-          status: response.status,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(Buffer.byteLength(rewrittenHtml)),
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
-      }
-      
-      // Rewrite JavaScript responses to fix dynamic import paths
-      // Vite generates code like import('/assets/...') which needs to be rewritten
-      if (contentType.includes('javascript') || contentType.includes('application/javascript')) {
-        let js = new TextDecoder().decode(body)
-        // Rewrite absolute paths in dynamic imports: import("/assets/...") and import('/assets/...')
-        js = js.replace(/import\(["']\/assets\//g, `import("${externalBasePath}assets/`)
-        js = js.replace(/import\(["']\/src\//g, `import("${externalBasePath}src/`)
-        // Also handle other common patterns: __vite_ssr_dynamic_import__, etc.
-        js = js.replace(/"\/assets\//g, `"${externalBasePath}assets/`)
-        js = js.replace(/'\/assets\//g, `'${externalBasePath}assets/`)
-        js = js.replace(/"\/src\//g, `"${externalBasePath}src/`)
-        js = js.replace(/'\/src\//g, `'${externalBasePath}src/`)
-        return new Response(js, {
-          status: response.status,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(Buffer.byteLength(js)),
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
-      }
-      
-      return new Response(body, {
-        status: response.status,
-        headers: {
-          'Content-Type': contentType,
-          'Cache-Control': 'no-cache',
-          'Access-Control-Allow-Origin': '*',
-        },
-      })
-    } catch (error: any) {
-      console.error('[project-runtime] TanStack proxy error:', error)
-      return c.html(`
-        <html>
-          <body style="font-family: system-ui; padding: 2rem;">
-            <h1>Preview Loading...</h1>
-            <p>The TanStack Start server is starting up. Please wait a moment and refresh.</p>
-            <p style="color: #666; font-size: 0.9em;">Error: ${error.message}</p>
-            <script>setTimeout(() => location.reload(), 3000)</script>
-          </body>
-        </html>
-      `, 503)
-    }
-  }
-
   // Expo: proxy to the Expo Hono server (serves both API routes and static files)
   if (isExpo && expoServerProcess) {
     const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
@@ -3686,6 +3959,108 @@ app.all('/*', async (c, next) => {
     relativePath = previewPathMatch[1] || '/'
   }
   
+  // Pass through internal runtime endpoints to their dedicated route handlers.
+  // Without this, subdomain requests to /build-events (SSE), /build-status, etc.
+  // would fall through to static file serving and return HTML instead of the SSE stream.
+  // This is critical for the preview auto-refresh mechanism (SSE build events).
+  const runtimeInternalPaths = [
+    '/build-events',
+    '/build-status',
+    '/preview/restart',
+    '/preview/rebuild',
+    '/preview/status',
+    '/console-log',
+  ]
+  
+  if (runtimeInternalPaths.some(p => relativePath === p || relativePath.startsWith(p + '/'))) {
+    console.log(`[project-runtime] Subdomain: passing through internal endpoint ${relativePath}`)
+    return next()
+  }
+  
+  // Proxy /api/* requests to the project's backend server if one is running.
+  // For Expo: handled below via the Expo server proxy.
+  // For plain Vite: proxy to the project's Hono server started from server.ts.
+  // Without this, /api/* requests are served as static files from dist/, returning HTML.
+  if (!isExpo && serverProcess && relativePath.startsWith('/api/')) {
+    const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
+    const method = c.req.method
+    console.log(`[project-runtime] Subdomain: proxying ${method} ${relativePath} to project API server at ${targetUrl}`)
+    
+    try {
+      // Build headers for the proxy request
+      const proxyHeaders: Record<string, string> = {
+        'Host': `localhost:${SERVER_PORT}`,
+        'Accept': c.req.header('Accept') || '*/*',
+        'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+      }
+      
+      // Forward Content-Type for POST/PUT/PATCH requests
+      const contentType = c.req.header('Content-Type')
+      if (contentType) {
+        proxyHeaders['Content-Type'] = contentType
+      }
+      
+      // Forward cookies for auth
+      const cookies = c.req.header('Cookie')
+      if (cookies) {
+        proxyHeaders['Cookie'] = cookies
+      }
+      
+      // Forward Authorization header
+      const authHeader = c.req.header('Authorization')
+      if (authHeader) {
+        proxyHeaders['Authorization'] = authHeader
+      }
+      
+      // Build fetch options
+      const fetchOptions: RequestInit = {
+        method,
+        headers: proxyHeaders,
+      }
+      
+      // Forward request body for POST/PUT/PATCH
+      if (method !== 'GET' && method !== 'HEAD') {
+        try {
+          const bodyBuffer = await c.req.arrayBuffer()
+          if (bodyBuffer.byteLength > 0) {
+            fetchOptions.body = bodyBuffer
+          }
+        } catch {
+          // No body or couldn't read body - that's ok
+        }
+      }
+      
+      const response = await fetch(targetUrl, fetchOptions)
+      
+      const responseContentType = response.headers.get('Content-Type') || 'application/json'
+      const body = await response.arrayBuffer()
+      
+      // Build response headers
+      const responseHeaders: Record<string, string> = {
+        'Content-Type': responseContentType,
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Credentials': 'true',
+      }
+      
+      // Forward Set-Cookie headers for auth
+      const setCookie = response.headers.get('Set-Cookie')
+      if (setCookie) {
+        responseHeaders['Set-Cookie'] = setCookie
+      }
+      
+      return new Response(body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[project-runtime] Subdomain API proxy error:', error)
+      return c.json({
+        error: { code: 'api_proxy_error', message: `Failed to proxy to project API server: ${error.message}` }
+      }, 502)
+    }
+  }
+  
   // Check if dev mode has failed too many times (circuit breaker)
   const isInBackoff = devModeFailureCount >= DEV_MODE_MAX_FAILURES && 
     devModeLastFailure && (Date.now() - devModeLastFailure < DEV_MODE_BACKOFF_MS)
@@ -3781,7 +4156,7 @@ app.all('/*', async (c, next) => {
   // Use build+restart approach instead of dev mode for reliability and simplicity
   // This avoids HMR complexity and provides consistent preview updates
   // For plain Vite: only auto-start if dist/ doesn't exist (prevents redundant builds)
-  // For TanStack Start/Expo: always auto-start if process isn't running
+  // For Expo: always auto-start if process isn't running
   const needsAutoStart = !serverProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
   
   if (needsAutoStart) {
@@ -3821,9 +4196,8 @@ app.all('/*', async (c, next) => {
   
   // Show loading page while build is starting
   // For plain Vite: only show loading if dist/ doesn't exist yet
-  // For TanStack Start/Expo: show loading if respective process isn't running
-  const isTanstackStart = existsSync(join(PROJECT_DIR, '.output', 'server', 'index.mjs'))
-  const needsProcess = isTanstackStart || existsSync(join(PROJECT_DIR, 'app.json')) // TanStack Start or Expo
+  // For Expo: show loading if respective process isn't running
+  const needsProcess = existsSync(join(PROJECT_DIR, 'app.json')) // Expo
   
   if (devModeStarting || (!distExists && !serverProcess && !expoServerProcess && !isInBackoff)) {
     return c.html(`
@@ -3948,88 +4322,6 @@ app.all('/*', async (c, next) => {
     }
   }
   
-  // TanStack Start: proxy to the running server
-  if (isTanStackStart) {
-    const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
-    const method = c.req.method
-    console.log(`[project-runtime] Subdomain: proxying ${method} to TanStack at ${targetUrl}`)
-    
-    try {
-      // Build headers for the proxy request
-      const proxyHeaders: Record<string, string> = {
-        'Host': `localhost:${SERVER_PORT}`,
-        'Accept': c.req.header('Accept') || '*/*',
-        'Accept-Encoding': c.req.header('Accept-Encoding') || '',
-      }
-      
-      // Forward Content-Type for POST/PUT/PATCH requests
-      const contentType = c.req.header('Content-Type')
-      if (contentType) {
-        proxyHeaders['Content-Type'] = contentType
-      }
-      
-      // Forward cookies for auth
-      const cookies = c.req.header('Cookie')
-      if (cookies) {
-        proxyHeaders['Cookie'] = cookies
-      }
-      
-      // Build fetch options
-      const fetchOptions: RequestInit = {
-        method,
-        headers: proxyHeaders,
-      }
-      
-      // Forward request body for POST/PUT/PATCH
-      if (method !== 'GET' && method !== 'HEAD') {
-        try {
-          const bodyBuffer = await c.req.arrayBuffer()
-          if (bodyBuffer.byteLength > 0) {
-            fetchOptions.body = bodyBuffer
-          }
-        } catch {
-          // No body or couldn't read body - that's ok
-        }
-      }
-      
-      const response = await fetch(targetUrl, fetchOptions)
-      
-      const responseContentType = response.headers.get('Content-Type') || 'text/html'
-      const body = await response.arrayBuffer()
-      
-      // Build response headers
-      const responseHeaders: Record<string, string> = {
-        'Content-Type': responseContentType,
-        'Cache-Control': 'no-cache',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Credentials': 'true',
-      }
-      
-      // Forward Set-Cookie headers for auth
-      const setCookie = response.headers.get('Set-Cookie')
-      if (setCookie) {
-        responseHeaders['Set-Cookie'] = setCookie
-      }
-      
-      // No rewriting needed for subdomain access - serve directly!
-      return new Response(body, {
-        status: response.status,
-        headers: responseHeaders,
-      })
-    } catch (error: any) {
-      console.error('[project-runtime] Subdomain TanStack proxy error:', error)
-      return c.html(`
-        <html>
-          <body style="font-family: system-ui; padding: 2rem;">
-            <h1>Preview Loading...</h1>
-            <p>The server is starting up. Please wait a moment and refresh.</p>
-            <script>setTimeout(() => location.reload(), 3000)</script>
-          </body>
-        </html>
-      `, 503)
-    }
-  }
-
   // Expo: proxy to the Expo Hono server (serves both API routes and static files)
   if (isExpo && expoServerProcess) {
     const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
@@ -4420,6 +4712,26 @@ app.post('/terminal/exec', async (c) => {
     if (!cmdConfig) {
       return c.json({ error: { code: 'command_not_found', message: 'Command configuration not found' } }, 500)
     }
+
+    // For Playwright tests, ensure dependencies are installed (workspaces from template may have no node_modules)
+    if (commandId === 'playwright-test') {
+      const nodeModulesDir = join(PROJECT_DIR, 'node_modules')
+      if (!existsSync(nodeModulesDir)) {
+        console.log(`[project-runtime] Running bun install before playwright (node_modules missing)`)
+        const installResult = Bun.spawnSync(['bun', 'install'], {
+          cwd: PROJECT_DIR,
+          env: { ...process.env, CI: 'true' },
+          stdout: 'inherit',
+          stderr: 'inherit',
+        })
+        if (installResult.exitCode !== 0) {
+          return c.json(
+            { error: { code: 'install_failed', message: 'bun install failed. Run "bun install" in the project and try again.' } },
+            500
+          )
+        }
+      }
+    }
     
     console.log(`[project-runtime] Executing terminal command: ${cmdConfig.command}`)
     
@@ -4645,7 +4957,8 @@ app.get('/tests/list', (c) => {
  * 
  * Request body:
  * - file?: string - Specific test file to run (relative path)
- * - testName?: string - Specific test name pattern (grep)
+ * - testName?: string - Test name pattern (grep), ignored when line is set
+ * - line?: number - Run only the test at this line (file:line); takes precedence over testName
  * - headed?: boolean - Run in headed mode
  * - reporter?: 'list' | 'json' | 'line' - Reporter to use
  */
@@ -4656,6 +4969,7 @@ app.post('/tests/run', async (c) => {
   let body: { 
     file?: string
     testName?: string
+    line?: number
     headed?: boolean
     reporter?: 'list' | 'json' | 'line'
   } = {}
@@ -4666,19 +4980,23 @@ app.post('/tests/run', async (c) => {
     // Empty body is fine, use defaults
   }
 
-  const { file, testName, headed, reporter = 'list' } = body
+  const { file, testName, line, headed, reporter = 'list' } = body
 
   // Build command
   let command = 'bunx playwright test'
   
-  // Add specific file
+  // Add specific file (or file:line to run a single test)
   if (file) {
-    command += ` "${file}"`
+    if (line != null && line > 0) {
+      command += ` "${file}:${line}"`
+    } else {
+      command += ` "${file}"`
+    }
   }
   
-  // Add test name filter (grep)
-  if (testName) {
-    command += ` --grep "${testName}"`
+  // Add test name filter (grep) only when not targeting by line
+  if (testName && (line == null || line <= 0)) {
+    command += ` --grep "${testName.replace(/"/g, '\\"')}"`
   }
   
   // Add headed mode
@@ -4688,6 +5006,24 @@ app.post('/tests/run', async (c) => {
   
   // Add reporter
   command += ` --reporter=${reporter}`
+
+  // Ensure dependencies are installed (workspaces created from template may have no node_modules)
+  const nodeModulesDir = join(PROJECT_DIR, 'node_modules')
+  if (!existsSync(nodeModulesDir)) {
+    console.log(`[project-runtime] Running bun install before tests (node_modules missing)`)
+    const installResult = Bun.spawnSync(['bun', 'install'], {
+      cwd: PROJECT_DIR,
+      env: { ...process.env, CI: 'true' },
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    if (installResult.exitCode !== 0) {
+      return c.json(
+        { error: { code: 'install_failed', message: 'bun install failed. Run "bun install" in the project and try again.' } },
+        500
+      )
+    }
+  }
 
   console.log(`[project-runtime] Executing: ${command}`)
 
@@ -4731,6 +5067,32 @@ app.post('/tests/run', async (c) => {
       }
 
       const exitCode = await proc.exited
+
+      // Append any test-result attachments (screenshots, traces, videos)
+      // Playwright only prints these for failures; we surface them for all runs
+      const resultsDir = join(PROJECT_DIR, 'test-results')
+      if (existsSync(resultsDir)) {
+        const attachments: string[] = []
+        function walkResults(dir: string) {
+          try {
+            for (const entry of readdirSync(dir, { withFileTypes: true })) {
+              const full = join(dir, entry.name)
+              if (entry.isDirectory()) walkResults(full)
+              else if (entry.name.endsWith('.png') || entry.name === 'trace.zip' || entry.name.endsWith('.webm')) {
+                attachments.push(full.replace(PROJECT_DIR + '/', ''))
+              }
+            }
+          } catch { /* ignore */ }
+        }
+        walkResults(resultsDir)
+        if (attachments.length > 0) {
+          await writer.write(encoder.encode('\n--- Test Artifacts ---\n'))
+          for (const a of attachments) {
+            await writer.write(encoder.encode(`${a}\n`))
+          }
+        }
+      }
+
       await writer.write(encoder.encode(`\n\n[Process exited with code ${exitCode}]\n`))
       await writer.close()
     } catch (err: any) {
@@ -5041,6 +5403,14 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
 (function() {
   var proxyBase = ${JSON.stringify(basePath)};
   
+  // Helper to extract URL string from various input types (string, URL, Request)
+  function extractUrlString(input) {
+    if (typeof input === 'string') return input;
+    if (input instanceof URL) return input.toString();
+    if (input instanceof Request) return input.url;
+    return null;
+  }
+  
   // Helper to rewrite URL for proxy
   function rewriteUrl(url) {
     if (typeof url !== 'string') return url;
@@ -5063,7 +5433,6 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
             if (path.startsWith('/')) path = path.substring(1);
             url = proxyBase + path + urlObj.search;
           }
-          console.log('[Prisma Studio Proxy] Rewrote full URL to:', url);
         }
       } catch(e) {
         // Invalid URL, leave as-is
@@ -5071,7 +5440,6 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
     }
     // Handle protocol-relative URLs (//...) - leave unchanged
     else if (url.startsWith('//')) {
-      // Protocol-relative URLs should not be rewritten
       return url;
     }
     // Handle /api/ calls - but check if already proxied
@@ -5093,17 +5461,62 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
   
   // Store original fetch
   var originalFetch = window.fetch;
-  window.fetch = function(url, options) {
-    url = rewriteUrl(url);
-    return originalFetch.call(this, url, options);
+  window.fetch = function(input, init) {
+    // fix-prisma-proxy: Handle Request, URL, and string inputs
+    // Modern frameworks (including Prisma Studio) may pass Request or URL objects
+    // instead of plain strings, which previously bypassed URL rewriting entirely.
+    if (input instanceof Request) {
+      var rewrittenUrl = rewriteUrl(input.url);
+      if (rewrittenUrl !== input.url) {
+        // Create a new Request with rewritten URL, preserving all other properties
+        input = new Request(rewrittenUrl, input);
+      }
+      return originalFetch.call(this, input, init);
+    }
+    if (input instanceof URL) {
+      var urlStr = rewriteUrl(input.toString());
+      return originalFetch.call(this, urlStr, init);
+    }
+    var rewritten = rewriteUrl(input);
+    return originalFetch.call(this, rewritten, init);
   };
   
   // Store original XMLHttpRequest.open
   var originalOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {
     var args = Array.prototype.slice.call(arguments, 2);
-    url = rewriteUrl(url);
+    // fix-prisma-proxy: Handle URL objects in XHR too
+    var urlStr = extractUrlString(url);
+    if (urlStr !== null) {
+      url = rewriteUrl(urlStr);
+    }
     return originalOpen.apply(this, [method, url].concat(args));
+  };
+  
+  // fix-prisma-proxy: Prevent Prisma Studio SPA router from changing location
+  // If Prisma Studio pushes history state, it changes location.pathname which
+  // breaks subsequent relative URL resolution. Lock the pathname to the proxy base.
+  var originalPushState = history.pushState;
+  var originalReplaceState = history.replaceState;
+  history.pushState = function(state, title, url) {
+    // Only allow if URL stays within proxy base path, otherwise no-op
+    if (url) {
+      var urlStr = typeof url === 'string' ? url : url.toString();
+      if (!urlStr.startsWith(proxyBase) && urlStr.startsWith('/')) {
+        // Redirect to proxy-prefixed path
+        url = proxyBase + urlStr.substring(1);
+      }
+    }
+    return originalPushState.call(this, state, title, url);
+  };
+  history.replaceState = function(state, title, url) {
+    if (url) {
+      var urlStr = typeof url === 'string' ? url : url.toString();
+      if (!urlStr.startsWith(proxyBase) && urlStr.startsWith('/')) {
+        url = proxyBase + urlStr.substring(1);
+      }
+    }
+    return originalReplaceState.call(this, state, title, url);
   };
   
   // Patch dynamically created script/link elements
@@ -5121,11 +5534,7 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
         var originalSetter = descriptor.set;
         Object.defineProperty(element, 'src', {
           set: function(value) {
-            var rewritten = rewriteUrl(value);
-            if (rewritten !== value) {
-              console.log('[Prisma Studio Proxy] Rewrote element src:', value, '->', rewritten);
-            }
-            return originalSetter.call(this, rewritten);
+            return originalSetter.call(this, rewriteUrl(value));
           },
           get: descriptor.get
         });
@@ -5137,11 +5546,7 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
         var originalLinkSetter = linkDescriptor.set;
         Object.defineProperty(element, 'href', {
           set: function(value) {
-            var rewritten = rewriteUrl(value);
-            if (rewritten !== value) {
-              console.log('[Prisma Studio Proxy] Rewrote link href:', value, '->', rewritten);
-            }
-            return originalLinkSetter.call(this, rewritten);
+            return originalLinkSetter.call(this, rewriteUrl(value));
           },
           get: linkDescriptor.get
         });

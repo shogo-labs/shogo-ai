@@ -22,6 +22,7 @@ export const UserModel = types
     email: types.string,
     emailVerified: types.boolean,
     image: types.optional(types.string, ""),
+    role: types.enumeration("UserRole", ["user", "super_admin"]),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),

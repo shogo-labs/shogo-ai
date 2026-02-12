@@ -10,18 +10,6 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
-    "./studio-core/domain": {
-      "import": "./src/studio-core/domain.ts",
-      "types": "./src/studio-core/domain.ts"
-    },
-    "./query/registry": {
-      "import": "./src/query/registry.ts",
-      "types": "./src/query/registry.ts"
-    },
-    "./query/backends/sql": {
-      "import": "./src/query/backends/sql.ts",
-      "types": "./src/query/backends/sql.ts"
-    },
     "./query/execution/bun-postgres": {
       "import": "./src/query/execution/bun-postgres.ts",
       "types": "./src/query/execution/bun-postgres.ts"
@@ -30,25 +18,9 @@
       "import": "./src/query/execution/bun-sql.ts",
       "types": "./src/query/execution/bun-sql.ts"
     },
-    "./persistence/null": {
-      "import": "./src/persistence/null.ts",
-      "types": "./src/persistence/null.ts"
-    },
     "./persistence/s3-sqlite": {
       "import": "./src/persistence/s3-sqlite.ts",
       "types": "./src/persistence/s3-sqlite.ts"
-    },
-    "./billing/domain": {
-      "import": "./src/billing/domain.ts",
-      "types": "./src/billing/domain.ts"
-    },
-    "./runtime": {
-      "import": "./src/runtime/index.ts",
-      "types": "./src/runtime/index.ts"
-    },
-    "./runtime/types": {
-      "import": "./src/runtime/types.ts",
-      "types": "./src/runtime/types.ts"
     },
     "./mcp-isolation": {
       "import": "./src/mcp-isolation/index.ts",
@@ -58,9 +30,9 @@
       "import": "./src/mcp-isolation/types.ts",
       "types": "./src/mcp-isolation/types.ts"
     },
-    "./generators": {
-      "import": "./src/generators/index.ts",
-      "types": "./src/generators/index.ts"
+    "./component-builder": {
+      "import": "./src/component-builder/index.ts",
+      "types": "./src/component-builder/index.ts"
     }
   },
   "scripts": {
@@ -85,7 +57,6 @@
     "uuid": "^13.0.0"
   },
   "devDependencies": {
-    "@prisma/internals": "^7.3.0",
     "@types/bun": "latest",
     "@types/nunjucks": "^3.2.6",
     "@types/uuid": "^11.0.0",

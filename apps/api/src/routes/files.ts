@@ -51,6 +51,23 @@ const EXCLUDED_DIRS = new Set([
 ])
 
 /**
+ * Map file extensions to MIME types for binary/media files.
+ * Files with these extensions are served as raw binary with the correct content type.
+ */
+const BINARY_MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.webm': 'video/webm',
+  '.mp4': 'video/mp4',
+  '.zip': 'application/zip',
+  '.ico': 'image/x-icon',
+}
+
+/**
  * File info returned by list endpoint.
  */
 interface FileInfo {
@@ -161,6 +178,12 @@ export function filesRoutes(config: FilesRoutesConfig) {
   }
 
   /**
+   * Directories that are always allowed even though they would normally be excluded.
+   * test-results contains Playwright screenshots/traces/videos.
+   */
+  const ALLOWED_DIRS = new Set(['test-results'])
+
+  /**
    * Validate file path to prevent directory traversal.
    */
   function validateFilePath(filePath: string): boolean {
@@ -168,10 +191,10 @@ export function filesRoutes(config: FilesRoutesConfig) {
     if (filePath.includes('..') || filePath.startsWith('/')) {
       return false
     }
-    // Prevent access to excluded directories
+    // Prevent access to excluded directories (but allow test-results)
     const parts = filePath.split('/')
     for (const part of parts) {
-      if (EXCLUDED_DIRS.has(part)) {
+      if (EXCLUDED_DIRS.has(part) && !ALLOWED_DIRS.has(part)) {
         return false
       }
     }
@@ -277,6 +300,24 @@ export function filesRoutes(config: FilesRoutesConfig) {
       const fullPath = join(projectPath, filePath)
 
       try {
+        // Check if this is a binary/media file that should be served raw
+        const ext = extname(filePath).toLowerCase()
+        const mimeType = BINARY_MIME_TYPES[ext]
+
+        if (mimeType) {
+          // Serve binary files with correct content type (images, videos, zips)
+          const buffer = await readFile(fullPath)
+          return new Response(buffer, {
+            status: 200,
+            headers: {
+              'Content-Type': mimeType,
+              'Content-Length': String(buffer.byteLength),
+              'Cache-Control': 'public, max-age=60',
+            },
+          })
+        }
+
+        // Text files: return as JSON (existing behavior)
         const content = await readFile(fullPath, 'utf-8')
         return c.json({ ok: true, content, path: filePath }, 200)
       } catch (err: any) {

@@ -24,57 +24,7 @@ describe('Build Status Verification', () => {
     rmSync(TEST_PROJECT_DIR, { recursive: true, force: true })
   })
 
-  describe('TanStack Start Projects', () => {
-    test('should detect missing assets directory', () => {
-      // Create minimal TanStack project structure (server only, no public assets)
-      mkdirSync(join(TEST_PROJECT_DIR, '.output', 'server'), { recursive: true })
-      writeFileSync(join(TEST_PROJECT_DIR, '.output', 'server', 'index.mjs'), 'export default {}')
-      
-      // Assets directory is missing - this is the bug we're fixing
-      const assetsDir = join(TEST_PROJECT_DIR, '.output', 'public', 'assets')
-      expect(existsSync(assetsDir)).toBe(false)
-    })
-
-    test('should detect empty assets directory', () => {
-      // Create assets directory but leave it empty
-      const assetsDir = join(TEST_PROJECT_DIR, '.output', 'public', 'assets')
-      mkdirSync(assetsDir, { recursive: true })
-      
-      const files = readdirSync(assetsDir)
-      expect(files.length).toBe(0)
-    })
-
-    test('should detect missing routes bundle', () => {
-      // Create assets directory with only main bundle
-      const assetsDir = join(TEST_PROJECT_DIR, '.output', 'public', 'assets')
-      mkdirSync(assetsDir, { recursive: true })
-      writeFileSync(join(assetsDir, 'main-abc123.js'), 'export default {}')
-      
-      const files = readdirSync(assetsDir)
-      const hasRoutes = files.some(f => f.startsWith('routes-') && f.endsWith('.js'))
-      expect(hasRoutes).toBe(false)
-    })
-
-    test('should pass with complete assets', () => {
-      // Create complete assets directory
-      const assetsDir = join(TEST_PROJECT_DIR, '.output', 'public', 'assets')
-      rmSync(assetsDir, { recursive: true, force: true })
-      mkdirSync(assetsDir, { recursive: true })
-      
-      // Create both required bundles
-      writeFileSync(join(assetsDir, 'routes-PSsqLd_-.js'), 'export default {}')
-      writeFileSync(join(assetsDir, 'main-xc_vcqGp.js'), 'export default {}')
-      
-      const files = readdirSync(assetsDir)
-      const hasRoutes = files.some(f => f.startsWith('routes-') && f.endsWith('.js'))
-      const hasMain = files.some(f => f.startsWith('main-') && f.endsWith('.js'))
-      
-      expect(hasRoutes).toBe(true)
-      expect(hasMain).toBe(true)
-    })
-  })
-
-  describe('Plain Vite Projects', () => {
+  describe('Vite Projects', () => {
     const viteProjectDir = join(TEST_PROJECT_DIR, 'vite-project')
 
     beforeAll(() => {
@@ -159,32 +109,23 @@ describe('Route Ordering', () => {
 describe('Entrypoint Script Logic', () => {
   // These tests verify the bash script logic patterns
   
-  test('should correctly detect TanStack Start project from package.json', () => {
+  test('should correctly detect Vite + Hono project from package.json', () => {
     const packageJson = JSON.stringify({
       name: "test-project",
       dependencies: {
-        "@tanstack/react-start": "1.154.7"
-      }
-    })
-    
-    const isTanStackStart = packageJson.includes('@tanstack/react-start')
-    expect(isTanStackStart).toBe(true)
-  })
-
-  test('should correctly detect plain Vite project', () => {
-    const packageJson = JSON.stringify({
-      name: "test-project",
-      dependencies: {
-        "react": "^18.3.1",
-        "react-dom": "^18.3.1"
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+        "hono": "^4.0.0"
       },
       devDependencies: {
-        "vite": "^5.4.2"
+        "vite": "^7.3.1"
       }
     })
     
-    const isTanStackStart = packageJson.includes('@tanstack/react-start')
-    expect(isTanStackStart).toBe(false)
+    const hasHono = packageJson.includes('hono')
+    const hasVite = packageJson.includes('vite')
+    expect(hasHono).toBe(true)
+    expect(hasVite).toBe(true)
   })
 })
 

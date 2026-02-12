@@ -1,0 +1,83 @@
+/**
+ * Shogo Documentation - Custom Theme
+ *
+ * Colors are based on the Shogo brand palette.
+ * Using CSS custom properties for Docusaurus theming.
+ */
+
+:root {
+  --ifm-color-primary: #6366f1;
+  --ifm-color-primary-dark: #4f46e5;
+  --ifm-color-primary-darker: #4338ca;
+  --ifm-color-primary-darkest: #3730a3;
+  --ifm-color-primary-light: #818cf8;
+  --ifm-color-primary-lighter: #a5b4fc;
+  --ifm-color-primary-lightest: #c7d2fe;
+
+  --ifm-font-family-base: "Inter", system-ui, -apple-system, sans-serif;
+  --ifm-heading-font-family: "Inter", system-ui, -apple-system, sans-serif;
+  --ifm-font-size-base: 16px;
+  --ifm-code-font-size: 95%;
+  --ifm-heading-font-weight: 700;
+
+  --ifm-navbar-height: 64px;
+  --ifm-footer-padding-vertical: 2rem;
+
+  --docusaurus-highlighted-code-line-bg: rgba(99, 102, 241, 0.1);
+}
+
+[data-theme="dark"] {
+  --ifm-color-primary: #818cf8;
+  --ifm-color-primary-dark: #6366f1;
+  --ifm-color-primary-darker: #4f46e5;
+  --ifm-color-primary-darkest: #4338ca;
+  --ifm-color-primary-light: #a5b4fc;
+  --ifm-color-primary-lighter: #c7d2fe;
+  --ifm-color-primary-lightest: #e0e7ff;
+
+  --docusaurus-highlighted-code-line-bg: rgba(129, 140, 248, 0.15);
+}
+
+/* Clean up admonitions for non-technical audience */
+.admonition {
+  border-radius: 8px;
+}
+
+/* Make code blocks more approachable */
+.prism-code {
+  border-radius: 8px;
+}
+
+/* Style prompt examples distinctively */
+.prompt-example {
+  background: var(--ifm-color-primary-lightest);
+  border-left: 4px solid var(--ifm-color-primary);
+  padding: 1rem 1.5rem;
+  border-radius: 0 8px 8px 0;
+  margin: 1rem 0;
+  font-style: italic;
+}
+
+[data-theme="dark"] .prompt-example {
+  background: rgba(99, 102, 241, 0.15);
+}
+
+/* Feature cards for template gallery */
+.template-card {
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 12px;
+  padding: 1.5rem;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.template-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  transform: translateY(-2px);
+}
+
+/* Responsive improvements */
+@media (max-width: 768px) {
+  .markdown h1 {
+    font-size: 1.75rem;
+  }
+}

@@ -14,6 +14,8 @@ import { toCamelCase, getIdField } from './prisma-generator'
 export interface StoreGeneratorConfig {
   /** Base API path (default: '/api') */
   basePath?: string
+  /** File extension: 'ts' or 'tsx' (default: 'tsx') */
+  fileExtension?: 'ts' | 'tsx'
 }
 
 export interface GeneratedStoreFile {
@@ -66,9 +68,10 @@ export function generateModelStore(
   }
 
   const basePath = config.basePath || '/api'
+  const ext = config.fileExtension || 'tsx'
   const modelName = model.name
   const modelLower = toCamelCase(modelName)
-  const fileName = `${toFileName(modelName)}.store.tsx`
+  const fileName = `${toFileName(modelName)}.store.${ext}`
   const routePath = toRoutePath(modelName)
   const endpoint = `${basePath}/${routePath}`
 
