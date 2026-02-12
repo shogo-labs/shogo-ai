@@ -4,8 +4,7 @@ import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
 import { TodoList } from './components/TodoList'
 import { AddTodo } from './components/AddTodo'
-
-const API_BASE = '/api'
+import { api, configureApiClient } from './generated/api-client'
 
 export interface Todo {
   id: string
@@ -23,17 +22,22 @@ const TodoApp = observer(function TodoApp() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Configure API client with user context
+  useEffect(() => {
+    if (auth.user) {
+      configureApiClient({ userId: auth.user.id })
+    }
+  }, [auth.user?.id])
+
   const fetchTodos = async () => {
     if (!auth.user) return
 
     try {
-      // Fetch only todos for the current user
-      const res = await fetch(`${API_BASE}/todos?userId=${auth.user.id}`)
-      const data = await res.json()
-      if (data.ok) {
-        setTodos(data.items)
+      const result = await api.todo.list()
+      if (result.ok) {
+        setTodos((result.items || []) as any)
       } else {
-        setError(data.error?.message || 'Failed to fetch todos')
+        setError(result.error?.message || 'Failed to fetch todos')
       }
     } catch (err) {
       setError('Network error')
@@ -50,16 +54,11 @@ const TodoApp = observer(function TodoApp() {
     if (!auth.user) return
 
     try {
-      const res = await fetch(`${API_BASE}/todos`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, userId: auth.user.id }),
-      })
-      const data = await res.json()
-      if (data.ok) {
-        setTodos((prev) => [data.data, ...prev])
+      const result = await api.todo.create({ title, userId: auth.user.id })
+      if (result.ok && result.data) {
+        setTodos((prev) => [result.data as any, ...prev])
       } else {
-        setError(data.error?.message || 'Failed to add todo')
+        setError(result.error?.message || 'Failed to add todo')
       }
     } catch (err) {
       setError('Network error')
@@ -71,14 +70,9 @@ const TodoApp = observer(function TodoApp() {
     if (!todo) return
 
     try {
-      const res = await fetch(`${API_BASE}/todos/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ completed: !todo.completed }),
-      })
-      const data = await res.json()
-      if (data.ok) {
-        setTodos((prev) => prev.map((t) => (t.id === id ? data.data : t)))
+      const result = await api.todo.update(id, { completed: !todo.completed })
+      if (result.ok && result.data) {
+        setTodos((prev) => prev.map((t) => (t.id === id ? (result.data as any) : t)))
       }
     } catch (err) {
       setError('Network error')
@@ -87,9 +81,8 @@ const TodoApp = observer(function TodoApp() {
 
   const deleteTodo = async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE}/todos/${id}`, { method: 'DELETE' })
-      const data = await res.json()
-      if (data.ok) {
+      const result = await api.todo.delete(id)
+      if (result.ok) {
         setTodos((prev) => prev.filter((t) => t.id !== id))
       }
     } catch (err) {

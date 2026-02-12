@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
 import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
+import { api, configureApiClient } from './generated/api-client'
 
 // Types
 interface CategoryType {
@@ -87,33 +88,37 @@ const Dashboard = observer(function Dashboard() {
   const [showAddForm, setShowAddForm] = useState(false)
   const [stockModal, setStockModal] = useState<{ product: ProductType; action: 'add' | 'remove' } | null>(null)
 
+  // Configure API client with user context
+  useEffect(() => {
+    if (auth.user) {
+      configureApiClient({ userId: auth.user.id })
+    }
+  }, [auth.user?.id])
+
   const fetchData = useCallback(async () => {
     if (!auth.user) return
 
     try {
+      // Use API client for standard CRUD, raw fetch only for custom endpoints
       const [catsRes, supsRes, prodsRes, movsRes, summaryRes] = await Promise.all([
-        fetch(`/api/categories?userId=${auth.user.id}`),
-        fetch(`/api/suppliers?userId=${auth.user.id}`),
-        fetch(`/api/products?userId=${auth.user.id}&include=category,supplier`),
-        fetch(`/api/stockmovements?userId=${auth.user.id}&limit=10&include=product`),
+        api.category.list(),
+        api.supplier.list(),
+        api.product.list({ params: { include: 'category,supplier' } }),
+        api.stockMovement.list({ limit: 10, params: { include: 'product' } }),
         fetch(`/api/summary?userId=${auth.user.id}`),
       ])
 
       if (catsRes.ok) {
-        const data = await catsRes.json()
-        setCategories(data.items || [])
+        setCategories((catsRes.items || []) as any)
       }
       if (supsRes.ok) {
-        const data = await supsRes.json()
-        setSuppliers(data.items || [])
+        setSuppliers((supsRes.items || []) as any)
       }
       if (prodsRes.ok) {
-        const data = await prodsRes.json()
-        setProducts(data.items || [])
+        setProducts((prodsRes.items || []) as any)
       }
       if (movsRes.ok) {
-        const data = await movsRes.json()
-        setMovements(data.items || [])
+        setMovements((movsRes.items || []) as any)
       }
       if (summaryRes.ok) {
         setSummary(await summaryRes.json())
@@ -131,7 +136,7 @@ const Dashboard = observer(function Dashboard() {
 
   const handleDeleteProduct = async (productId: string) => {
     if (!confirm('Delete this product?')) return
-    await fetch(`/api/products/${productId}`, { method: 'DELETE' })
+    await api.product.delete(productId)
     fetchData()
   }
 
@@ -353,26 +358,21 @@ function AddProductForm({
     setError('')
 
     try {
-      const res = await fetch('/api/products', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          sku,
-          description: description || null,
-          price: price ? parseFloat(price) : 0,
-          cost: cost ? parseFloat(cost) : 0,
-          quantity: quantity ? parseInt(quantity) : 0,
-          minQuantity: minQuantity ? parseInt(minQuantity) : 10,
-          categoryId,
-          supplierId: supplierId || null,
-          userId,
-        }),
-      })
+      const result = await api.product.create({
+        name,
+        sku,
+        description: description || null,
+        price: price ? parseFloat(price) : 0,
+        cost: cost ? parseFloat(cost) : 0,
+        quantity: quantity ? parseInt(quantity) : 0,
+        minQuantity: minQuantity ? parseInt(minQuantity) : 10,
+        categoryId,
+        supplierId: supplierId || null,
+        userId,
+      } as any)
 
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error?.message || 'Failed to create product')
+      if (!result.ok) {
+        throw new Error(result.error?.message || 'Failed to create product')
       }
 
       onAdd()

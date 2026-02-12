@@ -135,7 +135,8 @@ NOTE: The project already exists. Templates SET UP the project structure based o
 
 1. **Templates First** - Always check for a matching template before writing custom code
 2. **Follow Patterns** - Match the style of existing code in the project
-3. **Keep It Simple** - Write only what's needed`
+3. **Keep It Simple** - Write only what's needed
+4. **NEVER use raw fetch()** - Always use the generated API client (\`src/generated/api-client.tsx\`) for data operations. Import \`{ api, configureApiClient }\` and use \`api.modelName.list()\`, \`api.modelName.create()\`, etc. Raw \`fetch()\` calls are forbidden in application code.`
 
 /**
  * Persona-specific system prompts.

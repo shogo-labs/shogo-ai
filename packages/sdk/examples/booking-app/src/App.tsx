@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
 import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
+import { api, configureApiClient } from './generated/api-client'
 
 interface ServiceType {
   id: string
@@ -72,17 +73,24 @@ const Dashboard = observer(function Dashboard() {
   const [timeSlots, setTimeSlots] = useState<TimeSlotType[]>([])
   const [loading, setLoading] = useState(true)
 
+  // Configure API client with user context
+  useEffect(() => {
+    if (auth.user) {
+      configureApiClient({ userId: auth.user.id })
+    }
+  }, [auth.user?.id])
+
   const fetchData = useCallback(async () => {
     if (!auth.user) return
     try {
       const [svcRes, bookRes, slotRes] = await Promise.all([
-        fetch(`/api/services?userId=${auth.user.id}`),
-        fetch(`/api/bookings?userId=${auth.user.id}&include=service`),
-        fetch(`/api/timeslots?userId=${auth.user.id}`),
+        api.service.list(),
+        api.booking.list({ params: { include: 'service' } }),
+        api.timeSlot.list(),
       ])
-      if (svcRes.ok) { const d = await svcRes.json(); setServices(d.items || []) }
-      if (bookRes.ok) { const d = await bookRes.json(); setBookings(d.items || []) }
-      if (slotRes.ok) { const d = await slotRes.json(); setTimeSlots(d.items || []) }
+      if (svcRes.ok) { setServices((svcRes.items || []) as any) }
+      if (bookRes.ok) { setBookings((bookRes.items || []) as any) }
+      if (slotRes.ok) { setTimeSlots((slotRes.items || []) as any) }
     } catch (err) {
       console.error('Failed to fetch:', err)
     } finally {
@@ -141,11 +149,7 @@ const Dashboard = observer(function Dashboard() {
 
 function BookingsTab({ bookings, onUpdate }: { bookings: BookingType[]; onUpdate: () => void }) {
   const handleUpdateStatus = async (id: string, status: string) => {
-    await fetch(`/api/bookings/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    })
+    await api.booking.update(id, { status } as any)
     onUpdate()
   }
 
@@ -205,27 +209,19 @@ function ServicesTab({ services, userId, onUpdate }: { services: ServiceType[]; 
   const [showAdd, setShowAdd] = useState(false)
 
   const handleAdd = async (data: Partial<ServiceType>) => {
-    await fetch('/api/services', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...data, userId }),
-    })
+    await api.service.create({ ...data, userId } as any)
     setShowAdd(false)
     onUpdate()
   }
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this service?')) return
-    await fetch(`/api/services/${id}`, { method: 'DELETE' })
+    await api.service.delete(id)
     onUpdate()
   }
 
   const handleToggle = async (id: string, isActive: boolean) => {
-    await fetch(`/api/services/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ isActive: !isActive }),
-    })
+    await api.service.update(id, { isActive: !isActive } as any)
     onUpdate()
   }
 
@@ -300,17 +296,13 @@ function AvailabilityTab({ timeSlots, userId, onUpdate }: { timeSlots: TimeSlotT
   const [showAdd, setShowAdd] = useState(false)
 
   const handleAdd = async (data: { dayOfWeek: number; startTime: string; endTime: string }) => {
-    await fetch('/api/timeslots', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...data, userId }),
-    })
+    await api.timeSlot.create({ ...data, userId } as any)
     setShowAdd(false)
     onUpdate()
   }
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/timeslots/${id}`, { method: 'DELETE' })
+    await api.timeSlot.delete(id)
     onUpdate()
   }
 
