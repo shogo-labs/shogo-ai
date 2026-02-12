@@ -45,7 +45,6 @@ import {
   FolderInput,
   FolderX,
   CheckSquare,
-  Square,
   ArrowLeft,
   Copy,
   X,
@@ -265,6 +264,10 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   const [targetFolderId, setTargetFolderId] = useState<string | null>(null)
   const [isMovingProject, setIsMovingProject] = useState(false)
 
+  // Multi-select mode state
+  const [isSelectMode, setIsSelectMode] = useState(false)
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set())
+
   // Drag & drop state
   const [activeProject, setActiveProject] = useState<Project | null>(null)
   const sensors = useSensors(
@@ -466,6 +469,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
 
     setIsCreatingFolder(true)
     try {
+      // Pass null for root folders (API expects null, collection normalizes to undefined for MST)
       await actions.createFolder(
         newFolderName.trim(),
         currentWorkspace.id,
@@ -572,6 +576,84 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   const handleBreadcrumbClick = useCallback((folder: Folder) => {
     setFolderId(folder.id)
   }, [setFolderId])
+
+  // Multi-select handlers
+  const handleToggleSelectMode = useCallback(() => {
+    setIsSelectMode(prev => {
+      // Clear selections when exiting select mode
+      if (prev) {
+        setSelectedProjectIds(new Set())
+      }
+      return !prev
+    })
+  }, [])
+
+  const handleToggleProjectSelection = useCallback((projectId: string, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation()
+    }
+    setSelectedProjectIds(prev => {
+      const next = new Set(prev)
+      if (next.has(projectId)) {
+        next.delete(projectId)
+      } else {
+        next.add(projectId)
+      }
+      return next
+    })
+  }, [])
+
+  const handleSelectAll = useCallback(() => {
+    setSelectedProjectIds(new Set(filteredProjects.map(p => p.id)))
+  }, [filteredProjects])
+
+  const handleDeselectAll = useCallback(() => {
+    setSelectedProjectIds(new Set())
+  }, [])
+
+  // Bulk operations
+  const handleBulkDelete = useCallback(async () => {
+    if (selectedProjectIds.size === 0) return
+    
+    setIsDeleting(true)
+    try {
+      await Promise.all(
+        Array.from(selectedProjectIds).map(id => actions.deleteProject(id))
+      )
+      refetchProjects()
+      setSelectedProjectIds(new Set())
+      setIsSelectMode(false)
+    } catch (error) {
+      console.error("Failed to delete projects:", error)
+    } finally {
+      setIsDeleting(false)
+    }
+  }, [selectedProjectIds, actions, refetchProjects])
+
+  const handleBulkMove = useCallback(async () => {
+    if (selectedProjectIds.size === 0) return
+
+    setIsMovingProject(true)
+    try {
+      await Promise.all(
+        Array.from(selectedProjectIds).map(id => actions.moveProjectToFolder(id, targetFolderId))
+      )
+      refetchProjects()
+      setSelectedProjectIds(new Set())
+      setIsSelectMode(false)
+      setMoveProjectDialogOpen(false)
+      setTargetFolderId(null)
+    } catch (error) {
+      console.error("Failed to move projects:", error)
+    } finally {
+      setIsMovingProject(false)
+    }
+  }, [selectedProjectIds, targetFolderId, actions, refetchProjects])
+
+  const openBulkMoveDialog = useCallback(() => {
+    setMoveProjectDialogOpen(true)
+    setTargetFolderId(null)
+  }, [])
 
   // Get root folders for move dialog
   const rootFolders = useMemo(() => {
@@ -760,9 +842,59 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
         </Button>
 
         {/* Select projects button */}
-        <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+        <Button 
+          variant={isSelectMode ? "secondary" : "ghost"} 
+          size="sm" 
+          className="h-8 w-8 p-0"
+          onClick={handleToggleSelectMode}
+          title={isSelectMode ? "Exit select mode" : "Select projects"}
+        >
           <CheckSquare className="h-4 w-4" />
         </Button>
+
+        {/* Bulk actions - show when in select mode with selections */}
+        {isSelectMode && selectedProjectIds.size > 0 && (
+          <>
+            <div className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground">
+              {selectedProjectIds.size} selected
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1 text-xs"
+              onClick={handleSelectAll}
+            >
+              Select all
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1 text-xs"
+              onClick={handleDeselectAll}
+            >
+              Deselect all
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1 text-xs"
+              onClick={openBulkMoveDialog}
+            >
+              <FolderInput className="h-3.5 w-3.5" />
+              Move
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1 text-xs text-destructive hover:text-destructive"
+              onClick={handleBulkDelete}
+              disabled={isDeleting}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete
+            </Button>
+          </>
+        )}
 
         {/* View toggle */}
         <div className="flex items-center gap-0.5 ml-auto">
@@ -878,8 +1010,18 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
             {filteredProjects.map((project) => (
               <DraggableProjectCard key={project.id} project={project}>
                 <div
-                  onClick={() => handleProjectClick(project)}
-                  className="group flex flex-col rounded-xl bg-card overflow-hidden hover:shadow-md transition-all cursor-pointer"
+                  onClick={() => {
+                  if (isSelectMode) {
+                    handleToggleProjectSelection(project.id)
+                  } else {
+                    handleProjectClick(project)
+                  }
+                }}
+                  className={cn(
+                  "group flex flex-col rounded-xl bg-card overflow-hidden hover:shadow-md transition-all",
+                  isSelectMode ? "cursor-pointer" : "cursor-pointer",
+                  isSelectMode && selectedProjectIds.has(project.id) && "ring-2 ring-primary"
+                )}
                 >
                   {/* Preview area */}
                   <div className={cn(
@@ -891,19 +1033,33 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                       <FolderOpen className="h-10 w-10 text-white/30" />
                     </div>
 
-                    {/* Star button - shows on hover */}
-                    <button
-                      onClick={(e) => handleToggleStar(project.id, e)}
-                      className={cn(
-                        "absolute top-2 right-2 p-1.5 rounded-md transition-all",
-                        starredProjectIds.has(project.id)
-                          ? "bg-yellow-500/90 text-white opacity-100"
-                          : "bg-black/30 text-white/90 opacity-0 group-hover:opacity-100 hover:bg-black/50"
-                      )}
-                      title={starredProjectIds.has(project.id) ? "Remove from favorites" : "Add to favorites"}
-                    >
-                      <Star className={cn("h-3.5 w-3.5", starredProjectIds.has(project.id) && "fill-current")} />
-                    </button>
+                    {/* Checkbox in select mode */}
+                  {isSelectMode && (
+                    <div className="absolute top-2 left-2">
+                      <Checkbox
+                        checked={selectedProjectIds.has(project.id)}
+                        onCheckedChange={() => handleToggleProjectSelection(project.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white/90 border-white/20"
+                      />
+                    </div>
+                  )}
+
+                  {/* Star button - shows on hover (hidden in select mode) */}
+                  {!isSelectMode && (
+                      <button
+                        onClick={(e) => handleToggleStar(project.id, e)}
+                        className={cn(
+                          "absolute top-2 right-2 p-1.5 rounded-md transition-all",
+                          starredProjectIds.has(project.id)
+                            ? "bg-yellow-500/90 text-white opacity-100"
+                            : "bg-black/30 text-white/90 opacity-0 group-hover:opacity-100 hover:bg-black/50"
+                        )}
+                        title={starredProjectIds.has(project.id) ? "Remove from favorites" : "Add to favorites"}
+                      >
+                        <Star className={cn("h-3.5 w-3.5", starredProjectIds.has(project.id) && "fill-current")} />
+                      </button>
+                  )}
                   </div>
 
                   {/* Info area */}
@@ -925,45 +1081,47 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                       </p>
                     </div>
 
-                    {/* Actions menu */}
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={(e) => openMoveProjectDialog(project, e as any)}>
-                          <FolderInput className="mr-2 h-4 w-4" />
-                          Move to folder
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={(e) => openRenameDialog(project, e as any)}>
-                          <Pencil className="mr-2 h-4 w-4" />
-                          Rename
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={(e) => {
-                          e.stopPropagation()
-                          handleProjectClick(project)
-                        }}>
-                          <Settings className="mr-2 h-4 w-4" />
-                          Settings
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          onClick={(e) => openDeleteDialog(project, e as any)}
-                          className="text-destructive"
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    {/* Actions menu - hidden in select mode */}
+                  {!isSelectMode && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={(e) => openMoveProjectDialog(project, e as any)}>
+                            <FolderInput className="mr-2 h-4 w-4" />
+                            Move to folder
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={(e) => openRenameDialog(project, e as any)}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Rename
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={(e) => {
+                            e.stopPropagation()
+                            handleProjectClick(project)
+                          }}>
+                            <Settings className="mr-2 h-4 w-4" />
+                            Settings
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={(e) => openDeleteDialog(project, e as any)}
+                            className="text-destructive"
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                  )}
                   </div>
                 </div>
               </DraggableProjectCard>
@@ -1061,31 +1219,46 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
 
             {/* Project rows */}
             <div className="space-y-0">
-              {filteredProjects.map((project) => (
-                <Link
-                  key={project.id}
-                  to="#"
-                  onClick={(e) => {
-                    e.preventDefault()
-                    handleProjectClick(project)
-                  }}
-                  className="group grid grid-cols-[1fr_120px_140px] gap-4 px-3 py-2.5 rounded-lg hover:bg-accent/50 transition-colors items-center"
-                >
-                  {/* Name column with preview */}
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className={cn(
-                      "flex-shrink-0 w-12 h-8 rounded-md bg-gradient-to-br flex items-center justify-center overflow-hidden",
-                      getPlaceholderGradient(project.name)
-                    )}>
-                      <FolderOpen className="h-4 w-4 text-white/50" />
+              {filteredProjects.map((project) => {
+                const isSelected = selectedProjectIds.has(project.id)
+                return (
+                  <div
+                    key={project.id}
+                    onClick={() => {
+                      if (isSelectMode) {
+                        handleToggleProjectSelection(project.id)
+                      } else {
+                        handleProjectClick(project)
+                      }
+                    }}
+                    className={cn(
+                      "group grid grid-cols-[1fr_120px_140px] gap-4 px-3 py-2.5 rounded-lg transition-colors items-center cursor-pointer",
+                      isSelectMode && isSelected && "bg-accent ring-2 ring-primary"
+                    )}
+                  >
+                    {/* Name column with preview */}
+                    <div className="flex items-center gap-3 min-w-0">
+                      {isSelectMode && (
+                        <Checkbox
+                          checked={isSelected}
+                          onCheckedChange={() => handleToggleProjectSelection(project.id)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="mr-1"
+                        />
+                      )}
+                      <div className={cn(
+                        "flex-shrink-0 w-12 h-8 rounded-md bg-gradient-to-br flex items-center justify-center overflow-hidden",
+                        getPlaceholderGradient(project.name)
+                      )}>
+                        <FolderOpen className="h-4 w-4 text-white/50" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-sm truncate">{project.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          Edited {getTimeAgo(project.updatedAt || project.createdAt)}
+                        </p>
+                      </div>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium text-sm truncate">{project.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        Edited {getTimeAgo(project.updatedAt || project.createdAt)}
-                      </p>
-                    </div>
-                  </div>
 
                   {/* Created at column */}
                   <div className="text-sm text-muted-foreground">
@@ -1094,73 +1267,78 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
 
                   {/* Created by column */}
                   <div className="flex items-center justify-between">
-                    <button
-                      onClick={(e) => e.stopPropagation()}
-                      className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-accent transition-colors"
-                    >
-                      <div className="w-5 h-5 rounded-full bg-primary/10 flex items-center justify-center text-[10px] font-medium">
-                        {session?.user?.name?.charAt(0) || "U"}
-                      </div>
-                      <span className="text-xs">{session?.user?.name || "User"}</span>
-                    </button>
-
-                    {/* Actions */}
-                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          handleToggleStar(project.id, e)
-                        }}
+                    {!isSelectMode && (
+                      <button
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-accent transition-colors"
                       >
-                        <Star className={cn(
-                          "h-4 w-4",
-                          starredProjectIds.has(project.id) && "fill-yellow-500 text-yellow-500"
-                        )} />
-                      </Button>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
-                            onClick={(e) => {
-                              e.preventDefault()
-                              e.stopPropagation()
-                            }}
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={(e) => openRenameDialog(project, e as any)}>
-                            <Pencil className="mr-2 h-4 w-4" />
-                            Rename
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={(e) => {
+                        <div className="w-5 h-5 rounded-full bg-primary/10 flex items-center justify-center text-[10px] font-medium">
+                          {session?.user?.name?.charAt(0) || "U"}
+                        </div>
+                        <span className="text-xs">{session?.user?.name || "User"}</span>
+                      </button>
+                    )}
+
+                    {/* Actions - hidden in select mode */}
+                    {!isSelectMode && (
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          onClick={(e) => {
+                            e.preventDefault()
                             e.stopPropagation()
-                            handleProjectClick(project)
-                          }}>
-                            <Settings className="mr-2 h-4 w-4" />
-                            Settings
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            onClick={(e) => openDeleteDialog(project, e as any)}
-                            className="text-destructive"
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
+                            handleToggleStar(project.id, e)
+                          }}
+                        >
+                          <Star className={cn(
+                            "h-4 w-4",
+                            starredProjectIds.has(project.id) && "fill-yellow-500 text-yellow-500"
+                          )} />
+                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                              }}
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={(e) => openRenameDialog(project, e as any)}>
+                              <Pencil className="mr-2 h-4 w-4" />
+                              Rename
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={(e) => {
+                              e.stopPropagation()
+                              handleProjectClick(project)
+                            }}>
+                              <Settings className="mr-2 h-4 w-4" />
+                              Settings
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onClick={(e) => openDeleteDialog(project, e as any)}
+                              className="text-destructive"
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    )}
                   </div>
-                </Link>
-              ))}
+                </div>
+              )
+              })}
             </div>
           </div>
         )}
@@ -1331,9 +1509,15 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
       <Dialog open={moveProjectDialogOpen} onOpenChange={setMoveProjectDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Move to folder</DialogTitle>
+            <DialogTitle>
+              {isSelectMode && selectedProjectIds.size > 0
+                ? `Move ${selectedProjectIds.size} project${selectedProjectIds.size > 1 ? 's' : ''} to folder`
+                : "Move to folder"}
+            </DialogTitle>
             <DialogDescription>
-              Select a folder to move "{projectToMove?.name}" to.
+              {isSelectMode && selectedProjectIds.size > 0
+                ? `Select a folder to move ${selectedProjectIds.size} selected project${selectedProjectIds.size > 1 ? 's' : ''} to.`
+                : `Select a folder to move "${projectToMove?.name}" to.`}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -1370,7 +1554,10 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
             <Button variant="outline" onClick={() => setMoveProjectDialogOpen(false)} disabled={isMovingProject}>
               Cancel
             </Button>
-            <Button onClick={handleMoveProjectToFolder} disabled={isMovingProject}>
+            <Button 
+              onClick={isSelectMode && selectedProjectIds.size > 0 ? handleBulkMove : handleMoveProjectToFolder} 
+              disabled={isMovingProject}
+            >
               {isMovingProject ? "Moving..." : "Move"}
             </Button>
           </DialogFooter>
