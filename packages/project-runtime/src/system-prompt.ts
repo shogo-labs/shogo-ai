@@ -110,7 +110,15 @@ export const TOOL_USAGE = `## Tool Usage
 - **template.copy** - Copy template to set up project (ALWAYS use for matching requests)
 - **TodoWrite** - Track your task progress (use for multi-step work)
 
-After template.copy, the project builds and starts automatically. You don't need to do anything else.
+After template.copy, the project builds and starts automatically. You don't need to do anything else unless you're customizing further.
+
+**IMPORTANT: When customizing a template (changing schema, adding models):**
+1. Edit \`prisma/schema.prisma\` with new/modified models
+2. Run \`bunx shogo generate\` — this handles EVERYTHING: Prisma client, database push, route generation, server.tsx, and triggers a rebuild + backend restart
+3. Wait 2-3 seconds for the rebuild to complete
+4. Update the UI (\`src/App.tsx\`, components) to use new models
+5. Update branding in LoginPage/AuthGate components to match the new app name
+6. **NEVER manually edit \`server.tsx\` or files in \`src/generated/\`** — they are auto-generated
 
 ## Task Management with TodoWrite
 
@@ -163,11 +171,17 @@ Only use Read, Write, Edit, Bash for:
 The project has convenient scripts in package.json:
 
 **Code Generation (the only command you'll commonly need):**
-- \`bunx shogo generate\` - **IMPORTANT**: Regenerate ALL SDK files (types, server-functions, domain store) from schema.prisma AND push changes to database. This is the ONE command to run after ANY schema changes. After this runs, wait 2-3 seconds for the automatic rebuild. You can also run it as \`bun run generate\` (same thing).
+- \`bunx shogo generate\` - **IMPORTANT**: The ONE command to run after ANY schema changes. It does everything:
+  1. Runs \`prisma generate\` (updates Prisma client types)
+  2. Runs \`prisma db push\` (creates/updates database tables)
+  3. Generates Hono route files for ALL models (\`src/generated/*.routes.tsx\`)
+  4. Generates TypeScript types, API client, and server entry point
+  5. Pauses/resumes the build watcher (triggers rebuild + backend restart)
+  After this completes, wait 2-3 seconds for the Vite rebuild to finish.
 
 **Database & Prisma (rarely needed):**
-- \`bun run db:generate\` - Generate Prisma client only (rarely needed - use \`bunx shogo generate\` instead)
-- \`bun run db:push\` - Push schema changes to database only (rarely needed - use \`bunx shogo generate\` instead)
+- \`bun run db:generate\` - Generate Prisma client only (rarely needed - \`bunx shogo generate\` does this)
+- \`bun run db:push\` - Push schema changes to database only (rarely needed - \`bunx shogo generate\` does this)
 - \`bun run db:migrate\` - Run database migrations
 - \`bun run db:reset\` - Reset database and re-run migrations
 
@@ -243,8 +257,43 @@ Your code must be precise, clean, and immediately implementable in a Prisma sche
 1. **ALWAYS modify \`prisma/schema.prisma\`** - This is the source of truth for data models
 2. **NEVER directly edit files in \`src/generated/\`** - These are auto-generated from the schema
 3. **After schema changes, ALWAYS run**: \`bunx shogo generate\`
-   - This regenerates ALL SDK files (types.ts, server-functions.ts, domain.ts) AND pushes to database
-4. **Then update the UI** in \`src/routes/\` or \`src/components/\` to use the new fields
+   - This is the ONE command you need. It does everything:
+     a. Runs \`prisma generate\` (updates Prisma client types)
+     b. Runs \`prisma db push\` (syncs database schema — creates new tables)
+     c. Generates Hono route files for ALL models (\`src/generated/*.routes.tsx\`)
+     d. Generates TypeScript types, API client, and auth store
+     e. Regenerates \`server.tsx\` with routes for all models mounted at \`/api\`
+     f. Triggers a Vite rebuild and restarts the backend API server
+   - **Wait 2-3 seconds** after it completes for the rebuild to finish
+4. **Then update the UI** in \`src/App.tsx\` or \`src/components/\` to use the new fields
+5. **NEVER manually edit \`server.tsx\` for routes** — it is regenerated automatically
+
+### How Generated Routes Work
+
+\`bunx shogo generate\` creates Hono routes for every Prisma model automatically:
+- Model \`CostItem\` → routes at \`/api/cost-items\` (GET list, POST create, GET/:id, PATCH/:id, DELETE/:id)
+- Model \`MenuItem\` → routes at \`/api/menu-items\`
+- Model names are converted to kebab-case plurals for URL paths
+
+The frontend can use the generated API client (\`src/generated/api-client.tsx\`) or raw fetch:
+\`\`\`typescript
+// Using generated API client (preferred)
+import { api } from './generated/api-client'
+const items = await api.costItems.list()
+const newItem = await api.costItems.create({ name: 'Flour', amount: 500 })
+
+// Using raw fetch (also works)
+const res = await fetch('/api/cost-items')
+const items = await res.json()
+\`\`\`
+
+### Customizing Template Branding
+
+When customizing a project from a template, you MUST update ALL user-facing branding:
+- **\`src/components/LoginPage.tsx\`** (or similar auth component) - Update the app title, description, and any template-specific branding
+- **\`src/components/AuthGate.tsx\`** - Check if it references old template names
+- **\`index.html\`** - Update the \`<title>\` tag to match the new app name
+- **\`src/App.tsx\`** - Update any hardcoded app names or descriptions
 
 ### Example: Adding a "priority" field to Todo
 
@@ -263,21 +312,24 @@ Your code must be precise, clean, and immediately implementable in a Prisma sche
    \`\`\`
 
 2. Run: \`bunx shogo generate\`
-   This regenerates types.ts, server-functions.ts, domain.ts AND pushes to database.
+   This regenerates everything (Prisma client, database tables, Hono routes, types, API client).
+   Wait 2-3 seconds for the rebuild to complete.
 
-3. Update UI in \`src/routes/index.tsx\` to display/edit priority
+3. Update UI in \`src/App.tsx\` to display/edit the priority field.
+   The API endpoint \`/api/todos\` already supports the new field — no route changes needed.
 
 ### Files You Should NEVER Edit Directly
 
-- \`src/generated/prisma/*\` - Auto-generated Prisma client (regenerated by \`bun run db:generate\`)
-- \`src/generated/types.ts\` - Auto-generated TypeScript types (regenerated by \`bunx shogo generate\`)
-- \`src/generated/server-functions.ts\` - Auto-generated CRUD operations (regenerated by \`bunx shogo generate\`)
-- \`src/generated/domain.ts\` - Auto-generated MobX store (regenerated by \`bunx shogo generate\`)
-- \`src/generated/index.ts\` - Auto-generated exports (regenerated by \`bunx shogo generate\`)
+- \`src/generated/prisma/*\` - Auto-generated Prisma client
+- \`src/generated/*.routes.tsx\` - Auto-generated Hono CRUD routes (per model)
+- \`src/generated/types.tsx\` - Auto-generated TypeScript types
+- \`src/generated/api-client.tsx\` - Auto-generated fetch client
+- \`src/generated/index.tsx\` - Auto-generated exports with \`createAllRoutes()\`
+- \`server.tsx\` - Auto-generated Hono server entry point (mounts all routes at /api)
 
-**Exception:** \`src/generated/hooks.ts\` is user-editable and will NOT be overwritten by \`bunx shogo generate\`.
+All these are regenerated from \`prisma/schema.prisma\` when you run \`bunx shogo generate\`.
 
-All other generated files are regenerated from \`prisma/schema.prisma\` when you run \`bunx shogo generate\`. Editing them directly will be overwritten.`
+**Exception:** \`src/generated/*.hooks.tsx\` files are user-editable and will NOT be overwritten.`
 
 // =============================================================================
 // Tailwind Styling (static)

@@ -531,10 +531,12 @@ export function RuntimePreviewPanel({
               forceRefreshTimeoutRef.current = null
             }
             
-            // Throttle: Skip if a refresh happened in the last 2 seconds
+            // Throttle: Skip if a refresh happened very recently.
+            // Reduced from 2000ms to 500ms to avoid missing legitimate build completions
+            // that arrive shortly after a FORCE_REFRESH trigger.
             const now = Date.now()
             const timeSinceLastRefresh = now - lastForceRefreshRef.current
-            const SSE_THROTTLE_MS = 2000
+            const SSE_THROTTLE_MS = 500
             
             console.log('[RuntimePreviewPanel] 📥 SSE_BUILD_SUCCESS received:', {
               prevState,
@@ -768,10 +770,11 @@ export function RuntimePreviewPanel({
     if (forceRefresh === lastProcessedForceRefreshRef.current) return
     lastProcessedForceRefreshRef.current = forceRefresh
     
-    // Throttle: ignore if a refresh happened in the last 2 seconds
+    // Throttle: ignore if a refresh happened very recently.
+    // Reduced from 2000ms to 500ms to prevent missed refreshes after AI code changes.
     const now = Date.now()
     const timeSinceLastRefresh = now - lastForceRefreshRef.current
-    const THROTTLE_MS = 2000
+    const THROTTLE_MS = 500
     
     console.log('[RuntimePreviewPanel] 📥 FORCE_REFRESH received:', {
       forceRefresh,
@@ -831,18 +834,21 @@ export function RuntimePreviewPanel({
           }
         })
       
-      // Fallback: if SSE doesn't fire within 10 seconds, refresh iframe directly.
+      // Fallback: if SSE doesn't fire within 5 seconds, refresh iframe directly.
       // This is a safety net; normally the SSE BUILD_SUCCESS handler refreshes the iframe.
+      // Reduced from 10s to 5s since builds typically complete in 1-3s and stale previews
+      // are a significant UX issue (users think nothing happened).
       forceRefreshTimeoutRef.current = setTimeout(() => {
         if (iframeRef.current && sandboxUrl) {
           console.log('[RuntimePreviewPanel] 🔄 FORCE_REFRESH fallback - refreshing iframe directly')
           lastForceRefreshRef.current = Date.now()
           setIframeLoaded(false)
+          setIsRebuilding(false)
           const cacheBuster = Date.now()
           const separator = sandboxUrl.includes('?') ? '&' : '?'
           iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
         }
-      }, 10000) // 10 second fallback - normally SSE fires much sooner
+      }, 5000) // 5 second fallback - normally SSE fires much sooner
     } else {
       console.log('[RuntimePreviewPanel] ⚠️ FORCE_REFRESH skipped - conditions not met:', {
         hasIframeRef: !!iframeRef.current,
