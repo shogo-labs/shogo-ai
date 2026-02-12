@@ -26,6 +26,7 @@ import {
   LEVEL_5_BUSINESS_EVALS,
   LEVEL_6_BUSINESS_EVALS,
 } from './test-cases-business-user'
+import { ALL_SHADCN_EVALS } from './test-cases-shadcn'
 import type { AgentEval, EvalResult } from './types'
 import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs'
 
@@ -156,6 +157,120 @@ const BASE_PORT = 6300
 const MCP_SERVER = '/Users/russell/git/shogo-ai/packages/mcp/src/server-templates.ts'
 const PROJECT_RUNTIME = '/Users/russell/git/shogo-ai/packages/project-runtime/src/server.ts'
 
+// =============================================================================
+// AI Proxy Auto-Detection
+// =============================================================================
+// On startup, detect the local API server's AI proxy and generate a token so
+// eval workers route LLM calls through the proxy instead of using raw API keys.
+
+interface AIProxyConfig {
+  url: string    // AI_PROXY_URL for project-runtime (e.g. http://localhost:8002/api/ai/v1)
+  token: string  // AI_PROXY_TOKEN (signed JWT)
+}
+
+/** Inline JWT generation — same logic as apps/api/src/lib/ai-proxy-token.ts */
+function base64urlEncode(data: string | ArrayBuffer): string {
+  const bytes =
+    typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data)
+  const base64 = btoa(String.fromCharCode.apply(null, Array.from(bytes)))
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+async function generateEvalProxyToken(secret: string): Promise<string> {
+  const header = { alg: 'HS256', typ: 'JWT' }
+  const now = Date.now()
+  const payload = {
+    projectId: 'eval-server',
+    workspaceId: 'eval-workspace',
+    type: 'ai-proxy',
+    iat: Math.floor(now / 1000),
+    exp: Math.floor((now + 24 * 60 * 60 * 1000) / 1000), // 24h
+  }
+
+  const encodedHeader = base64urlEncode(JSON.stringify(header))
+  const encodedPayload = base64urlEncode(JSON.stringify(payload))
+  const signingInput = `${encodedHeader}.${encodedPayload}`
+
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  )
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signingInput))
+  return `${signingInput}.${base64urlEncode(signature)}`
+}
+
+/**
+ * Detect the AI proxy on the local API server.
+ *
+ * Priority:
+ *  1. AI_PROXY_URL + AI_PROXY_TOKEN already in env → use directly
+ *  2. Probe the local API server health endpoint → generate a token
+ *  3. Return null (workers will fall back to direct ANTHROPIC_API_KEY)
+ */
+async function detectAIProxy(): Promise<AIProxyConfig | null> {
+  // 1) Already configured in env
+  if (process.env.AI_PROXY_URL && process.env.AI_PROXY_TOKEN) {
+    console.log('🔑 AI Proxy: using env AI_PROXY_URL + AI_PROXY_TOKEN')
+    return { url: process.env.AI_PROXY_URL, token: process.env.AI_PROXY_TOKEN }
+  }
+
+  // 2) Try to detect the local API server
+  const apiPort = process.env.API_PORT || '8002'
+  const apiBase = `http://localhost:${apiPort}`
+  const proxyHealthUrl = `${apiBase}/api/ai/proxy/health`
+
+  try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 3000)
+    const res = await fetch(proxyHealthUrl, { signal: controller.signal })
+    clearTimeout(timeoutId)
+
+    if (!res.ok) {
+      console.log(`🔑 AI Proxy: API server health returned ${res.status}, skipping proxy`)
+      return null
+    }
+
+    const health = await res.json() as { status: string; providers: Record<string, boolean> }
+
+    if (!health.providers?.anthropic) {
+      console.log('🔑 AI Proxy: API server has no Anthropic key configured, skipping proxy')
+      return null
+    }
+
+    // Generate a proxy token using the shared secret
+    const secret =
+      process.env.AI_PROXY_SECRET ||
+      process.env.BETTER_AUTH_SECRET ||
+      process.env.PREVIEW_TOKEN_SECRET
+    if (!secret) {
+      console.log('🔑 AI Proxy: No signing secret (AI_PROXY_SECRET / BETTER_AUTH_SECRET), skipping proxy')
+      return null
+    }
+
+    const token = await generateEvalProxyToken(secret)
+    const url = `${apiBase}/api/ai/v1`
+
+    console.log(`🔑 AI Proxy: detected API server at ${apiBase} (anthropic=true)`)
+    console.log(`   Proxy URL: ${url}`)
+    console.log(`   Token: ${token.slice(0, 30)}...`)
+
+    return { url, token }
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      console.log('🔑 AI Proxy: API server not reachable (timeout), skipping proxy')
+    } else {
+      console.log(`🔑 AI Proxy: Could not reach API server (${err.message}), skipping proxy`)
+    }
+    return null
+  }
+}
+
+// Resolved at startup, used by startWorker
+let aiProxyConfig: AIProxyConfig | null = null
+
 // State
 interface Worker {
   id: number
@@ -205,7 +320,8 @@ function getEvals(template: string): AgentEval[] {
     case 'vague': return VAGUE_BUSINESS_LANGUAGE_EVALS
     case 'level5': return LEVEL_5_BUSINESS_EVALS
     case 'level6': return LEVEL_6_BUSINESS_EVALS
-    case 'all': return [...ALL_CRM_EVALS, ...ALL_INVENTORY_EVALS, ...ALL_HARD_EVALS, ...ALL_BUSINESS_USER_EVALS]
+    case 'shadcn': return ALL_SHADCN_EVALS
+    case 'all': return [...ALL_CRM_EVALS, ...ALL_INVENTORY_EVALS, ...ALL_HARD_EVALS, ...ALL_BUSINESS_USER_EVALS, ...ALL_SHADCN_EVALS]
     default:
       throw new Error(`Unknown template: ${template}`)
   }
@@ -216,8 +332,18 @@ async function startWorker(id: number): Promise<Worker> {
   const port = BASE_PORT + id
   const projectDir = `/tmp/shogo-eval-worker-${id}`
   
+  // Fast cleanup: rename old dir out of the way (instant), then remove in background
   if (existsSync(projectDir)) {
-    rmSync(projectDir, { recursive: true, force: true })
+    const trashDir = `${projectDir}-trash-${Date.now()}`
+    try {
+      // rename is instant (same filesystem), then we can rm in background
+      require('fs').renameSync(projectDir, trashDir)
+      // Fire-and-forget cleanup of the renamed dir
+      spawn({ cmd: ['rm', '-rf', trashDir], stdout: 'ignore', stderr: 'ignore' })
+    } catch {
+      // Fallback to sync removal if rename fails
+      rmSync(projectDir, { recursive: true, force: true })
+    }
   }
   mkdirSync(projectDir, { recursive: true })
   
@@ -229,18 +355,27 @@ async function startWorker(id: number): Promise<Worker> {
   
   await Bun.sleep(500)
   
+  // Build worker env — inject AI proxy config if detected
+  const workerEnv: Record<string, string> = {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+    ),
+    PORT: String(port),
+    PROJECT_DIR: projectDir,
+    PROJECT_ID: `eval-worker-${id}`,
+    MCP_SERVER_PATH: MCP_SERVER,
+    AGENT_MODEL: modelArg,
+    SHOGO_EVAL_MODE: 'true',
+    NODE_OPTIONS: '--max-old-space-size=512',
+  }
+  if (aiProxyConfig) {
+    workerEnv.AI_PROXY_URL = aiProxyConfig.url
+    workerEnv.AI_PROXY_TOKEN = aiProxyConfig.token
+  }
+
   const proc = spawn({
     cmd: ['bun', 'run', PROJECT_RUNTIME],
-    env: {
-      ...process.env,
-      PORT: String(port),
-      PROJECT_DIR: projectDir,
-      PROJECT_ID: `eval-worker-${id}`,
-      MCP_SERVER_PATH: MCP_SERVER,
-      AGENT_MODEL: modelArg,
-      SHOGO_EVAL_MODE: 'true',
-      NODE_OPTIONS: '--max-old-space-size=512',
-    },
+    env: workerEnv,
     stdout: 'ignore',
     stderr: 'ignore',
   })
@@ -425,6 +560,9 @@ async function startRun() {
   state.completedCount = 0
   state.errors = []
   
+  // Auto-detect AI proxy before starting workers
+  aiProxyConfig = await detectAIProxy()
+
   console.log('')
   console.log('🚀 EVAL SERVER')
   console.log('═'.repeat(50))
@@ -432,6 +570,11 @@ async function startRun() {
   console.log(`🤖 Model: claude-${modelArg}`)
   console.log(`👷 Workers: ${workersArg}`)
   console.log(`🌐 Server: http://localhost:${serverPort}`)
+  if (aiProxyConfig) {
+    console.log(`🔑 AI Proxy: ${aiProxyConfig.url}`)
+  } else {
+    console.log(`🔑 AI Proxy: disabled (using direct ANTHROPIC_API_KEY)`)
+  }
   if (retryFailedOnly) {
     console.log(`🔄 Mode: Retry failed evals only`)
   }

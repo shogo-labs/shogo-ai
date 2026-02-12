@@ -7,6 +7,22 @@ import { observer } from 'mobx-react-lite'
 import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
 import { api, configureApiClient } from './generated/api-client'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import {
+  LayoutDashboard,
+  Plus,
+  Trash2,
+  X,
+  ArrowLeft,
+  GripVertical,
+  LogOut,
+  Loader2,
+  MoveHorizontal,
+  Columns,
+} from 'lucide-react'
 
 interface LabelType {
   id: string
@@ -113,7 +129,12 @@ const Dashboard = observer(function Dashboard() {
   }
 
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center"><p className="text-gray-500">Loading...</p></div>
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
+        <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">Loading...</p>
+      </div>
+    )
   }
 
   // Board detail view
@@ -130,21 +151,28 @@ const Dashboard = observer(function Dashboard() {
 
   // Board list view
   return (
-    <div className="min-h-screen">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-gray-900">📋 Kanban Board</h1>
+    <div className="min-h-screen bg-background">
+      <header className="sticky top-0 z-10 bg-background border-b px-6 py-4 flex justify-between items-center">
+        <div className="flex items-center gap-3">
+          <LayoutDashboard className="h-6 w-6 text-primary" />
+          <h1 className="text-2xl font-bold">Kanban Board</h1>
+        </div>
         <div className="flex items-center gap-4">
-          <span className="text-gray-500">{auth.user?.name || auth.user?.email}</span>
-          <button onClick={() => auth.signOut()} className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">Sign Out</button>
+          <span className="text-sm text-muted-foreground">{auth.user?.name || auth.user?.email}</span>
+          <Button variant="outline" size="sm" onClick={() => auth.signOut()}>
+            <LogOut className="h-4 w-4" />
+            Sign Out
+          </Button>
         </div>
       </header>
 
-      <div className="p-6">
+      <div className="p-6 max-w-6xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-xl font-semibold text-gray-900">Your Boards</h2>
-          <button onClick={() => setShowAddBoard(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
-            + New Board
-          </button>
+          <h2 className="text-xl font-semibold">Your Boards</h2>
+          <Button onClick={() => setShowAddBoard(true)}>
+            <Plus className="h-4 w-4" />
+            New Board
+          </Button>
         </div>
 
         {showAddBoard && (
@@ -152,34 +180,48 @@ const Dashboard = observer(function Dashboard() {
         )}
 
         {boards.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-gray-400 mb-4">No boards yet. Create your first board to get started!</p>
+          <div className="text-center py-16">
+            <LayoutDashboard className="h-12 w-12 text-muted-foreground/50 mx-auto mb-4" />
+            <p className="text-muted-foreground">No boards yet. Create your first board to get started!</p>
           </div>
         ) : (
-          <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
             {boards.map(board => (
-              <div
+              <Card
                 key={board.id}
-                className="bg-white rounded-xl p-5 shadow-sm cursor-pointer hover:shadow-md transition"
+                className="cursor-pointer hover:shadow-md transition-shadow group"
                 onClick={() => fetchBoardDetails(board.id)}
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div style={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: board.color }} />
-                    <h3 className="font-semibold text-gray-900">{board.name}</h3>
+                <CardHeader>
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="h-3 w-3 rounded-full shrink-0"
+                        style={{ backgroundColor: board.color }}
+                      />
+                      <CardTitle className="text-base">{board.name}</CardTitle>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                      onClick={(e) => { e.stopPropagation(); handleDeleteBoard(board.id) }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
                   </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleDeleteBoard(board.id) }}
-                    className="text-gray-400 hover:text-red-500"
-                  >×</button>
-                </div>
-                {board.description && <p className="text-gray-500 text-sm mt-2 truncate">{board.description}</p>}
-              </div>
+                  {board.description && (
+                    <p className="text-sm text-muted-foreground truncate">{board.description}</p>
+                  )}
+                </CardHeader>
+              </Card>
             ))}
           </div>
         )}
 
-        <footer className="text-center text-gray-400 text-sm mt-8">Built with @shogo-ai/sdk + Hono</footer>
+        <footer className="text-center text-muted-foreground text-sm mt-8">
+          Built with @shogo-ai/sdk + Hono
+        </footer>
       </div>
     </div>
   )
@@ -190,35 +232,38 @@ function AddBoardForm({ onAdd, onCancel }: { onAdd: (name: string, color: string
   const [color, setColor] = useState('#3B82F6')
 
   return (
-    <div className="bg-white rounded-xl p-5 shadow-sm mb-6">
-      <h3 className="font-semibold text-gray-900 mb-4">Create New Board</h3>
-      <div className="flex gap-4 items-end">
-        <div className="flex-1">
-          <input
-            type="text"
-            placeholder="Board name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm"
-          />
+    <Card className="mb-6">
+      <CardHeader>
+        <CardTitle>Create New Board</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex gap-4 items-end">
+          <div className="flex-1">
+            <Input
+              type="text"
+              placeholder="Board name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div>
+            <input
+              type="color"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              className="w-10 h-10 rounded-md cursor-pointer border-0 p-0"
+            />
+          </div>
+          <Button onClick={() => name && onAdd(name, color)}>
+            Create
+          </Button>
+          <Button variant="outline" onClick={onCancel}>
+            Cancel
+          </Button>
         </div>
-        <div>
-          <input
-            type="color"
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            className="w-12 h-12 rounded cursor-pointer"
-            style={{ padding: 0, border: 'none' }}
-          />
-        </div>
-        <button onClick={() => name && onAdd(name, color)} className="px-4 py-3 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
-          Create
-        </button>
-        <button onClick={onCancel} className="px-4 py-3 border border-gray-200 rounded-lg text-sm hover:bg-gray-50">
-          Cancel
-        </button>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -277,29 +322,45 @@ function BoardView({ board, userId, onBack, onUpdate }: { board: BoardType; user
 
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: board.color + '10' }}>
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center">
+      <header className="sticky top-0 z-10 bg-background border-b px-6 py-4 flex justify-between items-center">
         <div className="flex items-center gap-4">
-          <button onClick={onBack} className="text-gray-500 hover:text-gray-700">← Back</button>
+          <Button variant="ghost" size="sm" onClick={onBack}>
+            <ArrowLeft className="h-4 w-4" />
+            Back
+          </Button>
           <div className="flex items-center gap-2">
-            <div style={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: board.color }} />
-            <h1 className="text-xl font-bold text-gray-900">{board.name}</h1>
+            <div
+              className="h-3 w-3 rounded-full"
+              style={{ backgroundColor: board.color }}
+            />
+            <h1 className="text-xl font-bold">{board.name}</h1>
           </div>
         </div>
-        <button onClick={() => setShowAddColumn(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
-          + Add Column
-        </button>
+        <Button onClick={() => setShowAddColumn(true)}>
+          <Plus className="h-4 w-4" />
+          Add Column
+        </Button>
       </header>
 
       <div className="flex-1 p-6 overflow-x-auto">
         <div className="flex gap-4 items-start" style={{ minWidth: 'max-content' }}>
           {columns.map(column => (
-            <div key={column.id} className="w-72 min-w-72 bg-gray-100 rounded-xl p-4 shrink-0">
+            <div key={column.id} className="w-72 min-w-72 rounded-xl bg-muted/50 p-4 shrink-0">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="font-semibold text-gray-900">{column.name}</h3>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-400">{(column.cards || []).length}</span>
-                  <button onClick={() => handleDeleteColumn(column.id)} className="text-gray-400 hover:text-red-500">×</button>
+                  <h3 className="font-semibold">{column.name}</h3>
+                  <Badge variant="secondary" className="text-xs">
+                    {(column.cards || []).length}
+                  </Badge>
                 </div>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="text-muted-foreground hover:text-destructive"
+                  onClick={() => handleDeleteColumn(column.id)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
               </div>
 
               <div className="space-y-3">
@@ -316,26 +377,31 @@ function BoardView({ board, userId, onBack, onUpdate }: { board: BoardType; user
                 {addingCardToColumn === column.id ? (
                   <AddCardForm onAdd={(title) => handleAddCard(column.id, title)} onCancel={() => setAddingCardToColumn(null)} />
                 ) : (
-                  <button
+                  <Button
+                    variant="outline"
+                    className="w-full border-dashed text-muted-foreground"
                     onClick={() => setAddingCardToColumn(column.id)}
-                    className="w-full p-3 border border-dashed border-gray-300 rounded-lg text-gray-400 text-sm hover:border-gray-400 hover:text-gray-500"
                   >
-                    + Add Card
-                  </button>
+                    <Plus className="h-4 w-4" />
+                    Add Card
+                  </Button>
                 )}
               </div>
             </div>
           ))}
 
           {showAddColumn && (
-            <div className="w-72 min-w-72 bg-white rounded-xl p-4 shrink-0">
-              <AddColumnForm onAdd={handleAddColumn} onCancel={() => setShowAddColumn(false)} />
-            </div>
+            <Card className="w-72 min-w-72 shrink-0">
+              <CardContent className="pt-4">
+                <AddColumnForm onAdd={handleAddColumn} onCancel={() => setShowAddColumn(false)} />
+              </CardContent>
+            </Card>
           )}
 
           {!showAddColumn && columns.length === 0 && (
-            <div className="text-center py-12 w-full">
-              <p className="text-gray-400">Add your first column to start organizing tasks.</p>
+            <div className="text-center py-16 w-full">
+              <Columns className="h-12 w-12 text-muted-foreground/50 mx-auto mb-4" />
+              <p className="text-muted-foreground">Add your first column to start organizing tasks.</p>
             </div>
           )}
         </div>
@@ -348,43 +414,78 @@ function CardItem({ card, columns, onDelete, onMove }: { card: CardType; columns
   const [showMoveMenu, setShowMoveMenu] = useState(false)
 
   return (
-    <div className="bg-white rounded-lg p-3 shadow-sm hover:shadow-md transition cursor-move">
-      <div className="flex justify-between items-start">
-        <p className="text-sm font-medium text-gray-900">{card.title}</p>
-        <div className="flex gap-1">
-          <button onClick={() => setShowMoveMenu(!showMoveMenu)} className="text-gray-400 hover:text-gray-600 text-xs">↔</button>
-          <button onClick={onDelete} className="text-gray-400 hover:text-red-500">×</button>
-        </div>
-      </div>
-      {card.description && <p className="text-xs text-gray-500 mt-1 truncate">{card.description}</p>}
-      {card.dueDate && (
-        <p className="text-xs text-gray-400 mt-2">Due: {new Date(card.dueDate).toLocaleDateString()}</p>
-      )}
-      {card.labels && card.labels.length > 0 && (
-        <div className="flex gap-1 mt-2 flex-wrap">
-          {card.labels.map(({ label }) => (
-            <span key={label.id} className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: label.color + '30', color: label.color }}>
-              {label.name}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {showMoveMenu && (
-        <div className="mt-2 p-2 bg-gray-50 rounded text-xs">
-          <p className="text-gray-500 mb-1">Move to:</p>
-          {columns.filter(c => c.id !== card.columnId).map(col => (
-            <button
-              key={col.id}
-              onClick={() => { onMove(col.id); setShowMoveMenu(false) }}
-              className="block w-full text-left px-2 py-1 hover:bg-gray-100 rounded"
+    <Card className="hover:shadow-md transition-shadow cursor-move py-3 gap-2">
+      <CardContent className="px-3 py-0 space-y-1.5">
+        <div className="flex justify-between items-start gap-2">
+          <div className="flex items-start gap-2">
+            <GripVertical className="h-4 w-4 text-muted-foreground/50 mt-0.5 shrink-0" />
+            <p className="text-sm font-medium leading-snug">{card.title}</p>
+          </div>
+          <div className="flex gap-0.5 shrink-0">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => setShowMoveMenu(!showMoveMenu)}
             >
-              {col.name}
-            </button>
-          ))}
+              <MoveHorizontal className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="text-muted-foreground hover:text-destructive"
+              onClick={onDelete}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
-      )}
-    </div>
+
+        {card.description && (
+          <p className="text-xs text-muted-foreground truncate pl-6">{card.description}</p>
+        )}
+
+        {card.dueDate && (
+          <p className="text-xs text-muted-foreground pl-6">
+            Due: {new Date(card.dueDate).toLocaleDateString()}
+          </p>
+        )}
+
+        {card.labels && card.labels.length > 0 && (
+          <div className="flex gap-1 flex-wrap pl-6">
+            {card.labels.map(({ label }) => (
+              <Badge
+                key={label.id}
+                variant="outline"
+                className="text-[10px] px-1.5 py-0"
+                style={{ backgroundColor: label.color + '20', color: label.color, borderColor: label.color + '40' }}
+              >
+                {label.name}
+              </Badge>
+            ))}
+          </div>
+        )}
+
+        {showMoveMenu && (
+          <div className="mt-1 p-2 bg-muted rounded-md">
+            <p className="text-xs text-muted-foreground mb-1.5 font-medium">Move to:</p>
+            <div className="space-y-0.5">
+              {columns.filter(c => c.id !== card.columnId).map(col => (
+                <Button
+                  key={col.id}
+                  variant="ghost"
+                  size="sm"
+                  className="w-full justify-start text-xs h-7"
+                  onClick={() => { onMove(col.id); setShowMoveMenu(false) }}
+                >
+                  {col.name}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -392,24 +493,25 @@ function AddCardForm({ onAdd, onCancel }: { onAdd: (title: string) => void; onCa
   const [title, setTitle] = useState('')
 
   return (
-    <div className="bg-white rounded-lg p-3 shadow-sm">
-      <input
-        type="text"
-        placeholder="Card title"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        className="w-full px-3 py-2 border border-gray-200 rounded text-sm mb-2"
-        autoFocus
-      />
-      <div className="flex gap-2">
-        <button onClick={() => title && onAdd(title)} className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">
-          Add
-        </button>
-        <button onClick={onCancel} className="px-3 py-1 border border-gray-200 rounded text-sm hover:bg-gray-50">
-          Cancel
-        </button>
-      </div>
-    </div>
+    <Card className="py-3 gap-2">
+      <CardContent className="px-3 py-0 space-y-2">
+        <Input
+          type="text"
+          placeholder="Card title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          autoFocus
+        />
+        <div className="flex gap-2">
+          <Button size="sm" onClick={() => title && onAdd(title)}>
+            Add
+          </Button>
+          <Button variant="outline" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -417,22 +519,21 @@ function AddColumnForm({ onAdd, onCancel }: { onAdd: (name: string) => void; onC
   const [name, setName] = useState('')
 
   return (
-    <div>
-      <input
+    <div className="space-y-2">
+      <Input
         type="text"
         placeholder="Column name"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        className="w-full px-3 py-2 border border-gray-200 rounded text-sm mb-2"
         autoFocus
       />
       <div className="flex gap-2">
-        <button onClick={() => name && onAdd(name)} className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">
+        <Button size="sm" onClick={() => name && onAdd(name)}>
           Add
-        </button>
-        <button onClick={onCancel} className="px-3 py-1 border border-gray-200 rounded text-sm hover:bg-gray-50">
+        </Button>
+        <Button variant="outline" size="sm" onClick={onCancel}>
           Cancel
-        </button>
+        </Button>
       </div>
     </div>
   )

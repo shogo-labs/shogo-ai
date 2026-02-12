@@ -192,3 +192,10 @@ export {
   EVAL_API_CLIENT_CUSTOM_ENDPOINT_OK,
   EVAL_API_CLIENT_INVENTORY,
 } from './test-cases-api-client'
+
+// shadcn/UI Component Usage Test Cases
+export {
+  ALL_SHADCN_EVALS,
+  SHADCN_COMPONENT_EVALS,
+  SHADCN_IMPORT_EVALS,
+} from './test-cases-shadcn'
