@@ -9,6 +9,38 @@ import { observer } from 'mobx-react-lite'
 import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
 import { api, configureApiClient } from './generated/api-client'
+import {
+  Users,
+  TrendingUp,
+  UserCheck,
+  DollarSign,
+  Plus,
+  Trash2,
+  Search,
+  LogOut,
+  Loader2,
+  UserPlus,
+} from 'lucide-react'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 // Types
 interface ContactType {
@@ -60,6 +92,21 @@ export default function App() {
       <Dashboard />
     </AuthGate>
   )
+}
+
+function getStatusBadge(status: string) {
+  switch (status) {
+    case 'lead':
+      return <Badge variant="outline" className="border-yellow-300 bg-yellow-50 text-yellow-700">Lead</Badge>
+    case 'prospect':
+      return <Badge className="bg-blue-100 text-blue-700 border-blue-200">Prospect</Badge>
+    case 'customer':
+      return <Badge className="bg-green-100 text-green-700 border-green-200">Customer</Badge>
+    case 'churned':
+      return <Badge variant="destructive">Churned</Badge>
+    default:
+      return <Badge variant="secondary">{status}</Badge>
+  }
 }
 
 const Dashboard = observer(function Dashboard() {
@@ -142,169 +189,232 @@ const Dashboard = observer(function Dashboard() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-gray-500">Loading...</p>
+      <div className="min-h-screen flex flex-col items-center justify-center gap-3">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">Loading...</p>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-gray-900">CRM</h1>
-        <div className="flex items-center gap-4">
-          <span className="text-gray-500">{auth.user?.name || auth.user?.email}</span>
-          <button
-            onClick={() => auth.signOut()}
-            className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50"
-          >
-            Sign Out
-          </button>
+    <div className="min-h-screen bg-slate-50/50">
+      {/* Header */}
+      <header className="sticky top-0 z-10 bg-white/80 backdrop-blur-sm border-b">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+              <Users className="h-4 w-4" />
+            </div>
+            <h1 className="text-xl font-bold tracking-tight">CRM</h1>
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-muted-foreground">{auth.user?.name || auth.user?.email}</span>
+            <Button variant="outline" size="sm" onClick={() => auth.signOut()}>
+              <LogOut className="h-4 w-4" />
+              Sign Out
+            </Button>
+          </div>
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto p-6">
+      <div className="max-w-7xl mx-auto p-6 space-y-6">
         {/* Stats */}
         {stats && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-            <div className="bg-white rounded-xl p-5 shadow-sm">
-              <p className="text-sm text-gray-500 mb-1">Total Contacts</p>
-              <p className="text-3xl font-bold text-gray-900">{stats.total}</p>
-            </div>
-            <div className="bg-white rounded-xl p-5 shadow-sm">
-              <p className="text-sm text-gray-500 mb-1">Leads</p>
-              <p className="text-3xl font-bold text-yellow-600">{stats.leads}</p>
-            </div>
-            <div className="bg-white rounded-xl p-5 shadow-sm">
-              <p className="text-sm text-gray-500 mb-1">Customers</p>
-              <p className="text-3xl font-bold text-green-600">{stats.customers}</p>
-            </div>
-            <div className="bg-white rounded-xl p-5 shadow-sm">
-              <p className="text-sm text-gray-500 mb-1">Pipeline Value</p>
-              <p className="text-3xl font-bold text-blue-600">${(pipeline?.totalValue || 0).toLocaleString()}</p>
-            </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <Card>
+              <CardContent className="pt-0">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-50">
+                    <Users className="h-5 w-5 text-blue-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Total Contacts</p>
+                    <p className="text-2xl font-bold">{stats.total}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-0">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-yellow-50">
+                    <TrendingUp className="h-5 w-5 text-yellow-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Leads</p>
+                    <p className="text-2xl font-bold">{stats.leads}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-0">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-green-50">
+                    <UserCheck className="h-5 w-5 text-green-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Customers</p>
+                    <p className="text-2xl font-bold">{stats.customers}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-0">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-purple-50">
+                    <DollarSign className="h-5 w-5 text-purple-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Pipeline Value</p>
+                    <p className="text-2xl font-bold">${(pipeline?.totalValue || 0).toLocaleString()}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
           </div>
         )}
 
         {/* Pipeline */}
         {pipeline && pipeline.pipeline.length > 0 && (
-          <div className="bg-white rounded-xl p-5 shadow-sm mb-6">
-            <h3 className="font-semibold text-gray-900 mb-4">Deal Pipeline</h3>
-            <div className="flex gap-2 overflow-x-auto">
-              {pipeline.pipeline.map(({ stage, count, value }) => (
-                <div key={stage} className="flex-1 min-w-[120px] p-3 bg-gray-50 rounded-lg text-center">
-                  <p className="text-xs text-gray-500 capitalize">{stage}</p>
-                  <p className="text-lg font-bold">{count}</p>
-                  <p className="text-xs text-gray-400">${value.toLocaleString()}</p>
-                </div>
-              ))}
-            </div>
-          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>Deal Pipeline</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex gap-2 overflow-x-auto">
+                {pipeline.pipeline.map(({ stage, count, value }) => (
+                  <div key={stage} className="flex-1 min-w-[120px] p-3 bg-muted rounded-lg text-center">
+                    <p className="text-xs text-muted-foreground capitalize">{stage}</p>
+                    <p className="text-lg font-bold">{count}</p>
+                    <p className="text-xs text-muted-foreground">${value.toLocaleString()}</p>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
         )}
 
         {/* Contacts */}
-        <div className="bg-white rounded-xl p-5 shadow-sm">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="font-semibold text-gray-900">Contacts</h3>
-            <button
-              onClick={() => setShowAddContact(!showAddContact)}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
-            >
-              {showAddContact ? 'Cancel' : '+ Add Contact'}
-            </button>
-          </div>
-
-          {/* Filters */}
-          <div className="flex gap-4 mb-4">
-            <input
-              type="text"
-              placeholder="Search contacts..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="flex-1 px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="px-4 py-2 border border-gray-200 rounded-lg text-sm bg-white"
-            >
-              <option value="">All Status</option>
-              <option value="lead">Lead</option>
-              <option value="prospect">Prospect</option>
-              <option value="customer">Customer</option>
-              <option value="churned">Churned</option>
-            </select>
-          </div>
-
-          {showAddContact && (
-            <AddContactForm
-              userId={auth.user!.id}
-              companies={companies}
-              onAdd={() => {
-                setShowAddContact(false)
-                fetchData()
-              }}
-            />
-          )}
-
-          {/* Contact List */}
-          {filteredContacts.length === 0 ? (
-            <p className="text-center text-gray-400 py-8">No contacts found</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table>
-                <thead>
-                  <tr className="text-sm text-gray-500 border-b border-gray-100">
-                    <th className="font-medium">Name</th>
-                    <th className="font-medium">Email</th>
-                    <th className="font-medium">Company</th>
-                    <th className="font-medium">Status</th>
-                    <th className="font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredContacts.map((contact) => (
-                    <tr key={contact.id} className="border-b border-gray-50 hover:bg-gray-50">
-                      <td>
-                        <div className="font-medium text-gray-900">{contact.firstName} {contact.lastName}</div>
-                        {contact.title && <div className="text-xs text-gray-400">{contact.title}</div>}
-                      </td>
-                      <td className="text-gray-600">{contact.email || '-'}</td>
-                      <td className="text-gray-600">{contact.company?.name || '-'}</td>
-                      <td>
-                        <select
-                          value={contact.status}
-                          onChange={(e) => handleUpdateStatus(contact.id, e.target.value)}
-                          className={`px-2 py-1 rounded text-xs font-medium border-0 ${
-                            contact.status === 'lead' ? 'bg-yellow-100 text-yellow-700' :
-                            contact.status === 'prospect' ? 'bg-blue-100 text-blue-700' :
-                            contact.status === 'customer' ? 'bg-green-100 text-green-700' :
-                            'bg-red-100 text-red-700'
-                          }`}
-                        >
-                          <option value="lead">Lead</option>
-                          <option value="prospect">Prospect</option>
-                          <option value="customer">Customer</option>
-                          <option value="churned">Churned</option>
-                        </select>
-                      </td>
-                      <td>
-                        <button
-                          onClick={() => handleDeleteContact(contact.id)}
-                          className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded"
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <Card>
+          <CardHeader>
+            <div className="flex justify-between items-center">
+              <div>
+                <CardTitle>Contacts</CardTitle>
+                <p className="text-sm text-muted-foreground mt-1">{filteredContacts.length} contact{filteredContacts.length !== 1 ? 's' : ''}</p>
+              </div>
+              <Button onClick={() => setShowAddContact(!showAddContact)}>
+                {showAddContact ? (
+                  'Cancel'
+                ) : (
+                  <>
+                    <Plus className="h-4 w-4" />
+                    Add Contact
+                  </>
+                )}
+              </Button>
             </div>
-          )}
-        </div>
+          </CardHeader>
 
-        <footer className="text-center text-gray-400 text-sm mt-8">
+          <CardContent className="space-y-4">
+            {/* Filters */}
+            <div className="flex gap-4">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  type="text"
+                  placeholder="Search contacts..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-[160px]">
+                  <SelectValue placeholder="All Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Status</SelectItem>
+                  <SelectItem value="lead">Lead</SelectItem>
+                  <SelectItem value="prospect">Prospect</SelectItem>
+                  <SelectItem value="customer">Customer</SelectItem>
+                  <SelectItem value="churned">Churned</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {showAddContact && (
+              <AddContactForm
+                userId={auth.user!.id}
+                companies={companies}
+                onAdd={() => {
+                  setShowAddContact(false)
+                  fetchData()
+                }}
+              />
+            )}
+
+            {/* Contact List */}
+            {filteredContacts.length === 0 ? (
+              <p className="text-center text-muted-foreground py-8">No contacts found</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Email</TableHead>
+                    <TableHead>Company</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="w-[80px]">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredContacts.map((contact) => (
+                    <TableRow key={contact.id}>
+                      <TableCell>
+                        <div className="font-medium">{contact.firstName} {contact.lastName}</div>
+                        {contact.title && <div className="text-xs text-muted-foreground">{contact.title}</div>}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">{contact.email || '-'}</TableCell>
+                      <TableCell className="text-muted-foreground">{contact.company?.name || '-'}</TableCell>
+                      <TableCell>
+                        <Select
+                          value={contact.status}
+                          onValueChange={(value) => handleUpdateStatus(contact.id, value)}
+                        >
+                          <SelectTrigger className="h-7 w-auto border-none shadow-none px-0 gap-1 focus:ring-0">
+                            <SelectValue>
+                              {getStatusBadge(contact.status)}
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="lead">Lead</SelectItem>
+                            <SelectItem value="prospect">Prospect</SelectItem>
+                            <SelectItem value="customer">Customer</SelectItem>
+                            <SelectItem value="churned">Churned</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => handleDeleteContact(contact.id)}
+                          className="text-muted-foreground hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+
+        <footer className="text-center text-sm text-muted-foreground pb-4">
           <p>Built with @shogo-ai/sdk + Hono</p>
         </footer>
       </div>
@@ -363,77 +473,110 @@ function AddContactForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="bg-gray-50 rounded-lg p-4 mb-4 space-y-3">
-      <div className="grid grid-cols-2 gap-3">
-        <input
-          type="text"
-          placeholder="First name *"
-          value={firstName}
-          onChange={(e) => setFirstName(e.target.value)}
-          required
-          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm"
-        />
-        <input
-          type="text"
-          placeholder="Last name *"
-          value={lastName}
-          onChange={(e) => setLastName(e.target.value)}
-          required
-          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm"
-        />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm"
-        />
-        <input
-          type="tel"
-          placeholder="Phone"
-          value={phone}
-          onChange={(e) => setPhone(e.target.value)}
-          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm"
-        />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <input
-          type="text"
-          placeholder="Job title"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm"
-        />
-        <select
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-          className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm bg-white"
-        >
-          <option value="lead">Lead</option>
-          <option value="prospect">Prospect</option>
-          <option value="customer">Customer</option>
-        </select>
-      </div>
-      <select
-        value={companyId}
-        onChange={(e) => setCompanyId(e.target.value)}
-        className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm bg-white"
-      >
-        <option value="">Select company (optional)</option>
-        {companies.map((c) => (
-          <option key={c.id} value={c.id}>{c.name}</option>
-        ))}
-      </select>
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      <button
-        type="submit"
-        disabled={loading}
-        className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-      >
-        {loading ? 'Adding...' : 'Add Contact'}
-      </button>
-    </form>
+    <Card className="bg-muted/50">
+      <CardContent>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="firstName">First name *</Label>
+              <Input
+                id="firstName"
+                type="text"
+                placeholder="First name"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="lastName">Last name *</Label>
+              <Input
+                id="lastName"
+                type="text"
+                placeholder="Last name"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="contactEmail">Email</Label>
+              <Input
+                id="contactEmail"
+                type="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="contactPhone">Phone</Label>
+              <Input
+                id="contactPhone"
+                type="tel"
+                placeholder="Phone"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="contactTitle">Job title</Label>
+              <Input
+                id="contactTitle"
+                type="text"
+                placeholder="Job title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Status</Label>
+              <Select value={status} onValueChange={setStatus}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="lead">Lead</SelectItem>
+                  <SelectItem value="prospect">Prospect</SelectItem>
+                  <SelectItem value="customer">Customer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Company (optional)</Label>
+            <Select value={companyId} onValueChange={setCompanyId}>
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Select company" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No company</SelectItem>
+                {companies.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <Button type="submit" disabled={loading} className="w-full">
+            {loading ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Adding...
+              </>
+            ) : (
+              <>
+                <UserPlus className="h-4 w-4" />
+                Add Contact
+              </>
+            )}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
   )
 }
