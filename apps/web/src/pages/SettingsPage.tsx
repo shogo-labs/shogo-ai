@@ -93,6 +93,13 @@ import { PlanSelector } from "@/components/app/billing/PlanSelector"
 import { useBillingData } from "@/hooks/useBillingData"
 
 // =============================================================================
+// Configuration
+// =============================================================================
+
+/** External documentation site URL (env-configurable) */
+const DOCS_URL = import.meta.env.VITE_DOCS_URL || 'https://docs.shogo.ai'
+
+// =============================================================================
 // Workspace-scoped usage hooks (reuse the same UsageTable component as admin)
 // =============================================================================
 
@@ -519,7 +526,7 @@ function KnowledgeTab() {
         </div>
         <Button variant="outline" size="sm" asChild>
           <a 
-            href="https://docs-staging.shogo.ai" 
+            href={DOCS_URL} 
             target="_blank" 
             rel="noopener noreferrer"
             className="flex items-center gap-2"
@@ -985,7 +992,7 @@ function PeopleTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="https://docs-staging.shogo.ai/" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
+          <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -1033,7 +1040,7 @@ function PeopleTab() {
               </DropdownMenuContent>
             </DropdownMenu>
 
-            <Button variant="outline" size="sm" className="h-8 gap-1" onClick={handleExport} onClick={handleExportMembers}>
+            <Button variant="outline" size="sm" className="h-8 gap-1" onClick={handleExportMembers}>
               <Download className="h-3.5 w-3.5" />
               Export
             </Button>
@@ -1249,7 +1256,7 @@ function BillingTab() {
         </div>
         <Button variant="outline" size="sm" asChild>
           <a 
-            href="https://docs-staging.shogo.ai" 
+            href={DOCS_URL} 
             target="_blank" 
             rel="noopener noreferrer"
             className="flex items-center gap-2"
@@ -1448,7 +1455,7 @@ function UsageTab() {
         </div>
         <Button variant="outline" size="sm" asChild>
           <a 
-            href="https://docs-staging.shogo.ai" 
+            href={DOCS_URL} 
             target="_blank" 
             rel="noopener noreferrer"
             className="flex items-center gap-2"
@@ -2010,7 +2017,7 @@ function LabsTab() {
         </div>
         <Button variant="outline" size="sm" asChild>
           <a 
-            href="https://docs-staging.shogo.ai" 
+            href={DOCS_URL} 
             target="_blank" 
             rel="noopener noreferrer"
             className="flex items-center gap-2"
@@ -2155,7 +2162,7 @@ function GitHubTab() {
         </div>
         <Button variant="outline" size="sm" asChild>
           <a 
-            href="https://docs-staging.shogo.ai" 
+            href={DOCS_URL} 
             target="_blank" 
             rel="noopener noreferrer"
             className="flex items-center gap-2"
