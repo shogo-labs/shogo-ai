@@ -33,6 +33,7 @@ import {
   EDGE_CASE_EVALS,
   ALL_BUSINESS_USER_EVALS,
   MULTI_TURN_COHERENCE_EVALS,
+  RUNTIME_SAFETY_EVALS,
   type EvalCategory,
   type AgentEval,
 } from './index'
@@ -247,6 +248,10 @@ async function main() {
           case 'multiturn':
             evalsToRun = [...MULTI_TURN_COHERENCE_EVALS]
             suiteName = 'Multi-Turn Coherence'
+            break
+          case 'runtime-safety':
+            evalsToRun = [...RUNTIME_SAFETY_EVALS]
+            suiteName = 'Runtime Safety'
             break
           default:
             evalsToRun = ALL_EVALS.filter(e => e.category === category)

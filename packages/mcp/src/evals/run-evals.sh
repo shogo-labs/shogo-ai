@@ -67,7 +67,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR/.."
+cd "$SCRIPT_DIR/../.."
 
 echo "🚀 Starting Eval Runner"
 echo "   Template: $TEMPLATE"
