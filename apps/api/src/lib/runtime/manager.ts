@@ -608,14 +608,17 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         })
 
         agentProc.stdout?.on('data', (data) => {
-          const output = data.toString()
-          if (output.includes('Starting server') || output.includes('port')) {
-            console.log(`[RuntimeManager] Agent server ready for ${projectId} on port ${agentPort}`)
+          const output = data.toString().trim()
+          if (output) {
+            console.log(`[Agent:${projectId.slice(0, 8)}] ${output}`)
           }
         })
 
         agentProc.stderr?.on('data', (data) => {
-          console.error(`[RuntimeManager] Agent stderr for ${projectId}:`, data.toString())
+          const output = data.toString().trim()
+          if (output) {
+            console.error(`[Agent:${projectId.slice(0, 8)}] ${output}`)
+          }
         })
       } else {
         console.warn(`[RuntimeManager] Agent server not found at ${PROJECT_RUNTIME_SERVER}, skipping agent startup`)

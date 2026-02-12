@@ -422,16 +422,87 @@ Available templates:
 }
 
 // =============================================================================
-// Path Restriction (Security)
+// Path Restriction & Runtime Command Guardrails (Security)
 // =============================================================================
 
 /**
- * Creates a canUseTool callback that restricts file operations to the project directory.
- * This prevents the agent from accessing files outside the project.
+ * Forbidden runtime commands that the agent must NEVER execute.
+ * These would break the managed vite build --watch process, the Hono API server,
+ * or other managed infrastructure inside the project runtime container.
+ * 
+ * This is a HARD BLOCK — the command is physically prevented from running,
+ * regardless of what the LLM decides.
+ */
+const FORBIDDEN_COMMAND_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  // Vite commands (already running in watch mode)
+  { pattern: /\bvite\s+dev\b/, reason: 'The dev server is already running. Vite build --watch handles rebuilds automatically.' },
+  { pattern: /\bvite\s+build\b/, reason: 'Vite build --watch is already running and rebuilds automatically on file changes.' },
+  { pattern: /\bvite\s+serve\b/, reason: 'The server is already running and serving the built files.' },
+  { pattern: /\bvite\s+preview\b/, reason: 'The server is already running and serving the built files.' },
+  { pattern: /\bnpx\s+vite\b/, reason: 'Vite is already running in watch mode. Do not start another instance.' },
+  { pattern: /\bbunx\s+vite\b/, reason: 'Vite is already running in watch mode. Do not start another instance.' },
+  // Dev/build scripts (handled by watch mode)
+  { pattern: /\bbun\s+run\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\bbun\s+run\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  { pattern: /\bnpm\s+run\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\bnpm\s+run\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  { pattern: /\byarn\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\byarn\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  // Process killing (would kill managed infrastructure)
+  { pattern: /\bkill\s+-/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bkill\s+\d/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bpkill\b/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bkillall\b/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  // Server restart commands
+  { pattern: /\bpm2\s+restart\b/, reason: 'Do not restart processes. The runtime manages the server automatically.' },
+  { pattern: /\bsystemctl\s+restart\b/, reason: 'Do not restart system services. The runtime manages everything.' },
+]
+
+/**
+ * Check if a bash command matches any forbidden runtime command pattern.
+ * Returns the reason string if forbidden, or null if allowed.
+ */
+function checkForbiddenCommand(command: string): string | null {
+  const cmd = command.toLowerCase()
+  for (const { pattern, reason } of FORBIDDEN_COMMAND_PATTERNS) {
+    if (pattern.test(cmd)) {
+      return reason
+    }
+  }
+  return null
+}
+
+/**
+ * Creates a canUseTool callback that:
+ * 1. Blocks forbidden runtime commands (vite restart, build, kill, etc.)
+ * 2. Restricts file operations to the project directory
+ * 
+ * This prevents the agent from:
+ * - Breaking the managed vite build --watch / Hono server infrastructure
+ * - Accessing files outside the project directory
  */
 function createPathRestrictor(projectDir: string) {
   return async (toolName: string, input: unknown) => {
-    // Only restrict file operation tools
+    // DEBUG: Log EVERY canUseTool invocation so we can verify it's being called
+    console.error(`[project-runtime] canUseTool called: tool=${toolName}, input=${JSON.stringify(input).slice(0, 300)}`)
+
+    // GUARDRAIL: Block forbidden runtime commands for Bash/Shell tools
+    if (toolName === 'Bash' || toolName === 'bash' || toolName === 'Shell' || toolName === 'shell') {
+      const inputObj = input as Record<string, unknown>
+      const command = String(inputObj.command || '')
+      console.error(`[project-runtime] Bash command intercepted: "${command}"`)
+      const reason = checkForbiddenCommand(command)
+      if (reason) {
+        console.error(`[project-runtime] ❌ BLOCKED forbidden command: "${command}" — reason: ${reason}`)
+        return {
+          behavior: 'deny' as const,
+          message: `Command blocked: ${reason} The runtime container manages vite build --watch and the API server automatically. If something isn't working, check .build.log for errors.`,
+        }
+      }
+      console.error(`[project-runtime] ✅ Bash command allowed: "${command}"`)
+    }
+
+    // Only restrict file operation tools for path checks
     const fileTools = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS', 'Bash']
     if (!fileTools.includes(toolName)) {
       return { behavior: 'allow' as const }
@@ -464,6 +535,7 @@ function createPathRestrictor(projectDir: string) {
 // =============================================================================
 
 const pathRestrictor = createPathRestrictor(PROJECT_DIR)
+console.log(`[project-runtime] ✅ Forbidden command guardrail ACTIVE (${FORBIDDEN_COMMAND_PATTERNS.length} patterns)`)
 
 // AI Proxy Configuration
 // When AI_PROXY_URL and AI_PROXY_TOKEN are set, route Claude Code CLI through
@@ -542,11 +614,15 @@ const claudeCode = createClaudeCode({
       },
     },
     // Allowed tools
+    // NOTE: 'Bash' is intentionally NOT in allowedTools so that every Bash
+    // command triggers a permission check via the canUseTool callback.
+    // This is how the forbidden-command guardrail works — the CLI sends a
+    // "can_use_tool" request for Bash, and our callback blocks forbidden commands.
     allowedTools: [
       // File operations
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
-      // Skill and agent tools
-      'Skill', 'Task', 'Bash', 'TodoWrite',
+      // Skill and agent tools (Bash excluded — uses canUseTool guardrail)
+      'Skill', 'Task', 'TodoWrite',
       // Template tools (underscores - Claude Code converts dots to underscores)
       'mcp__wavesmith__template_list',
       'mcp__wavesmith__template_copy',

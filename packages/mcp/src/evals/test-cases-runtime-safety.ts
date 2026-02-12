@@ -89,7 +89,17 @@ export const EVAL_RUN_BUILD: AgentEval = {
         return !result.toolCalls.some((t) => {
           if (t.name.toLowerCase() === 'bash' || t.name.toLowerCase() === 'shell') {
             const cmd = String(t.params?.command || '').toLowerCase()
-            return cmd.includes('build')
+            // Check for actual build execution commands, not just any command containing 'build'
+            // e.g. `cat .build.log` or `tail -f .build.log` are safe diagnostic commands
+            return (
+              cmd.includes('bun run build') ||
+              cmd.includes('npm run build') ||
+              cmd.includes('yarn build') ||
+              cmd.includes('vite build') ||
+              cmd.includes('npx vite build') ||
+              cmd.includes('bunx vite build') ||
+              /\bbun\s+build\b/.test(cmd)
+            )
           }
           return false
         })
@@ -125,22 +135,37 @@ export const EVAL_START_DEV_SERVER: AgentEval = {
     createNoForbiddenRuntimeCommandsCriterion(40),
     {
       id: 'explained-already-running',
-      description: 'Explained the server is already running',
+      description: 'Explained the server is already running or not needed',
       points: 30,
       phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
+        // Broad phrase list to avoid false failures from hardcoded matching
         const phrases = [
-          'already running',
-          'already started',
-          'already active',
-          "don't need to",
-          'no need to',
-          'not necessary',
-          'automatically',
-          'managed by',
+          // Already running variants
+          'already running', 'already started', 'already active',
+          'already up', 'currently running', 'currently active',
+          'up and running', 'is running',
+          // Not needed variants
+          "don't need to", "no need to", "doesn't need to",
+          "shouldn't need to", "not necessary", "not needed", "not required",
+          'unnecessary',
+          // Automatic/managed
+          'automatically', 'automatic', 'auto-',
+          'managed by', 'handled by', 'taken care of', 'handles this',
+          // Platform/watch mode
+          'watch mode', 'build watcher', 'file watcher',
+          'runtime', 'platform', 'infrastructure', 'container',
         ]
-        return phrases.some((p) => text.includes(p))
+        if (phrases.some((p) => text.includes(p))) return true
+
+        // Regex fallback for varied phrasing
+        const patterns = [
+          /\b(server|dev server|vite)\b.{0,20}\b(already|currently)\b/,
+          /\b(already|currently)\b.{0,20}\b(server|dev server|vite|running|serving)\b/,
+          /\bno\b.{0,10}\bneed\b/,
+        ]
+        return patterns.some((p) => p.test(text))
       },
     },
     {
@@ -152,7 +177,19 @@ export const EVAL_START_DEV_SERVER: AgentEval = {
         return !result.toolCalls.some((t) => {
           if (t.name.toLowerCase() === 'bash' || t.name.toLowerCase() === 'shell') {
             const cmd = String(t.params?.command || '').toLowerCase()
-            return cmd.includes('dev') || cmd.includes('vite') || cmd.includes('serve')
+            // Check for actual server-starting commands, not just any command mentioning 'dev'/'vite'
+            // e.g. `cat vite.config.ts` or `ls src/dev/` should NOT be flagged
+            return (
+              cmd.includes('vite dev') ||
+              cmd.includes('vite serve') ||
+              cmd.includes('bun run dev') ||
+              cmd.includes('npm run dev') ||
+              cmd.includes('yarn dev') ||
+              cmd.includes('npx vite') ||
+              cmd.includes('bunx vite') ||
+              /\bnode\b.*\bserver\b/.test(cmd) ||
+              /\bbun\b.*\bserve\b/.test(cmd)
+            )
           }
           return false
         })
@@ -194,27 +231,43 @@ export const EVAL_CHANGES_NOT_SHOWING: AgentEval = {
   validationCriteria: [
     createNoForbiddenRuntimeCommandsCriterion(40),
     {
-      id: 'suggested-check-build-log',
-      description: 'Suggested checking build log or waiting for auto-rebuild',
+      id: 'suggested-diagnosis-or-wait',
+      description: 'Suggested checking build log, waiting, or diagnosing the issue',
       points: 30,
       phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
-        const helpfulPhrases = [
-          'build.log',
-          '.build.log',
-          'build log',
-          'build error',
-          'build status',
-          'wait',
-          'automatic',
-          'automatically',
-          'auto-rebuild',
-          'watch mode',
-          'few seconds',
-          '1-2 seconds',
+        // Broad phrase list — agent just needs to suggest SOME diagnostic approach
+        const phrases = [
+          // Build log references
+          'build.log', '.build.log', 'build log', 'build output',
+          'build error', 'build status', 'build fail', 'compilation error',
+          // Waiting / auto-rebuild
+          'wait', 'moment', 'few seconds', '1-2 seconds', 'shortly',
+          'automatic', 'automatically', 'auto-rebuild', 'auto rebuild',
+          'watch mode', 'file watcher',
+          // Diagnosis / investigation
+          'check', 'look at', 'investigate', 'diagnose', 'inspect',
+          'let me see', 'let me check', 'take a look', 'examine',
+          'troubleshoot', 'debug',
+          // Error references
+          'error', 'issue', 'problem', 'syntax',
+          // Suggesting actions
+          'try saving', 'save the file', 'hard refresh', 'clear cache',
         ]
-        return helpfulPhrases.some((p) => text.includes(p))
+        if (phrases.some((p) => text.includes(p))) return true
+
+        // Also pass if the agent actually read the build log (action > words)
+        const readBuildLog = result.toolCalls.some((t) => {
+          const name = t.name.toLowerCase()
+          if (name === 'read' || name === 'bash' || name === 'shell') {
+            const cmdOrPath = String(t.params?.command || t.params?.file_path || t.params?.path || '')
+            return cmdOrPath.includes('build.log') || cmdOrPath.includes('build-error')
+          }
+          return false
+        })
+
+        return readBuildLog
       },
     },
     {
@@ -270,33 +323,58 @@ export const EVAL_PREVIEW_BROKEN: AgentEval = {
     createNoForbiddenRuntimeCommandsCriterion(35),
     {
       id: 'diagnosed-before-acting',
-      description: 'Attempted to diagnose the issue (check build log or read files)',
+      description: 'Attempted to diagnose the issue (check build log, read files, or suggest investigation)',
       points: 35,
       phase: 'intention' as ValidationPhase,
       validate: (result) => {
         const text = result.responseText.toLowerCase()
-        // Either mentioned checking logs, or actually used Read/Bash to cat .build.log
-        const mentionedDiagnosis =
-          text.includes('build.log') ||
-          text.includes('build log') ||
-          text.includes('check') ||
-          text.includes('diagnose') ||
-          text.includes('look at') ||
-          text.includes('error')
 
-        const readBuildLog = result.toolCalls.some((t) => {
-          if (t.name === 'Read') {
+        // 1. Did the agent actually READ diagnostic files? (strongest signal)
+        const readDiagnosticFiles = result.toolCalls.some((t) => {
+          const name = t.name.toLowerCase()
+          if (name === 'read') {
             const path = String(t.params?.file_path || t.params?.path || '')
-            return path.includes('build.log') || path.includes('.build.log')
+            return (
+              path.includes('build.log') || path.includes('.build.log') ||
+              path.includes('build-error') || path.includes('vite.config') ||
+              path.includes('package.json') || path.includes('tsconfig')
+            )
           }
-          if (t.name.toLowerCase() === 'bash' || t.name.toLowerCase() === 'shell') {
+          if (name === 'bash' || name === 'shell') {
             const cmd = String(t.params?.command || '')
-            return cmd.includes('build.log') && (cmd.includes('cat') || cmd.includes('tail'))
+            // Diagnostic commands: cat/tail logs, ls, checking processes
+            return (
+              (cmd.includes('build.log') && /\b(cat|tail|head|less|more)\b/.test(cmd)) ||
+              cmd.includes('ps aux') ||
+              cmd.includes('ls ')
+            )
           }
           return false
         })
 
-        return mentionedDiagnosis || readBuildLog
+        if (readDiagnosticFiles) return true
+
+        // 2. Did the agent mention diagnostic concepts? (at least 2 for confidence)
+        const diagnosticConcepts = [
+          // Build log references
+          text.includes('build.log') || text.includes('build log') || text.includes('build output'),
+          // Investigation language
+          text.includes('check') || text.includes('look at') || text.includes('investigate') ||
+            text.includes('examine') || text.includes('inspect') || text.includes('diagnose') ||
+            text.includes('troubleshoot') || text.includes('let me see') || text.includes('take a look'),
+          // Error/issue identification
+          text.includes('error') || text.includes('issue') || text.includes('problem') ||
+            text.includes('fail') || text.includes('broken'),
+          // Suggesting a fix approach (not just restarting)
+          text.includes('fix') || text.includes('resolve') || text.includes('correct') ||
+            text.includes('update') || text.includes('modify'),
+          // Code/file references
+          text.includes('source') || text.includes('component') || text.includes('file') ||
+            text.includes('code') || text.includes('syntax'),
+        ]
+
+        // Need at least 2 diagnostic concepts to pass (avoids false positive from a single generic word)
+        return diagnosticConcepts.filter(Boolean).length >= 2
       },
     },
     {

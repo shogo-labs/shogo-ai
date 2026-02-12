@@ -13,8 +13,9 @@ import type {
   CriterionResult,
   ToolCall,
   EvalMetrics,
+  GlobalPenalty,
 } from './types'
-import { evaluateToolCorrectness, extractSelectedTemplate, ranForbiddenRuntimeCommands } from './validators'
+import { evaluateToolCorrectness, extractSelectedTemplate, ranForbiddenRuntimeCommands, extractForbiddenCommands } from './validators'
 
 /**
  * Configuration for the eval runner
@@ -231,9 +232,39 @@ export async function runEval(
     }
   }
 
-  // Calculate final score (deduct for anti-patterns)
+  // Calculate score after anti-patterns
   const antiPatternPenalty = triggeredAntiPatterns.length * 10
-  const finalScore = Math.max(0, totalScore - antiPatternPenalty)
+  let finalScore = Math.max(0, totalScore - antiPatternPenalty)
+
+  // Apply global penalties (platform-level quality signals that apply to ALL evals)
+  const globalPenalties: GlobalPenalty[] = []
+
+  // Global penalty: Forbidden runtime commands (5% score reduction)
+  // If the agent runs vite dev, bun run build, pkill, etc. during ANY eval,
+  // something is wrong with the platform — these should never be needed.
+  if (ranForbiddenRuntimeCommands(toolCalls)) {
+    const forbiddenCmds = extractForbiddenCommands(toolCalls)
+    const RUNTIME_PENALTY_PERCENT = 5
+    const pointsDeducted = Math.round((RUNTIME_PENALTY_PERCENT / 100) * eval_.maxScore)
+    
+    globalPenalties.push({
+      id: 'forbidden-runtime-commands',
+      description: `Ran forbidden runtime commands (-${RUNTIME_PENALTY_PERCENT}%)`,
+      percentagePenalty: RUNTIME_PENALTY_PERCENT,
+      pointsDeducted,
+      details: forbiddenCmds,
+    })
+
+    finalScore = Math.max(0, finalScore - pointsDeducted)
+
+    if (cfg.verbose) {
+      console.log(`    ⚠️ Global penalty: Forbidden runtime commands (-${pointsDeducted} pts / -${RUNTIME_PENALTY_PERCENT}%)`)
+      for (const cmd of forbiddenCmds) {
+        console.log(`       → ${cmd}`)
+      }
+    }
+  }
+
   const percentage = (finalScore / eval_.maxScore) * 100
   const passed = percentage >= 70 && triggeredAntiPatterns.length === 0
 
@@ -264,6 +295,7 @@ export async function runEval(
     criteriaResults,
     triggeredAntiPatterns,
     phaseScores,
+    globalPenalties: globalPenalties.length > 0 ? globalPenalties : undefined,
   }
 }
 
@@ -896,6 +928,28 @@ export function formatEvalReport(suiteResult: EvalSuiteResult): string {
   }
   lines.push('')
 
+  // Global penalties summary
+  const evalsWithPenalties = suiteResult.results.filter(r => r.globalPenalties && r.globalPenalties.length > 0)
+  if (evalsWithPenalties.length > 0) {
+    lines.push('GLOBAL PENALTIES')
+    lines.push('-'.repeat(50))
+    lines.push(`Evals penalized:  ${evalsWithPenalties.length}/${suiteResult.results.length}`)
+    const totalPenaltyPoints = evalsWithPenalties.reduce((sum, r) => 
+      sum + (r.globalPenalties?.reduce((s, p) => s + p.pointsDeducted, 0) || 0), 0)
+    lines.push(`Total points lost: ${totalPenaltyPoints}`)
+    for (const result of evalsWithPenalties) {
+      for (const penalty of result.globalPenalties!) {
+        lines.push(`  ⚠️ ${result.eval.name}: ${penalty.description}`)
+        if (penalty.details?.length) {
+          for (const detail of penalty.details) {
+            lines.push(`     → ${detail}`)
+          }
+        }
+      }
+    }
+    lines.push('')
+  }
+
   // Individual results with metrics
   lines.push('INDIVIDUAL RESULTS')
   lines.push('-'.repeat(50))
@@ -918,6 +972,12 @@ export function formatEvalReport(suiteResult: EvalSuiteResult): string {
 
     if (!result.passed && result.triggeredAntiPatterns.length > 0) {
       lines.push(`    Anti-patterns: ${result.triggeredAntiPatterns.join(', ')}`)
+    }
+
+    if (result.globalPenalties && result.globalPenalties.length > 0) {
+      for (const penalty of result.globalPenalties) {
+        lines.push(`    ⚠️ ${penalty.description}${penalty.details?.length ? ': ' + penalty.details.join(', ') : ''}`)
+      }
     }
 
     if (result.errors && result.errors.length > 0) {

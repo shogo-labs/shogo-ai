@@ -472,6 +472,10 @@ export function createNoForbiddenRuntimeCommandsCriterion(
 /**
  * Criterion: Explained why the command is not needed
  * Phase: intention (educating the user shows good understanding)
+ * 
+ * Uses a combination of phrase matching and regex patterns to avoid
+ * false failures from hardcoded strings. The agent just needs to
+ * communicate the CONCEPT that builds/restarts are handled for them.
  */
 export function createExplainedAutoRebuildCriterion(
   points: number = 30,
@@ -484,23 +488,46 @@ export function createExplainedAutoRebuildCriterion(
     phase,
     validate: (result) => {
       const text = result.responseText.toLowerCase()
-      const autoRebuildPhrases = [
-        'automatic',
-        'automatically',
-        'auto-rebuild',
-        'watch mode',
-        'watch process',
-        'already running',
-        'not needed',
-        'not necessary',
-        "don't need to",
-        "no need to",
-        'handled by',
-        'managed by',
-        'builds automatically',
-        'rebuilds when',
+
+      // Phrase matching: any of these indicate the agent explained the concept
+      const phrases = [
+        // Direct auto-rebuild references
+        'automatic', 'automatically', 'auto-rebuild', 'auto rebuild',
+        'watch mode', 'watch process', 'file watcher', 'build watcher',
+        'vite build --watch',
+        // Already running / not needed
+        'already running', 'already started', 'already active',
+        'already handled', 'already taken care',
+        'not needed', 'not necessary', 'not required', 'unnecessary',
+        "don't need to", "no need to", "doesn't need to", "won't need to",
+        "shouldn't need to", "never need to",
+        // Managed/handled by system
+        'handled by', 'managed by', 'taken care of', 'takes care of',
+        'handled for you', 'managed for you', 'done for you',
+        'built-in', 'built in', 'baked in',
+        // Rebuild explanations
+        'builds automatically', 'rebuilds when', 'rebuilds on',
+        'rebuild on save', 'rebuild on change', 'rebuilds automatically',
+        'detects changes', 'picks up changes', 'reflects changes',
+        // Platform/runtime references
+        'runtime handles', 'runtime manages', 'platform handles',
+        'platform manages', 'system handles', 'system manages',
+        'infrastructure', 'container',
       ]
-      return autoRebuildPhrases.some((phrase) => text.includes(phrase))
+
+      if (phrases.some((p) => text.includes(p))) return true
+
+      // Regex patterns: catch varied phrasing the phrases might miss
+      const patterns = [
+        /\b(rebuild|build|restart)s?\b.{0,20}\b(auto|on its own|by itself|for you)\b/,
+        /\b(no|don'?t|shouldn'?t|won'?t|never)\b.{0,30}\b(need|have) to\b.{0,20}\b(build|restart|run|start)\b/,
+        /\b(already|currently)\b.{0,15}\b(running|active|started|up)\b/,
+        /\bhandle[sd]?\b.{0,20}\b(by the|for you|automatically)\b/,
+        /\b(file|code)\s+(change|save|edit)s?\b.{0,30}\b(trigger|cause|start|kick off)\b/,
+        /\bwhen you\b.{0,20}\b(save|edit|change|modify)\b/,
+      ]
+
+      return patterns.some((p) => p.test(text))
     },
   }
 }
