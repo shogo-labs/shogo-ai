@@ -27,6 +27,8 @@ ${DECISION_RULES}
 
 ${TOOL_USAGE}
 
+${USER_ATTACHED_IMAGES}
+
 ${SCHEMA_MODIFICATIONS}
 
 ${TAILWIND_STYLING}
@@ -177,6 +179,16 @@ The project has convenient scripts in package.json:
 - \`bun run build\` - The watch process handles this automatically
 - \`bun run dev\` - The server is already running
 - \`vite build\` or \`vite dev\` - Already handled by watch mode`
+
+// =============================================================================
+// User-Attached Images (background, hero, logo)
+// =============================================================================
+
+export const USER_ATTACHED_IMAGES = `## User-Attached Images
+
+**All images that the user attaches in chat are saved to the \`public/\` folder** (e.g. \`public/upload-0.png\`).
+
+When the user asks to use an attached image in the app (e.g. "make this the background"), the image is already saved under \`public/\`. The user's message will include a line like: "Attached image(s) saved to: public/upload-0.png". Use that path in your code: in CSS use \`url('/upload-0.png')\` (Vite serves \`public/\` at root); in JSX use \`<img src="/upload-0.png" />\`. Do NOT run \`curl\` or try to download the image—it is already in the project.`
 
 // =============================================================================
 // [DSPy-Optimized] Schema Modifications

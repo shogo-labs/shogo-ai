@@ -40,7 +40,8 @@ export interface FilesRoutesConfig {
  * Excludes node_modules, .git, dist, etc.
  */
 const INCLUDED_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.json', '.css', '.html', '.md', '.svg'
+  '.ts', '.tsx', '.js', '.jsx', '.json', '.css', '.html', '.md', '.svg',
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', // uploaded images (e.g. public/upload-0.png)
 ])
 
 /**

@@ -754,6 +754,53 @@ function parseDataUrl(dataUrl: string): { mimeType: string; base64Data: string }
   return { mimeType: match[1], base64Data: match[2] }
 }
 
+/** Map image mime type to file extension for saving uploaded images. */
+function mimeToExt(mimeType: string): string {
+  const map: Record<string, string> = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'image/svg+xml': '.svg',
+  }
+  return map[mimeType] ?? '.png'
+}
+
+/**
+ * Write user-attached image parts to public/ so the agent can reference them in code.
+ * Returns the list of saved paths (e.g. ["public/upload-0.png"]).
+ */
+function writeAttachedImagesToPublic(
+  contentParts: Array<{ type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }>,
+  projectDir: string
+): string[] {
+  const imageParts = contentParts.filter((p): p is { type: 'image'; image: string; mimeType: string } => p.type === 'image')
+  if (imageParts.length === 0) return []
+
+  const publicDir = join(projectDir, 'public')
+  if (!existsSync(publicDir)) {
+    mkdirSync(publicDir, { recursive: true })
+  }
+
+  const savedPaths: string[] = []
+  for (let i = 0; i < imageParts.length; i++) {
+    const part = imageParts[i]
+    const ext = mimeToExt(part.mimeType)
+    const fileName = `upload-${i}${ext}`
+    const relativePath = `public/${fileName}`
+    const fullPath = join(projectDir, relativePath)
+    try {
+      const buf = Buffer.from(part.image, 'base64')
+      writeFileSync(fullPath, buf)
+      savedPaths.push(relativePath)
+    } catch (err) {
+      console.error(`[project-runtime] Failed to write attached image to ${relativePath}:`, err)
+    }
+  }
+  return savedPaths
+}
+
 // =============================================================================
 // Request Schemas
 // =============================================================================
@@ -1100,6 +1147,17 @@ app.post('/agent/chat', async (c) => {
           }
         }
 
+        // Persist user-attached images to public/ so the agent can reference them in code
+        if (msg.role === 'user' && contentParts.some((p) => p.type === 'image')) {
+          const savedPaths = writeAttachedImagesToPublic(contentParts, PROJECT_DIR)
+          if (savedPaths.length > 0) {
+            contentParts.push({
+              type: 'text',
+              text: ` [Attached image(s) saved to: ${savedPaths.join(', ')}. Use these paths in CSS (e.g. url('/${savedPaths[0].replace(/^public\//, '')}')) or in <img src="/..."/>.]`,
+            })
+          }
+        }
+
         // Return appropriate format based on content
         if (contentParts.length === 1 && contentParts[0].type === 'text') {
           return { role: msg.role, content: contentParts[0].text }
@@ -1129,6 +1187,17 @@ app.post('/agent/chat', async (c) => {
           } else if (part.type === 'image' && part.image) {
             // Already in image format, pass through
             contentParts.push({ type: 'image', image: part.image, mimeType: part.mimeType || 'image/png' })
+          }
+        }
+
+        // Persist user-attached images to public/ so the agent can reference them in code
+        if (msg.role === 'user' && contentParts.some((p) => p.type === 'image')) {
+          const savedPaths = writeAttachedImagesToPublic(contentParts, PROJECT_DIR)
+          if (savedPaths.length > 0) {
+            contentParts.push({
+              type: 'text',
+              text: ` [Attached image(s) saved to: ${savedPaths.join(', ')}. Use these paths in CSS (e.g. url('/${savedPaths[0].replace(/^public\//, '')}')) or in <img src="/..."/>.]`,
+            })
           }
         }
 
