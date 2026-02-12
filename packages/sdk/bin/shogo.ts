@@ -424,7 +424,67 @@ async function main() {
 
   console.log('')
 
-  // Generate
+  // Detect if running inside a Shogo project-runtime environment.
+  // When PORT is set and we're inside a pod, pause the Vite build watcher
+  // to prevent crashes from rapid file writes during code generation.
+  // The resume call at the end triggers a fresh build + backend server restart.
+  const runtimePort = process.env.RUNTIME_PORT || process.env.PORT
+  const isInsideRuntime = !!runtimePort && existsSync(resolve(cwd, 'server.tsx'))
+  
+  if (isInsideRuntime) {
+    console.log(`📡 Detected project-runtime (port ${runtimePort})`)
+  }
+  
+  // ── Step 1: Pause watcher (if inside runtime) ──────────────────────────
+  if (isInsideRuntime) {
+    try {
+      console.log('⏸️  Pausing build watcher...')
+      await fetch(`http://localhost:${runtimePort}/preview/watch/pause`, { method: 'POST' })
+    } catch {
+      console.log('   (watcher not running or unreachable - continuing)')
+    }
+  }
+  
+  // ── Step 2: Run prisma generate + db push ──────────────────────────────
+  // Always regenerate the Prisma client and push schema changes to the database.
+  // This ensures the generated routes have matching DB tables and up-to-date types.
+  const hasPrisma = existsSync(schemaPath)
+  if (hasPrisma) {
+    console.log('🔧 Updating Prisma client and database...')
+    
+    try {
+      console.log('   Running prisma generate...')
+      execSync('bunx --bun prisma generate', {
+        cwd,
+        stdio: values.verbose ? 'inherit' : 'pipe',
+        env: process.env,
+      })
+      console.log('   ✓ Prisma client generated')
+    } catch (err) {
+      console.warn(`   ⚠️ prisma generate failed: ${err instanceof Error ? err.message : err}`)
+    }
+    
+    // Push schema to database (only if DATABASE_URL is set)
+    if (process.env.DATABASE_URL) {
+      try {
+        console.log('   Running prisma db push...')
+        execSync('bunx --bun prisma db push --accept-data-loss', {
+          cwd,
+          stdio: values.verbose ? 'inherit' : 'pipe',
+          env: process.env,
+        })
+        console.log('   ✓ Database schema synced')
+      } catch (err) {
+        console.warn(`   ⚠️ prisma db push failed: ${err instanceof Error ? err.message : err}`)
+      }
+    } else {
+      console.log('   ⊘ Skipping db push (no DATABASE_URL)')
+    }
+    
+    console.log('')
+  }
+  
+  // ── Step 3: Generate SDK files ─────────────────────────────────────────
   try {
     const options: GenerateOptions = {
       schemaPath,
@@ -513,40 +573,42 @@ async function main() {
     }
 
     console.log('')
-    console.log('Next steps:')
-    if (outputs) {
-      const hasRoutes = outputs.some(o => o.generate.includes('routes'))
-      const hasStores = outputs.some(o => o.generate.includes('stores'))
-      const hasDocs = outputs.some(o => o.generate.includes('docs'))
-      const skipDocsBuild = values['no-docs-build'] as boolean
-      let step = 1
-      
-      if (hasRoutes) {
-        console.log(`  ${step++}. Customize hooks in your API generated/*.hooks.ts files`)
-        console.log(`  ${step++}. Mount routes with createAllRoutes(prisma) in your server`)
-      }
-      if (hasStores) {
-        console.log(`  ${step++}. Import stores and use with DomainProvider in your app`)
-      }
-      if (hasDocs && skipDocsBuild) {
-        const docsDir = outputs.find(o => o.generate.includes('docs'))?.dir || './docs'
-        console.log(`  ${step++}. Install docs dependencies: cd ${docsDir} && bun install`)
-        console.log(`  ${step++}. Build docs site: cd ${docsDir} && bunx docusaurus build`)
-      } else if (hasDocs) {
-        const docsDir = outputs.find(o => o.generate.includes('docs'))?.dir || './docs'
-        console.log(`  ${step++}. Serve docs: bunx serve ${docsDir}/build`)
-      }
-    } else {
-      console.log('  1. Review generated hooks in hooks.ts')
-      console.log('  2. Import and use generated code in your app')
-    }
 
   } catch (error) {
     console.error('')
     console.error('❌ Generation failed:')
     console.error(`   ${error instanceof Error ? error.message : error}`)
+    
+    // Still try to resume watcher even if generation failed
+    if (isInsideRuntime) {
+      try {
+        await fetch(`http://localhost:${runtimePort}/preview/watch/resume`, { method: 'POST' })
+      } catch { /* ignore */ }
+    }
+    
     process.exit(1)
   }
+  
+  // ── Step 4: Resume watcher (if inside runtime) ─────────────────────────
+  // This triggers a fresh Vite build AND restarts the backend API server,
+  // ensuring new routes are served immediately.
+  if (isInsideRuntime) {
+    try {
+      console.log('▶️  Resuming build watcher (triggers rebuild + backend restart)...')
+      const res = await fetch(`http://localhost:${runtimePort}/preview/watch/resume`, { method: 'POST' })
+      const data = await res.json() as { resumed?: boolean; buildSuccess?: boolean }
+      if (data.buildSuccess) {
+        console.log('   ✓ Build succeeded and backend restarted')
+      } else if (data.resumed) {
+        console.log('   ✓ Watcher resumed (build in progress)')
+      }
+    } catch {
+      console.log('   ⚠️ Could not resume watcher - you may need to rebuild manually')
+    }
+  }
+  
+  console.log('')
+  console.log('✅ Done!')
 }
 
 main()

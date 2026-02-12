@@ -1168,52 +1168,81 @@ app.post('/agent/chat', async (c) => {
           const originalStream = response.body
           const usagePromise = result.usage
           
-          // Create a new stream that wraps the original with keep-alive AND appends usage
-          const wrappedStream = new ReadableStream({
-            async start(controller) {
-              let closed = false
-              const reader = wrapStreamWithKeepalive(originalStream, 15000).getReader()
+          // Create a new stream that wraps the original with keep-alive AND appends usage.
+          // IMPORTANT: Uses pull()-based streaming instead of consuming everything in start().
+          // The pull() pattern ensures demand-driven data flow — chunks are read from the
+          // underlying stream only when the consumer (HTTP response / proxy) requests them.
+          // This prevents buffering issues where start() would read the entire stream
+          // before the consumer sees any data, which caused follow-up AI messages to
+          // appear hung (no text streaming to frontend despite backend processing).
+          let keepAliveReader: ReadableStreamDefaultReader<Uint8Array> | null = null
+          let streamFinished = false
+          let usageAppended = false
+          
+          const wrappedStream = new ReadableStream<Uint8Array>({
+            start() {
+              // Initialize the keep-alive wrapped reader. We do this in start() so
+              // the keep-alive timer begins immediately (it runs on an interval).
+              keepAliveReader = wrapStreamWithKeepalive(originalStream, 15000).getReader()
+            },
+            
+            async pull(controller) {
+              if (!keepAliveReader) {
+                controller.close()
+                return
+              }
+              
               try {
-                while (true) {
-                  const { done, value } = await reader.read()
-                  if (done) break
-                  controller.enqueue(value)
+                const { done, value } = await keepAliveReader.read()
+                
+                if (done) {
+                  // Inner stream finished — append usage data before closing
+                  streamFinished = true
+                  keepAliveReader.releaseLock()
+                  keepAliveReader = null
+                  
+                  if (!usageAppended) {
+                    usageAppended = true
+                    try {
+                      const usage = await usagePromise
+                      console.log('[project-runtime] Usage from streamText:', JSON.stringify(usage))
+                      if (usage) {
+                        const usageEvent = `data: ${JSON.stringify({ type: 'data-usage', data: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } })}\n\n`
+                        controller.enqueue(new TextEncoder().encode(usageEvent))
+                      }
+                    } catch (err) {
+                      console.error('[project-runtime] Failed to get usage:', err)
+                    }
+                  }
+                  
+                  // Trigger S3 sync after agent chat completes.
+                  // The agent may have written/modified project files via tool calls.
+                  // The file watcher's debounce will also catch these, but this explicit
+                  // trigger ensures we don't miss anything if the watcher is delayed.
+                  if (s3Sync) {
+                    s3Sync.triggerSync()
+                  }
+                  
+                  controller.close()
+                  return
                 }
+                
+                controller.enqueue(value)
               } catch (err) {
                 console.error('[project-runtime] Stream read error:', err)
-              } finally {
-                reader.releaseLock()
+                keepAliveReader?.releaseLock()
+                keepAliveReader = null
+                controller.error(err)
               }
-              
-              // After the main stream finishes, append usage data as a custom SSE event
-              // Using "data-" prefix so @ai-sdk/react's stream validator accepts it
-              if (!closed) {
-                try {
-                  const usage = await usagePromise
-                  console.log('[project-runtime] Usage from streamText:', JSON.stringify(usage))
-                  if (usage) {
-                    const usageEvent = `data: ${JSON.stringify({ type: 'data-usage', data: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } })}\n\n`
-                    controller.enqueue(new TextEncoder().encode(usageEvent))
-                  }
-                } catch (err) {
-                  console.error('[project-runtime] Failed to get usage:', err)
-                }
+            },
+            
+            cancel() {
+              // Clean up when the consumer cancels (e.g., client disconnects)
+              streamFinished = true
+              if (keepAliveReader) {
+                keepAliveReader.cancel().catch(() => {})
+                keepAliveReader = null
               }
-              
-              // Trigger S3 sync after agent chat completes.
-              // The agent may have written/modified project files via tool calls.
-              // The file watcher's debounce will also catch these, but this explicit
-              // trigger ensures we don't miss anything if the watcher is delayed.
-              if (s3Sync) {
-                s3Sync.triggerSync()
-              }
-              
-              try {
-                controller.close()
-              } catch {
-                // Controller may already be closed if the client disconnected
-              }
-              closed = true
             },
           })
           
@@ -2177,6 +2206,29 @@ async function startViteBuildWatch(): Promise<void> {
             // Reset crash count on successful build
             watchCrashCount = 0
             notifyBuildStateChange()
+            
+            // Restart the backend API server after each successful rebuild.
+            // This ensures any changes to generated routes (from `shogo generate`)
+            // or server.tsx are picked up immediately. The overhead is minimal
+            // (~500ms to restart a Bun process) vs the UX cost of stale API routes.
+            if (serverProcess) {
+              const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+              const serverTsPath = join(PROJECT_DIR, 'server.ts')
+              const serverPath = existsSync(serverTsxPath) ? serverTsxPath : (existsSync(serverTsPath) ? serverTsPath : null)
+              if (serverPath) {
+                console.log('[project-runtime] 🔄 Restarting backend API server after rebuild...')
+                serverProcess.kill()
+                serverProcess = null
+                serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+                  cwd: PROJECT_DIR,
+                  env: { ...process.env, PORT: String(SERVER_PORT) },
+                  stdout: 'pipe',
+                  stderr: 'pipe',
+                })
+                streamProcessOutput(serverProcess, 'api-server')
+                appendToBuildLog('🔄 Backend API server restarted')
+              }
+            }
             
             // Return to idle after 1s
             setTimeout(() => {
