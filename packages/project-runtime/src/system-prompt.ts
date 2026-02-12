@@ -383,13 +383,13 @@ export const CODE_QUALITY = `## Automatic Rebuilds - NEVER Run Build Commands (C
 - Do NOT try to manually \`touch\` files, inspect processes with \`ps\`, or restart watchers via bash. The rebuild endpoint handles everything.
 - Do NOT tell the user to refresh — it happens automatically.
 
-## NEVER Use Raw fetch() — Use the Generated API Client (CRITICAL)
+## Prefer the Generated API Client Over Raw fetch()
 
-**Every project has a generated API client at \`src/generated/api-client.tsx\`** that provides typed, centralized HTTP methods for all data models. You MUST use this client for ALL API calls in route files, components, and client-side code.
+**Every project has a generated API client at \`src/generated/api-client.tsx\`** that provides typed, centralized HTTP methods for all data models. You should strongly prefer this client for API calls in route files, components, and client-side code.
 
-**NEVER do this:**
+**Avoid this pattern for standard CRUD:**
 \`\`\`tsx
-// ❌ BAD - Raw fetch() calls are FORBIDDEN in application code
+// ❌ Avoid — raw fetch() for standard CRUD operations
 const res = await fetch('/api/todos?userId=' + userId)
 const data = await res.json()
 
@@ -402,9 +402,9 @@ await fetch('/api/todos', {
 await fetch(\`/api/todos/\${id}\`, { method: 'DELETE' })
 \`\`\`
 
-**ALWAYS do this instead:**
+**Prefer this instead:**
 \`\`\`tsx
-// ✅ GOOD - Use the generated API client
+// ✅ Better — Use the generated API client
 import { api, configureApiClient } from './generated/api-client'
 
 // Configure once with user context (e.g., after auth)
@@ -431,13 +431,17 @@ const filtered = await api.todo.list({ where: { completed: false } })
 const withRelations = await api.contact.list({ params: { include: 'company' } })
 \`\`\`
 
-**Why this matters:**
-- The API client handles auth tokens, userId, error formatting, and base URL automatically
-- Type safety: the client uses typed inputs/outputs generated from your Prisma schema
+**Why the API client is preferred:**
+- Handles auth tokens, userId, error formatting, and base URL automatically
+- Type safety: uses typed inputs/outputs generated from your Prisma schema
 - Consistency: all API calls go through one place, making debugging and changes easier
 - If the API shape changes, only the generated client needs to update
 
-**The ONLY exception** where raw \`fetch()\` is acceptable is for custom endpoints not covered by the generated CRUD client (e.g., \`/api/contacts/stats\`, \`/api/deals/pipeline\`). Even then, prefer adding a helper function in a \`lib/\` file rather than scattering raw fetch calls in components.
+**When raw \`fetch()\` is acceptable:**
+- Custom endpoints not covered by the generated CRUD client (e.g., \`/api/contacts/stats\`, \`/api/deals/pipeline\`, \`/api/stock/add\`)
+- Public-facing pages that run without auth context (e.g., public form submissions)
+- Third-party API calls or non-standard request patterns
+- Even in these cases, prefer extracting fetch calls into a helper function in \`lib/\` rather than scattering them in components.
 
 ## Code Quality Verification
 
@@ -504,8 +508,8 @@ export const ENVIRONMENT_AWARENESS = `## Runtime Environment
 ### Important: Server/Client Code Separation
 - Route files (\`src/routes/*.tsx\`) and component files (\`src/components/*.tsx\`) run in the BROWSER.
 - NEVER import from \`src/lib/db.ts\`, \`src/lib/shogo.ts\`, or \`@prisma/client\` in browser code.
-- Use the generated API client (\`src/generated/api-client.tsx\`) for ALL data access — import \`{ api, configureApiClient }\` and use \`api.modelName.list()\`, \`api.modelName.create()\`, etc.
-- NEVER use raw \`fetch()\` for API calls in components or route files — always use the generated API client.
+- Prefer the generated API client (\`src/generated/api-client.tsx\`) for data access — import \`{ api, configureApiClient }\` and use \`api.modelName.list()\`, \`api.modelName.create()\`, etc.
+- For standard CRUD operations, use the API client instead of raw \`fetch()\`. Raw \`fetch()\` is fine for custom endpoints, public pages, or third-party calls.
 
 ## Build Verification (CRITICAL)
 
