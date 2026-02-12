@@ -515,6 +515,66 @@ export const CODE_QUALITY = `## Automatic Rebuilds - NEVER Run Build Commands (C
 - Do NOT try to manually \`touch\` files, inspect processes with \`ps\`, or restart watchers via bash. The rebuild endpoint handles everything.
 - Do NOT tell the user to refresh — it happens automatically.
 
+## Prefer the Generated API Client Over Raw fetch()
+
+**Every project has a generated API client at \`src/generated/api-client.tsx\`** that provides typed, centralized HTTP methods for all data models. You should strongly prefer this client for API calls in route files, components, and client-side code.
+
+**Avoid this pattern for standard CRUD:**
+\`\`\`tsx
+// ❌ Avoid — raw fetch() for standard CRUD operations
+const res = await fetch('/api/todos?userId=' + userId)
+const data = await res.json()
+
+await fetch('/api/todos', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ title, userId }),
+})
+
+await fetch(\`/api/todos/\${id}\`, { method: 'DELETE' })
+\`\`\`
+
+**Prefer this instead:**
+\`\`\`tsx
+// ✅ Better — Use the generated API client
+import { api, configureApiClient } from './generated/api-client'
+
+// Configure once with user context (e.g., after auth)
+configureApiClient({ userId: user.id })
+
+// List records (userId is auto-appended from config)
+const result = await api.todo.list()
+if (result.ok) setTodos(result.items || [])
+
+// Create a record
+const created = await api.todo.create({ title })
+if (created.ok) setTodos(prev => [created.data!, ...prev])
+
+// Update a record
+await api.todo.update(id, { completed: true })
+
+// Delete a record
+await api.todo.delete(id)
+
+// Filter with where clause
+const filtered = await api.todo.list({ where: { completed: false } })
+
+// Pass extra query params (e.g., include relations)
+const withRelations = await api.contact.list({ params: { include: 'company' } })
+\`\`\`
+
+**Why the API client is preferred:**
+- Handles auth tokens, userId, error formatting, and base URL automatically
+- Type safety: uses typed inputs/outputs generated from your Prisma schema
+- Consistency: all API calls go through one place, making debugging and changes easier
+- If the API shape changes, only the generated client needs to update
+
+**When raw \`fetch()\` is acceptable:**
+- Custom endpoints not covered by the generated CRUD client (e.g., \`/api/contacts/stats\`, \`/api/deals/pipeline\`, \`/api/stock/add\`)
+- Public-facing pages that run without auth context (e.g., public form submissions)
+- Third-party API calls or non-standard request patterns
+- Even in these cases, prefer extracting fetch calls into a helper function in \`lib/\` rather than scattering them in components.
+
 ## Code Quality Verification
 
 After making code changes, verify there are no TypeScript errors:
@@ -572,14 +632,16 @@ export const ENVIRONMENT_AWARENESS = `## Runtime Environment
 
 ### Architecture
 - **Server**: Hono server (\`server.tsx\`) serves REST API routes at \`/api/*\` and static files from \`dist/\`.
-- **Client**: Vite SPA built to \`dist/\`. Route files import fetch-based client functions (NOT Prisma directly).
-- **Generated code**: \`src/generated/server-functions.ts\` contains fetch-based functions that call the REST API. These are safe for browser bundles — they do NOT import Prisma or Node.js modules.
+- **Client**: Vite SPA built to \`dist/\`. Route files import the generated API client (NOT Prisma directly).
+- **Generated API client**: \`src/generated/api-client.tsx\` provides typed CRUD methods (\`api.todo.list()\`, \`api.todo.create()\`, etc.) that call the REST API internally. These are safe for browser bundles — they do NOT import Prisma or Node.js modules.
+- **Generated server-functions**: \`src/generated/server-functions.ts\` contains lower-level fetch functions. Prefer using the API client (\`api-client.tsx\`) instead.
 - **Prisma** is only used on the server side (\`server.tsx\`, \`src/lib/db.ts\`). NEVER import Prisma in route files, components, or client-side code.
 
 ### Important: Server/Client Code Separation
 - Route files (\`src/routes/*.tsx\`) and component files (\`src/components/*.tsx\`) run in the BROWSER.
 - NEVER import from \`src/lib/db.ts\`, \`src/lib/shogo.ts\`, or \`@prisma/client\` in browser code.
-- Use the generated functions in \`src/generated/server-functions.ts\` for data access — they use \`fetch()\` to call the server API.
+- Prefer the generated API client (\`src/generated/api-client.tsx\`) for data access — import \`{ api, configureApiClient }\` and use \`api.modelName.list()\`, \`api.modelName.create()\`, etc.
+- For standard CRUD operations, use the API client instead of raw \`fetch()\`. Raw \`fetch()\` is fine for custom endpoints, public pages, or third-party calls.
 
 ## Build Verification (CRITICAL)
 

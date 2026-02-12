@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
 import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
+import { api, configureApiClient } from './generated/api-client'
 import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
@@ -69,16 +70,24 @@ const Dashboard = observer(function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [showAddForm, setShowAddForm] = useState(false)
 
+  // Configure API client with user context
+  useEffect(() => {
+    if (auth.user) {
+      configureApiClient({ userId: auth.user.id })
+    }
+  }, [auth.user?.id])
+
   const fetchData = useCallback(async () => {
     if (!auth.user) return
     try {
+      // Use API client for standard CRUD, raw fetch only for custom endpoints
       const [txRes, catRes, sumRes] = await Promise.all([
-        fetch(`/api/transactions?userId=${auth.user.id}&include=category`),
-        fetch(`/api/categories?userId=${auth.user.id}`),
+        api.transaction.list({ params: { include: 'category' } }),
+        api.category.list(),
         fetch(`/api/summary?userId=${auth.user.id}`),
       ])
-      if (txRes.ok) { const d = await txRes.json(); setTransactions(d.items || []) }
-      if (catRes.ok) { const d = await catRes.json(); setCategories(d.items || []) }
+      if (txRes.ok) { setTransactions((txRes.items || []) as any) }
+      if (catRes.ok) { setCategories((catRes.items || []) as any) }
       if (sumRes.ok) setSummary(await sumRes.json())
     } catch (err) { console.error('Failed to fetch:', err) }
     finally { setLoading(false) }
@@ -88,7 +97,7 @@ const Dashboard = observer(function Dashboard() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this transaction?')) return
-    await fetch(`/api/transactions/${id}`, { method: 'DELETE' })
+    await api.transaction.delete(id)
     fetchData()
   }
 
@@ -245,12 +254,8 @@ function AddTransactionForm({ userId, categories, onAdd }: { userId: string; cat
     if (!amount || !categoryId) return
     setLoading(true); setError('')
     try {
-      const res = await fetch('/api/transactions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: parseFloat(amount), description: description || null, type, categoryId, userId, date: new Date().toISOString() }),
-      })
-      if (!res.ok) { const d = await res.json(); throw new Error(d.error?.message || 'Failed') }
+      const result = await api.transaction.create({ amount: parseFloat(amount), description: description || null, type, categoryId, userId, date: new Date().toISOString() } as any)
+      if (!result.ok) { throw new Error(result.error?.message || 'Failed') }
       onAdd()
     } catch (err) { setError(err instanceof Error ? err.message : 'Failed') }
     finally { setLoading(false) }

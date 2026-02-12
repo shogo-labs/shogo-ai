@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
 import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
+import { api, configureApiClient } from './generated/api-client'
 
 interface LabelType {
   id: string
@@ -55,13 +56,19 @@ const Dashboard = observer(function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [showAddBoard, setShowAddBoard] = useState(false)
 
+  // Configure API client with user context
+  useEffect(() => {
+    if (auth.user) {
+      configureApiClient({ userId: auth.user.id })
+    }
+  }, [auth.user?.id])
+
   const fetchBoards = useCallback(async () => {
     if (!auth.user) return
     try {
-      const res = await fetch(`/api/boards?userId=${auth.user.id}`)
-      if (res.ok) {
-        const data = await res.json()
-        setBoards(data.items || [])
+      const result = await api.board.list()
+      if (result.ok) {
+        setBoards((result.items || []) as any)
       }
     } catch (err) {
       console.error('Failed to fetch boards:', err)
@@ -72,6 +79,7 @@ const Dashboard = observer(function Dashboard() {
 
   const fetchBoardDetails = useCallback(async (boardId: string) => {
     try {
+      // Custom endpoint - not covered by generated API client
       const res = await fetch(`/api/boards/${boardId}/full`)
       if (res.ok) {
         const board = await res.json()
@@ -87,12 +95,8 @@ const Dashboard = observer(function Dashboard() {
   const handleCreateBoard = async (name: string, color: string) => {
     if (!auth.user) return
     try {
-      const res = await fetch('/api/boards', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, color, userId: auth.user.id }),
-      })
-      if (res.ok) {
+      const result = await api.board.create({ name, color, userId: auth.user.id } as any)
+      if (result.ok) {
         setShowAddBoard(false)
         fetchBoards()
       }
@@ -103,7 +107,7 @@ const Dashboard = observer(function Dashboard() {
 
   const handleDeleteBoard = async (id: string) => {
     if (!confirm('Delete this board and all its cards?')) return
-    await fetch(`/api/boards/${id}`, { method: 'DELETE' })
+    await api.board.delete(id)
     if (selectedBoard?.id === id) setSelectedBoard(null)
     fetchBoards()
   }
@@ -227,11 +231,7 @@ function BoardView({ board, userId, onBack, onUpdate }: { board: BoardType; user
   const handleAddColumn = async (name: string) => {
     try {
       const maxPos = Math.max(0, ...columns.map(c => c.position))
-      await fetch('/api/columns', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, boardId: board.id, position: maxPos + 1 }),
-      })
+      await api.column.create({ name, boardId: board.id, position: maxPos + 1 } as any)
       setShowAddColumn(false)
       onUpdate()
     } catch (err) {
@@ -241,7 +241,7 @@ function BoardView({ board, userId, onBack, onUpdate }: { board: BoardType; user
 
   const handleDeleteColumn = async (columnId: string) => {
     if (!confirm('Delete this column and all its cards?')) return
-    await fetch(`/api/columns/${columnId}`, { method: 'DELETE' })
+    await api.column.delete(columnId)
     onUpdate()
   }
 
@@ -250,11 +250,7 @@ function BoardView({ board, userId, onBack, onUpdate }: { board: BoardType; user
     const cards = column?.cards || []
     const maxPos = Math.max(0, ...cards.map(c => c.position))
     try {
-      await fetch('/api/cards', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, columnId, userId, position: maxPos + 1 }),
-      })
+      await api.card.create({ title, columnId, userId, position: maxPos + 1 } as any)
       setAddingCardToColumn(null)
       onUpdate()
     } catch (err) {
@@ -263,7 +259,7 @@ function BoardView({ board, userId, onBack, onUpdate }: { board: BoardType; user
   }
 
   const handleDeleteCard = async (cardId: string) => {
-    await fetch(`/api/cards/${cardId}`, { method: 'DELETE' })
+    await api.card.delete(cardId)
     onUpdate()
   }
 
@@ -272,11 +268,7 @@ function BoardView({ board, userId, onBack, onUpdate }: { board: BoardType; user
     const cards = targetColumn?.cards || []
     const maxPos = Math.max(0, ...cards.map(c => c.position))
     try {
-      await fetch(`/api/cards/${cardId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ columnId: newColumnId, position: maxPos + 1 }),
-      })
+      await api.card.update(cardId, { columnId: newColumnId, position: maxPos + 1 } as any)
       onUpdate()
     } catch (err) {
       console.error('Failed to move card:', err)

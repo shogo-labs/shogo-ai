@@ -8,6 +8,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
 import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
+import { api, configureApiClient } from './generated/api-client'
 
 // Types
 interface ContactType {
@@ -72,24 +73,30 @@ const Dashboard = observer(function Dashboard() {
   const [statusFilter, setStatusFilter] = useState('')
   const [search, setSearch] = useState('')
 
+  // Configure API client with user context
+  useEffect(() => {
+    if (auth.user) {
+      configureApiClient({ userId: auth.user.id })
+    }
+  }, [auth.user?.id])
+
   const fetchData = useCallback(async () => {
     if (!auth.user) return
 
     try {
+      // Use API client for standard CRUD, raw fetch only for custom endpoints
       const [contactsRes, companiesRes, statsRes, pipelineRes] = await Promise.all([
-        fetch(`/api/contacts?userId=${auth.user.id}&include=company`),
-        fetch(`/api/companies?userId=${auth.user.id}`),
+        api.contact.list({ params: { include: 'company' } }),
+        api.company.list(),
         fetch(`/api/contacts/stats?userId=${auth.user.id}`),
         fetch(`/api/deals/pipeline?userId=${auth.user.id}`),
       ])
 
       if (contactsRes.ok) {
-        const data = await contactsRes.json()
-        setContacts(data.items || [])
+        setContacts((contactsRes.items || []) as any)
       }
       if (companiesRes.ok) {
-        const data = await companiesRes.json()
-        setCompanies(data.items || [])
+        setCompanies((companiesRes.items || []) as any)
       }
       if (statsRes.ok) {
         setStats(await statsRes.json())
@@ -110,16 +117,12 @@ const Dashboard = observer(function Dashboard() {
 
   const handleDeleteContact = async (id: string) => {
     if (!confirm('Delete this contact?')) return
-    await fetch(`/api/contacts/${id}`, { method: 'DELETE' })
+    await api.contact.delete(id)
     fetchData()
   }
 
   const handleUpdateStatus = async (id: string, status: string) => {
-    await fetch(`/api/contacts/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    })
+    await api.contact.update(id, { status } as any)
     fetchData()
   }
 
@@ -336,24 +339,19 @@ function AddContactForm({
     setError('')
 
     try {
-      const res = await fetch('/api/contacts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          firstName,
-          lastName,
-          email: email || null,
-          phone: phone || null,
-          title: title || null,
-          status,
-          companyId: companyId || null,
-          userId,
-        }),
-      })
+      const result = await api.contact.create({
+        firstName,
+        lastName,
+        email: email || null,
+        phone: phone || null,
+        title: title || null,
+        status,
+        companyId: companyId || null,
+        userId,
+      } as any)
 
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error?.message || 'Failed to create contact')
+      if (!result.ok) {
+        throw new Error(result.error?.message || 'Failed to create contact')
       }
 
       onAdd()
