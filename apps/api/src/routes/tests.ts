@@ -52,6 +52,41 @@ export interface TestResult {
 }
 
 /**
+ * Recursively find test-result attachment files (screenshots, videos, traces)
+ * Returns paths relative to the project directory.
+ */
+function findTestResultAttachments(projectDir: string): { screenshots: string[]; traces: string[]; videos: string[] } {
+  const resultsDir = join(projectDir, 'test-results')
+  const screenshots: string[] = []
+  const traces: string[] = []
+  const videos: string[] = []
+
+  if (!existsSync(resultsDir)) return { screenshots, traces, videos }
+
+  function walk(dir: string) {
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          walk(full)
+        } else if (entry.isFile()) {
+          const rel = relative(projectDir, full)
+          if (entry.name.endsWith('.png')) screenshots.push(rel)
+          else if (entry.name === 'trace.zip') traces.push(rel)
+          else if (entry.name.endsWith('.webm')) videos.push(rel)
+        }
+      }
+    } catch {
+      // Ignore read errors
+    }
+  }
+
+  walk(resultsDir)
+  return { screenshots, traces, videos }
+}
+
+/**
  * Configuration for tests routes
  */
 export interface TestsRoutesConfig {
@@ -223,7 +258,8 @@ export function testsRoutes(config: TestsRoutesConfig) {
    *
    * Request body:
    * - file?: string - Specific test file to run (relative path)
-   * - testName?: string - Specific test name pattern (grep)
+   * - testName?: string - Test name pattern (grep), ignored when line is set
+   * - line?: number - Run only the test at this line (file:line); takes precedence over testName
    * - headed?: boolean - Run in headed mode
    * - reporter?: 'list' | 'json' | 'line' - Reporter to use
    *
@@ -245,6 +281,7 @@ export function testsRoutes(config: TestsRoutesConfig) {
     let body: { 
       file?: string
       testName?: string
+      line?: number
       headed?: boolean
       reporter?: 'list' | 'json' | 'line'
     } = {}
@@ -255,19 +292,37 @@ export function testsRoutes(config: TestsRoutesConfig) {
       // Empty body is fine, use defaults
     }
 
-    const { file, testName, headed, reporter = 'list' } = body
+    const { file, testName, line, headed, reporter = 'list' } = body
+
+    // Ensure dependencies are installed (workspaces created from template may have no node_modules)
+    const nodeModulesDir = join(projectDir, 'node_modules')
+    if (!existsSync(nodeModulesDir)) {
+      console.log(`[Tests] Running bun install in ${projectDir} before tests`)
+      try {
+        execSync('bun install', { cwd: projectDir, stdio: 'pipe', timeout: 120000 })
+      } catch (err: any) {
+        return c.json(
+          { error: { code: 'install_failed', message: err.message || 'bun install failed. Run "bun install" in the project and try again.' } },
+          500
+        )
+      }
+    }
 
     // Build command
     let command = 'bunx playwright test'
     
-    // Add specific file
+    // Add specific file (or file:line to run a single test)
     if (file) {
-      command += ` "${file}"`
+      if (line != null && line > 0) {
+        command += ` "${file}:${line}"`
+      } else {
+        command += ` "${file}"`
+      }
     }
     
-    // Add test name filter (grep)
-    if (testName) {
-      command += ` --grep "${testName}"`
+    // Add test name filter (grep) only when not targeting by line
+    if (testName && (line == null || line <= 0)) {
+      command += ` --grep "${testName.replace(/"/g, '\\"')}"`
     }
     
     // Add headed mode
@@ -332,6 +387,22 @@ export function testsRoutes(config: TestsRoutesConfig) {
         child.on('close', async (code) => {
           clearTimeout(timeoutId)
           try {
+            // Append any test-result attachments (screenshots, traces, videos)
+            // Playwright only prints these for failures; we surface them for all runs
+            const { screenshots, traces: traceFiles, videos } = findTestResultAttachments(projectDir)
+            if (screenshots.length > 0 || traceFiles.length > 0 || videos.length > 0) {
+              await writer.write(encoder.encode('\n--- Test Artifacts ---\n'))
+              for (const s of screenshots) {
+                await writer.write(encoder.encode(`${s}\n`))
+              }
+              for (const t of traceFiles) {
+                await writer.write(encoder.encode(`${t}\n`))
+              }
+              for (const v of videos) {
+                await writer.write(encoder.encode(`${v}\n`))
+              }
+            }
+
             await writer.write(encoder.encode(`\n\n[Process exited with code ${code}]\n`))
             await writer.close()
           } catch {

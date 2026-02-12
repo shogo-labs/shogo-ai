@@ -119,8 +119,9 @@ export function WorkspaceLayout() {
   /**
    * Handle prompt submission from home page.
    * Creates a project + chat session via API, then navigates with the initial prompt.
+   * If a theme is selected (non-default), it's appended to the prompt so the AI applies it.
    */
-  const handlePromptSubmit = useCallback(async (prompt: string, imageData?: string[]) => {
+  const handlePromptSubmit = useCallback(async (prompt: string, imageData?: string[], themeId?: string) => {
     const userId = session?.user?.id
     const workspaceId = currentWorkspace?.id
     if (!userId || !workspaceId) return
@@ -141,11 +142,16 @@ export function WorkspaceLayout() {
         contextId: newProject.id,
       })
 
+      // If a theme is selected, append it to the initial message so the AI applies it
+      const initialMessage = themeId
+        ? `${prompt}\n\nPlease use the "${themeId}" theme for this project. Apply the theme CSS variables to src/index.css.`
+        : prompt
+
       navigate(`/projects/${newProject.id}?chatSessionId=${chatSession.id}`, {
         state: {
           project: { id: newProject.id, name: newProject.name },
           chatSessionId: chatSession.id,
-          initialMessage: prompt,
+          initialMessage,
           initialImageData: imageData,
         },
       })
@@ -160,8 +166,9 @@ export function WorkspaceLayout() {
    * Handle template selection from home page.
    * Creates project + chat session via API, then navigates with an initial
    * message that tells the AI to copy the template files.
+   * If a theme is selected, the AI is instructed to pass it to template_copy.
    */
-  const handleTemplateSelect = useCallback(async (templateName: string, displayName: string) => {
+  const handleTemplateSelect = useCallback(async (templateName: string, displayName: string, themeId?: string) => {
     const userId = session?.user?.id
     const workspaceId = currentWorkspace?.id
     if (!userId || !workspaceId) return
@@ -183,7 +190,11 @@ export function WorkspaceLayout() {
         contextId: newProject.id,
       })
 
-      const initialMessage = `I want to use the ${templateName} template. Please set up this project by copying the template files, then tell me what I can do next with this ${displayName} app.`
+      // Build initial message with optional theme instruction
+      const themeInstruction = themeId
+        ? ` Use the "${themeId}" theme by passing theme: "${themeId}" to the template_copy tool.`
+        : ''
+      const initialMessage = `I want to use the ${templateName} template. Please set up this project by copying the template files${themeInstruction}, then tell me what I can do next with this ${displayName} app.`
 
       navigate(`/projects/${newProject.id}?chatSessionId=${chatSession.id}`, {
         state: {

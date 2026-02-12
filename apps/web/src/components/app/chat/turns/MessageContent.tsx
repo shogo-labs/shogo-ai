@@ -33,7 +33,7 @@ interface ImagePart {
  * Extract text content from a message.
  * Handles AI SDK v3 parts array format.
  */
-function extractTextContent(message: Message): string {
+export function extractTextContent(message: Message): string {
   // If message has content string, use it
   if (typeof message.content === "string" && message.content) {
     return message.content

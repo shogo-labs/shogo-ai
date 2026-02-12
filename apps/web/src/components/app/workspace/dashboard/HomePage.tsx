@@ -33,10 +33,10 @@ export type TransitionPhase = 'idle' | 'commit' | 'dissolve' | 'transform' | 'em
 interface HomePageProps {
   /** User's display name for personalized greeting */
   userName?: string
-  /** Callback when a new prompt is submitted */
-  onPromptSubmit?: (prompt: string, imageData?: string[]) => void
-  /** Callback when a template is selected - receives template name and display name */
-  onTemplateSelect?: (templateName: string, displayName: string) => void
+  /** Callback when a new prompt is submitted (includes selected themeId) */
+  onPromptSubmit?: (prompt: string, imageData?: string[], themeId?: string) => void
+  /** Callback when a template is selected - receives template name, display name, and themeId */
+  onTemplateSelect?: (templateName: string, displayName: string, themeId?: string) => void
   /** Loading state - true when creating project/feature from prompt */
   isLoading?: boolean
   /** Template currently being loaded (template name) */
@@ -100,7 +100,7 @@ export const HomePage = observer(function HomePage({
   // Handle "Use template" from modal
   const handleUseTemplate = (template: TemplateMetadata) => {
     if (onTemplateSelect && !loadingTemplate) {
-      onTemplateSelect(template.name, formatTemplateName(template.name))
+      onTemplateSelect(template.name, formatTemplateName(template.name), currentThemeId !== 'default' ? currentThemeId : undefined)
       setIsModalOpen(false)
     }
   }
@@ -223,7 +223,7 @@ export const HomePage = observer(function HomePage({
             mode="compact"
             featureId={null}
             phase={null}
-            onCompactSubmit={onPromptSubmit}
+            onCompactSubmit={(p) => onPromptSubmit?.(p, currentThemeId !== 'default' ? currentThemeId : undefined)}
             compactValue={prompt}
             onCompactValueChange={setPrompt}
             selectedThemeId={currentThemeId}
