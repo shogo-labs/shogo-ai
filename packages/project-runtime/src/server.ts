@@ -2390,14 +2390,18 @@ app.post('/preview/watch/resume', async (c) => {
     notifyBuildStateChange()
     
     // Restart the backend server to pick up new generated routes
+    // This must always restart (not just when serverProcess exists) because
+    // generation may have changed models/routes, and the server needs fresh imports.
     const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
     const serverTsPath = join(PROJECT_DIR, 'server.ts')
     const serverPath = existsSync(serverTsxPath) ? serverTsxPath : (existsSync(serverTsPath) ? serverTsPath : null)
     
-    if (serverPath && serverProcess) {
+    if (serverPath && !isExpo) {
       console.log('[project-runtime] 🔄 Restarting backend API server...')
-      serverProcess.kill()
-      serverProcess = null
+      if (serverProcess) {
+        serverProcess.kill()
+        serverProcess = null
+      }
       serverProcess = Bun.spawn(['bun', 'run', serverPath], {
         cwd: PROJECT_DIR,
         env: { ...process.env, PORT: String(SERVER_PORT) },
@@ -2405,6 +2409,28 @@ app.post('/preview/watch/resume', async (c) => {
         stderr: 'pipe',
       })
       streamProcessOutput(serverProcess, 'api-server')
+      
+      // Wait for server to be ready (critical: detect startup crashes early)
+      let serverReady = false
+      for (let attempt = 1; attempt <= 10 && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${SERVER_PORT}/health`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ✅ Backend API server ready after ${attempt} attempt(s)`)
+            appendToBuildLog(`✅ Backend API server ready`)
+          }
+        } catch (e) {
+          await new Promise(resolve => setTimeout(resolve, Math.min(100 * attempt, 500)))
+        }
+      }
+      
+      if (!serverReady) {
+        console.warn('[project-runtime] ⚠️ Backend API server may still be starting...')
+        appendToBuildLog('⚠️ Backend API server may still be starting after generation')
+      }
     }
     
     // Restart watch mode

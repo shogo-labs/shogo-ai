@@ -15,8 +15,8 @@
  */
 
 import { parseArgs } from 'util'
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
-import { resolve, dirname } from 'path'
+import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs'
+import { resolve, dirname, basename } from 'path'
 import { execSync } from 'child_process'
 import { generateFromPrisma, type GenerateOptions, type OutputConfig } from '../src/generators/prisma-generator'
 import { 
@@ -92,6 +92,76 @@ const { values, positionals } = parseArgs({
   },
   allowPositionals: true,
 })
+
+// ============================================================================
+// Cleanup stale generated files
+// ============================================================================
+
+/**
+ * Clean up stale per-model generated files from previous schemas.
+ *
+ * When models change (e.g., template had Category/Transaction/Budget,
+ * user's schema has MenuItem/FixedCost/BusinessPlan), old per-model files
+ * remain on disk and cause import errors. This removes them.
+ */
+function cleanupStaleGeneratedFiles(outputDir: string, newFiles: { path: string }[]): void {
+  const absOutputDir = resolve(outputDir)
+  if (!existsSync(absOutputDir)) return
+
+  // Build set of filenames we're about to write
+  const expectedFiles = new Set<string>()
+  for (const file of newFiles) {
+    const absPath = file.path.startsWith('/') ? file.path : resolve(file.path)
+    // Only track files in this output directory
+    if (absPath.startsWith(absOutputDir)) {
+      expectedFiles.add(basename(absPath))
+    }
+  }
+
+  const existingFiles = readdirSync(absOutputDir)
+  const staleFiles: string[] = []
+
+  // Per-model generated file patterns that should be cleaned up
+  const generatedPatterns = [
+    /^.+\.routes\.(ts|tsx)$/,
+    /^.+\.hooks\.(ts|tsx)$/,
+    /^.+\.types\.(ts|tsx)$/,
+    /^.+\.store\.(ts|tsx)$/,
+    /^.+\.model\.(ts|tsx)$/,
+    /^.+\.collection\.(ts|tsx)$/,
+  ]
+
+  for (const file of existingFiles) {
+    // Skip if it's a file we're about to write
+    if (expectedFiles.has(file)) continue
+
+    // Check if it matches a generated per-model file pattern
+    const isGenerated = generatedPatterns.some(p => p.test(file))
+    if (isGenerated) {
+      staleFiles.push(file)
+      continue
+    }
+
+    // Clean up index.tsx if we're about to write index.ts
+    // Bun's module resolution prefers .tsx over .ts, causing conflicts
+    if (file === 'index.tsx' && expectedFiles.has('index.ts')) {
+      staleFiles.push(file)
+      continue
+    }
+  }
+
+  if (staleFiles.length > 0) {
+    console.log(`   🧹 Cleaning up ${staleFiles.length} stale generated file(s):`)
+    for (const file of staleFiles) {
+      try {
+        unlinkSync(resolve(absOutputDir, file))
+        console.log(`      ✗ ${file} (deleted)`)
+      } catch (err: any) {
+        console.warn(`      ⚠️ Failed to delete ${file}: ${err.message}`)
+      }
+    }
+  }
+}
 
 // ============================================================================
 // Help
@@ -499,6 +569,17 @@ async function main() {
     }
 
     const result = await generateFromPrisma(options)
+
+    // Clean up stale generated files from previous models
+    if (outputs) {
+      for (const output of outputs) {
+        const absDir = output.dir.startsWith('/') ? output.dir : resolve(cwd, output.dir)
+        cleanupStaleGeneratedFiles(absDir, result.files)
+      }
+    } else if (outputDir) {
+      const absDir = outputDir.startsWith('/') ? outputDir : resolve(cwd, outputDir)
+      cleanupStaleGeneratedFiles(absDir, result.files)
+    }
 
     // Write files
     for (const file of result.files) {

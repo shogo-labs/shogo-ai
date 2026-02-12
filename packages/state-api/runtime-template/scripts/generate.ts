@@ -9,7 +9,7 @@
  * You can also run it manually if needed.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
 // Try to import from the monorepo first (for local development), then from npm package
@@ -68,6 +68,76 @@ function generateHooksTemplate(models: PrismaModel[]): string {
   lines.push('')
 
   return lines.join('\n')
+}
+
+/**
+ * Convert a PascalCase model name to kebab-case filename prefix.
+ * e.g., "MenuItem" → "menu-item", "BusinessPlan" → "business-plan"
+ */
+function toFileName(name: string): string {
+  return name.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()
+}
+
+/**
+ * Clean up stale generated files from previous models.
+ *
+ * When a user changes their Prisma schema (e.g., from Category/Transaction/Budget
+ * to MenuItem/FixedCost/BusinessPlan), the old per-model files remain on disk.
+ * This causes import errors in the generated index/routes files.
+ *
+ * We clean up:
+ * - *.routes.{ts,tsx} files that don't match current models
+ * - *.hooks.{ts,tsx} files that don't match current models (with warning)
+ * - index.tsx if we're generating index.ts (Bun resolves .tsx over .ts)
+ */
+function cleanupStaleGeneratedFiles(outputDir: string, models: PrismaModel[]): void {
+  if (!existsSync(outputDir)) return
+
+  const expectedFileNames = new Set(models.map(m => toFileName(m.name)))
+  const files = readdirSync(outputDir)
+  const staleFiles: string[] = []
+
+  for (const file of files) {
+    // Check per-model route files: {model-name}.routes.{ts,tsx}
+    const routeMatch = file.match(/^(.+)\.routes\.(ts|tsx)$/)
+    if (routeMatch) {
+      const modelFileName = routeMatch[1]
+      if (!expectedFileNames.has(modelFileName)) {
+        staleFiles.push(file)
+      }
+      continue
+    }
+
+    // Check per-model hook files: {model-name}.hooks.{ts,tsx}
+    const hookMatch = file.match(/^(.+)\.hooks\.(ts|tsx)$/)
+    if (hookMatch) {
+      const modelFileName = hookMatch[1]
+      if (!expectedFileNames.has(modelFileName)) {
+        staleFiles.push(file)
+      }
+      continue
+    }
+
+    // Clean up index.tsx if we're about to write index.ts
+    // Bun's module resolution prefers .tsx over .ts, causing conflicts
+    if (file === 'index.tsx') {
+      staleFiles.push(file)
+      continue
+    }
+  }
+
+  if (staleFiles.length > 0) {
+    console.log(`   🧹 Cleaning up ${staleFiles.length} stale generated file(s):`)
+    for (const file of staleFiles) {
+      const filePath = join(outputDir, file)
+      try {
+        unlinkSync(filePath)
+        console.log(`      ✗ ${file} (deleted)`)
+      } catch (err: any) {
+        console.warn(`      ⚠️ Failed to delete ${file}: ${err.message}`)
+      }
+    }
+  }
 }
 
 /**
@@ -174,6 +244,9 @@ async function main() {
     // Generate domain.ts
     writeFileSync(join(OUTPUT_DIR, 'domain.ts'), generateDomainStore(models))
     console.log('   domain.ts')
+
+    // Clean up stale generated files from previous models
+    cleanupStaleGeneratedFiles(OUTPUT_DIR, models)
 
     // Generate server-side Hono route files (per-model CRUD)
     const { routes, hooks: routeHooks } = generateRoutes(models, { fileExtension: 'ts' })
