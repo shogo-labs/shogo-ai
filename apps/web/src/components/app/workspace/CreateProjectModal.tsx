@@ -118,7 +118,7 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
 
       // Close modal and notify parent with the new project ID
       onOpenChange(false)
-      onSuccess?.(newProject.id)
+      if (newProject) onSuccess?.(newProject.id)
     } catch (err) {
       console.error("[CreateProjectModal] Failed to create project:", err)
       setError(err instanceof Error ? err.message : "Failed to create project")

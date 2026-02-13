@@ -213,8 +213,8 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
   }, [workspaceId, store, isLoadingUsageEvents])
 
   // Computed helpers
-  const hasActiveSubscription = subscription?.isActive ?? false
-  const daysRemaining = subscription?.daysRemaining
+  const hasActiveSubscription = (subscription as any)?.isActive ?? false
+  const daysRemaining = (subscription as any)?.daysRemaining
 
   const isLoading = isLoadingSubscription || isLoadingCreditLedger || isLoadingUsageEvents
 

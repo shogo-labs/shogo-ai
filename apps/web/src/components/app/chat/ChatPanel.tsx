@@ -754,8 +754,10 @@ export const ChatPanel = observer(function ChatPanel({
             contextId: featureId,
             phase: phase,
           })
-          setCurrentSessionId(newSession.id)
-          onChatSessionChange?.(newSession.id)
+          if (newSession) {
+            setCurrentSessionId(newSession.id)
+            onChatSessionChange?.(newSession.id)
+          }
         } else {
           // No phase provided, create session without phase
           const newSession = await actions.createChatSession({
@@ -763,8 +765,10 @@ export const ChatPanel = observer(function ChatPanel({
             contextType: "feature",
             contextId: featureId,
           })
-          setCurrentSessionId(newSession.id)
-          onChatSessionChange?.(newSession.id)
+          if (newSession) {
+            setCurrentSessionId(newSession.id)
+            onChatSessionChange?.(newSession.id)
+          }
         }
       } finally {
         // Clear the guard after creation completes

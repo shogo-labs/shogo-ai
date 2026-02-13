@@ -189,16 +189,10 @@ export const FolderCollection = types
         const tempId = `temp-${crypto.randomUUID()}`
         const now = Date.now()
 
-        // Normalize parentId: null -> undefined for MST (MST doesn't accept null, but API expects null)
-        const normalizedInput = {
-          ...input,
-          parentId: input.parentId === null ? undefined : input.parentId,
-        }
-
-        // Create optimistic item with normalized input for MST
+        // Create optimistic item
         const optimistic = {
           id: tempId,
-          ...normalizedInput,
+          ...input,
           createdAt: now,
           updatedAt: now,
         }
@@ -210,7 +204,6 @@ export const FolderCollection = types
 
         try {
           const env = getEnv<ISDKEnvironment>(self)
-          // Send original input to API (with null if provided, as API expects)
           const response = yield env.http.post<{ ok: boolean; data?: any }>(ENDPOINT, input)
 
           if (!response.data?.ok || !response.data.data) {

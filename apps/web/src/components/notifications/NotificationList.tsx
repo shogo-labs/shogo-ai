@@ -77,7 +77,7 @@ export const NotificationList = observer(function NotificationList({
       // Sort by createdAt descending (newest first)
       const sorted = [...userNotifications].sort((a, b) => b.createdAt - a.createdAt)
 
-      setNotifications(sorted)
+      setNotifications(sorted as unknown as Notification[])
     } catch (error) {
       console.error("[NotificationList] Failed to load notifications:", error)
     } finally {
