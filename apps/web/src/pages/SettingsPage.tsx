@@ -467,6 +467,38 @@ function ProjectSettingsTab({ projectId }: { projectId?: string }) {
           </Select>
         </div>
 
+        {/* Project category */}
+        <div className="flex items-start justify-between p-4 bg-card rounded-lg border border-border">
+          <div>
+            <div className="font-medium">Project category</div>
+            <div className="text-sm text-muted-foreground">
+              Categorize your project to help others find it.
+            </div>
+          </div>
+          <Select
+            value={(project as any)?.category || ""}
+            onValueChange={async (val) => {
+              if (!project?.id) return
+              try {
+                await store.projectCollection.update(project.id, { category: val } as any)
+                toast({ title: "Category updated", description: `Project category set to ${val}` })
+              } catch (err: any) {
+                toast({ variant: "destructive", title: "Update failed", description: err?.message || "Could not update category" })
+              }
+            }}
+          >
+            <SelectTrigger className="w-36">
+              <SelectValue placeholder="Select category" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="app">Application</SelectItem>
+              <SelectItem value="website">Website</SelectItem>
+              <SelectItem value="tool">Tool</SelectItem>
+              <SelectItem value="game">Game</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
         {/* Rename project */}
         <div className="p-4 bg-card rounded-lg border border-border">
           <div className="flex items-start justify-between">
