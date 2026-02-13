@@ -75,7 +75,7 @@ interface TimingResult {
 function testAnthropicDirect(runNum: number): Promise<TimingResult> {
   return new Promise((resolve) => {
     const body = JSON.stringify({
-      model: "claude-haiku-4-20250514",
+      model: "claude-3-5-haiku-latest",
       max_tokens: 100,
       stream: true,
       messages: [{ role: "user", content: message }],
@@ -586,7 +586,7 @@ async function main() {
   // Test 1: Direct Anthropic API
   if (!chatOnly && ANTHROPIC_API_KEY) {
     printHeader("TEST 1: Direct Anthropic API (baseline)")
-    console.log("  Model: claude-haiku-4-20250514 (streaming)")
+    console.log("  Model: claude-3-5-haiku-latest (streaming)")
     const results = await runSuite("Anthropic API (direct)", testAnthropicDirect, runs)
     suites.push({ label: "Anthropic API (direct)", results })
   }
