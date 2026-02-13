@@ -91,6 +91,7 @@ import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
 import { PlanSelector } from "@/components/app/billing/PlanSelector"
 import { useBillingData } from "@/hooks/useBillingData"
+import { useToast } from "@/hooks/use-toast"
 
 // =============================================================================
 // Configuration
@@ -261,29 +262,119 @@ function NavItem({
 // ============================================================================
 // PROJECT SETTINGS TAB
 // ============================================================================
-function ProjectSettingsTab() {
-  const { currentProject, currentWorkspace } = useWorkspaceData()
+
+/** Map UI visibility values to schema AccessLevel enum */
+const VISIBILITY_TO_ACCESS: Record<string, string> = {
+  public: "anyone",
+  workspace: "authenticated",
+  private: "private",
+}
+const ACCESS_TO_VISIBILITY: Record<string, string> = {
+  anyone: "public",
+  authenticated: "workspace",
+  private: "private",
+}
+
+function ProjectSettingsTab({ projectId }: { projectId?: string }) {
+  const navigate = useNavigate()
+  const store = useSDKDomain() as IDomainStore
   const actions = useDomainActions()
   const { data: session } = useSession()
+  const { toast } = useToast()
 
-  const [name, setName] = useState(currentProject?.name || "")
+  // Resolve project from SDK store using route-param projectId
+  const project = projectId ? store?.projectCollection?.get(projectId) : undefined
+
+  // If project isn't in the store yet, try loading it
+  const [isLoadingProject, setIsLoadingProject] = useState(false)
+  useEffect(() => {
+    if (projectId && !project && store?.projectCollection && !isLoadingProject) {
+      setIsLoadingProject(true)
+      store.projectCollection.loadById(projectId).finally(() => setIsLoadingProject(false))
+    }
+  }, [projectId, project, store?.projectCollection])
+
+  const [name, setName] = useState(project?.name || "")
+  const [isRenaming, setIsRenaming] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState("")
+  const [isSavingVisibility, setIsSavingVisibility] = useState(false)
 
+  // Derived values
+  const accessLevel = (project as any)?.accessLevel || "anyone"
+  const visibility = ACCESS_TO_VISIBILITY[accessLevel] || "public"
+  const subdomain = (project as any)?.publishedSubdomain || ""
+  const messagesCount = (project as any)?.chatSessions?.length ?? 0
+  const creditsUsed = ((project as any)?.usageEvents || []).reduce(
+    (sum: number, e: any) => sum + (e?.creditCost || 0),
+    0
+  )
+  const deleteConfirmRequired = project?.name || "delete"
+  const isDeleteConfirmed = deleteConfirmText === deleteConfirmRequired
+
+  // Sync name when project loads / changes
   useEffect(() => {
-    setName(currentProject?.name || "")
-  }, [currentProject?.name])
+    setName(project?.name || "")
+  }, [project?.name])
 
-  const handleSave = async () => {
-    if (!currentProject?.id) return
+  const handleRename = async () => {
+    if (!project?.id || !name.trim()) return
     setIsSaving(true)
     try {
-      await actions.updateProject(currentProject.id, {
-        name: name.trim(),
-      })
+      await actions.updateProject(project.id, { name: name.trim() })
+      setIsRenaming(false)
+      toast({ title: "Project renamed", description: `Project is now "${name.trim()}"` })
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Rename failed", description: err?.message || "Could not rename project" })
     } finally {
       setIsSaving(false)
     }
+  }
+
+  const handleVisibilityChange = async (newVisibility: string) => {
+    if (!project?.id) return
+    const newAccess = VISIBILITY_TO_ACCESS[newVisibility]
+    if (!newAccess || newAccess === accessLevel) return
+    setIsSavingVisibility(true)
+    try {
+      // accessLevel is a Project schema field — update via collection
+      await store.projectCollection.update(project.id, { accessLevel: newAccess } as any)
+      toast({ title: "Visibility updated", description: `Project is now ${newVisibility}` })
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Update failed", description: err?.message || "Could not update visibility" })
+    } finally {
+      setIsSavingVisibility(false)
+    }
+  }
+
+  const handleDeleteProject = async () => {
+    if (!project?.id) return
+    setIsDeleting(true)
+    try {
+      await actions.deleteProject(project.id)
+      toast({ title: "Project deleted" })
+      navigate("/")
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Delete failed", description: err?.message || "Could not delete project" })
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
+  const handleCopyName = () => {
+    const text = project?.name || "Untitled Project"
+    navigator.clipboard.writeText(text)
+    toast({ title: "Copied", description: "Project name copied to clipboard" })
+  }
+
+  if (isLoadingProject) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    )
   }
 
   return (
@@ -302,15 +393,29 @@ function ProjectSettingsTab() {
           <div>
             <div className="text-muted-foreground">Display name</div>
             <div className="font-medium flex items-center gap-2">
-              {currentProject?.name || "Untitled Project"}
-              <Button variant="ghost" size="icon" className="h-6 w-6">
+              {project?.name || "Untitled Project"}
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleCopyName}>
                 <Copy className="h-3 w-3" />
               </Button>
             </div>
           </div>
           <div>
             <div className="text-muted-foreground">URL subdomain</div>
-            <div className="font-medium">No URL subdomain</div>
+            <div className="font-medium">
+              {subdomain ? (
+                <a
+                  href={`https://${subdomain}.shogo.one`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline flex items-center gap-1"
+                >
+                  {subdomain}.shogo.one
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              ) : (
+                "No URL subdomain"
+              )}
+            </div>
           </div>
           <div>
             <div className="text-muted-foreground">Owner</div>
@@ -319,23 +424,23 @@ function ProjectSettingsTab() {
           <div>
             <div className="text-muted-foreground">Created at</div>
             <div className="font-medium">
-              {currentProject?.createdAt
-                ? format(new Date(currentProject.createdAt), "yyyy-MM-dd HH:mm:ss")
+              {(project as any)?.createdAt
+                ? format(new Date((project as any).createdAt), "yyyy-MM-dd HH:mm:ss")
                 : "Unknown"
               }
             </div>
           </div>
           <div>
             <div className="text-muted-foreground">Messages count</div>
-            <div className="font-medium">"0"</div>
+            <div className="font-medium">{messagesCount}</div>
           </div>
           <div>
             <div className="text-muted-foreground">AI edits count</div>
-            <div className="font-medium">"0"</div>
+            <div className="font-medium">{(project as any)?.featureSessions?.length ?? 0}</div>
           </div>
           <div>
             <div className="text-muted-foreground">Credits used</div>
-            <div className="font-medium">"0.00"</div>
+            <div className="font-medium">{creditsUsed.toFixed(2)}</div>
           </div>
         </div>
       </div>
@@ -350,7 +455,7 @@ function ProjectSettingsTab() {
               Keep your project hidden and prevent others from remixing it.
             </div>
           </div>
-          <Select defaultValue="workspace">
+          <Select value={visibility} onValueChange={handleVisibilityChange} disabled={isSavingVisibility}>
             <SelectTrigger className="w-36">
               <SelectValue />
             </SelectTrigger>
@@ -362,36 +467,46 @@ function ProjectSettingsTab() {
           </Select>
         </div>
 
-        {/* Project category */}
-        <div className="flex items-start justify-between p-4 bg-card rounded-lg border border-border">
-          <div>
-            <div className="font-medium">Project category</div>
-            <div className="text-sm text-muted-foreground">
-              Categorize your project to help others find it.
-            </div>
-          </div>
-          <Select>
-            <SelectTrigger className="w-36">
-              <SelectValue placeholder="Select category" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="app">Application</SelectItem>
-              <SelectItem value="website">Website</SelectItem>
-              <SelectItem value="tool">Tool</SelectItem>
-              <SelectItem value="game">Game</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
         {/* Rename project */}
-        <div className="flex items-start justify-between p-4 bg-card rounded-lg border border-border">
-          <div>
-            <div className="font-medium">Rename project</div>
-            <div className="text-sm text-muted-foreground">
-              Update your project's title.
+        <div className="p-4 bg-card rounded-lg border border-border">
+          <div className="flex items-start justify-between">
+            <div>
+              <div className="font-medium">Rename project</div>
+              <div className="text-sm text-muted-foreground">
+                Update your project's title.
+              </div>
             </div>
+            {!isRenaming && (
+              <Button variant="outline" size="sm" onClick={() => setIsRenaming(true)}>
+                Rename
+              </Button>
+            )}
           </div>
-          <Button variant="outline" size="sm">Rename</Button>
+          {isRenaming && (
+            <div className="flex items-center gap-2 mt-3">
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Project name"
+                className="flex-1"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleRename()
+                  if (e.key === "Escape") { setIsRenaming(false); setName(project?.name || "") }
+                }}
+              />
+              <Button size="sm" onClick={handleRename} disabled={isSaving || !name.trim()}>
+                {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setIsRenaming(false); setName(project?.name || "") }}
+              >
+                Cancel
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* Remix project */}
@@ -402,7 +517,9 @@ function ProjectSettingsTab() {
               Duplicate this app in a new project.
             </div>
           </div>
-          <Button variant="outline" size="sm">Remix</Button>
+          <Button variant="outline" size="sm" disabled>
+            Remix
+          </Button>
         </div>
 
         {/* Transfer */}
@@ -431,6 +548,49 @@ function ProjectSettingsTab() {
           </Button>
         </div>
       </div>
+
+      {/* Delete Project Confirmation Dialog */}
+      <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive">Delete project</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-3">
+              <p>
+                This action <strong>cannot be undone</strong>. This will permanently delete the
+                project <strong>{project?.name}</strong> and all its data including features,
+                chat sessions, and usage history.
+              </p>
+              <p className="pt-2">
+                Please type <strong>{deleteConfirmRequired}</strong> to confirm.
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Input
+            value={deleteConfirmText}
+            onChange={(e) => setDeleteConfirmText(e.target.value)}
+            placeholder={`Type "${deleteConfirmRequired}" to confirm`}
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting} onClick={() => setDeleteConfirmText("")}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteProject}
+              disabled={!isDeleteConfirmed || isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                "Delete project"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
@@ -2270,7 +2430,7 @@ export const SettingsPage = observer(function SettingsPage() {
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto p-8">
-          {activeTab === "project" && <ProjectSettingsTab />}
+          {activeTab === "project" && <ProjectSettingsTab projectId={projectId} />}
           {activeTab === "domains" && <DomainsTab />}
           {activeTab === "knowledge" && <KnowledgeTab />}
           {activeTab === "workspace" && <WorkspaceSettingsTab />}
