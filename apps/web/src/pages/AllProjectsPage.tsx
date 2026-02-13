@@ -1106,7 +1106,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={(e) => {
                             e.stopPropagation()
-                            handleProjectClick(project)
+                            navigate(`/projects/${project.id}/settings?tab=project`)
                           }}>
                             <Settings className="mr-2 h-4 w-4" />
                             Settings
@@ -1318,7 +1318,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={(e) => {
                               e.stopPropagation()
-                              handleProjectClick(project)
+                              navigate(`/projects/${project.id}/settings?tab=project`)
                             }}>
                               <Settings className="mr-2 h-4 w-4" />
                               Settings
