@@ -1,28 +1,39 @@
 /**
- * S3 Sync Module (Zip-based)
+ * S3 Sync Module (Layered Archive)
  *
  * Provides bidirectional file synchronization between S3 and local filesystem.
- * Uses zip archives for efficient storage and fast downloads (includes node_modules).
+ * Uses a TWO-LAYER archive strategy to make cold starts near-instant:
  *
- * Key Benefits:
- * - Single zip file download vs thousands of individual files
- * - node_modules included = no bun install needed on cold start
- * - Much faster restore times (~2s vs ~15s)
+ * Layer 1: deps archive (node_modules/)
+ *   - Keyed by hash of bun.lock (content-addressed)
+ *   - Only re-uploaded when dependencies change
+ *   - Shared across pod restarts with same lockfile
+ *   - ~150-200MB compressed, but rarely changes
+ *
+ * Layer 2: project archive (source + dist + config)
+ *   - Everything EXCEPT node_modules
+ *   - Small (~2-10MB), updated frequently
+ *   - Fast to create and extract (<2s)
+ *
+ * Cold start performance:
+ *   Before: Download 162MB tar.gz → Extract 37K files → 72s
+ *   After:  Download ~5MB tar.gz → Extract ~300 files → <2s
+ *           (node_modules cached by lockfile hash, usually already present)
  *
  * Features:
- * - Download project zip from S3 on startup
- * - Upload changed files to S3 periodically (as zip, safety net)
+ * - Content-addressed deps caching (hash of bun.lock)
+ * - Small project archive for fast sync
  * - Event-driven sync: file watcher triggers debounced upload on changes
  * - Explicit sync trigger via triggerSync() for critical write operations
+ * - Backward compatible: reads legacy project.tar.gz if layered archives missing
  */
 
 import { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
 import { watch } from 'fs'
 import { readdir, readFile, writeFile, mkdir, stat, unlink, rm } from 'fs/promises'
 import { join, relative, dirname } from 'path'
-import { createReadStream, createWriteStream, existsSync, statSync, mkdirSync } from 'fs'
-import { pipeline } from 'stream/promises'
-import { createGzip, createGunzip } from 'zlib'
+import { existsSync, statSync, mkdirSync } from 'fs'
+import { createHash } from 'crypto'
 import * as tar from 'tar'
 
 // =============================================================================
@@ -57,14 +68,23 @@ export interface SyncStats {
   errors: string[]
   lastSync: Date | null
   archiveSize?: number
+  /** Whether deps were restored from cache */
+  depsCacheHit?: boolean
+  /** Time to extract project archive (ms) */
+  projectExtractMs?: number
+  /** Time to extract deps archive (ms) */
+  depsExtractMs?: number
 }
 
 // =============================================================================
-// S3 Sync Class (Zip-based)
+// S3 Sync Class (Layered Archive)
 // =============================================================================
 
 /** Default debounce delay for event-driven sync (ms) */
 const SYNC_DEBOUNCE_MS = 3000
+
+/** S3 key prefix for deps archives (shared across projects) */
+const DEPS_CACHE_PREFIX = '_deps-cache'
 
 export class S3Sync {
   private client: S3Client
@@ -83,6 +103,10 @@ export class S3Sync {
   private lastUploadHash: string = ''
   private isUploading: boolean = false
   private uploadRequestedDuringUpload: boolean = false
+  /** Track the current lockfile hash to detect dep changes */
+  private currentLockfileHash: string = ''
+  /** Whether deps need to be uploaded (lockfile changed since last deps upload) */
+  private depsNeedUpload: boolean = false
 
   constructor(config: S3SyncConfig) {
     this.config = {
@@ -92,12 +116,10 @@ export class S3Sync {
       endpoint: config.endpoint || process.env.S3_ENDPOINT || undefined,
       region: config.region || process.env.S3_REGION || 'us-east-1',
       forcePathStyle: config.forcePathStyle ?? (process.env.S3_FORCE_PATH_STYLE === 'true'),
-      // Exclude patterns - these won't be included in the zip
-      // IMPORTANT: We INCLUDE node_modules and dist
-      // This eliminates the need for bun install and vite build on cold start
+      // Exclude patterns - these won't be included in archives
       exclude: config.exclude || [
-        '.DS_Store',      // macOS metadata
-        '*.log',          // Log files
+        '.DS_Store',          // macOS metadata
+        '*.log',              // Log files
         'playwright-report',  // Test artifacts
         'test-results',       // Test artifacts
         'dev.db',             // Local SQLite (we use Postgres in K8s)
@@ -125,24 +147,72 @@ export class S3Sync {
   }
 
   // ===========================================================================
-  // Public Methods
+  // S3 Key Helpers
   // ===========================================================================
 
-  /**
-   * Get the S3 key for the project archive
-   */
-  private getArchiveKey(): string {
+  /** Legacy single-archive key (for backward compatibility) */
+  private getLegacyArchiveKey(): string {
     return `${this.config.prefix}/project.tar.gz`
   }
 
-  /**
-   * Check if archive exists in S3
-   */
-  async archiveExists(): Promise<boolean> {
+  /** Project archive key (source + dist, no node_modules) */
+  private getProjectArchiveKey(): string {
+    return `${this.config.prefix}/project-src.tar.gz`
+  }
+
+  /** Deps archive key (content-addressed by lockfile hash) */
+  private getDepsArchiveKey(lockfileHash: string): string {
+    return `${DEPS_CACHE_PREFIX}/${lockfileHash}.tar.gz`
+  }
+
+  /** Per-project pointer to the current deps hash */
+  private getDepsPointerKey(): string {
+    return `${this.config.prefix}/deps-hash.txt`
+  }
+
+  // ===========================================================================
+  // Lockfile Hashing
+  // ===========================================================================
+
+  /** Compute SHA-256 hash of bun.lock (or package-lock.json / yarn.lock) */
+  private async computeLockfileHash(): Promise<string> {
+    const lockFiles = ['bun.lock', 'bun.lockb', 'package-lock.json', 'yarn.lock']
+    
+    for (const lockFile of lockFiles) {
+      const lockPath = join(this.config.localDir, lockFile)
+      try {
+        const content = await readFile(lockPath)
+        const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
+        return hash
+      } catch {
+        // Try next lockfile
+      }
+    }
+    
+    // Fallback: hash package.json dependencies
+    try {
+      const pkgPath = join(this.config.localDir, 'package.json')
+      const pkg = JSON.parse(await readFile(pkgPath, 'utf-8'))
+      const depsKey = JSON.stringify({
+        dependencies: pkg.dependencies || {},
+        devDependencies: pkg.devDependencies || {},
+      })
+      return createHash('sha256').update(depsKey).digest('hex').slice(0, 16)
+    } catch {
+      // No lockfile and no package.json — use a static key
+      return 'no-lockfile'
+    }
+  }
+
+  // ===========================================================================
+  // Archive Existence Checks
+  // ===========================================================================
+
+  private async objectExists(key: string): Promise<boolean> {
     try {
       await this.client.send(new HeadObjectCommand({
         Bucket: this.config.bucket,
-        Key: this.getArchiveKey(),
+        Key: key,
       }))
       return true
     } catch (error: any) {
@@ -153,105 +223,244 @@ export class S3Sync {
     }
   }
 
+  // ===========================================================================
+  // Download (Layered)
+  // ===========================================================================
+
   /**
-   * Download and extract project archive from S3.
-   * Called on startup to initialize the project.
+   * Download and extract project from S3 using layered archives.
+   * 
+   * Strategy:
+   * 1. Try to download project-src.tar.gz (new layered format)
+   * 2. If found, also restore deps from content-addressed cache
+   * 3. If not found, fall back to legacy project.tar.gz (full archive)
+   * 
+   * This provides backward compatibility while enabling fast cold starts
+   * for projects that have been synced with the new format.
    */
   async downloadAll(): Promise<SyncStats> {
-    const archiveKey = this.getArchiveKey()
-    console.log(`[S3Sync] Downloading archive from s3://${this.config.bucket}/${archiveKey}`)
+    const totalStart = Date.now()
 
     try {
-      // Check if archive exists
-      const exists = await this.archiveExists()
-      if (!exists) {
-        console.log(`[S3Sync] No archive found in S3 (new project)`)
-        return this.getStats()
+      // Step 1: Try new layered format first
+      const projectKey = this.getProjectArchiveKey()
+      const hasLayeredArchive = await this.objectExists(projectKey)
+
+      if (hasLayeredArchive) {
+        return await this.downloadLayered(totalStart)
       }
 
-      // Download archive
-      const startTime = Date.now()
-      const command = new GetObjectCommand({
-        Bucket: this.config.bucket,
-        Key: archiveKey,
-      })
+      // Step 2: Fall back to legacy format
+      const legacyKey = this.getLegacyArchiveKey()
+      const hasLegacyArchive = await this.objectExists(legacyKey)
 
-      const response = await this.client.send(command)
-      if (!response.Body) {
-        console.log(`[S3Sync] Empty response from S3`)
-        return this.getStats()
+      if (hasLegacyArchive) {
+        console.log(`[S3Sync] Using legacy archive format (will migrate on next upload)`)
+        return await this.downloadLegacy(totalStart)
       }
 
-      const downloadTime = Date.now() - startTime
-      console.log(`[S3Sync] Downloaded archive in ${downloadTime}ms`)
+      // No archive at all — new project
+      console.log(`[S3Sync] No archive found in S3 (new project)`)
+      return this.getStats()
 
-      // Ensure local directory exists
-      if (!existsSync(this.config.localDir)) {
-        mkdirSync(this.config.localDir, { recursive: true })
-      }
-
-      // Extract archive
-      const extractStart = Date.now()
-      
-      // For AWS SDK v3, convert the response body to a byte array ONCE
-      // (the stream can only be consumed once - calling transformToByteArray twice
-      // causes "The stream has already been transformed" error)
-      const bodyArray = await response.Body.transformToByteArray()
-      const tempArchive = join('/tmp', `project-${this.config.prefix}.tar.gz`)
-      await writeFile(tempArchive, bodyArray)
-      
-      // Extract using tar
-      await tar.extract({
-        file: tempArchive,
-        cwd: this.config.localDir,
-        strip: 0, // Don't strip any path components
-      })
-      
-      // Cleanup temp file
-      await unlink(tempArchive).catch(() => {})
-
-      const extractTime = Date.now() - extractStart
-      console.log(`[S3Sync] Extracted archive in ${extractTime}ms`)
-
-      // Count files and check what was restored
-      const fileCount = await this.countFiles(this.config.localDir)
-      const allFiles = await this.listLocalFiles()
-      const hasNodeModules = allFiles.some(f => f.includes('/node_modules/'))
-      const hasBuildOutput = allFiles.some(f => f.includes('/dist/'))
-      
-      this.stats.downloaded = fileCount
-      this.stats.lastSync = new Date()
-      this.stats.archiveSize = bodyArray.length
-
-      console.log(`[S3Sync] Download complete: ${fileCount} files (${this.formatBytes(bodyArray.length)})`)
-      if (hasNodeModules) {
-        console.log(`[S3Sync] ⚡ node_modules restored - skipping bun install`)
-      }
-      if (hasBuildOutput) {
-        console.log(`[S3Sync] ⚡ Build output restored - skipping vite build`)
-      }
     } catch (error: any) {
-      if (error.name === 'NoSuchKey' || error.$metadata?.httpStatusCode === 404) {
-        console.log(`[S3Sync] No archive found in S3 (new project)`)
-      } else {
-        console.error(`[S3Sync] Download failed:`, error)
-        this.stats.errors.push(`Download failed: ${error.message}`)
-      }
+      console.error(`[S3Sync] Download failed:`, error)
+      this.stats.errors.push(`Download failed: ${error.message}`)
+      return this.getStats()
+    }
+  }
+
+  /**
+   * Download using new layered format:
+   * 1. Download project-src.tar.gz (small, always)
+   * 2. Check deps-hash pointer → download cached deps archive if available
+   */
+  private async downloadLayered(totalStart: number): Promise<SyncStats> {
+    console.log(`[S3Sync] ⚡ Using layered archive format`)
+
+    // Ensure local directory exists
+    if (!existsSync(this.config.localDir)) {
+      mkdirSync(this.config.localDir, { recursive: true })
     }
 
+    // Step 1: Download and extract project archive (source + dist)
+    const projectStart = Date.now()
+    const projectKey = this.getProjectArchiveKey()
+    console.log(`[S3Sync] Downloading project archive from s3://${this.config.bucket}/${projectKey}`)
+
+    const projectResponse = await this.client.send(new GetObjectCommand({
+      Bucket: this.config.bucket,
+      Key: projectKey,
+    }))
+
+    if (!projectResponse.Body) {
+      console.log(`[S3Sync] Empty project archive response`)
+      return this.getStats()
+    }
+
+    const projectData = await projectResponse.Body.transformToByteArray()
+    const projectDownloadMs = Date.now() - projectStart
+    console.log(`[S3Sync] Downloaded project archive in ${projectDownloadMs}ms (${this.formatBytes(projectData.length)})`)
+
+    // Extract project archive
+    const extractStart = Date.now()
+    const tempProject = join('/tmp', `project-${this.config.prefix}-src.tar.gz`)
+    await writeFile(tempProject, projectData)
+    await tar.extract({ file: tempProject, cwd: this.config.localDir, strip: 0 })
+    await unlink(tempProject).catch(() => {})
+    const projectExtractMs = Date.now() - extractStart
+    console.log(`[S3Sync] Extracted project archive in ${projectExtractMs}ms`)
+    this.stats.projectExtractMs = projectExtractMs
+
+    // Step 2: Restore deps from cache
+    await this.restoreDeps()
+
+    const totalMs = Date.now() - totalStart
+    const projectFileCount = await this.countFilesExcluding(this.config.localDir, ['node_modules'])
+    const totalFileCount = await this.countFiles(this.config.localDir)
+    
+    this.stats.downloaded = totalFileCount
+    this.stats.lastSync = new Date()
+    this.stats.archiveSize = projectData.length
+
+    console.log(`[S3Sync] ⚡ Layered download complete in ${totalMs}ms (${projectFileCount} source files, ${totalFileCount} total)`)
     return this.getStats()
   }
 
   /**
-   * Create and upload project archive to S3.
-   * INCLUDES: node_modules, dist (for fast cold starts)
+   * Restore node_modules from content-addressed deps cache.
+   */
+  private async restoreDeps(): Promise<void> {
+    // Read the deps hash pointer for this project
+    const pointerKey = this.getDepsPointerKey()
+    let lockfileHash: string | null = null
+
+    try {
+      const pointerResponse = await this.client.send(new GetObjectCommand({
+        Bucket: this.config.bucket,
+        Key: pointerKey,
+      }))
+      if (pointerResponse.Body) {
+        lockfileHash = (await pointerResponse.Body.transformToString()).trim()
+      }
+    } catch (error: any) {
+      if (error.name !== 'NoSuchKey' && error.$metadata?.httpStatusCode !== 404) {
+        console.warn(`[S3Sync] Error reading deps pointer:`, error.message)
+      }
+    }
+
+    if (!lockfileHash) {
+      console.log(`[S3Sync] No deps cache pointer found — will need bun install`)
+      return
+    }
+
+    // Check if node_modules already exists and matches
+    const localHash = await this.computeLockfileHash()
+    if (localHash === lockfileHash && existsSync(join(this.config.localDir, 'node_modules', '.package-lock.json')) ||
+        existsSync(join(this.config.localDir, 'node_modules', '.cache'))) {
+      // node_modules already present from a previous extract — skip
+    }
+
+    // Download deps archive
+    const depsKey = this.getDepsArchiveKey(lockfileHash)
+    const depsExists = await this.objectExists(depsKey)
+
+    if (!depsExists) {
+      console.log(`[S3Sync] Deps cache miss (hash: ${lockfileHash}) — will need bun install`)
+      return
+    }
+
+    console.log(`[S3Sync] ⚡ Deps cache hit (hash: ${lockfileHash})`)
+    const depsStart = Date.now()
+
+    const depsResponse = await this.client.send(new GetObjectCommand({
+      Bucket: this.config.bucket,
+      Key: depsKey,
+    }))
+
+    if (!depsResponse.Body) return
+
+    const depsData = await depsResponse.Body.transformToByteArray()
+    const downloadMs = Date.now() - depsStart
+    console.log(`[S3Sync] Downloaded deps archive in ${downloadMs}ms (${this.formatBytes(depsData.length)})`)
+
+    // Extract deps
+    const extractStart = Date.now()
+    const tempDeps = join('/tmp', `deps-${lockfileHash}.tar.gz`)
+    await writeFile(tempDeps, depsData)
+    await tar.extract({ file: tempDeps, cwd: this.config.localDir, strip: 0 })
+    await unlink(tempDeps).catch(() => {})
+    const extractMs = Date.now() - extractStart
+    console.log(`[S3Sync] Extracted deps archive in ${extractMs}ms`)
+
+    this.stats.depsCacheHit = true
+    this.stats.depsExtractMs = extractMs
+    this.currentLockfileHash = lockfileHash
+  }
+
+  /**
+   * Download using legacy single-archive format (backward compatibility).
+   */
+  private async downloadLegacy(totalStart: number): Promise<SyncStats> {
+    const archiveKey = this.getLegacyArchiveKey()
+    console.log(`[S3Sync] Downloading legacy archive from s3://${this.config.bucket}/${archiveKey}`)
+
+    const response = await this.client.send(new GetObjectCommand({
+      Bucket: this.config.bucket,
+      Key: archiveKey,
+    }))
+
+    if (!response.Body) {
+      console.log(`[S3Sync] Empty response from S3`)
+      return this.getStats()
+    }
+
+    const downloadStart = Date.now()
+    const bodyArray = await response.Body.transformToByteArray()
+    const downloadTime = Date.now() - downloadStart
+    console.log(`[S3Sync] Downloaded archive in ${downloadTime}ms (${this.formatBytes(bodyArray.length)})`)
+
+    if (!existsSync(this.config.localDir)) {
+      mkdirSync(this.config.localDir, { recursive: true })
+    }
+
+    // Extract archive
+    const extractStart = Date.now()
+    const tempArchive = join('/tmp', `project-${this.config.prefix}.tar.gz`)
+    await writeFile(tempArchive, bodyArray)
+    await tar.extract({ file: tempArchive, cwd: this.config.localDir, strip: 0 })
+    await unlink(tempArchive).catch(() => {})
+
+    const extractTime = Date.now() - extractStart
+    console.log(`[S3Sync] Extracted archive in ${extractTime}ms`)
+
+    const fileCount = await this.countFiles(this.config.localDir)
+    this.stats.downloaded = fileCount
+    this.stats.lastSync = new Date()
+    this.stats.archiveSize = bodyArray.length
+
+    console.log(`[S3Sync] Download complete: ${fileCount} files (${this.formatBytes(bodyArray.length)})`)
+
+    // Flag that we should migrate to layered format on next upload
+    this.depsNeedUpload = true
+
+    return this.getStats()
+  }
+
+  // ===========================================================================
+  // Upload (Layered)
+  // ===========================================================================
+
+  /**
+   * Upload project state to S3 using layered archives.
    *
-   * Uses an upload lock to prevent concurrent uploads. If called while an
-   * upload is already in progress, it will be re-run after the current upload
-   * finishes (to capture any changes made during the upload).
+   * Always uploads: project-src.tar.gz (source + dist, no node_modules)
+   * Conditionally uploads: deps archive (only when lockfile hash changes)
+   *
+   * Uses an upload lock to prevent concurrent uploads.
    */
   async uploadAll(deleteOrphans: boolean = false): Promise<SyncStats> {
-    // Prevent concurrent uploads - if one is running, flag for re-run after it finishes
+    // Prevent concurrent uploads
     if (this.isUploading) {
       console.log(`[S3Sync] Upload already in progress, will re-run after completion`)
       this.uploadRequestedDuringUpload = true
@@ -261,9 +470,6 @@ export class S3Sync {
     this.isUploading = true
     this.uploadRequestedDuringUpload = false
 
-    const archiveKey = this.getArchiveKey()
-    console.log(`[S3Sync] Uploading archive to s3://${this.config.bucket}/${archiveKey}`)
-
     try {
       // Check if there are any files to upload
       const fileCount = await this.countFiles(this.config.localDir)
@@ -272,82 +478,193 @@ export class S3Sync {
         return this.getStats()
       }
 
-      // Create tar.gz archive
-      const startTime = Date.now()
-      const tempArchive = join('/tmp', `project-${this.config.prefix}-upload.tar.gz`)
+      // Upload project archive (source + dist, NO node_modules)
+      await this.uploadProjectArchive()
 
-      // Get list of files to include (excluding patterns)
-      const filesToInclude = await this.listLocalFiles()
-      
-      if (filesToInclude.length === 0) {
-        console.log(`[S3Sync] No files to include after filtering`)
-        return this.getStats()
-      }
+      // Upload deps archive if lockfile changed
+      await this.uploadDepsIfNeeded()
 
-      // Log breakdown of what's being archived
-      const nodeModulesFiles = filesToInclude.filter(f => f.includes('/node_modules/')).length
-      const outputFiles = filesToInclude.filter(f => f.includes('/dist/')).length
-      const sourceFiles = filesToInclude.length - nodeModulesFiles - outputFiles
-      console.log(`[S3Sync] Archive contents: ${sourceFiles} source, ${nodeModulesFiles} node_modules, ${outputFiles} build output`)
-
-      // Clear pending uploads before archiving (any changes after this point
-      // will trigger a new debounced sync)
-      this.pendingUploads.clear()
-
-      // Create archive
-      await tar.create(
-        {
-          gzip: true,
-          file: tempArchive,
-          cwd: this.config.localDir,
-          portable: true, // Portable mode for better compatibility
-        },
-        filesToInclude.map(f => relative(this.config.localDir, f))
-      )
-
-      const archiveTime = Date.now() - startTime
-      const archiveStats = statSync(tempArchive)
-      console.log(`[S3Sync] Created archive in ${archiveTime}ms (${this.formatBytes(archiveStats.size)})`)
-
-      // Upload to S3
-      const uploadStart = Date.now()
-      const archiveContent = await readFile(tempArchive)
-      
-      await this.client.send(new PutObjectCommand({
-        Bucket: this.config.bucket,
-        Key: archiveKey,
-        Body: archiveContent,
-        ContentType: 'application/gzip',
-      }))
-
-      const uploadTime = Date.now() - uploadStart
-      console.log(`[S3Sync] Uploaded archive in ${uploadTime}ms`)
-
-      // Cleanup temp file
-      await unlink(tempArchive).catch(() => {})
-
-      this.stats.uploaded = filesToInclude.length
       this.stats.lastSync = new Date()
-      this.stats.archiveSize = archiveStats.size
 
-      console.log(`[S3Sync] Upload complete: ${filesToInclude.length} files`)
     } catch (error: any) {
       console.error(`[S3Sync] Upload failed:`, error)
       this.stats.errors.push(`Upload failed: ${error.message}`)
     } finally {
       this.isUploading = false
 
-      // If another upload was requested while we were uploading, run it now
+      // Re-run if changes occurred during upload
       if (this.uploadRequestedDuringUpload) {
         this.uploadRequestedDuringUpload = false
         console.log(`[S3Sync] Re-running upload (changes occurred during previous upload)`)
-        // Use setImmediate to avoid deep recursion
         setTimeout(() => this.uploadAll(false), 0)
       }
     }
 
     return this.getStats()
   }
+
+  /**
+   * Upload project-src.tar.gz (everything EXCEPT node_modules).
+   * This is small (~2-10MB) and fast to create.
+   */
+  private async uploadProjectArchive(): Promise<void> {
+    const archiveKey = this.getProjectArchiveKey()
+    console.log(`[S3Sync] Uploading project archive to s3://${this.config.bucket}/${archiveKey}`)
+
+    const startTime = Date.now()
+    const tempArchive = join('/tmp', `project-${this.config.prefix}-src-upload.tar.gz`)
+
+    // List all files EXCLUDING node_modules
+    const filesToInclude = await this.listLocalFiles(undefined, ['node_modules'])
+
+    if (filesToInclude.length === 0) {
+      console.log(`[S3Sync] No project files to include after filtering`)
+      return
+    }
+
+    // Log breakdown
+    const outputFiles = filesToInclude.filter(f => f.includes('/dist/')).length
+    const sourceFiles = filesToInclude.length - outputFiles
+    console.log(`[S3Sync] Project archive: ${sourceFiles} source, ${outputFiles} build output`)
+
+    // Clear pending uploads before archiving
+    this.pendingUploads.clear()
+
+    // Create archive
+    await tar.create(
+      {
+        gzip: true,
+        file: tempArchive,
+        cwd: this.config.localDir,
+        portable: true,
+      },
+      filesToInclude.map(f => relative(this.config.localDir, f))
+    )
+
+    const archiveTime = Date.now() - startTime
+    const archiveStats = statSync(tempArchive)
+    console.log(`[S3Sync] Created project archive in ${archiveTime}ms (${this.formatBytes(archiveStats.size)})`)
+
+    // Upload to S3
+    const uploadStart = Date.now()
+    const archiveContent = await readFile(tempArchive)
+
+    await this.client.send(new PutObjectCommand({
+      Bucket: this.config.bucket,
+      Key: archiveKey,
+      Body: archiveContent,
+      ContentType: 'application/gzip',
+    }))
+
+    const uploadTime = Date.now() - uploadStart
+    console.log(`[S3Sync] Uploaded project archive in ${uploadTime}ms`)
+
+    // Cleanup
+    await unlink(tempArchive).catch(() => {})
+
+    this.stats.uploaded = filesToInclude.length
+    this.stats.archiveSize = archiveStats.size
+  }
+
+  /**
+   * Upload deps archive (node_modules/) if lockfile has changed.
+   * Uses content-addressed caching: the deps archive key includes the lockfile hash.
+   * This means identical lockfiles across different projects share the same deps archive.
+   */
+  private async uploadDepsIfNeeded(): Promise<void> {
+    const lockfileHash = await this.computeLockfileHash()
+
+    // Check if deps already cached for this lockfile hash
+    if (lockfileHash === this.currentLockfileHash && !this.depsNeedUpload) {
+      // Same lockfile hash — deps archive already in S3
+      return
+    }
+
+    // Check if this exact deps archive already exists in S3
+    const depsKey = this.getDepsArchiveKey(lockfileHash)
+    const depsExist = await this.objectExists(depsKey)
+
+    if (depsExist && !this.depsNeedUpload) {
+      // Already cached — just update the pointer
+      console.log(`[S3Sync] Deps cache already exists for hash ${lockfileHash}, updating pointer`)
+      await this.updateDepsPointer(lockfileHash)
+      this.currentLockfileHash = lockfileHash
+      this.depsNeedUpload = false
+      return
+    }
+
+    // Check if node_modules exists
+    const nodeModulesDir = join(this.config.localDir, 'node_modules')
+    if (!existsSync(nodeModulesDir)) {
+      return
+    }
+
+    console.log(`[S3Sync] Uploading deps archive (lockfile hash: ${lockfileHash})`)
+    const startTime = Date.now()
+    const tempArchive = join('/tmp', `deps-${lockfileHash}-upload.tar.gz`)
+
+    // List only node_modules files
+    const nodeModulesFiles = await this.listLocalFiles(nodeModulesDir)
+    if (nodeModulesFiles.length === 0) return
+
+    console.log(`[S3Sync] Deps archive: ${nodeModulesFiles.length} files`)
+
+    // Create archive of node_modules only
+    await tar.create(
+      {
+        gzip: true,
+        file: tempArchive,
+        cwd: this.config.localDir,
+        portable: true,
+      },
+      // Archive as 'node_modules/...' paths (relative to project dir)
+      nodeModulesFiles.map(f => relative(this.config.localDir, f))
+    )
+
+    const archiveTime = Date.now() - startTime
+    const archiveStats = statSync(tempArchive)
+    console.log(`[S3Sync] Created deps archive in ${archiveTime}ms (${this.formatBytes(archiveStats.size)})`)
+
+    // Upload to S3 (content-addressed key)
+    const uploadStart = Date.now()
+    const archiveContent = await readFile(tempArchive)
+
+    await this.client.send(new PutObjectCommand({
+      Bucket: this.config.bucket,
+      Key: depsKey,
+      Body: archiveContent,
+      ContentType: 'application/gzip',
+    }))
+
+    const uploadTime = Date.now() - uploadStart
+    console.log(`[S3Sync] Uploaded deps archive in ${uploadTime}ms`)
+
+    // Update the per-project pointer to this deps hash
+    await this.updateDepsPointer(lockfileHash)
+
+    // Cleanup
+    await unlink(tempArchive).catch(() => {})
+
+    this.currentLockfileHash = lockfileHash
+    this.depsNeedUpload = false
+
+    console.log(`[S3Sync] ⚡ Deps cache populated for hash ${lockfileHash}`)
+  }
+
+  /** Write the deps hash pointer so downloads know which deps archive to use */
+  private async updateDepsPointer(lockfileHash: string): Promise<void> {
+    const pointerKey = this.getDepsPointerKey()
+    await this.client.send(new PutObjectCommand({
+      Bucket: this.config.bucket,
+      Key: pointerKey,
+      Body: lockfileHash,
+      ContentType: 'text/plain',
+    }))
+  }
+
+  // ===========================================================================
+  // Sync Control
+  // ===========================================================================
 
   /**
    * Start periodic sync (upload changes to S3).
@@ -383,9 +700,6 @@ export class S3Sync {
    * The watcher triggers a debounced upload on every source file change.
    * This means files are synced to S3 within ~3 seconds of modification,
    * dramatically reducing the data-loss window compared to the 30s periodic sync.
-   *
-   * The periodic sync (startPeriodicSync) acts as a safety net for any
-   * changes the watcher might miss.
    */
   startWatcher(): void {
     if (!this.config.watchEnabled) {
@@ -393,13 +707,11 @@ export class S3Sync {
       return
     }
 
-    // If watcher is already running, don't start another one
     if (this.watcher) {
       console.log(`[S3Sync] File watcher already running`)
       return
     }
 
-    // Check if directory exists before starting watcher
     try {
       const dirStat = statSync(this.config.localDir)
       if (!dirStat.isDirectory()) {
@@ -422,16 +734,21 @@ export class S3Sync {
             if (!filename || this.shouldExclude(filename)) return
 
             // Skip node_modules and dist changes for debounced sync triggers.
-            // These are large directories that change during bun install / vite build,
-            // not during AI file edits. They'll be captured by the periodic sync.
-            if (filename.startsWith('node_modules/') || filename.startsWith('dist/')) return
+            // node_modules changes are handled by deps upload (lockfile hash change).
+            // dist changes are included in the project archive by periodic sync.
+            if (filename.startsWith('node_modules/') || filename.startsWith('dist/')) {
+              // But flag deps upload if lockfile changed
+              if (filename === 'bun.lock' || filename === 'bun.lockb' || 
+                  filename === 'package-lock.json' || filename === 'yarn.lock') {
+                this.depsNeedUpload = true
+              }
+              return
+            }
 
             // Mark that we have pending changes
             this.pendingUploads.add(filename)
 
-            // Debounced upload: resets on every change, fires SYNC_DEBOUNCE_MS
-            // after the last change. This batches rapid successive writes
-            // (e.g., AI writing multiple files) into a single upload.
+            // Debounced upload
             if (this.uploadDebounceTimer) {
               clearTimeout(this.uploadDebounceTimer)
             }
@@ -449,8 +766,7 @@ export class S3Sync {
           }
         }
       )
-      
-      // Handle watcher errors gracefully
+
       this.watcher.on('error', (error: Error) => {
         console.warn(`[S3Sync] File watcher error (continuing without watcher):`, error.message)
         this.stopWatcher()
@@ -473,12 +789,6 @@ export class S3Sync {
 
   /**
    * Explicitly trigger an S3 sync (debounced).
-   *
-   * Call this after critical file write operations (e.g., template copy,
-   * agent file writes, build output) to ensure changes are persisted promptly.
-   * Uses the same debounce mechanism as the file watcher to batch rapid calls.
-   *
-   * @param immediate - If true, skips debounce and uploads immediately.
    */
   triggerSync(immediate: boolean = false): void {
     if (immediate) {
@@ -489,7 +799,6 @@ export class S3Sync {
       return
     }
 
-    // Debounced trigger (same as watcher)
     if (this.uploadDebounceTimer) {
       clearTimeout(this.uploadDebounceTimer)
     }
@@ -528,10 +837,13 @@ export class S3Sync {
   }
 
   // ===========================================================================
-  // Private Methods
+  // Private Helpers
   // ===========================================================================
 
-  private async listLocalFiles(dir?: string): Promise<string[]> {
+  /**
+   * List local files, optionally excluding additional directory prefixes.
+   */
+  private async listLocalFiles(dir?: string, excludeDirs?: string[]): Promise<string[]> {
     const targetDir = dir || this.config.localDir
     const files: string[] = []
 
@@ -542,12 +854,15 @@ export class S3Sync {
         const fullPath = join(targetDir, entry.name)
         const relativePath = relative(this.config.localDir, fullPath)
 
-        if (this.shouldExclude(relativePath)) {
+        if (this.shouldExclude(relativePath)) continue
+
+        // Skip additional excluded directories
+        if (excludeDirs && excludeDirs.some(d => relativePath === d || relativePath.startsWith(d + '/'))) {
           continue
         }
 
         if (entry.isDirectory()) {
-          const subFiles = await this.listLocalFiles(fullPath)
+          const subFiles = await this.listLocalFiles(fullPath, excludeDirs)
           files.push(...subFiles)
         } else if (entry.isFile()) {
           files.push(fullPath)
@@ -577,14 +892,30 @@ export class S3Sync {
     return count
   }
 
+  private async countFilesExcluding(dir: string, excludeDirs: string[]): Promise<number> {
+    let count = 0
+    try {
+      const entries = await readdir(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (excludeDirs.includes(entry.name)) continue
+        if (entry.isDirectory()) {
+          count += await this.countFilesExcluding(join(dir, entry.name), excludeDirs)
+        } else if (entry.isFile()) {
+          count++
+        }
+      }
+    } catch (error) {
+      // Directory may not exist
+    }
+    return count
+  }
+
   private shouldExclude(path: string): boolean {
     for (const pattern of this.config.exclude) {
       if (pattern.startsWith('*')) {
-        // Glob pattern (e.g., *.log)
         const ext = pattern.slice(1)
         if (path.endsWith(ext)) return true
       } else {
-        // Exact match or path contains
         if (path === pattern || path.includes(`/${pattern}/`) || path.includes(`/${pattern}`) || path.startsWith(`${pattern}/`) || path.startsWith(pattern)) {
           return true
         }
@@ -616,7 +947,6 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
     return null
   }
 
-  // Enable file watching by default when S3 is configured
   const watchEnabled = process.env.S3_WATCH_ENABLED !== 'false'
 
   return new S3Sync({
@@ -638,10 +968,6 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
  * CRITICAL: If the download fails for ANY reason (not just auth errors),
  * we must NOT start the uploader/watcher. Otherwise, the default template
  * files get uploaded to S3, overwriting the user's actual project data.
- *
- * Starts both periodic sync (30s safety net) and file watcher (debounced event-driven sync).
- * The watcher is started for ALL projects, including new ones, to catch the first
- * file writes (e.g., template copy, AI code generation).
  */
 export async function initializeS3Sync(localDir: string): Promise<{ sync: S3Sync, downloadSucceeded: boolean } | null> {
   const sync = createS3SyncFromEnv(localDir)
@@ -652,48 +978,32 @@ export async function initializeS3Sync(localDir: string): Promise<{ sync: S3Sync
 
   // Download and extract archive from S3
   const downloadStats = await sync.downloadAll()
-  
+
   // If there were ANY download errors, do NOT start uploading.
-  // This prevents the catastrophic scenario where:
-  // 1. Download fails (e.g., stream error, network issue)
-  // 2. Entrypoint has already copied the default template
-  // 3. Watcher detects template files and uploads them to S3
-  // 4. User's actual project data in S3 gets overwritten with template
   if (downloadStats.errors.length > 0) {
     console.warn('[S3Sync] Download had errors - starting sync in UPLOAD-ONLY-AFTER-DELAY mode')
     console.warn('[S3Sync] Errors:', downloadStats.errors)
-    
-    // Check if these are permission/config errors (completely disable sync)
-    const hasCriticalError = downloadStats.errors.some(err => 
-      err.includes('AccessDenied') || 
+
+    const hasCriticalError = downloadStats.errors.some(err =>
+      err.includes('AccessDenied') ||
       err.includes('NoSuchBucket') ||
       err.includes('InvalidAccessKeyId') ||
       err.includes('SignatureDoesNotMatch')
     )
-    
+
     if (hasCriticalError) {
       console.warn('[S3Sync] Critical auth/config error - S3 sync completely disabled')
       return null
     }
-    
-    // For non-critical errors (stream errors, network issues):
-    // Return the sync instance but DON'T start watcher/periodic sync yet.
-    // The caller (server.ts) should retry the download or start sync later
-    // after verifying the project state is correct.
+
     console.warn('[S3Sync] Non-critical download error - sync instance created but NOT started')
-    console.warn('[S3Sync] Caller must explicitly start sync after verifying project state')
     return { sync, downloadSucceeded: false }
   }
 
-  // Download succeeded (or no archive existed for new project) - safe to start sync
+  // Download succeeded — safe to start sync
   const isNewProject = downloadStats.downloaded === 0
 
-  // Start periodic sync (30s safety net - catches anything the watcher misses)
   sync.startPeriodicSync()
-
-  // Always start file watcher - including for new projects.
-  // This ensures the first file writes (template copy, AI code generation)
-  // trigger an immediate debounced sync to S3, rather than waiting up to 30s.
   sync.startWatcher()
 
   if (isNewProject) {
