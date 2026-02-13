@@ -29,6 +29,7 @@ import { CodeEditorPanel } from "./CodeEditorPanel"
 import { TerminalPanel } from "./TerminalPanel"
 import { DatabasePanel } from "./DatabasePanel"
 import { TestPanel } from "./TestPanel"
+import { SecurityPanel } from "./SecurityPanel"
 import { HistoryPanel } from "./HistoryPanel"
 import { cn } from "@/lib/utils"
 import { useSession } from "@/contexts/SessionProvider"
@@ -103,8 +104,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // External preview opening state
   const [isOpeningExternal, setIsOpeningExternal] = useState(false)
 
-  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'terminal' (TerminalPanel), 'database' (DatabasePanel), 'tests' (TestPanel), or 'history' (HistoryPanel)
-  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'terminal' | 'database' | 'tests' | 'history'>('runtime')
+  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'terminal' (TerminalPanel), 'database' (DatabasePanel), 'tests' (TestPanel), 'security' (SecurityPanel), or 'history' (HistoryPanel)
+  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'terminal' | 'database' | 'tests' | 'security' | 'history'>('runtime')
 
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
@@ -1008,6 +1009,17 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 Tests
               </button>
               <button
+                onClick={() => setPreviewMode('security')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'security'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Security
+              </button>
+              <button
                 onClick={() => setPreviewMode('history')}
                 className={cn(
                   "px-3 py-1 text-xs font-medium rounded-md transition-colors",
@@ -1113,6 +1125,16 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 previewMode !== 'tests' && "invisible pointer-events-none"
               )}>
                 <TestPanel
+                  projectId={projectId || ''}
+                  className="h-full"
+                />
+              </div>
+              {/* Security Panel - Automated security scanning */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'security' && "invisible pointer-events-none"
+              )}>
+                <SecurityPanel
                   projectId={projectId || ''}
                   className="h-full"
                 />
