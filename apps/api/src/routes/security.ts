@@ -346,20 +346,7 @@ const SECURITY_RULES: SecurityRule[] = [
     fileExtensions: [".ts", ".js"],
     excludePaths: [/node_modules/, /\.test\./, /\.spec\./],
   },
-  {
-    id: "SEC061",
-    title: "Console.log in Production Code",
-    severity: "info",
-    category: "Information Disclosure",
-    description:
-      "console.log statements may expose sensitive information in browser developer tools.",
-    recommendation:
-      "Remove or replace console.log with a proper logging library that can be disabled in production.",
-    pattern:
-      /console\.log\s*\(/,
-    fileExtensions: [".ts", ".tsx", ".js", ".jsx"],
-    excludePaths: [/node_modules/, /\.test\./, /\.spec\./, /\.config\./],
-  },
+  // NOTE: console.log rule removed — too noisy for most projects.
 
   // ─── MEDIUM: Insecure Dependencies ─────────────────────────────────
   {
