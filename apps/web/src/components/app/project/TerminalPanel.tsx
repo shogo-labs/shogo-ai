@@ -171,6 +171,7 @@ export function TerminalPanel({
   const abortControllerRef = useRef<AbortController | null>(null)
   const consoleEventSourceRef = useRef<EventSource | null>(null)
   const sandboxBaseUrlRef = useRef<string | null>(null)
+  const agentBaseUrlRef = useRef<string | null>(null)
 
   // Fetch available commands on mount
   useEffect(() => {
@@ -190,21 +191,43 @@ export function TerminalPanel({
     fetchCommands()
   }, [projectId])
 
-  // Fetch build log from runtime
-  const fetchBuildLog = useCallback(async () => {
-    setIsLoadingBuildLog(true)
+  // Resolve sandbox base URL and agent URL (shared by build log and server log)
+  // In local dev, the Vite dev server (sandbox URL) and project-runtime agent (agent URL) 
+  // run on different ports. SSE endpoints like /console-events and /build-events are on the agent.
+  const resolveUrls = useCallback(async (): Promise<{ sandboxUrl: string | null; agentUrl: string | null }> => {
+    if (sandboxBaseUrlRef.current) {
+      return { sandboxUrl: sandboxBaseUrlRef.current, agentUrl: agentBaseUrlRef.current || sandboxBaseUrlRef.current }
+    }
     try {
-      // Get sandbox URL first to know the runtime URL
       const sandboxResponse = await fetch(`/api/projects/${projectId}/sandbox/url`)
-      if (!sandboxResponse.ok) {
-        console.error('[TerminalPanel] Failed to get sandbox URL')
-        return
-      }
+      if (!sandboxResponse.ok) return { sandboxUrl: null, agentUrl: null }
       const sandboxData = await sandboxResponse.json()
       const url = new URL(sandboxData.url)
       const baseUrl = `${url.protocol}//${url.host}`
+      sandboxBaseUrlRef.current = baseUrl
+      // Use agentUrl if provided (local dev has separate agent server), otherwise fall back to sandbox URL
+      if (sandboxData.agentUrl) {
+        agentBaseUrlRef.current = sandboxData.agentUrl
+      } else {
+        agentBaseUrlRef.current = baseUrl
+      }
+      return { sandboxUrl: baseUrl, agentUrl: agentBaseUrlRef.current }
+    } catch {
+      return { sandboxUrl: null, agentUrl: null }
+    }
+  }, [projectId])
+
+  // Fetch build log from runtime (uses agent URL, not Vite URL)
+  const fetchBuildLog = useCallback(async () => {
+    setIsLoadingBuildLog(true)
+    try {
+      const { agentUrl } = await resolveUrls()
+      if (!agentUrl) {
+        console.error('[TerminalPanel] Failed to get agent URL')
+        return
+      }
       
-      const response = await fetch(`${baseUrl}/build-log?lines=200`)
+      const response = await fetch(`${agentUrl}/build-log?lines=200`)
       if (response.ok) {
         const data = await response.json()
         setBuildLog(data.log || '')
@@ -214,7 +237,7 @@ export function TerminalPanel({
     } finally {
       setIsLoadingBuildLog(false)
     }
-  }, [projectId])
+  }, [resolveUrls])
 
   // Auto-switch to build log tab when there's a build error
   useEffect(() => {
@@ -265,22 +288,6 @@ export function TerminalPanel({
     }
   }, [serverLog])
 
-  // Resolve sandbox base URL (shared by build log and server log)
-  const getSandboxBaseUrl = useCallback(async (): Promise<string | null> => {
-    if (sandboxBaseUrlRef.current) return sandboxBaseUrlRef.current
-    try {
-      const sandboxResponse = await fetch(`/api/projects/${projectId}/sandbox/url`)
-      if (!sandboxResponse.ok) return null
-      const sandboxData = await sandboxResponse.json()
-      const url = new URL(sandboxData.url)
-      const baseUrl = `${url.protocol}//${url.host}`
-      sandboxBaseUrlRef.current = baseUrl
-      return baseUrl
-    } catch {
-      return null
-    }
-  }, [projectId])
-
   // Connect to server console log SSE when server tab is active
   useEffect(() => {
     if (activeTab !== 'server') {
@@ -297,13 +304,13 @@ export function TerminalPanel({
 
     async function connectSSE() {
       setIsLoadingServerLog(true)
-      const baseUrl = await getSandboxBaseUrl()
-      if (!baseUrl || cancelled) {
+      const { agentUrl } = await resolveUrls()
+      if (!agentUrl || cancelled) {
         setIsLoadingServerLog(false)
         return
       }
 
-      const eventSource = new EventSource(`${baseUrl}/console-events`)
+      const eventSource = new EventSource(`${agentUrl}/console-events`)
       consoleEventSourceRef.current = eventSource
 
       eventSource.onmessage = (event) => {
@@ -344,7 +351,7 @@ export function TerminalPanel({
         setServerConnected(false)
       }
     }
-  }, [activeTab, getSandboxBaseUrl])
+  }, [activeTab, resolveUrls])
 
   // Handle server restart
   const handleRestartServer = useCallback(async () => {

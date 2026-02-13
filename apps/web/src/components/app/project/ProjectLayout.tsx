@@ -1069,15 +1069,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   buildErrorContext={buildErrorContext}
                   onRebuild={async () => {
                     try {
-                      // Get sandbox URL to call rebuild endpoint
+                      // Get sandbox URL to call rebuild endpoint on the agent server
                       const sandboxResponse = await fetch(`/api/projects/${projectId}/sandbox/url`)
                       if (!sandboxResponse.ok) {
                         console.error('[ProjectLayout] Failed to get sandbox URL')
                         return
                       }
                       const sandboxData = await sandboxResponse.json()
-                      const url = new URL(sandboxData.url)
-                      const baseUrl = `${url.protocol}//${url.host}`
+                      // Use agentUrl (project-runtime) for rebuild, not the Vite URL
+                      const baseUrl = sandboxData.agentUrl || (() => { const u = new URL(sandboxData.url); return `${u.protocol}//${u.host}` })()
                       
                       const response = await fetch(`${baseUrl}/preview/rebuild`, { method: 'POST' })
                       const data = await response.json()

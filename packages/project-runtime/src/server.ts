@@ -3082,6 +3082,24 @@ app.get('/console-log', (c) => {
 })
 
 /**
+ * Append log lines to the console log (used by RuntimeManager in local dev).
+ * In local dev, the Vite dev server is managed by RuntimeManager, not by
+ * project-runtime. RuntimeManager forwards Vite output here so the Server tab can display it.
+ */
+app.post('/console-log/append', async (c) => {
+  try {
+    const body = await c.req.json()
+    const { line, stream = 'stdout' } = body as { line: string; stream?: 'stdout' | 'stderr' }
+    if (line) {
+      appendToConsoleLog(line, stream)
+    }
+    return c.json({ ok: true })
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+})
+
+/**
  * Server-Sent Events endpoint for real-time server console log streaming.
  * Clients subscribe to receive new log lines as they arrive from the server process.
  */
@@ -4103,6 +4121,7 @@ app.all('/*', async (c, next) => {
       '/build-events',
       '/build-status',
       '/console-log',
+      '/console-log/append',
       '/console-events',
       '/preview/restart',
       '/preview/rebuild',

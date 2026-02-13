@@ -552,10 +552,31 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         if (output.includes('Local:') || output.includes('ready in')) {
           console.log(`[RuntimeManager] Vite ready for ${projectId} on port ${port}`)
         }
+        // Forward Vite output to the agent server's console log for the Server tab
+        for (const line of output.split('\n')) {
+          if (line.trim()) {
+            fetch(`http://localhost:${agentPort}/console-log/append`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ line: line.trim(), stream: 'stdout' }),
+            }).catch(() => {}) // Ignore if agent isn't ready yet
+          }
+        }
       })
 
       proc.stderr?.on('data', (data) => {
-        console.error(`[RuntimeManager] Vite stderr for ${projectId}:`, data.toString())
+        const output = data.toString()
+        console.error(`[RuntimeManager] Vite stderr for ${projectId}:`, output)
+        // Forward Vite stderr to the agent server's console log for the Server tab
+        for (const line of output.split('\n')) {
+          if (line.trim()) {
+            fetch(`http://localhost:${agentPort}/console-log/append`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ line: line.trim(), stream: 'stderr' }),
+            }).catch(() => {}) // Ignore if agent isn't ready yet
+          }
+        }
       })
 
       // Spawn project-runtime agent server for local development

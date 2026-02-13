@@ -242,6 +242,7 @@ export function RuntimePreviewPanel({
   chatError,
 }: RuntimePreviewPanelProps) {
   const [sandboxUrl, setSandboxUrl] = useState<string | null>(null)
+  const [agentUrl, setAgentUrl] = useState<string | null>(null)
   const [sandboxAttributes, setSandboxAttributes] = useState<string>('')
   const [status, setStatus] = useState<RuntimeStatus>('stopped')
   const [statusMessage, setStatusMessage] = useState<string>('Initializing...')
@@ -476,12 +477,10 @@ export function RuntimePreviewPanel({
    * MUST be defined before fetchSandboxUrlOnce which uses it
    */
   const subscribeToBuildEvents = useCallback(() => {
-    // Don't subscribe until we have a sandbox URL
-    if (!sandboxUrl) return
-    
-    // Extract base URL from sandbox URL
-    const url = new URL(sandboxUrl)
-    const baseUrl = `${url.protocol}//${url.host}`
+    // Don't subscribe until we have a URL
+    // Use agentUrl for build-events (in local dev, this is the project-runtime agent server)
+    const baseUrl = agentUrl || (sandboxUrl ? (() => { const u = new URL(sandboxUrl); return `${u.protocol}//${u.host}` })() : null)
+    if (!baseUrl) return
     
     console.log('[RuntimePreviewPanel] Subscribing to build events:', `${baseUrl}/build-events`)
     
@@ -639,6 +638,10 @@ export function RuntimePreviewPanel({
 
       setSandboxUrl(data.url)
       setSandboxAttributes(data.sandbox)
+      // Capture agentUrl for SSE endpoints (separate from Vite URL in local dev)
+      if (data.agentUrl) {
+        setAgentUrl(data.agentUrl)
+      }
       setStatus('running')
       retryCountRef.current = 0
       
@@ -714,6 +717,7 @@ export function RuntimePreviewPanel({
     retryCountRef.current = 0
     setError(null)
     setSandboxUrl(null)
+    setAgentUrl(null)
     setStatus('stopped')
     setStatusMessage('Initializing...')
     setIframeLoaded(false)
