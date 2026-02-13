@@ -597,9 +597,10 @@ const claudeCode = createClaudeCode({
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
       // Skill and agent tools
       'Skill', 'Task', 'Bash', 'TodoWrite',
-      // Template tools (underscores - Claude Code converts dots to underscores)
+      // MCP tools (underscores - Claude Code converts dots to underscores)
       'mcp__wavesmith__template_list',
       'mcp__wavesmith__template_copy',
+      'mcp__wavesmith__image_save',
       // Wavesmith MCP tools - Schema (underscores)
       // 'mcp__wavesmith__schema_set',
       // 'mcp__wavesmith__schema_get',
@@ -768,37 +769,39 @@ function mimeToExt(mimeType: string): string {
 }
 
 /**
- * Write user-attached image parts to public/ so the agent can reference them in code.
- * Returns the list of saved paths (e.g. ["public/upload-0.png"]).
+ * Write user-attached images to .image-staging/ so the agent can save them
+ * to public/ via the save_image MCP tool with a meaningful filename.
+ * Returns metadata about each staged image.
  */
-function writeAttachedImagesToPublic(
+function stageAttachedImages(
   contentParts: Array<{ type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }>,
   projectDir: string
-): string[] {
+): Array<{ id: string; stagedPath: string; ext: string; sizeKB: number }> {
   const imageParts = contentParts.filter((p): p is { type: 'image'; image: string; mimeType: string } => p.type === 'image')
   if (imageParts.length === 0) return []
 
-  const publicDir = join(projectDir, 'public')
-  if (!existsSync(publicDir)) {
-    mkdirSync(publicDir, { recursive: true })
+  const stagingDir = join(projectDir, '.image-staging')
+  if (!existsSync(stagingDir)) {
+    mkdirSync(stagingDir, { recursive: true })
   }
 
-  const savedPaths: string[] = []
+  const results: Array<{ id: string; stagedPath: string; ext: string; sizeKB: number }> = []
   for (let i = 0; i < imageParts.length; i++) {
     const part = imageParts[i]
     const ext = mimeToExt(part.mimeType)
-    const fileName = `upload-${i}${ext}`
-    const relativePath = `public/${fileName}`
-    const fullPath = join(projectDir, relativePath)
+    const id = `image-${i}`
+    const fileName = `${id}${ext}`
+    const stagedPath = `.image-staging/${fileName}`
+    const fullPath = join(projectDir, stagedPath)
     try {
       const buf = Buffer.from(part.image, 'base64')
       writeFileSync(fullPath, buf)
-      savedPaths.push(relativePath)
+      results.push({ id, stagedPath, ext: ext.replace('.', ''), sizeKB: Math.round(buf.length / 1024) })
     } catch (err) {
-      console.error(`[project-runtime] Failed to write attached image to ${relativePath}:`, err)
+      console.error(`[project-runtime] Failed to stage image ${stagedPath}:`, err)
     }
   }
-  return savedPaths
+  return results
 }
 
 // =============================================================================
@@ -1147,13 +1150,14 @@ app.post('/agent/chat', async (c) => {
           }
         }
 
-        // Persist user-attached images to public/ so the agent can reference them in code
+        // Stage user-attached images to .image-staging/ for the image.save MCP tool
         if (msg.role === 'user' && contentParts.some((p) => p.type === 'image')) {
-          const savedPaths = writeAttachedImagesToPublic(contentParts, PROJECT_DIR)
-          if (savedPaths.length > 0) {
+          const staged = stageAttachedImages(contentParts, PROJECT_DIR)
+          if (staged.length > 0) {
+            const imageInfos = staged.map(s => `${s.id} (${s.ext}, ${s.sizeKB}KB) -> ${s.stagedPath}`)
             contentParts.push({
               type: 'text',
-              text: ` [Attached image(s) saved to: ${savedPaths.join(', ')}. Use these paths in CSS (e.g. url('/${savedPaths[0].replace(/^public\//, '')}')) or in <img src="/..."/>.]`,
+              text: ` [Images staged: ${imageInfos.join(', ')}. Use the image.save tool to save to public/ with a meaningful filename.]`,
             })
           }
         }
@@ -1190,13 +1194,14 @@ app.post('/agent/chat', async (c) => {
           }
         }
 
-        // Persist user-attached images to public/ so the agent can reference them in code
+        // Stage user-attached images to .image-staging/ for the image.save MCP tool
         if (msg.role === 'user' && contentParts.some((p) => p.type === 'image')) {
-          const savedPaths = writeAttachedImagesToPublic(contentParts, PROJECT_DIR)
-          if (savedPaths.length > 0) {
+          const staged = stageAttachedImages(contentParts, PROJECT_DIR)
+          if (staged.length > 0) {
+            const imageInfos = staged.map(s => `${s.id} (${s.ext}, ${s.sizeKB}KB) -> ${s.stagedPath}`)
             contentParts.push({
               type: 'text',
-              text: ` [Attached image(s) saved to: ${savedPaths.join(', ')}. Use these paths in CSS (e.g. url('/${savedPaths[0].replace(/^public\//, '')}')) or in <img src="/..."/>.]`,
+              text: ` [Images staged: ${imageInfos.join(', ')}. Use the image.save tool to save to public/ with a meaningful filename.]`,
             })
           }
         }

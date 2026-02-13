@@ -103,6 +103,7 @@ export class S3Sync {
         'dev.db',             // Local SQLite (we use Postgres in K8s)
         'dev.db-journal',     // SQLite journal
         '.bun',               // Bun cache (can be regenerated)
+        '.image-staging',     // Temporary image staging (images saved to public/ via tool)
       ],
       syncInterval: config.syncInterval ?? 30000, // 30 seconds default
       watchEnabled: config.watchEnabled ?? true,

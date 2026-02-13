@@ -186,9 +186,20 @@ The project has convenient scripts in package.json:
 
 export const USER_ATTACHED_IMAGES = `## User-Attached Images
 
-**All images that the user attaches in chat are saved to the \`public/\` folder** (e.g. \`public/upload-0.png\`).
+When the user attaches images in chat, you can see them as visual content in the conversation. However, **images are NOT automatically saved to the project**.
 
-When the user asks to use an attached image in the app (e.g. "make this the background"), the image is already saved under \`public/\`. The user's message will include a line like: "Attached image(s) saved to: public/upload-0.png". Use that path in your code: in CSS use \`url('/upload-0.png')\` (Vite serves \`public/\` at root); in JSX use \`<img src="/upload-0.png" />\`. Do NOT run \`curl\` or try to download the image—it is already in the project.`
+Images are staged to \`.image-staging/\` with IDs like "image-0", "image-1". To use an attached image in the project code, you **must** call the \`image.save\` MCP tool first:
+
+1. Call \`image.save\` with the image ID and a meaningful filename:
+   - \`image.save({ imageId: "image-0", filename: "hero-bg.png" })\`
+2. The tool saves it to \`public/hero-bg.png\` and returns the path.
+3. Use the returned path in code: CSS \`url('/hero-bg.png')\`, JSX \`<img src="/hero-bg.png" />\`.
+
+**Important rules:**
+- Always call \`image.save\` BEFORE referencing the image in any code.
+- Choose a meaningful filename that describes the image's purpose (e.g. "logo.png", "hero-bg.jpg").
+- Do NOT run \`curl\` or try to download the image — use the \`image.save\` tool.
+- Do NOT manually copy files from \`.image-staging/\` — always use the tool.`
 
 // =============================================================================
 // [DSPy-Optimized] Schema Modifications
