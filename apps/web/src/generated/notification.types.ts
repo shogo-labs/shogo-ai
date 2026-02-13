@@ -6,7 +6,7 @@
 
 export type NotificationType = 'invitation_pending' | 'invitation_accepted' | 'member_joined' | 'member_left' | 'workspace_updated'
 
-export interface NotificationType {
+export interface Notification {
   id: string
   userId: string
   type: NotificationType

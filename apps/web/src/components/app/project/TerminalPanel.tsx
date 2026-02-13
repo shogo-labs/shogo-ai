@@ -514,7 +514,7 @@ export function TerminalPanel({
                   {/* Category commands */}
                   {expandedCategories.has(category) && (
                     <div className="ml-2">
-                      {categoryCommands?.map((cmd) => (
+                      {categoryCommands?.map((cmd: PresetCommand) => (
                         <button
                           key={cmd.id}
                           onClick={() => handleCommandClick(cmd)}

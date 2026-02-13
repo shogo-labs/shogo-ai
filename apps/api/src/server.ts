@@ -396,7 +396,7 @@ const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'work
  */
 type PermissionResult =
   | { behavior: 'allow' }
-  | { behavior: 'deny'; message?: string }
+  | { behavior: 'deny'; message: string }
 
 /**
  * Type for canUseTool callback function.

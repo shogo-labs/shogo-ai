@@ -68,7 +68,7 @@ const SYNC_DEBOUNCE_MS = 3000
 
 export class S3Sync {
   private client: S3Client
-  private config: Required<S3SyncConfig>
+  private config: Omit<Required<S3SyncConfig>, 'endpoint'> & { endpoint?: string }
   private stats: SyncStats = {
     downloaded: 0,
     uploaded: 0,
@@ -89,7 +89,7 @@ export class S3Sync {
       bucket: config.bucket,
       prefix: config.prefix,
       localDir: config.localDir,
-      endpoint: config.endpoint || process.env.S3_ENDPOINT || undefined,
+      endpoint: config.endpoint || process.env.S3_ENDPOINT,
       region: config.region || process.env.S3_REGION || 'us-east-1',
       forcePathStyle: config.forcePathStyle ?? (process.env.S3_FORCE_PATH_STYLE === 'true'),
       // Exclude patterns - these won't be included in the zip

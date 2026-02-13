@@ -292,7 +292,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
       try {
         // Load workspaces first to ensure safeReference can resolve
         // This prevents MST reference errors when loading projects directly
-        await store.workspaceCollection.loadAll({ userId: session.user.id })
+        await store.workspaceCollection.loadAll({ userId: session.user!.id })
 
         // Load the project from SDK store
         await store.projectCollection.loadAll({ id: projectId })
@@ -912,7 +912,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
               )}
             >
               <ChatPanel
-                featureId={projectId}
+                featureId={projectId ?? null}
                 featureName={project.name}
                 phase={null}
                 chatSessionId={chatSessionId}

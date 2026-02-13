@@ -91,9 +91,6 @@ function getOrCreateStore(userId: string | null): {
   moduleHttpClient = new HttpClient({
     baseUrl: API_BASE_URL,
     getToken: () => null, // Token is handled via cookies/session
-    defaultHeaders: {
-      'Content-Type': 'application/json',
-    },
   })
 
   // Create environment

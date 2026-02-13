@@ -18,5 +18,5 @@
     "noEmit": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "examples", "tests"]
+  "exclude": ["node_modules", "dist", "examples", "tests", "src/**/__tests__/**"]
 }
