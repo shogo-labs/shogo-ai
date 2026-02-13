@@ -258,8 +258,8 @@ services:
       BETTER_AUTH_SECRET: shogo-local-dev-secret-32-chars-minimum-ok
       BETTER_AUTH_URL: http://localhost:${WEB_PORT:-3333}
       ALLOWED_ORIGINS: http://localhost:${WEB_PORT:-3333},http://localhost:${VITE_DEV_PORT:-5173}
-      # Agent persona: 'wavesmith' (default) or 'code'
-      SHOGO_AGENT: wavesmith
+      # Agent persona: 'shogo' (default) or 'code'
+      SHOGO_AGENT: shogo
       # ANTHROPIC_API_KEY loaded from .env.local via env_file
       # Runtime workspaces for Vite dev servers
       WORKSPACES_DIR: /app/workspaces

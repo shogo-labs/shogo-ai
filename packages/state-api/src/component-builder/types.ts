@@ -93,7 +93,7 @@ export interface PropertyMetadata {
 }
 
 /**
- * Intermediate format for registry entries that can be hydrated from Wavesmith entities.
+ * Intermediate format for registry entries that can be hydrated from Shogo entities.
  * Has NO React dependency - componentRef is a string lookup key, not a React component.
  *
  * This is produced by hydration layer in state-api and consumed by apps/web

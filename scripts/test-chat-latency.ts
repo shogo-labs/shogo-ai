@@ -538,7 +538,7 @@ function printComparison(suites: { label: string; results: TimingResult[] }[]) {
         console.log("  \x1b[1;31m⚠️  Claude Code SDK adds significant overhead (>3s)\x1b[0m")
         console.log("  This is likely caused by:")
         console.log("    1. Claude Code CLI subprocess spawn/initialization")
-        console.log("    2. MCP server startup (wavesmith subprocess, virtual-tools)")
+        console.log("    2. MCP server startup (shogo subprocess, virtual-tools)")
         console.log("    3. Session file I/O (reading/writing conversation state)")
         console.log("    4. Permission/tool configuration processing")
         console.log()

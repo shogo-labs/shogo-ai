@@ -1,7 +1,7 @@
 /**
  * Unit tests for namespace derivation and table qualification
  *
- * Tests conversion of Wavesmith schema names to SQL-safe namespace identifiers
+ * Tests conversion of Shogo schema names to SQL-safe namespace identifiers
  * and generation of dialect-specific qualified table names.
  */
 

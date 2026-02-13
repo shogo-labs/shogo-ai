@@ -18,8 +18,8 @@
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",
     "@shogo-ai/sdk": "workspace:*",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.41",
     "ai": "^6.0.73",
-    "ai-sdk-provider-claude-code": "^3.3.0",
     "better-auth": "^1.2.8",
     "hono": "^4.7.10",
     "nanoid": "^5.0.9",
@@ -28,7 +28,6 @@
     "stripe": "^20.2.0"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.17",
     "@types/bun": "latest",
     "@types/nodemailer": "^6.4.17",
     "@types/pg": "^8.16.0",

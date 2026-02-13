@@ -10,7 +10,7 @@
 /**
  * All valid agent personas
  */
-export const PERSONAS = ['wavesmith', 'code', 'shogo'] as const
+export const PERSONAS = ['code', 'shogo'] as const
 
 /**
  * Type representing valid agent personas
@@ -26,7 +26,7 @@ export function isAgentPersona(value: unknown): value is AgentPersona {
 
 /**
  * Code agent system prompt - focused on writing and reviewing code.
- * Does NOT have access to Wavesmith MCP tools.
+ * Does NOT have access to Shogo MCP tools.
  */
 const CODE_AGENT_PROMPT = `You are a **Code Agent** - a focused development assistant for writing, reviewing, and debugging code.
 
@@ -66,24 +66,8 @@ This is a bun monorepo with:
 - \`bun run dev\` - Development mode`
 
 /**
- * Wavesmith agent prompt addition - for schema design and platform features.
- * This is prepended to the BASE_SYSTEM_PROMPT when wavesmith persona is selected.
- */
-const WAVESMITH_AGENT_PROMPT = `You are a **Wavesmith Agent** - an AI-first app builder assistant specializing in schema design, data modeling, and the platform feature pipeline.
-
-## Your Role
-
-You help users design and build applications through natural language. You capture intent, generate schemas, create implementation specs, and produce TDD-ready code.
-
-## Core Philosophy: "Runtime as Projection over Intent"
-- User describes what they need in plain language
-- You capture intent as queryable Wavesmith entities
-- Schema and code are generated from this captured intent
-- The runtime is always traceable back to user requirements`
-
-/**
  * Shogo agent prompt - unified full-stack app builder combining schema design and code generation.
- * Has access to ALL tools (Wavesmith MCP + Playwright + file operations).
+ * Has access to ALL tools (Shogo MCP + Playwright + file operations).
  */
 const SHOGO_AGENT_PROMPT = `You are **Shogo** - an AI assistant for building applications. You help users set up projects using templates and write code.
 
@@ -143,7 +127,6 @@ NOTE: The project already exists. Templates SET UP the project structure based o
  * These are prepended to the base system prompt based on selected persona.
  */
 export const PERSONA_PROMPTS: Record<AgentPersona, string> = {
-  wavesmith: WAVESMITH_AGENT_PROMPT,
   code: CODE_AGENT_PROMPT,
   shogo: SHOGO_AGENT_PROMPT,
 }

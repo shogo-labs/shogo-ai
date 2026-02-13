@@ -714,10 +714,10 @@ async function parseAgentStreamingResponse(
               const input = data.input || {}
               
               // Normalize MCP tool names to our expected format
-              // MCP tools come as: mcp__wavesmith__template_copy -> template.copy
+              // MCP tools come as: mcp__shogo__template_copy -> template.copy
               let normalizedName = toolName
-              if (toolName.startsWith('mcp__wavesmith__template_')) {
-                normalizedName = toolName.replace('mcp__wavesmith__template_', 'template.')
+              if (toolName.startsWith('mcp__shogo__template_')) {
+                normalizedName = toolName.replace('mcp__shogo__template_', 'template.')
               } else if (toolName.startsWith('mcp__') && toolName.includes('__template_')) {
                 // Handle other MCP server names too
                 const match = toolName.match(/mcp__\w+__template_(\w+)/)

@@ -1,6 +1,8 @@
 #!/bin/bash
-# E2E tests for agent persona selection
-# Tests the select-persona.sh script behavior
+# Test script for persona selection
+# Verifies that select-persona.sh correctly handles SHOGO_AGENT env var
+#
+# Usage: ./scripts/test-persona-selection.sh
 
 set -e
 
@@ -12,24 +14,24 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m' # No Color
 
-TESTS_PASSED=0
-TESTS_FAILED=0
+PASSED=0
+FAILED=0
 
 # Helper to run a test
 run_test() {
-    local name="$1"
+    local test_name="$1"
     local result="$2"
-
-    if [ "$result" -eq 0 ]; then
-        echo -e "${GREEN}✓${NC} $name"
-        ((TESTS_PASSED++))
+    
+    if [ "$result" = "0" ]; then
+        echo -e "${GREEN}✓ PASS${NC}: $test_name"
+        PASSED=$((PASSED + 1))
     else
-        echo -e "${RED}✗${NC} $name"
-        ((TESTS_FAILED++))
+        echo -e "${RED}✗ FAIL${NC}: $test_name"
+        FAILED=$((FAILED + 1))
     fi
 }
 
-# Backup current configs
+# Backup existing configs
 backup_configs() {
     [ -f "$PROJECT_ROOT/CLAUDE.md" ] && cp "$PROJECT_ROOT/CLAUDE.md" "$PROJECT_ROOT/CLAUDE.md.bak"
     [ -f "$PROJECT_ROOT/.mcp.json" ] && cp "$PROJECT_ROOT/.mcp.json" "$PROJECT_ROOT/.mcp.json.bak"
@@ -43,19 +45,13 @@ restore_configs() {
     [ -f "$PROJECT_ROOT/.claude/settings.json.bak" ] && mv "$PROJECT_ROOT/.claude/settings.json.bak" "$PROJECT_ROOT/.claude/settings.json"
 }
 
-# Cleanup on exit
-trap restore_configs EXIT
-
-echo "Running persona selection e2e tests..."
-echo ""
-
 # Check prerequisites
 if [ ! -f "$SCRIPT_DIR/select-persona.sh" ]; then
-    echo -e "${RED}Error: select-persona.sh not found. Run implementation first.${NC}"
+    echo -e "${RED}Error: select-persona.sh not found${NC}"
     exit 1
 fi
 
-if [ ! -d "$PROJECT_ROOT/.claude/personas/wavesmith" ] || [ ! -d "$PROJECT_ROOT/.claude/personas/code" ]; then
+if [ ! -d "$PROJECT_ROOT/.claude/personas/shogo" ] || [ ! -d "$PROJECT_ROOT/.claude/personas/code" ]; then
     echo -e "${RED}Error: Persona directories not found. Run implementation first.${NC}"
     exit 1
 fi
@@ -63,14 +59,14 @@ fi
 backup_configs
 
 # =============================================================================
-# Test 1: Default persona (no env var) selects wavesmith
+# Test 1: Default persona (no env var) selects shogo
 # =============================================================================
 test_default_persona() {
     unset SHOGO_AGENT
 
     "$SCRIPT_DIR/select-persona.sh" > /dev/null 2>&1
 
-    # Verify wavesmith CLAUDE.md was copied (should contain "Wavesmith" or full platform docs)
+    # Verify shogo CLAUDE.md was copied (should contain platform docs)
     if grep -q "platform-feature" "$PROJECT_ROOT/CLAUDE.md" 2>/dev/null; then
         return 0
     else
@@ -78,25 +74,25 @@ test_default_persona() {
     fi
 }
 
-run_test "Test 1: Default (no env var) selects wavesmith persona" "$(test_default_persona; echo $?)"
+run_test "Test 1: Default (no env var) selects shogo persona" "$(test_default_persona; echo $?)"
 
 # =============================================================================
-# Test 2: SHOGO_AGENT=wavesmith selects wavesmith
+# Test 2: SHOGO_AGENT=shogo selects shogo
 # =============================================================================
-test_wavesmith_persona() {
-    export SHOGO_AGENT=wavesmith
+test_shogo_persona() {
+    export SHOGO_AGENT=shogo
 
     "$SCRIPT_DIR/select-persona.sh" > /dev/null 2>&1
 
-    # Verify wavesmith configs - should have wavesmith MCP server
-    if grep -q "wavesmith" "$PROJECT_ROOT/.mcp.json" 2>/dev/null; then
+    # Verify shogo configs - should have shogo MCP server
+    if grep -q "shogo" "$PROJECT_ROOT/.mcp.json" 2>/dev/null; then
         return 0
     else
         return 1
     fi
 }
 
-run_test "Test 2: SHOGO_AGENT=wavesmith selects wavesmith persona" "$(test_wavesmith_persona; echo $?)"
+run_test "Test 2: SHOGO_AGENT=shogo selects shogo persona" "$(test_shogo_persona; echo $?)"
 
 # =============================================================================
 # Test 3: SHOGO_AGENT=code selects code persona
@@ -106,8 +102,8 @@ test_code_persona() {
 
     "$SCRIPT_DIR/select-persona.sh" > /dev/null 2>&1
 
-    # Verify code configs - should NOT have wavesmith MCP server, should NOT have platform-feature skills
-    if ! grep -q "wavesmith" "$PROJECT_ROOT/.mcp.json" 2>/dev/null && \
+    # Verify code configs - should NOT have shogo MCP server, should NOT have platform-feature skills
+    if ! grep -q "shogo" "$PROJECT_ROOT/.mcp.json" 2>/dev/null && \
        ! grep -q "platform-feature" "$PROJECT_ROOT/CLAUDE.md" 2>/dev/null; then
         return 0
     else
@@ -117,16 +113,15 @@ test_code_persona() {
 
 run_test "Test 3: SHOGO_AGENT=code selects code persona" "$(test_code_persona; echo $?)"
 
+# Restore original configs
+restore_configs
+
 # =============================================================================
 # Summary
 # =============================================================================
 echo ""
-echo "=========================================="
-echo "Results: $TESTS_PASSED passed, $TESTS_FAILED failed"
-echo "=========================================="
+echo "Results: $PASSED passed, $FAILED failed"
 
-if [ "$TESTS_FAILED" -gt 0 ]; then
+if [ "$FAILED" -gt 0 ]; then
     exit 1
 fi
-
-exit 0

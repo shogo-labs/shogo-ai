@@ -1,13 +1,13 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import Stripe from 'stripe'
-import { streamText, generateText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
+import { generateText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
 import { z } from 'zod'
 import { EventEmitter } from 'events'
 import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
 // isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
-import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
-import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-provider-claude-code'
+import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions } from '@anthropic-ai/claude-agent-sdk'
+import { createSdkMcpServer, tool as sdkTool, unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
@@ -16,7 +16,7 @@ import { existsSync, mkdirSync } from 'fs'
 import { auth } from './auth'
 import { PERSONA_PROMPTS, isAgentPersona, type AgentPersona } from './prompts/persona-prompts'
 import { getPriceId } from './config/stripe-prices'
-import { processInterleavedStream, finalizeCurrentText } from './lib/interleaved-stream'
+// processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
@@ -245,9 +245,7 @@ const progressEvents = new EventEmitter()
 // (virtual-tools-domain Phase 0 PoC)
 const virtualToolEvents = new EventEmitter()
 
-// Stream completion event emitter - signals when parent agent finishes (fixes subagent hang)
-// This is separate from progressEvents to avoid confusion between progress updates and completion signals
-const streamCompletionEvents = new EventEmitter()
+// streamCompletionEvents removed — V2 SDK session.stream() naturally completes per turn
 
 // Debug logging prefix for subagent progress
 const LOG_PREFIX = '[SubagentProgress]'
@@ -312,7 +310,7 @@ const virtualToolsServer = createSdkMcpServer({
         // Process each operation
         for (const op of args.operations ?? []) {
           // Check if this is a schema operation that should go to MCP
-          const isSchemaOperation = op.model === 'Schema' || op.domain === 'schema' || (op.domain === 'wavesmith' && op.model === 'Schema')
+          const isSchemaOperation = op.model === 'Schema' || op.domain === 'schema' || (op.domain === 'shogo' && op.model === 'Schema')
           
           if (isSchemaOperation && op.action === 'create' && op.data) {
             // Call MCP schema.set directly and return real result
@@ -390,23 +388,7 @@ const virtualToolsServer = createSdkMcpServer({
 // Get workspaces directory for project-scoped operations
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
 
-/**
- * Type for canUseTool permission result.
- * See: https://docs.anthropic.com/en/docs/claude-code/sdk
- */
-type PermissionResult =
-  | { behavior: 'allow' }
-  | { behavior: 'deny'; message: string }
-
-/**
- * Type for canUseTool callback function.
- * Invoked before every tool execution to check permissions.
- */
-type CanUseTool = (
-  toolName: string,
-  input: Record<string, unknown>,
-  options: { signal: AbortSignal }
-) => Promise<PermissionResult>
+// CanUseTool type is imported from @anthropic-ai/claude-agent-sdk
 
 /**
  * Create a canUseTool callback that restricts file operations to projectDir.
@@ -478,62 +460,152 @@ function createProjectPathRestrictor(projectDir: string): CanUseTool {
  * workspace via canUseTool callback. This prevents the agent from accessing
  * files outside the project directory (e.g., the Shogo platform codebase).
  */
-function createProjectScopedClaudeCode(projectId?: string) {
-  // Determine working directory - project workspace if projectId provided, else project root
+// =============================================================================
+// V2 Agent SDK Session Management
+// =============================================================================
+// Uses the V2 session-based API from @anthropic-ai/claude-agent-sdk.
+// Sessions persist across HTTP requests, keeping the CLI subprocess alive.
+// This eliminates the 7-12s cold start overhead per message.
+//
+// Architecture:
+//   createSession() → session.send(msg) → session.stream() → convert to UIMessageStream
+//   Session persists between requests (no subprocess respawn)
+//
+// The V2 SDKSessionOptions type is incomplete (preview API), but the runtime
+// accepts all V1 QueryOptions properties. We extend the type to include them.
+
+/** V1 QueryOptions fields that V2 runtime accepts but aren't yet typed */
+interface ExtendedSessionOptions extends SDKSessionOptions {
+  cwd?: string
+  mcpServers?: Record<string, any>
+  systemPrompt?: string | { type: 'preset'; preset: 'claude_code'; append?: string }
+  settingSources?: string[]
+  allowDangerouslySkipPermissions?: boolean
+  includePartialMessages?: boolean
+  persistSession?: boolean
+}
+
+// Shared allowedTools list for all sessions
+const ALLOWED_TOOLS = [
+  // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
+  'mcp__virtual-tools__set_workspace',
+  'mcp__virtual-tools__execute',
+  // File operations
+  'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
+  // Skill and agent tools
+  'Skill', 'Task', 'Bash', 'TodoWrite',
+  // Shogo MCP tools - Schema
+  'mcp__shogo__schema_set',
+  'mcp__shogo__schema_get',
+  'mcp__shogo__schema_list',
+  'mcp__shogo__schema_load',
+  // Shogo MCP tools - Store
+  'mcp__shogo__store_create',
+  'mcp__shogo__store_list',
+  'mcp__shogo__store_get',
+  'mcp__shogo__store_update',
+  'mcp__shogo__store_query',
+  'mcp__shogo__store_models',
+  'mcp__shogo__store_delete',
+  // Shogo MCP tools - Views
+  'mcp__shogo__view_execute',
+  'mcp__shogo__view_define',
+  'mcp__shogo__view_project',
+  // Shogo MCP tools - Data & DDL
+  'mcp__shogo__data_load',
+  'mcp__shogo__data_loadAll',
+  'mcp__shogo__ddl_execute',
+  'mcp__shogo__ddl_migrate',
+]
+
+// Shared hooks for all sessions (emit to module-level EventEmitters)
+const SESSION_HOOKS = {
+  SubagentStart: [{
+    hooks: [async (rawInput: unknown) => {
+      const input = rawInput as SubagentStartHookInput
+      console.log(`${LOG_PREFIX} 🚀 HOOK SubagentStart fired:`, {
+        agentId: input.agent_id,
+        agentType: input.agent_type,
+      })
+      progressEvents.emit('progress', {
+        type: 'subagent-start',
+        agentId: input.agent_id,
+        agentType: input.agent_type,
+        timestamp: Date.now(),
+      } satisfies SubagentProgressEvent)
+      return { continue: true }
+    }]
+  }],
+  SubagentStop: [{
+    hooks: [async (rawInput: unknown) => {
+      const input = rawInput as SubagentStopHookInput
+      console.log(`${LOG_PREFIX} 🛑 HOOK SubagentStop fired:`, { agentId: input.agent_id })
+      progressEvents.emit('progress', {
+        type: 'subagent-stop',
+        agentId: input.agent_id,
+        timestamp: Date.now(),
+      } satisfies SubagentProgressEvent)
+      return { continue: true }
+    }]
+  }],
+  PostToolUse: [{
+    hooks: [async (rawInput: unknown) => {
+      const input = rawInput as PostToolUseHookInput
+      if (input.tool_name.includes('mcp__') || input.tool_name === 'Skill' || input.tool_name === 'Task') {
+        console.log(`${LOG_PREFIX} 🔧 HOOK PostToolUse:`, { toolName: input.tool_name })
+      }
+      progressEvents.emit('progress', {
+        type: 'tool-complete',
+        toolName: input.tool_name,
+        toolUseId: input.tool_use_id,
+        timestamp: Date.now(),
+      } satisfies SubagentProgressEvent)
+      return { continue: true }
+    }]
+  }],
+}
+
+/**
+ * Build V2 session options for a given scope (platform or project).
+ * Includes all V1 QueryOptions needed for MCP servers, permissions, and hooks.
+ */
+function buildSessionOptions(projectId?: string, systemPrompt?: string): ExtendedSessionOptions {
   let cwd = PROJECT_ROOT
-  // Track project directory for path restriction (null means full access)
   let projectDir: string | null = null
 
   if (projectId) {
     const resolvedProjectDir = resolve(WORKSPACES_DIR, projectId)
-    // PROACTIVELY create workspace directory if it doesn't exist
-    // This ensures template.copy and AI edits write to the correct location
-    // Critical fix: Without this, cwd falls back to PROJECT_ROOT and edits go to wrong place
     try {
       if (!existsSync(resolvedProjectDir)) {
         console.log(`[ClaudeCode] Creating workspace directory: ${resolvedProjectDir}`)
         mkdirSync(resolvedProjectDir, { recursive: true })
       }
-      // Always use project workspace as cwd when projectId is provided
       cwd = resolvedProjectDir
-      projectDir = resolvedProjectDir // Enable path restriction
+      projectDir = resolvedProjectDir
       console.log(`[ClaudeCode] Using project workspace: ${resolvedProjectDir}`)
     } catch (e) {
       console.error(`[ClaudeCode] Error creating/checking project workspace: ${e}`)
-      // Fall back to project root only on error
       console.warn(`[ClaudeCode] Falling back to project root (no path restriction)`)
     }
   }
 
   const pathRestrictor = projectDir ? createProjectPathRestrictor(projectDir) : undefined
-  console.log(`[ClaudeCode] Creating provider with cwd: ${cwd}${projectId ? ` (project: ${projectId})` : ' (platform)'}${projectDir ? ' [path-restricted]' : ''}`);
-  console.log(`[ClaudeCode] canUseTool callback: ${pathRestrictor ? 'SET' : 'NOT SET'}`);
+  console.log(`[ClaudeCode] Building session options: cwd=${cwd}, pathRestricted=${!!pathRestrictor}`)
 
-  return createClaudeCode({
-  defaultSettings: {
-    // Enable streaming input - REQUIRED for hooks to fire
-    // See: https://ai-sdk.dev/providers/claude-code (hooks require streaming input)
-    streamingInput: 'always',
-    // perf: Disable verbose logging to reduce I/O overhead in production
-    // Set to true temporarily when debugging Claude Code provider issues
-    verbose: false,
-    // Set working directory - project workspace or project root
+  return {
+    model: 'claude-opus-4-20250514',
     cwd,
-    // Path restriction for project-scoped sessions (prevents access outside workspace)
-    // undefined means no restriction (full filesystem access for platform-level operations)
     canUseTool: pathRestrictor,
-    // Load project settings (picks up .claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
-    // MCP servers - Wavesmith for data + Virtual tools for client-side effects
+    // Include partial messages so we get streaming text deltas
+    includePartialMessages: true,
+    // System prompt (set once per session, constant for a given scope)
+    ...(systemPrompt && { systemPrompt }),
+    // MCP servers
     mcpServers: {
-      wavesmith: {
-        // Run MCP server as subprocess (packages/mcp included in Docker build)
-        // Path varies between local dev and Docker:
-        // - Local: PROJECT_ROOT/packages/mcp/src/server-templates.ts
-        // - Docker: /app/packages/mcp/src/server-templates.ts
+      shogo: {
         command: 'bun',
         args: ['run', resolve(PROJECT_ROOT, 'packages/mcp/src/server-templates.ts')],
-        // Pass PROJECT_ID and PROJECT_DIR so template.copy writes to correct location
         env: {
           ...(projectId && {
             PROJECT_ID: projectId,
@@ -541,271 +613,72 @@ function createProjectScopedClaudeCode(projectId?: string) {
           }),
         },
       },
-      // SDK MCP server for virtual tools (in-process, defined above)
       'virtual-tools': virtualToolsServer,
     },
-    // Allow MCP tools, file operations, and skill invocation
-    allowedTools: [
-      // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
-      'mcp__virtual-tools__set_workspace',
-      'mcp__virtual-tools__execute',
-      // File operations
-      'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
-      // Skill and agent tools
-      'Skill', 'Task', 'Bash', 'TodoWrite',
-      // Wavesmith MCP tools - Schema
-      'mcp__wavesmith__schema_set',
-      'mcp__wavesmith__schema_get',
-      'mcp__wavesmith__schema_list',
-      'mcp__wavesmith__schema_load',
-      // Wavesmith MCP tools - Store
-      'mcp__wavesmith__store_create',
-      'mcp__wavesmith__store_list',
-      'mcp__wavesmith__store_get',
-      'mcp__wavesmith__store_update',
-      'mcp__wavesmith__store_query',
-      'mcp__wavesmith__store_models',
-      'mcp__wavesmith__store_delete',
-      // Wavesmith MCP tools - Views
-      'mcp__wavesmith__view_execute',
-      'mcp__wavesmith__view_define',
-      'mcp__wavesmith__view_project',
-      // Wavesmith MCP tools - Data & DDL
-      'mcp__wavesmith__data_load',
-      'mcp__wavesmith__data_loadAll',
-      'mcp__wavesmith__ddl_execute',
-      'mcp__wavesmith__ddl_migrate',
-      // Chrome DevTools MCP - Navigation & Pages
-      'mcp__chrome-devtools__navigate_page',
-      'mcp__chrome-devtools__new_page',
-      'mcp__chrome-devtools__close_page',
-      'mcp__chrome-devtools__select_page',
-      'mcp__chrome-devtools__list_pages',
-      'mcp__chrome-devtools__wait_for',
-      'mcp__chrome-devtools__resize_page',
-      // Chrome DevTools MCP - Input & Interaction
-      'mcp__chrome-devtools__click',
-      'mcp__chrome-devtools__fill',
-      'mcp__chrome-devtools__fill_form',
-      'mcp__chrome-devtools__hover',
-      'mcp__chrome-devtools__press_key',
-      'mcp__chrome-devtools__drag',
-      'mcp__chrome-devtools__upload_file',
-      'mcp__chrome-devtools__handle_dialog',
-      // Chrome DevTools MCP - Inspection & Debugging
-      'mcp__chrome-devtools__take_screenshot',
-      'mcp__chrome-devtools__take_snapshot',
-      'mcp__chrome-devtools__evaluate_script',
-      'mcp__chrome-devtools__list_console_messages',
-      'mcp__chrome-devtools__get_console_message',
-      // Chrome DevTools MCP - Network
-      'mcp__chrome-devtools__list_network_requests',
-      'mcp__chrome-devtools__get_network_request',
-      'mcp__chrome-devtools__emulate',
-      // Chrome DevTools MCP - Performance
-      'mcp__chrome-devtools__performance_start_trace',
-      'mcp__chrome-devtools__performance_stop_trace',
-      'mcp__chrome-devtools__performance_analyze_insight',
-    ],
-    // Permission mode:
-    // - When canUseTool callback is provided (project-scoped): use 'default' so CLI sends
-    //   permission requests to SDK, which invokes our callback for path restriction
-    // - When no canUseTool callback (platform-level): use 'bypassPermissions' for non-interactive use
+    // PERF: Keep this list minimal — each tool adds ~550-850 tokens of context
+    allowedTools: ALLOWED_TOOLS,
     permissionMode: pathRestrictor ? 'default' : 'bypassPermissions',
-    // Skip the dangerous bypass confirmation for non-project sessions
     allowDangerouslySkipPermissions: !pathRestrictor,
-    // Hooks for subagent progress streaming (task-subagent-progress-streaming)
-    // and virtual tool interception (virtual-tools-domain Phase 0 PoC)
-    hooks: {
-      // PreToolUse: Currently unused - virtual tools handled via sdkTool()
-      // SDK tools (virtualToolsServer) are the single execution path for virtual tools.
-      // See: sdkTool('set_workspace', ...), sdkTool('execute', ...)
-      // Keeping hook structure for future non-virtual-tool interceptors if needed.
-      SubagentStart: [{
-        hooks: [async (rawInput: unknown) => {
-          const input = rawInput as SubagentStartHookInput
-          console.log(`${LOG_PREFIX} 🚀 HOOK SubagentStart fired:`, {
-            agentId: input.agent_id,
-            agentType: input.agent_type,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          const event = {
-            type: 'subagent-start',
-            agentId: input.agent_id,
-            agentType: input.agent_type,
-            timestamp: Date.now(),
-          } satisfies SubagentProgressEvent
-          progressEvents.emit('progress', event)
-          console.log(`${LOG_PREFIX} 📤 Emitted subagent-start event`)
-          return { continue: true }
-        }]
-      }],
-      SubagentStop: [{
-        hooks: [async (rawInput: unknown) => {
-          const input = rawInput as SubagentStopHookInput
-          console.log(`${LOG_PREFIX} 🛑 HOOK SubagentStop fired:`, {
-            agentId: input.agent_id,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          const event = {
-            type: 'subagent-stop',
-            agentId: input.agent_id,
-            timestamp: Date.now(),
-          } satisfies SubagentProgressEvent
-          progressEvents.emit('progress', event)
-          console.log(`${LOG_PREFIX} 📤 Emitted subagent-stop event`)
-          return { continue: true }
-        }]
-      }],
-      PostToolUse: [{
-        hooks: [async (rawInput: unknown) => {
-          const input = rawInput as PostToolUseHookInput
-          // Only log MCP and Skill tools to reduce noise
-          if (input.tool_name.includes('mcp__') || input.tool_name === 'Skill' || input.tool_name === 'Task') {
-            console.log(`${LOG_PREFIX} 🔧 HOOK PostToolUse fired:`, {
-              toolName: input.tool_name,
-              toolUseId: input.tool_use_id,
-            })
-          }
-          const event = {
-            type: 'tool-complete',
-            toolName: input.tool_name,
-            toolUseId: input.tool_use_id,
-            timestamp: Date.now(),
-          } satisfies SubagentProgressEvent
-          progressEvents.emit('progress', event)
-          return { continue: true }
-        }]
-      }],
-      // Stop hook fires when PARENT agent finishes (not just subagents)
-      // This is the authoritative signal that the stream should complete
-      Stop: [{
-        hooks: [async (rawInput: unknown) => {
-          // Extract session_id from rawInput - SDK doesn't provide it in stream metadata
-          const sessionId = (rawInput as { session_id?: string }).session_id
-          console.log(`${LOG_PREFIX} 🏁 HOOK Stop (PARENT) fired:`, {
-            sessionId,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          // Signal stream completion with session ID - this will unblock the reader.read() loop
-          streamCompletionEvents.emit('complete', {
-            source: 'Stop',
-            timestamp: Date.now(),
-            sessionId,  // Pass session ID for client persistence
-          })
-          console.log(`${LOG_PREFIX} 📤 Emitted stream-complete signal from Stop hook (sessionId: ${sessionId})`)
-          return { continue: true }
-        }]
-      }],
-      // SessionEnd hook fires when the Claude Code session ends
-      // This is a fallback signal in case Stop doesn't fire
-      SessionEnd: [{
-        hooks: [async (rawInput: unknown) => {
-          // Extract session_id from rawInput - SDK doesn't provide it in stream metadata
-          const sessionId = (rawInput as { session_id?: string }).session_id
-          console.log(`${LOG_PREFIX} 🔚 HOOK SessionEnd fired:`, {
-            sessionId,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          // Signal stream completion with session ID
-          streamCompletionEvents.emit('complete', {
-            source: 'SessionEnd',
-            timestamp: Date.now(),
-            sessionId,  // Pass session ID for client persistence
-          })
-          console.log(`${LOG_PREFIX} 📤 Emitted stream-complete signal from SessionEnd hook (sessionId: ${sessionId})`)
-          return { continue: true }
-        }]
-      }],
-    },
-  },
-  })
+    hooks: SESSION_HOOKS,
+  } as ExtendedSessionOptions
 }
 
-// perf: Cache Claude Code provider instances per projectId to avoid re-creating
-// the provider (and spawning MCP subprocesses) on every /api/chat request.
-// The platform-level instance (no projectId) is always cached as the default.
-const claudeCodeCache = new Map<string, ReturnType<typeof createProjectScopedClaudeCode>>()
+// Session cache: persistent V2 sessions keyed by scope (projectId or '__platform__')
+const sessionCache = new Map<string, SDKSession>()
 
-function getOrCreateScopedClaudeCode(projectId?: string) {
-  const cacheKey = projectId || '__platform__'
-  let instance = claudeCodeCache.get(cacheKey)
-  if (!instance) {
-    instance = createProjectScopedClaudeCode(projectId)
-    claudeCodeCache.set(cacheKey, instance)
-    console.log(`[ClaudeCode] Cached provider for key: ${cacheKey}`)
+/**
+ * Get or create a persistent V2 session for the given scope.
+ * Sessions persist across HTTP requests — the CLI subprocess stays alive,
+ * eliminating the 7-12s cold start per message.
+ */
+function getOrCreateSession(scopeKey: string, projectId?: string, systemPrompt?: string): SDKSession {
+  const existing = sessionCache.get(scopeKey)
+  if (existing) {
+    // Check if session is still alive (V2 session has a 'closed' property)
+    if (!(existing as any).closed) {
+      return existing
+    }
+    console.log(`[ClaudeCode] Session ${scopeKey} was closed, creating new one`)
+    sessionCache.delete(scopeKey)
   }
-  return instance
-}
 
-// Default Claude Code instance for platform-level operations (skills, non-project chats)
-const claudeCode = getOrCreateScopedClaudeCode()
-
-// =============================================================================
-// Model Instance Cache — "keep the CLI warm" (mirrors project-runtime pattern)
-// =============================================================================
-// Cache ClaudeCodeLanguageModel instances by (scope + modelName) so the internal
-// sessionId persists across HTTP requests. After the first streamText() call the
-// SDK stores the sessionId; subsequent calls automatically resume the previous
-// session, avoiding a full CLI cold-start (MCP servers, skill init) per message.
-//
-// The provider cache above (claudeCodeCache) caches the createClaudeCode() factory.
-// This cache goes one level deeper: it caches the *language model* instance returned
-// by calling that factory with a model name.
-const modelInstanceCache = new Map<string, ReturnType<ReturnType<typeof createProjectScopedClaudeCode>>>()
-
-function getOrCreateModelInstance(
-  scopeKey: string,
-  provider: ReturnType<typeof createProjectScopedClaudeCode>,
-  modelName: 'haiku' | 'sonnet' | 'opus' = 'opus',
-) {
-  const cacheKey = `${scopeKey}:${modelName}`
-  let model = modelInstanceCache.get(cacheKey)
-  if (!model) {
-    model = provider(modelName, {
-      streamingInput: 'always',
-    })
-    modelInstanceCache.set(cacheKey, model)
-    console.log(`[ClaudeCode] Cached model instance for: ${cacheKey} (session will auto-resume on next call)`)
-  }
-  return model
+  const options = buildSessionOptions(projectId, systemPrompt)
+  const session = unstable_v2_createSession(options as any)
+  sessionCache.set(scopeKey, session)
+  console.log(`[ClaudeCode] Created V2 session for: ${scopeKey}`)
+  return session
 }
 
 // =============================================================================
-// Pre-warm Claude Code — initialize CLI subprocess before first user message
+// Pre-warm: Create a V2 session and send a ping to initialize the CLI
 // =============================================================================
-// The first streamText() call spawns the Claude Code CLI, loads MCP servers,
-// reads skills, and establishes a session. This takes 3-7 seconds. By sending
-// a lightweight warm-up request at server startup, we shift that cost from the
-// user's first message to server boot time.
+// The first send() spawns the CLI subprocess, loads MCP servers, and establishes
+// a session. By sending a lightweight ping at startup, we shift that cost
+// from the user's first message to server boot time.
 async function prewarmClaudeCode() {
   const startTime = performance.now()
-  console.log(`[ClaudeCode] 🔥 Pre-warming Claude Code (platform, opus)...`)
+  console.log(`[ClaudeCode] 🔥 Pre-warming V2 session (platform)...`)
   try {
-    // Get or create the cached model instance — this alone is fast
-    const model = getOrCreateModelInstance('__platform__', claudeCode, 'opus')
+    // Build system prompt for platform (same as what /api/chat will use)
+    const agentPersona = process.env.SHOGO_AGENT as any
+    const systemPrompt = buildSystemPrompt(agentPersona)
 
-    // Send a minimal request to force the CLI subprocess to start,
-    // load MCP servers, and establish a session. The response content
-    // doesn't matter — we just need the process to be alive.
-    const { textStream } = streamText({
-      model: model as Parameters<typeof streamText>[0]['model'],
-      system: 'You are a helpful assistant. Respond with exactly one word.',
-      messages: [{ role: 'user', content: 'ping' }],
-    })
+    const session = getOrCreateSession('__platform__', undefined, systemPrompt)
+    await session.send('ping')
 
-    // Consume the stream to completion (triggers CLI startup)
+    // Consume stream to completion (triggers CLI startup)
     let firstToken = false
-    for await (const chunk of textStream) {
-      if (!firstToken) {
+    for await (const msg of session.stream()) {
+      if (!firstToken && (msg.type === 'stream_event' || msg.type === 'assistant')) {
         const ttft = performance.now() - startTime
-        console.log(`[ClaudeCode] 🔥 Pre-warm first token in ${(ttft / 1000).toFixed(2)}s`)
+        console.log(`[ClaudeCode] 🔥 Pre-warm first response in ${(ttft / 1000).toFixed(2)}s`)
         firstToken = true
       }
+      if (msg.type === 'result') break
     }
 
     const elapsed = performance.now() - startTime
-    console.log(`[ClaudeCode] ✅ Pre-warm complete in ${(elapsed / 1000).toFixed(2)}s — CLI is hot`)
+    console.log(`[ClaudeCode] ✅ Pre-warm complete in ${(elapsed / 1000).toFixed(2)}s — session is hot (id: ${session.sessionId})`)
   } catch (error: any) {
     const elapsed = performance.now() - startTime
     console.error(`[ClaudeCode] ⚠️ Pre-warm failed after ${(elapsed / 1000).toFixed(2)}s:`, error.message)
@@ -814,12 +687,12 @@ async function prewarmClaudeCode() {
 }
 
 /**
- * Base system prompt for the Wavesmith app builder assistant.
+ * Base system prompt for the Shogo app builder assistant.
  * This prompt is always included and provides context about available MCP tools.
  */
-export const BASE_SYSTEM_PROMPT = `You are a Wavesmith app builder assistant running in the shogo-ai project at ${PROJECT_ROOT}.
+export const BASE_SYSTEM_PROMPT = `You are a Shogo app builder assistant running in the shogo-ai project at ${PROJECT_ROOT}.
 
-You have access to the Wavesmith MCP server with these tools:
+You have access to the Shogo MCP server with these tools:
 - schema_set, schema_get, schema_list, schema_load - Manage JSON schemas
 - store_create, store_list, store_get, store_update, store_query - CRUD operations on entities
 - store_models - List available models in a schema
@@ -888,22 +761,21 @@ Be concise and practical. Show tool results when relevant.`
 /**
  * Build a dynamic system prompt based on agent persona.
  *
- * @param agentPersona - The agent persona ('wavesmith' or 'code'), defaults to 'wavesmith'
+ * @param agentPersona - The agent persona ('shogo' or 'code'), defaults to 'shogo'
  * @returns The complete system prompt with persona guidance and base prompt
  */
 export function buildSystemPrompt(
   agentPersona?: AgentPersona | null
 ): string {
   // Validate and default persona
-  const persona: AgentPersona = agentPersona && isAgentPersona(agentPersona) ? agentPersona : 'wavesmith'
+  const persona: AgentPersona = agentPersona && isAgentPersona(agentPersona) ? agentPersona : 'shogo'
 
-  // Code agent gets a completely different prompt (no Wavesmith tools)
+  // Code agent gets a completely different prompt (no Shogo MCP tools)
   if (persona === 'code') {
     return PERSONA_PROMPTS.code
   }
 
-  // Wavesmith and Shogo agents get persona intro + base prompt
-  // Shogo has all the same tools as Wavesmith, plus code generation capabilities
+  // Shogo agent gets persona intro + base prompt
   return `${PERSONA_PROMPTS[persona]}\n\n${BASE_SYSTEM_PROMPT}`
 }
 
@@ -2903,7 +2775,7 @@ Examples:
  * AI Chat endpoint using Vercel AI SDK with Claude Code provider
  * Streams Claude responses back to the client
  * Uses existing Claude Pro/Max subscription via Claude Code CLI
- * Scoped to project with access to local MCP server (wavesmith)
+ * Scoped to project with access to local MCP server (shogo)
  *
  * Session Resume (task-cc-api-endpoint):
  * - Accepts optional `ccSessionId` in request body
@@ -2919,336 +2791,243 @@ app.post('/api/chat', async (c) => {
   try {
     const { messages, ccSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
 
-    // perf: Use cached Claude Code instance instead of creating a new one per request
-    const scopedClaudeCode = projectId
-      ? getOrCreateScopedClaudeCode(projectId)
-      : claudeCode
-
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
-    // This prevents users from sending messages when they have no credits remaining
     if (workspaceId) {
-      // Get credit ledger via Prisma service
       let ledger = await billingService.getCreditLedger(workspaceId)
-
-      // If no ledger exists, allocate free tier credits
       if (!ledger) {
         ledger = await billingService.allocateFreeCredits(workspaceId)
       }
-
       if (ledger) {
-        // Calculate effective balance with lazy daily reset
         const now = Date.now()
         const lastResetDay = new Date(ledger.lastDailyReset).setUTCHours(0, 0, 0, 0)
         const todayStart = new Date(now).setUTCHours(0, 0, 0, 0)
         const needsReset = lastResetDay !== todayStart
-
         const dailyCredits = needsReset ? 5 : ledger.dailyCredits
         const total = dailyCredits + ledger.monthlyCredits + ledger.rolloverCredits
-
-        // Minimum credit cost is 0.5, so check if total >= 0.5
         if (total < 0.5) {
-          return c.json(
-            {
-              error: 'Insufficient credits',
-              message: 'You have run out of daily credits. Credits reset at midnight UTC.',
-              creditsRemaining: total,
-            },
-            402 // Payment Required
-          )
+          return c.json({
+            error: 'Insufficient credits',
+            message: 'You have run out of daily credits. Credits reset at midnight UTC.',
+            creditsRemaining: total,
+          }, 402)
         }
       }
     }
 
-    // Build dynamic system prompt based on agent persona (env var)
+    // Build system prompt (constant for a given persona, set once per session)
     const agentPersona = process.env.SHOGO_AGENT as AgentPersona | undefined
-    let systemPrompt = buildSystemPrompt(agentPersona)
+    const systemPrompt = buildSystemPrompt(agentPersona)
 
-    // perf: Use cached model instance to preserve sessionId across requests.
-    // After the first call the model auto-resumes the previous session,
-    // avoiding a full CLI cold-start on every message.
-    // The ccSessionId from the frontend is no longer needed for resume — the cached
-    // model instance maintains the session internally. The session ID is still
-    // captured from Stop/SessionEnd hooks and sent back to the frontend for reference.
+    // Get or create a persistent V2 session for this scope.
+    // The session keeps the CLI subprocess alive across requests — no more cold starts.
     const scopeKey = projectId || '__platform__'
-    const cachedModel = getOrCreateModelInstance(scopeKey, scopedClaudeCode, 'opus')
+    const session = getOrCreateSession(scopeKey, projectId, systemPrompt)
 
-    // chat-session-sync-fix: Convert UIMessage format to ModelMessage format
-    // v3 @ai-sdk/react sends UIMessage with parts array, but streamText expects ModelMessage with content string
-    const coreMessages = convertUIMessagesToModelMessages(messages)
+    // Extract the last user message from the full message array.
+    // V2 sessions maintain conversation history internally, so we only need the latest turn.
+    const lastUserMessage = [...messages].reverse().find((m: any) => m.role === 'user')
+    if (!lastUserMessage) {
+      return c.json({ error: { message: 'No user message found', code: 'NO_USER_MESSAGE' } }, 400)
+    }
+    // Convert UIMessage parts to plain text for V2 session.send()
+    let userText: string
+    if (typeof lastUserMessage.content === 'string') {
+      userText = lastUserMessage.content
+    } else if (Array.isArray(lastUserMessage.parts)) {
+      userText = lastUserMessage.parts
+        .filter((p: any) => p.type === 'text')
+        .map((p: any) => p.text)
+        .join('\n')
+    } else {
+      userText = String(lastUserMessage.content ?? '')
+    }
 
-    // task-subagent-progress-streaming: Buffer events BEFORE starting streamText
-    // This fixes the race condition where SubagentStart fires before the stream listener is attached
+    // Event buffering for progress/virtual-tool events (same pattern as before)
     const eventBuffer: SubagentProgressEvent[] = []
-    // virtual-tools-domain: Buffer for virtual tool events
     const virtualToolBuffer: VirtualToolEvent[] = []
     let streamWriter: { write: (data: any) => void } | null = null
 
-    // Stream completion signal - resolves when Stop or SessionEnd hook fires
-    // This fixes the hang when subagents complete but the stream doesn't close
-    let streamCompleteResolver: (() => void) | null = null
-    const streamCompletePromise = new Promise<void>((resolve) => {
-      streamCompleteResolver = resolve
-    })
-
-    // Session ID captured from Stop/SessionEnd hooks (SDK workaround)
-    // The Claude Code SDK doesn't include sessionId in stream metadata,
-    // so we extract it from hook rawInput and emit it as a final stream event
-    let capturedSessionId: string | undefined
-
-    // Listen for completion signal from Stop/SessionEnd hooks
-    const onStreamComplete = (info: { source: string; timestamp: number; sessionId?: string }) => {
-      console.log(`${LOG_PREFIX} 🎯 Received stream-complete signal:`, info)
-      capturedSessionId = info.sessionId
-      // Write final session event to stream before closing (if we have streamWriter)
-      if (streamWriter && info.sessionId) {
-        console.log(`${LOG_PREFIX} 📨 Writing final session event to stream:`, info.sessionId)
-        // Use message-metadata chunk type for session ID (AI SDK 6.x format)
-        streamWriter.write({
-          type: 'message-metadata',
-          messageMetadata: { ccSessionId: info.sessionId },
-        })
-      }
-      streamCompleteResolver?.()
-    }
-    streamCompletionEvents.on('complete', onStreamComplete)
-
     const onProgress = (event: SubagentProgressEvent) => {
-      console.log(`${LOG_PREFIX} 📥 Received progress event:`, event)
       if (streamWriter) {
-        // Stream is ready, write directly using AI SDK 6.x data-{name} format
-        // The `data-progress` type allows custom data to flow through the stream
-        streamWriter.write({
-          type: 'data-progress',
-          id: `progress-${Date.now()}`,
-          data: event,
-        })
-        console.log(`${LOG_PREFIX} ✅ Wrote data-progress part to stream (live)`)
+        streamWriter.write({ type: 'data-progress', id: `progress-${Date.now()}`, data: event })
       } else {
-        // Stream not ready yet, buffer the event
         eventBuffer.push(event)
-        console.log(`${LOG_PREFIX} 📦 Buffered event (stream not ready), buffer size:`, eventBuffer.length)
       }
     }
-
-    // virtual-tools-domain: Handle virtual tool events for client-side execution
     const onVirtualTool = (event: VirtualToolEvent) => {
-      console.log(`${VT_LOG_PREFIX} 📥 Received virtual tool event:`, event)
       if (streamWriter) {
-        // Stream is ready, write directly using AI SDK 6.x data-{name} format
-        streamWriter.write({
-          type: 'data-virtual-tool',
-          id: `vt-${Date.now()}`,
-          data: event,
-        })
-        console.log(`${VT_LOG_PREFIX} ✅ Wrote data-virtual-tool part to stream (live)`)
+        streamWriter.write({ type: 'data-virtual-tool', id: `vt-${Date.now()}`, data: event })
       } else {
-        // Stream not ready yet, buffer the event
         virtualToolBuffer.push(event)
-        console.log(`${VT_LOG_PREFIX} 📦 Buffered event (stream not ready), buffer size:`, virtualToolBuffer.length)
       }
     }
 
-    // Attach listeners BEFORE calling streamText
-    console.log(`${LOG_PREFIX} 👂 Attaching progress listener BEFORE streamText`)
+    // Attach listeners BEFORE sending message
     progressEvents.on('progress', onProgress)
-    console.log(`${VT_LOG_PREFIX} 👂 Attaching virtual tool listener BEFORE streamText`)
     virtualToolEvents.on('virtual-tool', onVirtualTool)
 
-    // chat-session-sync-fix: Send FULL message history every time
-    // Claude Code handles deduplication internally via its session files
-    // Old message-filtering logic was removed in favor of passing full array
-    const result = streamText({
-      // perf: Use cached model instance — keeps CLI subprocess alive across requests.
-      // The model auto-resumes its session, avoiding MCP server restarts and skill reload.
-      model: cachedModel as Parameters<typeof streamText>[0]['model'],
-      system: systemPrompt,
-      messages: coreMessages,
-    })
+    // Send the user message to the persistent V2 session
+    await session.send(userText)
 
-    // task-subagent-progress-streaming: Create merged stream with progress events
-    // Uses createUIMessageStream to interleave hook events with LLM stream
-    console.log(`${LOG_PREFIX} 📡 Creating UIMessageStream for request`)
+    // Create UIMessageStream that converts V2 SDK messages to UIMessageChunks
+    console.log(`${LOG_PREFIX} 📡 V2 session streaming for: ${scopeKey}`)
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        // Connect the writer so new events go directly to stream
         streamWriter = writer
-        console.log(`${LOG_PREFIX} 🔗 Stream writer connected`)
 
-        // Flush any buffered events that arrived before stream was ready
-        if (eventBuffer.length > 0) {
-          console.log(`${LOG_PREFIX} 📤 Flushing ${eventBuffer.length} buffered events`)
-          for (const bufferedEvent of eventBuffer) {
-            writer.write({
-              type: 'data-progress',
-              id: `progress-${Date.now()}`,
-              data: bufferedEvent,
-            })
-          }
-          eventBuffer.length = 0 // Clear buffer
+        // Flush buffered events
+        for (const ev of eventBuffer) {
+          writer.write({ type: 'data-progress', id: `progress-${Date.now()}`, data: ev })
         }
-
-        // virtual-tools-domain: Flush buffered virtual tool events
-        if (virtualToolBuffer.length > 0) {
-          console.log(`${VT_LOG_PREFIX} 📤 Flushing ${virtualToolBuffer.length} buffered virtual tool events`)
-          for (const bufferedEvent of virtualToolBuffer) {
-            writer.write({
-              type: 'data-virtual-tool',
-              id: `vt-${Date.now()}`,
-              data: bufferedEvent,
-            })
-          }
-          virtualToolBuffer.length = 0 // Clear buffer
+        eventBuffer.length = 0
+        for (const ev of virtualToolBuffer) {
+          writer.write({ type: 'data-virtual-tool', id: `vt-${Date.now()}`, data: ev })
         }
+        virtualToolBuffer.length = 0
 
-        // Feature flag for interleaved stream processing
-        // Set to true to use new processInterleavedStream that preserves text/tool boundaries
-        // Set to false to restore original toUIMessageStream behavior
-        const USE_INTERLEAVED_STREAM = true
+        // State for converting raw stream events to UIMessageChunks
+        let currentTextId: string | null = null
+        let resultUsage: any = null
+        let resultSessionId: string | undefined
 
         try {
-          if (USE_INTERLEAVED_STREAM) {
-            // =====================================================================
-            // NEW: Interleaved stream processing (chat-tool-interleaving-stream-processor)
-            // task-server-integration: Use processInterleavedStream to preserve text/tool boundaries
-            // =====================================================================
-            console.log(`${LOG_PREFIX} 📖 Starting interleaved stream processing`)
+          writer.write({ type: 'start' })
+          writer.write({ type: 'start-step' })
 
-            // Create the complete signal ONCE outside the loop to avoid repeated logging
-            let streamCompleteWon = false
-            const completeSignal = streamCompletePromise.then(() => {
-              if (!streamCompleteWon) {
-                streamCompleteWon = true
-                console.log(`${LOG_PREFIX} 🏁 Stream complete signal won the race - closing stream`)
-              }
-              return { type: 'completion-signal' as const }
-            })
+          for await (const msg of session.stream()) {
+            // -----------------------------------------------------------------
+            // SDKPartialAssistantMessage — incremental streaming events
+            // -----------------------------------------------------------------
+            if (msg.type === 'stream_event') {
+              const event = msg.event as any
+              resultSessionId = msg.session_id
 
-            // Options for processInterleavedStream including metadata extraction
-            const interleavedOptions = {
-              getMessageMetadata: (providerMetadata: Record<string, Record<string, unknown>> | undefined) => {
-                // Extract ccSessionId from providerMetadata (same logic as original)
-                const claudeCodeMeta = providerMetadata?.['claude-code']
-                const sessionId = claudeCodeMeta?.sessionId as string | undefined
-                if (sessionId) {
-                  console.log('[messageMetadata]', {
-                    hasProviderMetadata: !!providerMetadata,
-                    hasClaudeCodeMeta: !!claudeCodeMeta,
-                    sessionId,
-                    source: 'interleaved-stream',
-                  })
+              switch (event.type) {
+                case 'content_block_start': {
+                  const block = event.content_block
+                  if (block?.type === 'text') {
+                    // Start a new text part
+                    currentTextId = `text-${Date.now()}-${event.index}`
+                    writer.write({ type: 'text-start', id: currentTextId })
+                  } else if (block?.type === 'tool_use') {
+                    // Finalize any open text
+                    if (currentTextId) {
+                      writer.write({ type: 'text-end', id: currentTextId })
+                      currentTextId = null
+                    }
+                    writer.write({
+                      type: 'tool-input-start',
+                      toolCallId: block.id,
+                      toolName: block.name,
+                    })
+                  }
+                  break
                 }
-                return sessionId ? { ccSessionId: sessionId } : undefined
+
+                case 'content_block_delta': {
+                  const delta = event.delta
+                  if (delta?.type === 'text_delta' && delta.text) {
+                    if (!currentTextId) {
+                      currentTextId = `text-${Date.now()}-${event.index}`
+                      writer.write({ type: 'text-start', id: currentTextId })
+                    }
+                    writer.write({ type: 'text-delta', id: currentTextId, delta: delta.text })
+                  } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
+                    // Tool argument streaming — find the tool call ID from the content_block_start
+                    writer.write({
+                      type: 'tool-input-delta',
+                      toolCallId: `tool-${event.index}`,
+                      inputTextDelta: delta.partial_json,
+                    })
+                  }
+                  break
+                }
+
+                case 'content_block_stop': {
+                  if (currentTextId) {
+                    writer.write({ type: 'text-end', id: currentTextId })
+                    currentTextId = null
+                  }
+                  break
+                }
+
+                case 'message_stop': {
+                  // End of an assistant turn — finalize text and emit step-finish
+                  if (currentTextId) {
+                    writer.write({ type: 'text-end', id: currentTextId })
+                    currentTextId = null
+                  }
+                  writer.write({ type: 'finish-step' })
+                  // New step may follow if there are tool results + more assistant turns
+                  writer.write({ type: 'start-step' })
+                  break
+                }
               }
             }
 
-            // Use for-await-of loop over processInterleavedStream
-            // Wrap in async IIFE to allow Promise.race against completion signal
-            const processStream = async () => {
-              for await (const chunk of processInterleavedStream(result.fullStream, interleavedOptions)) {
-                writer.write(chunk)
+            // -----------------------------------------------------------------
+            // SDKSystemMessage — session init with metadata
+            // -----------------------------------------------------------------
+            else if (msg.type === 'system' && (msg as any).subtype === 'init') {
+              resultSessionId = (msg as any).session_id
+              console.log(`${LOG_PREFIX} Session init: ${resultSessionId}`)
+            }
+
+            // -----------------------------------------------------------------
+            // SDKResultMessage — turn complete with usage data
+            // -----------------------------------------------------------------
+            else if (msg.type === 'result') {
+              const result = msg as any
+              resultUsage = result.usage
+              resultSessionId = result.session_id
+              console.log(`${LOG_PREFIX} Result: ${result.subtype}, tokens: ${JSON.stringify(resultUsage)}`)
+
+              // Finalize any open text
+              if (currentTextId) {
+                writer.write({ type: 'text-end', id: currentTextId })
+                currentTextId = null
               }
-              return { type: 'stream-exhausted' as const }
-            }
 
-            // Race the stream processing against completion signal
-            const raceResult = await Promise.race([
-              processStream(),
-              completeSignal
-            ])
-
-            if (raceResult.type === 'completion-signal') {
-              console.log(`${LOG_PREFIX} ✅ Loop breaking due to completion signal`)
-              // Completion signal won - stream is being closed by Stop/SessionEnd hook
-            } else {
-              console.log(`${LOG_PREFIX} ✅ Stream processing complete (stream exhausted)`)
-            }
-          } else {
-            // =====================================================================
-            // ROLLBACK: Original toUIMessageStream implementation
-            // Set USE_INTERLEAVED_STREAM = false to restore this behavior
-            // =====================================================================
-            // Merge the LLM stream with messageMetadata for session ID
-            const llmStream = result.toUIMessageStream({
-              messageMetadata: ({ part }) => {
-                // Debug logging for session ID extraction (task-cc-api-endpoint)
-                const hasProviderMetadata = !!(part as any).providerMetadata
-                const claudeCodeMeta = ((part as any).providerMetadata as Record<string, Record<string, unknown>> | undefined)?.['claude-code']
-                const sessionId = claudeCodeMeta?.sessionId as string | undefined
-                console.log('[messageMetadata]', {
-                  hasProviderMetadata,
-                  hasClaudeCodeMeta: !!claudeCodeMeta,
-                  sessionId: sessionId ?? 'undefined',
-                  partType: (part as any).type,
+              // Write session metadata
+              if (resultSessionId) {
+                writer.write({
+                  type: 'message-metadata',
+                  messageMetadata: { ccSessionId: resultSessionId },
                 })
-                return sessionId ? { ccSessionId: sessionId } : undefined
-              },
-            })
-
-            // Read and forward all chunks from LLM stream
-            // CRITICAL: Race each read against the stream completion signal
-            // This fixes the hang when subagents complete but the reader is still waiting
-            const reader = llmStream.getReader()
-            console.log(`${LOG_PREFIX} 📖 Starting reader loop with completion race`)
-
-            // Create the complete signal ONCE outside the loop to avoid repeated logging
-            let streamCompleteWon = false
-            const completeSignal = streamCompletePromise.then(() => {
-              if (!streamCompleteWon) {
-                streamCompleteWon = true
-                console.log(`${LOG_PREFIX} 🏁 Stream complete signal won the race - closing stream`)
               }
-              return { done: true as const, value: undefined }
-            })
 
-            while (true) {
-              // Race the read against the completion signal from Stop/SessionEnd hooks
-              const readResult = await Promise.race([
-                reader.read(),
-                completeSignal
-              ])
-
-              if (readResult.done) {
-                console.log(`${LOG_PREFIX} ✅ Reader loop complete (done=${readResult.done})`)
-                break
-              }
-              if (readResult.value) {
-                writer.write(readResult.value)
-              }
+              // Emit finish
+              writer.write({
+                type: 'finish',
+                finishReason: result.subtype === 'success' ? 'stop' : 'error',
+              })
+              break // Turn is complete
             }
           }
         } finally {
-          // Cleanup: remove progress listener to prevent memory leak
-          console.log(`${LOG_PREFIX} 🧹 Removing progress listener (stream ending)`)
+          // Cleanup listeners
           progressEvents.off('progress', onProgress)
           virtualToolEvents.off('virtual-tool', onVirtualTool)
-          streamCompletionEvents.off('complete', onStreamComplete)
           streamWriter = null
-          console.log(`${LOG_PREFIX} 📊 Remaining listener count:`, progressEvents.listenerCount('progress'))
-          console.log(`${VT_LOG_PREFIX} 📊 Remaining listener count:`, virtualToolEvents.listenerCount('virtual-tool'))
 
-          // credit-tracking: Charge credits AFTER stream completes based on token usage
-          // Fire-and-forget pattern - don't block the stream response
-          // credit-model-aware: Credit cost varies by model (basic=haiku is cheaper, advanced=sonnet is standard)
-          if (workspaceId && userId) {
+          // Credit tracking (fire-and-forget)
+          if (workspaceId && userId && resultUsage) {
             (async () => {
               try {
-                const usage = await result.usage as any
-                // AI SDK usage may have totalTokens, promptTokens/completionTokens, or inputTokens/outputTokens
-                const inputTokens = usage?.promptTokens ?? usage?.inputTokens ?? 0
-                const outputTokens = usage?.completionTokens ?? usage?.outputTokens ?? 0
-                const totalTokens = usage?.totalTokens ?? (inputTokens + outputTokens)
-                // Calculate credit cost based on agent mode (basic=haiku cheaper, advanced=sonnet standard)
+                const inputTokens = resultUsage.input_tokens ?? resultUsage.inputTokens ?? 0
+                const outputTokens = resultUsage.output_tokens ?? resultUsage.outputTokens ?? 0
+                const totalTokens = inputTokens + outputTokens
                 const creditCost = calculateCreditCost(totalTokens, agentMode as AgentMode | undefined)
                 const modelUsed = agentMode === 'basic' ? 'haiku' : 'sonnet'
 
                 await billingService.consumeCredits(
                   workspaceId,
-                  projectId || null, // projectId
+                  projectId || null,
                   userId,
                   'chat_message',
                   creditCost,
                   {
-                    ccSessionId,
+                    ccSessionId: resultSessionId ?? ccSessionId,
                     inputTokens,
                     outputTokens,
                     totalTokens,
@@ -3256,7 +3035,7 @@ app.post('/api/chat', async (c) => {
                     modelUsed,
                   }
                 )
-                console.log(`[/api/chat] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${modelUsed}) for workspace ${workspaceId}`)
+                console.log(`[/api/chat] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${modelUsed})`)
               } catch (creditError: any) {
                 console.error(`[/api/chat] ⚠️ Failed to charge credits:`, creditError.message)
               }
@@ -3266,10 +3045,8 @@ app.post('/api/chat', async (c) => {
       },
       onError: (error) => {
         console.error('[/api/chat] Stream error:', error)
-        // Cleanup on error too
         progressEvents.off('progress', onProgress)
         virtualToolEvents.off('virtual-tool', onVirtualTool)
-        streamCompletionEvents.off('complete', onStreamComplete)
         streamWriter = null
         return 'An error occurred during streaming'
       },

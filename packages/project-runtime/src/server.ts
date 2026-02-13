@@ -28,8 +28,8 @@ logTiming('Server module loading...')
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText, tool, type ModelMessage } from 'ai'
-import { createClaudeCode } from 'ai-sdk-provider-claude-code'
+import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
+import { unstable_v2_createSession, type SDKSession, type SDKSessionOptions } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
 import { existsSync, readdirSync, readFileSync, writeFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
@@ -628,33 +628,49 @@ if (useAIProxy) {
   claudeCodeEnv.ANTHROPIC_API_KEY = AI_PROXY_TOKEN!
 }
 
-const claudeCode = createClaudeCode({
-  defaultSettings: {
-    // Enable streaming (required for hooks)
-    streamingInput: 'always',
-    // Verbose logging (disabled in production)
-    verbose: false,
-    // Working directory is the project
+// =============================================================================
+// V2 Agent SDK Session Management
+// =============================================================================
+// Uses the V2 session-based API from @anthropic-ai/claude-agent-sdk.
+// Sessions persist across HTTP requests, keeping the CLI subprocess alive.
+// This eliminates the 7-12s cold start overhead per message.
+
+/** V1 QueryOptions fields that V2 runtime accepts but aren't yet typed */
+interface ExtendedSessionOptions extends SDKSessionOptions {
+  cwd?: string
+  mcpServers?: Record<string, any>
+  systemPrompt?: string | { type: 'preset'; preset: 'claude_code'; append?: string }
+  settingSources?: string[]
+  allowDangerouslySkipPermissions?: boolean
+  includePartialMessages?: boolean
+  persistSession?: boolean
+}
+
+// Session cache: one persistent session per model name
+const sessionCache = new Map<string, SDKSession>()
+
+function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
+  return {
+    model: modelName === 'haiku' ? 'claude-3-5-haiku-latest'
+         : modelName === 'opus' ? 'claude-opus-4-20250514'
+         : 'claude-sonnet-4-20250514',
     cwd: PROJECT_DIR,
-    // Path restriction for security
     canUseTool: pathRestrictor,
-    // Load project settings (.claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
-    // Environment for Claude Code process
-    // Inherits all runtime env vars (DATABASE_URL, etc.) plus AI proxy overrides
     env: claudeCodeEnv,
-    // MCP server configuration
+    includePartialMessages: true,
+    // Base system prompt (dynamic context appended to user messages per-request)
+    systemPrompt: buildSystemPrompt(PROJECT_DIR),
     mcpServers: {
-      wavesmith: {
+      shogo: {
         command: 'bun',
         args: ['run', MCP_SERVER_PATH],
         env: {
           SCHEMAS_PATH,
           PROJECT_ID: PROJECT_ID!,
-          PROJECT_DIR,  // Critical: template.copy needs this to copy to the right location
-          RUNTIME_PORT: String(PORT),  // Port for calling /preview/restart from template.copy
+          PROJECT_DIR,
+          RUNTIME_PORT: String(PORT),
           NODE_ENV: process.env.NODE_ENV || 'production',
-          // Forward S3 configuration for schema persistence
           S3_ENDPOINT: process.env.S3_ENDPOINT || '',
           S3_SCHEMA_BUCKET: process.env.S3_SCHEMA_BUCKET || '',
           S3_FORCE_PATH_STYLE: process.env.S3_FORCE_PATH_STYLE || '',
@@ -666,105 +682,54 @@ const claudeCode = createClaudeCode({
         },
       },
     },
-    // Allowed tools
-    // NOTE: 'Bash' is intentionally NOT in allowedTools so that every Bash
-    // command triggers a permission check via the canUseTool callback.
-    // This is how the forbidden-command guardrail works — the CLI sends a
-    // "can_use_tool" request for Bash, and our callback blocks forbidden commands.
+    // NOTE: 'Bash' intentionally NOT in allowedTools — canUseTool guardrail handles it
     allowedTools: [
-      // File operations
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
-      // Skill and agent tools (Bash excluded — uses canUseTool guardrail)
       'Skill', 'Task', 'TodoWrite',
-      // Template tools (underscores - Claude Code converts dots to underscores)
-      'mcp__wavesmith__template_list',
-      'mcp__wavesmith__template_copy',
-      // Wavesmith MCP tools - Schema (underscores)
-      // 'mcp__wavesmith__schema_set',
-      // 'mcp__wavesmith__schema_get',
-      // 'mcp__wavesmith__schema_list',
-      // 'mcp__wavesmith__schema_load',
-      // // Wavesmith MCP tools - Store (underscores)
-      // 'mcp__wavesmith__store_create',
-      // 'mcp__wavesmith__store_list',
-      // 'mcp__wavesmith__store_get',
-      // 'mcp__wavesmith__store_update',
-      // 'mcp__wavesmith__store_query',
-      // 'mcp__wavesmith__store_models',
-      // 'mcp__wavesmith__store_delete',
-      // // Wavesmith MCP tools - Views (underscores)
-      // 'mcp__wavesmith__view_execute',
-      // 'mcp__wavesmith__view_define',
-      // 'mcp__wavesmith__view_project',
-      // // Wavesmith MCP tools - Data & DDL (underscores)
-      // 'mcp__wavesmith__data_load',
-      // 'mcp__wavesmith__data_loadAll',
-      // 'mcp__wavesmith__ddl_execute',
-      // 'mcp__wavesmith__ddl_migrate',
+      'mcp__shogo__template_list',
+      'mcp__shogo__template_copy',
     ],
-    // Use default permission mode (our canUseTool callback handles restrictions)
     permissionMode: 'default',
-  },
-})
+  } as ExtendedSessionOptions
+}
 
-// =============================================================================
-// Model Instance Cache — "keep the CLI warm"
-// =============================================================================
-// Cache ClaudeCodeLanguageModel instances by model name so the internal sessionId
-// persists across HTTP requests.  After the first streamText() call the SDK stores
-// the sessionId; subsequent calls automatically pass `resume: <sessionId>` to the
-// Claude Code CLI subprocess.  This means the CLI loads the existing session from
-// disk (~/.claude/projects/) instead of cold-starting a brand-new conversation,
-// saving 1-2 s of MCP/skill initialisation per message.
-//
-// Only 3 possible keys (haiku | sonnet | opus) so memory is bounded.
-const cachedModels = new Map<string, ReturnType<typeof claudeCode>>()
-
-function getOrCreateModel(modelName: 'haiku' | 'sonnet' | 'opus') {
-  let model = cachedModels.get(modelName)
-  if (!model) {
-    model = claudeCode(modelName, {
-      streamingInput: 'always',
-    })
-    cachedModels.set(modelName, model)
-    console.log(`[project-runtime] Cached model instance for: ${modelName} (session will auto-resume on next call)`)
+function getOrCreateProjectSession(modelName: 'haiku' | 'sonnet' | 'opus'): SDKSession {
+  const existing = sessionCache.get(modelName)
+  if (existing && !(existing as any).closed) {
+    return existing
   }
-  return model
+  if (existing) {
+    console.log(`[project-runtime] Session for ${modelName} was closed, creating new one`)
+    sessionCache.delete(modelName)
+  }
+
+  const options = buildProjectSessionOptions(modelName)
+  const session = unstable_v2_createSession(options as any)
+  sessionCache.set(modelName, session)
+  console.log(`[project-runtime] Created V2 session for model: ${modelName}`)
+  return session
 }
 
 // =============================================================================
-// Pre-warm Claude Code — initialize CLI subprocess before first user message
+// Pre-warm: Create a V2 session and send a ping to initialize the CLI
 // =============================================================================
-// The first streamText() call spawns the Claude Code CLI, loads MCP servers,
-// reads skills, and establishes a session. This takes 3-7 seconds. By sending
-// a lightweight warm-up request at server startup, we shift that cost from the
-// user's first message to server boot time.
-//
-// NOTE: This runs AFTER the server is listening (called from bottom of file)
-// to ensure it doesn't block or crash server startup.
 async function prewarmClaudeCode() {
   const defaultModel = (process.env.AGENT_MODEL || 'sonnet') as 'haiku' | 'sonnet' | 'opus'
   const startTime = performance.now()
-  console.log(`[project-runtime] 🔥 Pre-warming Claude Code (${defaultModel})...`)
+  console.log(`[project-runtime] 🔥 Pre-warming V2 session (${defaultModel})...`)
   try {
-    const model = getOrCreateModel(defaultModel)
+    const session = getOrCreateProjectSession(defaultModel)
+    await session.send('ping')
 
-    // Send a minimal request to force the CLI subprocess to start,
-    // load MCP servers, and establish a session.
-    const result = streamText({
-      model: model as Parameters<typeof streamText>[0]['model'],
-      system: 'You are a helpful assistant. Respond with exactly one word.',
-      messages: [{ role: 'user', content: 'ping' }],
-    })
+    for await (const msg of session.stream()) {
+      if (msg.type === 'result') break
+    }
 
-    // Consume the full stream to completion (triggers CLI startup).
-    const text = await result.text
     const elapsed = performance.now() - startTime
-    console.log(`[project-runtime] ✅ Pre-warm complete in ${(elapsed / 1000).toFixed(2)}s — CLI is hot (response: "${text.slice(0, 50)}")`)
+    console.log(`[project-runtime] ✅ Pre-warm complete in ${(elapsed / 1000).toFixed(2)}s — session is hot (id: ${session.sessionId})`)
   } catch (error: any) {
     const elapsed = performance.now() - startTime
     console.error(`[project-runtime] ⚠️ Pre-warm failed after ${(elapsed / 1000).toFixed(2)}s:`, error.message)
-    // Non-fatal — first real request will cold-start as before
   }
 }
 
@@ -1167,132 +1132,7 @@ app.post('/agent/chat', async (c) => {
     
     const { messages, system, themeContext, agentMode } = parsed.data
     
-    // Build system prompt with optional theme context and current build status
-    // The prompt is defined in system-prompt.ts and can be updated via DSPy export
-    const getSystemPrompt = () => {
-      // Get current build status context for the agent
-      const buildContext = getBuildStatusContext()
-      
-      if (system) {
-        // Custom system prompt provided - append build status and optional theme context
-        let prompt = system
-        if (buildContext) prompt = `${prompt}\n\n${buildContext}`
-        if (themeContext) prompt = `${prompt}\n\n${themeContext}`
-        return prompt
-      }
-      // Use the default system prompt from system-prompt.ts with build status
-      return buildSystemPrompt(PROJECT_DIR, themeContext, buildContext)
-    }
-    
-    // Convert to ModelMessage format, handling both string and parts content
-    // Preserves image parts for multimodal AI processing
-    type ContentPart = { type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }
-
-    const coreMessages = messages.map((msg: any) => {
-      // If message already has content string, pass through
-      if (typeof msg.content === 'string') {
-        return { role: msg.role, content: msg.content }
-      }
-
-      // If message has parts array (AI SDK v4 UIMessage format), process all part types including images
-      if (Array.isArray(msg.parts)) {
-        const contentParts: ContentPart[] = []
-
-        for (const part of msg.parts) {
-          if (part.type === 'text' && part.text) {
-            contentParts.push({ type: 'text', text: part.text })
-          } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
-            // File parts with image mediaType: convert to ImagePart
-            // The url field contains the data URL (data:image/png;base64,...)
-            const parsed = parseDataUrl(part.url || '')
-            if (parsed) {
-              contentParts.push({
-                type: 'image',
-                image: parsed.base64Data,
-                mimeType: parsed.mimeType,
-              })
-            }
-          }
-        }
-
-        // Return appropriate format based on content
-        if (contentParts.length === 1 && contentParts[0].type === 'text') {
-          return { role: msg.role, content: contentParts[0].text }
-        }
-        if (contentParts.length > 0) {
-          return { role: msg.role, content: contentParts }
-        }
-        return { role: msg.role, content: '' }
-      }
-
-      // Also handle content array format (alternative message format)
-      if (Array.isArray(msg.content)) {
-        const contentParts: ContentPart[] = []
-
-        for (const part of msg.content) {
-          if (part.type === 'text' && part.text) {
-            contentParts.push({ type: 'text', text: part.text })
-          } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
-            const parsed = parseDataUrl(part.url || '')
-            if (parsed) {
-              contentParts.push({
-                type: 'image',
-                image: parsed.base64Data,
-                mimeType: parsed.mimeType,
-              })
-            }
-          } else if (part.type === 'image' && part.image) {
-            // Already in image format, pass through
-            contentParts.push({ type: 'image', image: part.image, mimeType: part.mimeType || 'image/png' })
-          }
-        }
-
-        if (contentParts.length === 1 && contentParts[0].type === 'text') {
-          return { role: msg.role, content: contentParts[0].text }
-        }
-        if (contentParts.length > 0) {
-          return { role: msg.role, content: contentParts }
-        }
-      }
-
-      return { role: msg.role, content: msg.content ?? '' }
-    })
-    
-    // Debug: Log message structure to verify image handling
-    const messageStats = coreMessages.map(m => ({
-      role: m.role,
-      contentType: typeof m.content === 'string' ? 'string' : Array.isArray(m.content) ? `array(${m.content.length})` : typeof m.content,
-      hasImages: Array.isArray(m.content) ? m.content.some((p: any) => p.type === 'image') : false,
-    }))
-    console.log(`[project-runtime] Processing ${messages.length} messages:`, JSON.stringify(messageStats))
-    
-    // Retry configuration for transient API errors
-    const MAX_RETRIES = 3
-    const RETRY_DELAY_MS = 2000
-    const RETRYABLE_ERRORS = [
-      'rate_limit',
-      'overloaded',
-      'api_error',
-      'invalid_api_key', // Sometimes transient
-      'connection',
-      'timeout',
-      'ECONNRESET',
-      'ETIMEDOUT',
-      '529', // Overloaded
-      '503', // Service unavailable
-      '502', // Bad gateway
-    ]
-    
-    const isRetryableError = (error: any): boolean => {
-      const errorStr = String(error?.message || error || '').toLowerCase()
-      return RETRYABLE_ERRORS.some(e => errorStr.includes(e.toLowerCase()))
-    }
-    
-    // Create streaming response using Claude Code with native template tools
-    // Theme context (if provided) is appended to the system prompt for AI-aware styling
-    // Model selection: agentMode takes precedence, then AGENT_MODEL env var, then default to sonnet
-    // - basic mode uses Haiku (faster, cheaper)
-    // - advanced mode uses Sonnet (more capable)
+    // Model selection: agentMode takes precedence, then AGENT_MODEL env var, then sonnet
     const getModelFromAgentMode = (mode?: 'basic' | 'advanced'): 'haiku' | 'sonnet' | 'opus' => {
       if (mode === 'basic') return 'haiku'
       if (mode === 'advanced') return 'sonnet'
@@ -1300,137 +1140,172 @@ app.post('/agent/chat', async (c) => {
     }
     const modelName = getModelFromAgentMode(agentMode)
     console.log(`[project-runtime] Using model: ${modelName} (agentMode: ${agentMode || 'default'})`)
-    
-    let lastError: any = null
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const result = streamText({
-          // perf: Use cached model instance to preserve sessionId across requests.
-          // After the first call the model auto-resumes the previous session,
-          // avoiding a full CLI cold-start on every message.
-          model: getOrCreateModel(modelName) as Parameters<typeof streamText>[0]['model'],
-          system: getSystemPrompt(),
-          messages: coreMessages as any,
-          tools: templateTools,
-          maxSteps: 10,
-        } as any)
-        
-        // Return the AI SDK UI message stream response with keep-alive wrapper
-        // This ensures compatibility with @ai-sdk/react's useChat hook (DefaultChatTransport)
-        // The keep-alive wrapper prevents HTTP/2 connection termination during long tool calls
-        const response = result.toUIMessageStreamResponse()
-        
-        // Wrap the stream with keep-alive messages to prevent ALB/proxy timeouts
-        // This is critical for long-running operations like template.copy (45+ seconds)
-        // Also appends a custom usage SSE event after the stream finishes
-        if (response.body) {
-          const originalStream = response.body
-          const usagePromise = result.usage
-          
-          // Create a new stream that wraps the original with keep-alive AND appends usage.
-          // IMPORTANT: Uses pull()-based streaming instead of consuming everything in start().
-          // The pull() pattern ensures demand-driven data flow — chunks are read from the
-          // underlying stream only when the consumer (HTTP response / proxy) requests them.
-          // This prevents buffering issues where start() would read the entire stream
-          // before the consumer sees any data, which caused follow-up AI messages to
-          // appear hung (no text streaming to frontend despite backend processing).
-          let keepAliveReader: ReadableStreamDefaultReader<Uint8Array> | null = null
-          let streamFinished = false
-          let usageAppended = false
-          
-          const wrappedStream = new ReadableStream<Uint8Array>({
-            start() {
-              // Initialize the keep-alive wrapped reader. We do this in start() so
-              // the keep-alive timer begins immediately (it runs on an interval).
-              keepAliveReader = wrapStreamWithKeepalive(originalStream, 15000).getReader()
-            },
-            
-            async pull(controller) {
-              if (!keepAliveReader) {
-                controller.close()
-                return
-              }
-              
-              try {
-                const { done, value } = await keepAliveReader.read()
-                
-                if (done) {
-                  // Inner stream finished — append usage data before closing
-                  streamFinished = true
-                  keepAliveReader.releaseLock()
-                  keepAliveReader = null
-                  
-                  if (!usageAppended) {
-                    usageAppended = true
-                    try {
-                      const usage = await usagePromise
-                      console.log('[project-runtime] Usage from streamText:', JSON.stringify(usage))
-                      if (usage) {
-                        const usageEvent = `data: ${JSON.stringify({ type: 'data-usage', data: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } })}\n\n`
-                        controller.enqueue(new TextEncoder().encode(usageEvent))
-                      }
-                    } catch (err) {
-                      console.error('[project-runtime] Failed to get usage:', err)
-                    }
-                  }
-                  
-                  // Trigger S3 sync after agent chat completes.
-                  // The agent may have written/modified project files via tool calls.
-                  // The file watcher's debounce will also catch these, but this explicit
-                  // trigger ensures we don't miss anything if the watcher is delayed.
-                  if (s3Sync) {
-                    s3Sync.triggerSync()
-                  }
-                  
-                  controller.close()
-                  return
-                }
-                
-                controller.enqueue(value)
-              } catch (err) {
-                console.error('[project-runtime] Stream read error:', err)
-                keepAliveReader?.releaseLock()
-                keepAliveReader = null
-                controller.error(err)
-              }
-            },
-            
-            cancel() {
-              // Clean up when the consumer cancels (e.g., client disconnects)
-              streamFinished = true
-              if (keepAliveReader) {
-                keepAliveReader.cancel().catch(() => {})
-                keepAliveReader = null
-              }
-            },
-          })
-          
-          return new Response(wrappedStream, {
-            status: response.status,
-            headers: response.headers,
-          })
-        }
-        
-        return response
-      } catch (error: any) {
-        lastError = error
-        const errorMsg = error?.message || String(error)
-        
-        if (isRetryableError(error) && attempt < MAX_RETRIES) {
-          const delay = RETRY_DELAY_MS * attempt
-          console.warn(`[project-runtime] Chat API error (attempt ${attempt}/${MAX_RETRIES}): ${errorMsg}`)
-          console.warn(`[project-runtime] Retrying in ${delay}ms...`)
-          await new Promise(resolve => setTimeout(resolve, delay))
-          continue
-        }
-        
-        // Non-retryable or max retries exceeded
-        throw error
-      }
+
+    // Get or create a persistent V2 session for this model
+    const session = getOrCreateProjectSession(modelName)
+
+    // Extract the last user message from the full message array.
+    // V2 sessions maintain conversation history internally.
+    const lastUserMessage = [...messages].reverse().find((m: any) => m.role === 'user')
+    if (!lastUserMessage) {
+      return c.json({ error: { code: 'no_user_message', message: 'No user message found' } }, 400)
     }
-    
-    // Should not reach here, but just in case
-    throw lastError
+
+    // Convert UIMessage parts to plain text for V2 session.send()
+    let userText: string
+    if (typeof lastUserMessage.content === 'string') {
+      userText = lastUserMessage.content
+    } else if (Array.isArray(lastUserMessage.parts)) {
+      userText = lastUserMessage.parts
+        .filter((p: any) => p.type === 'text')
+        .map((p: any) => p.text)
+        .join('\n')
+    } else {
+      userText = String(lastUserMessage.content ?? '')
+    }
+
+    // Prepend dynamic context (build status, theme) to the user message
+    // The base system prompt is set at session creation; per-request context goes here
+    const buildContext = getBuildStatusContext()
+    let contextPrefix = ''
+    if (buildContext) contextPrefix += `[Build Status]\n${buildContext}\n\n`
+    if (themeContext) contextPrefix += `[Theme Context]\n${themeContext}\n\n`
+    if (system) contextPrefix += `[Additional Instructions]\n${system}\n\n`
+    const fullUserText = contextPrefix ? `${contextPrefix}${userText}` : userText
+
+    console.log(`[project-runtime] Processing message (${fullUserText.length} chars, context prefix: ${contextPrefix.length} chars)`)
+
+    // Send the user message to the persistent V2 session
+    await session.send(fullUserText)
+
+    // Create UIMessageStream that converts V2 SDK messages to UIMessageChunks
+    const stream = createUIMessageStream({
+      execute: async ({ writer }) => {
+        let currentTextId: string | null = null
+        let resultUsage: any = null
+
+        try {
+          writer.write({ type: 'start' })
+          writer.write({ type: 'start-step' })
+
+          for await (const msg of session.stream()) {
+            // SDKPartialAssistantMessage — incremental streaming
+            if (msg.type === 'stream_event') {
+              const event = msg.event as any
+
+              switch (event.type) {
+                case 'content_block_start': {
+                  const block = event.content_block
+                  if (block?.type === 'text') {
+                    currentTextId = `text-${Date.now()}-${event.index}`
+                    writer.write({ type: 'text-start', id: currentTextId })
+                  } else if (block?.type === 'tool_use') {
+                    if (currentTextId) {
+                      writer.write({ type: 'text-end', id: currentTextId })
+                      currentTextId = null
+                    }
+                    writer.write({
+                      type: 'tool-input-start',
+                      toolCallId: block.id,
+                      toolName: block.name,
+                    })
+                  }
+                  break
+                }
+
+                case 'content_block_delta': {
+                  const delta = event.delta
+                  if (delta?.type === 'text_delta' && delta.text) {
+                    if (!currentTextId) {
+                      currentTextId = `text-${Date.now()}-${event.index}`
+                      writer.write({ type: 'text-start', id: currentTextId })
+                    }
+                    writer.write({ type: 'text-delta', id: currentTextId, delta: delta.text })
+                  } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
+                    writer.write({
+                      type: 'tool-input-delta',
+                      toolCallId: `tool-${event.index}`,
+                      inputTextDelta: delta.partial_json,
+                    })
+                  }
+                  break
+                }
+
+                case 'content_block_stop': {
+                  if (currentTextId) {
+                    writer.write({ type: 'text-end', id: currentTextId })
+                    currentTextId = null
+                  }
+                  break
+                }
+
+                case 'message_stop': {
+                  if (currentTextId) {
+                    writer.write({ type: 'text-end', id: currentTextId })
+                    currentTextId = null
+                  }
+                  writer.write({ type: 'finish-step' })
+                  writer.write({ type: 'start-step' })
+                  break
+                }
+              }
+            }
+
+            // SDKResultMessage — turn complete with usage
+            else if (msg.type === 'result') {
+              const result = msg as any
+              resultUsage = result.usage
+              console.log(`[project-runtime] Result: ${result.subtype}, tokens: ${JSON.stringify(resultUsage)}`)
+
+              if (currentTextId) {
+                writer.write({ type: 'text-end', id: currentTextId })
+                currentTextId = null
+              }
+
+              // Emit usage as custom data event (matches old format)
+              if (resultUsage) {
+                const inputTokens = resultUsage.input_tokens ?? 0
+                const outputTokens = resultUsage.output_tokens ?? 0
+                writer.write({
+                  type: 'data-usage' as any,
+                  data: {
+                    inputTokens,
+                    outputTokens,
+                    totalTokens: inputTokens + outputTokens,
+                  },
+                })
+              }
+
+              writer.write({
+                type: 'finish',
+                finishReason: result.subtype === 'success' ? 'stop' : 'error',
+              })
+              break
+            }
+          }
+        } finally {
+          // Trigger S3 sync after agent chat completes
+          if (s3Sync) {
+            s3Sync.triggerSync()
+          }
+        }
+      },
+      onError: (error) => {
+        console.error('[project-runtime] Stream error:', error)
+        return 'An error occurred during streaming'
+      },
+    })
+
+    // Wrap with keep-alive for long-running operations (template.copy etc.)
+    const response = createUIMessageStreamResponse({ stream })
+    if (response.body) {
+      const wrappedStream = wrapStreamWithKeepalive(response.body, 15000)
+      return new Response(wrappedStream, {
+        status: response.status,
+        headers: response.headers,
+      })
+    }
+    return response
   } catch (error: any) {
     console.error('[project-runtime] Chat error:', error)
     return c.json({

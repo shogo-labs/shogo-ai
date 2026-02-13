@@ -4,8 +4,8 @@
 #
 # Usage:
 #   SHOGO_AGENT=code claude    # Use code agent
-#   SHOGO_AGENT=wavesmith claude  # Use wavesmith agent (default)
-#   claude                     # Defaults to wavesmith
+#   SHOGO_AGENT=shogo claude   # Use shogo agent (default)
+#   claude                     # Defaults to shogo
 
 set -e
 
@@ -13,13 +13,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PERSONAS_DIR="$PROJECT_ROOT/.claude/personas"
 
-# Default to wavesmith if not set or invalid
-PERSONA="${SHOGO_AGENT:-wavesmith}"
+# Default to shogo if not set or invalid
+PERSONA="${SHOGO_AGENT:-shogo}"
 
 # Validate persona
-if [ "$PERSONA" != "wavesmith" ] && [ "$PERSONA" != "code" ]; then
-    echo "Warning: Invalid SHOGO_AGENT='$PERSONA', defaulting to wavesmith"
-    PERSONA="wavesmith"
+if [ "$PERSONA" != "shogo" ] && [ "$PERSONA" != "code" ]; then
+    echo "Warning: Invalid SHOGO_AGENT='$PERSONA', defaulting to shogo"
+    PERSONA="shogo"
 fi
 
 PERSONA_DIR="$PERSONAS_DIR/$PERSONA"
@@ -39,8 +39,8 @@ cp "$PERSONA_DIR/settings.json" "$PROJECT_ROOT/.claude/settings.json"
 
 echo "✓ Persona '$PERSONA' activated"
 
-# Run build only for wavesmith persona (needs MCP server)
-if [ "$PERSONA" = "wavesmith" ]; then
+# Run build only for shogo persona (needs MCP server)
+if [ "$PERSONA" = "shogo" ]; then
     echo "Building MCP server..."
     cd "$PROJECT_ROOT" && bun run build
     echo "✓ Build complete - MCP servers ready"

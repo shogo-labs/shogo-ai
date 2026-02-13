@@ -93,7 +93,7 @@ const LAYOUT_TO_TEMPLATE: Record<string, string> = {
 
 // Helper to format tool names for display
 function formatToolName(name: string): string {
-  // Handle MCP tool names: mcp__wavesmith__store_query -> wavesmith.store_query
+  // Handle MCP tool names: mcp__shogo__store_query -> shogo.store_query
   if (name.startsWith('mcp__')) {
     const parts = name.replace('mcp__', '').split('__')
     return parts.join('.')
@@ -454,7 +454,7 @@ interface RefreshTarget {
 function getRefreshTarget(toolCall: ExtractedToolCall): RefreshTarget | null {
   const { toolName, args } = toolCall
 
-  // Handle MCP tool naming: "mcp__wavesmith__store_create" -> "store_create"
+  // Handle MCP tool naming: "mcp__shogo__store_create" -> "store_create"
   const normalizedToolName = toolName.includes("__")
     ? toolName.split("__").pop() || toolName
     : toolName
@@ -528,7 +528,7 @@ function getModifiedFilePaths(toolCalls: ExtractedToolCall[]): string[] {
       continue
     }
     
-    // Handle MCP tool naming: "mcp__wavesmith__template_copy" -> "template_copy"
+    // Handle MCP tool naming: "mcp__shogo__template_copy" -> "template_copy"
     const normalizedToolName = toolCall.toolName.includes("__")
       ? toolCall.toolName.split("__").pop() || toolCall.toolName
       : toolCall.toolName

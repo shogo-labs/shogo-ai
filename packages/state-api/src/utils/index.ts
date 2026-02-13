@@ -1,5 +1,5 @@
 /**
- * Utility functions for the Wavesmith State API
+ * Utility functions for the Shogo State API
  */
 
 export * from './string'

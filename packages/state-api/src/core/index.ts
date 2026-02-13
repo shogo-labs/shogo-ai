@@ -1,5 +1,5 @@
 /**
- * Core types and utilities for the Wavesmith State API
+ * Core types and utilities for the Shogo State API
  */
 
 // Core type definitions

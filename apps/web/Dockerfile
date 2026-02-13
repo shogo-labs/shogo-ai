@@ -38,7 +38,7 @@ COPY apps/api/package.json ./apps/api/
 # Install all dependencies
 RUN bun install
 
-# Copy source code (including mcp for raw imports in WavesmithMetaDemo)
+# Copy source code (including mcp for raw imports in ShogoMetaDemo)
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 COPY packages/sdk ./packages/sdk
