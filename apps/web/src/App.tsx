@@ -23,7 +23,7 @@ import { AdminUserDetail } from './components/admin/pages/AdminUserDetail'
 import { AdminWorkspaces } from './components/admin/pages/AdminWorkspaces'
 import { AdminAnalytics } from './components/admin/pages/AdminAnalytics'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
-import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
+import { ShogoMetaStoreProvider } from './contexts/ShogoMetaStoreContext'
 import { SessionProvider, useSessionContext } from './contexts/SessionProvider'
 import { createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService, MemoryBackend } from '@shogo/state-api'
 import { APIPersistence } from './persistence/APIPersistence'
@@ -129,7 +129,7 @@ function AppWithSession() {
         {/* SDK provider for new code using useSDKDomain() */}
         <SDKProvider key={`sdk-${authKey}`}>
           <SchemaLoadingGate>
-            <WavesmithMetaStoreProvider>
+            <ShogoMetaStoreProvider>
               <AuthProvider authService={betterAuthService}>
                 <Routes>
                   {/* Super Admin Portal - separate layout */}
@@ -195,7 +195,7 @@ function AppWithSession() {
                   </Route>
                 </Routes>
               </AuthProvider>
-            </WavesmithMetaStoreProvider>
+            </ShogoMetaStoreProvider>
           </SchemaLoadingGate>
         </SDKProvider>
       </LegacyDomainProvider>
