@@ -93,6 +93,13 @@ import { PlanSelector } from "@/components/app/billing/PlanSelector"
 import { useBillingData } from "@/hooks/useBillingData"
 
 // =============================================================================
+// Configuration
+// =============================================================================
+
+/** External documentation site URL (env-configurable) */
+const DOCS_URL = import.meta.env.VITE_DOCS_URL || 'https://docs.shogo.ai'
+
+// =============================================================================
 // Workspace-scoped usage hooks (reuse the same UsageTable component as admin)
 // =============================================================================
 
@@ -518,7 +525,12 @@ function KnowledgeTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a 
+            href={DOCS_URL} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2"
+          >
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -952,7 +964,7 @@ function PeopleTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="https://docs-staging.shogo.ai/" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
+          <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -1215,7 +1227,12 @@ function BillingTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a 
+            href={DOCS_URL} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2"
+          >
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -1409,7 +1426,12 @@ function UsageTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a 
+            href={DOCS_URL} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2"
+          >
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -1966,7 +1988,12 @@ function LabsTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a 
+            href={DOCS_URL} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2"
+          >
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -2106,7 +2133,12 @@ function GitHubTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a 
+            href={DOCS_URL} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2"
+          >
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
