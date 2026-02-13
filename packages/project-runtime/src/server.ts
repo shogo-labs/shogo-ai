@@ -3067,6 +3067,17 @@ app.post('/preview/rebuild', async (c) => {
     console.log(`[project-runtime] ✅ Manual rebuild complete (${durationMs}ms)`)
     notifyBuildStateChange()
     
+    // 4a. Update BUILD_STATUS_FILE so readiness probe reflects the successful build
+    // (getBuildStatus reads from this file, not the in-memory buildState)
+    if (FAST_START_MODE) {
+      try {
+        writeFileSync(BUILD_STATUS_FILE, 'ready')
+        console.log(`[project-runtime] ✅ Build status file updated to 'ready'`)
+      } catch (e) {
+        console.warn(`[project-runtime] ⚠️ Failed to update build status file:`, e)
+      }
+    }
+    
     // 4b. Restart the backend server process if server.tsx exists
     // This is critical: when the AI modifies server.tsx or generates new API routes,
     // the old serverProcess is stale and must be restarted to pick up changes.
@@ -4022,13 +4033,18 @@ function isSubdomainAccess(c: any): boolean {
 }
 
 /**
- * Check if request is for subdomain preview access.
+ * Check if request is for subdomain preview or published app access.
+ * Returns true for:
+ * - Preview subdomains (preview--{projectId}.staging.shogo.ai)
+ * - Preview token in query string (__preview_token=...)
+ * - Published app domains (*.shogo.one)
  */
 function isSubdomainPreviewRequest(c: any): boolean {
   const token = c.req.query('__preview_token')
   const host = c.req.header('host') || ''
   const isPreviewSubdomain = host.startsWith('preview--')
-  return !!(token || isPreviewSubdomain)
+  const isPublishedDomain = host.endsWith('.shogo.one')
+  return !!(token || isPreviewSubdomain || isPublishedDomain)
 }
 
 /**

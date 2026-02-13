@@ -260,22 +260,58 @@ cd "$PROJECT_DIR"
 # =============================================================================
 # Wait for S3 sync to complete (if configured)
 # =============================================================================
+S3_RESTORE_STATUS="none"
 if [ -n "$S3_WORKSPACES_BUCKET" ]; then
   bg_log "Waiting for S3 sync to complete..."
   WAIT_START=$(date +%s%3N)
   
-  # Wait up to 30 seconds for S3 restore
-  for i in $(seq 1 60); do
+  # Wait up to 5 minutes for S3 restore (large archives can take 100+ seconds to extract)
+  MAX_S3_WAIT=600  # 600 iterations × 0.5s = 300 seconds
+  for i in $(seq 1 $MAX_S3_WAIT); do
     if [ -f "$S3_RESTORE_MARKER" ]; then
       WAIT_END=$(date +%s%3N)
-      bg_log "S3 sync complete (waited $((WAIT_END - WAIT_START))ms)"
+      S3_RESTORE_STATUS=$(cat "$S3_RESTORE_MARKER" | cut -d: -f1)
+      bg_log "S3 sync marker found: '$S3_RESTORE_STATUS' (waited $((WAIT_END - WAIT_START))ms)"
+      
+      # Check if download actually succeeded
+      if [ "$S3_RESTORE_STATUS" = "restored" ] || [ "$S3_RESTORE_STATUS" = "restored-retry" ]; then
+        bg_log "✅ S3 download succeeded - project files restored"
+      elif [ "$S3_RESTORE_STATUS" = "download-failed" ]; then
+        bg_log "⚠️ S3 download failed - will wait for retry to complete..."
+        # The server.ts retry logic will update the marker.
+        # Wait an additional 60 seconds for the retry to succeed.
+        RETRY_WAIT_START=$(date +%s%3N)
+        for j in $(seq 1 120); do
+          S3_RESTORE_STATUS=$(cat "$S3_RESTORE_MARKER" | cut -d: -f1)
+          if [ "$S3_RESTORE_STATUS" = "restored-retry" ]; then
+            RETRY_WAIT_END=$(date +%s%3N)
+            bg_log "✅ S3 retry download succeeded (waited additional $((RETRY_WAIT_END - RETRY_WAIT_START))ms)"
+            break
+          fi
+          sleep 0.5
+        done
+        if [ "$S3_RESTORE_STATUS" != "restored-retry" ]; then
+          bg_log "⚠️ S3 retry did not succeed in time (status: $S3_RESTORE_STATUS)"
+        fi
+      elif [ "$S3_RESTORE_STATUS" = "skipped" ]; then
+        bg_log "S3 sync not configured, proceeding with template"
+      elif [ "$S3_RESTORE_STATUS" = "error" ]; then
+        bg_log "⚠️ S3 sync initialization failed completely"
+      else
+        bg_log "⚠️ Unknown S3 restore status: $S3_RESTORE_STATUS"
+      fi
       break
     fi
     sleep 0.5
+    # Log progress every 30 seconds
+    if [ $((i % 60)) -eq 0 ]; then
+      ELAPSED=$(( ($(date +%s%3N) - WAIT_START) / 1000 ))
+      bg_log "Still waiting for S3 sync... (${ELAPSED}s elapsed)"
+    fi
   done
   
   if [ ! -f "$S3_RESTORE_MARKER" ]; then
-    bg_log "S3 sync did not complete in time, proceeding anyway..."
+    bg_log "⚠️ S3 sync did not complete in 5 minutes, proceeding anyway..."
   fi
 fi
 
@@ -283,9 +319,20 @@ fi
 # Check if this is a restored project (node_modules already present from S3)
 # =============================================================================
 RESTORED_FROM_S3=false
-if [ -d "node_modules/react" ] && [ -d "node_modules/vite" ]; then
+if [ "$S3_RESTORE_STATUS" = "restored" ] || [ "$S3_RESTORE_STATUS" = "restored-retry" ]; then
+  # S3 download confirmed successful - check for actual node_modules
+  if [ -d "node_modules/react" ] && [ -d "node_modules/vite" ]; then
+    RESTORED_FROM_S3=true
+    bg_log "⚡ Project restored from S3 archive (download succeeded + node_modules present)"
+  else
+    bg_log "⚠️ S3 download succeeded but node_modules not found - will install"
+  fi
+elif [ -d "node_modules/react" ] && [ -d "node_modules/vite" ] && [ "$S3_RESTORE_STATUS" = "none" ]; then
+  # No S3 configured but node_modules exist (e.g., pre-installed in image)
   RESTORED_FROM_S3=true
-  bg_log "⚡ Project restored from S3 archive (node_modules present)"
+  bg_log "⚡ Dependencies already present (no S3 configured)"
+else
+  bg_log "S3 restore status: $S3_RESTORE_STATUS - will install fresh dependencies"
 fi
 
 # Step 1: Install dependencies (skip if restored from S3 or pre-installed)

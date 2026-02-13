@@ -123,12 +123,12 @@ function generatePassword(): string {
  * - Handles "already exists" errors gracefully as success
  */
 export async function provisionDatabase(
-  projectId: string
+  projectId: string,
+  options: { forcePasswordReset?: boolean } = {}
 ): Promise<ProjectDatabase> {
   const pool = getAdminPool()
   const dbName = projectIdToDbName(projectId)
   const username = dbName // Use same name for user and database
-  const password = generatePassword()
 
   console.log(
     `[DatabaseService] Provisioning database "${dbName}" for project ${projectId}`
@@ -148,14 +148,41 @@ export async function provisionDatabase(
       )
 
       if (existsResult.rows.length > 0) {
+        // Database already exists - do NOT change the password by default.
+        // Changing the password here would break running pods that still use
+        // the old password in their DATABASE_URL environment variable.
+        if (options.forcePasswordReset) {
+          const password = generatePassword()
+          console.log(
+            `[DatabaseService] Database "${dbName}" already exists, force-resetting password`
+          )
+          await client.query(
+            `ALTER USER "${username}" WITH PASSWORD '${password}'`
+          )
+          const host = PROJECTS_DB_HOST
+          const port = parseInt(PROJECTS_DB_PORT, 10)
+          const connectionUrl = `postgres://${username}:${password}@${host}:${port}/${dbName}`
+          return { databaseName: dbName, username, password, connectionUrl, host, port }
+        }
+
         console.log(
-          `[DatabaseService] Database "${dbName}" already exists, updating password`
+          `[DatabaseService] Database "${dbName}" already exists, keeping existing credentials`
         )
-        // Update password for existing user (in case it was lost)
-        await client.query(
-          `ALTER USER "${username}" WITH PASSWORD '${password}'`
-        )
+        // Return without password - caller should use existing credentials from the pod
+        const host = PROJECTS_DB_HOST
+        const port = parseInt(PROJECTS_DB_PORT, 10)
+        // Password is unknown (stored in K8s secret / pod env), return empty
+        // The caller must use the existing DATABASE_URL from the running pod
+        return {
+          databaseName: dbName,
+          username,
+          password: "", // Existing password preserved in pod env
+          connectionUrl: `postgres://${username}@${host}:${port}/${dbName}`,
+          host,
+          port,
+        }
       } else {
+        const password = generatePassword()
         // Create role atomically using PL/pgSQL DO block.
         // This avoids the TOCTOU race where two concurrent calls both see the role
         // doesn't exist and then one fails on CREATE USER.
@@ -207,19 +234,19 @@ export async function provisionDatabase(
         )
 
         console.log(`[DatabaseService] Database "${dbName}" created successfully`)
-      }
 
-      const host = PROJECTS_DB_HOST
-      const port = parseInt(PROJECTS_DB_PORT, 10)
-      const connectionUrl = `postgres://${username}:${password}@${host}:${port}/${dbName}`
+        const host = PROJECTS_DB_HOST
+        const port = parseInt(PROJECTS_DB_PORT, 10)
+        const connectionUrl = `postgres://${username}:${password}@${host}:${port}/${dbName}`
 
-      return {
-        databaseName: dbName,
-        username,
-        password,
-        connectionUrl,
-        host,
-        port,
+        return {
+          databaseName: dbName,
+          username,
+          password,
+          connectionUrl,
+          host,
+          port,
+        }
       }
     } finally {
       // Always release the advisory lock, even on error
