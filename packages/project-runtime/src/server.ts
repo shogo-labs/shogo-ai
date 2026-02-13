@@ -733,6 +733,42 @@ function getOrCreateModel(modelName: 'haiku' | 'sonnet' | 'opus') {
 }
 
 // =============================================================================
+// Pre-warm Claude Code — initialize CLI subprocess before first user message
+// =============================================================================
+// The first streamText() call spawns the Claude Code CLI, loads MCP servers,
+// reads skills, and establishes a session. This takes 3-7 seconds. By sending
+// a lightweight warm-up request at server startup, we shift that cost from the
+// user's first message to server boot time.
+//
+// NOTE: This runs AFTER the server is listening (called from bottom of file)
+// to ensure it doesn't block or crash server startup.
+async function prewarmClaudeCode() {
+  const defaultModel = (process.env.AGENT_MODEL || 'sonnet') as 'haiku' | 'sonnet' | 'opus'
+  const startTime = performance.now()
+  console.log(`[project-runtime] 🔥 Pre-warming Claude Code (${defaultModel})...`)
+  try {
+    const model = getOrCreateModel(defaultModel)
+
+    // Send a minimal request to force the CLI subprocess to start,
+    // load MCP servers, and establish a session.
+    const result = streamText({
+      model: model as Parameters<typeof streamText>[0]['model'],
+      system: 'You are a helpful assistant. Respond with exactly one word.',
+      messages: [{ role: 'user', content: 'ping' }],
+    })
+
+    // Consume the full stream to completion (triggers CLI startup).
+    const text = await result.text
+    const elapsed = performance.now() - startTime
+    console.log(`[project-runtime] ✅ Pre-warm complete in ${(elapsed / 1000).toFixed(2)}s — CLI is hot (response: "${text.slice(0, 50)}")`)
+  } catch (error: any) {
+    const elapsed = performance.now() - startTime
+    console.error(`[project-runtime] ⚠️ Pre-warm failed after ${(elapsed / 1000).toFixed(2)}s:`, error.message)
+    // Non-fatal — first real request will cold-start as before
+  }
+}
+
+// =============================================================================
 // Stream Keep-Alive Utility
 // =============================================================================
 
@@ -1834,6 +1870,24 @@ function appendToConsoleLog(line: string, stream: 'stdout' | 'stderr' = 'stdout'
   } catch (e) {
     // Ignore write errors
   }
+  
+  // Push to SSE console event clients
+  if (consoleEventClients.size > 0) {
+    const payload = JSON.stringify({ line: logLine, stream, timestamp })
+    const encoder = new TextEncoder()
+    const message = encoder.encode(`data: ${payload}\n\n`)
+    const deadControllers: ReadableStreamDefaultController[] = []
+    for (const controller of consoleEventClients) {
+      try {
+        controller.enqueue(message)
+      } catch (e) {
+        deadControllers.push(controller)
+      }
+    }
+    for (const dead of deadControllers) {
+      consoleEventClients.delete(dead)
+    }
+  }
 }
 
 /**
@@ -2041,6 +2095,9 @@ ${ctx.logExcerpt}
 
 // SSE clients listening for build events
 const buildEventClients = new Set<ReadableStreamDefaultController>()
+
+// SSE clients listening for console log events
+const consoleEventClients = new Set<ReadableStreamDefaultController>()
 
 /**
  * Check if a TCP port is accepting connections.
@@ -3181,6 +3238,67 @@ app.get('/build-log', (c) => {
 })
 
 /**
+ * Get the current server console log (last N lines)
+ * Captures stdout/stderr from the running application server.
+ */
+app.get('/console-log', (c) => {
+  const lines = parseInt(c.req.query('lines') || '100', 10)
+  return c.json({
+    log: consoleLogLines.slice(-lines).join('\n'),
+    totalLines: consoleLogLines.length,
+  })
+})
+
+/**
+ * Server-Sent Events endpoint for real-time server console log streaming.
+ * Clients subscribe to receive new log lines as they arrive from the server process.
+ */
+app.get('/console-events', (c) => {
+  c.header('Content-Type', 'text/event-stream')
+  c.header('Cache-Control', 'no-cache')
+  c.header('Connection', 'keep-alive')
+  
+  let clientController: ReadableStreamDefaultController | null = null
+  
+  const stream = new ReadableStream({
+    start(controller) {
+      clientController = controller
+      consoleEventClients.add(controller)
+      
+      // Send current log as initial payload so client has context
+      const initialPayload = JSON.stringify({
+        type: 'init',
+        log: consoleLogLines.slice(-200).join('\n'),
+        totalLines: consoleLogLines.length,
+      })
+      const encoder = new TextEncoder()
+      try {
+        controller.enqueue(encoder.encode(`data: ${initialPayload}\n\n`))
+      } catch {
+        consoleEventClients.delete(controller)
+      }
+      
+      console.log(`[project-runtime] Console events client connected (total: ${consoleEventClients.size})`)
+    },
+    cancel() {
+      if (clientController) {
+        consoleEventClients.delete(clientController)
+        clientController = null
+        console.log(`[project-runtime] Console events client disconnected (remaining: ${consoleEventClients.size})`)
+      }
+    },
+  })
+  
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  })
+})
+
+/**
  * Start Vite Dev Server with HMR
  * 
  * This provides instant updates via Hot Module Replacement instead of rebuilding.
@@ -4187,6 +4305,7 @@ app.all('/*', async (c, next) => {
     '/preview/rebuild',
     '/preview/status',
     '/console-log',
+    '/console-events',
   ]
   
   if (runtimeInternalPaths.some(p => relativePath === p || relativePath.startsWith(p + '/'))) {
@@ -4828,6 +4947,59 @@ app.get('/files', (c) => {
     console.error('[project-runtime] Files list error:', error)
     return c.json({
       error: { code: 'files_error', message: error.message || 'Failed to list files' }
+    }, 500)
+  }
+})
+
+/**
+ * Download project source code as a tar.gz archive.
+ * Excludes node_modules, .git, dist, build, .cache, .output, and other non-source directories.
+ * Used by the code editor UI to let users download their project files.
+ */
+app.get('/download', async (c) => {
+  try {
+    if (!existsSync(PROJECT_DIR)) {
+      return c.json({
+        error: { code: 'no_project', message: 'Project directory not found' }
+      }, 404)
+    }
+
+    // Use tar to create a gzipped archive, excluding non-source dirs
+    const excludes = [
+      'node_modules', '.git', '.next', 'dist', 'build', '.cache',
+      '.output', '.nuxt', '.turbo', '.bun', '.vite'
+    ]
+    const excludeArgs = excludes.flatMap(dir => ['--exclude', dir])
+
+    const projectName = PROJECT_ID || 'project'
+    const result = Bun.spawnSync(
+      ['tar', '-czf', '-', ...excludeArgs, '-C', PROJECT_DIR, '.'],
+      { stdout: 'pipe', stderr: 'pipe' }
+    )
+
+    if (result.exitCode !== 0) {
+      const stderr = result.stderr?.toString() || 'Unknown error'
+      console.error('[project-runtime] Download archive error:', stderr)
+      return c.json({
+        error: { code: 'archive_error', message: `Failed to create archive: ${stderr}` }
+      }, 500)
+    }
+
+    const archiveBuffer = result.stdout
+    console.log(`[project-runtime] Created download archive for project ${PROJECT_ID} (${(archiveBuffer.byteLength / 1024).toFixed(1)} KB)`)
+
+    return new Response(archiveBuffer, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="${projectName}.tar.gz"`,
+        'Content-Length': String(archiveBuffer.byteLength),
+      },
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Download error:', error)
+    return c.json({
+      error: { code: 'download_error', message: error.message || 'Failed to create download' }
     }, 500)
   }
 })
@@ -6287,3 +6459,11 @@ export default {
   idleTimeout: 120,
   websocket: websocketHandlers,
 }
+
+// Pre-warm Claude Code after server is listening.
+// Small delay ensures the export/listen completes before we start the warm-up.
+setTimeout(() => {
+  prewarmClaudeCode().catch((err: any) => {
+    console.error('[project-runtime] ⚠️ Pre-warm error (non-fatal):', err.message)
+  })
+}, 2000)

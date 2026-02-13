@@ -28,6 +28,9 @@ import {
   Trash2,
   ChevronDown,
   ChevronRight,
+  Server,
+  Circle,
+  Power,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -71,7 +74,7 @@ export interface TerminalPanelProps {
   /** Additional CSS classes */
   className?: string
   /** Callback to restart the dev server (optional) */
-  onRestartServer?: () => void
+  onRestartServer?: () => void | Promise<void>
   /** Callback to trigger a rebuild */
   onRebuild?: () => Promise<void>
   /** Current build error if any */
@@ -100,6 +103,43 @@ const CATEGORY_LABELS: Record<string, string> = {
   build: 'Build',
 }
 
+/**
+ * Strip ANSI escape codes from a string.
+ * Handles color, style, cursor movement, and other terminal sequences.
+ */
+function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1B(?:\[[0-9;]*[a-zA-Z]|\([A-Z])/g, '')
+}
+
+/**
+ * Clean terminal output for display in the browser.
+ * - Strips ANSI escape codes
+ * - Handles carriage returns (\r) that terminals use for line overwriting
+ * - Normalizes line endings
+ */
+function cleanTerminalOutput(raw: string): string {
+  // Strip ANSI escape codes
+  let clean = stripAnsi(raw)
+  
+  // Normalize \r\n to \n first
+  clean = clean.replace(/\r\n/g, '\n')
+  
+  // Handle standalone \r (carriage return without newline).
+  // In a real terminal, \r moves cursor to start of line so subsequent text
+  // overwrites. We simulate this by keeping only the text after the last \r
+  // on each line.
+  clean = clean.split('\n').map(line => {
+    if (line.includes('\r')) {
+      const parts = line.split('\r')
+      return parts[parts.length - 1]
+    }
+    return line
+  }).join('\n')
+  
+  return clean
+}
+
 export function TerminalPanel({
   projectId,
   className,
@@ -116,14 +156,21 @@ export function TerminalPanel({
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
     new Set(['package', 'database'])
   )
-  const [activeTab, setActiveTab] = useState<'commands' | 'buildLog'>('commands')
+  const [activeTab, setActiveTab] = useState<'commands' | 'buildLog' | 'server'>('commands')
   const [buildLog, setBuildLog] = useState<string>('')
   const [isLoadingBuildLog, setIsLoadingBuildLog] = useState(false)
   const [isRebuilding, setIsRebuilding] = useState(false)
+  const [serverLog, setServerLog] = useState<string>('')
+  const [isLoadingServerLog, setIsLoadingServerLog] = useState(false)
+  const [isRestartingServer, setIsRestartingServer] = useState(false)
+  const [serverConnected, setServerConnected] = useState(false)
   
   const outputRef = useRef<HTMLPreElement>(null)
   const buildLogRef = useRef<HTMLPreElement>(null)
+  const serverLogRef = useRef<HTMLPreElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+  const consoleEventSourceRef = useRef<EventSource | null>(null)
+  const sandboxBaseUrlRef = useRef<string | null>(null)
 
   // Fetch available commands on mount
   useEffect(() => {
@@ -210,6 +257,107 @@ export function TerminalPanel({
       buildLogRef.current.scrollTop = buildLogRef.current.scrollHeight
     }
   }, [buildLog])
+
+  // Auto-scroll server log
+  useEffect(() => {
+    if (serverLogRef.current && serverLog) {
+      serverLogRef.current.scrollTop = serverLogRef.current.scrollHeight
+    }
+  }, [serverLog])
+
+  // Resolve sandbox base URL (shared by build log and server log)
+  const getSandboxBaseUrl = useCallback(async (): Promise<string | null> => {
+    if (sandboxBaseUrlRef.current) return sandboxBaseUrlRef.current
+    try {
+      const sandboxResponse = await fetch(`/api/projects/${projectId}/sandbox/url`)
+      if (!sandboxResponse.ok) return null
+      const sandboxData = await sandboxResponse.json()
+      const url = new URL(sandboxData.url)
+      const baseUrl = `${url.protocol}//${url.host}`
+      sandboxBaseUrlRef.current = baseUrl
+      return baseUrl
+    } catch {
+      return null
+    }
+  }, [projectId])
+
+  // Connect to server console log SSE when server tab is active
+  useEffect(() => {
+    if (activeTab !== 'server') {
+      // Disconnect when leaving the tab
+      if (consoleEventSourceRef.current) {
+        consoleEventSourceRef.current.close()
+        consoleEventSourceRef.current = null
+        setServerConnected(false)
+      }
+      return
+    }
+
+    let cancelled = false
+
+    async function connectSSE() {
+      setIsLoadingServerLog(true)
+      const baseUrl = await getSandboxBaseUrl()
+      if (!baseUrl || cancelled) {
+        setIsLoadingServerLog(false)
+        return
+      }
+
+      const eventSource = new EventSource(`${baseUrl}/console-events`)
+      consoleEventSourceRef.current = eventSource
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.type === 'init') {
+            // Initial log dump
+            setServerLog(data.log || '')
+            setIsLoadingServerLog(false)
+            setServerConnected(true)
+          } else if (data.line) {
+            // Incremental log line
+            setServerLog(prev => prev ? prev + '\n' + data.line : data.line)
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      }
+
+      eventSource.onerror = () => {
+        setServerConnected(false)
+        setIsLoadingServerLog(false)
+        // EventSource auto-reconnects
+      }
+
+      eventSource.onopen = () => {
+        setServerConnected(true)
+      }
+    }
+
+    connectSSE()
+
+    return () => {
+      cancelled = true
+      if (consoleEventSourceRef.current) {
+        consoleEventSourceRef.current.close()
+        consoleEventSourceRef.current = null
+        setServerConnected(false)
+      }
+    }
+  }, [activeTab, getSandboxBaseUrl])
+
+  // Handle server restart
+  const handleRestartServer = useCallback(async () => {
+    if (isRestartingServer || !onRestartServer) return
+    setIsRestartingServer(true)
+    try {
+      await onRestartServer()
+      // Clear server log on restart so fresh logs show
+      setServerLog('')
+    } finally {
+      setIsRestartingServer(false)
+    }
+  }, [onRestartServer, isRestartingServer])
 
   /**
    * Execute a preset command
@@ -372,8 +520,50 @@ export function TerminalPanel({
               <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
             )}
           </button>
+          <button
+            onClick={() => setActiveTab('server')}
+            className={cn(
+              "flex items-center gap-2 px-2 py-1 text-sm font-medium rounded transition-colors",
+              activeTab === 'server' 
+                ? "bg-background text-foreground shadow-sm" 
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <Server className="h-4 w-4" />
+            Server
+            {serverConnected && (
+              <Circle className="h-2 w-2 fill-green-500 text-green-500" />
+            )}
+          </button>
         </div>
         <div className="flex items-center gap-1">
+          {activeTab === 'server' && onRestartServer && (
+            <button
+              onClick={handleRestartServer}
+              disabled={isRestartingServer}
+              className={cn(
+                "flex items-center gap-1 px-2 py-1 text-xs font-medium rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors",
+                isRestartingServer && "opacity-50 cursor-not-allowed"
+              )}
+              title="Restart server"
+            >
+              {isRestartingServer ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Power className="h-3 w-3" />
+              )}
+              Restart
+            </button>
+          )}
+          {activeTab === 'server' && (
+            <button
+              onClick={() => setServerLog('')}
+              className="p-1.5 rounded hover:bg-muted transition-colors"
+              title="Clear Server Log"
+            >
+              <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+            </button>
+          )}
           {activeTab === 'buildLog' && onRebuild && (
             <button
               onClick={handleRebuild}
@@ -466,18 +656,75 @@ export function TerminalPanel({
             className={cn(
               "flex-1 p-4 overflow-auto font-mono text-xs leading-relaxed",
               "bg-zinc-950 text-zinc-100",
-              "whitespace-pre-wrap break-all"
+              "whitespace-pre-wrap wrap-break-word"
             )}
           >
             {isLoadingBuildLog ? (
               <span className="text-zinc-500">Loading build log...</span>
             ) : buildLog ? (
-              buildLog
+              cleanTerminalOutput(buildLog)
             ) : (
               <span className="text-zinc-500">
                 No build log available yet.
                 {'\n\n'}
                 The build log will appear here when you make changes to your code.
+              </span>
+            )}
+          </pre>
+        </div>
+      )}
+
+      {/* Server Tab Content */}
+      {activeTab === 'server' && (
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* Server status bar */}
+          <div className={cn(
+            "px-4 py-2 text-xs border-b flex items-center justify-between",
+            serverConnected 
+              ? "bg-green-500/10 border-green-500/20" 
+              : "bg-zinc-500/10 border-zinc-500/20"
+          )}>
+            <div className="flex items-center gap-2">
+              <Circle className={cn(
+                "h-2 w-2",
+                serverConnected 
+                  ? "fill-green-500 text-green-500" 
+                  : "fill-zinc-500 text-zinc-500"
+              )} />
+              <span className={cn(
+                "font-medium",
+                serverConnected 
+                  ? "text-green-600 dark:text-green-400" 
+                  : "text-zinc-500"
+              )}>
+                {isRestartingServer ? 'Restarting...' : serverConnected ? 'Server Running' : 'Connecting...'}
+              </span>
+            </div>
+            <span className="text-muted-foreground">
+              {serverLog ? `${serverLog.split('\n').length} lines` : 'No logs yet'}
+            </span>
+          </div>
+          
+          {/* Server log output */}
+          <pre
+            ref={serverLogRef}
+            className={cn(
+              "flex-1 p-4 overflow-auto font-mono text-xs leading-relaxed",
+              "bg-zinc-950 text-zinc-100",
+              "whitespace-pre-wrap wrap-break-word"
+            )}
+          >
+            {isLoadingServerLog ? (
+              <span className="text-zinc-500">Connecting to server logs...</span>
+            ) : serverLog ? (
+              cleanTerminalOutput(serverLog)
+            ) : (
+              <span className="text-zinc-500">
+                No server logs available yet.
+                {'\n\n'}
+                Server stdout/stderr will stream here in real time.
+                {'\n'}
+                Start the server or restart it to see logs.
               </span>
             )}
           </pre>
@@ -553,11 +800,11 @@ export function TerminalPanel({
             className={cn(
               "flex-1 p-4 overflow-auto font-mono text-xs leading-relaxed",
               "bg-zinc-950 text-zinc-100",
-              "whitespace-pre-wrap break-all"
+              "whitespace-pre-wrap wrap-break-word"
             )}
           >
             {currentExecution ? (
-              currentExecution.output || 'Running...\n'
+              cleanTerminalOutput(currentExecution.output) || 'Running...\n'
             ) : (
               <span className="text-zinc-500">
                 Select a command from the sidebar to execute it.

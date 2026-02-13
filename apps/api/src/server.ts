@@ -741,6 +741,78 @@ function getOrCreateScopedClaudeCode(projectId?: string) {
 // Default Claude Code instance for platform-level operations (skills, non-project chats)
 const claudeCode = getOrCreateScopedClaudeCode()
 
+// =============================================================================
+// Model Instance Cache — "keep the CLI warm" (mirrors project-runtime pattern)
+// =============================================================================
+// Cache ClaudeCodeLanguageModel instances by (scope + modelName) so the internal
+// sessionId persists across HTTP requests. After the first streamText() call the
+// SDK stores the sessionId; subsequent calls automatically resume the previous
+// session, avoiding a full CLI cold-start (MCP servers, skill init) per message.
+//
+// The provider cache above (claudeCodeCache) caches the createClaudeCode() factory.
+// This cache goes one level deeper: it caches the *language model* instance returned
+// by calling that factory with a model name.
+const modelInstanceCache = new Map<string, ReturnType<ReturnType<typeof createProjectScopedClaudeCode>>>()
+
+function getOrCreateModelInstance(
+  scopeKey: string,
+  provider: ReturnType<typeof createProjectScopedClaudeCode>,
+  modelName: 'haiku' | 'sonnet' | 'opus' = 'opus',
+) {
+  const cacheKey = `${scopeKey}:${modelName}`
+  let model = modelInstanceCache.get(cacheKey)
+  if (!model) {
+    model = provider(modelName, {
+      streamingInput: 'always',
+    })
+    modelInstanceCache.set(cacheKey, model)
+    console.log(`[ClaudeCode] Cached model instance for: ${cacheKey} (session will auto-resume on next call)`)
+  }
+  return model
+}
+
+// =============================================================================
+// Pre-warm Claude Code — initialize CLI subprocess before first user message
+// =============================================================================
+// The first streamText() call spawns the Claude Code CLI, loads MCP servers,
+// reads skills, and establishes a session. This takes 3-7 seconds. By sending
+// a lightweight warm-up request at server startup, we shift that cost from the
+// user's first message to server boot time.
+async function prewarmClaudeCode() {
+  const startTime = performance.now()
+  console.log(`[ClaudeCode] 🔥 Pre-warming Claude Code (platform, opus)...`)
+  try {
+    // Get or create the cached model instance — this alone is fast
+    const model = getOrCreateModelInstance('__platform__', claudeCode, 'opus')
+
+    // Send a minimal request to force the CLI subprocess to start,
+    // load MCP servers, and establish a session. The response content
+    // doesn't matter — we just need the process to be alive.
+    const { textStream } = streamText({
+      model: model as Parameters<typeof streamText>[0]['model'],
+      system: 'You are a helpful assistant. Respond with exactly one word.',
+      messages: [{ role: 'user', content: 'ping' }],
+    })
+
+    // Consume the stream to completion (triggers CLI startup)
+    let firstToken = false
+    for await (const chunk of textStream) {
+      if (!firstToken) {
+        const ttft = performance.now() - startTime
+        console.log(`[ClaudeCode] 🔥 Pre-warm first token in ${(ttft / 1000).toFixed(2)}s`)
+        firstToken = true
+      }
+    }
+
+    const elapsed = performance.now() - startTime
+    console.log(`[ClaudeCode] ✅ Pre-warm complete in ${(elapsed / 1000).toFixed(2)}s — CLI is hot`)
+  } catch (error: any) {
+    const elapsed = performance.now() - startTime
+    console.error(`[ClaudeCode] ⚠️ Pre-warm failed after ${(elapsed / 1000).toFixed(2)}s:`, error.message)
+    // Non-fatal — first real request will cold-start as before
+  }
+}
+
 /**
  * Base system prompt for the Wavesmith app builder assistant.
  * This prompt is always included and provides context about available MCP tools.
@@ -1602,6 +1674,84 @@ app.put('/api/projects/:projectId/files/*', async (c) => {
     body: c.req.raw.body,
   })
   return router.fetch(newReq)
+})
+
+// Download project source code as tar.gz archive
+app.get('/api/projects/:projectId/download', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/download`
+      
+      console.log(`[FilesProxy] Proxying download to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[FilesProxy] Download error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to download project' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Create tar.gz from workspace directory
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const projectDir = resolve(workspacesDir, projectId)
+  
+  if (!existsSync(projectDir)) {
+    return c.json({
+      error: { code: 'not_found', message: 'Project directory not found' }
+    }, 404)
+  }
+  
+  try {
+    const excludes = [
+      'node_modules', '.git', '.next', 'dist', 'build', '.cache',
+      '.output', '.nuxt', '.turbo', '.bun', '.vite'
+    ]
+    const excludeArgs = excludes.flatMap((dir: string) => ['--exclude', dir])
+    
+    const result = Bun.spawnSync(
+      ['tar', '-czf', '-', ...excludeArgs, '-C', projectDir, '.'],
+      { stdout: 'pipe', stderr: 'pipe' }
+    )
+    
+    if (result.exitCode !== 0) {
+      return c.json({
+        error: { code: 'archive_error', message: 'Failed to create archive' }
+      }, 500)
+    }
+    
+    const archiveBuffer = result.stdout
+    return new Response(archiveBuffer, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="${projectId}.tar.gz"`,
+        'Content-Length': String(archiveBuffer.byteLength),
+      },
+    })
+  } catch (error: any) {
+    console.error('[FilesProxy] Download archive error:', error)
+    return c.json({
+      error: { code: 'download_error', message: error.message || 'Failed to create download' }
+    }, 500)
+  }
 })
 
 // =============================================================================
@@ -2813,9 +2963,14 @@ app.post('/api/chat', async (c) => {
     const agentPersona = process.env.SHOGO_AGENT as AgentPersona | undefined
     let systemPrompt = buildSystemPrompt(agentPersona)
 
-    // Pass resume parameter if ccSessionId provided (task-cc-api-endpoint)
-    // This enables session continuity in Claude Code
-    const modelSettings = ccSessionId ? { resume: ccSessionId } : {}
+    // perf: Use cached model instance to preserve sessionId across requests.
+    // After the first call the model auto-resumes the previous session,
+    // avoiding a full CLI cold-start on every message.
+    // The ccSessionId from the frontend is no longer needed for resume — the cached
+    // model instance maintains the session internally. The session ID is still
+    // captured from Stop/SessionEnd hooks and sent back to the frontend for reference.
+    const scopeKey = projectId || '__platform__'
+    const cachedModel = getOrCreateModelInstance(scopeKey, scopedClaudeCode, 'opus')
 
     // chat-session-sync-fix: Convert UIMessage format to ModelMessage format
     // v3 @ai-sdk/react sends UIMessage with parts array, but streamText expects ModelMessage with content string
@@ -2903,12 +3058,9 @@ app.post('/api/chat', async (c) => {
     // Claude Code handles deduplication internally via its session files
     // Old message-filtering logic was removed in favor of passing full array
     const result = streamText({
-      // Type assertion for ai-sdk-provider-claude-code compatibility with ai@6
-      // task-api-convert-images: streamingInput required for image support
-      model: scopedClaudeCode('opus', {
-        ...modelSettings,
-        streamingInput: 'always',  // Required for image parts to be sent to Claude
-      }) as Parameters<typeof streamText>[0]['model'],
+      // perf: Use cached model instance — keeps CLI subprocess alive across requests.
+      // The model auto-resumes its session, avoiding MCP server restarts and skill reload.
+      model: cachedModel as Parameters<typeof streamText>[0]['model'],
       system: systemPrompt,
       messages: coreMessages,
     })
@@ -3468,5 +3620,17 @@ export default {
   // Increase idle timeout for long-running subagent operations
   // Default is 10 seconds which is too short for Claude Code tool execution
   idleTimeout: 120, // 2 minutes
+}
+
+// Pre-warm Claude Code after server is listening.
+// Small delay ensures the export/listen completes before we start the warm-up.
+// The warm-up sends a minimal "ping" to initialize the CLI subprocess and MCP servers.
+const PREWARM_ENABLED = process.env.PREWARM_CLAUDE_CODE !== 'false'
+if (PREWARM_ENABLED) {
+  setTimeout(() => {
+    prewarmClaudeCode().catch((err) => {
+      console.error('[ClaudeCode] ⚠️ Pre-warm error (non-fatal):', err.message)
+    })
+  }, 3000)
 }
 

@@ -12,11 +12,11 @@
  * 5. Checkpoints are synced to GitHub as commits
  *
  * Environment Variables:
- * - GITHUB_APP_ID: GitHub App ID
- * - GITHUB_APP_PRIVATE_KEY: GitHub App private key (PEM format)
- * - GITHUB_APP_CLIENT_ID: GitHub App OAuth client ID
- * - GITHUB_APP_CLIENT_SECRET: GitHub App OAuth client secret
- * - GITHUB_APP_WEBHOOK_SECRET: Webhook secret for verification
+ * - GH_APP_ID: GitHub App ID
+ * - GH_APP_PRIVATE_KEY: GitHub App private key (PEM format)
+ * - GH_APP_CLIENT_ID: GitHub App OAuth client ID
+ * - GH_APP_CLIENT_SECRET: GitHub App OAuth client secret
+ * - GH_APP_WEBHOOK_SECRET: Webhook secret for verification
  */
 
 import { execSync } from 'child_process';
@@ -83,8 +83,8 @@ export interface SyncResult {
 // =============================================================================
 
 const GITHUB_API_URL = 'https://api.github.com';
-const GITHUB_APP_ID = process.env.GITHUB_APP_ID;
-const GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, '\n');
+const GITHUB_APP_ID = process.env.GH_APP_ID;
+const GITHUB_APP_PRIVATE_KEY = process.env.GH_APP_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
 // =============================================================================
 // JWT & Token Generation
@@ -521,7 +521,7 @@ export function verifyWebhookSignature(
   payload: string,
   signature: string
 ): boolean {
-  const secret = process.env.GITHUB_APP_WEBHOOK_SECRET;
+  const secret = process.env.GH_APP_WEBHOOK_SECRET;
   if (!secret) {
     console.warn('[GitHub] Webhook secret not configured');
     return false;
@@ -612,7 +612,7 @@ export function isConfigured(): boolean {
  * Get the GitHub App installation URL for a user to install the app.
  */
 export function getInstallationUrl(): string {
-  const appSlug = process.env.GITHUB_APP_SLUG || 'shogo-ai';
+  const appSlug = process.env.GH_APP_SLUG || 'shogo-ai';
   return `https://github.com/apps/${appSlug}/installations/new`;
 }
 
@@ -620,7 +620,7 @@ export function getInstallationUrl(): string {
  * Get OAuth authorization URL for linking GitHub account.
  */
 export function getOAuthUrl(state: string, redirectUri: string): string {
-  const clientId = process.env.GITHUB_APP_CLIENT_ID;
+  const clientId = process.env.GH_APP_CLIENT_ID;
   if (!clientId) {
     throw new Error('GitHub App client ID not configured');
   }
@@ -643,8 +643,8 @@ export async function exchangeOAuthCode(code: string): Promise<{
   token_type: string;
   scope: string;
 }> {
-  const clientId = process.env.GITHUB_APP_CLIENT_ID;
-  const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET;
+  const clientId = process.env.GH_APP_CLIENT_ID;
+  const clientSecret = process.env.GH_APP_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
     throw new Error('GitHub App OAuth credentials not configured');

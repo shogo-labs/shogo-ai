@@ -277,7 +277,7 @@ function testPlatformChat(runNum: number): Promise<TimingResult> {
         totalTime: endTime - startTime,
         status,
         textPreview: textContent.slice(0, 120) || `(no text deltas — ${eventCount} events: ${eventTypes.join(", ")})`,
-        error: status >= 400 ? `HTTP ${status}` : undefined,
+        error: status === 0 ? "Connection failed (server may have restarted)" : status >= 400 ? `HTTP ${status}` : undefined,
       })
     })
   })
