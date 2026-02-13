@@ -427,8 +427,23 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
   
   # Use the LOCAL prisma binary from node_modules (not bunx which uses a global cache
   # and may run a stale version, e.g. 7.3.0 when node_modules has 7.4.0)
-  LOCAL_PRISMA="$PROJECT_DIR/node_modules/.bin/prisma"
-  if [ ! -x "$LOCAL_PRISMA" ]; then
+  # S3 tar archives often break .bin/ symlinks, so check multiple locations.
+  LOCAL_PRISMA=""
+  if [ -x "$PROJECT_DIR/node_modules/.bin/prisma" ]; then
+    LOCAL_PRISMA="$PROJECT_DIR/node_modules/.bin/prisma"
+  elif [ -f "$PROJECT_DIR/node_modules/prisma/build/index.js" ]; then
+    LOCAL_PRISMA="bun $PROJECT_DIR/node_modules/prisma/build/index.js"
+  else
+    # Last resort: recreate the .bin symlink if prisma package exists
+    if [ -d "$PROJECT_DIR/node_modules/prisma" ]; then
+      bg_log "Rebuilding node_modules/.bin symlinks for prisma..."
+      cd "$PROJECT_DIR" && bun install --frozen-lockfile 2>&1 || bun install 2>&1 || true
+      if [ -x "$PROJECT_DIR/node_modules/.bin/prisma" ]; then
+        LOCAL_PRISMA="$PROJECT_DIR/node_modules/.bin/prisma"
+      fi
+    fi
+  fi
+  if [ -z "$LOCAL_PRISMA" ]; then
     LOCAL_PRISMA="bunx prisma"
     bg_log "⚠️ Local prisma binary not found, falling back to bunx"
   fi

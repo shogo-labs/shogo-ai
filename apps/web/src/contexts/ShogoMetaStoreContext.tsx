@@ -1,5 +1,5 @@
 /**
- * WavesmithMetaStoreContext - React context for isomorphic meta-store
+ * ShogoMetaStoreContext - React context for isomorphic meta-store
  *
  * Provides a meta-store with MCPPersistence for dynamic schema loading.
  * Use this when you need to load schemas at runtime via MCP rather than
@@ -7,12 +7,12 @@
  *
  * Usage:
  * ```tsx
- * <WavesmithMetaStoreProvider>
+ * <ShogoMetaStoreProvider>
  *   <MyApp />
- * </WavesmithMetaStoreProvider>
+ * </ShogoMetaStoreProvider>
  *
  * function MyApp() {
- *   const metaStore = useWavesmithMetaStore()
+ *   const metaStore = useShogoMetaStore()
  *   const [schema, setSchema] = useState(null)
  *
  *   useEffect(() => {
@@ -38,7 +38,7 @@ interface MetaStoreContextValue {
 
 const MetaStoreContext = createContext<MetaStoreContextValue | null>(null)
 
-export interface WavesmithMetaStoreProviderProps {
+export interface ShogoMetaStoreProviderProps {
   /** Optional custom persistence service. Defaults to MCPPersistence. */
   persistence?: IPersistenceService
   children: ReactNode
@@ -50,10 +50,10 @@ export interface WavesmithMetaStoreProviderProps {
  * Gets persistence from EnvironmentProvider ancestor by default.
  * The meta-store provides `loadSchema()` action for dynamic schema loading.
  */
-export function WavesmithMetaStoreProvider({
+export function ShogoMetaStoreProvider({
   persistence: customPersistence,
   children
-}: WavesmithMetaStoreProviderProps) {
+}: ShogoMetaStoreProviderProps) {
   // Get persistence from EnvironmentProvider if available
   const ancestorEnv = useOptionalEnv()
   const contextRef = useRef<MetaStoreContextValue | null>(null)
@@ -64,7 +64,7 @@ export function WavesmithMetaStoreProvider({
 
     if (!persistence) {
       throw new Error(
-        'WavesmithMetaStoreProvider requires persistence. ' +
+        'ShogoMetaStoreProvider requires persistence. ' +
         'Either provide a persistence prop or wrap in EnvironmentProvider.'
       )
     }
@@ -73,7 +73,7 @@ export function WavesmithMetaStoreProvider({
     const metaStore = createMetaStoreInstance({ services: { persistence } })
 
     contextRef.current = { metaStore, persistence }
-    console.log('[WavesmithMetaStoreProvider] Meta-store created with persistence')
+    console.log('[ShogoMetaStoreProvider] Meta-store created with persistence')
   }
 
   return (
@@ -92,12 +92,12 @@ export function WavesmithMetaStoreProvider({
  * - Schema entities with `runtimeStore` accessor
  *
  * @returns The meta-store instance
- * @throws Error if used outside WavesmithMetaStoreProvider
+ * @throws Error if used outside ShogoMetaStoreProvider
  */
-export function useWavesmithMetaStore() {
+export function useShogoMetaStore() {
   const context = useContext(MetaStoreContext)
   if (!context) {
-    throw new Error('useWavesmithMetaStore must be used within WavesmithMetaStoreProvider')
+    throw new Error('useShogoMetaStore must be used within ShogoMetaStoreProvider')
   }
   return context.metaStore
 }
@@ -105,12 +105,12 @@ export function useWavesmithMetaStore() {
 /**
  * Hook to optionally access the meta-store.
  *
- * Returns null if used outside WavesmithMetaStoreProvider, allowing
+ * Returns null if used outside ShogoMetaStoreProvider, allowing
  * components to gracefully handle missing meta-store context.
  *
  * @returns The meta-store instance or null
  */
-export function useOptionalWavesmithMetaStore() {
+export function useOptionalShogoMetaStore() {
   const context = useContext(MetaStoreContext)
   return context?.metaStore ?? null
 }
@@ -122,10 +122,10 @@ export function useOptionalWavesmithMetaStore() {
  *
  * @returns The persistence service (MCPPersistence by default)
  */
-export function useWavesmithPersistence() {
+export function useShogoPersistence() {
   const context = useContext(MetaStoreContext)
   if (!context) {
-    throw new Error('useWavesmithPersistence must be used within WavesmithMetaStoreProvider')
+    throw new Error('useShogoPersistence must be used within ShogoMetaStoreProvider')
   }
   return context.persistence
 }

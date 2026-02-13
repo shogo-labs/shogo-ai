@@ -4317,19 +4317,61 @@ app.all('/*', async (c, next) => {
   // For Expo: handled below via the Expo server proxy.
   // For plain Vite: proxy to the project's Hono server started from server.ts.
   // IMPORTANT: /api/* must NEVER fall through to static file serving (which returns HTML).
-  // If the backend is not running, return a proper JSON error.
   if (!isExpo && relativePath.startsWith('/api/')) {
+    // If the backend is not running, try to auto-start it before returning an error.
+    // This handles cold starts from S3 restore where dist/ exists but the backend hasn't started.
     if (!serverProcess) {
-      // Backend is not running — could be crashing or not started yet.
-      // Return a proper JSON error instead of falling through to serve HTML from dist/
-      console.error(`[project-runtime] Subdomain: /api/ request but backend server is not running (path: ${relativePath})`)
+      const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+      const serverTsPath = join(PROJECT_DIR, 'server.ts')
+      const _serverTsxExists = existsSync(serverTsxPath) || existsSync(serverTsPath)
+      const _distExists = existsSync(join(PROJECT_DIR, 'dist'))
+      
+      if (_serverTsxExists && _distExists) {
+        console.log('[project-runtime] 🔄 Auto-starting backend API server for /api/ request...')
+        const serverPath = existsSync(serverTsxPath) ? serverTsxPath : serverTsPath
+        serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+          cwd: PROJECT_DIR,
+          env: { ...process.env, PORT: String(SERVER_PORT) },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        })
+        streamProcessOutput(serverProcess, 'api-server')
+        console.log(`[project-runtime] Backend API server started (PID: ${serverProcess.pid}, port: ${SERVER_PORT})`)
+        
+        // Monitor for crashes — reset serverProcess to null so next request can retry
+        const proc = serverProcess
+        proc.exited.then((exitCode) => {
+          if (serverProcess === proc) {
+            console.error(`[project-runtime] ⚠️ Backend API server exited with code ${exitCode}`)
+            serverProcess = null
+          }
+        })
+        
+        // Give the server a moment to start before proxying
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      } else {
+        // No server.tsx or no dist/ — can't start backend
+        console.error(`[project-runtime] Subdomain: /api/ request but no backend server available (path: ${relativePath})`)
+        return c.json({
+          error: { 
+            code: 'backend_unavailable', 
+            message: 'Backend API server is not available. The project may not have a server.tsx file.' 
+          }
+        }, 503)
+      }
+    }
+    
+    // If server process crashed between the auto-start above and now, return error
+    if (!serverProcess) {
+      console.error(`[project-runtime] Subdomain: /api/ backend server crashed during startup (path: ${relativePath})`)
       return c.json({
         error: { 
           code: 'backend_unavailable', 
-          message: 'Backend API server is not running. It may be starting up or experiencing errors. Please try again in a few seconds.' 
+          message: 'Backend API server crashed during startup. Check server logs for errors.' 
         }
       }, 503)
     }
+    
     const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
     const method = c.req.method
     console.log(`[project-runtime] Subdomain: proxying ${method} ${relativePath} to project API server at ${targetUrl}`)

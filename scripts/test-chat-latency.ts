@@ -226,15 +226,15 @@ function testPlatformChat(runNum: number): Promise<TimingResult> {
           const eventType = parsed.type || "unknown"
           if (!eventTypes.includes(eventType)) eventTypes.push(eventType)
 
-          // Look for text content in various formats
-          if (parsed.type === "text" && parsed.value) {
+          // Look for text content in various AI SDK stream formats:
+          // - { type: "text-delta", delta: "Hello" }        (AI SDK UI Message Stream v1)
+          // - { type: "text-delta", textDelta: "Hello" }    (AI SDK older format)
+          // - { type: "text", value: "Hello" }              (AI SDK text chunk)
+          const textValue = parsed.delta || parsed.textDelta || parsed.value || parsed.text
+          if ((parsed.type === "text-delta" || parsed.type === "text") && textValue) {
             if (!firstTokenTime) firstTokenTime = now
-            textContent += parsed.value
-            if (verbose) process.stdout.write(`\x1b[2m${parsed.value}\x1b[0m`)
-          } else if (parsed.type === "text-delta" && (parsed.textDelta || parsed.value)) {
-            if (!firstTokenTime) firstTokenTime = now
-            textContent += parsed.textDelta || parsed.value
-            if (verbose) process.stdout.write(`\x1b[2m${parsed.textDelta || parsed.value}\x1b[0m`)
+            textContent += textValue
+            if (verbose) process.stdout.write(`\x1b[2m${textValue}\x1b[0m`)
           } else if (verbose) {
             console.log(`\x1b[33m  [SSE] ${eventType}: ${JSON.stringify(parsed).slice(0, 120)}\x1b[0m`)
           }
@@ -343,12 +343,10 @@ function testProjectChat(projId: string, runNum: number): Promise<TimingResult> 
           const eventType = parsed.type || "unknown"
           if (!eventTypes.includes(eventType)) eventTypes.push(eventType)
 
-          if (parsed.type === "text" && parsed.value) {
+          const textValue = parsed.delta || parsed.textDelta || parsed.value || parsed.text
+          if ((parsed.type === "text-delta" || parsed.type === "text") && textValue) {
             if (!firstTokenTime) firstTokenTime = now
-            textContent += parsed.value
-          } else if (parsed.type === "text-delta" && (parsed.textDelta || parsed.value)) {
-            if (!firstTokenTime) firstTokenTime = now
-            textContent += parsed.textDelta || parsed.value
+            textContent += textValue
           }
         } catch {
           if (sseData.startsWith("0:")) {
@@ -423,12 +421,35 @@ function printRunResult(r: TimingResult) {
 }
 
 // ---------------------------------------------------------------------------
+// Wait for server to be idle (previous Claude Code session fully complete)
+// ---------------------------------------------------------------------------
+async function waitForServerReady(delayMs: number, label: string): Promise<void> {
+  // First wait a base delay for the previous session to fully close
+  // (Stop hook, usage tracking, session file writes, etc.)
+  if (verbose) console.log(`    \x1b[2m⏳ Waiting ${(delayMs / 1000).toFixed(0)}s for previous ${label} session to complete...\x1b[0m`)
+  await new Promise((r) => setTimeout(r, delayMs))
+
+  // Then verify the server is responsive
+  const maxRetries = 10
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const health = await testHealth()
+      if (health.ok) return
+    } catch {}
+    await new Promise((r) => setTimeout(r, 1000))
+  }
+  console.log(`    \x1b[33m⚠ Server not responsive after ${maxRetries}s, proceeding anyway\x1b[0m`)
+}
+
+// ---------------------------------------------------------------------------
 // Run a test suite
 // ---------------------------------------------------------------------------
 async function runSuite(
   label: string,
   testFn: (runNum: number) => Promise<TimingResult>,
   numRuns: number,
+  /** Extra delay between runs (ms). Chat tests need longer to let server-side session finish. */
+  interRunDelayMs: number = 1000,
 ): Promise<TimingResult[]> {
   console.log(`\n  \x1b[1m${label}\x1b[0m`)
   const results: TimingResult[] = []
@@ -437,7 +458,14 @@ async function runSuite(
     const r = await testFn(i)
     results.push(r)
     printRunResult(r)
-    if (i < numRuns) await new Promise((r) => setTimeout(r, 1000))
+
+    // Wait for the server-side session to fully complete before next run.
+    // The Claude Code SDK keeps the CLI subprocess alive and can only handle
+    // one session at a time per cached model instance. If we send the next
+    // request too soon, it will queue behind the previous session.
+    if (i < numRuns) {
+      await waitForServerReady(interRunDelayMs, label)
+    }
   }
 
   return results
@@ -587,7 +615,8 @@ async function main() {
   if (!chatOnly && ANTHROPIC_API_KEY) {
     printHeader("TEST 1: Direct Anthropic API (baseline)")
     console.log("  Model: claude-3-5-haiku-latest (streaming)")
-    const results = await runSuite("Anthropic API (direct)", testAnthropicDirect, runs)
+    // Short delay between Anthropic runs — no server-side session to clean up
+    const results = await runSuite("Anthropic API (direct)", testAnthropicDirect, runs, 1000)
     suites.push({ label: "Anthropic API (direct)", results })
   }
 
@@ -599,7 +628,12 @@ async function main() {
   // Test 2: Platform chat
   printHeader("TEST 2: Platform Chat /api/chat")
   console.log("  Path: Client → API Server → Claude Code SDK → Anthropic")
-  const platformResults = await runSuite("Platform /api/chat", testPlatformChat, runs)
+  console.log("  \x1b[2m(Waiting for each session to fully complete before the next request)\x1b[0m")
+  // Longer delay between platform chat runs — the Claude Code CLI session
+  // needs time to fully close (Stop hook, session file write, usage tracking).
+  // If we send the next request before the previous session finishes, it will
+  // either queue or conflict with the in-progress session.
+  const platformResults = await runSuite("Platform /api/chat", testPlatformChat, runs, 8000)
   suites.push({ label: "Platform /api/chat", results: platformResults })
 
   // Test 3: Project chat
@@ -610,6 +644,7 @@ async function main() {
       `Project chat`,
       (n) => testProjectChat(projectId!, n),
       runs,
+      8000,
     )
     suites.push({ label: "Project chat", results: projectResults })
   }

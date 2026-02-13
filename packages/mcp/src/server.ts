@@ -20,13 +20,13 @@ await initializeSeedData(SCHEMAS_PATH)
 // Pre-load core schemas into meta-store at startup
 await preloadCoreSchemas(SCHEMAS_PATH)
 
-// Wavesmith MCP (stdio transport for Claude Code sessions)
+// Shogo MCP (stdio transport for Claude Code sessions)
 const server = new FastMCP({
-  name: "wavesmith-mcp",
+  name: "shogo-mcp",
   version: "0.0.1",
 })
 
-// Register all Wavesmith tools (18 tools)
+// Register all Shogo tools (18 tools)
 registerAllTools(server)
 server.start({
   transportType: "stdio",
