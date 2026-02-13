@@ -631,6 +631,9 @@ const sessionCache = new Map<string, SDKSession>()
  * Sessions persist across HTTP requests — the CLI subprocess stays alive,
  * eliminating the 7-12s cold start per message.
  */
+// Track which sessions are actively handling a chat message
+const activeSessions = new Set<string>()
+
 function getOrCreateSession(scopeKey: string, projectId?: string, systemPrompt?: string): SDKSession {
   const existing = sessionCache.get(scopeKey)
   if (existing) {
@@ -640,6 +643,7 @@ function getOrCreateSession(scopeKey: string, projectId?: string, systemPrompt?:
     }
     console.log(`[ClaudeCode] Session ${scopeKey} was closed, creating new one`)
     sessionCache.delete(scopeKey)
+    activeSessions.delete(scopeKey)
   }
 
   const options = buildSessionOptions(projectId, systemPrompt)
@@ -656,14 +660,30 @@ function getOrCreateSession(scopeKey: string, projectId?: string, systemPrompt?:
 // a session. By sending a lightweight ping at startup, we shift that cost
 // from the user's first message to server boot time.
 async function prewarmClaudeCode() {
+  const scopeKey = '__platform__'
   const startTime = performance.now()
+
+  // Skip prewarm if a chat is already using this session (race condition guard)
+  if (activeSessions.has(scopeKey)) {
+    console.log(`[ClaudeCode] ⏭️ Pre-warm skipped — session ${scopeKey} is already active`)
+    return
+  }
+
   console.log(`[ClaudeCode] 🔥 Pre-warming V2 session (platform)...`)
   try {
     // Build system prompt for platform (same as what /api/chat will use)
     const agentPersona = process.env.SHOGO_AGENT as any
     const systemPrompt = buildSystemPrompt(agentPersona)
 
-    const session = getOrCreateSession('__platform__', undefined, systemPrompt)
+    const session = getOrCreateSession(scopeKey, undefined, systemPrompt)
+
+    // Double-check after session creation — a chat request might have arrived
+    if (activeSessions.has(scopeKey)) {
+      console.log(`[ClaudeCode] ⏭️ Pre-warm aborted — session ${scopeKey} became active`)
+      return
+    }
+
+    activeSessions.add(scopeKey) // Mark as active during prewarm
     await session.send('ping')
 
     // Consume stream to completion (triggers CLI startup)
@@ -676,10 +696,12 @@ async function prewarmClaudeCode() {
       }
       if (msg.type === 'result') break
     }
+    activeSessions.delete(scopeKey) // Release after prewarm completes
 
     const elapsed = performance.now() - startTime
     console.log(`[ClaudeCode] ✅ Pre-warm complete in ${(elapsed / 1000).toFixed(2)}s — session is hot (id: ${session.sessionId})`)
   } catch (error: any) {
+    activeSessions.delete(scopeKey) // Release on error too
     const elapsed = performance.now() - startTime
     console.error(`[ClaudeCode] ⚠️ Pre-warm failed after ${(elapsed / 1000).toFixed(2)}s:`, error.message)
     // Non-fatal — first real request will cold-start as before
@@ -2822,6 +2844,7 @@ app.post('/api/chat', async (c) => {
     // The session keeps the CLI subprocess alive across requests — no more cold starts.
     const scopeKey = projectId || '__platform__'
     const session = getOrCreateSession(scopeKey, projectId, systemPrompt)
+    activeSessions.add(scopeKey) // Mark session as active to prevent prewarm interference
 
     // Extract the last user message from the full message array.
     // V2 sessions maintain conversation history internally, so we only need the latest turn.
@@ -2895,22 +2918,57 @@ app.post('/api/chat', async (c) => {
           writer.write({ type: 'start-step' })
 
           for await (const msg of session.stream()) {
+            const msgAny = msg as any
+
             // -----------------------------------------------------------------
-            // SDKPartialAssistantMessage — incremental streaming events
+            // SDKAssistantMessage — complete assistant response per turn
+            // V2 SDK emits full messages (not incremental stream_event deltas)
             // -----------------------------------------------------------------
-            if (msg.type === 'stream_event') {
-              const event = msg.event as any
+            if (msg.type === 'assistant') {
+              resultSessionId = msgAny.session_id
+              const content = msgAny.message?.content as Array<any> | undefined
+              if (content && Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type === 'text' && block.text) {
+                    const textId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                    writer.write({ type: 'text-start', id: textId })
+                    writer.write({ type: 'text-delta', id: textId, delta: block.text })
+                    writer.write({ type: 'text-end', id: textId })
+                  } else if (block.type === 'tool_use') {
+                    writer.write({
+                      type: 'tool-input-start',
+                      toolCallId: block.id,
+                      toolName: block.name,
+                    })
+                    if (block.input) {
+                      writer.write({
+                        type: 'tool-input-delta',
+                        toolCallId: block.id,
+                        inputTextDelta: JSON.stringify(block.input),
+                      })
+                    }
+                  }
+                }
+              }
+              // End the current step (turn) and start a new one for potential tool results
+              writer.write({ type: 'finish-step' })
+              writer.write({ type: 'start-step' })
+            }
+
+            // -----------------------------------------------------------------
+            // SDKPartialAssistantMessage — incremental streaming (if available)
+            // -----------------------------------------------------------------
+            else if (msg.type === 'stream_event') {
+              const event = msgAny.event as any
               resultSessionId = msg.session_id
 
               switch (event.type) {
                 case 'content_block_start': {
                   const block = event.content_block
                   if (block?.type === 'text') {
-                    // Start a new text part
                     currentTextId = `text-${Date.now()}-${event.index}`
                     writer.write({ type: 'text-start', id: currentTextId })
                   } else if (block?.type === 'tool_use') {
-                    // Finalize any open text
                     if (currentTextId) {
                       writer.write({ type: 'text-end', id: currentTextId })
                       currentTextId = null
@@ -2923,7 +2981,6 @@ app.post('/api/chat', async (c) => {
                   }
                   break
                 }
-
                 case 'content_block_delta': {
                   const delta = event.delta
                   if (delta?.type === 'text_delta' && delta.text) {
@@ -2933,7 +2990,6 @@ app.post('/api/chat', async (c) => {
                     }
                     writer.write({ type: 'text-delta', id: currentTextId, delta: delta.text })
                   } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
-                    // Tool argument streaming — find the tool call ID from the content_block_start
                     writer.write({
                       type: 'tool-input-delta',
                       toolCallId: `tool-${event.index}`,
@@ -2942,7 +2998,6 @@ app.post('/api/chat', async (c) => {
                   }
                   break
                 }
-
                 case 'content_block_stop': {
                   if (currentTextId) {
                     writer.write({ type: 'text-end', id: currentTextId })
@@ -2950,15 +3005,12 @@ app.post('/api/chat', async (c) => {
                   }
                   break
                 }
-
                 case 'message_stop': {
-                  // End of an assistant turn — finalize text and emit step-finish
                   if (currentTextId) {
                     writer.write({ type: 'text-end', id: currentTextId })
                     currentTextId = null
                   }
                   writer.write({ type: 'finish-step' })
-                  // New step may follow if there are tool results + more assistant turns
                   writer.write({ type: 'start-step' })
                   break
                 }
@@ -2968,8 +3020,8 @@ app.post('/api/chat', async (c) => {
             // -----------------------------------------------------------------
             // SDKSystemMessage — session init with metadata
             // -----------------------------------------------------------------
-            else if (msg.type === 'system' && (msg as any).subtype === 'init') {
-              resultSessionId = (msg as any).session_id
+            else if (msg.type === 'system' && msgAny.subtype === 'init') {
+              resultSessionId = msgAny.session_id
               console.log(`${LOG_PREFIX} Session init: ${resultSessionId}`)
             }
 
@@ -3005,6 +3057,9 @@ app.post('/api/chat', async (c) => {
             }
           }
         } finally {
+          // Release active session lock
+          activeSessions.delete(scopeKey)
+
           // Cleanup listeners
           progressEvents.off('progress', onProgress)
           virtualToolEvents.off('virtual-tool', onVirtualTool)
@@ -3044,6 +3099,7 @@ app.post('/api/chat', async (c) => {
         }
       },
       onError: (error) => {
+        activeSessions.delete(scopeKey)
         console.error('[/api/chat] Stream error:', error)
         progressEvents.off('progress', onProgress)
         virtualToolEvents.off('virtual-tool', onVirtualTool)

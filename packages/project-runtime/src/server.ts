@@ -371,108 +371,9 @@ function copyTemplate(templateName: string, projectName: string): { ok: boolean;
   }
 }
 
-/**
- * AI SDK native tools for template operations
- */
-const templateTools = {
-  'template.list': (tool as any)({
-    description: `List and search available starter templates. Returns templates with metadata including name, description, complexity, features, models, and tags.
-
-Available templates:
-- todo-app: Simple task management
-- expense-tracker: Personal finance with categories
-- crm: Customer relationship management
-- inventory: Stock and product management
-- kanban: Project boards with drag-and-drop
-- ai-chat: AI chatbot with conversation history`,
-    parameters: z.object({
-      query: z.string().optional().describe('Optional search query to filter templates'),
-    }),
-    execute: async ({ query }: { query?: string }) => {
-      console.log(`[project-runtime] template.list called with query: ${query}`)
-      let templates = loadTemplates()
-
-      if (query) {
-        const queryLower = query.toLowerCase()
-        templates = templates.filter(t =>
-          t.name.toLowerCase().includes(queryLower) ||
-          t.description.toLowerCase().includes(queryLower) ||
-          t.tags.some(tag => tag.toLowerCase().includes(queryLower)) ||
-          t.useCases.some(uc => uc.toLowerCase().includes(queryLower))
-        )
-      }
-
-      return JSON.stringify({ ok: true, templates }, null, 2)
-    },
-  }),
-
-  'template.copy': (tool as any)({
-    description: `Copy a starter template to set up the project. This will copy all template files to the current project directory, install dependencies, build the project, and start the preview server automatically.`,
-    parameters: z.object({
-      templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app", "expense-tracker")'),
-      projectName: z.string().optional().describe('Optional project name (for package.json)'),
-    }),
-    execute: async ({ templateName, projectName }: { templateName: string; projectName?: string }) => {
-      console.log(`[project-runtime] template.copy called: ${templateName}`)
-      const result = copyTemplate(templateName, projectName || templateName)
-      
-      // If successful, trigger S3 sync immediately to persist the template files
-      if (result.ok && s3Sync) {
-        console.log(`[project-runtime] Triggering S3 sync after template copy`)
-        s3Sync.triggerSync(true) // immediate=true since template copy is a critical operation
-      }
-      
-      // If successful, automatically rebuild and restart the preview
-      if (result.ok) {
-        let restartResult: { success: boolean; message: string; mode?: string; port?: number | null } = {
-          success: false,
-          message: 'Restart not attempted',
-        }
-        
-        try {
-          console.log(`[project-runtime] Starting dev mode for project ${PROJECT_ID}...`)
-          // Call our local dev endpoint (uses vite dev server with HMR for instant updates)
-          const response = await fetch(`http://localhost:${PORT}/preview/dev`, {
-            method: 'POST',
-          })
-          
-          if (response.ok) {
-            const data = await response.json() as { success: boolean; mode: string; port: number | null }
-            restartResult = {
-              success: true,
-              message: `Preview restarted in ${data.mode} mode`,
-              mode: data.mode,
-              port: data.port,
-            }
-            console.log(`[project-runtime] Preview restarted in ${data.mode} mode`)
-          } else {
-            const errorData = await response.json().catch(() => ({})) as { error?: string }
-            restartResult = {
-              success: false,
-              message: errorData.error || `Restart failed with status ${response.status}`,
-            }
-          }
-        } catch (err: any) {
-          console.warn(`[project-runtime] Restart error: ${err.message}`)
-          restartResult = {
-            success: false,
-            message: err.message,
-          }
-        }
-        
-        return JSON.stringify({
-          ...result,
-          restart: restartResult,
-          message: restartResult.success 
-            ? `Template copied and preview rebuilt. The preview will show the ${templateName} app.`
-            : 'Template copied but rebuild failed. Try refreshing the preview.',
-        }, null, 2)
-      }
-      
-      return JSON.stringify(result, null, 2)
-    },
-  }),
-}
+// NOTE: Template tools (template.list, template.copy) are provided via the
+// shogo MCP server (mcp__shogo__template_list, mcp__shogo__template_copy).
+// No AI SDK tool wrappers needed here.
 
 // =============================================================================
 // Path Restriction & Runtime Command Guardrails (Security)
@@ -693,6 +594,9 @@ function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
   } as ExtendedSessionOptions
 }
 
+// Track which sessions are actively handling a chat message
+const activeSessions = new Set<string>()
+
 function getOrCreateProjectSession(modelName: 'haiku' | 'sonnet' | 'opus'): SDKSession {
   const existing = sessionCache.get(modelName)
   if (existing && !(existing as any).closed) {
@@ -701,6 +605,7 @@ function getOrCreateProjectSession(modelName: 'haiku' | 'sonnet' | 'opus'): SDKS
   if (existing) {
     console.log(`[project-runtime] Session for ${modelName} was closed, creating new one`)
     sessionCache.delete(modelName)
+    activeSessions.delete(modelName)
   }
 
   const options = buildProjectSessionOptions(modelName)
@@ -716,18 +621,35 @@ function getOrCreateProjectSession(modelName: 'haiku' | 'sonnet' | 'opus'): SDKS
 async function prewarmClaudeCode() {
   const defaultModel = (process.env.AGENT_MODEL || 'sonnet') as 'haiku' | 'sonnet' | 'opus'
   const startTime = performance.now()
+
+  // Skip prewarm if a chat is already using this session (race condition guard)
+  if (activeSessions.has(defaultModel)) {
+    console.log(`[project-runtime] ⏭️ Pre-warm skipped — session ${defaultModel} is already active`)
+    return
+  }
+
   console.log(`[project-runtime] 🔥 Pre-warming V2 session (${defaultModel})...`)
   try {
     const session = getOrCreateProjectSession(defaultModel)
+
+    // Double-check after session creation — a chat request might have arrived
+    if (activeSessions.has(defaultModel)) {
+      console.log(`[project-runtime] ⏭️ Pre-warm aborted — session ${defaultModel} became active`)
+      return
+    }
+
+    activeSessions.add(defaultModel) // Mark as active during prewarm
     await session.send('ping')
 
     for await (const msg of session.stream()) {
       if (msg.type === 'result') break
     }
+    activeSessions.delete(defaultModel) // Release after prewarm completes
 
     const elapsed = performance.now() - startTime
     console.log(`[project-runtime] ✅ Pre-warm complete in ${(elapsed / 1000).toFixed(2)}s — session is hot (id: ${session.sessionId})`)
   } catch (error: any) {
+    activeSessions.delete(defaultModel) // Release on error too
     const elapsed = performance.now() - startTime
     console.error(`[project-runtime] ⚠️ Pre-warm failed after ${(elapsed / 1000).toFixed(2)}s:`, error.message)
   }
@@ -1143,6 +1065,7 @@ app.post('/agent/chat', async (c) => {
 
     // Get or create a persistent V2 session for this model
     const session = getOrCreateProjectSession(modelName)
+    activeSessions.add(modelName) // Mark session as active to prevent prewarm interference
 
     // Extract the last user message from the full message array.
     // V2 sessions maintain conversation history internally.
@@ -1189,10 +1112,43 @@ app.post('/agent/chat', async (c) => {
           writer.write({ type: 'start-step' })
 
           for await (const msg of session.stream()) {
-            // SDKPartialAssistantMessage — incremental streaming
-            if (msg.type === 'stream_event') {
-              const event = msg.event as any
+            const msgAny = msg as any
 
+            // SDKAssistantMessage — complete assistant response per turn
+            // V2 SDK emits full messages (not incremental stream_event deltas)
+            if (msg.type === 'assistant') {
+              const content = msgAny.message?.content as Array<any> | undefined
+              if (content && Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type === 'text' && block.text) {
+                    const textId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                    writer.write({ type: 'text-start', id: textId })
+                    writer.write({ type: 'text-delta', id: textId, delta: block.text })
+                    writer.write({ type: 'text-end', id: textId })
+                  } else if (block.type === 'tool_use') {
+                    writer.write({
+                      type: 'tool-input-start',
+                      toolCallId: block.id,
+                      toolName: block.name,
+                    })
+                    if (block.input) {
+                      writer.write({
+                        type: 'tool-input-delta',
+                        toolCallId: block.id,
+                        inputTextDelta: JSON.stringify(block.input),
+                      })
+                    }
+                  }
+                }
+              }
+              // End the current step (turn) and start a new one for potential tool results
+              writer.write({ type: 'finish-step' })
+              writer.write({ type: 'start-step' })
+            }
+
+            // SDKPartialAssistantMessage — incremental streaming (if available)
+            else if (msg.type === 'stream_event') {
+              const event = msgAny.event as any
               switch (event.type) {
                 case 'content_block_start': {
                   const block = event.content_block
@@ -1212,7 +1168,6 @@ app.post('/agent/chat', async (c) => {
                   }
                   break
                 }
-
                 case 'content_block_delta': {
                   const delta = event.delta
                   if (delta?.type === 'text_delta' && delta.text) {
@@ -1230,7 +1185,6 @@ app.post('/agent/chat', async (c) => {
                   }
                   break
                 }
-
                 case 'content_block_stop': {
                   if (currentTextId) {
                     writer.write({ type: 'text-end', id: currentTextId })
@@ -1238,7 +1192,6 @@ app.post('/agent/chat', async (c) => {
                   }
                   break
                 }
-
                 case 'message_stop': {
                   if (currentTextId) {
                     writer.write({ type: 'text-end', id: currentTextId })
@@ -1284,6 +1237,9 @@ app.post('/agent/chat', async (c) => {
             }
           }
         } finally {
+          // Release active session lock
+          activeSessions.delete(modelName)
+
           // Trigger S3 sync after agent chat completes
           if (s3Sync) {
             s3Sync.triggerSync()
@@ -1291,6 +1247,7 @@ app.post('/agent/chat', async (c) => {
         }
       },
       onError: (error) => {
+        activeSessions.delete(modelName)
         console.error('[project-runtime] Stream error:', error)
         return 'An error occurred during streaming'
       },
@@ -4139,7 +4096,25 @@ app.all('/*', async (c, next) => {
       '/lsp',
     ]
     
-    if (apiPaths.some(p => path.startsWith(p))) {
+    // Also allow exact-match internal endpoints that are called directly by the API server
+    const internalEndpoints = [
+      '/download',
+      '/build-log',
+      '/build-events',
+      '/build-status',
+      '/console-log',
+      '/console-events',
+      '/preview/restart',
+      '/preview/rebuild',
+      '/preview/dev',
+      '/preview/dev/stop',
+      '/preview/status',
+      '/agent/chat',
+      '/sync/download',
+      '/sync/upload',
+    ]
+    
+    if (apiPaths.some(p => path.startsWith(p)) || internalEndpoints.some(p => path === p || path.startsWith(p + '?'))) {
       // Call next() to let Hono continue to the specific route handlers
       return next()
     }
