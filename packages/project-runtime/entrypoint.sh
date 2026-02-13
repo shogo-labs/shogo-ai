@@ -427,12 +427,13 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
   
   # Ensure prisma CLI and @prisma/client versions match (prevents 't.graph' runtime crash)
   # S3-restored node_modules can have mismatched versions if packages were installed at different times
-  CLI_VER=$(cd "$PROJECT_DIR" && node -e "try{console.log(require('prisma/package.json').version)}catch{console.log('unknown')}" 2>/dev/null)
-  CLIENT_VER=$(cd "$PROJECT_DIR" && node -e "try{console.log(require('@prisma/client/package.json').version)}catch{console.log('unknown')}" 2>/dev/null)
-  if [ "$CLI_VER" != "$CLIENT_VER" ] && [ "$CLI_VER" != "unknown" ] && [ "$CLIENT_VER" != "unknown" ]; then
-    bg_log "⚠️ Prisma version mismatch: CLI=$CLI_VER, client=$CLIENT_VER - aligning..."
+  CLI_VER=$(cat "$PROJECT_DIR/node_modules/prisma/package.json" 2>/dev/null | grep '"version"' | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+  CLIENT_VER=$(cat "$PROJECT_DIR/node_modules/@prisma/client/package.json" 2>/dev/null | grep '"version"' | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+  bg_log "Prisma versions: CLI=$CLI_VER, client=$CLIENT_VER"
+  if [ -n "$CLI_VER" ] && [ -n "$CLIENT_VER" ] && [ "$CLI_VER" != "$CLIENT_VER" ]; then
+    bg_log "⚠️ Prisma version mismatch detected - aligning CLI to match client@$CLIENT_VER..."
     cd "$PROJECT_DIR" && bun add prisma@"$CLIENT_VER" --dev 2>&1 || true
-    bg_log "Prisma CLI updated to match @prisma/client@$CLIENT_VER"
+    bg_log "Prisma CLI updated to $CLIENT_VER"
   fi
 
   # Generate Prisma client (fast, needed for types)

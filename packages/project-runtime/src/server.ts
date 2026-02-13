@@ -4459,6 +4459,15 @@ app.all('/*', async (c, next) => {
     })
     streamProcessOutput(serverProcess, 'api-server')
     console.log(`[project-runtime] Backend API server started (PID: ${serverProcess.pid}, port: ${SERVER_PORT})`)
+    
+    // Monitor for crashes — reset serverProcess to null so next request can retry
+    const proc = serverProcess
+    proc.exited.then((exitCode) => {
+      if (serverProcess === proc) {
+        console.error(`[project-runtime] ⚠️ Backend API server exited with code ${exitCode}`)
+        serverProcess = null
+      }
+    })
   }
   
   // Show loading page while build is starting
