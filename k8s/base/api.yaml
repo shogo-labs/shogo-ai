@@ -37,6 +37,35 @@ roleRef:
   name: shogo-api-domainmapping-manager
   apiGroup: rbac.authorization.k8s.io
 ---
+# Role for managing database credential Secrets in the workspaces namespace.
+# The API creates/reads/updates/deletes Secrets named "project-{id}-db-creds"
+# to persistently store per-project database credentials.
+# NOTE: Staging/production overlays define their own Role+RoleBinding with
+# environment-specific namespaces. This base definition uses shogo-workspaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-workspaces
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-workspaces
+subjects:
+  - kind: ServiceAccount
+    name: shogo-api
+    namespace: shogo-system
+roleRef:
+  kind: Role
+  name: shogo-api-db-secret-manager
+  apiGroup: rbac.authorization.k8s.io
+---
 # API secrets are managed by:
 # - Terraform (for initial creation with BETTER_AUTH_SECRET)
 # - GitHub Actions workflow (for ANTHROPIC_API_KEY and updates)

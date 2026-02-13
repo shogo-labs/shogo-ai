@@ -9,7 +9,7 @@ metadata:
   name: api-service-account
   namespace: shogo-staging-system
 ---
-# ClusterRole for managing DomainMappings (for publish feature)
+# ClusterRole for managing DomainMappings and Knative Services (for publish feature)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -34,6 +34,33 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: shogo-staging-api-domainmapping-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+# Role for managing database credential Secrets in the workspaces namespace.
+# The API creates/reads/updates/deletes Secrets named "project-{id}-db-creds"
+# to persistently store per-project database credentials (source of truth).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-staging-workspaces
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-staging-workspaces
+subjects:
+  - kind: ServiceAccount
+    name: api-service-account
+    namespace: shogo-staging-system
+roleRef:
+  kind: Role
+  name: shogo-api-db-secret-manager
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: serving.knative.dev/v1
