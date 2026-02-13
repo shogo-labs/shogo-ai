@@ -937,7 +937,7 @@ export function CodeEditorPanel({
             <div className="p-4 text-center">
               <p className="text-sm text-red-500">{filesError}</p>
               <button
-                onClick={loadFiles}
+                onClick={() => loadFiles()}
                 className="mt-2 text-xs text-blue-500 hover:underline"
               >
                 Retry

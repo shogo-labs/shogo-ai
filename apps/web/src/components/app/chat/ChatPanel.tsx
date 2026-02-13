@@ -19,7 +19,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { observer } from "mobx-react-lite"
-import { useChat, type Message } from "@ai-sdk/react"
+import { useChat, type UIMessage } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import { useNavigate } from "react-router-dom"
 import { useDomains, useSDKDomains } from "@/contexts/DomainProvider"
@@ -189,9 +189,9 @@ export interface ChatPanelProps {
   /** Callback when submit happens in compact mode (before session exists) */
   onCompactSubmit?: (prompt: string) => void
   /** Ref to expose the input container for transition animation measurement */
-  inputContainerRef?: React.RefObject<HTMLDivElement>
+  inputContainerRef?: React.RefObject<HTMLDivElement | null>
   /** Ref to expose the message container for transition animation measurement (targets first message area) */
-  messageContainerRef?: React.RefObject<HTMLDivElement>
+  messageContainerRef?: React.RefObject<HTMLDivElement | null>
   /** Controlled value for compact mode input */
   compactValue?: string
   /** Callback when compact mode input value changes */
@@ -260,7 +260,7 @@ interface ExtractedToolCall {
   error?: string
 }
 
-function extractToolCalls(message: Message): ExtractedToolCall[] {
+function extractToolCalls(message: UIMessage): ExtractedToolCall[] {
   // AI SDK 4.2+ uses message.parts for tool invocations
   if (!("parts" in message) || !Array.isArray((message as any).parts)) {
     return []
@@ -301,10 +301,10 @@ function extractToolCalls(message: Message): ExtractedToolCall[] {
  * chat-session-sync-fix: v3 API uses parts array instead of content string.
  * This helper handles both formats for backward compatibility.
  */
-function extractTextContent(message: Message): string {
+function extractTextContent(message: UIMessage): string {
   // If message has content string (legacy or fallback), use it
-  if (typeof message.content === "string" && message.content) {
-    return message.content
+  if (typeof (message as any).content === "string" && (message as any).content) {
+    return (message as any).content
   }
 
   // v3 API: Extract text from parts array
@@ -343,7 +343,7 @@ function mapToolCallState(state: string | undefined): ToolCallState {
 /**
  * Check if a message has tool calls worth persisting.
  */
-function hasToolCalls(message: Message): boolean {
+function hasToolCalls(message: UIMessage): boolean {
   const parts = (message as any).parts as any[] | undefined
   if (!parts || !Array.isArray(parts)) return false
   return parts.some(
@@ -865,7 +865,6 @@ export const ChatPanel = observer(function ChatPanel({
     status,       // v3 API: 'submitted' | 'streaming' | 'ready' | 'error'
     error,
     setMessages,
-    reload,
     stop,  // Used by idle timeout to force-complete hung streams
   } = useChat({
     transport: chatTransport,
@@ -909,9 +908,9 @@ export const ChatPanel = observer(function ChatPanel({
         } else if (event.toolName === 'open_panel') {
           // task-testbed-chat-integration: Handle open_panel virtual tool
           const panelId = event.args?.panelId as string || `panel-${event.toolUseId}`
-          const panelType = event.args?.type as string || 'preview'
+          const panelType = (event.args?.type as "code" | "schema" | "preview" | "docs") || 'preview'
           const panelTitle = event.args?.title as string || 'Panel'
-          const panelContent = event.args?.content as unknown
+          const panelContent = event.args?.content as React.ReactNode
 
           if (onOpenPanel) {
             console.log('[ChatPanel:VirtualTool] 📋 Opening panel:', panelId, panelType, panelTitle)
@@ -1231,7 +1230,7 @@ export const ChatPanel = observer(function ChatPanel({
       // chat-session-sync-fix: v3 API callback receives { message, messages, isAbort, ... } options object
       // Must destructure message from options - NOT receive message directly like v1/v2
       
-      const contentLength = message.content?.length ?? message.parts?.length ?? 0
+      const contentLength = (message as any).content?.length ?? message.parts?.length ?? 0
 
       // chat-session-sync-fix: v3 API - Session ID from message.metadata
       // Server's messageMetadata callback sends ccSessionId via SSE message-metadata event
@@ -1383,7 +1382,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Display messages: use real messages, or single optimistic user message when transitioning from homepage
   // Prefer ref so the first message stays visible even if parent stops passing initialMessage
-  const displayMessages = useMemo((): Message[] => {
+  const displayMessages = useMemo((): UIMessage[] => {
     if (messages.length > 0) return messages
     const text = (pendingInitialMessage ?? initialMessage ?? initialMessageRef.current ?? '').trim()
     if (text !== '') {
@@ -1391,8 +1390,8 @@ export const ChatPanel = observer(function ChatPanel({
         {
           id: 'initial-optimistic',
           role: 'user',
-          content: text,
-        } as Message,
+          parts: [{ type: 'text', text }],
+        } as unknown as UIMessage,
       ]
     }
     return []
@@ -1412,7 +1411,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   useEffect(() => {
     // Get current content to track changes
-    const currentContent = messages.map(m => m.content).join("")
+    const currentContent = messages.map(m => (m as any).content || m.parts?.map((p: any) => p.text || '').join('')).join("")
 
     if (isStreaming) {
       // Clear existing timeout
@@ -2267,23 +2266,28 @@ export const ChatPanel = observer(function ChatPanel({
   )
 
   // Error retry handler (task-chat-retry-fix)
-  // AI SDK v3: reload() regenerates the last assistant message
-  // Only use reload() to avoid duplicating user messages
+  // AI SDK v4: reload() was removed; retry by removing failed assistant message and re-sending
   const handleRetry = useCallback(() => {
-    if (typeof reload === 'function' && messages.length > 0) {
-      reload()
-    } else {
-      // Don't resend via handleSendMessage as it duplicates the user message.
-      // Instead, suggest refreshing.
-      console.warn('[ChatPanel] Cannot retry via reload. Please refresh the page.')
+    if (messages.length > 0) {
+      const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
+      if (lastUserMsg) {
+        const textPart = (lastUserMsg as any).parts?.find((p: any) => p.type === 'text')
+        const content = textPart?.text || ''
+        if (content) {
+          // Remove messages after (and including) the failed assistant response
+          const lastUserIdx = messages.lastIndexOf(lastUserMsg)
+          setMessages(messages.slice(0, lastUserIdx))
+          sendMessage({ text: content })
+        }
+      }
     }
-  }, [reload, messages.length])
+  }, [messages, sendMessage, setMessages])
 
   // Convert messages for MessageList
   const messageListMessages = messages.map((msg) => ({
     id: msg.id,
     role: msg.role as "user" | "assistant",
-    content: msg.content,
+    content: (msg as any).content || msg.parts?.map((p: any) => p.text || '').join('') || '',
   }))
 
   // Context value for ChatContextProvider

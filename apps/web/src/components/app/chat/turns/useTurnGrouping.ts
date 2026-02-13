@@ -9,14 +9,14 @@
  */
 
 import { useMemo } from "react"
-import type { Message } from "@ai-sdk/react"
+import type { UIMessage } from "@ai-sdk/react"
 import type { ConversationTurn, MessagePart } from "./types"
 import { type ToolCallData, getToolCategory } from "../tools/types"
 
 /**
  * Extract tool calls from a message (AI SDK v3 format).
  */
-function extractToolCallsFromMessage(message: Message): ToolCallData[] {
+function extractToolCallsFromMessage(message: UIMessage): ToolCallData[] {
   // AI SDK 4.2+ uses message.parts for tool invocations
   if (!("parts" in message) || !Array.isArray((message as any).parts)) {
     return []
@@ -60,13 +60,13 @@ function mapToolState(state?: string): ToolCallData["state"] {
  * Extract ordered parts from an AI SDK message.
  * Preserves the natural interleaving of text, tools, and images.
  */
-function extractOrderedParts(message: Message): MessagePart[] {
+function extractOrderedParts(message: UIMessage): MessagePart[] {
   const parts = (message as any).parts as any[] | undefined
 
   // Fallback: single text part from content
   if (!parts || !Array.isArray(parts)) {
-    if (typeof message.content === "string" && message.content) {
-      return [{ type: "text", text: message.content, id: "text-0" }]
+    if (typeof (message as any).content === "string" && (message as any).content) {
+      return [{ type: "text", text: (message as any).content, id: "text-0" }]
     }
     return []
   }
@@ -162,7 +162,7 @@ function extractOrderedParts(message: Message): MessagePart[] {
  * ```
  */
 export function useTurnGrouping(
-  messages: Message[],
+  messages: UIMessage[],
   isStreaming: boolean = false,
   externalToolCalls?: ToolCallData[]
 ): ConversationTurn[] {

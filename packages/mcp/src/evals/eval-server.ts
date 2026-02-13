@@ -50,12 +50,10 @@ interface Checkpoint {
 }
 
 function saveCheckpoint() {
-  // Extract eval IDs - handle both evalId and eval.id formats
+  // Extract eval IDs from eval results
   const completedEvalIds = state.results.map(r => {
-    if (r.evalId) return r.evalId
-    if ((r as any).eval?.id) return (r as any).eval.id
-    return null
-  }).filter(Boolean)
+    return r.eval?.id || null
+  }).filter((id): id is string => id !== null)
   
   const checkpoint: Checkpoint = {
     template: templateArg,
@@ -612,7 +610,7 @@ async function startRun() {
       // Find failed evals (including API errors)
       failedEvalIds = previousResults
         .filter((r: any) => !r.passed || r.apiError || (r.errors && r.errors.length > 0))
-        .map((r: any) => r.evalId)
+        .map((r: any) => r.eval?.id || r.evalId)
       
       console.log(`📥 Loaded previous results: ${previousResults.length} evals`)
       console.log(`   Failed/Error evals: ${failedEvalIds.length}`)
@@ -738,11 +736,11 @@ function printSummary(totalTime: number) {
   
   if (mergeMode && previousResults.length > 0) {
     // Get the IDs of newly run evals
-    const newEvalIds = new Set(state.results.map((r: any) => r.evalId || r.eval?.id))
+    const newEvalIds = new Set(state.results.map((r: any) => r.eval?.id || r.evalId))
     
     // Keep previous results for evals we didn't re-run
     const keptPreviousResults = previousResults.filter((r: any) => {
-      const evalId = r.evalId || r.eval?.id
+      const evalId = r.eval?.id || r.evalId
       return !newEvalIds.has(evalId)
     })
     
@@ -813,7 +811,7 @@ function printSummary(totalTime: number) {
   
   for (const r of allResults) {
     // Handle both evalId at top level and eval.id from runner
-    const evalId = r.evalId || (r as any).eval?.id || 'unknown'
+    const evalId = r.eval?.id || (r as any).evalId || 'unknown'
     const ev = state.evals.find(e => e.id === evalId)
     const name = (ev?.name || (r as any).eval?.name || evalId).slice(0, 38)
     const isApiError = (r as any).apiError
@@ -860,7 +858,7 @@ function printSummary(totalTime: number) {
       },
     },
     results: allResults.map(r => {
-      const evalId = r.evalId || (r as any).eval?.id || 'unknown'
+      const evalId = r.eval?.id || (r as any).evalId || 'unknown'
       const ev = state.evals.find(e => e.id === evalId)
       const inputTokens = r.metrics?.tokens?.input || 0
       const outputTokens = r.metrics?.tokens?.output || 0
@@ -948,11 +946,11 @@ const server = Bun.serve({
           passRate: ((passed / state.results.length) * 100).toFixed(1) + '%',
         },
         results: state.results.map(r => ({
-          evalId: r.evalId,
-          name: state.evals.find(e => e.id === r.evalId)?.name || r.evalId,
+          evalId: r.eval?.id,
+          name: state.evals.find(e => e.id === r.eval?.id)?.name || r.eval?.id,
           passed: r.passed,
           score: r.score,
-          maxScore: state.evals.find(e => e.id === r.evalId)?.maxScore || 100,
+          maxScore: state.evals.find(e => e.id === r.eval?.id)?.maxScore || 100,
           intentionScore: r.phaseScores?.intention.percentage.toFixed(0) + '%',
           executionScore: r.phaseScores?.execution.percentage.toFixed(0) + '%',
         })),

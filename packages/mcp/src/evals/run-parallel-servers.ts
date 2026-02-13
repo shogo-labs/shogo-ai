@@ -205,14 +205,20 @@ async function runEvalOnWorker(
   } catch (error: any) {
     console.error(`[${index + 1}/${total}] ✗ ${ev.name}: ERROR - ${error.message}`)
     return {
-      evalId: ev.id,
+      eval: ev,
       passed: false,
       score: 0,
       maxScore: ev.maxScore || 100,
-      scorePercent: 0,
+      percentage: 0,
       responseText: '',
       toolCalls: [],
       criteriaResults: [],
+      triggeredAntiPatterns: [],
+      timing: {
+        startTime,
+        endTime: Date.now(),
+        durationMs: Date.now() - startTime,
+      },
       metrics: {
         toolCallCount: 0,
         stepCount: 0,
@@ -220,7 +226,7 @@ async function runEvalOnWorker(
         timing: { totalMs: Date.now() - startTime, firstToolCallMs: null, avgToolCallMs: null },
       },
       errors: [error.message],
-    }
+    } as EvalResult
   }
 }
 
@@ -432,8 +438,8 @@ async function main() {
   console.log('─'.repeat(70))
   
   for (const r of results) {
-    const ev = evals.find(e => e.id === r.evalId)
-    const name = (ev?.name || r.evalId).slice(0, 38)
+    const ev = evals.find(e => e.id === r.eval?.id)
+    const name = (ev?.name || r.eval?.id || 'unknown').slice(0, 38)
     const status = r.passed ? '✓' : '✗'
     const score = `${r.score}/${ev?.maxScore || 100}`
     const intentPct = r.phaseScores ? `${r.phaseScores.intention.percentage.toFixed(0)}%` : 'N/A'
@@ -451,10 +457,10 @@ async function main() {
     workers: workersArg,
     summary: { total: results.length, passed, failed, avgScore },
     results: results.map(r => ({
-      evalId: r.evalId,
+      evalId: r.eval?.id,
       passed: r.passed,
       score: r.score,
-      maxScore: evals.find(e => e.id === r.evalId)?.maxScore || 100,
+      maxScore: evals.find(e => e.id === r.eval?.id)?.maxScore || 100,
       tools: r.toolCalls.length,
       criteriaResults: r.criteriaResults,
     })),

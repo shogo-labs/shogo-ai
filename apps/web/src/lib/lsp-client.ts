@@ -157,13 +157,13 @@ export class MonacoLSPClient {
 
     // Watch for model changes (file opens/closes)
     this.disposables.push(
-      this.monaco.editor.onDidCreateModel((model) => {
+      this.monaco.editor.onDidCreateModel((model: any) => {
         this.didOpenTextDocument(model.uri.toString(), model.getLanguageId(), model.getValue())
       })
     )
 
     this.disposables.push(
-      this.monaco.editor.onWillDisposeModel((model) => {
+      this.monaco.editor.onWillDisposeModel((model: any) => {
         this.didCloseTextDocument(model.uri.toString())
       })
     )
@@ -264,7 +264,7 @@ export class MonacoLSPClient {
   private handleDiagnostics(params: { uri: string; diagnostics: unknown[] }): void {
     if (!this.monaco) return
 
-    const model = this.monaco.editor.getModels().find(m => m.uri.toString() === params.uri)
+    const model = this.monaco.editor.getModels().find((m: any) => m.uri.toString() === params.uri)
     if (!model) return
 
     // Convert LSP diagnostics to Monaco markers
@@ -305,7 +305,7 @@ export class MonacoLSPClient {
       ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'],
       {
         triggerCharacters: ['.', '"', "'", '/', '@', '<'],
-        provideCompletionItems: async (model, position, context) => {
+        provideCompletionItems: async (model: any, position: any, context: any) => {
           try {
             const result = await this.request('textDocument/completion', {
               textDocument: { uri: model.uri.toString() },
@@ -393,7 +393,7 @@ export class MonacoLSPClient {
     const provider = this.monaco.languages.registerHoverProvider(
       ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'],
       {
-        provideHover: async (model, position) => {
+        provideHover: async (model: any, position: any) => {
           try {
             const result = await this.request('textDocument/hover', {
               textDocument: { uri: model.uri.toString() },
@@ -437,7 +437,7 @@ export class MonacoLSPClient {
       ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'],
       {
         signatureHelpTriggerCharacters: ['(', ','],
-        provideSignatureHelp: async (model, position) => {
+        provideSignatureHelp: async (model: any, position: any) => {
           try {
             const result = await this.request('textDocument/signatureHelp', {
               textDocument: { uri: model.uri.toString() },
@@ -481,7 +481,7 @@ export class MonacoLSPClient {
     const provider = this.monaco.languages.registerDefinitionProvider(
       ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'],
       {
-        provideDefinition: async (model, position) => {
+        provideDefinition: async (model: any, position: any) => {
           try {
             const result = await this.request('textDocument/definition', {
               textDocument: { uri: model.uri.toString() },
@@ -521,7 +521,7 @@ export class MonacoLSPClient {
     const provider = this.monaco.languages.registerReferenceProvider(
       ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'],
       {
-        provideReferences: async (model, position, context) => {
+        provideReferences: async (model: any, position: any, context: any) => {
           try {
             const result = await this.request('textDocument/references', {
               textDocument: { uri: model.uri.toString() },

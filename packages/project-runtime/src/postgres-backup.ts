@@ -50,7 +50,7 @@ export interface PostgresBackupConfig {
 
 export class PostgresBackup {
   private client: S3Client
-  private config: Required<PostgresBackupConfig>
+  private config: Omit<Required<PostgresBackupConfig>, 's3Endpoint'> & { s3Endpoint?: string }
   private backupTimer: ReturnType<typeof setInterval> | null = null
   private isShuttingDown = false
   private lastBackupTime: Date | null = null
@@ -64,7 +64,7 @@ export class PostgresBackup {
       pgUser: config.pgUser || process.env.POSTGRES_USER || 'shogo',
       pgPassword: config.pgPassword || process.env.POSTGRES_PASSWORD || 'shogo',
       pgDatabase: config.pgDatabase || process.env.POSTGRES_DB || 'project',
-      s3Endpoint: config.s3Endpoint || process.env.S3_ENDPOINT || undefined,
+      s3Endpoint: config.s3Endpoint || process.env.S3_ENDPOINT,
       s3Region: config.s3Region || process.env.S3_REGION || 'us-east-1',
       backupInterval: config.backupInterval || 600000, // 10 minutes default
       dataDir: config.dataDir || '/var/lib/postgresql/data',

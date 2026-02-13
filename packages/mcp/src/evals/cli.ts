@@ -147,7 +147,7 @@ async function main() {
   const jsonOutput = hasFlag('json')
   const includeExtended = hasFlag('extended')
   const saveResults = hasFlag('save')
-  const category = getArg('category') as EvalCategory | undefined
+  const category = getArg('category') as EvalCategory | 'business' | 'business-user' | 'multiturn' | undefined
   // Default to Shogo agent in project-runtime (has template tools)
   // Platform /api/chat uses persona prompts without template tools
   const endpoint = getArg('endpoint') || 'http://localhost:6300/agent/chat'

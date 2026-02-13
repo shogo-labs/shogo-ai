@@ -39,7 +39,7 @@ import {
 interface SchemaInfo {
   name: string
   schema: Record<string, unknown> & {
-    "x-persistence"?: { backend?: string; namespace?: string }
+    "x-persistence"?: { backend?: string; namespace?: string; bootstrap?: boolean }
   }
   path: string
 }

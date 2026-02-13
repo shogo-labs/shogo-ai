@@ -375,7 +375,7 @@ function copyTemplate(templateName: string, projectName: string): { ok: boolean;
  * AI SDK native tools for template operations
  */
 const templateTools = {
-  'template.list': tool({
+  'template.list': (tool as any)({
     description: `List and search available starter templates. Returns templates with metadata including name, description, complexity, features, models, and tags.
 
 Available templates:
@@ -388,7 +388,7 @@ Available templates:
     parameters: z.object({
       query: z.string().optional().describe('Optional search query to filter templates'),
     }),
-    execute: async ({ query }) => {
+    execute: async ({ query }: { query?: string }) => {
       console.log(`[project-runtime] template.list called with query: ${query}`)
       let templates = loadTemplates()
 
@@ -406,13 +406,13 @@ Available templates:
     },
   }),
 
-  'template.copy': tool({
+  'template.copy': (tool as any)({
     description: `Copy a starter template to set up the project. This will copy all template files to the current project directory, install dependencies, build the project, and start the preview server automatically.`,
     parameters: z.object({
       templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app", "expense-tracker")'),
       projectName: z.string().optional().describe('Optional project name (for package.json)'),
     }),
-    execute: async ({ templateName, projectName }) => {
+    execute: async ({ templateName, projectName }: { templateName: string; projectName?: string }) => {
       console.log(`[project-runtime] template.copy called: ${templateName}`)
       const result = copyTemplate(templateName, projectName || templateName)
       
@@ -1188,7 +1188,7 @@ app.post('/agent/chat', async (c) => {
     // Preserves image parts for multimodal AI processing
     type ContentPart = { type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }
 
-    const coreMessages: ModelMessage[] = messages.map((msg) => {
+    const coreMessages = messages.map((msg: any) => {
       // If message already has content string, pass through
       if (typeof msg.content === 'string') {
         return { role: msg.role, content: msg.content }
@@ -1310,10 +1310,10 @@ app.post('/agent/chat', async (c) => {
           // avoiding a full CLI cold-start on every message.
           model: getOrCreateModel(modelName) as Parameters<typeof streamText>[0]['model'],
           system: getSystemPrompt(),
-          messages: coreMessages,
+          messages: coreMessages as any,
           tools: templateTools,
           maxSteps: 10,
-        })
+        } as any)
         
         // Return the AI SDK UI message stream response with keep-alive wrapper
         // This ensures compatibility with @ai-sdk/react's useChat hook (DefaultChatTransport)
@@ -1573,8 +1573,8 @@ const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '8081', 10)
 
 // Track current preview mode and server processes
 let isExpo = process.env.IS_EXPO === 'true'
-let serverProcess: ReturnType<typeof Bun.spawn> | null = null
-let expoServerProcess: ReturnType<typeof Bun.spawn> | null = null
+let serverProcess: any = null
+let expoServerProcess: any = null
 
 // Dev mode: use vite dev server with HMR instead of production builds
 let isDevMode = false
@@ -1898,7 +1898,7 @@ function streamProcessOutput(proc: ReturnType<typeof Bun.spawn>, name: string) {
   // Stream stdout
   if (proc.stdout && typeof proc.stdout !== 'number') {
     ;(async () => {
-      const reader = proc.stdout.getReader()
+      const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader()
       const decoder = new TextDecoder()
       try {
         while (true) {
@@ -1921,7 +1921,7 @@ function streamProcessOutput(proc: ReturnType<typeof Bun.spawn>, name: string) {
   // Stream stderr
   if (proc.stderr && typeof proc.stderr !== 'number') {
     ;(async () => {
-      const reader = proc.stderr.getReader()
+      const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader()
       const decoder = new TextDecoder()
       try {
         while (true) {
@@ -5250,10 +5250,12 @@ app.post('/terminal/exec', async (c) => {
         const proc = Bun.spawn(['sh', '-c', cmdConfig.command], {
           cwd: PROJECT_DIR,
           env: { ...process.env, FORCE_COLOR: '1', CI: 'true' },
+          stdout: 'pipe',
+          stderr: 'pipe',
         })
         
         // Stream stdout
-        const reader = proc.stdout.getReader()
+        const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader()
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
@@ -5261,8 +5263,8 @@ app.post('/terminal/exec', async (c) => {
         }
         
         // Stream stderr
-        if (proc.stderr) {
-          const stderrReader = proc.stderr.getReader()
+        if (proc.stderr && typeof proc.stderr !== 'number') {
+          const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader()
           while (true) {
             const { done, value } = await stderrReader.read()
             if (done) break
@@ -5548,10 +5550,12 @@ app.post('/tests/run', async (c) => {
           FORCE_COLOR: '1',
           CI: 'true',
         },
+        stdout: 'pipe',
+        stderr: 'pipe',
       })
 
       // Stream stdout
-      const reader = proc.stdout.getReader()
+      const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader()
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -5559,8 +5563,8 @@ app.post('/tests/run', async (c) => {
       }
       
       // Stream stderr
-      if (proc.stderr) {
-        const stderrReader = proc.stderr.getReader()
+      if (proc.stderr && typeof proc.stderr !== 'number') {
+        const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader()
         while (true) {
           const { done, value } = await stderrReader.read()
           if (done) break

@@ -30,8 +30,8 @@ function getProjectDir(result: EvalResult): string | null {
   }
   
   // Check tool call params
-  if (copyCall?.params?.targetDir) return copyCall.params.targetDir
-  if (copyCall?.params?.target_dir) return copyCall.params.target_dir
+  if (copyCall?.params?.targetDir) return copyCall.params.targetDir as string
+  if (copyCall?.params?.target_dir) return copyCall.params.target_dir as string
   
   // Check worker directories (parallel eval runner uses these)
   for (let i = 0; i < 10; i++) {
