@@ -4194,11 +4194,23 @@ app.all('/*', async (c, next) => {
     return next()
   }
   
-  // Proxy /api/* requests to the project's backend server if one is running.
+  // Proxy /api/* requests to the project's backend server.
   // For Expo: handled below via the Expo server proxy.
   // For plain Vite: proxy to the project's Hono server started from server.ts.
-  // Without this, /api/* requests are served as static files from dist/, returning HTML.
-  if (!isExpo && serverProcess && relativePath.startsWith('/api/')) {
+  // IMPORTANT: /api/* must NEVER fall through to static file serving (which returns HTML).
+  // If the backend is not running, return a proper JSON error.
+  if (!isExpo && relativePath.startsWith('/api/')) {
+    if (!serverProcess) {
+      // Backend is not running — could be crashing or not started yet.
+      // Return a proper JSON error instead of falling through to serve HTML from dist/
+      console.error(`[project-runtime] Subdomain: /api/ request but backend server is not running (path: ${relativePath})`)
+      return c.json({
+        error: { 
+          code: 'backend_unavailable', 
+          message: 'Backend API server is not running. It may be starting up or experiencing errors. Please try again in a few seconds.' 
+        }
+      }, 503)
+    }
     const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
     const method = c.req.method
     console.log(`[project-runtime] Subdomain: proxying ${method} ${relativePath} to project API server at ${targetUrl}`)

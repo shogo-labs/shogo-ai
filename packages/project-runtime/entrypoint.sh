@@ -425,26 +425,38 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
     bg_log "Continuing anyway - Prisma may fail"
   fi
   
+  # Use the LOCAL prisma binary from node_modules (not bunx which uses a global cache
+  # and may run a stale version, e.g. 7.3.0 when node_modules has 7.4.0)
+  LOCAL_PRISMA="$PROJECT_DIR/node_modules/.bin/prisma"
+  if [ ! -x "$LOCAL_PRISMA" ]; then
+    LOCAL_PRISMA="bunx prisma"
+    bg_log "⚠️ Local prisma binary not found, falling back to bunx"
+  fi
+  
   # Ensure prisma CLI and @prisma/client versions match (prevents 't.graph' runtime crash)
   # S3-restored node_modules can have mismatched versions if packages were installed at different times
   CLI_VER=$(cat "$PROJECT_DIR/node_modules/prisma/package.json" 2>/dev/null | grep '"version"' | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
   CLIENT_VER=$(cat "$PROJECT_DIR/node_modules/@prisma/client/package.json" 2>/dev/null | grep '"version"' | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-  bg_log "Prisma versions: CLI=$CLI_VER, client=$CLIENT_VER"
+  bg_log "Prisma versions: CLI=$CLI_VER, client=$CLIENT_VER (using: $LOCAL_PRISMA)"
   if [ -n "$CLI_VER" ] && [ -n "$CLIENT_VER" ] && [ "$CLI_VER" != "$CLIENT_VER" ]; then
     bg_log "⚠️ Prisma version mismatch detected - aligning CLI to match client@$CLIENT_VER..."
     cd "$PROJECT_DIR" && bun add prisma@"$CLIENT_VER" --dev 2>&1 || true
     bg_log "Prisma CLI updated to $CLIENT_VER"
+    # Re-resolve local binary after install
+    LOCAL_PRISMA="$PROJECT_DIR/node_modules/.bin/prisma"
   fi
 
   # Generate Prisma client (fast, needed for types)
-  bunx prisma generate 2>&1 || true
+  # MUST use local binary — bunx caches and may use a stale version
+  bg_log "Running prisma generate..."
+  $LOCAL_PRISMA generate 2>&1 || true
   
   # Push schema to database with retry logic
   PUSH_RETRIES=3
   PUSH_SUCCESS=false
   
   for i in $(seq 1 $PUSH_RETRIES); do
-    if bunx prisma db push 2>&1; then
+    if $LOCAL_PRISMA db push 2>&1; then
       PUSH_SUCCESS=true
       STEP_END=$(date +%s%3N)
       bg_log "Prisma db push completed (took $((STEP_END - STEP_START))ms)"
