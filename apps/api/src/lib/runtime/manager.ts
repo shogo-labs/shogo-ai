@@ -38,6 +38,42 @@ const PROJECT_RUNTIME_SERVER = join(__dirname, '..', '..', '..', '..', '..', 'pa
  */
 const MCP_SERVER_PATH = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'mcp', 'src', 'server-templates.ts')
 
+/**
+ * Get the resolved path to the bun binary.
+ * In local dev, bun may be installed in ~/.bun/bin which isn't in the default
+ * system PATH for child processes. We resolve the path from the running process
+ * so that execSync/spawn can find it reliably.
+ */
+function getBunPath(): string {
+  // process.argv[0] is the path to the runtime binary (bun) when running under bun
+  if (process.argv[0] && process.argv[0].endsWith('bun')) {
+    return process.argv[0]
+  }
+  // Fallback: check common locations
+  const homeDir = process.env.HOME || process.env.USERPROFILE || ''
+  const bunHome = join(homeDir, '.bun', 'bin', 'bun')
+  if (existsSync(bunHome)) {
+    return bunHome
+  }
+  // Last resort: hope it's in PATH
+  return 'bun'
+}
+
+/**
+ * Ensure PATH includes the directory containing bun so child processes can find it.
+ */
+function ensureBunInPath(env: Record<string, string>): Record<string, string> {
+  const bunPath = getBunPath()
+  if (bunPath !== 'bun') {
+    const bunDir = dirname(bunPath)
+    const currentPath = env.PATH || process.env.PATH || ''
+    if (!currentPath.includes(bunDir)) {
+      env.PATH = `${bunDir}:${currentPath}`
+    }
+  }
+  return env
+}
+
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {
   basePort: 5200,
@@ -364,15 +400,16 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     const nodeModulesDir = join(projectDir, 'node_modules')
     if (!existsSync(nodeModulesDir)) {
       console.log(`[RuntimeManager] Installing dependencies for ${projectId}...`)
+      const bunBin = getBunPath()
       try {
-        execSync('bun install', {
+        execSync(`${bunBin} install`, {
           cwd: projectDir,
           stdio: 'pipe',
           timeout: 60000,
         })
         console.log(`[RuntimeManager] Dependencies installed for ${projectId}`)
       } catch (err: any) {
-        console.error(`[RuntimeManager] Failed to install dependencies:`, err.message)
+        console.error(`[RuntimeManager] Failed to install dependencies (bun=${bunBin}):`, err.message)
         throw new Error(`Failed to install dependencies for project ${projectId}`)
       }
     }
@@ -412,13 +449,13 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     try {
       // Build Vite environment - override DATABASE_URL with projects database if available
       // This ensures project runtimes connect to the isolated projects database, not the platform database
-      const viteEnv: Record<string, string> = {
+      const viteEnv: Record<string, string> = ensureBunInPath({
         ...process.env as Record<string, string>,
         PROJECT_ID: projectId,
         VITE_PROJECT_ID: projectId,
         VITE_PORT: String(port),
         PORT: String(port),
-      }
+      })
       
       // Override DATABASE_URL with PROJECTS_DATABASE_URL to isolate project data
       if (process.env.PROJECTS_DATABASE_URL) {
@@ -426,27 +463,32 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         console.log(`[RuntimeManager] Vite using projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
       }
 
-      // Detect if this is an Expo project (Expo doesn't accept --host 0.0.0.0)
+      // Detect project type from package.json
       let isExpoProject = false
+      let hasDevClientScript = false
       try {
         const pkgJsonPath = join(projectDir, 'package.json')
         if (existsSync(pkgJsonPath)) {
           const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
           isExpoProject = !!(pkgJson.dependencies?.expo || pkgJson.devDependencies?.expo)
+          // Check if there's a dedicated dev:client script (used when dev runs concurrently)
+          hasDevClientScript = !!(pkgJson.scripts?.['dev:client'])
         }
       } catch {
-        // Ignore parse errors, assume not Expo
+        // Ignore parse errors, assume defaults
       }
 
       // Build spawn args - Expo only accepts 'lan', 'tunnel', or 'localhost' for --host
       // For Expo projects, we need to run the Hono server (which serves both static files AND API routes)
       // instead of the Expo Metro bundler (which only serves frontend with no API)
       let proc: ReturnType<typeof spawn>
+      const bunBin = getBunPath()
+      const bunxBin = join(dirname(bunBin), 'bunx')
 
       if (isExpoProject) {
         // For Expo: Install deps, build, then run Hono server
         console.log(`[RuntimeManager] Installing dependencies for Expo project ${projectId}...`)
-        const installProc = spawn('bun', ['install'], {
+        const installProc = spawn(bunBin, ['install'], {
           cwd: projectDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           env: viteEnv,
@@ -470,7 +512,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
         // Run Prisma generate and db push
         console.log(`[RuntimeManager] Setting up database for ${projectId}...`)
-        const prismaGenProc = spawn('bunx', ['prisma', 'generate'], {
+        const prismaGenProc = spawn(bunxBin, ['prisma', 'generate'], {
           cwd: projectDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           env: viteEnv,
@@ -480,7 +522,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           prismaGenProc.on('error', () => resolve()) // Continue even if fails
         })
 
-        const prismaPushProc = spawn('bunx', ['prisma', 'db', 'push', '--accept-data-loss'], {
+        const prismaPushProc = spawn(bunxBin, ['prisma', 'db', 'push', '--accept-data-loss'], {
           cwd: projectDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           env: viteEnv,
@@ -491,7 +533,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         })
 
         console.log(`[RuntimeManager] Building Expo project ${projectId}...`)
-        const buildProc = spawn('bun', ['run', 'build'], {
+        const buildProc = spawn(bunBin, ['run', 'build'], {
           cwd: projectDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           env: viteEnv,
@@ -515,16 +557,29 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
         // Start Hono server (serves static files from dist/ AND API routes)
         console.log(`[RuntimeManager] Starting Expo Hono server for ${projectId} on port ${port}`)
-        proc = spawn('bun', ['run', 'start'], {
+        proc = spawn(bunBin, ['run', 'start'], {
           cwd: projectDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: false,
           env: { ...viteEnv, PORT: String(port) },
         })
+      } else if (hasDevClientScript) {
+        // Project uses concurrently (dev runs both server + client).
+        // The RuntimeManager already handles the agent server separately,
+        // so we only need the Vite client dev server.
+        // Run dev:client directly so --port and --host flags reach Vite.
+        console.log(`[RuntimeManager] Using dev:client script for ${projectId} (concurrently-based project)`)
+        const devArgs = ['run', 'dev:client', '--', '--port', String(port), '--host', '0.0.0.0']
+        proc = spawn(bunBin, devArgs, {
+          cwd: projectDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: false,
+          env: viteEnv,
+        })
       } else {
-        // For non-Expo: Run Vite dev server
+        // For standard Vite projects: Run dev script directly
         const devArgs = ['run', 'dev', '--port', String(port), '--host', '0.0.0.0']
-        proc = spawn('bun', devArgs, {
+        proc = spawn(bunBin, devArgs, {
           cwd: projectDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: false,
@@ -552,31 +607,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         if (output.includes('Local:') || output.includes('ready in')) {
           console.log(`[RuntimeManager] Vite ready for ${projectId} on port ${port}`)
         }
-        // Forward Vite output to the agent server's console log for the Server tab
-        for (const line of output.split('\n')) {
-          if (line.trim()) {
-            fetch(`http://localhost:${agentPort}/console-log/append`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ line: line.trim(), stream: 'stdout' }),
-            }).catch(() => {}) // Ignore if agent isn't ready yet
-          }
-        }
       })
 
       proc.stderr?.on('data', (data) => {
-        const output = data.toString()
-        console.error(`[RuntimeManager] Vite stderr for ${projectId}:`, output)
-        // Forward Vite stderr to the agent server's console log for the Server tab
-        for (const line of output.split('\n')) {
-          if (line.trim()) {
-            fetch(`http://localhost:${agentPort}/console-log/append`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ line: line.trim(), stream: 'stderr' }),
-            }).catch(() => {}) // Ignore if agent isn't ready yet
-          }
-        }
+        console.error(`[RuntimeManager] Vite stderr for ${projectId}:`, data.toString())
       })
 
       // Spawn project-runtime agent server for local development
@@ -584,7 +618,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         console.log(`[RuntimeManager] Starting agent server for ${projectId} on port ${agentPort}`)
         
         // Build environment for project runtime
-        const runtimeEnv: Record<string, string> = {
+        const runtimeEnv: Record<string, string> = ensureBunInPath({
           ...process.env as Record<string, string>,
           PROJECT_ID: projectId,
           PROJECT_DIR: projectDir,
@@ -592,7 +626,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),
           MCP_SERVER_PATH: MCP_SERVER_PATH,
           NODE_ENV: 'development',
-        }
+        })
         
         // Only override DATABASE_URL if PROJECTS_DATABASE_URL is explicitly set.
         // This prevents AI agents from accidentally modifying platform data in local dev,
@@ -602,6 +636,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           console.log(`[RuntimeManager] Using isolated projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
         }
 
+        // Tell the project-runtime where the user sees the preview
+        runtimeEnv.PREVIEW_URL = `http://localhost:${port}`
+        
         // AI Proxy configuration for user-created AI apps
         // In local dev, the API server runs on the same machine
         const apiPort = process.env.API_PORT || '3000'
@@ -611,7 +648,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           runtimeEnv.AI_PROXY_TOKEN = process.env.AI_PROXY_TOKEN
         }
         
-        const agentProc = spawn('bun', ['run', PROJECT_RUNTIME_SERVER], {
+        const agentProc = spawn(bunBin, ['run', PROJECT_RUNTIME_SERVER], {
           cwd: projectDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: false,
@@ -629,17 +666,14 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         })
 
         agentProc.stdout?.on('data', (data) => {
-          const output = data.toString().trim()
-          if (output) {
-            console.log(`[Agent:${projectId.slice(0, 8)}] ${output}`)
+          const output = data.toString()
+          if (output.includes('Starting server') || output.includes('port')) {
+            console.log(`[RuntimeManager] Agent server ready for ${projectId} on port ${agentPort}`)
           }
         })
 
         agentProc.stderr?.on('data', (data) => {
-          const output = data.toString().trim()
-          if (output) {
-            console.error(`[Agent:${projectId.slice(0, 8)}] ${output}`)
-          }
+          console.error(`[RuntimeManager] Agent stderr for ${projectId}:`, data.toString())
         })
       } else {
         console.warn(`[RuntimeManager] Agent server not found at ${PROJECT_RUNTIME_SERVER}, skipping agent startup`)

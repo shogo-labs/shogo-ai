@@ -717,6 +717,8 @@ export class KnativeProjectManager {
       { name: "PROJECT_ID", value: projectId },
       { name: "PROJECT_DIR", value: "/app/project" },
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
+      // Preview URL so the agent knows where the user sees the running app
+      { name: "PREVIEW_URL", value: getPreviewUrl(projectId) },
       // Auth secret for validating preview JWT tokens
       {
         name: "BETTER_AUTH_SECRET",
@@ -780,8 +782,6 @@ export class KnativeProjectManager {
 
     // Add PostgreSQL DATABASE_URL for shared CloudNativePG cluster
     // Database is provisioned per-project on the shared projects-pg cluster
-    // Credentials are stored in a K8s Secret and referenced via secretKeyRef
-    // so that password rotation doesn't require pod recreation
     if (this.postgresEnabled) {
       // Retry database provisioning up to 3 times (CNPG cluster may be briefly unavailable)
       let dbInfo: Awaited<ReturnType<typeof databaseService.provisionDatabase>> | null = null
@@ -798,30 +798,11 @@ export class KnativeProjectManager {
       }
 
       if (dbInfo) {
-        const credSecretName = databaseService.dbSecretName(projectId)
-        // If the Secret was created (password is non-empty), reference it via secretKeyRef.
-        // This is the preferred path: password lives only in the Secret, not in the ksvc spec.
-        // If the Secret wasn't created (legacy project, empty password), fall back to inline value.
-        if (dbInfo.password) {
-          env.push({
-            name: "DATABASE_URL",
-            valueFrom: {
-              secretKeyRef: {
-                name: credSecretName,
-                key: "database-url",
-              },
-            },
-          })
-          console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId} (credentials in Secret "${credSecretName}")`)
-        } else {
-          // Legacy fallback: K8s Secret doesn't exist yet. Use inline value.
-          // This path is temporary — the migration script will create the missing Secrets.
-          env.push({
-            name: "DATABASE_URL",
-            value: dbInfo.connectionUrl,
-          })
-          console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId} (legacy: inline credentials)`)
-        }
+        env.push({
+          name: "DATABASE_URL",
+          value: dbInfo.connectionUrl,
+        })
+        console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId}`)
       } else {
         // DATABASE_URL is required for all templates — fail the project creation
         throw new Error(`Failed to provision database for project ${projectId} after 3 attempts. Check CloudNativePG cluster health.`)
