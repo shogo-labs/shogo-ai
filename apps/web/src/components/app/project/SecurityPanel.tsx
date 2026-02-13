@@ -67,7 +67,6 @@ interface ScanResult {
   ok: boolean
   findings: SecurityFinding[]
   summary: ScanSummary
-  error?: { code: string; message: string }
 }
 
 // ============================================================================
@@ -324,6 +323,16 @@ function FindingCard({
 }
 
 // ============================================================================
+// Utilities
+// ============================================================================
+
+/** Format milliseconds into a human-readable duration string */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+// ============================================================================
 // Main Component
 // ============================================================================
 
@@ -368,6 +377,7 @@ export function SecurityPanel({ projectId, className }: SecurityPanelProps) {
       setExpandedFindings(new Set())
     } catch (err: any) {
       setScanError(err.message || "Failed to run security scan")
+      setScanResult(null)
     } finally {
       setIsScanning(false)
     }
@@ -403,12 +413,6 @@ export function SecurityPanel({ projectId, className }: SecurityPanelProps) {
     }
     return groups
   }, [filteredFindings])
-
-  // Format scan duration
-  const formatDuration = (ms: number) => {
-    if (ms < 1000) return `${ms}ms`
-    return `${(ms / 1000).toFixed(1)}s`
-  }
 
   return (
     <div className={cn("flex flex-col h-full bg-background", className)}>
@@ -539,7 +543,7 @@ export function SecurityPanel({ projectId, className }: SecurityPanelProps) {
       </div>
 
       {/* Main content area */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto relative">
         {/* Error state */}
         {scanError && (
           <div className="flex flex-col items-center justify-center h-full p-8">
