@@ -4229,16 +4229,17 @@ app.all('/*', async (c, next) => {
         proxyHeaders['Authorization'] = authHeader
       }
       
-      // Build fetch options
+      // Build fetch options — read body once before any retry loop
       const fetchOptions: RequestInit = {
         method,
         headers: proxyHeaders,
       }
       
       // Forward request body for POST/PUT/PATCH
+      let bodyBuffer: ArrayBuffer | null = null
       if (method !== 'GET' && method !== 'HEAD') {
         try {
-          const bodyBuffer = await c.req.arrayBuffer()
+          bodyBuffer = await c.req.arrayBuffer()
           if (bodyBuffer.byteLength > 0) {
             fetchOptions.body = bodyBuffer
           }
@@ -4247,7 +4248,34 @@ app.all('/*', async (c, next) => {
         }
       }
       
-      const response = await fetch(targetUrl, fetchOptions)
+      // Retry logic: the backend server may have just been auto-started and not listening yet.
+      // Retry up to 5 times with 1s delay to give it time to start.
+      let response: Response | null = null
+      let lastError: Error | null = null
+      const MAX_PROXY_RETRIES = 5
+      for (let attempt = 1; attempt <= MAX_PROXY_RETRIES; attempt++) {
+        try {
+          // Re-attach body for retries (ArrayBuffer can only be consumed once)
+          const retryOptions = { ...fetchOptions }
+          if (bodyBuffer && bodyBuffer.byteLength > 0) {
+            retryOptions.body = bodyBuffer.slice(0) // clone for retry
+          }
+          response = await fetch(targetUrl, retryOptions)
+          break // Success
+        } catch (err: any) {
+          lastError = err
+          if (attempt < MAX_PROXY_RETRIES && (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED') || err.message?.includes('Failed to connect'))) {
+            console.log(`[project-runtime] API proxy attempt ${attempt}/${MAX_PROXY_RETRIES} failed (server starting?), retrying in 1s...`)
+            await new Promise(resolve => setTimeout(resolve, 1000))
+          } else {
+            throw err
+          }
+        }
+      }
+      
+      if (!response) {
+        throw lastError || new Error('API proxy failed after retries')
+      }
       
       const responseContentType = response.headers.get('Content-Type') || 'application/json'
       const body = await response.arrayBuffer()
@@ -4376,6 +4404,12 @@ app.all('/*', async (c, next) => {
   // For Expo: always auto-start if process isn't running
   const needsAutoStart = !serverProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
   
+  // Also check: dist/ exists but the backend server isn't running and a server.tsx exists.
+  // This happens on cold starts from S3 restore (bg-init builds dist/ but doesn't start the backend).
+  // For published domains (*.shogo.one), we need the backend server for /api/* routes.
+  const serverTsxExists = existsSync(join(PROJECT_DIR, 'server.tsx')) || existsSync(join(PROJECT_DIR, 'server.ts'))
+  const needsBackendStart = !serverProcess && !isExpo && !devModeStarting && !isInBackoff && distExists && serverTsxExists
+  
   if (needsAutoStart) {
     console.log('[project-runtime] Auto-starting build mode on first subdomain request...')
     devModeStarting = true
@@ -4409,6 +4443,22 @@ app.all('/*', async (c, next) => {
         devModeError = err.message || 'Connection error'
         devModeStarting = false
       })
+  } else if (needsBackendStart) {
+    // dist/ exists (from S3 restore / bg-init build) but backend server isn't running.
+    // Start ONLY the backend server (no rebuild needed) so /api/* routes work.
+    console.log('[project-runtime] 🔄 Auto-starting backend API server (dist/ exists, server not running)...')
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const serverPath = existsSync(serverTsxPath) ? serverTsxPath : serverTsPath
+    
+    serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+      cwd: PROJECT_DIR,
+      env: { ...process.env, PORT: String(SERVER_PORT) },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    streamProcessOutput(serverProcess, 'api-server')
+    console.log(`[project-runtime] Backend API server started (PID: ${serverProcess.pid}, port: ${SERVER_PORT})`)
   }
   
   // Show loading page while build is starting
