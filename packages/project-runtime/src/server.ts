@@ -91,15 +91,61 @@ const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
 ;(async () => {
   const s3StartTime = Date.now()
   try {
-    s3Sync = await initializeS3Sync(PROJECT_DIR)
-    if (s3Sync) {
+    const result = await initializeS3Sync(PROJECT_DIR)
+    if (result) {
+      const { sync, downloadSucceeded } = result
       const s3Duration = Date.now() - s3StartTime
-      logTiming(`S3 sync initialized (took ${s3Duration}ms)`)
       
-      // Write marker file to signal background init that S3 restore is complete
-      // This allows background init to skip bun install if node_modules was restored
-      writeFileSync(S3_RESTORE_MARKER, `restored:${Date.now()}`)
-      logTiming('S3 restore marker written')
+      if (downloadSucceeded) {
+        // Download succeeded - safe to enable sync and set the global
+        s3Sync = sync
+        logTiming(`S3 sync initialized successfully (took ${s3Duration}ms)`)
+        // Write marker file to signal background init that S3 restore is complete
+        // This allows background init to skip bun install if node_modules was restored
+        writeFileSync(S3_RESTORE_MARKER, `restored:${Date.now()}`)
+        logTiming('S3 restore marker written')
+      } else {
+        // Download failed but not a critical auth error.
+        // CRITICAL: Do NOT set s3Sync - this prevents ANY uploads of template files.
+        // The entrypoint template files are on disk, and uploading them would
+        // overwrite the user's actual project data in S3.
+        console.warn(`[project-runtime] S3 download failed (took ${s3Duration}ms) - sync DISABLED to protect user data`)
+        console.warn(`[project-runtime] Will retry download in 10 seconds...`)
+        writeFileSync(S3_RESTORE_MARKER, `download-failed:${Date.now()}`)
+        
+        // Retry download after a delay
+        const retryDownload = async (attempt: number) => {
+          try {
+            console.log(`[project-runtime] Retrying S3 download (attempt ${attempt})...`)
+            const retryStats = await sync.downloadAll()
+            if (retryStats.errors.length === 0) {
+              console.log(`[project-runtime] S3 download retry succeeded! Enabling sync.`)
+              // Now safe to enable sync - set the global and start watcher/periodic
+              s3Sync = sync
+              sync.startPeriodicSync()
+              sync.startWatcher()
+              writeFileSync(S3_RESTORE_MARKER, `restored-retry:${Date.now()}`)
+            } else {
+              console.error(`[project-runtime] S3 download retry ${attempt} failed:`, retryStats.errors)
+              // Retry with exponential backoff up to 3 attempts
+              if (attempt < 3) {
+                const delay = 10000 * Math.pow(2, attempt - 1) // 10s, 20s, 40s
+                console.log(`[project-runtime] Will retry again in ${delay / 1000}s...`)
+                setTimeout(() => retryDownload(attempt + 1), delay)
+              } else {
+                console.error(`[project-runtime] All S3 download retries failed. Sync remains disabled.`)
+              }
+            }
+          } catch (retryError) {
+            console.error(`[project-runtime] S3 download retry ${attempt} error:`, retryError)
+            if (attempt < 3) {
+              const delay = 10000 * Math.pow(2, attempt - 1)
+              setTimeout(() => retryDownload(attempt + 1), delay)
+            }
+          }
+        }
+        setTimeout(() => retryDownload(1), 10000)
+      }
     } else {
       logTiming('S3 sync not configured (S3_WORKSPACES_BUCKET not set)')
       // Still write marker so background init doesn't wait forever
@@ -108,6 +154,7 @@ const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
   } catch (error) {
     console.error(`[project-runtime] S3 sync initialization failed:`, error)
     // Write marker even on error so background init doesn't hang
+    // But do NOT start uploading - protect user data
     writeFileSync(S3_RESTORE_MARKER, `error:${Date.now()}`)
   }
 })()

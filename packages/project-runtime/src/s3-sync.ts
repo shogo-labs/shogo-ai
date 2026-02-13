@@ -190,16 +190,12 @@ export class S3Sync {
         mkdirSync(this.config.localDir, { recursive: true })
       }
 
-      // Extract archive directly from stream
+      // Extract archive
       const extractStart = Date.now()
       
-      // Convert web stream to node stream
-      const webStream = response.Body as any
-      const nodeStream = webStream.transformToWebStream 
-        ? (await webStream.transformToByteArray()).buffer
-        : webStream
-
-      // For AWS SDK v3, we need to handle the stream properly
+      // For AWS SDK v3, convert the response body to a byte array ONCE
+      // (the stream can only be consumed once - calling transformToByteArray twice
+      // causes "The stream has already been transformed" error)
       const bodyArray = await response.Body.transformToByteArray()
       const tempArchive = join('/tmp', `project-${this.config.prefix}.tar.gz`)
       await writeFile(tempArchive, bodyArray)
@@ -639,11 +635,15 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
  * Initialize S3 sync: download archive and start background sync.
  * Returns null if S3 is not configured OR if initial download fails critically.
  *
+ * CRITICAL: If the download fails for ANY reason (not just auth errors),
+ * we must NOT start the uploader/watcher. Otherwise, the default template
+ * files get uploaded to S3, overwriting the user's actual project data.
+ *
  * Starts both periodic sync (30s safety net) and file watcher (debounced event-driven sync).
  * The watcher is started for ALL projects, including new ones, to catch the first
  * file writes (e.g., template copy, AI code generation).
  */
-export async function initializeS3Sync(localDir: string): Promise<S3Sync | null> {
+export async function initializeS3Sync(localDir: string): Promise<{ sync: S3Sync, downloadSucceeded: boolean } | null> {
   const sync = createS3SyncFromEnv(localDir)
 
   if (!sync) {
@@ -653,19 +653,40 @@ export async function initializeS3Sync(localDir: string): Promise<S3Sync | null>
   // Download and extract archive from S3
   const downloadStats = await sync.downloadAll()
   
-  // Check if download had critical errors
-  const hasCriticalError = downloadStats.errors.some(err => 
-    err.includes('AccessDenied') || 
-    err.includes('NoSuchBucket') ||
-    err.includes('InvalidAccessKeyId') ||
-    err.includes('SignatureDoesNotMatch')
-  )
-  
-  if (hasCriticalError) {
-    console.warn('[S3Sync] Critical error during initial download - S3 sync disabled')
+  // If there were ANY download errors, do NOT start uploading.
+  // This prevents the catastrophic scenario where:
+  // 1. Download fails (e.g., stream error, network issue)
+  // 2. Entrypoint has already copied the default template
+  // 3. Watcher detects template files and uploads them to S3
+  // 4. User's actual project data in S3 gets overwritten with template
+  if (downloadStats.errors.length > 0) {
+    console.warn('[S3Sync] Download had errors - starting sync in UPLOAD-ONLY-AFTER-DELAY mode')
     console.warn('[S3Sync] Errors:', downloadStats.errors)
-    return null
+    
+    // Check if these are permission/config errors (completely disable sync)
+    const hasCriticalError = downloadStats.errors.some(err => 
+      err.includes('AccessDenied') || 
+      err.includes('NoSuchBucket') ||
+      err.includes('InvalidAccessKeyId') ||
+      err.includes('SignatureDoesNotMatch')
+    )
+    
+    if (hasCriticalError) {
+      console.warn('[S3Sync] Critical auth/config error - S3 sync completely disabled')
+      return null
+    }
+    
+    // For non-critical errors (stream errors, network issues):
+    // Return the sync instance but DON'T start watcher/periodic sync yet.
+    // The caller (server.ts) should retry the download or start sync later
+    // after verifying the project state is correct.
+    console.warn('[S3Sync] Non-critical download error - sync instance created but NOT started')
+    console.warn('[S3Sync] Caller must explicitly start sync after verifying project state')
+    return { sync, downloadSucceeded: false }
   }
+
+  // Download succeeded (or no archive existed for new project) - safe to start sync
+  const isNewProject = downloadStats.downloaded === 0
 
   // Start periodic sync (30s safety net - catches anything the watcher misses)
   sync.startPeriodicSync()
@@ -675,5 +696,9 @@ export async function initializeS3Sync(localDir: string): Promise<S3Sync | null>
   // trigger an immediate debounced sync to S3, rather than waiting up to 30s.
   sync.startWatcher()
 
-  return sync
+  if (isNewProject) {
+    console.log('[S3Sync] New project - watcher will capture first file writes')
+  }
+
+  return { sync, downloadSucceeded: true }
 }
