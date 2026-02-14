@@ -9,8 +9,8 @@ import { registerTemplateCopy } from "./template.copy"
  *
  * This provides access to starter templates for rapid app scaffolding.
  *
- * Total: 2 tools
- * - Template: 2 tools (list, copy)
+ * Total: 2 tools (template.list, template.copy)
+ * Image saving is handled in-process by project-runtime via createSdkMcpServer (image_save).
  *
  * @param server - FastMCP server instance (stdio or HTTP transport)
  */

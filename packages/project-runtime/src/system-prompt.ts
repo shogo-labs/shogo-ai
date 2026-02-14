@@ -35,7 +35,9 @@ ${CODE_QUALITY}
 
 ${BUILD_FAILURE_RECOVERY}
 
-${ENVIRONMENT_AWARENESS}`
+${ENVIRONMENT_AWARENESS}
+
+${USER_ATTACHED_IMAGES}`
 
   let prompt = basePrompt
   
@@ -213,6 +215,22 @@ The project has convenient scripts in package.json:
 - \`bun run build\` - The watch process handles this automatically
 - \`bun run dev\` - The server is already running
 - \`vite build\` or \`vite dev\` - Already handled by watch mode`
+
+// =============================================================================
+// User-Attached Images (background, hero, logo)
+// =============================================================================
+
+export const USER_ATTACHED_IMAGES = `## User-Attached Images
+
+When the user attaches images in chat, you can see them as visual content. A text annotation lists "Images available: image-0 (png, 45KB), ...". **Images are NOT automatically saved to the project** — you decide when and with what filename to save them.
+
+To use an attached image in the project, call the **image_save** MCP tool (in-process, no staging directory):
+
+1. Call \`image_save\` with the image ID and a meaningful filename:
+   - \`image_save({ imageId: "image-0", filename: "hero-bg.png" })\`
+2. The tool writes to \`public/hero-bg.png\` and returns the path.
+3. Use the returned path in code: CSS \`url('/hero-bg.png')\`, JSX \`<img src="/hero-bg.png" />\`.
+`
 
 // =============================================================================
 // [DSPy-Optimized] Schema Modifications

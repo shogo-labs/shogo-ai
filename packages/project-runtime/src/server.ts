@@ -40,6 +40,7 @@ logTiming('Server module loading...')
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
+import { createSdkMcpServer, tool as sdkTool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
 import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
@@ -507,6 +508,84 @@ function ensureBaseInfrastructure(projectDir: string): void {
   }
 }
 
+// =============================================================================
+// In-Process Image Tools (image_save via createSdkMcpServer)
+// =============================================================================
+// Module-level image store — populated per-request before session.send(), cleared after.
+// Agent calls image_save MCP tool to write from this Map to public/ with a meaningful filename.
+let pendingImages = new Map<string, { base64Data: string; mimeType: string }>()
+
+function mimeToExt(mimeType: string): string {
+  const map: Record<string, string> = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'image/svg+xml': '.svg',
+  }
+  return map[mimeType] ?? '.png'
+}
+
+const imageToolsServer = createSdkMcpServer({
+  name: 'image-tools',
+  version: '1.0.0',
+  tools: [
+    sdkTool(
+      'image_save',
+      `Save a user-attached image to the project's public/ directory with a meaningful filename so it can be referenced in code (e.g. in <img src="/filename.png" /> or url('/filename.png') in CSS). Call this when the user has attached images and you want to use one in the project.`,
+      {
+        imageId: z.string().describe('The image identifier (e.g. "image-0", "image-1") from the "Images available" annotation in the user message'),
+        filename: z.string().optional().describe('Desired filename (e.g. "hero-bg.png", "logo.svg"). If omitted, defaults to imageId with original extension.'),
+      },
+      async (args) => {
+        const image = pendingImages.get(args.imageId)
+        if (!image) {
+          const available = Array.from(pendingImages.keys())
+          const err = available.length > 0
+            ? `Image "${args.imageId}" not found. Available: ${available.join(', ')}.`
+            : 'No images available. The user has not attached any images in this conversation.'
+          return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err }) }] }
+        }
+        const ext = mimeToExt(image.mimeType)
+        let finalFilename = args.filename
+          ? (/\.\w+$/.test(args.filename) ? args.filename : `${args.filename}${ext}`)
+          : `${args.imageId}${ext}`
+        finalFilename = finalFilename.replace(/[^a-zA-Z0-9._-]/g, '-')
+        const publicDir = join(PROJECT_DIR, 'public')
+        if (!existsSync(publicDir)) {
+          mkdirSync(publicDir, { recursive: true })
+        }
+        const destPath = join(publicDir, finalFilename)
+        try {
+          writeFileSync(destPath, Buffer.from(image.base64Data, 'base64'))
+          const servePath = `/${finalFilename}`
+          const sizeBytes = statSync(destPath).size
+          console.log(`[project-runtime] image_save: ${args.imageId} -> public/${finalFilename} (${sizeBytes} bytes)`)
+          if (s3Sync) {
+            s3Sync.triggerSync()
+          }
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                ok: true,
+                path: `public/${finalFilename}`,
+                servePath,
+                fileSize: sizeBytes,
+                message: `Image saved to public/${finalFilename} (${sizeBytes} bytes). Use "${servePath}" in CSS (e.g. background-image: url("${servePath}")) or in <img src="${servePath}" />. Refresh the preview to see it.`,
+              }),
+            }]
+          }
+        } catch (err: any) {
+          console.error(`[project-runtime] image_save failed:`, err)
+          return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message }) }] }
+        }
+      }
+    ),
+  ],
+})
+
 /**
  * Apply a theme to the project's index.css.
  * Output is Tailwind v4–compatible (@import "tailwindcss", @theme inline) so that
@@ -794,6 +873,7 @@ function writeAgentConfigFiles(): void {
           DATABASE_URL: process.env.DATABASE_URL || '',
         },
       },
+      'image-tools': imageToolsServer,
     },
   }
   writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
@@ -836,6 +916,7 @@ function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
           DATABASE_URL: process.env.DATABASE_URL || '',
         },
       },
+      'image-tools': imageToolsServer,
     },
     allowedTools: [
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
@@ -843,6 +924,7 @@ function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
       'Skill', 'Task', 'TodoWrite',
       'mcp__shogo__template_list',
       'mcp__shogo__template_copy',
+      'mcp__image-tools__image_save',
     ],
     disallowedTools: ['EnterPlanMode', 'ExitPlanMode', 'SendMessage', 'TeamCreate', 'TeamDelete'],
     permissionMode: 'default',
@@ -944,10 +1026,6 @@ function wrapStreamWithKeepalive(
     },
   })
 }
-
-// =============================================================================
-// Image Handling Helpers
-// =============================================================================
 
 /**
  * Parse a data URL to extract mediaType and base64 data.
@@ -1562,8 +1640,30 @@ app.post('/agent/chat', async (c) => {
       return c.json({ error: { code: 'no_user_message', message: 'No user message found' } }, 400)
     }
 
+    // Populate pendingImages for image_save in-process MCP tool
+    pendingImages = new Map()
     const userContent = extractUserContent(lastUserMessage)
     const userText = typeof userContent === 'string' ? userContent : extractUserText(lastUserMessage)
+
+    if (typeof userContent !== 'string') {
+      // Images present — extract base64 data into pendingImages
+      let imageIdx = 0
+      for (const block of userContent) {
+        if (block.type === 'image' && 'source' in block && block.source.type === 'base64') {
+          const id = `image-${imageIdx}`
+          pendingImages.set(id, { base64Data: block.source.data, mimeType: block.source.media_type })
+          imageIdx++
+        }
+      }
+      if (pendingImages.size > 0) {
+        const imageInfos = Array.from(pendingImages.entries()).map(([id, img]) => {
+          const ext = mimeToExt(img.mimeType).replace('.', '')
+          const sizeKB = Math.round(Buffer.byteLength(img.base64Data, 'base64') / 1024)
+          return `${id} (${ext}, ${sizeKB}KB)`
+        })
+        console.log(`[project-runtime] Extracted ${pendingImages.size} images for image_save: ${imageInfos.join(', ')}`)
+      }
+    }
 
     // Prepend dynamic context (build status, theme) to the user message
     const buildContext = getBuildStatusContext()
@@ -1571,17 +1671,32 @@ app.post('/agent/chat', async (c) => {
     if (buildContext) contextPrefix += `[Build Status]\n${buildContext}\n\n`
     if (themeContext) contextPrefix += `[Theme Context]\n${themeContext}\n\n`
     if (system) contextPrefix += `[Additional Instructions]\n${system}\n\n`
-    const fullUserText = contextPrefix ? `${contextPrefix}${userText}` : userText
 
-    console.log(`[project-runtime] Processing message (${fullUserText.length} chars, context prefix: ${contextPrefix.length} chars)`)
+    // Append image availability annotation so the agent knows to call image_save
+    let imageAnnotation = ''
+    if (pendingImages.size > 0) {
+      const imageInfos = Array.from(pendingImages.entries()).map(([id, img]) => {
+        const ext = mimeToExt(img.mimeType).replace('.', '')
+        const sizeKB = Math.round(Buffer.byteLength(img.base64Data, 'base64') / 1024)
+        return `${id} (${ext}, ${sizeKB}KB)`
+      })
+      imageAnnotation = `\n\n[Images available: ${imageInfos.join(', ')}. Use the image_save tool to save to public/ with a meaningful filename.]`
+    }
+
+    const fullUserText = (contextPrefix ? `${contextPrefix}${userText}` : userText) + imageAnnotation
+
+    console.log(`[project-runtime] Processing message (${fullUserText.length} chars, context prefix: ${contextPrefix.length} chars, images: ${pendingImages.size})`)
 
     if (typeof userContent !== 'string') {
-      // Images present — build multi-part content with context prefix prepended as text
+      // Images present — build multi-part content with context prefix and annotation
       const contentBlocks: ContentBlock[] = []
       if (contextPrefix) {
         contentBlocks.push({ type: 'text', text: contextPrefix })
       }
       contentBlocks.push(...userContent)
+      if (imageAnnotation) {
+        contentBlocks.push({ type: 'text', text: imageAnnotation })
+      }
       await session.send({
         type: 'user',
         message: { role: 'user', content: contentBlocks },

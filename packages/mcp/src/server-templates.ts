@@ -17,7 +17,7 @@ const server = new FastMCP({
   version: "0.0.1",
 })
 
-// Register only template tools (2 tools)
+// Register template tools (2 tools)
 registerTemplateTools(server)
 
 server.start({
