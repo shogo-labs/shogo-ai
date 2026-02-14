@@ -28,8 +28,8 @@ logTiming('Server module loading...')
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText, tool, type ModelMessage } from 'ai'
-import { createClaudeCode } from 'ai-sdk-provider-claude-code'
+import { streamText, type ModelMessage } from 'ai'
+import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-provider-claude-code'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
 import { existsSync, readdirSync, readFileSync, writeFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
@@ -368,108 +368,84 @@ function runProjectGenerateAfterCopy(projectDir: string): void {
   }
 }
 
-/**
- * AI SDK native tools for template operations
- */
-const templateTools = {
-  'template.list': tool({
-    description: `List and search available starter templates. Returns templates with metadata including name, description, complexity, features, models, and tags.
+// =============================================================================
+// In-Process Image Tools (image_save via createSdkMcpServer)
+// =============================================================================
+// Module-level image store — populated per-request before streamText(), cleared after.
+// Agent calls image_save MCP tool to write from this Map to public/ with a meaningful filename.
+let pendingImages = new Map<string, { base64Data: string; mimeType: string }>()
 
-Available templates:
-- todo-app: Simple task management
-- expense-tracker: Personal finance with categories
-- crm: Customer relationship management
-- inventory: Stock and product management
-- kanban: Project boards with drag-and-drop
-- ai-chat: AI chatbot with conversation history`,
-    parameters: z.object({
-      query: z.string().optional().describe('Optional search query to filter templates'),
-    }),
-    execute: async ({ query }) => {
-      console.log(`[project-runtime] template.list called with query: ${query}`)
-      let templates = loadTemplates()
+function mimeToExt(mimeType: string): string {
+  const map: Record<string, string> = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'image/svg+xml': '.svg',
+  }
+  return map[mimeType] ?? '.png'
+}
 
-      if (query) {
-        const queryLower = query.toLowerCase()
-        templates = templates.filter(t =>
-          t.name.toLowerCase().includes(queryLower) ||
-          t.description.toLowerCase().includes(queryLower) ||
-          t.tags.some(tag => tag.toLowerCase().includes(queryLower)) ||
-          t.useCases.some(uc => uc.toLowerCase().includes(queryLower))
-        )
-      }
-
-      return JSON.stringify({ ok: true, templates }, null, 2)
-    },
-  }),
-
-  'template.copy': tool({
-    description: `Copy a starter template to set up the project. This will copy all template files to the current project directory, install dependencies, build the project, and start the preview server automatically.`,
-    parameters: z.object({
-      templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app", "expense-tracker")'),
-      projectName: z.string().optional().describe('Optional project name (for package.json)'),
-    }),
-    execute: async ({ templateName, projectName }) => {
-      console.log(`[project-runtime] template.copy called: ${templateName}`)
-      const result = copyTemplate(templateName, projectName || templateName)
-      
-      // If successful, trigger S3 sync immediately to persist the template files
-      if (result.ok && s3Sync) {
-        console.log(`[project-runtime] Triggering S3 sync after template copy`)
-        s3Sync.triggerSync(true) // immediate=true since template copy is a critical operation
-      }
-      
-      // If successful, automatically rebuild and restart the preview
-      if (result.ok) {
-        let restartResult: { success: boolean; message: string; mode?: string; port?: number | null } = {
-          success: false,
-          message: 'Restart not attempted',
+const imageToolsServer = createSdkMcpServer({
+  name: 'image-tools',
+  version: '1.0.0',
+  tools: [
+    sdkTool(
+      'image_save',
+      `Save a user-attached image to the project's public/ directory with a meaningful filename so it can be referenced in code (e.g. in <img src="/filename.png" /> or url('/filename.png') in CSS). Call this when the user has attached images and you want to use one in the project.`,
+      {
+        imageId: z.string().describe('The image identifier (e.g. "image-0", "image-1") from the "Images available" annotation in the user message'),
+        filename: z.string().optional().describe('Desired filename (e.g. "hero-bg.png", "logo.svg"). If omitted, defaults to imageId with original extension.'),
+      },
+      async (args) => {
+        const image = pendingImages.get(args.imageId)
+        if (!image) {
+          const available = Array.from(pendingImages.keys())
+          const err = available.length > 0
+            ? `Image "${args.imageId}" not found. Available: ${available.join(', ')}.`
+            : 'No images available. The user has not attached any images in this conversation.'
+          return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err }) }] }
         }
-        
+        const ext = mimeToExt(image.mimeType)
+        let finalFilename = args.filename
+          ? (/\.\w+$/.test(args.filename) ? args.filename : `${args.filename}${ext}`)
+          : `${args.imageId}${ext}`
+        finalFilename = finalFilename.replace(/[^a-zA-Z0-9._-]/g, '-')
+        const publicDir = join(PROJECT_DIR, 'public')
+        if (!existsSync(publicDir)) {
+          mkdirSync(publicDir, { recursive: true })
+        }
+        const destPath = join(publicDir, finalFilename)
         try {
-          console.log(`[project-runtime] Starting dev mode for project ${PROJECT_ID}...`)
-          // Call our local dev endpoint (uses vite dev server with HMR for instant updates)
-          const response = await fetch(`http://localhost:${PORT}/preview/dev`, {
-            method: 'POST',
-          })
-          
-          if (response.ok) {
-            const data = await response.json() as { success: boolean; mode: string; port: number | null }
-            restartResult = {
-              success: true,
-              message: `Preview restarted in ${data.mode} mode`,
-              mode: data.mode,
-              port: data.port,
-            }
-            console.log(`[project-runtime] Preview restarted in ${data.mode} mode`)
-          } else {
-            const errorData = await response.json().catch(() => ({})) as { error?: string }
-            restartResult = {
-              success: false,
-              message: errorData.error || `Restart failed with status ${response.status}`,
-            }
+          writeFileSync(destPath, Buffer.from(image.base64Data, 'base64'))
+          const servePath = `/${finalFilename}`
+          const sizeBytes = statSync(destPath).size
+          console.log(`[project-runtime] image_save: ${args.imageId} -> public/${finalFilename} (${sizeBytes} bytes)`)
+          // Trigger sync immediately so preview/file watchers and S3 see the new file
+          if (s3Sync) {
+            s3Sync.triggerSync()
+          }
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                ok: true,
+                path: `public/${finalFilename}`,
+                servePath,
+                fileSize: sizeBytes,
+                message: `Image saved to public/${finalFilename} (${sizeBytes} bytes). Use "${servePath}" in CSS (e.g. background-image: url("${servePath}")) or in <img src="${servePath}" />. Refresh the preview to see it.`,
+              }),
+            }]
           }
         } catch (err: any) {
-          console.warn(`[project-runtime] Restart error: ${err.message}`)
-          restartResult = {
-            success: false,
-            message: err.message,
-          }
+          console.error(`[project-runtime] image_save failed:`, err)
+          return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message }) }] }
         }
-        
-        return JSON.stringify({
-          ...result,
-          restart: restartResult,
-          message: restartResult.success 
-            ? `Template copied and preview rebuilt. The preview will show the ${templateName} app.`
-            : 'Template copied but rebuild failed. Try refreshing the preview.',
-        }, null, 2)
       }
-      
-      return JSON.stringify(result, null, 2)
-    },
-  }),
-}
+    ),
+  ],
+})
 
 // =============================================================================
 // Path Restriction (Security)
@@ -590,6 +566,7 @@ const claudeCode = createClaudeCode({
           DATABASE_URL: process.env.DATABASE_URL || '',
         },
       },
+      'image-tools': imageToolsServer,
     },
     // Allowed tools
     allowedTools: [
@@ -600,7 +577,7 @@ const claudeCode = createClaudeCode({
       // MCP tools (underscores - Claude Code converts dots to underscores)
       'mcp__wavesmith__template_list',
       'mcp__wavesmith__template_copy',
-      'mcp__wavesmith__image_save',
+      'mcp__image-tools__image_save',
       // Wavesmith MCP tools - Schema (underscores)
       // 'mcp__wavesmith__schema_set',
       // 'mcp__wavesmith__schema_get',
@@ -741,10 +718,6 @@ function wrapStreamWithKeepalive(
   })
 }
 
-// =============================================================================
-// Image Handling Helpers
-// =============================================================================
-
 /**
  * Parse a data URL to extract mediaType and base64 data.
  * Example: "data:image/png;base64,iVBORw0..." -> { mimeType: "image/png", base64Data: "iVBORw0..." }
@@ -753,55 +726,6 @@ function parseDataUrl(dataUrl: string): { mimeType: string; base64Data: string }
   const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
   if (!match) return null
   return { mimeType: match[1], base64Data: match[2] }
-}
-
-/** Map image mime type to file extension for saving uploaded images. */
-function mimeToExt(mimeType: string): string {
-  const map: Record<string, string> = {
-    'image/png': '.png',
-    'image/jpeg': '.jpg',
-    'image/jpg': '.jpg',
-    'image/gif': '.gif',
-    'image/webp': '.webp',
-    'image/svg+xml': '.svg',
-  }
-  return map[mimeType] ?? '.png'
-}
-
-/**
- * Write user-attached images to .image-staging/ so the agent can save them
- * to public/ via the save_image MCP tool with a meaningful filename.
- * Returns metadata about each staged image.
- */
-function stageAttachedImages(
-  contentParts: Array<{ type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }>,
-  projectDir: string
-): Array<{ id: string; stagedPath: string; ext: string; sizeKB: number }> {
-  const imageParts = contentParts.filter((p): p is { type: 'image'; image: string; mimeType: string } => p.type === 'image')
-  if (imageParts.length === 0) return []
-
-  const stagingDir = join(projectDir, '.image-staging')
-  if (!existsSync(stagingDir)) {
-    mkdirSync(stagingDir, { recursive: true })
-  }
-
-  const results: Array<{ id: string; stagedPath: string; ext: string; sizeKB: number }> = []
-  for (let i = 0; i < imageParts.length; i++) {
-    const part = imageParts[i]
-    const ext = mimeToExt(part.mimeType)
-    const id = `image-${i}`
-    const fileName = `${id}${ext}`
-    const stagedPath = `.image-staging/${fileName}`
-    const fullPath = join(projectDir, stagedPath)
-    try {
-      const buf = Buffer.from(part.image, 'base64')
-      writeFileSync(fullPath, buf)
-      results.push({ id, stagedPath, ext: ext.replace('.', ''), sizeKB: Math.round(buf.length / 1024) })
-    } catch (err) {
-      console.error(`[project-runtime] Failed to stage image ${stagedPath}:`, err)
-    }
-  }
-  return results
 }
 
 // =============================================================================
@@ -1119,6 +1043,9 @@ app.post('/agent/chat', async (c) => {
       return buildSystemPrompt(PROJECT_DIR, themeContext, buildContext)
     }
     
+    // Reset per-request image store for image_save tool (in-process MCP)
+    pendingImages = new Map()
+
     // Convert to ModelMessage format, handling both string and parts content
     // Preserves image parts for multimodal AI processing
     type ContentPart = { type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }
@@ -1150,14 +1077,24 @@ app.post('/agent/chat', async (c) => {
           }
         }
 
-        // Stage user-attached images to .image-staging/ for the image.save MCP tool
-        if (msg.role === 'user' && contentParts.some((p) => p.type === 'image')) {
-          const staged = stageAttachedImages(contentParts, PROJECT_DIR)
-          if (staged.length > 0) {
-            const imageInfos = staged.map(s => `${s.id} (${s.ext}, ${s.sizeKB}KB) -> ${s.stagedPath}`)
+        // Populate pendingImages for image_save in-process MCP tool and annotate message
+        if (msg.role === 'user') {
+          const imageParts = contentParts.filter((p): p is { type: 'image'; image: string; mimeType: string } => p.type === 'image')
+          for (let i = 0; i < imageParts.length; i++) {
+            const id = `image-${i}`
+            pendingImages.set(id, { base64Data: imageParts[i].image, mimeType: imageParts[i].mimeType })
+          }
+          if (imageParts.length > 0) {
+            const imageInfos = imageParts.map((_, i) => {
+              const id = `image-${i}`
+              const mime = imageParts[i].mimeType
+              const ext = mimeToExt(mime).replace('.', '')
+              const sizeKB = Math.round(Buffer.byteLength(imageParts[i].image, 'base64') / 1024)
+              return `${id} (${ext}, ${sizeKB}KB)`
+            })
             contentParts.push({
               type: 'text',
-              text: ` [Images staged: ${imageInfos.join(', ')}. Use the image.save tool to save to public/ with a meaningful filename.]`,
+              text: ` [Images available: ${imageInfos.join(', ')}. Use the image_save tool to save to public/ with a meaningful filename.]`,
             })
           }
         }
@@ -1194,14 +1131,24 @@ app.post('/agent/chat', async (c) => {
           }
         }
 
-        // Stage user-attached images to .image-staging/ for the image.save MCP tool
-        if (msg.role === 'user' && contentParts.some((p) => p.type === 'image')) {
-          const staged = stageAttachedImages(contentParts, PROJECT_DIR)
-          if (staged.length > 0) {
-            const imageInfos = staged.map(s => `${s.id} (${s.ext}, ${s.sizeKB}KB) -> ${s.stagedPath}`)
+        // Populate pendingImages for image_save in-process MCP tool and annotate message
+        if (msg.role === 'user') {
+          const imageParts = contentParts.filter((p): p is { type: 'image'; image: string; mimeType: string } => p.type === 'image')
+          for (let i = 0; i < imageParts.length; i++) {
+            const id = `image-${i}`
+            pendingImages.set(id, { base64Data: imageParts[i].image, mimeType: imageParts[i].mimeType })
+          }
+          if (imageParts.length > 0) {
+            const imageInfos = imageParts.map((_, i) => {
+              const id = `image-${i}`
+              const mime = imageParts[i].mimeType
+              const ext = mimeToExt(mime).replace('.', '')
+              const sizeKB = Math.round(Buffer.byteLength(imageParts[i].image, 'base64') / 1024)
+              return `${id} (${ext}, ${sizeKB}KB)`
+            })
             contentParts.push({
               type: 'text',
-              text: ` [Images staged: ${imageInfos.join(', ')}. Use the image.save tool to save to public/ with a meaningful filename.]`,
+              text: ` [Images available: ${imageInfos.join(', ')}. Use the image_save tool to save to public/ with a meaningful filename.]`,
             })
           }
         }
@@ -1270,7 +1217,6 @@ app.post('/agent/chat', async (c) => {
           model: getOrCreateModel(modelName) as Parameters<typeof streamText>[0]['model'],
           system: getSystemPrompt(),
           messages: coreMessages,
-          tools: templateTools,
           maxSteps: 10,
         })
         

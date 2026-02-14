@@ -7,7 +7,6 @@
  * Tools available:
  * - template.list: List and search available starter templates
  * - template.copy: Copy a template to set up a project
- * - image.save: Save user-attached images to project public/ directory
  */
 import { FastMCP } from "fastmcp"
 import { registerTemplateTools } from "./tools/registry"
@@ -18,7 +17,7 @@ const server = new FastMCP({
   version: "0.0.1",
 })
 
-// Register template + image tools (3 tools)
+// Register template tools (2 tools)
 registerTemplateTools(server)
 
 server.start({
