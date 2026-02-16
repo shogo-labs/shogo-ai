@@ -116,6 +116,11 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Chat error state - passed to RuntimePreviewPanel to stop loading on project creation failure
   const [chatError, setChatError] = useState<Error | null>(null)
 
+  // Injected chat message from Security "Fix with AI" — passed to ChatPanel.injectMessage
+  // Nonce is appended to ensure each click produces a unique value for the useEffect dedup
+  const securityFixNonceRef = useRef(0)
+  const [securityFixMessage, setSecurityFixMessage] = useState<string | null>(null)
+
   // Build error state - shared between RuntimePreviewPanel and TerminalPanel
   const [buildError, setBuildError] = useState<string | null>(null)
   const [buildErrorContext, setBuildErrorContext] = useState<{
@@ -929,6 +934,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 inputContainerRef={chatInputContainerRef}
                 messageContainerRef={messageContainerRef}
               onChatError={setChatError}
+              injectMessage={securityFixMessage}
               onFilesChanged={(paths) => {
                 console.log('[ProjectLayout] 📁 Agent modified files:', paths)
                 // Increment refresh trigger to reload code editor
@@ -1137,6 +1143,16 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <SecurityPanel
                   projectId={projectId || ''}
                   className="h-full"
+                  onFixWithAI={(message) => {
+                    // Uncollapse chat panel so the user can see the AI working
+                    if (isChatCollapsed) setIsChatCollapsed(false)
+                    // Close chat sessions panel if open
+                    if (showChatSessions) setShowChatSessions(false)
+                    // Inject the message directly into the chat — it auto-sends
+                    // Nonce ensures each click produces a unique string for dedup
+                    securityFixNonceRef.current += 1
+                    setSecurityFixMessage(`${message}\n\n[nonce:${securityFixNonceRef.current}]`)
+                  }}
                 />
               </div>
               {/* History Panel - Version control checkpoints */}

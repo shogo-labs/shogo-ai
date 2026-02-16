@@ -13,6 +13,10 @@ import { Hono } from "hono"
 import { readdir, readFile, stat } from "fs/promises"
 import { join, relative, extname } from "path"
 import { existsSync } from "fs"
+import { exec } from "child_process"
+import { promisify } from "util"
+
+const execAsync = promisify(exec)
 
 // ============================================================================
 // Types
@@ -57,6 +61,10 @@ export interface ScanSummary {
   filesScanned: number
   /** Duration in milliseconds */
   durationMs: number
+  /** Whether AI-powered analysis was included */
+  aiAnalysis: boolean
+  /** Number of dependencies with known vulnerabilities */
+  vulnerableDeps: number
 }
 
 /** Full scan result */
@@ -672,6 +680,253 @@ async function scanEnvFiles(
 }
 
 // ============================================================================
+// Dependency Audit (npm audit / CVE checking)
+// ============================================================================
+
+/**
+ * Run `npm audit` (or parse bun audit) to find dependencies with known CVEs.
+ * Falls back gracefully if npm is not available or no lockfile exists.
+ */
+async function auditDependencies(
+  projectDir: string
+): Promise<SecurityFinding[]> {
+  const findings: SecurityFinding[] = []
+
+  // Need either package-lock.json (npm) or bun.lock or yarn.lock
+  const hasNpmLock = existsSync(join(projectDir, "package-lock.json"))
+  const hasBunLock = existsSync(join(projectDir, "bun.lock")) || existsSync(join(projectDir, "bun.lockb"))
+  const hasPkgJson = existsSync(join(projectDir, "package.json"))
+
+  if (!hasPkgJson) return findings
+
+  try {
+    // Try npm audit first (works with package-lock.json, or --package-lock-only)
+    let auditJson: any = null
+
+    if (hasNpmLock || !hasBunLock) {
+      try {
+        const { stdout } = await execAsync(
+          "npm audit --json --audit-level=low 2>/dev/null || true",
+          { cwd: projectDir, timeout: 30000 }
+        )
+        auditJson = JSON.parse(stdout)
+      } catch {
+        // npm audit failed — try with --package-lock-only
+        try {
+          const { stdout } = await execAsync(
+            "npm audit --json --package-lock-only 2>/dev/null || true",
+            { cwd: projectDir, timeout: 30000 }
+          )
+          auditJson = JSON.parse(stdout)
+        } catch {
+          // npm audit not available
+        }
+      }
+    }
+
+    if (auditJson?.vulnerabilities) {
+      // npm audit v7+ format: { vulnerabilities: { [name]: { severity, via, range, ... } } }
+      for (const [name, vuln] of Object.entries<any>(auditJson.vulnerabilities)) {
+        const severity = mapNpmSeverity(vuln.severity)
+        const title =
+          Array.isArray(vuln.via) && vuln.via[0]?.title
+            ? vuln.via[0].title
+            : `Known vulnerability in ${name}`
+        const url =
+          Array.isArray(vuln.via) && vuln.via[0]?.url
+            ? vuln.via[0].url
+            : ""
+
+        findings.push({
+          id: `DEP-${name}`,
+          title: `Vulnerable Dependency: ${name}`,
+          severity,
+          category: "Dependencies",
+          description: `${title}. ${url ? `More info: ${url}` : ""}`,
+          file: "package.json",
+          line: 1,
+          snippet: `"${name}": "${vuln.range || "?"}"`,
+          recommendation: vuln.fixAvailable
+            ? `Update to a fixed version: npm audit fix, or manually update ${name}.`
+            : `No fix available yet. Consider finding an alternative package.`,
+        })
+      }
+    }
+  } catch {
+    // Audit completely failed — skip silently
+  }
+
+  return findings
+}
+
+/** Map npm audit severity strings to our Severity type */
+function mapNpmSeverity(npmSev: string): Severity {
+  switch (npmSev) {
+    case "critical":
+      return "critical"
+    case "high":
+      return "high"
+    case "moderate":
+      return "medium"
+    case "low":
+      return "low"
+    case "info":
+      return "info"
+    default:
+      return "medium"
+  }
+}
+
+// ============================================================================
+// LLM-Powered Code Analysis
+// ============================================================================
+
+/**
+ * Use an LLM (Claude) to perform semantic security analysis on key project files.
+ * This catches issues that regex patterns cannot: logic flaws, auth gaps, etc.
+ * Returns findings or empty array if LLM is not available.
+ */
+async function llmSecurityAnalysis(
+  projectDir: string,
+  files: string[]
+): Promise<SecurityFinding[]> {
+  const findings: SecurityFinding[] = []
+
+  // Only run if ANTHROPIC_API_KEY is configured
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) return findings
+
+  try {
+    // Collect key files for analysis (max ~30KB to stay within token limits)
+    // Prioritize server files, auth files, API routes, env configs
+    const priorityPatterns = [
+      /server\.(ts|js)$/,
+      /auth\.(ts|js)$/,
+      /middleware/,
+      /route/,
+      /api\//,
+      /\.env/,
+      /config/,
+      /prisma/,
+      /App\.(tsx|jsx)$/,
+    ]
+
+    const priorityFiles: string[] = []
+    const otherFiles: string[] = []
+
+    for (const file of files) {
+      if (priorityPatterns.some((p) => p.test(file))) {
+        priorityFiles.push(file)
+      } else {
+        otherFiles.push(file)
+      }
+    }
+
+    // Take priority files first, then fill up with others
+    const filesToAnalyze = [...priorityFiles, ...otherFiles].slice(0, 15)
+
+    // Read file contents (limit each to 2KB)
+    let codeContext = ""
+    for (const file of filesToAnalyze) {
+      try {
+        const content = await readFile(join(projectDir, file), "utf-8")
+        const trimmed = content.substring(0, 2000)
+        codeContext += `\n--- ${file} ---\n${trimmed}\n`
+      } catch {
+        // Skip unreadable files
+      }
+    }
+
+    if (!codeContext.trim()) return findings
+
+    // Call Anthropic API directly (non-streaming, fast)
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-3-5-haiku-latest",
+        max_tokens: 2048,
+        system: `You are a security auditor. Analyze the provided source code files and identify security vulnerabilities.
+
+Return ONLY a JSON array of findings. Each finding must have:
+- "title": short title (string)
+- "severity": one of "critical", "high", "medium", "low", "info"  
+- "category": category name (string)
+- "description": what the issue is (string)
+- "file": which file (string)
+- "line": approximate line number (number, use 1 if unsure)
+- "snippet": the relevant code (string, max 100 chars)
+- "recommendation": how to fix (string)
+
+Focus on:
+1. Authentication/authorization gaps (missing auth checks on routes)
+2. Business logic flaws (e.g., no rate limiting, price manipulation)
+3. Data exposure (sensitive data in responses, logs)
+4. Missing input validation
+5. Insecure defaults
+
+Do NOT flag: console.log, TypeScript style issues, missing types.
+If no issues found, return an empty array: []
+Return ONLY the JSON array, no markdown, no explanation.`,
+        messages: [
+          {
+            role: "user",
+            content: `Analyze these project files for security vulnerabilities:\n${codeContext}`,
+          },
+        ],
+      }),
+    })
+
+    if (!response.ok) return findings
+
+    const data = await response.json()
+    const text = data?.content?.[0]?.text || ""
+
+    // Parse the JSON array from the LLM response
+    try {
+      // Try direct parse first, then extract from markdown code block
+      let parsed: any[]
+      const jsonMatch = text.match(/\[[\s\S]*\]/)
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0])
+      } else {
+        parsed = JSON.parse(text)
+      }
+
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (item.title && item.severity && item.description) {
+            findings.push({
+              id: `AI-${item.file || "unknown"}-${item.line || 1}`,
+              title: item.title,
+              severity: ["critical", "high", "medium", "low", "info"].includes(item.severity)
+                ? item.severity
+                : "medium",
+              category: item.category || "AI Analysis",
+              description: item.description,
+              file: item.file || "unknown",
+              line: item.line || 1,
+              snippet: (item.snippet || "").substring(0, 200),
+              recommendation: item.recommendation || "Review this code for security issues.",
+            })
+          }
+        }
+      }
+    } catch {
+      // LLM returned non-parseable response — skip
+    }
+  } catch {
+    // LLM call failed — skip silently (feature is best-effort)
+  }
+
+  return findings
+}
+
+// ============================================================================
 // Route Configuration
 // ============================================================================
 
@@ -739,7 +994,15 @@ export function securityRoutes(config: SecurityRoutesConfig) {
       const envFindings = await scanEnvFiles(projectDir)
       allFindings.push(...envFindings)
 
-      // 4. Sort by severity (critical first)
+      // 4. Dependency audit (npm audit / CVE database)
+      const depFindings = await auditDependencies(projectDir)
+      allFindings.push(...depFindings)
+
+      // 5. LLM-powered semantic analysis (best-effort, non-blocking)
+      const aiFindings = await llmSecurityAnalysis(projectDir, files)
+      allFindings.push(...aiFindings)
+
+      // 6. Sort by severity (critical first)
       const severityOrder: Record<Severity, number> = {
         critical: 0,
         high: 1,
@@ -751,7 +1014,7 @@ export function securityRoutes(config: SecurityRoutesConfig) {
         (a, b) => severityOrder[a.severity] - severityOrder[b.severity]
       )
 
-      // 5. Build summary
+      // 7. Build summary
       const durationMs = Date.now() - startTime
       const summary: ScanSummary = {
         total: allFindings.length,
@@ -762,6 +1025,8 @@ export function securityRoutes(config: SecurityRoutesConfig) {
         info: allFindings.filter((f) => f.severity === "info").length,
         filesScanned: files.length,
         durationMs,
+        aiAnalysis: aiFindings.length > 0 || !!process.env.ANTHROPIC_API_KEY,
+        vulnerableDeps: depFindings.length,
       }
 
       return c.json({

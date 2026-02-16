@@ -31,6 +31,8 @@ import {
   CheckCircle2,
   XCircle,
   AlertCircle,
+  Package,
+  Wrench,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -61,6 +63,8 @@ interface ScanSummary {
   info: number
   filesScanned: number
   durationMs: number
+  aiAnalysis?: boolean
+  vulnerableDeps?: number
 }
 
 interface ScanResult {
@@ -232,10 +236,12 @@ function FindingCard({
   finding,
   isExpanded,
   onToggle,
+  onFix,
 }: {
   finding: SecurityFinding
   isExpanded: boolean
   onToggle: () => void
+  onFix?: () => void
 }) {
   const config = SEVERITY_CONFIG[finding.severity]
   const Icon = config.icon
@@ -307,7 +313,7 @@ function FindingCard({
           {/* Recommendation */}
           <div className="mt-3 flex gap-2 p-3 rounded-md bg-green-500/5 border border-green-500/20">
             <Lightbulb className="h-4 w-4 text-green-500 shrink-0 mt-0.5" />
-            <div>
+            <div className="flex-1">
               <span className="text-[10px] font-medium text-green-600 dark:text-green-400 uppercase tracking-wide">
                 Recommendation
               </span>
@@ -316,6 +322,21 @@ function FindingCard({
               </p>
             </div>
           </div>
+
+          {/* Fix with AI button */}
+          {onFix && finding.severity !== "info" && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onFix(); }}
+              className={cn(
+                "mt-3 flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md",
+                "bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20",
+                "hover:bg-purple-500/20 transition-colors"
+              )}
+            >
+              <Wrench className="h-3 w-3" />
+              Fix with AI
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -341,9 +362,11 @@ export interface SecurityPanelProps {
   projectId: string
   /** Additional CSS classes */
   className?: string
+  /** Callback to send a fix message to the chat agent */
+  onFixWithAI?: (message: string) => void
 }
 
-export function SecurityPanel({ projectId, className }: SecurityPanelProps) {
+export function SecurityPanel({ projectId, className, onFixWithAI }: SecurityPanelProps) {
   // Scan state
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
   const [isScanning, setIsScanning] = useState(false)
@@ -402,6 +425,30 @@ export function SecurityPanel({ projectId, className }: SecurityPanelProps) {
     if (filterSeverity === "all") return scanResult.findings
     return scanResult.findings.filter((f) => f.severity === filterSeverity)
   }, [scanResult?.findings, filterSeverity])
+
+  // Build a prompt to fix all issues with AI
+  const handleFixAll = useCallback(() => {
+    if (!scanResult || !onFixWithAI || scanResult.summary.total === 0) return
+    const issueList = scanResult.findings
+      .filter((f) => f.severity !== "info")
+      .slice(0, 10) // Limit to top 10 issues
+      .map((f) => `- [${f.severity.toUpperCase()}] ${f.title} in ${f.file}:${f.line} — ${f.recommendation}`)
+      .join("\n")
+    onFixWithAI(
+      `Security scan found ${scanResult.summary.total} issues. Please fix the following security vulnerabilities in my project:\n\n${issueList}`
+    )
+  }, [scanResult, onFixWithAI])
+
+  // Build a prompt to fix a single issue with AI
+  const handleFixSingle = useCallback(
+    (finding: SecurityFinding) => {
+      if (!onFixWithAI) return
+      onFixWithAI(
+        `Fix this security issue in my project:\n\n**${finding.title}** (${finding.severity}) in \`${finding.file}:${finding.line}\`\n\nCode: \`${finding.snippet}\`\n\nIssue: ${finding.description}\n\nRecommended fix: ${finding.recommendation}`
+      )
+    },
+    [onFixWithAI]
+  )
 
   // Group findings by severity for display
   const findingsByCategory = useMemo(() => {
@@ -673,13 +720,36 @@ export function SecurityPanel({ projectId, className }: SecurityPanelProps) {
                     />
                   ))}
                 </div>
-                <div className="flex items-center gap-3 mt-3 text-xs text-muted-foreground">
+                <div className="flex items-center gap-3 mt-3 text-xs text-muted-foreground flex-wrap">
                   <span>{scanResult.summary.filesScanned} files scanned</span>
                   <span className="text-muted-foreground/50">•</span>
                   <span>{scanResult.summary.total} issues found</span>
                   <span className="text-muted-foreground/50">•</span>
                   <span>{formatDuration(scanResult.summary.durationMs)}</span>
+                  {(scanResult.summary.vulnerableDeps ?? 0) > 0 && (
+                    <>
+                      <span className="text-muted-foreground/50">•</span>
+                      <span className="inline-flex items-center gap-1 text-orange-500">
+                        <Package className="h-3 w-3" />
+                        {scanResult.summary.vulnerableDeps} vulnerable deps
+                      </span>
+                    </>
+                  )}
                 </div>
+                {/* Fix with AI button */}
+                {onFixWithAI && scanResult.summary.total > 0 && scanResult.summary.total - scanResult.summary.info > 0 && (
+                  <button
+                    onClick={handleFixAll}
+                    className={cn(
+                      "mt-3 flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-md",
+                      "bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20",
+                      "hover:bg-purple-500/20 transition-colors"
+                    )}
+                  >
+                    <Wrench className="h-3.5 w-3.5" />
+                    Fix All with AI
+                  </button>
+                )}
               </div>
             </div>
 
@@ -716,6 +786,7 @@ export function SecurityPanel({ projectId, className }: SecurityPanelProps) {
                           finding={finding}
                           isExpanded={expandedFindings.has(finding.id)}
                           onToggle={() => toggleFinding(finding.id)}
+                          onFix={onFixWithAI ? () => handleFixSingle(finding) : undefined}
                         />
                       ))}
                     </div>
