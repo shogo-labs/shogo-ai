@@ -11,10 +11,10 @@
 /**
  * Build the complete system prompt for the Shogo agent.
  * @param projectDir - The project directory path to include in the prompt
- * @param themeContext - Optional theme context to append
- * @param buildStatusContext - Optional current build status to include
+ * @param options - Optional context to include in the prompt
  */
-export function buildSystemPrompt(projectDir: string, themeContext?: string, buildStatusContext?: string): string {
+export function buildSystemPrompt(projectDir: string, options?: { themeContext?: string; buildStatusContext?: string; previewUrl?: string }): string {
+  const { themeContext, buildStatusContext, previewUrl } = options ?? {}
   const basePrompt = `You are Shogo - an AI assistant for building applications.
 
 **Working Directory:** ${projectDir}
@@ -47,6 +47,11 @@ ${ENVIRONMENT_AWARENESS}`
   // Add theme context if provided
   if (themeContext) {
     prompt = `${prompt}\n\n${themeContext}`
+  }
+  
+  // Add live preview URL if provided
+  if (previewUrl) {
+    prompt = `${prompt}\n\n**Live Preview URL:** ${previewUrl}`
   }
   
   return prompt
