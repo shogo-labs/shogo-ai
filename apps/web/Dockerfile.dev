@@ -22,6 +22,9 @@ COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
 COPY apps/web/package.json ./apps/web/
 
+# Copy scripts needed for postinstall
+COPY scripts ./scripts
+
 # Install all dependencies
 RUN bun install
 

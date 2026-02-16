@@ -25,6 +25,7 @@ import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { terminalRoutes } from './routes/terminal'
 import { testsRoutes } from './routes/tests'
+import { securityRoutes } from './routes/security'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { githubRoutes } from './routes/github'
@@ -2169,6 +2170,79 @@ app.delete('/api/projects/:projectId/tests/traces', async (c) => {
   
   // Local development: Not implemented
   return c.json({ ok: true, message: 'Not implemented in local mode' })
+})
+
+// =============================================================================
+// Security scanning routes - Automated security analysis
+// =============================================================================
+
+app.post('/api/projects/:projectId/security/scan', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/security/scan`
+      
+      console.log(`[SecurityProxy] Proxying security scan to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl, { method: 'POST' })
+      
+      // Handle non-OK responses
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        return c.json({
+          error: { code: 'upstream_error', message: `Security scan service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      const isPodNotReady = error.message?.includes('not ready') || 
+        error.message?.includes('not found') ||
+        error.message?.includes('starting')
+      
+      if (isPodNotReady) {
+        return c.json({
+          error: { code: 'service_starting', message: 'Project runtime is starting...' }
+        }, 503)
+      }
+      
+      console.error(`[SecurityProxy] Error proxying security scan:`, error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
+      }, 502)
+    }
+  }
+  
+  // Local/development mode: use local filesystem
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = securityRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/security/scan`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
 })
 
 // =============================================================================

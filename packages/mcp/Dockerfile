@@ -22,6 +22,9 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
 
+# Copy scripts needed for postinstall
+COPY scripts ./scripts
+
 # Install all dependencies
 RUN bun install
 

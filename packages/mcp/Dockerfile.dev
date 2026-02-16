@@ -20,6 +20,9 @@ COPY tsconfig.base.json ./
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
 
+# Copy scripts needed for postinstall
+COPY scripts ./scripts
+
 # Install all dependencies
 RUN bun install
 

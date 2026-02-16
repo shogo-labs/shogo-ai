@@ -36,6 +36,9 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
 
+# Copy scripts needed for postinstall (patch-claude-sdk runs during bun install)
+COPY scripts ./scripts
+
 # Install all dependencies (with BuildKit cache mount for faster rebuilds)
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install
