@@ -691,6 +691,50 @@ function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
 // Track which sessions are actively handling a chat message
 const activeSessions = new Set<string>()
 
+// Track active stream queries per model so we can interrupt them
+const activeQueries = new Map<string, AsyncGenerator<any, void>>()
+
+/**
+ * Interrupt an active session for a given model.
+ * 
+ * The V2 SDK session's stream() returns an AsyncGenerator that wraps the
+ * underlying Claude Code CLI subprocess. Calling generator.return() only
+ * stops JavaScript iteration but does NOT stop the CLI from generating.
+ * When session.send() is called again, the old buffered tokens leak into
+ * the new response, causing garbled output.
+ * 
+ * The fix: close the entire session (kills the CLI process) and remove it
+ * from cache. The next getOrCreateProjectSession() call will create a fresh
+ * session. Conversation history is maintained by the frontend, not the backend.
+ */
+async function interruptActiveQuery(modelName: string): Promise<void> {
+  console.log(`[project-runtime] Interrupting active session for ${modelName} — closing session to kill CLI process`)
+  
+  // 1. Stop JS-level iteration on the active query
+  const activeQuery = activeQueries.get(modelName)
+  if (activeQuery) {
+    try { await activeQuery.return(undefined as any) } catch {}
+    activeQueries.delete(modelName)
+  }
+
+  // 2. Close the session (kills the CLI subprocess)
+  const session = sessionCache.get(modelName)
+  if (session) {
+    try {
+      session.close()
+      console.log(`[project-runtime] Closed session for ${modelName}`)
+    } catch (err) {
+      console.warn(`[project-runtime] Error closing session for ${modelName}:`, err)
+    }
+    sessionCache.delete(modelName)
+  }
+
+  // 3. Clean up tracking state
+  activeSessions.delete(modelName)
+  
+  console.log(`[project-runtime] Session cleanup complete for ${modelName} — next request will create fresh session`)
+}
+
 function getOrCreateProjectSession(modelName: 'haiku' | 'sonnet' | 'opus'): SDKSession {
   const existing = sessionCache.get(modelName)
   if (existing && !(existing as any).closed) {
@@ -1257,6 +1301,26 @@ app.post('/templates/copy', async (c) => {
   }
 })
 
+// Stop/interrupt endpoint - called when user clicks stop or before a new message
+app.post('/agent/stop', async (c) => {
+  console.log(`[project-runtime] Received stop request for project: ${PROJECT_ID}`)
+  
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    const modelName = (body as any)?.modelName || 'sonnet'
+    
+    if (activeSessions.has(modelName)) {
+      await interruptActiveQuery(modelName)
+      return c.json({ success: true, message: `Interrupted ${modelName} session` })
+    }
+    
+    return c.json({ success: true, message: 'No active session to interrupt' })
+  } catch (error: any) {
+    console.error('[project-runtime] Stop error:', error)
+    return c.json({ success: false, error: error.message }, 500)
+  }
+})
+
 // Main chat endpoint - receives from API, streams response
 app.post('/agent/chat', async (c) => {
   console.log(`[project-runtime] Received chat request for project: ${PROJECT_ID}`)
@@ -1286,6 +1350,14 @@ app.post('/agent/chat', async (c) => {
     }
     const modelName = getModelFromAgentMode(agentMode)
     console.log(`[project-runtime] Using model: ${modelName} (agentMode: ${agentMode || 'default'})`)
+
+    // If a previous query is still active for this model, interrupt it first.
+    // This handles the case where the user clicked stop (aborting the HTTP connection)
+    // but the SDK session is still generating the previous response.
+    if (activeSessions.has(modelName)) {
+      console.log(`[project-runtime] Previous session still active for ${modelName}, interrupting...`)
+      await interruptActiveQuery(modelName)
+    }
 
     // Get or create a persistent V2 session for this model
     const session = getOrCreateProjectSession(modelName)
@@ -1347,7 +1419,12 @@ app.post('/agent/chat', async (c) => {
           writer.write({ type: 'start' })
           writer.write({ type: 'start-step' })
 
-          for await (const msg of session.stream()) {
+          // Store the stream query reference so it can be interrupted
+          // if the user stops generation and sends a new message
+          const query = session.stream()
+          activeQueries.set(modelName, query)
+
+          for await (const msg of query) {
             const msgAny = msg as any
 
             // SDKPartialAssistantMessage — incremental streaming (preferred)
@@ -1584,8 +1661,9 @@ app.post('/agent/chat', async (c) => {
             }
           }
         } finally {
-          // Release active session lock
+          // Release active session lock and query reference
           activeSessions.delete(modelName)
+          activeQueries.delete(modelName)
 
           // Trigger S3 sync after agent chat completes
                   if (s3Sync) {
@@ -1595,6 +1673,7 @@ app.post('/agent/chat', async (c) => {
       },
       onError: (error) => {
         activeSessions.delete(modelName)
+        activeQueries.delete(modelName)
         console.error('[project-runtime] Stream error:', error)
         return 'An error occurred during streaming'
       },

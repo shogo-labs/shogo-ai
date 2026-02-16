@@ -493,6 +493,45 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   })
 
   /**
+   * POST /projects/:projectId/chat/stop - Stop/interrupt active generation
+   * Proxies to the project runtime's /agent/stop endpoint
+   */
+  router.post("/projects/:projectId/chat/stop", async (c) => {
+    const projectId = c.req.param("projectId")
+    console.log(`[ProjectChat] Received stop request for project: ${projectId}`)
+
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404
+        )
+      }
+
+      let podUrl: string
+      try {
+        podUrl = await getProjectUrl(projectId)
+      } catch {
+        return c.json({ success: true, message: "No active runtime to stop" })
+      }
+
+      const body = await c.req.text()
+      const response = await fetch(`${podUrl}/agent/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: body || "{}",
+      })
+
+      const result = await response.json()
+      return c.json(result)
+    } catch (error: any) {
+      console.error("[ProjectChat] Stop error:", error)
+      return c.json({ success: false, error: error.message }, 500)
+    }
+  })
+
+  /**
    * GET /projects/:projectId/chat/status - Check project runtime status
    */
   router.get("/projects/:projectId/chat/status", async (c) => {
