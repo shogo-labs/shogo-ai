@@ -29,6 +29,7 @@ import { CodeEditorPanel } from "./CodeEditorPanel"
 import { TerminalPanel } from "./TerminalPanel"
 import { DatabasePanel } from "./DatabasePanel"
 import { TestPanel } from "./TestPanel"
+import { SecurityPanel } from "./SecurityPanel"
 import { HistoryPanel } from "./HistoryPanel"
 import { cn } from "@/lib/utils"
 import { useSession } from "@/contexts/SessionProvider"
@@ -103,8 +104,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // External preview opening state
   const [isOpeningExternal, setIsOpeningExternal] = useState(false)
 
-  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'terminal' (TerminalPanel), 'database' (DatabasePanel), 'tests' (TestPanel), or 'history' (HistoryPanel)
-  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'terminal' | 'database' | 'tests' | 'history'>('runtime')
+  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'terminal' (TerminalPanel), 'database' (DatabasePanel), 'tests' (TestPanel), 'security' (SecurityPanel), or 'history' (HistoryPanel)
+  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'terminal' | 'database' | 'tests' | 'security' | 'history'>('runtime')
 
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
@@ -114,6 +115,11 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
   // Chat error state - passed to RuntimePreviewPanel to stop loading on project creation failure
   const [chatError, setChatError] = useState<Error | null>(null)
+
+  // Injected chat message from Security "Fix with AI" — passed to ChatPanel.injectMessage
+  // Nonce is appended to ensure each click produces a unique value for the useEffect dedup
+  const securityFixNonceRef = useRef(0)
+  const [securityFixMessage, setSecurityFixMessage] = useState<string | null>(null)
 
   // Build error state - shared between RuntimePreviewPanel and TerminalPanel
   const [buildError, setBuildError] = useState<string | null>(null)
@@ -928,6 +934,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 inputContainerRef={chatInputContainerRef}
                 messageContainerRef={messageContainerRef}
               onChatError={setChatError}
+              injectMessage={securityFixMessage}
               onFilesChanged={(paths) => {
                 console.log('[ProjectLayout] 📁 Agent modified files:', paths)
                 // Increment refresh trigger to reload code editor
@@ -1006,6 +1013,17 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 )}
               >
                 Tests
+              </button>
+              <button
+                onClick={() => setPreviewMode('security')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'security'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Security
               </button>
               <button
                 onClick={() => setPreviewMode('history')}
@@ -1115,6 +1133,26 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <TestPanel
                   projectId={projectId || ''}
                   className="h-full"
+                />
+              </div>
+              {/* Security Panel - Automated security scanning */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'security' && "invisible pointer-events-none"
+              )}>
+                <SecurityPanel
+                  projectId={projectId || ''}
+                  className="h-full"
+                  onFixWithAI={(message) => {
+                    // Uncollapse chat panel so the user can see the AI working
+                    if (isChatCollapsed) setIsChatCollapsed(false)
+                    // Close chat sessions panel if open
+                    if (showChatSessions) setShowChatSessions(false)
+                    // Inject the message directly into the chat — it auto-sends
+                    // Nonce ensures each click produces a unique string for dedup
+                    securityFixNonceRef.current += 1
+                    setSecurityFixMessage(`${message}\n\n[nonce:${securityFixNonceRef.current}]`)
+                  }}
                 />
               </div>
               {/* History Panel - Version control checkpoints */}
