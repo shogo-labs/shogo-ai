@@ -681,9 +681,10 @@ import { calculateCreditCost, proxyModelToBillingModel } from '../lib/credit-cos
 import * as billingService from '../services/billing.service'
 
 /**
- * Log a proxy usage event and charge credits (fire-and-forget, don't block response).
+ * Charge credits and log usage event (fire-and-forget).
+ * If totalTokens is 0 (streaming), charges the model's minimum cost.
  */
-async function logProxyUsage(
+async function chargeAndLogUsage(
   tokenPayload: ProxyTokenPayload,
   model: string,
   provider: Provider,
@@ -696,22 +697,18 @@ async function logProxyUsage(
   try {
     const totalTokens = inputTokens + outputTokens
     const billingModel = proxyModelToBillingModel(model)
-    const creditCost = totalTokens > 0 ? calculateCreditCost(totalTokens, billingModel) : 0
+    // For streaming with unknown tokens, charge minimum cost for the model
+    const creditCost = success
+      ? (totalTokens > 0 ? calculateCreditCost(totalTokens, billingModel) : calculateCreditCost(0, billingModel))
+      : 0
 
     const actionMetadata = {
-      model,
-      provider,
-      inputTokens,
-      outputTokens,
-      totalTokens,
-      durationMs,
-      success,
-      errorMessage,
-      stream: totalTokens === 0, // streaming requests have 0 tokens at log time
+      model, provider, inputTokens, outputTokens, totalTokens,
+      durationMs, success, errorMessage,
+      stream: totalTokens === 0,
     }
 
     if (creditCost > 0) {
-      // Use billing service to deduct credits + log the usage event in one transaction
       const result = await billingService.consumeCredits(
         tokenPayload.workspaceId,
         tokenPayload.projectId || null,
@@ -720,45 +717,11 @@ async function logProxyUsage(
         creditCost,
         actionMetadata
       )
-
       if (result.success) {
-        console.log(
-          `[AI Proxy] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${billingModel}) for workspace ${tokenPayload.workspaceId} — remaining: ${result.remainingCredits}`
-        )
+        console.log(`[AI Proxy] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${billingModel}) — remaining: ${result.remainingCredits}`)
       } else {
-        // Credit deduction failed (no ledger or insufficient) — still log the event but with 0 cost
-        console.warn(
-          `[AI Proxy] ⚠️ Could not charge credits: ${result.error} — logging usage with 0 cost`
-        )
-        await prisma.usageEvent.create({
-          data: {
-            workspaceId: tokenPayload.workspaceId,
-            projectId: tokenPayload.projectId,
-            memberId: tokenPayload.userId || 'system',
-            actionType: 'ai_proxy_completion',
-            actionMetadata,
-            creditCost: 0,
-            creditSource: 'daily',
-            balanceBefore: 0,
-            balanceAfter: 0,
-          },
-        })
+        console.warn(`[AI Proxy] ⚠️ Could not charge credits: ${result.error}`)
       }
-    } else {
-      // No tokens (streaming request) or failed request — log with 0 cost
-      await prisma.usageEvent.create({
-        data: {
-          workspaceId: tokenPayload.workspaceId,
-          projectId: tokenPayload.projectId,
-          memberId: tokenPayload.userId || 'system',
-          actionType: 'ai_proxy_completion',
-          actionMetadata,
-          creditCost: 0,
-          creditSource: 'daily',
-          balanceBefore: 0,
-          balanceAfter: 0,
-        },
-      })
     }
   } catch (err) {
     console.error('[AI Proxy] Failed to log usage event:', err)
@@ -802,6 +765,20 @@ export function aiProxyRoutes() {
           },
         },
         401
+      )
+    }
+
+    // Pre-check: reject if workspace has no credits
+    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+      return c.json(
+        {
+          error: {
+            message: 'Insufficient credits. Please upgrade your plan.',
+            type: 'billing_error',
+            code: 'insufficient_credits',
+          },
+        },
+        402
       )
     }
 
@@ -864,9 +841,9 @@ export function aiProxyRoutes() {
           response = await proxyOpenAIStream(request, apiKey, modelConfig)
         }
 
-        // Log usage asynchronously (for streaming, we estimate tokens)
+        // Charge minimum credits for streaming (exact tokens unknown)
         const durationMs = Date.now() - startTime
-        logProxyUsage(tokenPayload, request.model, modelConfig.provider, 0, 0, durationMs, true)
+        chargeAndLogUsage(tokenPayload, request.model, modelConfig.provider, 0, 0, durationMs, true)
 
         return response
       } else {
@@ -877,9 +854,9 @@ export function aiProxyRoutes() {
           result = await proxyOpenAINonStream(request, apiKey, modelConfig)
         }
 
-        // Log usage with actual token counts
+        // Charge credits with actual token counts
         const durationMs = Date.now() - startTime
-        logProxyUsage(
+        chargeAndLogUsage(
           tokenPayload,
           request.model,
           modelConfig.provider,
@@ -895,16 +872,7 @@ export function aiProxyRoutes() {
       const durationMs = Date.now() - startTime
       console.error('[AI Proxy] Error:', error.message)
 
-      logProxyUsage(
-        tokenPayload,
-        'unknown',
-        'anthropic',
-        0,
-        0,
-        durationMs,
-        false,
-        error.message
-      )
+      chargeAndLogUsage(tokenPayload, 'unknown', 'anthropic', 0, 0, durationMs, false, error.message)
 
       // Return OpenAI-compatible error format
       const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
@@ -1044,59 +1012,49 @@ export function aiProxyRoutes() {
     const tokenPayload = await validateAnthropicAuth(c)
     if (!tokenPayload) {
       return c.json(
-        {
-          type: 'error',
-          error: {
-            type: 'authentication_error',
-            message: 'Invalid or missing proxy token in x-api-key header.',
-          },
-        },
+        { type: 'error', error: { type: 'authentication_error', message: 'Invalid or missing proxy token in x-api-key header.' } },
         401
       )
     }
 
-    // Get the real Anthropic API key
+    // Pre-check credits
+    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+      return c.json(
+        { type: 'error', error: { type: 'billing_error', message: 'Insufficient credits. Please upgrade your plan.' } },
+        402
+      )
+    }
+
     const anthropicApiKey = process.env.ANTHROPIC_API_KEY
     if (!anthropicApiKey) {
       return c.json(
-        {
-          type: 'error',
-          error: {
-            type: 'api_error',
-            message: 'Anthropic provider is not configured on this server.',
-          },
-        },
+        { type: 'error', error: { type: 'api_error', message: 'Anthropic provider is not configured on this server.' } },
         503
       )
     }
 
     try {
-      // Read the raw request body to forward as-is
       const body = await c.req.text()
 
-      // Extract model from the body for logging (without fully parsing the stream body)
       let model = 'unknown'
+      let isStream = false
       try {
         const parsed = JSON.parse(body)
         model = parsed.model || 'unknown'
+        isStream = !!parsed.stream
       } catch { /* ok */ }
 
-      console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${model}`)
+      console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${model} (stream: ${isStream})`)
 
-      // Forward all relevant headers, replacing x-api-key with the real key
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'x-api-key': anthropicApiKey,
       }
-
-      // Forward anthropic-version and other anthropic-* headers
       for (const [key, value] of Object.entries(c.req.header())) {
-        const lowerKey = key.toLowerCase()
-        if (lowerKey.startsWith('anthropic-') && value) {
+        if (key.toLowerCase().startsWith('anthropic-') && value) {
           headers[key] = value as string
         }
       }
-      // Ensure anthropic-version is set
       if (!headers['anthropic-version']) {
         headers['anthropic-version'] = '2023-06-01'
       }
@@ -1107,33 +1065,37 @@ export function aiProxyRoutes() {
         body,
       })
 
-      // Log usage asynchronously
-      const durationMs = Date.now() - startTime
-      logProxyUsage(tokenPayload, model, 'anthropic', 0, 0, durationMs, response.ok, response.ok ? undefined : `HTTP ${response.status}`)
-
       if (!response.ok) {
-        // Forward error response as-is so Claude Code CLI gets proper error handling
+        const durationMs = Date.now() - startTime
+        chargeAndLogUsage(tokenPayload, model, 'anthropic', 0, 0, durationMs, false, `HTTP ${response.status}`)
         const errorBody = await response.text()
         return new Response(errorBody, {
           status: response.status,
-          headers: {
-            'Content-Type': response.headers.get('Content-Type') || 'application/json',
-          },
+          headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
         })
       }
 
-      // Stream or non-stream: forward the response as-is
-      // Copy relevant response headers
+      if (!isStream) {
+        // Non-streaming: parse response to extract token usage, then charge accurately
+        const responseBody = await response.json() as any
+        const durationMs = Date.now() - startTime
+        const inputTokens = responseBody.usage?.input_tokens || 0
+        const outputTokens = responseBody.usage?.output_tokens || 0
+        chargeAndLogUsage(tokenPayload, model, 'anthropic', inputTokens, outputTokens, durationMs, true)
+        return c.json(responseBody)
+      }
+
+      // Streaming: copy relevant response headers and forward body as-is
       const responseHeaders = new Headers()
       const contentType = response.headers.get('Content-Type')
       if (contentType) responseHeaders.set('Content-Type', contentType)
-
-      // For streaming responses, forward the body directly
       const requestId = response.headers.get('request-id')
       if (requestId) responseHeaders.set('request-id', requestId)
-
       responseHeaders.set('X-Proxy-Provider', 'anthropic')
       responseHeaders.set('X-Proxy-Project', tokenPayload.projectId)
+
+      const durationMs = Date.now() - startTime
+      chargeAndLogUsage(tokenPayload, model, 'anthropic', 0, 0, durationMs, true)
 
       return new Response(response.body, {
         status: response.status,
@@ -1142,16 +1104,9 @@ export function aiProxyRoutes() {
     } catch (error: any) {
       const durationMs = Date.now() - startTime
       console.error('[AI Proxy] Anthropic pass-through error:', error.message)
-      logProxyUsage(tokenPayload, 'unknown', 'anthropic', 0, 0, durationMs, false, error.message)
-
+      chargeAndLogUsage(tokenPayload, 'unknown', 'anthropic', 0, 0, durationMs, false, error.message)
       return c.json(
-        {
-          type: 'error',
-          error: {
-            type: 'api_error',
-            message: error.message || 'Proxy error',
-          },
-        },
+        { type: 'error', error: { type: 'api_error', message: error.message || 'Proxy error' } },
         500
       )
     }

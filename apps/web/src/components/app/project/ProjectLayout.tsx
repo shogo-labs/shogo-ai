@@ -807,15 +807,17 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const creditLedger = workspaceId
     ? store?.creditLedgerCollection?.all.find((l: any) => l.workspaceId === workspaceId)
     : null
-  // Compute effective balance from raw credit ledger fields
-  const effectiveBalance = creditLedger ? {
-    dailyCredits: creditLedger.dailyCredits ?? 0,
-    monthlyCredits: creditLedger.monthlyCredits ?? 0,
-    rolloverCredits: creditLedger.rolloverCredits ?? 0,
-    total: (creditLedger.dailyCredits ?? 0) + (creditLedger.monthlyCredits ?? 0) + (creditLedger.rolloverCredits ?? 0),
-  } : null
+  // Compute effective balance with lazy daily reset
+  const effectiveBalance = creditLedger ? (() => {
+    const lastReset = creditLedger.lastDailyReset ? new Date(creditLedger.lastDailyReset).toDateString() : ''
+    const needsReset = lastReset !== new Date().toDateString()
+    const daily = needsReset ? 5 : (creditLedger.dailyCredits ?? 0)
+    const monthly = creditLedger.monthlyCredits ?? 0
+    const rollover = creditLedger.rolloverCredits ?? 0
+    return { dailyCredits: daily, monthlyCredits: monthly, rolloverCredits: rollover, total: daily + monthly + rollover }
+  })() : null
   const creditsRemaining = effectiveBalance?.total ?? 5
-  const maxCredits = effectiveBalance ? (effectiveBalance.dailyCredits + effectiveBalance.monthlyCredits + effectiveBalance.rolloverCredits) : 5
+  const maxCredits = creditsRemaining
 
   // Loading state
   if (isLoading || !project) {

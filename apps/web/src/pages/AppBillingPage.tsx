@@ -60,9 +60,11 @@ export const AppBillingPage = observer(function AppBillingPage() {
     }
   }, [isSuccess, currentWorkspace, searchParams, setSearchParams, refetchSubscription, refetchCreditLedger])
 
-  // Calculate credits
-  const creditsRemaining = effectiveBalance?.total ?? (hasActiveSubscription ? 105 : 5)
-  const creditsTotal = hasActiveSubscription ? 105 : 5
+  // Calculate credits from actual ledger data
+  const creditsRemaining = effectiveBalance?.total ?? 5
+  // Plan max: daily(5) + monthly allocation based on plan
+  const planMonthlyMax = subscription ? { pro: 500, business: 2000, enterprise: 10000 }[subscription.planId as string] ?? 50 : 50
+  const creditsTotal = planMonthlyMax + 5
 
   // Get plan name
   const planName = subscription

@@ -159,19 +159,23 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
   const creditLedger = currentWorkspace
     ? store?.creditLedgerCollection?.all.find((cl: any) => cl.workspaceId === currentWorkspace.id)
     : null
-  // Compute effective balance from raw credit ledger fields
-  const effectiveBalance = creditLedger ? {
-    dailyCredits: creditLedger.dailyCredits ?? 0,
-    monthlyCredits: creditLedger.monthlyCredits ?? 0,
-    rolloverCredits: creditLedger.rolloverCredits ?? 0,
-    total: (creditLedger.dailyCredits ?? 0) + (creditLedger.monthlyCredits ?? 0) + (creditLedger.rolloverCredits ?? 0),
-  } : null
+  // Compute effective balance with lazy daily reset
+  const effectiveBalance = creditLedger ? (() => {
+    const lastReset = creditLedger.lastDailyReset ? new Date(creditLedger.lastDailyReset).toDateString() : ''
+    const needsReset = lastReset !== new Date().toDateString()
+    const daily = needsReset ? 5 : (creditLedger.dailyCredits ?? 0)
+    const monthly = creditLedger.monthlyCredits ?? 0
+    const rollover = creditLedger.rolloverCredits ?? 0
+    return { dailyCredits: daily, monthlyCredits: monthly, rolloverCredits: rollover, total: daily + monthly + rollover }
+  })() : null
 
   // TODO: Get actual member count from domain
   const memberCount = 1
-  const creditsRemaining = effectiveBalance?.total ?? (subscription ? 105 : 5)
-  const creditsTotal = subscription ? 105 : 5 // Pro gets 100 monthly + 5 daily
-  const creditsPercent = ((creditsTotal - creditsRemaining) / creditsTotal) * 100
+  const creditsRemaining = effectiveBalance?.total ?? 5
+  // Plan max: daily(5) + monthly allocation based on plan
+  const planMonthlyMax = subscription ? { pro: 500, business: 2000, enterprise: 10000 }[subscription.planId as string] ?? 50 : 50
+  const creditsTotal = planMonthlyMax + 5
+  const creditsPercent = Math.max(0, Math.min(100, ((creditsTotal - creditsRemaining) / creditsTotal) * 100))
 
   // Show skeleton during loading
   if (isLoading) {

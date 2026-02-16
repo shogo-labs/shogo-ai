@@ -336,6 +336,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
+      // Pre-check credits before proxying to runtime
+      if (!await billingService.hasCredits(project.workspaceId)) {
+        return c.json(
+          { error: { code: "insufficient_credits", message: "You've run out of credits. Please upgrade your plan to continue." } },
+          402
+        )
+      }
+
       // Get project pod URL
       // This will create the pod if needed and wait for it to be ready
       let podUrl: string

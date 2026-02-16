@@ -103,7 +103,25 @@ export async function allocateMonthlyCredits(
 }
 
 /**
- * Consume credits for an action
+ * Check if workspace has sufficient credits (without deducting).
+ * Uses lazy daily reset logic for accurate balance.
+ */
+export async function hasCredits(workspaceId: string, minimumRequired = 0.5): Promise<boolean> {
+  let ledger = await prisma.creditLedger.findUnique({ where: { workspaceId } });
+  if (!ledger) {
+    ledger = await allocateFreeCredits(workspaceId);
+  }
+  if (!ledger) return false;
+
+  const now = new Date();
+  const needsReset = now.toDateString() !== new Date(ledger.lastDailyReset).toDateString();
+  const daily = needsReset ? DAILY_CREDITS : ledger.dailyCredits;
+  return (daily + ledger.monthlyCredits + ledger.rolloverCredits) >= minimumRequired;
+}
+
+/**
+ * Consume credits for an action.
+ * Deduction order: daily → monthly → rollover → insufficient.
  */
 export async function consumeCredits(
   workspaceId: string,
@@ -120,12 +138,9 @@ export async function consumeCredits(
     });
 
     if (!ledger) {
-      // Lazy-create free tier ledger if none exists (handles new workspaces)
       try {
         await allocateFreeCredits(workspaceId);
-        ledger = await tx.creditLedger.findUnique({
-          where: { workspaceId },
-        });
+        ledger = await tx.creditLedger.findUnique({ where: { workspaceId } });
       } catch {
         // allocation failed, fall through
       }
@@ -134,36 +149,40 @@ export async function consumeCredits(
       }
     }
 
-    // Check for daily reset
+    // Lazy daily reset
     const now = new Date();
-    const lastReset = new Date(ledger.lastDailyReset);
-    const needsDailyReset = now.toDateString() !== lastReset.toDateString();
+    const needsDailyReset = now.toDateString() !== new Date(ledger.lastDailyReset).toDateString();
 
     let dailyCredits = needsDailyReset ? DAILY_CREDITS : ledger.dailyCredits;
     let monthlyCredits = ledger.monthlyCredits;
+    let rolloverCredits = ledger.rolloverCredits;
 
-    // Determine which pool to use
+    // Deduction order: daily → monthly → rollover
     let creditSource: CreditSource;
     let balanceBefore: number;
     let balanceAfter: number;
 
     if (dailyCredits >= creditCost) {
-      // Use daily credits first
       creditSource = 'daily';
       balanceBefore = dailyCredits;
       dailyCredits -= creditCost;
       balanceAfter = dailyCredits;
     } else if (monthlyCredits >= creditCost) {
-      // Fall back to monthly credits
       creditSource = 'monthly';
       balanceBefore = monthlyCredits;
       monthlyCredits -= creditCost;
       balanceAfter = monthlyCredits;
+    } else if (rolloverCredits >= creditCost) {
+      // Rollover credits (tracked as 'monthly' source since they originate from unused monthly)
+      creditSource = 'monthly';
+      balanceBefore = rolloverCredits;
+      rolloverCredits -= creditCost;
+      balanceAfter = rolloverCredits;
     } else {
       return {
         success: false,
         error: 'Insufficient credits',
-        remainingCredits: dailyCredits + monthlyCredits,
+        remainingCredits: dailyCredits + monthlyCredits + rolloverCredits,
       };
     }
 
@@ -173,6 +192,7 @@ export async function consumeCredits(
       data: {
         dailyCredits,
         monthlyCredits,
+        rolloverCredits,
         ...(needsDailyReset ? { lastDailyReset: now } : {}),
       },
     });
@@ -194,7 +214,7 @@ export async function consumeCredits(
 
     return {
       success: true,
-      remainingCredits: dailyCredits + monthlyCredits,
+      remainingCredits: dailyCredits + monthlyCredits + rolloverCredits,
     };
   });
 }

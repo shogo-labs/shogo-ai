@@ -181,11 +181,16 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     }
   }, [workspaceId, store, isLoadingCreditLedger])
 
-  // Compute effective balance from raw credit ledger fields
+  // Compute effective balance with lazy daily reset applied
   const effectiveBalance = useMemo(() => {
     if (!creditLedger) return undefined
     try {
-      const daily = creditLedger.dailyCredits ?? 0
+      // Apply lazy daily reset: if lastDailyReset is not today, show 5 daily credits
+      const lastReset = creditLedger.lastDailyReset
+        ? new Date(creditLedger.lastDailyReset).toDateString()
+        : ''
+      const needsReset = lastReset !== new Date().toDateString()
+      const daily = needsReset ? 5 : (creditLedger.dailyCredits ?? 0)
       const monthly = creditLedger.monthlyCredits ?? 0
       const rollover = creditLedger.rolloverCredits ?? 0
       return {
