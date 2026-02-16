@@ -54,7 +54,8 @@ logTiming('Loading configuration...')
 const PROJECT_ID = process.env.PROJECT_ID
 const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
-// MCP server removed — template tools are now HTTP endpoints on this server
+// MCP server path: resolve from MONOREPO_ROOT for local dev, fallback to Docker path
+const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || resolve(MONOREPO_ROOT, 'packages/mcp/src/server-templates.ts')
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
 // Fast start mode: server starts before build completes
@@ -70,6 +71,7 @@ if (!PROJECT_ID) {
 logTiming(`Configuration loaded for project: ${PROJECT_ID}`)
 console.log(`[project-runtime] Project directory: ${PROJECT_DIR}`)
 console.log(`[project-runtime] Schemas path: ${SCHEMAS_PATH}`)
+console.log(`[project-runtime] MCP server path: ${MCP_SERVER_PATH}`)
 console.log(`[project-runtime] Template endpoints: /templates/list, /templates/copy`)
 if (FAST_START_MODE) {
   logTiming('Fast start mode enabled (build runs in background)')
@@ -637,6 +639,7 @@ claudeCodeEnv.RUNTIME_PORT = String(PORT)
 /** V1 QueryOptions fields that V2 runtime accepts but aren't yet typed */
 interface ExtendedSessionOptions extends SDKSessionOptions {
   cwd?: string
+  mcpServers?: Record<string, any>
   systemPrompt?: string | { type: 'preset'; preset: 'claude_code'; append?: string }
   settingSources?: string[]
   allowDangerouslySkipPermissions?: boolean
@@ -659,12 +662,27 @@ function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
     includePartialMessages: true,
     // Base system prompt (dynamic context appended to user messages per-request)
     systemPrompt: buildSystemPrompt(PROJECT_DIR),
-    // Template tools are now HTTP endpoints on this server (/templates/list, /templates/copy)
-    // The agent uses Bash + curl to call them — no MCP server needed
+    // MCP server provides template tools as native tool calls
+    mcpServers: {
+      shogo: {
+        command: 'bun',
+        args: ['run', MCP_SERVER_PATH],
+        env: {
+          SCHEMAS_PATH,
+          PROJECT_ID: PROJECT_ID!,
+          PROJECT_DIR,
+          RUNTIME_PORT: String(PORT),
+          NODE_ENV: process.env.NODE_ENV || 'production',
+          DATABASE_URL: process.env.DATABASE_URL || '',
+        },
+      },
+    },
     allowedTools: [
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
       'Bash',
       'Skill', 'Task', 'TodoWrite',
+      'mcp__shogo__template_list',
+      'mcp__shogo__template_copy',
     ],
     permissionMode: 'default',
   } as ExtendedSessionOptions
@@ -1609,6 +1627,7 @@ app.get('/info', (c) => {
     projectId: PROJECT_ID,
     projectDir: PROJECT_DIR,
     schemasPath: SCHEMAS_PATH,
+    mcpServerPath: MCP_SERVER_PATH,
     templateEndpoints: ['/templates/list', '/templates/copy'],
     nodeEnv: process.env.NODE_ENV,
     port: PORT,

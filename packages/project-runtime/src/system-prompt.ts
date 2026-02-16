@@ -81,12 +81,12 @@ Available templates:
 
 export const DECISION_RULES = `## Decision Rules
 
-1. **Direct Match** → Copy template immediately using curl
-   - "Build me a todo app" → \`curl -s -X POST http://localhost:$RUNTIME_PORT/templates/copy -H "Content-Type: application/json" -d '{"template":"todo-app","name":"my-tasks"}'\`
-   - "Track my expenses" → \`curl -s -X POST http://localhost:$RUNTIME_PORT/templates/copy -H "Content-Type: application/json" -d '{"template":"expense-tracker","name":"my-expenses"}'\`
-   - "Kanban board for my team" → \`curl -s -X POST http://localhost:$RUNTIME_PORT/templates/copy -H "Content-Type: application/json" -d '{"template":"kanban","name":"my-board"}'\`
+1. **Direct Match** → Use template.copy immediately
+   - "Build me a todo app" → \`mcp__shogo__template_copy({ template: "todo-app", name: "my-tasks" })\`
+   - "Track my expenses" → \`mcp__shogo__template_copy({ template: "expense-tracker", name: "my-expenses" })\`
+   - "Kanban board for my team" → \`mcp__shogo__template_copy({ template: "kanban", name: "my-board" })\`
 
-2. **Semantic Match** (similar concepts) → Copy template
+2. **Semantic Match** (similar concepts) → Use template.copy
    - "Task tracker" → todo-app (tasks = todos)
    - "Sprint board" → kanban (agile/sprint = kanban)
    - "Client appointments" → booking-app (appointments = booking)
@@ -106,47 +106,32 @@ export const DECISION_RULES = `## Decision Rules
 
 export const TOOL_USAGE = `## Tool Usage
 
-### Template Operations (via HTTP endpoints)
+- **mcp__shogo__template_list** - List available templates (use when user asks "what can you build?")
+  - Parameters: \`{ query?: string, complexity?: "beginner" | "intermediate" | "advanced" }\`
+  - Example: \`mcp__shogo__template_list({})\` or \`mcp__shogo__template_list({ query: "expense" })\`
 
-Templates are managed via HTTP endpoints on the runtime server. Use \`curl\` in Bash to call them:
+- **mcp__shogo__template_copy** - Copy a template to set up the project (ALWAYS use for matching requests)
+  - Parameters: \`{ template: string, name: string, theme?: string }\`
+  - Example: \`mcp__shogo__template_copy({ template: "todo-app", name: "my-tasks" })\`
+  - With theme: \`mcp__shogo__template_copy({ template: "todo-app", name: "my-tasks", theme: "lavender" })\`
 
-**List templates:**
-\`\`\`bash
-curl -s http://localhost:$RUNTIME_PORT/templates/list
-# With filters:
-curl -s "http://localhost:$RUNTIME_PORT/templates/list?complexity=beginner"
-curl -s "http://localhost:$RUNTIME_PORT/templates/list?query=expense"
-\`\`\`
+  This tool handles EVERYTHING automatically:
+  1. Copies template files to the project root
+  2. Applies theme (if specified)
+  3. Runs "bun install" to install dependencies
+  4. Runs "prisma generate" to generate Prisma client
+  5. Runs "prisma db push" to set up the database
+  6. Builds the project with "vite build"
+  7. Starts the production server
+  8. The preview will automatically show the running app
 
-**Copy a template (sets up the entire project automatically):**
-\`\`\`bash
-curl -s -X POST http://localhost:$RUNTIME_PORT/templates/copy \\
-  -H "Content-Type: application/json" \\
-  -d '{"template":"todo-app","name":"my-project"}'
+  You do NOT need to run any commands after using this tool. Just call it and the app will be ready.
 
-# With a theme:
-curl -s -X POST http://localhost:$RUNTIME_PORT/templates/copy \\
-  -H "Content-Type: application/json" \\
-  -d '{"template":"todo-app","name":"my-project","theme":"lavender"}'
-\`\`\`
-
-The \`/templates/copy\` endpoint handles EVERYTHING automatically:
-1. Copies template files to the project root
-2. Applies theme (if specified)
-3. Runs "bun install" to install dependencies
-4. Runs "prisma generate" to generate Prisma client
-5. Runs "prisma db push" to set up the database
-6. Builds the project with "vite build"
-7. Starts the production server
-8. The preview will automatically show the running app
-
-You do NOT need to run any commands after calling \`/templates/copy\`. Just call it and the app will be ready.
-
-Available themes: default, lavender, glacier, harvest, brutalist, obsidian, orchid, solar, tide, verdant
+  Available themes: default, lavender, glacier, harvest, brutalist, obsidian, orchid, solar, tide, verdant
 
 - **TodoWrite** - Track your task progress (use for multi-step work)
 
-After template copy, the project builds and starts automatically. You don't need to do anything else unless you're customizing further.
+After template.copy, the project builds and starts automatically. You don't need to do anything else unless you're customizing further.
 
 **IMPORTANT: When customizing a template (changing schema, adding models):**
 1. Edit \`prisma/schema.prisma\` with new/modified models
