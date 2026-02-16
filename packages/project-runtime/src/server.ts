@@ -54,7 +54,7 @@ logTiming('Loading configuration...')
 const PROJECT_ID = process.env.PROJECT_ID
 const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
-const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || '/app/packages/mcp/src/server-templates.ts'
+// MCP server removed — template tools are now HTTP endpoints on this server
 const PORT = parseInt(process.env.PORT || '8080', 10)
 const PREVIEW_URL = process.env.PREVIEW_URL
 
@@ -71,7 +71,7 @@ if (!PROJECT_ID) {
 logTiming(`Configuration loaded for project: ${PROJECT_ID}`)
 console.log(`[project-runtime] Project directory: ${PROJECT_DIR}`)
 console.log(`[project-runtime] Schemas path: ${SCHEMAS_PATH}`)
-console.log(`[project-runtime] MCP server path: ${MCP_SERVER_PATH}`)
+console.log(`[project-runtime] Template endpoints: /templates/list, /templates/copy`)
 if (FAST_START_MODE) {
   logTiming('Fast start mode enabled (build runs in background)')
 }
@@ -326,113 +326,187 @@ function copyTemplate(templateName: string, projectName: string): { ok: boolean;
 }
 
 /**
- * AI SDK native tools for template operations
+ * Theme CSS presets for template theming
  */
-const templateTools = {
-  'template.list': tool({
-    description: `List and search available starter templates. Returns templates with metadata including name, description, complexity, features, models, and tags.
-
-Available templates:
-- todo-app: Simple task management
-- expense-tracker: Personal finance with categories
-- crm: Customer relationship management
-- inventory: Stock and product management
-- kanban: Project boards with drag-and-drop
-- ai-chat: AI chatbot with conversation history`,
-    parameters: z.object({
-      query: z.string().optional().describe('Optional search query to filter templates'),
-    }),
-    execute: async ({ query }) => {
-      console.log(`[project-runtime] template.list called with query: ${query}`)
-      let templates = loadTemplates()
-
-      if (query) {
-        const queryLower = query.toLowerCase()
-        templates = templates.filter(t =>
-          t.name.toLowerCase().includes(queryLower) ||
-          t.description.toLowerCase().includes(queryLower) ||
-          t.tags.some(tag => tag.toLowerCase().includes(queryLower)) ||
-          t.useCases.some(uc => uc.toLowerCase().includes(queryLower))
-        )
-      }
-
-      return JSON.stringify({ ok: true, templates }, null, 2)
-    },
-  }),
-
-  'template.copy': tool({
-    description: `Copy a starter template to set up the project. This will copy all template files to the current project directory, install dependencies, build the project, and start the preview server automatically.`,
-    parameters: z.object({
-      templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app", "expense-tracker")'),
-      projectName: z.string().optional().describe('Optional project name (for package.json)'),
-    }),
-    execute: async ({ templateName, projectName }) => {
-      console.log(`[project-runtime] template.copy called: ${templateName}`)
-      const result = copyTemplate(templateName, projectName || templateName)
-      
-      // If successful, automatically rebuild and restart the preview
-      if (result.ok) {
-        let restartResult: { success: boolean; message: string; mode?: string; port?: number | null } = {
-          success: false,
-          message: 'Restart not attempted',
-        }
-        
-        try {
-          console.log(`[project-runtime] Starting dev mode for project ${PROJECT_ID}...`)
-          // Call our local dev endpoint (uses vite dev server with HMR for instant updates)
-          const response = await fetch(`http://localhost:${PORT}/preview/dev`, {
-            method: 'POST',
-          })
-          
-          if (response.ok) {
-            const data = await response.json() as { success: boolean; mode: string; port: number | null }
-            restartResult = {
-              success: true,
-              message: `Preview restarted in ${data.mode} mode`,
-              mode: data.mode,
-              port: data.port,
-            }
-            console.log(`[project-runtime] Preview restarted in ${data.mode} mode`)
-          } else {
-            const errorData = await response.json().catch(() => ({})) as { error?: string }
-            restartResult = {
-              success: false,
-              message: errorData.error || `Restart failed with status ${response.status}`,
-            }
-          }
-        } catch (err: any) {
-          console.warn(`[project-runtime] Restart error: ${err.message}`)
-          restartResult = {
-            success: false,
-            message: err.message,
-          }
-        }
-        
-        return JSON.stringify({
-          ...result,
-          restart: restartResult,
-          message: restartResult.success 
-            ? `Template copied and preview rebuilt. The preview will show the ${templateName} app.`
-            : 'Template copied but rebuild failed. Try refreshing the preview.',
-        }, null, 2)
-      }
-      
-      return JSON.stringify(result, null, 2)
-    },
-  }),
+const THEME_CSS: Record<string, { light: string; dark: string; radius: string }> = {
+  default: {
+    light: `--background: 0 0% 100%; --foreground: 222.2 84% 4.9%; --card: 0 0% 100%; --card-foreground: 222.2 84% 4.9%; --popover: 0 0% 100%; --popover-foreground: 222.2 84% 4.9%; --primary: 222.2 47.4% 11.2%; --primary-foreground: 210 40% 98%; --secondary: 210 40% 96.1%; --secondary-foreground: 222.2 47.4% 11.2%; --muted: 210 40% 96.1%; --muted-foreground: 215.4 16.3% 46.9%; --accent: 210 40% 96.1%; --accent-foreground: 222.2 47.4% 11.2%; --destructive: 0 84.2% 60.2%; --destructive-foreground: 210 40% 98%; --border: 214.3 31.8% 91.4%; --input: 214.3 31.8% 91.4%; --ring: 222.2 84% 4.9%;`,
+    dark: `--background: 222.2 84% 4.9%; --foreground: 210 40% 98%; --card: 222.2 84% 4.9%; --card-foreground: 210 40% 98%; --popover: 222.2 84% 4.9%; --popover-foreground: 210 40% 98%; --primary: 210 40% 98%; --primary-foreground: 222.2 47.4% 11.2%; --secondary: 217.2 32.6% 17.5%; --secondary-foreground: 210 40% 98%; --muted: 217.2 32.6% 17.5%; --muted-foreground: 215 20.2% 65.1%; --accent: 217.2 32.6% 17.5%; --accent-foreground: 210 40% 98%; --destructive: 0 62.8% 30.6%; --destructive-foreground: 210 40% 98%; --border: 217.2 32.6% 17.5%; --input: 217.2 32.6% 17.5%; --ring: 212.7 26.8% 83.9%;`,
+    radius: '0.5',
+  },
+  lavender: {
+    light: `--background: 270 50% 98%; --foreground: 270 50% 10%; --card: 0 0% 100%; --card-foreground: 270 50% 10%; --popover: 0 0% 100%; --popover-foreground: 270 50% 10%; --primary: 262 83% 58%; --primary-foreground: 0 0% 100%; --secondary: 270 50% 93%; --secondary-foreground: 270 50% 10%; --muted: 270 50% 93%; --muted-foreground: 270 30% 45%; --accent: 262 83% 92%; --accent-foreground: 262 83% 35%; --destructive: 0 84% 60%; --destructive-foreground: 0 0% 100%; --border: 270 30% 88%; --input: 270 30% 88%; --ring: 262 83% 58%;`,
+    dark: `--background: 270 50% 5%; --foreground: 270 50% 98%; --card: 270 50% 8%; --card-foreground: 270 50% 98%; --popover: 270 50% 8%; --popover-foreground: 270 50% 98%; --primary: 262 83% 58%; --primary-foreground: 270 50% 5%; --secondary: 270 30% 17%; --secondary-foreground: 270 50% 98%; --muted: 270 30% 17%; --muted-foreground: 270 30% 65%; --accent: 262 83% 20%; --accent-foreground: 262 83% 90%; --destructive: 0 63% 31%; --destructive-foreground: 270 50% 98%; --border: 270 30% 17%; --input: 270 30% 17%; --ring: 262 83% 58%;`,
+    radius: '0.625',
+  },
+  glacier: {
+    light: `--background: 210 40% 98%; --foreground: 222 47% 11%; --card: 0 0% 100%; --card-foreground: 222 47% 11%; --popover: 0 0% 100%; --popover-foreground: 222 47% 11%; --primary: 199 89% 48%; --primary-foreground: 0 0% 100%; --secondary: 210 40% 93%; --secondary-foreground: 222 47% 11%; --muted: 210 40% 93%; --muted-foreground: 215 16% 47%; --accent: 199 89% 93%; --accent-foreground: 199 89% 30%; --destructive: 0 84% 60%; --destructive-foreground: 0 0% 100%; --border: 214 32% 91%; --input: 214 32% 91%; --ring: 199 89% 48%;`,
+    dark: `--background: 222 47% 6%; --foreground: 210 40% 98%; --card: 222 47% 9%; --card-foreground: 210 40% 98%; --popover: 222 47% 9%; --popover-foreground: 210 40% 98%; --primary: 199 89% 48%; --primary-foreground: 222 47% 6%; --secondary: 217 33% 17%; --secondary-foreground: 210 40% 98%; --muted: 217 33% 17%; --muted-foreground: 215 20% 65%; --accent: 199 89% 20%; --accent-foreground: 199 89% 90%; --destructive: 0 63% 31%; --destructive-foreground: 210 40% 98%; --border: 217 33% 17%; --input: 217 33% 17%; --ring: 199 89% 48%;`,
+    radius: '0.5',
+  },
+  harvest: {
+    light: `--background: 40 33% 98%; --foreground: 20 14% 10%; --primary: 24 95% 53%; --primary-foreground: 0 0% 100%; --secondary: 40 33% 93%; --secondary-foreground: 20 14% 10%; --muted: 40 33% 93%; --muted-foreground: 20 14% 45%; --accent: 24 95% 92%; --accent-foreground: 24 95% 30%; --border: 40 20% 88%; --input: 40 20% 88%; --ring: 24 95% 53%;`,
+    dark: `--background: 20 14% 6%; --foreground: 40 33% 98%; --primary: 24 95% 53%; --primary-foreground: 20 14% 6%; --secondary: 20 14% 17%; --secondary-foreground: 40 33% 98%; --muted: 20 14% 17%; --muted-foreground: 40 20% 65%; --accent: 24 95% 20%; --accent-foreground: 24 95% 90%; --border: 20 14% 17%; --input: 20 14% 17%; --ring: 24 95% 53%;`,
+    radius: '0.5',
+  },
+  brutalist: {
+    light: `--background: 0 0% 100%; --foreground: 0 0% 0%; --primary: 0 0% 0%; --primary-foreground: 0 0% 100%; --secondary: 0 0% 95%; --secondary-foreground: 0 0% 0%; --accent: 351 100% 50%; --accent-foreground: 0 0% 100%; --border: 0 0% 0%; --input: 0 0% 85%; --ring: 0 0% 0%;`,
+    dark: `--background: 0 0% 0%; --foreground: 0 0% 100%; --primary: 0 0% 100%; --primary-foreground: 0 0% 0%; --secondary: 0 0% 15%; --secondary-foreground: 0 0% 100%; --accent: 351 100% 50%; --accent-foreground: 0 0% 100%; --border: 0 0% 100%; --input: 0 0% 20%; --ring: 0 0% 100%;`,
+    radius: '0',
+  },
+  obsidian: {
+    light: `--background: 240 10% 96%; --foreground: 240 10% 10%; --primary: 240 6% 25%; --primary-foreground: 0 0% 100%; --secondary: 240 10% 91%; --secondary-foreground: 240 10% 10%; --muted: 240 10% 91%; --muted-foreground: 240 6% 45%; --border: 240 6% 85%; --input: 240 6% 85%; --ring: 240 6% 25%;`,
+    dark: `--background: 240 6% 6%; --foreground: 240 10% 96%; --primary: 240 10% 90%; --primary-foreground: 240 6% 6%; --secondary: 240 6% 15%; --secondary-foreground: 240 10% 96%; --muted: 240 6% 15%; --muted-foreground: 240 6% 55%; --border: 240 6% 15%; --input: 240 6% 15%; --ring: 240 10% 90%;`,
+    radius: '0.375',
+  },
+  orchid: {
+    light: `--background: 330 50% 98%; --foreground: 330 50% 10%; --primary: 330 81% 60%; --primary-foreground: 0 0% 100%; --secondary: 330 50% 93%; --secondary-foreground: 330 50% 10%; --muted: 330 50% 93%; --muted-foreground: 330 30% 45%; --border: 330 30% 88%; --input: 330 30% 88%; --ring: 330 81% 60%;`,
+    dark: `--background: 330 50% 5%; --foreground: 330 50% 98%; --primary: 330 81% 60%; --primary-foreground: 330 50% 5%; --secondary: 330 30% 17%; --secondary-foreground: 330 50% 98%; --muted: 330 30% 17%; --muted-foreground: 330 30% 65%; --border: 330 30% 17%; --input: 330 30% 17%; --ring: 330 81% 60%;`,
+    radius: '0.5',
+  },
+  solar: {
+    light: `--background: 48 100% 98%; --foreground: 20 14% 10%; --primary: 45 93% 47%; --primary-foreground: 20 14% 10%; --secondary: 48 100% 93%; --secondary-foreground: 20 14% 10%; --muted: 48 100% 93%; --muted-foreground: 20 14% 45%; --border: 48 50% 85%; --input: 48 50% 85%; --ring: 45 93% 47%;`,
+    dark: `--background: 20 14% 6%; --foreground: 48 100% 98%; --primary: 45 93% 47%; --primary-foreground: 20 14% 6%; --secondary: 20 14% 17%; --secondary-foreground: 48 100% 98%; --muted: 20 14% 17%; --muted-foreground: 48 50% 65%; --border: 20 14% 17%; --input: 20 14% 17%; --ring: 45 93% 47%;`,
+    radius: '0.5',
+  },
+  tide: {
+    light: `--background: 180 30% 98%; --foreground: 180 30% 10%; --primary: 173 80% 40%; --primary-foreground: 0 0% 100%; --secondary: 180 30% 93%; --secondary-foreground: 180 30% 10%; --muted: 180 30% 93%; --muted-foreground: 180 20% 45%; --border: 180 20% 88%; --input: 180 20% 88%; --ring: 173 80% 40%;`,
+    dark: `--background: 180 30% 5%; --foreground: 180 30% 98%; --primary: 173 80% 40%; --primary-foreground: 180 30% 5%; --secondary: 180 20% 17%; --secondary-foreground: 180 30% 98%; --muted: 180 20% 17%; --muted-foreground: 180 20% 65%; --border: 180 20% 17%; --input: 180 20% 17%; --ring: 173 80% 40%;`,
+    radius: '0.5',
+  },
+  verdant: {
+    light: `--background: 120 30% 98%; --foreground: 120 30% 10%; --primary: 142 71% 45%; --primary-foreground: 0 0% 100%; --secondary: 120 30% 93%; --secondary-foreground: 120 30% 10%; --muted: 120 30% 93%; --muted-foreground: 120 20% 45%; --border: 120 20% 88%; --input: 120 20% 88%; --ring: 142 71% 45%;`,
+    dark: `--background: 120 30% 5%; --foreground: 120 30% 98%; --primary: 142 71% 45%; --primary-foreground: 120 30% 5%; --secondary: 120 20% 17%; --secondary-foreground: 120 30% 98%; --muted: 120 20% 17%; --muted-foreground: 120 20% 65%; --border: 120 20% 17%; --input: 120 20% 17%; --ring: 142 71% 45%;`,
+    radius: '0.5',
+  },
 }
 
+/**
+ * Apply a theme to the project's index.css
+ */
+function applyThemeToProject(projectDir: string, themeId: string): void {
+  const theme = THEME_CSS[themeId] || THEME_CSS.default
+  const indexCssPath = join(projectDir, 'src', 'index.css')
+  
+  const themeCSS = `@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme: ${themeId} */
+
+@layer base {
+  :root {
+    ${theme.light}
+    --radius: ${theme.radius}rem;
+  }
+
+  .dark {
+    ${theme.dark}
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+`
+  
+  try {
+    writeFileSync(indexCssPath, themeCSS, 'utf-8')
+    console.log(`[project-runtime] Applied theme "${themeId}" to ${indexCssPath}`)
+  } catch (err: any) {
+    console.warn(`[project-runtime] Warning: Could not apply theme: ${err.message}`)
+  }
+}
+
+// Template HTTP endpoints are registered after `app` is created (see /templates/list and /templates/copy below)
+
 // =============================================================================
-// Path Restriction (Security)
+// Path Restriction & Runtime Command Guardrails (Security)
 // =============================================================================
 
 /**
- * Creates a canUseTool callback that restricts file operations to the project directory.
- * This prevents the agent from accessing files outside the project.
+ * Forbidden runtime commands that the agent must NEVER execute.
+ * These would break the managed vite build --watch process, the Hono API server,
+ * or other managed infrastructure inside the project runtime container.
+ * 
+ * This is a HARD BLOCK — the command is physically prevented from running,
+ * regardless of what the LLM decides.
+ */
+const FORBIDDEN_COMMAND_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  // Vite commands (already running in watch mode)
+  { pattern: /\bvite\s+dev\b/, reason: 'The dev server is already running. Vite build --watch handles rebuilds automatically.' },
+  { pattern: /\bvite\s+build\b/, reason: 'Vite build --watch is already running and rebuilds automatically on file changes.' },
+  { pattern: /\bvite\s+serve\b/, reason: 'The server is already running and serving the built files.' },
+  { pattern: /\bvite\s+preview\b/, reason: 'The server is already running and serving the built files.' },
+  { pattern: /\bnpx\s+vite\b/, reason: 'Vite is already running in watch mode. Do not start another instance.' },
+  { pattern: /\bbunx\s+vite\b/, reason: 'Vite is already running in watch mode. Do not start another instance.' },
+  // Dev/build scripts (handled by watch mode)
+  { pattern: /\bbun\s+run\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\bbun\s+run\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  { pattern: /\bnpm\s+run\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\bnpm\s+run\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  { pattern: /\byarn\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\byarn\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  // Process killing (would kill managed infrastructure)
+  { pattern: /\bkill\s+-/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bkill\s+\d/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bpkill\b/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bkillall\b/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  // Server restart commands
+  { pattern: /\bpm2\s+restart\b/, reason: 'Do not restart processes. The runtime manages the server automatically.' },
+  { pattern: /\bsystemctl\s+restart\b/, reason: 'Do not restart system services. The runtime manages everything.' },
+]
+
+/**
+ * Check if a bash command matches any forbidden runtime command pattern.
+ * Returns the reason string if forbidden, or null if allowed.
+ */
+function checkForbiddenCommand(command: string): string | null {
+  const cmd = command.toLowerCase()
+  for (const { pattern, reason } of FORBIDDEN_COMMAND_PATTERNS) {
+    if (pattern.test(cmd)) {
+      return reason
+    }
+  }
+  return null
+}
+
+/**
+ * Creates a canUseTool callback that:
+ * 1. Blocks forbidden runtime commands (vite restart, build, kill, etc.)
+ * 2. Restricts file operations to the project directory
+ * 
+ * This prevents the agent from:
+ * - Breaking the managed vite build --watch / Hono server infrastructure
+ * - Accessing files outside the project directory
  */
 function createPathRestrictor(projectDir: string) {
   return async (toolName: string, input: unknown) => {
-    // Only restrict file operation tools
+    // DEBUG: Log EVERY canUseTool invocation so we can verify it's being called
+    console.error(`[project-runtime] canUseTool called: tool=${toolName}, input=${JSON.stringify(input).slice(0, 300)}`)
+
+    // GUARDRAIL: Block forbidden runtime commands for Bash/Shell tools
+    if (toolName === 'Bash' || toolName === 'bash' || toolName === 'Shell' || toolName === 'shell') {
+      const inputObj = input as Record<string, unknown>
+      const command = String(inputObj.command || '')
+      console.error(`[project-runtime] Bash command intercepted: "${command}"`)
+      const reason = checkForbiddenCommand(command)
+      if (reason) {
+        console.error(`[project-runtime] ❌ BLOCKED forbidden command: "${command}" — reason: ${reason}`)
+        return {
+          behavior: 'deny' as const,
+          message: `Command blocked: ${reason} The runtime container manages vite build --watch and the API server automatically. If something isn't working, check .build.log for errors.`,
+        }
+      }
+      console.error(`[project-runtime] ✅ Bash command allowed: "${command}"`)
+    }
+
+    // Only restrict file operation tools for path checks
     const fileTools = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS', 'Bash']
     if (!fileTools.includes(toolName)) {
       return { behavior: 'allow' as const }
@@ -503,14 +577,35 @@ if (useAIProxy) {
   claudeCodeEnv.ANTHROPIC_BASE_URL = anthropicProxyBase
   claudeCodeEnv.ANTHROPIC_API_KEY = AI_PROXY_TOKEN!
 }
+// Expose runtime port so the agent can call template endpoints via curl
+claudeCodeEnv.RUNTIME_PORT = String(PORT)
 
-const claudeCode = createClaudeCode({
-  defaultSettings: {
-    // Enable streaming (required for hooks)
-    streamingInput: 'always',
-    // Verbose logging (disabled in production)
-    verbose: false,
-    // Working directory is the project
+// =============================================================================
+// V2 Agent SDK Session Management
+// =============================================================================
+// Uses the V2 session-based API from @anthropic-ai/claude-agent-sdk.
+// Sessions persist across HTTP requests, keeping the CLI subprocess alive.
+// This eliminates the 7-12s cold start overhead per message.
+
+/** V1 QueryOptions fields that V2 runtime accepts but aren't yet typed */
+interface ExtendedSessionOptions extends SDKSessionOptions {
+  cwd?: string
+  mcpServers?: Record<string, any>
+  systemPrompt?: string | { type: 'preset'; preset: 'claude_code'; append?: string }
+  settingSources?: string[]
+  allowDangerouslySkipPermissions?: boolean
+  includePartialMessages?: boolean
+  persistSession?: boolean
+}
+
+// Session cache: one persistent session per model name
+const sessionCache = new Map<string, SDKSession>()
+
+function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
+  return {
+    model: modelName === 'haiku' ? 'claude-3-5-haiku-latest'
+         : modelName === 'opus' ? 'claude-opus-4-20250514'
+         : 'claude-sonnet-4-20250514',
     cwd: PROJECT_DIR,
     // Path restriction for security
     canUseTool: pathRestrictor,
@@ -519,18 +614,19 @@ const claudeCode = createClaudeCode({
     // Environment for Claude Code process
     // Inherits all runtime env vars (DATABASE_URL, etc.) plus AI proxy overrides
     env: claudeCodeEnv,
-    // MCP server configuration
+    includePartialMessages: true,
+    // Base system prompt (dynamic context appended to user messages per-request)
+    systemPrompt: buildSystemPrompt(PROJECT_DIR, { previewUrl: PREVIEW_URL }),
     mcpServers: {
-      wavesmith: {
+      shogo: {
         command: 'bun',
         args: ['run', MCP_SERVER_PATH],
         env: {
           SCHEMAS_PATH,
           PROJECT_ID: PROJECT_ID!,
-          PROJECT_DIR,  // Critical: template.copy needs this to copy to the right location
-          RUNTIME_PORT: String(PORT),  // Port for calling /preview/restart from template.copy
+          PROJECT_DIR,
+          RUNTIME_PORT: String(PORT),
           NODE_ENV: process.env.NODE_ENV || 'production',
-          // Forward S3 configuration for schema persistence
           S3_ENDPOINT: process.env.S3_ENDPOINT || '',
           S3_SCHEMA_BUCKET: process.env.S3_SCHEMA_BUCKET || '',
           S3_FORCE_PATH_STYLE: process.env.S3_FORCE_PATH_STYLE || '',
@@ -542,37 +638,13 @@ const claudeCode = createClaudeCode({
         },
       },
     },
-    // Allowed tools
+    // NOTE: 'Bash' intentionally NOT in allowedTools — canUseTool guardrail handles it
     allowedTools: [
       // File operations
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
-      // Skill and agent tools
-      'Skill', 'Task', 'Bash', 'TodoWrite',
-      // Template tools (underscores - Claude Code converts dots to underscores)
-      'mcp__wavesmith__template_list',
-      'mcp__wavesmith__template_copy',
-      // Wavesmith MCP tools - Schema (underscores)
-      // 'mcp__wavesmith__schema_set',
-      // 'mcp__wavesmith__schema_get',
-      // 'mcp__wavesmith__schema_list',
-      // 'mcp__wavesmith__schema_load',
-      // // Wavesmith MCP tools - Store (underscores)
-      // 'mcp__wavesmith__store_create',
-      // 'mcp__wavesmith__store_list',
-      // 'mcp__wavesmith__store_get',
-      // 'mcp__wavesmith__store_update',
-      // 'mcp__wavesmith__store_query',
-      // 'mcp__wavesmith__store_models',
-      // 'mcp__wavesmith__store_delete',
-      // // Wavesmith MCP tools - Views (underscores)
-      // 'mcp__wavesmith__view_execute',
-      // 'mcp__wavesmith__view_define',
-      // 'mcp__wavesmith__view_project',
-      // // Wavesmith MCP tools - Data & DDL (underscores)
-      // 'mcp__wavesmith__data_load',
-      // 'mcp__wavesmith__data_loadAll',
-      // 'mcp__wavesmith__ddl_execute',
-      // 'mcp__wavesmith__ddl_migrate',
+      'Skill', 'Task', 'TodoWrite',
+      'mcp__shogo__template_list',
+      'mcp__shogo__template_copy',
     ],
     // Use default permission mode (our canUseTool callback handles restrictions)
     permissionMode: 'default',
@@ -932,6 +1004,136 @@ app.get('/build-events', (c) => {
       'Connection': 'keep-alive',
     },
   })
+})
+
+// =============================================================================
+// Template HTTP Endpoints (used by the agent via Bash + curl)
+// =============================================================================
+
+/**
+ * GET /templates/list — List available starter templates
+ * Supports optional query params: ?query=...&complexity=beginner|intermediate|advanced
+ */
+app.get('/templates/list', (c) => {
+  try {
+    let templates = loadTemplates()
+    
+    const query = c.req.query('query')
+    const complexity = c.req.query('complexity') as 'beginner' | 'intermediate' | 'advanced' | undefined
+    
+    // Filter by complexity
+    if (complexity) {
+      templates = templates.filter(t => t.complexity === complexity)
+    }
+    
+    // Search by query string
+    if (query) {
+      const queryLower = query.toLowerCase()
+      const queryWords = queryLower.split(/\s+/)
+      
+      templates = templates
+        .map(template => {
+          const searchableText = [
+            template.name, template.description,
+            ...template.tags, ...template.useCases,
+            ...template.models, ...template.features,
+          ].join(' ').toLowerCase()
+          
+          let score = 0
+          for (const word of queryWords) {
+            if (searchableText.includes(word)) {
+              score++
+              if (template.tags.some(t => t.toLowerCase() === word)) score += 2
+              if (template.useCases.some(u => u.toLowerCase().includes(word))) score += 2
+              if (template.name.toLowerCase().includes(word)) score += 3
+            }
+          }
+          return { template, score }
+        })
+        .filter(({ score }) => score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map(({ template }) => template)
+    }
+    
+    // Strip internal paths from response
+    const safeTemplates = templates.map(({ path, ...rest }) => rest)
+    
+    return c.json({ ok: true, templates: safeTemplates })
+  } catch (error: any) {
+    return c.json({ ok: false, error: error.message || 'Failed to list templates' }, 500)
+  }
+})
+
+/**
+ * POST /templates/copy — Copy a starter template and set up the project
+ * Body: { template: string, name: string, theme?: string }
+ * 
+ * This endpoint:
+ * 1. Copies template files to the project directory
+ * 2. Applies optional theme
+ * 3. Triggers /preview/restart to install deps, generate Prisma, build, and start
+ */
+app.post('/templates/copy', async (c) => {
+  try {
+    const body = await c.req.json() as { template: string; name: string; theme?: string }
+    
+    if (!body.template || !body.name) {
+      return c.json({ ok: false, error: 'Missing required fields: template, name' }, 400)
+    }
+    
+    // Step 1: Copy template to project directory
+    const copyResult = copyTemplate(body.template, body.name)
+    if (!copyResult.ok) {
+      return c.json(copyResult, 400)
+    }
+    
+    // Step 2: Apply theme if specified
+    if (body.theme) {
+      applyThemeToProject(PROJECT_DIR, body.theme)
+    }
+    
+    // Step 3: Trigger restart to install deps, generate Prisma, build, and start
+    try {
+      console.log(`[templates/copy] Triggering preview restart after template copy...`)
+      const restartResponse = await fetch(`http://localhost:${PORT}/preview/restart`, {
+        method: 'POST',
+      })
+      
+      if (restartResponse.ok) {
+        const restartResult = await restartResponse.json() as { mode: string; port: number | null; timings?: any }
+        return c.json({
+          ok: true,
+          message: `Template "${body.template}" copied and fully set up. The preview should now show the app.`,
+          template: body.template,
+          projectDir: PROJECT_DIR,
+          setup: {
+            success: true,
+            mode: restartResult.mode,
+            port: restartResult.port,
+          },
+        })
+      } else {
+        const errorData = await restartResponse.json().catch(() => ({})) as { error?: string }
+        return c.json({
+          ok: true,
+          message: `Template copied but setup had issues: ${errorData.error || 'unknown error'}. Try refreshing the preview.`,
+          template: body.template,
+          projectDir: PROJECT_DIR,
+          setup: { success: false, error: errorData.error },
+        })
+      }
+    } catch (restartError: any) {
+      return c.json({
+        ok: true,
+        message: `Template copied but could not trigger restart: ${restartError.message}. Try refreshing the preview.`,
+        template: body.template,
+        projectDir: PROJECT_DIR,
+        setup: { success: false, error: restartError.message },
+      })
+    }
+  } catch (error: any) {
+    return c.json({ ok: false, error: error.message || 'Failed to copy template' }, 500)
+  }
 })
 
 // Main chat endpoint - receives from API, streams response
@@ -1304,7 +1506,7 @@ app.get('/info', (c) => {
     projectId: PROJECT_ID,
     projectDir: PROJECT_DIR,
     schemasPath: SCHEMAS_PATH,
-    mcpServerPath: MCP_SERVER_PATH,
+    templateEndpoints: ['/templates/list', '/templates/copy'],
     nodeEnv: process.env.NODE_ENV,
     port: PORT,
     uptime: process.uptime(),

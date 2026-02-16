@@ -94,12 +94,12 @@ Available templates:
 
 export const DECISION_RULES = `## Decision Rules
 
-1. **Direct Match** → Use template.copy immediately
-   - "Build me a todo app" → \`template.copy({ template: "todo-app" })\`
-   - "Track my expenses" → \`template.copy({ template: "expense-tracker" })\`
-   - "Kanban board for my team" → \`template.copy({ template: "kanban" })\`
+1. **Direct Match** → Copy template immediately using curl
+   - "Build me a todo app" → \`curl -s -X POST http://localhost:$RUNTIME_PORT/templates/copy -H "Content-Type: application/json" -d '{"template":"todo-app","name":"my-tasks"}'\`
+   - "Track my expenses" → \`curl -s -X POST http://localhost:$RUNTIME_PORT/templates/copy -H "Content-Type: application/json" -d '{"template":"expense-tracker","name":"my-expenses"}'\`
+   - "Kanban board for my team" → \`curl -s -X POST http://localhost:$RUNTIME_PORT/templates/copy -H "Content-Type: application/json" -d '{"template":"kanban","name":"my-board"}'\`
 
-2. **Semantic Match** (similar concepts) → Use template.copy
+2. **Semantic Match** (similar concepts) → Copy template
    - "Task tracker" → todo-app (tasks = todos)
    - "Sprint board" → kanban (agile/sprint = kanban)
    - "Client appointments" → booking-app (appointments = booking)
@@ -119,11 +119,47 @@ export const DECISION_RULES = `## Decision Rules
 
 export const TOOL_USAGE = `## Tool Usage
 
-- **template.list** - List available templates (use when user asks "what can you build?")
-- **template.copy** - Copy template to set up project (ALWAYS use for matching requests)
+### Template Operations (via HTTP endpoints)
+
+Templates are managed via HTTP endpoints on the runtime server. Use \`curl\` in Bash to call them:
+
+**List templates:**
+\`\`\`bash
+curl -s http://localhost:$RUNTIME_PORT/templates/list
+# With filters:
+curl -s "http://localhost:$RUNTIME_PORT/templates/list?complexity=beginner"
+curl -s "http://localhost:$RUNTIME_PORT/templates/list?query=expense"
+\`\`\`
+
+**Copy a template (sets up the entire project automatically):**
+\`\`\`bash
+curl -s -X POST http://localhost:$RUNTIME_PORT/templates/copy \\
+  -H "Content-Type: application/json" \\
+  -d '{"template":"todo-app","name":"my-project"}'
+
+# With a theme:
+curl -s -X POST http://localhost:$RUNTIME_PORT/templates/copy \\
+  -H "Content-Type: application/json" \\
+  -d '{"template":"todo-app","name":"my-project","theme":"lavender"}'
+\`\`\`
+
+The \`/templates/copy\` endpoint handles EVERYTHING automatically:
+1. Copies template files to the project root
+2. Applies theme (if specified)
+3. Runs "bun install" to install dependencies
+4. Runs "prisma generate" to generate Prisma client
+5. Runs "prisma db push" to set up the database
+6. Builds the project with "vite build"
+7. Starts the production server
+8. The preview will automatically show the running app
+
+You do NOT need to run any commands after calling \`/templates/copy\`. Just call it and the app will be ready.
+
+Available themes: default, lavender, glacier, harvest, brutalist, obsidian, orchid, solar, tide, verdant
+
 - **TodoWrite** - Track your task progress (use for multi-step work)
 
-After template.copy, the project builds and starts automatically. You don't need to do anything else.
+After template copy, the project builds and starts automatically. You don't need to do anything else.
 
 ## Task Management with TodoWrite
 
