@@ -660,8 +660,10 @@ function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
     settingSources: ['project', 'local'],
     env: claudeCodeEnv,
     includePartialMessages: true,
-    // Base system prompt (dynamic context appended to user messages per-request)
-    systemPrompt: buildSystemPrompt(PROJECT_DIR),
+    // Base system prompt (dynamic context like theme/build status appended to user messages per-request)
+    // Preview URL appended here so the agent knows where the user sees the running app
+    systemPrompt: buildSystemPrompt(PROJECT_DIR)
+      + (process.env.PREVIEW_URL ? `\n\n### Live Preview\n- **App URL:** ${process.env.PREVIEW_URL}\n- This is the URL where the user views the running app. Always reference this URL, not any internal port.\n- Use relative paths for API requests (e.g., \`/api/...\`).` : ''),
     // MCP server provides template tools as native tool calls
     mcpServers: {
       shogo: {

@@ -602,6 +602,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           console.log(`[RuntimeManager] Using isolated projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
         }
 
+        // Tell the project-runtime where the user sees the preview
+        runtimeEnv.PREVIEW_URL = `http://localhost:${port}`
+        
         // AI Proxy configuration for user-created AI apps
         // In local dev, the API server runs on the same machine
         const apiPort = process.env.API_PORT || '3000'

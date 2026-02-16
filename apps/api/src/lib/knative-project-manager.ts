@@ -717,6 +717,8 @@ export class KnativeProjectManager {
       { name: "PROJECT_ID", value: projectId },
       { name: "PROJECT_DIR", value: "/app/project" },
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
+      // Preview URL so the agent knows where the user sees the running app
+      { name: "PREVIEW_URL", value: getPreviewUrl(projectId) },
       // Auth secret for validating preview JWT tokens
       {
         name: "BETTER_AUTH_SECRET",
