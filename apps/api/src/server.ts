@@ -14,7 +14,7 @@ import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { existsSync, mkdirSync } from 'fs'
 import { auth } from './auth'
-import { PERSONA_PROMPTS, isAgentPersona, type AgentPersona } from './prompts/persona-prompts'
+import { SHOGO_AGENT_PROMPT } from './prompts/persona-prompts'
 import { getPriceId } from './config/stripe-prices'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
@@ -673,8 +673,7 @@ async function prewarmClaudeCode() {
   console.log(`[ClaudeCode] 🔥 Pre-warming V2 session (platform)...`)
   try {
     // Build system prompt for platform (same as what /api/chat will use)
-    const agentPersona = process.env.SHOGO_AGENT as any
-    const systemPrompt = buildSystemPrompt(agentPersona)
+    const systemPrompt = buildSystemPrompt()
 
     const session = getOrCreateSession(scopeKey, undefined, systemPrompt)
 
@@ -782,24 +781,12 @@ When users ask about compositions, or UI sections, query the component-builder s
 Be concise and practical. Show tool results when relevant.`
 
 /**
- * Build a dynamic system prompt based on agent persona.
+ * Build the system prompt for the Shogo agent.
  *
- * @param agentPersona - The agent persona ('shogo' or 'code'), defaults to 'shogo'
- * @returns The complete system prompt with persona guidance and base prompt
+ * Always uses the Shogo persona — no env-var switching needed.
  */
-export function buildSystemPrompt(
-  agentPersona?: AgentPersona | null
-): string {
-  // Validate and default persona
-  const persona: AgentPersona = agentPersona && isAgentPersona(agentPersona) ? agentPersona : 'shogo'
-
-  // Code agent gets a completely different prompt (no Shogo MCP tools)
-  if (persona === 'code') {
-    return PERSONA_PROMPTS.code
-  }
-
-  // Shogo agent gets persona intro + base prompt
-  return `${PERSONA_PROMPTS[persona]}\n\n${BASE_SYSTEM_PROMPT}`
+export function buildSystemPrompt(): string {
+  return `${SHOGO_AGENT_PROMPT}\n\n${BASE_SYSTEM_PROMPT}`
 }
 
 const app = new Hono()
@@ -2910,9 +2897,8 @@ app.post('/api/chat', async (c) => {
       }
     }
 
-    // Build system prompt (constant for a given persona, set once per session)
-    const agentPersona = process.env.SHOGO_AGENT as AgentPersona | undefined
-    const systemPrompt = buildSystemPrompt(agentPersona)
+    // Build system prompt (constant — always Shogo persona)
+    const systemPrompt = buildSystemPrompt()
 
     // Get or create a persistent V2 session for this scope.
     // The session keeps the CLI subprocess alive across requests — no more cold starts.

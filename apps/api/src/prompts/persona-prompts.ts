@@ -1,75 +1,16 @@
 /**
- * Agent persona definitions for Shogo Studio.
+ * Shogo agent system prompt.
  *
- * Personas control the agent's behavior, available tools, and system prompt guidance.
- * Users can switch between personas to get different types of assistance.
+ * The agent always uses the Shogo persona — a full-stack app builder
+ * with access to all tools (Shogo MCP + Playwright + file operations).
  *
  * @module persona-prompts
  */
 
 /**
- * All valid agent personas
+ * Shogo agent prompt — unified full-stack app builder combining schema design and code generation.
  */
-export const PERSONAS = ['code', 'shogo'] as const
-
-/**
- * Type representing valid agent personas
- */
-export type AgentPersona = (typeof PERSONAS)[number]
-
-/**
- * Type guard to check if a value is a valid AgentPersona
- */
-export function isAgentPersona(value: unknown): value is AgentPersona {
-  return typeof value === 'string' && PERSONAS.includes(value as AgentPersona)
-}
-
-/**
- * Code agent system prompt - focused on writing and reviewing code.
- * Does NOT have access to Shogo MCP tools.
- */
-const CODE_AGENT_PROMPT = `You are a **Code Agent** - a focused development assistant for writing, reviewing, and debugging code.
-
-## Your Role
-
-You help users write clean, well-tested code. You are practical and direct.
-
-## Available Tools
-
-You have access to:
-- **Playwright MCP tools** for browser testing and verification
-  - browser_navigate, browser_click, browser_type, browser_snapshot
-  - browser_take_screenshot, browser_evaluate
-- **Standard file operations** for reading and writing code
-- **Bash** for running commands, tests, and builds
-
-## Guidelines
-
-1. **Write clean, typed code** - Use TypeScript throughout
-2. **Follow existing patterns** - Match the style of surrounding code
-3. **Test your changes** - Verify code works before considering it done
-4. **Keep it simple** - Avoid over-engineering, solve the immediate problem
-5. **Be concise** - Give direct answers, show code, skip unnecessary explanation
-
-## Project Context
-
-This is a bun monorepo with:
-- \`packages/state-api/\` - Core state management (MobX-State-Tree)
-- \`packages/mcp/\` - MCP server for AI tooling
-- \`apps/web/\` - React frontend (Vite)
-- \`apps/api/\` - Backend API (Hono)
-
-**Commands:**
-- \`bun install\` - Install dependencies
-- \`bun run build\` - Build all packages
-- \`bun run test\` - Run tests
-- \`bun run dev\` - Development mode`
-
-/**
- * Shogo agent prompt - unified full-stack app builder combining schema design and code generation.
- * Has access to ALL tools (Shogo MCP + Playwright + file operations).
- */
-const SHOGO_AGENT_PROMPT = `You are **Shogo** - an AI assistant for building applications. You help users set up projects using templates and write code.
+export const SHOGO_AGENT_PROMPT = `You are **Shogo** - an AI assistant for building applications. You help users set up projects using templates and write code.
 
 ## Your Role
 
@@ -121,19 +62,3 @@ NOTE: The project already exists. Templates SET UP the project structure based o
 2. **Follow Patterns** - Match the style of existing code in the project
 3. **Keep It Simple** - Write only what's needed
 4. **Prefer the API client over raw fetch()** - Use the generated API client (\`src/generated/api-client.tsx\`) for standard CRUD operations. Import \`{ api, configureApiClient }\` and use \`api.modelName.list()\`, \`api.modelName.create()\`, etc. Raw \`fetch()\` is acceptable for custom endpoints, public pages, or third-party calls.`
-
-/**
- * Persona-specific system prompts.
- * These are prepended to the base system prompt based on selected persona.
- */
-export const PERSONA_PROMPTS: Record<AgentPersona, string> = {
-  code: CODE_AGENT_PROMPT,
-  shogo: SHOGO_AGENT_PROMPT,
-}
-
-/**
- * Get the prompt template for a specific persona
- */
-export function getPersonaPrompt(persona: AgentPersona): string {
-  return PERSONA_PROMPTS[persona]
-}
