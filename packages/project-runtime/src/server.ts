@@ -1105,7 +1105,19 @@ app.post('/agent/chat', async (c) => {
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
         let currentTextId: string | null = null
+        let currentToolId: string | null = null
+        let currentToolName: string | null = null
+        let currentToolInput = ''
+        // Track tool IDs already emitted via stream_event to avoid duplicates
+        const streamedToolIds = new Set<string>()
         let resultUsage: any = null
+        // Track whether we're receiving incremental stream_events.
+        // When streaming, the 'assistant' message is redundant (it's the complete
+        // version of what was already streamed incrementally).
+        let receivedStreamEvents = false
+        // Track tool calls that are pending execution by the SDK.
+        // When the next turn starts, we know all pending tools completed.
+        const pendingToolResults = new Map<string, string>() // toolCallId → toolName
 
         try {
           writer.write({ type: 'start' })
@@ -1114,42 +1126,25 @@ app.post('/agent/chat', async (c) => {
           for await (const msg of session.stream()) {
             const msgAny = msg as any
 
-            // SDKAssistantMessage — complete assistant response per turn
-            // V2 SDK emits full messages (not incremental stream_event deltas)
-            if (msg.type === 'assistant') {
-              const content = msgAny.message?.content as Array<any> | undefined
-              if (content && Array.isArray(content)) {
-                for (const block of content) {
-                  if (block.type === 'text' && block.text) {
-                    const textId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-                    writer.write({ type: 'text-start', id: textId })
-                    writer.write({ type: 'text-delta', id: textId, delta: block.text })
-                    writer.write({ type: 'text-end', id: textId })
-                  } else if (block.type === 'tool_use') {
-                    writer.write({
-                      type: 'tool-input-start',
-                      toolCallId: block.id,
-                      toolName: block.name,
-                    })
-                    if (block.input) {
-                      writer.write({
-                        type: 'tool-input-delta',
-                        toolCallId: block.id,
-                        inputTextDelta: JSON.stringify(block.input),
-                      })
-                    }
-                  }
-                }
-              }
-              // End the current step (turn) and start a new one for potential tool results
-              writer.write({ type: 'finish-step' })
-              writer.write({ type: 'start-step' })
-            }
-
-            // SDKPartialAssistantMessage — incremental streaming (if available)
-            else if (msg.type === 'stream_event') {
+            // SDKPartialAssistantMessage — incremental streaming (preferred)
+            // These arrive before the complete 'assistant' message and provide
+            // real-time text and tool call deltas for the UI.
+            if (msg.type === 'stream_event') {
+              receivedStreamEvents = true
               const event = msgAny.event as any
               switch (event.type) {
+                case 'message_start': {
+                  // New turn beginning — all previously pending tools have completed
+                  for (const [tcId] of pendingToolResults) {
+                    writer.write({
+                      type: 'tool-output-available',
+                      toolCallId: tcId,
+                      output: { success: true },
+                    })
+                  }
+                  pendingToolResults.clear()
+                  break
+                }
                 case 'content_block_start': {
                   const block = event.content_block
                   if (block?.type === 'text') {
@@ -1160,10 +1155,16 @@ app.post('/agent/chat', async (c) => {
                       writer.write({ type: 'text-end', id: currentTextId })
                       currentTextId = null
                     }
+                    currentToolId = block.id
+                    currentToolName = block.name
+                    currentToolInput = ''
+                    // Mark as streamed immediately so the assistant handler skips it
+                    streamedToolIds.add(block.id)
                     writer.write({
                       type: 'tool-input-start',
                       toolCallId: block.id,
                       toolName: block.name,
+                      dynamic: true,
                     })
                   }
                   break
@@ -1177,9 +1178,10 @@ app.post('/agent/chat', async (c) => {
                     }
                     writer.write({ type: 'text-delta', id: currentTextId, delta: delta.text })
                   } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
+                    currentToolInput += delta.partial_json
                     writer.write({
                       type: 'tool-input-delta',
-                      toolCallId: `tool-${event.index}`,
+                      toolCallId: currentToolId || `tool-${event.index}`,
                       inputTextDelta: delta.partial_json,
                     })
                   }
@@ -1190,6 +1192,23 @@ app.post('/agent/chat', async (c) => {
                     writer.write({ type: 'text-end', id: currentTextId })
                     currentTextId = null
                   }
+                  if (currentToolId) {
+                    // Finalize tool input — emit tool-input-available so UI shows it as "executing"
+                    let parsedInput: any = {}
+                    try { parsedInput = JSON.parse(currentToolInput || '{}') } catch {}
+                    writer.write({
+                      type: 'tool-input-available',
+                      toolCallId: currentToolId,
+                      toolName: currentToolName || 'unknown',
+                      input: parsedInput,
+                      dynamic: true,
+                    })
+                    // Track for result emission when next turn starts
+                    pendingToolResults.set(currentToolId, currentToolName || 'unknown')
+                    currentToolId = null
+                    currentToolName = null
+                    currentToolInput = ''
+                  }
                   break
                 }
                 case 'message_stop': {
@@ -1197,11 +1216,105 @@ app.post('/agent/chat', async (c) => {
                     writer.write({ type: 'text-end', id: currentTextId })
                     currentTextId = null
                   }
+                  currentToolId = null
+                  currentToolName = null
+                  currentToolInput = ''
                   writer.write({ type: 'finish-step' })
                   writer.write({ type: 'start-step' })
                   break
                 }
               }
+            }
+
+            // SDKAssistantMessage — complete assistant response per turn
+            // The V2 SDK handles tools internally and may NOT stream tool_use
+            // blocks via stream_event. The assistant message is the only reliable
+            // source of tool call information. We always extract tool_use blocks,
+            // but skip text when it was already streamed.
+            else if (msg.type === 'assistant') {
+              const content = msgAny.message?.content as Array<any> | undefined
+
+              // Resolve any pending tool results from the previous turn
+              for (const [tcId] of pendingToolResults) {
+                writer.write({
+                  type: 'tool-output-available',
+                  toolCallId: tcId,
+                  output: { success: true },
+                })
+              }
+              pendingToolResults.clear()
+
+              // Check if there are tool_use blocks to emit
+              const toolBlocks = content?.filter((b: any) => b.type === 'tool_use') || []
+
+              if (receivedStreamEvents) {
+                // Text was already streamed. Only emit tool calls that weren't
+                // already emitted via stream_event (avoid duplicates).
+                for (const block of toolBlocks) {
+                  if (streamedToolIds.has(block.id)) continue // Already emitted
+                  writer.write({
+                    type: 'tool-input-start',
+                    toolCallId: block.id,
+                    toolName: block.name,
+                    dynamic: true,
+                  })
+                  if (block.input) {
+                    writer.write({
+                      type: 'tool-input-delta',
+                      toolCallId: block.id,
+                      inputTextDelta: JSON.stringify(block.input),
+                    })
+                  }
+                  writer.write({
+                    type: 'tool-input-available',
+                    toolCallId: block.id,
+                    toolName: block.name,
+                    input: block.input || {},
+                    dynamic: true,
+                  })
+                  pendingToolResults.set(block.id, block.name)
+                }
+                // Don't emit finish-step/start-step — message_stop already did
+              } else {
+                // No streaming — emit everything from the complete message
+                if (content && Array.isArray(content)) {
+                  for (const block of content) {
+                    if (block.type === 'text' && block.text) {
+                      const textId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                      writer.write({ type: 'text-start', id: textId })
+                      writer.write({ type: 'text-delta', id: textId, delta: block.text })
+                      writer.write({ type: 'text-end', id: textId })
+                    } else if (block.type === 'tool_use') {
+                      writer.write({
+                        type: 'tool-input-start',
+                        toolCallId: block.id,
+                        toolName: block.name,
+                        dynamic: true,
+                      })
+                      if (block.input) {
+                        writer.write({
+                          type: 'tool-input-delta',
+                          toolCallId: block.id,
+                          inputTextDelta: JSON.stringify(block.input),
+                        })
+                      }
+                      writer.write({
+                        type: 'tool-input-available',
+                        toolCallId: block.id,
+                        toolName: block.name,
+                        input: block.input || {},
+                        dynamic: true,
+                      })
+                      pendingToolResults.set(block.id, block.name)
+                    }
+                  }
+                }
+                writer.write({ type: 'finish-step' })
+                writer.write({ type: 'start-step' })
+              }
+
+              // Reset streaming flag for the next turn
+              receivedStreamEvents = false
             }
 
             // SDKResultMessage — turn complete with usage
@@ -1214,6 +1327,16 @@ app.post('/agent/chat', async (c) => {
                 writer.write({ type: 'text-end', id: currentTextId })
                 currentTextId = null
               }
+
+              // Resolve any remaining pending tool results
+              for (const [tcId] of pendingToolResults) {
+                writer.write({
+                  type: 'tool-output-available',
+                  toolCallId: tcId,
+                  output: { success: true },
+                })
+              }
+              pendingToolResults.clear()
 
               // Emit usage as custom data event (matches old format)
               if (resultUsage) {
@@ -1241,9 +1364,9 @@ app.post('/agent/chat', async (c) => {
           activeSessions.delete(modelName)
 
           // Trigger S3 sync after agent chat completes
-          if (s3Sync) {
-            s3Sync.triggerSync()
-          }
+                  if (s3Sync) {
+                    s3Sync.triggerSync()
+                  }
         }
       },
       onError: (error) => {
@@ -1257,12 +1380,12 @@ app.post('/agent/chat', async (c) => {
     const response = createUIMessageStreamResponse({ stream })
     if (response.body) {
       const wrappedStream = wrapStreamWithKeepalive(response.body, 15000)
-      return new Response(wrappedStream, {
-        status: response.status,
-        headers: response.headers,
-      })
-    }
-    return response
+          return new Response(wrappedStream, {
+            status: response.status,
+            headers: response.headers,
+          })
+        }
+        return response
   } catch (error: any) {
     console.error('[project-runtime] Chat error:', error)
     return c.json({
@@ -4221,13 +4344,13 @@ app.all('/*', async (c, next) => {
       } else {
         // No server.tsx or no dist/ — can't start backend
         console.error(`[project-runtime] Subdomain: /api/ request but no backend server available (path: ${relativePath})`)
-        return c.json({
-          error: { 
-            code: 'backend_unavailable', 
+      return c.json({
+        error: { 
+          code: 'backend_unavailable', 
             message: 'Backend API server is not available. The project may not have a server.tsx file.' 
-          }
-        }, 503)
-      }
+        }
+      }, 503)
+    }
     }
     
     // If server process crashed between the auto-start above and now, return error
