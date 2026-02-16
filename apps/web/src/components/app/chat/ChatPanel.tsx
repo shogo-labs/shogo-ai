@@ -198,6 +198,8 @@ export interface ChatPanelProps {
   onCompactValueChange?: (value: string) => void
   /** Callback when chat encounters an error (for RuntimePreviewPanel to stop loading) */
   onChatError?: (error: Error | null) => void
+  /** Programmatic message to inject and send (e.g., from Security "Fix with AI"). Changes trigger a new send. */
+  injectMessage?: string | null
   /** Callback when agent modifies files (Write, Edit, StrReplace tools) - for code panel refresh */
   onFilesChanged?: (paths: string[]) => void
   /** Callback when a tool call becomes active/inactive - for preview overlay during template_copy */
@@ -616,6 +618,7 @@ export const ChatPanel = observer(function ChatPanel({
   compactValue,
   onCompactValueChange,
   onChatError,
+  injectMessage,
   onFilesChanged,
   onActiveToolCall,
   selectedThemeId,
@@ -2211,6 +2214,25 @@ export const ChatPanel = observer(function ChatPanel({
       handleSendMessage(initialMessage)
     }
   }, [initialMessage, currentSessionId, handleSendMessage])
+
+  // Programmatic message injection (e.g., Security "Fix with AI" button)
+  // Triggered whenever injectMessage changes to a new non-null value.
+  // Also re-fires when currentSessionId becomes available (handles case where
+  // button is clicked before session is ready).
+  const lastInjectedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (
+      injectMessage &&
+      injectMessage.trim() &&
+      currentSessionId &&
+      injectMessage !== lastInjectedRef.current
+    ) {
+      lastInjectedRef.current = injectMessage
+      // Strip internal nonce tag used for deduplication
+      const cleanMessage = injectMessage.replace(/\n\n\[nonce:\d+\]$/, '')
+      handleSendMessage(cleanMessage)
+    }
+  }, [injectMessage, currentSessionId, handleSendMessage])
 
   // Collapse toggle - persist to localStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {

@@ -955,131 +955,7 @@ app.post('/agent/chat', async (c) => {
     
     const { messages, system, themeContext, agentMode } = parsed.data
     
-    // Build system prompt with optional theme context and current build status
-    // The prompt is defined in system-prompt.ts and can be updated via DSPy export
-    const getSystemPrompt = () => {
-      // Get current build status context for the agent
-      const buildContext = getBuildStatusContext()
-      
-      if (system) {
-        // Custom system prompt provided - append build status and optional theme context
-        let prompt = system
-        if (buildContext) prompt = `${prompt}\n\n${buildContext}`
-        if (themeContext) prompt = `${prompt}\n\n${themeContext}`
-        return prompt
-      }
-      return buildSystemPrompt(PROJECT_DIR, { themeContext, buildStatusContext: buildContext, previewUrl: PREVIEW_URL })
-    }
-    
-    // Convert to ModelMessage format, handling both string and parts content
-    // Preserves image parts for multimodal AI processing
-    type ContentPart = { type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }
-
-    const coreMessages: ModelMessage[] = messages.map((msg) => {
-      // If message already has content string, pass through
-      if (typeof msg.content === 'string') {
-        return { role: msg.role, content: msg.content }
-      }
-
-      // If message has parts array (AI SDK v4 UIMessage format), process all part types including images
-      if (Array.isArray(msg.parts)) {
-        const contentParts: ContentPart[] = []
-
-        for (const part of msg.parts) {
-          if (part.type === 'text' && part.text) {
-            contentParts.push({ type: 'text', text: part.text })
-          } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
-            // File parts with image mediaType: convert to ImagePart
-            // The url field contains the data URL (data:image/png;base64,...)
-            const parsed = parseDataUrl(part.url || '')
-            if (parsed) {
-              contentParts.push({
-                type: 'image',
-                image: parsed.base64Data,
-                mimeType: parsed.mimeType,
-              })
-            }
-          }
-        }
-
-        // Return appropriate format based on content
-        if (contentParts.length === 1 && contentParts[0].type === 'text') {
-          return { role: msg.role, content: contentParts[0].text }
-        }
-        if (contentParts.length > 0) {
-          return { role: msg.role, content: contentParts }
-        }
-        return { role: msg.role, content: '' }
-      }
-
-      // Also handle content array format (alternative message format)
-      if (Array.isArray(msg.content)) {
-        const contentParts: ContentPart[] = []
-
-        for (const part of msg.content) {
-          if (part.type === 'text' && part.text) {
-            contentParts.push({ type: 'text', text: part.text })
-          } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
-            const parsed = parseDataUrl(part.url || '')
-            if (parsed) {
-              contentParts.push({
-                type: 'image',
-                image: parsed.base64Data,
-                mimeType: parsed.mimeType,
-              })
-            }
-          } else if (part.type === 'image' && part.image) {
-            // Already in image format, pass through
-            contentParts.push({ type: 'image', image: part.image, mimeType: part.mimeType || 'image/png' })
-          }
-        }
-
-        if (contentParts.length === 1 && contentParts[0].type === 'text') {
-          return { role: msg.role, content: contentParts[0].text }
-        }
-        if (contentParts.length > 0) {
-          return { role: msg.role, content: contentParts }
-        }
-      }
-
-      return { role: msg.role, content: msg.content ?? '' }
-    })
-    
-    // Debug: Log message structure to verify image handling
-    const messageStats = coreMessages.map(m => ({
-      role: m.role,
-      contentType: typeof m.content === 'string' ? 'string' : Array.isArray(m.content) ? `array(${m.content.length})` : typeof m.content,
-      hasImages: Array.isArray(m.content) ? m.content.some((p: any) => p.type === 'image') : false,
-    }))
-    console.log(`[project-runtime] Processing ${messages.length} messages:`, JSON.stringify(messageStats))
-    
-    // Retry configuration for transient API errors
-    const MAX_RETRIES = 3
-    const RETRY_DELAY_MS = 2000
-    const RETRYABLE_ERRORS = [
-      'rate_limit',
-      'overloaded',
-      'api_error',
-      'invalid_api_key', // Sometimes transient
-      'connection',
-      'timeout',
-      'ECONNRESET',
-      'ETIMEDOUT',
-      '529', // Overloaded
-      '503', // Service unavailable
-      '502', // Bad gateway
-    ]
-    
-    const isRetryableError = (error: any): boolean => {
-      const errorStr = String(error?.message || error || '').toLowerCase()
-      return RETRYABLE_ERRORS.some(e => errorStr.includes(e.toLowerCase()))
-    }
-    
-    // Create streaming response using Claude Code with native template tools
-    // Theme context (if provided) is appended to the system prompt for AI-aware styling
-    // Model selection: agentMode takes precedence, then AGENT_MODEL env var, then default to sonnet
-    // - basic mode uses Haiku (faster, cheaper)
-    // - advanced mode uses Sonnet (more capable)
+    // Model selection: agentMode takes precedence, then AGENT_MODEL env var, then sonnet
     const getModelFromAgentMode = (mode?: 'basic' | 'advanced'): 'haiku' | 'sonnet' | 'opus' => {
       if (mode === 'basic') return 'haiku'
       if (mode === 'advanced') return 'sonnet'
@@ -1087,91 +963,330 @@ app.post('/agent/chat', async (c) => {
     }
     const modelName = getModelFromAgentMode(agentMode)
     console.log(`[project-runtime] Using model: ${modelName} (agentMode: ${agentMode || 'default'})`)
-    
-    let lastError: any = null
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const result = streamText({
-          model: claudeCode(modelName, {
-            streamingInput: 'always',
-          }) as Parameters<typeof streamText>[0]['model'],
-          system: getSystemPrompt(),
-          messages: coreMessages,
-          tools: templateTools,
-          maxSteps: 10,
-        })
-        
-        // Return the AI SDK UI message stream response with keep-alive wrapper
-        // This ensures compatibility with @ai-sdk/react's useChat hook (DefaultChatTransport)
-        // The keep-alive wrapper prevents HTTP/2 connection termination during long tool calls
-        const response = result.toUIMessageStreamResponse()
-        
-        // Wrap the stream with keep-alive messages to prevent ALB/proxy timeouts
-        // This is critical for long-running operations like template.copy (45+ seconds)
-        // Also appends a custom usage SSE event after the stream finishes
-        if (response.body) {
-          const originalStream = response.body
-          const usagePromise = result.usage
-          
-          // Create a new stream that wraps the original with keep-alive AND appends usage
-          const wrappedStream = new ReadableStream({
-            async start(controller) {
-              const reader = wrapStreamWithKeepalive(originalStream, 15000).getReader()
-              try {
-                while (true) {
-                  const { done, value } = await reader.read()
-                  if (done) break
-                  controller.enqueue(value)
+
+    // Get or create a persistent V2 session for this model
+    const session = getOrCreateProjectSession(modelName)
+    activeSessions.add(modelName) // Mark session as active to prevent prewarm interference
+
+    // Extract the last user message from the full message array.
+    // V2 sessions maintain conversation history internally.
+    const lastUserMessage = [...messages].reverse().find((m: any) => m.role === 'user')
+    if (!lastUserMessage) {
+      return c.json({ error: { code: 'no_user_message', message: 'No user message found' } }, 400)
+    }
+
+    // Convert UIMessage parts to plain text for V2 session.send()
+    let userText: string
+    if (typeof lastUserMessage.content === 'string') {
+      userText = lastUserMessage.content
+    } else if (Array.isArray(lastUserMessage.parts)) {
+      userText = lastUserMessage.parts
+        .filter((p: any) => p.type === 'text')
+        .map((p: any) => p.text)
+        .join('\n')
+    } else {
+      userText = String(lastUserMessage.content ?? '')
+    }
+
+    // Prepend dynamic context (build status, theme) to the user message
+    // The base system prompt is set at session creation; per-request context goes here
+    const buildContext = getBuildStatusContext()
+    let contextPrefix = ''
+    if (buildContext) contextPrefix += `[Build Status]\n${buildContext}\n\n`
+    if (themeContext) contextPrefix += `[Theme Context]\n${themeContext}\n\n`
+    if (system) contextPrefix += `[Additional Instructions]\n${system}\n\n`
+    const fullUserText = contextPrefix ? `${contextPrefix}${userText}` : userText
+
+    console.log(`[project-runtime] Processing message (${fullUserText.length} chars, context prefix: ${contextPrefix.length} chars)`)
+
+    // Send the user message to the persistent V2 session
+    await session.send(fullUserText)
+
+    // Create UIMessageStream that converts V2 SDK messages to UIMessageChunks
+    const stream = createUIMessageStream({
+      execute: async ({ writer }) => {
+        let currentTextId: string | null = null
+        let currentToolId: string | null = null
+        let currentToolName: string | null = null
+        let currentToolInput = ''
+        // Track tool IDs already emitted via stream_event to avoid duplicates
+        const streamedToolIds = new Set<string>()
+        let resultUsage: any = null
+        // Track whether we're receiving incremental stream_events.
+        // When streaming, the 'assistant' message is redundant (it's the complete
+        // version of what was already streamed incrementally).
+        let receivedStreamEvents = false
+        // Track tool calls that are pending execution by the SDK.
+        // When the next turn starts, we know all pending tools completed.
+        const pendingToolResults = new Map<string, string>() // toolCallId → toolName
+
+        try {
+          writer.write({ type: 'start' })
+          writer.write({ type: 'start-step' })
+
+          for await (const msg of session.stream()) {
+            const msgAny = msg as any
+
+            // SDKPartialAssistantMessage — incremental streaming (preferred)
+            // These arrive before the complete 'assistant' message and provide
+            // real-time text and tool call deltas for the UI.
+            if (msg.type === 'stream_event') {
+              receivedStreamEvents = true
+              const event = msgAny.event as any
+              switch (event.type) {
+                case 'message_start': {
+                  // New turn beginning — all previously pending tools have completed
+                  for (const [tcId] of pendingToolResults) {
+                    writer.write({
+                      type: 'tool-output-available',
+                      toolCallId: tcId,
+                      output: { success: true },
+                    })
+                  }
+                  pendingToolResults.clear()
+                  break
                 }
-              } catch (err) {
-                console.error('[project-runtime] Stream read error:', err)
-              } finally {
-                reader.releaseLock()
-              }
-              
-              // After the main stream finishes, append usage data as a custom SSE event
-              // Using "data-" prefix so @ai-sdk/react's stream validator accepts it
-              try {
-                const usage = await usagePromise
-                console.log('[project-runtime] Usage from streamText:', JSON.stringify(usage))
-                if (usage) {
-                  const usageEvent = `data: ${JSON.stringify({ type: 'data-usage', data: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } })}\n\n`
-                  controller.enqueue(new TextEncoder().encode(usageEvent))
+                case 'content_block_start': {
+                  const block = event.content_block
+                  if (block?.type === 'text') {
+                    currentTextId = `text-${Date.now()}-${event.index}`
+                    writer.write({ type: 'text-start', id: currentTextId })
+                  } else if (block?.type === 'tool_use') {
+                    if (currentTextId) {
+                      writer.write({ type: 'text-end', id: currentTextId })
+                      currentTextId = null
+                    }
+                    currentToolId = block.id
+                    currentToolName = block.name
+                    currentToolInput = ''
+                    // Mark as streamed immediately so the assistant handler skips it
+                    streamedToolIds.add(block.id)
+                    writer.write({
+                      type: 'tool-input-start',
+                      toolCallId: block.id,
+                      toolName: block.name,
+                      dynamic: true,
+                    })
+                  }
+                  break
                 }
-              } catch (err) {
-                console.error('[project-runtime] Failed to get usage:', err)
+                case 'content_block_delta': {
+                  const delta = event.delta
+                  if (delta?.type === 'text_delta' && delta.text) {
+                    if (!currentTextId) {
+                      currentTextId = `text-${Date.now()}-${event.index}`
+                      writer.write({ type: 'text-start', id: currentTextId })
+                    }
+                    writer.write({ type: 'text-delta', id: currentTextId, delta: delta.text })
+                  } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
+                    currentToolInput += delta.partial_json
+                    writer.write({
+                      type: 'tool-input-delta',
+                      toolCallId: currentToolId || `tool-${event.index}`,
+                      inputTextDelta: delta.partial_json,
+                    })
+                  }
+                  break
+                }
+                case 'content_block_stop': {
+                  if (currentTextId) {
+                    writer.write({ type: 'text-end', id: currentTextId })
+                    currentTextId = null
+                  }
+                  if (currentToolId) {
+                    // Finalize tool input — emit tool-input-available so UI shows it as "executing"
+                    let parsedInput: any = {}
+                    try { parsedInput = JSON.parse(currentToolInput || '{}') } catch {}
+                    writer.write({
+                      type: 'tool-input-available',
+                      toolCallId: currentToolId,
+                      toolName: currentToolName || 'unknown',
+                      input: parsedInput,
+                      dynamic: true,
+                    })
+                    // Track for result emission when next turn starts
+                    pendingToolResults.set(currentToolId, currentToolName || 'unknown')
+                    currentToolId = null
+                    currentToolName = null
+                    currentToolInput = ''
+                  }
+                  break
+                }
+                case 'message_stop': {
+                  if (currentTextId) {
+                    writer.write({ type: 'text-end', id: currentTextId })
+                    currentTextId = null
+                  }
+                  currentToolId = null
+                  currentToolName = null
+                  currentToolInput = ''
+                  writer.write({ type: 'finish-step' })
+                  writer.write({ type: 'start-step' })
+                  break
+                }
               }
-              
-              controller.close()
-            },
-          })
-          
+            }
+
+            // SDKAssistantMessage — complete assistant response per turn
+            // The V2 SDK handles tools internally and may NOT stream tool_use
+            // blocks via stream_event. The assistant message is the only reliable
+            // source of tool call information. We always extract tool_use blocks,
+            // but skip text when it was already streamed.
+            else if (msg.type === 'assistant') {
+              const content = msgAny.message?.content as Array<any> | undefined
+
+              // Resolve any pending tool results from the previous turn
+              for (const [tcId] of pendingToolResults) {
+                writer.write({
+                  type: 'tool-output-available',
+                  toolCallId: tcId,
+                  output: { success: true },
+                })
+              }
+              pendingToolResults.clear()
+
+              // Check if there are tool_use blocks to emit
+              const toolBlocks = content?.filter((b: any) => b.type === 'tool_use') || []
+
+              if (receivedStreamEvents) {
+                // Text was already streamed. Only emit tool calls that weren't
+                // already emitted via stream_event (avoid duplicates).
+                for (const block of toolBlocks) {
+                  if (streamedToolIds.has(block.id)) continue // Already emitted
+                  writer.write({
+                    type: 'tool-input-start',
+                    toolCallId: block.id,
+                    toolName: block.name,
+                    dynamic: true,
+                  })
+                  if (block.input) {
+                    writer.write({
+                      type: 'tool-input-delta',
+                      toolCallId: block.id,
+                      inputTextDelta: JSON.stringify(block.input),
+                    })
+                  }
+                  writer.write({
+                    type: 'tool-input-available',
+                    toolCallId: block.id,
+                    toolName: block.name,
+                    input: block.input || {},
+                    dynamic: true,
+                  })
+                  pendingToolResults.set(block.id, block.name)
+                }
+                // Don't emit finish-step/start-step — message_stop already did
+              } else {
+                // No streaming — emit everything from the complete message
+                if (content && Array.isArray(content)) {
+                  for (const block of content) {
+                    if (block.type === 'text' && block.text) {
+                      const textId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                      writer.write({ type: 'text-start', id: textId })
+                      writer.write({ type: 'text-delta', id: textId, delta: block.text })
+                      writer.write({ type: 'text-end', id: textId })
+                    } else if (block.type === 'tool_use') {
+                      writer.write({
+                        type: 'tool-input-start',
+                        toolCallId: block.id,
+                        toolName: block.name,
+                        dynamic: true,
+                      })
+                      if (block.input) {
+                        writer.write({
+                          type: 'tool-input-delta',
+                          toolCallId: block.id,
+                          inputTextDelta: JSON.stringify(block.input),
+                        })
+                      }
+                      writer.write({
+                        type: 'tool-input-available',
+                        toolCallId: block.id,
+                        toolName: block.name,
+                        input: block.input || {},
+                        dynamic: true,
+                      })
+                      pendingToolResults.set(block.id, block.name)
+                    }
+                  }
+                }
+                writer.write({ type: 'finish-step' })
+                writer.write({ type: 'start-step' })
+              }
+
+              // Reset streaming flag for the next turn
+              receivedStreamEvents = false
+            }
+
+            // SDKResultMessage — turn complete with usage
+            else if (msg.type === 'result') {
+              const result = msg as any
+              resultUsage = result.usage
+              console.log(`[project-runtime] Result: ${result.subtype}, tokens: ${JSON.stringify(resultUsage)}`)
+
+              if (currentTextId) {
+                writer.write({ type: 'text-end', id: currentTextId })
+                currentTextId = null
+              }
+
+              // Resolve any remaining pending tool results
+              for (const [tcId] of pendingToolResults) {
+                writer.write({
+                  type: 'tool-output-available',
+                  toolCallId: tcId,
+                  output: { success: true },
+                })
+              }
+              pendingToolResults.clear()
+
+              // Emit usage as custom data event (matches old format)
+              if (resultUsage) {
+                const inputTokens = resultUsage.input_tokens ?? 0
+                const outputTokens = resultUsage.output_tokens ?? 0
+                writer.write({
+                  type: 'data-usage' as any,
+                  data: {
+                    inputTokens,
+                    outputTokens,
+                    totalTokens: inputTokens + outputTokens,
+                  },
+                })
+              }
+
+              writer.write({
+                type: 'finish',
+                finishReason: result.subtype === 'success' ? 'stop' : 'error',
+              })
+              break
+            }
+          }
+        } finally {
+          // Release active session lock
+          activeSessions.delete(modelName)
+
+          // Trigger S3 sync after agent chat completes
+                  if (s3Sync) {
+                    s3Sync.triggerSync()
+                  }
+        }
+      },
+      onError: (error) => {
+        activeSessions.delete(modelName)
+        console.error('[project-runtime] Stream error:', error)
+        return 'An error occurred during streaming'
+      },
+    })
+
+    // Wrap with keep-alive for long-running operations (template.copy etc.)
+    const response = createUIMessageStreamResponse({ stream })
+    if (response.body) {
+      const wrappedStream = wrapStreamWithKeepalive(response.body, 15000)
           return new Response(wrappedStream, {
             status: response.status,
             headers: response.headers,
           })
         }
-        
         return response
-      } catch (error: any) {
-        lastError = error
-        const errorMsg = error?.message || String(error)
-        
-        if (isRetryableError(error) && attempt < MAX_RETRIES) {
-          const delay = RETRY_DELAY_MS * attempt
-          console.warn(`[project-runtime] Chat API error (attempt ${attempt}/${MAX_RETRIES}): ${errorMsg}`)
-          console.warn(`[project-runtime] Retrying in ${delay}ms...`)
-          await new Promise(resolve => setTimeout(resolve, delay))
-          continue
-        }
-        
-        // Non-retryable or max retries exceeded
-        throw error
-      }
-    }
-    
-    // Should not reach here, but just in case
-    throw lastError
   } catch (error: any) {
     console.error('[project-runtime] Chat error:', error)
     return c.json({
@@ -3717,8 +3832,62 @@ app.all('/*', async (c, next) => {
   // Proxy /api/* requests to the project's backend server if one is running.
   // For Expo: handled below via the Expo server proxy.
   // For plain Vite: proxy to the project's Hono server started from server.ts.
-  // Without this, /api/* requests are served as static files from dist/, returning HTML.
-  if (!isExpo && serverProcess && relativePath.startsWith('/api/')) {
+  // IMPORTANT: /api/* must NEVER fall through to static file serving (which returns HTML).
+  if (!isExpo && relativePath.startsWith('/api/')) {
+    // If the backend is not running, try to auto-start it before returning an error.
+    // This handles cold starts from S3 restore where dist/ exists but the backend hasn't started.
+    if (!serverProcess) {
+      const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+      const serverTsPath = join(PROJECT_DIR, 'server.ts')
+      const _serverTsxExists = existsSync(serverTsxPath) || existsSync(serverTsPath)
+      const _distExists = existsSync(join(PROJECT_DIR, 'dist'))
+      
+      if (_serverTsxExists && _distExists) {
+        console.log('[project-runtime] 🔄 Auto-starting backend API server for /api/ request...')
+        const serverPath = existsSync(serverTsxPath) ? serverTsxPath : serverTsPath
+        serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+          cwd: PROJECT_DIR,
+          env: { ...process.env, PORT: String(SERVER_PORT) },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        })
+        streamProcessOutput(serverProcess, 'api-server')
+        console.log(`[project-runtime] Backend API server started (PID: ${serverProcess.pid}, port: ${SERVER_PORT})`)
+        
+        // Monitor for crashes — reset serverProcess to null so next request can retry
+        const proc = serverProcess
+        proc.exited.then((exitCode) => {
+          if (serverProcess === proc) {
+            console.error(`[project-runtime] ⚠️ Backend API server exited with code ${exitCode}`)
+            serverProcess = null
+          }
+        })
+        
+        // Give the server a moment to start before proxying
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      } else {
+        // No server.tsx or no dist/ — can't start backend
+        console.error(`[project-runtime] Subdomain: /api/ request but no backend server available (path: ${relativePath})`)
+      return c.json({
+        error: { 
+          code: 'backend_unavailable', 
+            message: 'Backend API server is not available. The project may not have a server.tsx file.' 
+        }
+      }, 503)
+    }
+    }
+    
+    // If server process crashed between the auto-start above and now, return error
+    if (!serverProcess) {
+      console.error(`[project-runtime] Subdomain: /api/ backend server crashed during startup (path: ${relativePath})`)
+      return c.json({
+        error: { 
+          code: 'backend_unavailable', 
+          message: 'Backend API server crashed during startup. Check server logs for errors.' 
+        }
+      }, 503)
+    }
+    
     const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
     const method = c.req.method
     console.log(`[project-runtime] Subdomain: proxying ${method} ${relativePath} to project API server at ${targetUrl}`)

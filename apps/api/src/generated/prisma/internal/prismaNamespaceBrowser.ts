@@ -194,6 +194,7 @@ export const ProjectScalarFieldEnum = {
   publishedSubdomain: 'publishedSubdomain',
   publishedAt: 'publishedAt',
   accessLevel: 'accessLevel',
+  category: 'category',
   siteTitle: 'siteTitle',
   siteDescription: 'siteDescription'
 } as const

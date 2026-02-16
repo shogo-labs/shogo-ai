@@ -3379,6 +3379,7 @@ export const ProjectScalarFieldEnum = {
   publishedSubdomain: 'publishedSubdomain',
   publishedAt: 'publishedAt',
   accessLevel: 'accessLevel',
+  category: 'category',
   siteTitle: 'siteTitle',
   siteDescription: 'siteDescription'
 } as const
@@ -4040,6 +4041,20 @@ export type EnumAccessLevelFieldRefInput<$PrismaModel> = FieldRefInputType<$Pris
  * Reference to a field of type 'AccessLevel[]'
  */
 export type ListEnumAccessLevelFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'AccessLevel[]'>
+    
+
+
+/**
+ * Reference to a field of type 'ProjectCategory'
+ */
+export type EnumProjectCategoryFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'ProjectCategory'>
+    
+
+
+/**
+ * Reference to a field of type 'ProjectCategory[]'
+ */
+export type ListEnumProjectCategoryFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'ProjectCategory[]'>
     
 
 
