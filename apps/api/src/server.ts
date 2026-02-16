@@ -3506,11 +3506,14 @@ app.post('/api/webhooks/stripe', async (c) => {
               ? stripeSubscription.current_period_end * 1000
               : now + (30 * 24 * 60 * 60 * 1000) // Default to 30 days from now
 
+            // Extract base plan type for DB enum (e.g. "pro_200" → "pro")
+            const basePlanId = planId.split('_')[0] as 'pro' | 'business' | 'enterprise'
+
             await billingService.syncFromStripe({
               stripeSubscriptionId: stripeSubscription.id,
               stripeCustomerId: session.customer as string,
               workspaceId,
-              planId: planId as 'pro' | 'business' | 'enterprise',
+              planId: basePlanId,
               status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
               billingInterval: billingInterval as 'monthly' | 'annual',
               currentPeriodStart: new Date(currentPeriodStart),
@@ -3518,9 +3521,9 @@ app.post('/api/webhooks/stripe', async (c) => {
               cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
             })
 
-            // Allocate monthly credits for the new subscription plan
-            await billingService.allocateMonthlyCredits(workspaceId, planId as 'pro' | 'business' | 'enterprise')
-            console.log('[Webhook] Subscription created + credits allocated for workspace:', workspaceId)
+            // Allocate monthly credits using full tiered planId (e.g. "pro_200" → 200 credits)
+            await billingService.allocateMonthlyCredits(workspaceId, planId)
+            console.log('[Webhook] Subscription created + credits allocated for workspace:', workspaceId, 'plan:', planId)
           } catch (err: any) {
             console.error('[Webhook] Failed to create subscription:', err.message)
           }
