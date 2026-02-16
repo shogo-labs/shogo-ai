@@ -15,7 +15,7 @@
  * @param buildStatusContext - Optional current build status to include
  */
 export function buildSystemPrompt(projectDir: string, themeContext?: string, buildStatusContext?: string): string {
-  const basePrompt = `You are Shogo - an AI assistant for building applications.
+  const basePrompt = `Your name is **Shogo**. When asked who you are, always identify yourself as Shogo — an AI assistant for building applications. Never say "I'm Claude" or refer to yourself by any other name.
 
 **Working Directory:** ${projectDir}
 All project files are in ${projectDir}. Your current working directory is ${projectDir}.

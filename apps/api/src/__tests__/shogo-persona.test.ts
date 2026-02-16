@@ -1,46 +1,50 @@
 /**
  * Shogo Persona Tests
  *
- * Validates that the agent always uses the Shogo persona —
- * no env-var switching, no fallback to a generic default.
+ * Validates that the project-runtime agent always identifies as Shogo
+ * and includes template guidance. The Shogo system prompt lives solely
+ * in packages/project-runtime/src/system-prompt.ts — there is no
+ * platform-level persona or prompt.
  *
  * Run: bun test apps/api/src/__tests__/shogo-persona.test.ts
  */
 
 import { describe, test, expect } from 'bun:test'
-import { SHOGO_AGENT_PROMPT } from '../prompts/persona-prompts'
-import { buildSystemPrompt, BASE_SYSTEM_PROMPT } from '../server'
+import { buildSystemPrompt } from '../../../../packages/project-runtime/src/system-prompt'
 
-describe('Shogo persona', () => {
-  test('SHOGO_AGENT_PROMPT identifies as Shogo', () => {
-    expect(SHOGO_AGENT_PROMPT).toContain('You are **Shogo**')
+describe('Shogo persona (project-runtime)', () => {
+  const prompt = buildSystemPrompt('/app/project')
+
+  test('identifies as Shogo', () => {
+    expect(prompt).toContain('Shogo')
+    expect(prompt).toContain('AI assistant for building applications')
   })
 
-  test('SHOGO_AGENT_PROMPT includes template guidance', () => {
-    expect(SHOGO_AGENT_PROMPT).toContain('template.copy')
-    expect(SHOGO_AGENT_PROMPT).toContain('Templates First')
+  test('explicitly overrides Claude identity', () => {
+    expect(prompt).toContain('Never say')
+    expect(prompt).toContain('Shogo')
   })
 
-  test('buildSystemPrompt() always returns Shogo persona + base prompt', () => {
-    const prompt = buildSystemPrompt()
-    // Must contain the Shogo identity
-    expect(prompt).toContain('You are **Shogo**')
-    // Must contain the base MCP tool docs
-    expect(prompt).toContain(BASE_SYSTEM_PROMPT)
+  test('includes template guidance', () => {
+    expect(prompt).toContain('template')
+    expect(prompt).toContain('template.copy')
+    expect(prompt).toContain('Template Selection')
   })
 
-  test('buildSystemPrompt() takes no arguments (no persona switching)', () => {
-    // Verify the function signature accepts zero args
-    expect(buildSystemPrompt.length).toBe(0)
+  test('includes project directory in prompt', () => {
+    expect(prompt).toContain('/app/project')
   })
+})
 
-  test('persona-prompts module does not export persona selection types', () => {
-    // These were removed — ensure they don't sneak back in
-    const exports = require('../prompts/persona-prompts')
-    expect(exports.PERSONAS).toBeUndefined()
-    expect(exports.AgentPersona).toBeUndefined()
-    expect(exports.isAgentPersona).toBeUndefined()
-    expect(exports.PERSONA_PROMPTS).toBeUndefined()
-    expect(exports.getPersonaPrompt).toBeUndefined()
+describe('no platform-level persona', () => {
+  test('persona-prompts.ts does not exist', async () => {
+    let imported = false
+    try {
+      await import('../prompts/persona-prompts')
+      imported = true
+    } catch {
+      imported = false
+    }
+    expect(imported).toBe(false)
   })
 })
