@@ -49,7 +49,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { PlanSelector } from "../billing/PlanSelector"
+import { PlanSelector, PLAN_CREDITS, DAILY_CREDITS } from "../billing/PlanSelector"
 
 /**
  * Workspace entity shape (from studioCore domain)
@@ -172,9 +172,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
   // TODO: Get actual member count from domain
   const memberCount = 1
   const creditsRemaining = effectiveBalance?.total ?? 5
-  // Plan max: base tier credits + 5 daily (from central plan config)
-  const PLAN_CREDITS: Record<string, number> = { pro: 100, business: 100, enterprise: 10000 }
-  const creditsTotal = (subscription ? PLAN_CREDITS[subscription.planId as string] ?? 50 : 50) + 5
+  const creditsTotal = (subscription ? PLAN_CREDITS[subscription.planId as string] ?? PLAN_CREDITS.free : PLAN_CREDITS.free) + DAILY_CREDITS
   const creditsPercent = Math.max(0, Math.min(100, ((creditsTotal - creditsRemaining) / creditsTotal) * 100))
 
   // Show skeleton during loading

@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { PlanSelector } from "@/components/app/billing/PlanSelector"
+import { PlanSelector, PLAN_CREDITS, DAILY_CREDITS } from "@/components/app/billing/PlanSelector"
 import { ManageBillingDialog } from "@/components/app/billing/ManageBillingDialog"
 
 export const AppBillingPage = observer(function AppBillingPage() {
@@ -62,9 +62,7 @@ export const AppBillingPage = observer(function AppBillingPage() {
 
   // Calculate credits from actual ledger data
   const creditsRemaining = effectiveBalance?.total ?? 5
-  // Plan max: base tier credits + 5 daily (from central plan config)
-  const PLAN_CREDITS: Record<string, number> = { pro: 100, business: 100, enterprise: 10000 }
-  const creditsTotal = (subscription ? PLAN_CREDITS[subscription.planId as string] ?? 50 : 50) + 5
+  const creditsTotal = (subscription ? PLAN_CREDITS[subscription.planId as string] ?? PLAN_CREDITS.free : PLAN_CREDITS.free) + DAILY_CREDITS
 
   // Get plan name
   const planName = subscription
