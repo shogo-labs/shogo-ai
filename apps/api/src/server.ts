@@ -2269,62 +2269,6 @@ app.post('/api/projects/:projectId/security/scan', async (c) => {
   }
 })
 
-// POST /api/projects/:projectId/security/notify — Create notifications for critical scan findings
-app.post('/api/projects/:projectId/security/notify', async (c) => {
-  const projectId = c.req.param('projectId')
-  const auth = c.get('auth') as { userId?: string } | undefined
-  if (!auth?.userId) {
-    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
-  }
-
-  try {
-    const body = await c.req.json()
-    const { critical = 0, high = 0, total = 0 } = body as { critical?: number; high?: number; total?: number }
-
-    // Only notify for critical or high severity findings
-    if (critical === 0 && high === 0) {
-      return c.json({ ok: true, notified: 0 })
-    }
-
-    // Look up the project to get workspace and name
-    const project = await prisma.project.findUnique({
-      where: { id: projectId },
-      select: { name: true, workspaceId: true },
-    })
-    if (!project) {
-      return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
-    }
-
-    // Get all workspace members to notify
-    const members = await prisma.member.findMany({
-      where: { workspaceId: project.workspaceId },
-      select: { userId: true },
-    })
-
-    // Build notification
-    const severity = critical > 0 ? 'critical' : 'high'
-    const title = `Security Alert: ${critical > 0 ? `${critical} critical` : `${high} high`} issue${(critical || high) > 1 ? 's' : ''} found`
-    const message = `Security scan on "${project.name}" found ${total} issue${total > 1 ? 's' : ''} (${critical} critical, ${high} high). Review and fix them in the Security panel.`
-
-    // Create notifications for all members (fire-and-forget, deduped by metadata)
-    const notifications = await prisma.notification.createMany({
-      data: members.map((m) => ({
-        userId: m.userId,
-        type: 'security_alert' as any,
-        title,
-        message,
-        metadata: { projectId, severity, critical, high, total },
-        actionUrl: `/projects/${projectId}?tab=security`,
-      })),
-      skipDuplicates: true,
-    })
-
-    return c.json({ ok: true, notified: notifications.count })
-  } catch (error: any) {
-    console.error('[SecurityNotify] Error:', error)
-    return c.json({ error: { code: 'notify_failed', message: error.message } }, 500)
-  }
-})
 
 // =============================================================================
 // Database routes - Prisma Studio management for project workspaces

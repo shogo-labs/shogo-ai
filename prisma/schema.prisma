@@ -385,7 +385,6 @@ enum NotificationType {
   member_joined
   member_left
   workspace_updated
-  security_alert
 }
 
 // =============================================================================

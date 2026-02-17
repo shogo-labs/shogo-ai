@@ -486,21 +486,6 @@ export function SecurityPanel({ projectId, className, onFixWithAI, autoScanTrigg
       setScanResult(result)
       setLastScanTime(new Date())
       setExpandedFindings(new Set())
-
-      // Send notification for critical/high findings (fire-and-forget)
-      if (result.ok && (result.summary.critical > 0 || result.summary.high > 0)) {
-        fetch(`/api/projects/${projectId}/security/notify`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            critical: result.summary.critical,
-            high: result.summary.high,
-            total: result.summary.total,
-          }),
-        }).catch((err) => {
-          console.warn("[SecurityPanel] Failed to send notification:", err)
-        })
-      }
     } catch (err: any) {
       setScanError(err.message || "Failed to run security scan")
       setScanResult(null)
