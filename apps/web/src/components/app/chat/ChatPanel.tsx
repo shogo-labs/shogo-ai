@@ -540,10 +540,11 @@ function getModifiedFilePaths(toolCalls: ExtractedToolCall[]): string[] {
       continue
     }
     
-    // Extract path from args
+    // Extract path from args (Claude Code tools use "file_path", others may use "path" or "filePath")
     const args = toolCall.args as Record<string, unknown> | undefined
-    if (args?.path && typeof args.path === 'string') {
-      paths.push(args.path)
+    const filePath = (args?.file_path ?? args?.path ?? args?.filePath) as string | undefined
+    if (filePath && typeof filePath === 'string') {
+      paths.push(filePath)
     }
     
     // For template.copy, mark as "all files changed" with special marker

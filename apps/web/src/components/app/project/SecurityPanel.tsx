@@ -454,6 +454,10 @@ export function SecurityPanel({ projectId, className, onFixWithAI, autoScanTrigg
   const [scanError, setScanError] = useState<string | null>(null)
   const [lastScanTime, setLastScanTime] = useState<Date | null>(null)
 
+  // Rate-limit state: tracks 429 responses separately from real errors
+  // Counts down to 0 and auto-retries the scan
+  const [rateLimitCountdown, setRateLimitCountdown] = useState(0)
+
   // UI state
   const [expandedFindings, setExpandedFindings] = useState<Set<string>>(new Set())
   const [filterSeverity, setFilterSeverity] = useState<Severity | "all">("all")
@@ -462,13 +466,11 @@ export function SecurityPanel({ projectId, className, onFixWithAI, autoScanTrigg
   // Finding lifecycle state: tracks resolved/ignored findings by ID (client-side only)
   const [findingStatuses, setFindingStatuses] = useState<Record<string, FindingStatus>>({})
 
-  // Track auto-scan trigger to prevent running on mount
-  const prevAutoScanTrigger = useRef(autoScanTrigger ?? 0)
-
   // Run security scan
   const runScan = useCallback(async () => {
     setIsScanning(true)
     setScanError(null)
+    setRateLimitCountdown(0)
 
     try {
       const response = await fetch(`/api/projects/${projectId}/security/scan`, {
@@ -477,6 +479,17 @@ export function SecurityPanel({ projectId, className, onFixWithAI, autoScanTrigg
 
       if (!response.ok) {
         const data = await response.json().catch(() => null)
+
+        // Handle rate limiting (429) separately — show friendly countdown, not "Scan Failed"
+        if (response.status === 429 && data?.error) {
+          const waitMatch = data.error.message?.match(/wait (\d+)s/)
+          const waitSeconds = waitMatch ? parseInt(waitMatch[1], 10) : 10
+          console.log(`[SecurityPanel] ⏳ Rate limited (${data.error.code}), auto-retrying in ${waitSeconds}s`)
+          setRateLimitCountdown(waitSeconds)
+          setIsScanning(false)
+          return // Don't treat rate limits as errors
+        }
+
         throw new Error(
           data?.error?.message || `Scan failed with status ${response.status}`
         )
@@ -494,6 +507,30 @@ export function SecurityPanel({ projectId, className, onFixWithAI, autoScanTrigg
     }
   }, [projectId])
 
+  // Ref to access runScan without adding it to useEffect dependencies
+  // (prevents re-runs from stale closures or ref identity changes)
+  const runScanRef = useRef(runScan)
+  runScanRef.current = runScan
+
+  // Rate-limit countdown: ticks every second and auto-retries when reaching 0
+  // Uses setTimeout (not setInterval) so each tick is a new effect — StrictMode safe
+  useEffect(() => {
+    if (rateLimitCountdown <= 0) return
+
+    const timer = setTimeout(() => {
+      const next = rateLimitCountdown - 1
+      if (next <= 0) {
+        setRateLimitCountdown(0)
+        console.log('[SecurityPanel] ⏳ Rate-limit cooldown expired, auto-retrying scan...')
+        runScanRef.current()
+      } else {
+        setRateLimitCountdown(next)
+      }
+    }, 1000)
+
+    return () => clearTimeout(timer)
+  }, [rateLimitCountdown])
+
   // Update finding status (resolve/ignore/reopen)
   const setFindingStatus = useCallback((findingId: string, status: FindingStatus) => {
     setFindingStatuses((prev) => ({ ...prev, [findingId]: status }))
@@ -508,17 +545,25 @@ export function SecurityPanel({ projectId, className, onFixWithAI, autoScanTrigg
   }, [scanResult?.findings, findingStatuses])
 
   // Auto-scan when trigger changes (after AI code generation)
+  // NOTE: Uses runScanRef to avoid including runScan in the dependency array.
+  // Previous pattern (tracking prev value in a ref) broke under React StrictMode
+  // because StrictMode double-invokes effects: the first run updates the ref,
+  // StrictMode cleanup cancels the timer, and the second run sees the ref as
+  // already processed → scan never fires. This simpler pattern avoids that
+  // by only depending on autoScanTrigger and using the natural useEffect
+  // cleanup for debouncing.
   useEffect(() => {
-    const trigger = autoScanTrigger ?? 0
-    if (trigger > 0 && trigger !== prevAutoScanTrigger.current) {
-      prevAutoScanTrigger.current = trigger
-      // Debounce: wait 2s after AI finishes to let file writes settle
-      const timer = setTimeout(() => {
-        runScan()
-      }, 2000)
-      return () => clearTimeout(timer)
-    }
-  }, [autoScanTrigger, runScan])
+    if (!autoScanTrigger || autoScanTrigger === 0) return
+
+    console.log('[SecurityPanel] 🔒 Auto-scan triggered after AI code generation, debouncing 2s...', { autoScanTrigger })
+
+    // Debounce: wait 2s after AI finishes to let file writes settle
+    const timer = setTimeout(() => {
+      console.log('[SecurityPanel] 🔒 Auto-scan executing...')
+      runScanRef.current()
+    }, 2000)
+    return () => clearTimeout(timer)
+  }, [autoScanTrigger])
 
   // Toggle finding expansion
   const toggleFinding = useCallback((findingId: string) => {
@@ -727,8 +772,8 @@ export function SecurityPanel({ projectId, className, onFixWithAI, autoScanTrigg
 
       {/* Main content area */}
       <div className="flex-1 overflow-y-auto relative">
-        {/* Error state */}
-        {scanError && (
+        {/* Error state (real errors only, not rate limits) */}
+        {scanError && !rateLimitCountdown && (
           <div className="flex flex-col items-center justify-center h-full p-8">
             <div className="flex flex-col items-center gap-4 max-w-md text-center">
               <ShieldX className="h-12 w-12 text-destructive" />
@@ -746,6 +791,36 @@ export function SecurityPanel({ projectId, className, onFixWithAI, autoScanTrigg
                 <RefreshCw className="h-4 w-4" />
                 Retry
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Rate-limit state — friendly countdown with auto-retry */}
+        {rateLimitCountdown > 0 && !isScanning && (
+          <div className="flex flex-col items-center justify-center h-full p-8">
+            <div className="flex flex-col items-center gap-4 max-w-md text-center">
+              <div className="relative">
+                <Shield className="h-12 w-12 text-muted-foreground/50" />
+                <Clock className="absolute -bottom-1 -right-1 h-5 w-5 text-amber-500" />
+              </div>
+              <div>
+                <h3 className="text-sm font-medium text-foreground">
+                  Scan Cooldown
+                </h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Auto-retrying in <span className="font-mono font-semibold text-foreground">{rateLimitCountdown}s</span>
+                </p>
+                <p className="text-xs text-muted-foreground/70 mt-2">
+                  Rate limited to prevent overloading — one scan every 10 seconds
+                </p>
+              </div>
+              {/* Progress-style visual countdown */}
+              <div className="w-48 h-1.5 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-amber-500/70 rounded-full transition-all duration-1000 ease-linear"
+                  style={{ width: `${Math.max(0, (rateLimitCountdown / 10) * 100)}%` }}
+                />
+              </div>
             </div>
           </div>
         )}
@@ -771,7 +846,7 @@ export function SecurityPanel({ projectId, className, onFixWithAI, autoScanTrigg
         )}
 
         {/* Empty state (no scan run yet) */}
-        {!scanResult && !isScanning && !scanError && (
+        {!scanResult && !isScanning && !scanError && !rateLimitCountdown && (
           <div className="flex flex-col items-center justify-center h-full p-8">
             <div className="flex flex-col items-center gap-6 max-w-md text-center">
               <div className="relative">
