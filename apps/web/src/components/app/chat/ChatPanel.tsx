@@ -1351,6 +1351,7 @@ export const ChatPanel = observer(function ChatPanel({
             const modifiedPaths = getModifiedFilePaths(toolCalls)
             if (modifiedPaths.length > 0) {
               console.log("[ChatPanel] 📁 Files modified by agent:", modifiedPaths)
+              filesChangedFiredRef.current = true
               onFilesChanged(modifiedPaths)
             }
           }
@@ -1361,6 +1362,9 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Derive isStreaming from v3 status for backward compatibility
   const isStreaming = status === 'streaming' || status === 'submitted'
+
+  // Track whether onFilesChanged was already called by onFinish (prevents double-trigger)
+  const filesChangedFiredRef = useRef(false)
 
   // Notify parent when chat error changes (for RuntimePreviewPanel to stop loading)
   useEffect(() => {
@@ -1449,6 +1453,33 @@ export const ChatPanel = observer(function ChatPanel({
       }
     }
   }, [isStreaming, messages, stop])
+
+  // Fallback: detect file changes when streaming ends (handles idle-timeout stop())
+  // onFinish doesn't always fire when stop() is called, so we re-check here.
+  const prevIsStreamingRef = useRef(false)
+  useEffect(() => {
+    const wasStreaming = prevIsStreamingRef.current
+    prevIsStreamingRef.current = isStreaming
+
+    // Only run on streaming → not-streaming transition
+    if (wasStreaming && !isStreaming && !filesChangedFiredRef.current && onFilesChanged) {
+      // Check the latest assistant message for file-modifying tool calls
+      const latestAssistant = [...messages].reverse().find(m => m.role === 'assistant')
+      if (latestAssistant) {
+        const toolCalls = extractToolCalls(latestAssistant)
+        const modifiedPaths = getModifiedFilePaths(toolCalls)
+        if (modifiedPaths.length > 0) {
+          console.log("[ChatPanel] 📁 Fallback: Files modified by agent (onFinish missed):", modifiedPaths)
+          onFilesChanged(modifiedPaths)
+        }
+      }
+    }
+
+    // Reset flag when streaming starts (for the next cycle)
+    if (isStreaming && !wasStreaming) {
+      filesChangedFiredRef.current = false
+    }
+  }, [isStreaming, messages, onFilesChanged])
 
   // Process progress events from message parts (task-subagent-progress-streaming)
   useEffect(() => {
