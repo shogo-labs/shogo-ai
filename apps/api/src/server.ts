@@ -2798,7 +2798,7 @@ Examples:
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, ccSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
+    const { messages, ccSessionId, chatSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
 
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
     if (workspaceId) {
@@ -2900,6 +2900,10 @@ app.post('/api/chat', async (c) => {
         const streamedToolIds = new Set<string>()
         let resultUsage: any = null
         let resultSessionId: string | undefined
+
+        // server-side-persistence: Accumulate content for DB persistence
+        let accumulatedText = ''
+        const toolCallDetails: { toolCallId: string; toolName: string; input: any }[] = []
         // Track whether we're receiving incremental stream_events.
         // When streaming, the 'assistant' message is redundant (it's the complete
         // version of what was already streamed incrementally).
@@ -2970,6 +2974,8 @@ app.post('/api/chat', async (c) => {
                       writer.write({ type: 'text-start', id: currentTextId })
                     }
                     writer.write({ type: 'text-delta', id: currentTextId, delta: delta.text })
+                    // server-side-persistence: accumulate text for DB persistence
+                    accumulatedText += delta.text
                   } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
                     currentToolInput += delta.partial_json
                     writer.write({
@@ -2995,6 +3001,12 @@ app.post('/api/chat', async (c) => {
                       toolName: currentToolName || 'unknown',
                       input: parsedInput,
                       dynamic: true,
+                    })
+                    // server-side-persistence: capture tool call details for message parts
+                    toolCallDetails.push({
+                      toolCallId: currentToolId,
+                      toolName: currentToolName || 'unknown',
+                      input: parsedInput,
                     })
                     // Track for result emission when next turn starts
                     pendingToolResults.set(currentToolId, currentToolName || 'unknown')
@@ -3070,6 +3082,12 @@ app.post('/api/chat', async (c) => {
                     input: block.input || {},
                     dynamic: true,
                   })
+                  // server-side-persistence: capture non-streamed tool calls
+                  toolCallDetails.push({
+                    toolCallId: block.id,
+                    toolName: block.name,
+                    input: block.input || {},
+                  })
                   pendingToolResults.set(block.id, block.name)
                 }
                 // Don't emit finish-step/start-step — message_stop already did
@@ -3082,6 +3100,8 @@ app.post('/api/chat', async (c) => {
                       writer.write({ type: 'text-start', id: textId })
                       writer.write({ type: 'text-delta', id: textId, delta: block.text })
                       writer.write({ type: 'text-end', id: textId })
+                      // server-side-persistence: accumulate text for non-streaming path
+                      accumulatedText += block.text
                     } else if (block.type === 'tool_use') {
                       writer.write({
                         type: 'tool-input-start',
@@ -3102,6 +3122,12 @@ app.post('/api/chat', async (c) => {
                         toolName: block.name,
                         input: block.input || {},
                         dynamic: true,
+                      })
+                      // server-side-persistence: capture tool call for non-streaming path
+                      toolCallDetails.push({
+                        toolCallId: block.id,
+                        toolName: block.name,
+                        input: block.input || {},
                       })
                       pendingToolResults.set(block.id, block.name)
                     }
@@ -3173,6 +3199,44 @@ app.post('/api/chat', async (c) => {
           progressEvents.off('progress', onProgress)
           virtualToolEvents.off('virtual-tool', onVirtualTool)
           streamWriter = null
+
+          // server-side-persistence: Persist assistant message to database (fire-and-forget)
+          // This ensures messages survive page refreshes and client disconnects.
+          if (chatSessionId && (accumulatedText || toolCallDetails.length > 0)) {
+            (async () => {
+              try {
+                const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
+                if (session) {
+                  const parts: any[] = []
+                  if (accumulatedText) {
+                    parts.push({ type: 'text', text: accumulatedText })
+                  }
+                  for (const tc of toolCallDetails) {
+                    parts.push({
+                      type: 'dynamic-tool',
+                      toolCallId: tc.toolCallId,
+                      toolName: tc.toolName,
+                      input: tc.input,
+                      output: { success: true },
+                      state: 'output-available',
+                    })
+                  }
+
+                  await prisma.chatMessage.create({
+                    data: {
+                      sessionId: chatSessionId,
+                      role: 'assistant',
+                      content: accumulatedText,
+                      parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
+                    },
+                  })
+                  console.log(`[/api/chat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallDetails.length} tool calls) for session ${chatSessionId}`)
+                }
+              } catch (persistError: any) {
+                console.error(`[/api/chat] ⚠️ Failed to persist assistant message:`, persistError.message)
+              }
+            })()
+          }
 
           // Credit tracking (fire-and-forget)
           if (workspaceId && userId && resultUsage) {

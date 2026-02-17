@@ -1260,25 +1260,10 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
-      // Persist assistant message in onFinish callback
-      // NOTE: All persistence operations are fire-and-forget to prevent hanging
-      // if backend is slow. The UI already shows the message, persistence is just logging.
+      // server-side-persistence: Assistant messages are now persisted by the backend
+      // after streaming completes. This eliminates data loss on page refresh/disconnect.
+      // The chatSessionId is sent in the request body so the backend knows where to save.
       if (currentSessionId) {
-        // Fire-and-forget: persist assistant message
-        // chat-session-sync-fix: Use extractTextContent for v3 API compatibility
-        // feat-toolcall-rendering-on-reload: Serialize parts for tool call rendering on reload
-        const partsJson = hasToolCalls(message)
-          ? serializeParts((message as any).parts)
-          : undefined
-        actions.addMessage({
-          sessionId: currentSessionId,
-          role: "assistant",
-          content: extractTextContent(message),
-          parts: partsJson,
-        }).catch((err) => {
-          console.warn("[ChatPanel] Failed to persist assistant message:", err)
-        })
-
         // Refresh credit balance after every message (credits are deducted server-side)
         // Fire-and-forget: this updates the MobX store which reactively updates
         // WorkspaceSwitcher, ProjectNameDropdown, and other credit displays
@@ -2045,6 +2030,7 @@ export const ChatPanel = observer(function ChatPanel({
               featureId,
               phase,
               ccSessionId: ccSessionIdRef.current,
+              chatSessionId: currentSessionId,
               workspaceId,
               userId,
               projectId,

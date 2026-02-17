@@ -59,6 +59,10 @@ async function trackUsageFromStream(
   const toolCalls: { toolName: string; args: string }[] = []
   let lastUsage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null = null
 
+  // server-side-persistence: Accumulate assistant message content for DB persistence
+  let accumulatedText = ''
+  const toolCallDetails: { toolCallId: string; toolName: string; input: any }[] = []
+
   try {
     while (true) {
       const { done, value } = await reader.read()
@@ -109,12 +113,26 @@ async function trackUsageFromStream(
         // UI Message Stream protocol uses { type: "..." } format
         const type = data.type
 
+        // server-side-persistence: Accumulate text content from stream
+        if (type === 'text-delta' && data.delta) {
+          accumulatedText += data.delta
+        }
+
         // Track tool calls
         if (type === 'tool-call-start' || type === 'tool-call') {
           toolCallCount++
           toolCalls.push({
             toolName: data.toolName || data.name || 'unknown',
             args: typeof data.args === 'string' ? data.args : JSON.stringify(data.args || {}),
+          })
+        }
+
+        // server-side-persistence: Capture finalized tool call details for message parts
+        if (type === 'tool-input-available') {
+          toolCallDetails.push({
+            toolCallId: data.toolCallId || `tool-${Date.now()}`,
+            toolName: data.toolName || 'unknown',
+            input: data.input || {},
           })
         }
 
@@ -227,6 +245,43 @@ async function trackUsageFromStream(
       }
     } catch (err) {
       console.error("[ProjectChat] Failed to log tool calls:", err)
+    }
+  }
+
+  // server-side-persistence: Persist assistant message to database
+  // This ensures messages survive page refreshes and client disconnects.
+  if (chatSessionId && (accumulatedText || toolCallDetails.length > 0)) {
+    try {
+      const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
+      if (session) {
+        // Build parts array matching the frontend's expected format
+        const parts: any[] = []
+        if (accumulatedText) {
+          parts.push({ type: 'text', text: accumulatedText })
+        }
+        for (const tc of toolCallDetails) {
+          parts.push({
+            type: 'dynamic-tool',
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            input: tc.input,
+            output: { success: true },
+            state: 'output-available',
+          })
+        }
+
+        await prisma.chatMessage.create({
+          data: {
+            sessionId: chatSessionId,
+            role: 'assistant',
+            content: accumulatedText,
+            parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
+          },
+        })
+        console.log(`[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallDetails.length} tool calls) for session ${chatSessionId}`)
+      }
+    } catch (err) {
+      console.error("[ProjectChat] Failed to persist assistant message:", err)
     }
   }
 }

@@ -635,34 +635,45 @@ claudeCodeEnv.RUNTIME_PORT = String(PORT)
 // Uses the V2 session-based API from @anthropic-ai/claude-agent-sdk.
 // Sessions persist across HTTP requests, keeping the CLI subprocess alive.
 // This eliminates the 7-12s cold start overhead per message.
+//
+// IMPORTANT: The V2 SDK's unstable_v2_createSession() only forwards a subset
+// of options to the CLI process (model, env, allowedTools, permissionMode,
+// settingSources, canUseTool, hooks, includePartialMessages). It does NOT
+// forward systemPrompt, mcpServers, or cwd — these are silently dropped.
+//
+// To work around this, we write file-based configuration that the CLI reads
+// via settingSources: ['project']:
+//   - CLAUDE.md in PROJECT_DIR → system prompt (loaded as project instructions)
+//   - .mcp.json in PROJECT_DIR → MCP server config (loaded as project MCP servers)
 
-/** V1 QueryOptions fields that V2 runtime accepts but aren't yet typed */
-interface ExtendedSessionOptions extends SDKSessionOptions {
-  cwd?: string
-  mcpServers?: Record<string, any>
-  systemPrompt?: string | { type: 'preset'; preset: 'claude_code'; append?: string }
-  settingSources?: string[]
-  allowDangerouslySkipPermissions?: boolean
+/**
+ * Fields the V2 session constructor reads but doesn't expose in SDKSessionOptions types.
+ * These are forwarded to the underlying CLI process despite not being typed.
+ */
+interface V2SessionOptions extends SDKSessionOptions {
+  settingSources?: ('user' | 'project' | 'local')[]
   includePartialMessages?: boolean
-  persistSession?: boolean
 }
 
 // Session cache: one persistent session per model name
 const sessionCache = new Map<string, SDKSession>()
 
-function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
-  return {
-    model: modelName === 'haiku' ? 'claude-3-5-haiku-latest'
-         : modelName === 'opus' ? 'claude-opus-4-20250514'
-         : 'claude-sonnet-4-20250514',
-    cwd: PROJECT_DIR,
-    canUseTool: pathRestrictor,
-    settingSources: ['project', 'local'],
-    env: claudeCodeEnv,
-    includePartialMessages: true,
-    // Base system prompt (dynamic context appended to user messages per-request)
-    systemPrompt: buildSystemPrompt(PROJECT_DIR),
-    // MCP server provides template tools as native tool calls
+/**
+ * Write CLAUDE.md and .mcp.json to the project directory so the V2 SDK CLI
+ * picks them up via settingSources: ['project']. This is necessary because
+ * the V2 session constructor does not forward systemPrompt or mcpServers
+ * from the programmatic options.
+ */
+function writeAgentConfigFiles(): void {
+  // Write CLAUDE.md with the system prompt
+  const claudeMdPath = resolve(PROJECT_DIR, 'CLAUDE.md')
+  const systemPromptContent = buildSystemPrompt(PROJECT_DIR)
+  writeFileSync(claudeMdPath, systemPromptContent, 'utf-8')
+  console.log(`[project-runtime] Wrote CLAUDE.md to ${claudeMdPath} (${systemPromptContent.length} chars)`)
+
+  // Write .mcp.json with the template MCP server config
+  const mcpJsonPath = resolve(PROJECT_DIR, '.mcp.json')
+  const mcpConfig = {
     mcpServers: {
       shogo: {
         command: 'bun',
@@ -677,6 +688,31 @@ function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
         },
       },
     },
+  }
+  writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
+  console.log(`[project-runtime] Wrote .mcp.json to ${mcpJsonPath}`)
+}
+
+// Write config files and ensure CLI will run in the project directory.
+// process.chdir() is safe here because the server uses absolute paths everywhere.
+try {
+  process.chdir(PROJECT_DIR)
+  console.log(`[project-runtime] Changed cwd to ${PROJECT_DIR}`)
+} catch (e: any) {
+  console.warn(`[project-runtime] Could not chdir to ${PROJECT_DIR}: ${e.message}`)
+}
+writeAgentConfigFiles()
+
+function buildProjectSessionOptions(modelName: string): V2SessionOptions {
+  return {
+    model: modelName === 'haiku' ? 'claude-3-5-haiku-latest'
+         : modelName === 'opus' ? 'claude-opus-4-20250514'
+         : 'claude-sonnet-4-20250514',
+    canUseTool: pathRestrictor,
+    // Load project settings (CLAUDE.md for system prompt, .mcp.json for MCP servers)
+    settingSources: ['project', 'local'],
+    env: claudeCodeEnv,
+    includePartialMessages: true,
     allowedTools: [
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
       'Bash',
@@ -685,7 +721,7 @@ function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
       'mcp__shogo__template_copy',
     ],
     permissionMode: 'default',
-  } as ExtendedSessionOptions
+  }
 }
 
 // Track which sessions are actively handling a chat message
@@ -747,7 +783,7 @@ function getOrCreateProjectSession(modelName: 'haiku' | 'sonnet' | 'opus'): SDKS
   }
 
   const options = buildProjectSessionOptions(modelName)
-  const session = unstable_v2_createSession(options as any)
+  const session = unstable_v2_createSession(options)
   sessionCache.set(modelName, session)
   console.log(`[project-runtime] Created V2 session for model: ${modelName}`)
   return session
