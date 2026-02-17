@@ -108,7 +108,7 @@ Examples:
 Workflow for Prompt Optimization:
   1. Start agent: bun run api:dev (in another terminal)
   2. Establish baseline: bun run packages/mcp/src/evals/cli.ts baseline
-  3. Make prompt changes in apps/api/src/prompts/persona-prompts.ts
+  3. Make prompt changes in packages/project-runtime/src/system-prompt.ts
   4. Run evals: bun run packages/mcp/src/evals/cli.ts run --label "your-change" --save
   5. Review comparison report
   6. Iterate until metrics improve

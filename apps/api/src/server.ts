@@ -14,7 +14,6 @@ import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { existsSync, mkdirSync } from 'fs'
 import { auth } from './auth'
-import { PERSONA_PROMPTS, isAgentPersona, type AgentPersona } from './prompts/persona-prompts'
 import { getPriceId } from './config/stripe-prices'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
@@ -479,7 +478,6 @@ function createProjectPathRestrictor(projectDir: string): CanUseTool {
 interface ExtendedSessionOptions extends SDKSessionOptions {
   cwd?: string
   mcpServers?: Record<string, any>
-  systemPrompt?: string | { type: 'preset'; preset: 'claude_code'; append?: string }
   settingSources?: string[]
   allowDangerouslySkipPermissions?: boolean
   includePartialMessages?: boolean
@@ -567,10 +565,10 @@ const SESSION_HOOKS = {
 }
 
 /**
- * Build V2 session options for a given scope (platform or project).
+ * Build V2 session options for a given scope.
  * Includes all V1 QueryOptions needed for MCP servers, permissions, and hooks.
  */
-function buildSessionOptions(projectId?: string, systemPrompt?: string): ExtendedSessionOptions {
+function buildSessionOptions(projectId?: string): ExtendedSessionOptions {
   let cwd = PROJECT_ROOT
   let projectDir: string | null = null
 
@@ -600,8 +598,6 @@ function buildSessionOptions(projectId?: string, systemPrompt?: string): Extende
     settingSources: ['project', 'local'],
     // Include partial messages so we get streaming text deltas
     includePartialMessages: true,
-    // System prompt (set once per session, constant for a given scope)
-    ...(systemPrompt && { systemPrompt }),
     // MCP servers
     mcpServers: {
       shogo: {
@@ -635,7 +631,7 @@ const sessionCache = new Map<string, SDKSession>()
 // Track which sessions are actively handling a chat message
 const activeSessions = new Set<string>()
 
-function getOrCreateSession(scopeKey: string, projectId?: string, systemPrompt?: string): SDKSession {
+function getOrCreateSession(scopeKey: string, projectId?: string): SDKSession {
   const existing = sessionCache.get(scopeKey)
   if (existing) {
     // Check if session is still alive (V2 session has a 'closed' property)
@@ -647,7 +643,7 @@ function getOrCreateSession(scopeKey: string, projectId?: string, systemPrompt?:
     activeSessions.delete(scopeKey)
   }
 
-  const options = buildSessionOptions(projectId, systemPrompt)
+  const options = buildSessionOptions(projectId)
   const session = unstable_v2_createSession(options as any)
   sessionCache.set(scopeKey, session)
   console.log(`[ClaudeCode] Created V2 session for: ${scopeKey}`)
@@ -672,11 +668,7 @@ async function prewarmClaudeCode() {
 
   console.log(`[ClaudeCode] 🔥 Pre-warming V2 session (platform)...`)
   try {
-    // Build system prompt for platform (same as what /api/chat will use)
-    const agentPersona = process.env.SHOGO_AGENT as any
-    const systemPrompt = buildSystemPrompt(agentPersona)
-
-    const session = getOrCreateSession(scopeKey, undefined, systemPrompt)
+    const session = getOrCreateSession(scopeKey)
 
     // Double-check after session creation — a chat request might have arrived
     if (activeSessions.has(scopeKey)) {
@@ -707,99 +699,6 @@ async function prewarmClaudeCode() {
     console.error(`[ClaudeCode] ⚠️ Pre-warm failed after ${(elapsed / 1000).toFixed(2)}s:`, error.message)
     // Non-fatal — first real request will cold-start as before
   }
-}
-
-/**
- * Base system prompt for the Shogo app builder assistant.
- * This prompt is always included and provides context about available MCP tools.
- */
-export const BASE_SYSTEM_PROMPT = `You are a Shogo app builder assistant running in the shogo-ai project at ${PROJECT_ROOT}.
-
-You have access to the Shogo MCP server with these tools:
-- schema_set, schema_get, schema_list, schema_load - Manage JSON schemas
-- store_create, store_list, store_get, store_update, store_query - CRUD operations on entities
-- store_models - List available models in a schema
-- data_load, data_loadAll - Load data from persistence
-
-**CRITICAL: Schema Format for schema_set**
-When calling schema_set, your payload MUST use Enhanced JSON Schema format with "$defs":
-
-{
-  "$defs": {
-    "ModelName": {
-      "type": "object",
-      "x-original-name": "ModelName",
-      "properties": {
-        "id": { "type": "string", "x-mst-type": "identifier" },
-        "name": { "type": "string" }
-      },
-      "required": ["id", "name"]
-    }
-  }
-}
-
-- Use "$defs" (NOT "models", "x-models", "definitions", or "schemas")
-- Each model needs: type="object", x-original-name, properties with id, required array
-- id property must have "x-mst-type": "identifier"
-
-You also have access to virtual tools for UI control:
-- set_workspace: Declaratively set workspace state
-  Arguments: { layout?: "single"|"split-h"|"split-v", panels: [{ slot, section, config? }] }
-  Example: set_workspace({ panels: [{ slot: "main", section: "DesignContainerSection", config: { schemaName: "component-builder" } }] })
-  Use this to show schemas, change layouts, or display any combination of panels.
-  Available sections: DesignContainerSection, WorkspaceBlankStateSection, DynamicCompositionSection, DataGridSection
-
-- execute: Run domain operations on client state
-  Arguments: { operations: [{ domain, action, model, id?, data }] }
-  Example: execute({ operations: [{ domain: "component-builder", action: "create", model: "Composition", data: { name: "..." } }] })
-  Use for creating/updating/deleting entities. Domains: component-builder, studio-chat
-
-Available schemas:
-- component-builder: UI composition system - ComponentDefinition, Composition, LayoutTemplate, Registry, RendererBinding
-- studio-core: Organizations, projects, project membership
-- studio-chat: Chat sessions and messages
-
-You can help users:
-- Design and create data schemas for their applications
-- Create and manage entity instances
-- Query and update data
-- Inspect and modify UI compositions (use component-builder schema)
-- Explain data modeling concepts and best practices
-
-**Skill Invocation (CRITICAL):**
-When a user's message starts with a slash command like "/view-builder", you MUST immediately invoke the Skill tool before doing anything else.
-
-Example:
-- User: "/view-builder Create a todo app"
-- You: Call the Skill tool with skill="view-builder"
-- The skill will load and provide specific instructions to follow
-
-Available skills:
-- /view-builder - For displaying data, layouts, views, workspace panels
-
-When users ask to create schemas or data, use the appropriate MCP tools.
-When users ask about compositions, or UI sections, query the component-builder schema.
-Be concise and practical. Show tool results when relevant.`
-
-/**
- * Build a dynamic system prompt based on agent persona.
- *
- * @param agentPersona - The agent persona ('shogo' or 'code'), defaults to 'shogo'
- * @returns The complete system prompt with persona guidance and base prompt
- */
-export function buildSystemPrompt(
-  agentPersona?: AgentPersona | null
-): string {
-  // Validate and default persona
-  const persona: AgentPersona = agentPersona && isAgentPersona(agentPersona) ? agentPersona : 'shogo'
-
-  // Code agent gets a completely different prompt (no Shogo MCP tools)
-  if (persona === 'code') {
-    return PERSONA_PROMPTS.code
-  }
-
-  // Shogo agent gets persona intro + base prompt
-  return `${PERSONA_PROMPTS[persona]}\n\n${BASE_SYSTEM_PROMPT}`
 }
 
 const app = new Hono()
@@ -2694,6 +2593,20 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
   return router.fetch(newReq)
 })
 
+// POST /api/projects/:projectId/chat/stop - Stop/interrupt active generation
+app.post('/api/projects/:projectId/chat/stop', async (c) => {
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/stop`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
 // POST /api/projects/:projectId/chat/wake - Wake up a scaled-to-zero pod
 app.post('/api/projects/:projectId/chat/wake', async (c) => {
   const manager = getRuntimeManager()
@@ -2910,14 +2823,10 @@ app.post('/api/chat', async (c) => {
       }
     }
 
-    // Build system prompt (constant for a given persona, set once per session)
-    const agentPersona = process.env.SHOGO_AGENT as AgentPersona | undefined
-    const systemPrompt = buildSystemPrompt(agentPersona)
-
     // Get or create a persistent V2 session for this scope.
     // The session keeps the CLI subprocess alive across requests — no more cold starts.
     const scopeKey = projectId || '__platform__'
-    const session = getOrCreateSession(scopeKey, projectId, systemPrompt)
+    const session = getOrCreateSession(scopeKey, projectId)
     activeSessions.add(scopeKey) // Mark session as active to prevent prewarm interference
 
     // Extract the last user message from the full message array.

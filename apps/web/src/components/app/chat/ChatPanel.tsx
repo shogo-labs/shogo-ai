@@ -1405,6 +1405,25 @@ export const ChatPanel = observer(function ChatPanel({
   const isStreamingRef = useRef(false)
   isStreamingRef.current = isStreaming
 
+  // Enhanced stop handler: calls both the AI SDK's stop() and the backend /agent/stop
+  // to ensure the server-side SDK session is also interrupted (prevents garbled output
+  // when the user sends a new message after stopping)
+  const handleStop = useCallback(() => {
+    // 1. Stop the client-side stream (aborts fetch)
+    stop()
+
+    // 2. Fire-and-forget: tell the backend to interrupt the active SDK session
+    if (projectId) {
+      fetch(`/api/projects/${projectId}/chat/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }).catch((err) => {
+        console.warn('[ChatPanel] Failed to send stop signal to backend:', err)
+      })
+    }
+  }, [stop, projectId])
+
   // Idle timeout to force-complete hung streams
   // When Claude Code invokes skills/tools, the stream can hang indefinitely
   // because onFinish never fires. This detects idle state and calls stop().
@@ -1431,7 +1450,7 @@ export const ChatPanel = observer(function ChatPanel({
       idleTimeoutRef.current = setTimeout(() => {
         if (isStreaming) {
           console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
-          stop()
+          handleStop()
         }
       }, IDLE_TIMEOUT_MS)
     } else {
@@ -1448,7 +1467,7 @@ export const ChatPanel = observer(function ChatPanel({
         clearTimeout(idleTimeoutRef.current)
       }
     }
-  }, [isStreaming, messages, stop])
+  }, [isStreaming, messages, handleStop])
 
   // Process progress events from message parts (task-subagent-progress-streaming)
   useEffect(() => {
@@ -2496,7 +2515,7 @@ export const ChatPanel = observer(function ChatPanel({
                   : "Ask Shogo..."
             }
             isStreaming={isStreaming}
-            onStop={stop}
+            onStop={handleStop}
             agentMode={agentMode}
             onAgentModeChange={setAgentMode}
             isPro={hasActiveSubscription}
