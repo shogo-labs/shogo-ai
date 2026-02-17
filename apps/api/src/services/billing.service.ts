@@ -4,14 +4,7 @@
  */
 
 import { prisma, type Prisma, CreditSource, SubscriptionStatus, BillingInterval, PlanId } from '../lib/prisma';
-
-// Credit allocation constants
-const DAILY_CREDITS = 5;
-const MONTHLY_CREDITS_FREE = 50;
-// Base tier credits (when planId has no tier suffix, e.g. "pro" = 100 credits base)
-const BASE_CREDITS_PRO = 100;
-const BASE_CREDITS_BUSINESS = 100;
-const BASE_CREDITS_ENTERPRISE = 10000;
+import { DAILY_CREDITS, PLAN_CREDITS, getMonthlyCreditsForPlan } from '../config/credit-plans';
 
 /**
  * Get subscription for a workspace
@@ -60,7 +53,7 @@ export async function allocateFreeCredits(workspaceId: string) {
   return prisma.creditLedger.create({
     data: {
       workspaceId,
-      monthlyCredits: MONTHLY_CREDITS_FREE,
+      monthlyCredits: PLAN_CREDITS.free,
       dailyCredits: DAILY_CREDITS,
       rolloverCredits: 0,
       anniversaryDay: now.getDate(),
@@ -77,14 +70,7 @@ export async function allocateMonthlyCredits(
   workspaceId: string,
   planId: string
 ) {
-  // Parse tiered plan IDs: "pro" = 100 base, "pro_200" = 200, "business_1200" = 1200
-  const parts = planId.split('_');
-  const planType = parts[0];
-  const tierCredits = parts.length > 1 ? parseInt(parts[1], 10) : NaN;
-
-  const monthlyCredits = !isNaN(tierCredits)
-    ? tierCredits
-    : { pro: BASE_CREDITS_PRO, business: BASE_CREDITS_BUSINESS, enterprise: BASE_CREDITS_ENTERPRISE }[planType] || MONTHLY_CREDITS_FREE;
+  const monthlyCredits = getMonthlyCreditsForPlan(planId);
 
   const now = new Date();
 

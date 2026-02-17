@@ -62,9 +62,9 @@ export const AppBillingPage = observer(function AppBillingPage() {
 
   // Calculate credits from actual ledger data
   const creditsRemaining = effectiveBalance?.total ?? 5
-  // creditsTotal = initial monthly allocation + 5 daily (read from ledger, not subscription)
-  // The ledger stores the actual allocated amount (e.g. 800 for "pro_800" tier)
-  const creditsTotal = (creditLedger?.monthlyCredits ?? 50) + 5
+  // Plan max: base tier credits + 5 daily (from central plan config)
+  const PLAN_CREDITS: Record<string, number> = { pro: 100, business: 100, enterprise: 10000 }
+  const creditsTotal = (subscription ? PLAN_CREDITS[subscription.planId as string] ?? 50 : 50) + 5
 
   // Get plan name
   const planName = subscription
