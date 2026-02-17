@@ -705,9 +705,9 @@ writeAgentConfigFiles()
 
 function buildProjectSessionOptions(modelName: string): V2SessionOptions {
   return {
-    model: modelName === 'haiku' ? 'claude-3-5-haiku-latest'
-         : modelName === 'opus' ? 'claude-opus-4-20250514'
-         : 'claude-sonnet-4-20250514',
+    model: modelName === 'haiku' ? 'claude-haiku-4-5'
+         : modelName === 'opus' ? 'claude-opus-4-6'
+         : 'claude-sonnet-4-5',
     canUseTool: pathRestrictor,
     // Load project settings (CLAUDE.md for system prompt, .mcp.json for MCP servers)
     settingSources: ['project', 'local'],
