@@ -1456,10 +1456,10 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Fallback: detect file changes when streaming ends (handles idle-timeout stop())
   // onFinish doesn't always fire when stop() is called, so we re-check here.
-  const prevIsStreamingRef = useRef(false)
+  const prevStreamingForScanRef = useRef(false)
   useEffect(() => {
-    const wasStreaming = prevIsStreamingRef.current
-    prevIsStreamingRef.current = isStreaming
+    const wasStreaming = prevStreamingForScanRef.current
+    prevStreamingForScanRef.current = isStreaming
 
     // Only run on streaming → not-streaming transition
     if (wasStreaming && !isStreaming && !filesChangedFiredRef.current && onFilesChanged) {
