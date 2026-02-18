@@ -29,6 +29,10 @@ import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
+import { thumbnailRoutes } from './routes/thumbnail'
+import { getThumbnailsDir, scheduleThumbnailCapture, getThumbnailsBucket } from './services/thumbnail.service'
+import { getS3Client } from './lib/s3'
+import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { calculateCreditCost, agentModeToModel, MODEL_CREDIT_CONFIG, type ModelName, type AgentMode } from './lib/credit-cost'
 import { adminRoutes } from './routes/admin'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
@@ -1187,6 +1191,17 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     // If pod is already running, return immediately
     if (status.exists && status.ready) {
       console.log(`[sandbox/url] Returning ready response with url=${previewUrl}`)
+
+      // Lazy thumbnail capture: if project has no thumbnail, capture one now (fire-and-forget)
+      prisma.project.findUnique({ where: { id: projectId }, select: { thumbnailKey: true } })
+        .then((proj) => {
+          if (proj && !proj.thumbnailKey) {
+            const captureUrl = getPreviewUrl(projectId)
+            scheduleThumbnailCapture(projectId, captureUrl, 5000)
+          }
+        })
+        .catch(() => { /* ignore */ })
+
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl, // Backwards compat - legacy proxy URL
@@ -1257,6 +1272,19 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
   } else {
     // Local development: Use RuntimeManager
     const manager = getRuntimeManager()
+
+    // Lazy thumbnail capture for local dev: if runtime is running and no thumbnail exists
+    const runtime = manager.status(projectId)
+    if (runtime && runtime.status === 'running' && runtime.url) {
+      prisma.project.findUnique({ where: { id: projectId }, select: { thumbnailKey: true } })
+        .then((proj) => {
+          if (proj && !proj.thumbnailKey) {
+            scheduleThumbnailCapture(projectId, runtime.url!, 5000)
+          }
+        })
+        .catch(() => { /* ignore */ })
+    }
+
     const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
     const url = new URL(c.req.url)
     url.pathname = `/projects/${projectId}/sandbox/url`
@@ -2695,6 +2723,96 @@ const githubRouter = githubRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', githubRouter)
 
 // =============================================================================
+// Thumbnail Routes (project preview screenshots)
+// =============================================================================
+
+// Proxy route: Stream thumbnails from S3 (private) or disk (fallback)
+app.get('/thumbnails/:projectId', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  try {
+    // Get project to check if thumbnail exists
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { thumbnailKey: true },
+    })
+
+    if (!project || !project.thumbnailKey) {
+      return c.json({ error: 'Thumbnail not found' }, 404)
+    }
+
+    const bucket = getThumbnailsBucket()
+    
+    // If S3 is available and key looks like S3 key (starts with "thumbnails/")
+    if (bucket && project.thumbnailKey.startsWith('thumbnails/')) {
+      try {
+        const client = getS3Client()
+        const response = await client.send(new GetObjectCommand({
+          Bucket: bucket,
+          Key: project.thumbnailKey,
+        }))
+
+        if (!response.Body) {
+          return c.json({ error: 'Thumbnail not found in S3' }, 404)
+        }
+
+        // Stream the S3 object to the client
+        // Use transformToWebStream() if available (Bun/Node.js compatible)
+        // Otherwise fall back to reading as byte array
+        let bodyStream: ReadableStream<Uint8Array>
+        if (typeof response.Body.transformToWebStream === 'function') {
+          bodyStream = response.Body.transformToWebStream()
+        } else {
+          // Fallback: read as byte array and create stream
+          const bytes = await response.Body.transformToByteArray()
+          bodyStream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(bytes))
+              controller.close()
+            },
+          })
+        }
+
+        return new Response(bodyStream, {
+          headers: {
+            'Content-Type': 'image/png',
+            'Cache-Control': 'public, max-age=3600', // 1 hour cache
+          },
+        })
+      } catch (error: any) {
+        if (error.name === 'NoSuchKey' || error.$metadata?.httpStatusCode === 404) {
+          return c.json({ error: 'Thumbnail not found in S3' }, 404)
+        }
+        console.error(`[Thumbnail] S3 fetch error for ${projectId}:`, error)
+        return c.json({ error: 'Failed to fetch thumbnail' }, 500)
+      }
+    } else {
+      // Fallback to disk storage (local dev)
+      const filename = project.thumbnailKey
+      const filePath = join(getThumbnailsDir(), filename)
+      const file = Bun.file(filePath)
+      
+      if (await file.exists()) {
+        return new Response(file.stream(), {
+          headers: {
+            'Content-Type': 'image/png',
+            'Cache-Control': 'public, max-age=3600', // 1 hour cache
+          },
+        })
+      }
+      return c.json({ error: 'Thumbnail not found on disk' }, 404)
+    }
+  } catch (error: any) {
+    console.error(`[Thumbnail] Route error for ${projectId}:`, error)
+    return c.json({ error: 'Failed to fetch thumbnail' }, 500)
+  }
+})
+
+// Mount thumbnail capture route
+const thumbnailRouter = thumbnailRoutes()
+app.route('/api', thumbnailRouter)
+
+// =============================================================================
 // Project Chat Proxy Routes (pod-per-project architecture)
 // =============================================================================
 
@@ -3424,6 +3542,34 @@ app.post('/api/chat', async (c) => {
                 console.log(`[/api/chat] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${modelUsed})`)
               } catch (creditError: any) {
                 console.error(`[/api/chat] ⚠️ Failed to charge credits:`, creditError.message)
+              }
+            })()
+          }
+
+          // Thumbnail capture after AI code generation (fire-and-forget)
+          // Waits 8s for HMR/rebuild to finish before capturing
+          if (projectId) {
+            (async () => {
+              try {
+                // Resolve sandbox URL for this project
+                let sandboxUrl: string | null = null
+
+                if (isKubernetes()) {
+                  const { getPreviewUrl } = await import('./lib/knative-project-manager')
+                  sandboxUrl = getPreviewUrl(projectId)
+                } else {
+                  const manager = getRuntimeManager()
+                  const runtime = manager.status(projectId)
+                  if (runtime && runtime.status === 'running' && runtime.url) {
+                    sandboxUrl = runtime.url
+                  }
+                }
+
+                if (sandboxUrl) {
+                  scheduleThumbnailCapture(projectId, sandboxUrl, 8000)
+                }
+              } catch (err: any) {
+                console.error(`[/api/chat] ⚠️ Thumbnail trigger failed:`, err.message)
               }
             })()
           }

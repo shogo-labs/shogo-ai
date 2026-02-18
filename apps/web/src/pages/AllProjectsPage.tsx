@@ -104,6 +104,17 @@ interface Project {
   status?: string
   starred?: boolean
   folderId?: string | null
+  thumbnailKey?: string | null
+  thumbnailUpdatedAt?: number | null
+}
+
+/** Build thumbnail URL with cache-busting timestamp */
+function getThumbnailSrc(project: Project): string {
+  if (!project.thumbnailKey) return ''
+  const t = project.thumbnailUpdatedAt || project.updatedAt || ''
+  // Use backend proxy route: /thumbnails/{projectId}
+  const baseUrl = `/thumbnails/${project.id}`
+  return t ? `${baseUrl}?t=${t}` : baseUrl
 }
 
 interface Folder {
@@ -199,12 +210,21 @@ function DragOverlayCard({ project }: { project: Project }) {
   return (
     <div className="w-64 rounded-xl bg-card shadow-2xl border border-border overflow-hidden pointer-events-none">
       <div className={cn(
-        "aspect-[16/10] bg-gradient-to-br",
-        getPlaceholderGradient(project.name)
+        "aspect-[16/10] overflow-hidden",
+        !project.thumbnailKey && "bg-gradient-to-br",
+        !project.thumbnailKey && getPlaceholderGradient(project.name)
       )}>
+        {project.thumbnailKey ? (
+          <img
+            src={getThumbnailSrc(project)}
+            alt={`${project.name} preview`}
+            className="w-full h-full object-cover object-top"
+          />
+        ) : (
         <div className="absolute inset-0 flex items-center justify-center">
           <FolderOpen className="h-10 w-10 text-white/30" />
         </div>
+        )}
       </div>
       <div className="p-3">
         <p className="font-medium text-sm truncate">{project.name}</p>
@@ -1025,13 +1045,32 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                 >
                   {/* Preview area */}
                   <div className={cn(
-                    "relative aspect-[16/10] bg-gradient-to-br",
-                    getPlaceholderGradient(project.name)
+                    "relative aspect-[16/10] overflow-hidden",
+                    !project.thumbnailKey && "bg-gradient-to-br",
+                    !project.thumbnailKey && getPlaceholderGradient(project.name)
                   )}>
-                    {/* Project icon */}
+                    {/* Thumbnail image or fallback icon */}
+                    {project.thumbnailKey ? (
+                      <img
+                        src={getThumbnailSrc(project)}
+                        alt={`${project.name} preview`}
+                        className="w-full h-full object-cover object-top"
+                        loading="lazy"
+                        onError={(e) => {
+                          // On error, hide image and show gradient fallback
+                          const target = e.currentTarget
+                          target.style.display = 'none'
+                          const parent = target.parentElement
+                          if (parent) {
+                            parent.classList.add('bg-gradient-to-br', ...getPlaceholderGradient(project.name).split(' '))
+                          }
+                        }}
+                      />
+                    ) : (
                     <div className="absolute inset-0 flex items-center justify-center">
                       <FolderOpen className="h-10 w-10 text-white/30" />
                     </div>
+                    )}
 
                     {/* Checkbox in select mode */}
                   {isSelectMode && (
@@ -1247,10 +1286,20 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                         />
                       )}
                       <div className={cn(
-                        "flex-shrink-0 w-12 h-8 rounded-md bg-gradient-to-br flex items-center justify-center overflow-hidden",
-                        getPlaceholderGradient(project.name)
+                        "flex-shrink-0 w-12 h-8 rounded-md flex items-center justify-center overflow-hidden",
+                        !project.thumbnailKey && "bg-gradient-to-br",
+                        !project.thumbnailKey && getPlaceholderGradient(project.name)
                       )}>
+                        {project.thumbnailKey ? (
+                          <img
+                            src={getThumbnailSrc(project)}
+                            alt={`${project.name} preview`}
+                            className="w-full h-full object-cover object-top"
+                            loading="lazy"
+                          />
+                        ) : (
                         <FolderOpen className="h-4 w-4 text-white/50" />
+                        )}
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="font-medium text-sm truncate">{project.name}</p>

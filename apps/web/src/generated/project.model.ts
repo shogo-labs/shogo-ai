@@ -40,6 +40,8 @@ export const ProjectModel = types
     type: types.optional(types.enumeration("ProjectType", ["APP", "AGENT"]), "APP"),
     siteTitle: types.optional(types.string, ""),
     siteDescription: types.optional(types.string, ""),
+    thumbnailKey: types.optional(types.maybeNull(types.string), null),
+    thumbnailUpdatedAt: types.optional(types.maybeNull(types.number), null),
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
     folder: types.safeReference(types.late(() => FolderModel)),
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),

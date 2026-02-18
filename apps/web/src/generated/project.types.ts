@@ -28,6 +28,8 @@ export interface ProjectType {
   category?: string
   siteTitle?: string
   siteDescription?: string
+  thumbnailKey?: string
+  thumbnailUpdatedAt?: Date
 }
 
 export interface ProjectCreateInput {

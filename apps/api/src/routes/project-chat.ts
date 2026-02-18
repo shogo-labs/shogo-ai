@@ -17,6 +17,7 @@ import type { IRuntimeManager } from "../lib/runtime"
 import { calculateCreditCost, proxyModelToBillingModel } from "../lib/credit-cost"
 import * as billingService from "../services/billing.service"
 import { setProjectUser } from "../lib/project-user-context"
+import { scheduleThumbnailCapture } from "../services/thumbnail.service"
 
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
@@ -51,7 +52,8 @@ export interface ProjectChatRoutesConfig {
 async function trackUsageFromStream(
   stream: ReadableStream<Uint8Array>,
   requestBody: any,
-  project: { id: string; workspaceId: string }
+  project: { id: string; workspaceId: string },
+  sandboxUrl?: string | null,
 ) {
   const decoder = new TextDecoder()
   const reader = stream.getReader()
@@ -284,6 +286,13 @@ async function trackUsageFromStream(
     } catch (err) {
       console.error("[ProjectChat] Failed to persist assistant message:", err)
     }
+  }
+
+  // Thumbnail re-capture after AI code generation (fire-and-forget)
+  // Waits 8s for HMR/rebuild to settle before capturing
+  if (totalTokens > 0 && sandboxUrl) {
+    scheduleThumbnailCapture(project.id, sandboxUrl, 8000)
+    console.log(`[ProjectChat] 📸 Scheduled thumbnail capture for ${project.id}`)
   }
 }
 
@@ -522,8 +531,24 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // Tee the stream: one for the client, one for usage tracking
           const [clientStream, trackingStream] = response.body!.tee()
 
-          // Fire-and-forget: scan the tracking stream for usage data
-          trackUsageFromStream(trackingStream, parsedBody, project).catch((err) =>
+          // Resolve sandbox URL for thumbnail capture
+          // In local dev: agent is on port 6200, sandbox/Vite is on port 5200 (agent - 1000)
+          // In K8s: use the Knative preview URL
+          let sandboxUrl: string | null = null
+          try {
+            if (isKubernetes()) {
+              const { getPreviewUrl } = await import("../lib/knative-project-manager")
+              sandboxUrl = getPreviewUrl(projectId)
+            } else {
+              // Derive sandbox URL from agent URL: http://localhost:6200 -> http://localhost:5200
+              const agentUrl = new URL(podUrl)
+              const agentPort = parseInt(agentUrl.port)
+              sandboxUrl = `http://localhost:${agentPort - 1000}`
+            }
+          } catch { /* ignore */ }
+
+          // Fire-and-forget: scan the tracking stream for usage data + trigger thumbnail
+          trackUsageFromStream(trackingStream, parsedBody, project, sandboxUrl).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)
           )
 

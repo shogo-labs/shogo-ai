@@ -48,6 +48,15 @@ function getTimeAgo(timestamp: number): string {
   return formatDistanceToNow(new Date(timestamp), { addSuffix: true })
 }
 
+/** Build thumbnail URL with cache-busting timestamp */
+function getThumbnailSrc(project: any): string {
+  if (!project.thumbnailKey) return ''
+  const t = project.thumbnailUpdatedAt || project.updatedAt || ''
+  // Use backend proxy route: /thumbnails/{projectId}
+  const baseUrl = `/thumbnails/${project.id}`
+  return t ? `${baseUrl}?t=${t}` : baseUrl
+}
+
 // Project card placeholder colors based on project name
 function getPlaceholderGradient(name: string): string {
   const colors = [
@@ -231,13 +240,31 @@ export const StarredProjectsPage = observer(function StarredProjectsPage() {
               >
                 {/* Preview area */}
                 <div className={cn(
-                  "relative aspect-[16/10] bg-gradient-to-br",
-                  getPlaceholderGradient(project.name || "")
+                  "relative aspect-[16/10] overflow-hidden",
+                  !project.thumbnailKey && "bg-gradient-to-br",
+                  !project.thumbnailKey && getPlaceholderGradient(project.name || "")
                 )}>
-                  {/* Project icon */}
+                  {/* Thumbnail or fallback icon */}
+                  {project.thumbnailKey ? (
+                    <img
+                      src={getThumbnailSrc(project)}
+                      alt={`${project.name} preview`}
+                      className="w-full h-full object-cover object-top"
+                      loading="lazy"
+                      onError={(e) => {
+                        const target = e.currentTarget
+                        target.style.display = 'none'
+                        const parent = target.parentElement
+                        if (parent) {
+                          parent.classList.add('bg-gradient-to-br', ...getPlaceholderGradient(project.name || '').split(' '))
+                        }
+                      }}
+                    />
+                  ) : (
                   <div className="absolute inset-0 flex items-center justify-center">
                     <FolderOpen className="h-10 w-10 text-white/30" />
                   </div>
+                  )}
 
                   {/* Unstar button - always visible since it's starred */}
                   <button
@@ -313,10 +340,15 @@ export const StarredProjectsPage = observer(function StarredProjectsPage() {
                   {/* Name column with preview */}
                   <div className="flex items-center gap-3 min-w-0">
                     <div className={cn(
-                      "flex-shrink-0 w-12 h-8 rounded-md bg-gradient-to-br flex items-center justify-center overflow-hidden",
-                      getPlaceholderGradient(project.name || "")
+                      "flex-shrink-0 w-12 h-8 rounded-md flex items-center justify-center overflow-hidden",
+                      !project.thumbnailKey && "bg-gradient-to-br",
+                      !project.thumbnailKey && getPlaceholderGradient(project.name || "")
                     )}>
+                      {project.thumbnailKey ? (
+                        <img src={getThumbnailSrc(project)} alt="" className="w-full h-full object-cover object-top" loading="lazy" />
+                      ) : (
                       <FolderOpen className="h-4 w-4 text-white/50" />
+                      )}
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="font-medium text-sm truncate">{project.name}</p>

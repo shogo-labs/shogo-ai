@@ -77,6 +77,10 @@ export default defineConfig(({ mode }) => {
           target: mcpProxyTarget,
           changeOrigin: true,
         },
+        '/thumbnails': {
+          target: apiProxyTarget,
+          changeOrigin: true,
+        },
       },
       // Watch config for Docker volumes (polling needed on macOS)
       watch: {
