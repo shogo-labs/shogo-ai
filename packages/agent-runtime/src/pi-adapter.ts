@@ -44,30 +44,62 @@ const PROVIDER_API_KEY_ENV: Record<string, string> = {
   mistral: 'MISTRAL_API_KEY',
 }
 
+const PROVIDER_BASE_URL_ENV: Record<string, string> = {
+  anthropic: 'ANTHROPIC_BASE_URL',
+  openai: 'OPENAI_BASE_URL',
+  google: 'GOOGLE_BASE_URL',
+  xai: 'XAI_BASE_URL',
+  groq: 'GROQ_BASE_URL',
+  cerebras: 'CEREBRAS_BASE_URL',
+  openrouter: 'OPENROUTER_BASE_URL',
+  mistral: 'MISTRAL_BASE_URL',
+}
+
 /**
  * Resolve a Pi Model object from a provider + modelId string.
- * Falls back to constructing a model object if the model isn't in pi-ai's registry.
+ * Respects *_BASE_URL env vars (set by configureAIProxy) to route through
+ * the API server's AI proxy instead of hitting provider APIs directly.
  */
 export function resolveModel(provider: string, modelId: string): Model<Api> {
+  let model: Model<Api> | undefined
   try {
-    const model = getModel(provider as any, modelId as any)
-    if (model) return model
+    model = getModel(provider as any, modelId as any) ?? undefined
   } catch {
-    // Model not in registry, construct manually
+    // Model not in registry
   }
 
-  return {
-    id: modelId,
-    name: modelId,
-    api: provider === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
-    provider,
-    baseUrl: getDefaultBaseUrl(provider),
-    reasoning: false,
-    input: ['text'],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 200000,
-    maxTokens: 8192,
-  } as Model<Api>
+  if (!model) {
+    model = {
+      id: modelId,
+      name: modelId,
+      api: provider === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
+      provider,
+      baseUrl: getDefaultBaseUrl(provider),
+      reasoning: false,
+      input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200000,
+      maxTokens: 8192,
+    } as Model<Api>
+  }
+
+  const envBaseUrl = resolveBaseUrl(provider)
+  if (envBaseUrl) {
+    return { ...model, baseUrl: envBaseUrl }
+  }
+
+  return model
+}
+
+/**
+ * Check for a provider-specific *_BASE_URL override in the environment.
+ * Used by configureAIProxy to route requests through the API server's proxy.
+ */
+function resolveBaseUrl(provider: string): string | undefined {
+  const envVar = PROVIDER_BASE_URL_ENV[provider]
+  if (envVar) return process.env[envVar]
+  const genericKey = `${provider.toUpperCase().replace(/-/g, '_')}_BASE_URL`
+  return process.env[genericKey]
 }
 
 function getDefaultBaseUrl(provider: string): string {

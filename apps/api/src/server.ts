@@ -2771,6 +2771,17 @@ app.post('/api/admin/projects/:projectId/warmup', async (c) => {
   return router.fetch(newReq)
 })
 
+// GET /api/admin/warm-pool - Get warm pool status
+app.get('/api/admin/warm-pool', async (c) => {
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    return c.json(controller.getStatus())
+  } catch (err: any) {
+    return c.json({ enabled: false, error: err.message })
+  }
+})
+
 // DELETE /api/admin/projects/:projectId - Delete project pod
 app.delete('/api/admin/projects/:projectId', async (c) => {
   const router = projectAdminRoutes()
@@ -3755,5 +3766,19 @@ if (PREWARM_ENABLED) {
       console.error('[ClaudeCode] ⚠️ Pre-warm error (non-fatal):', err.message)
     })
   }, 3000)
+}
+
+// Start warm pool controller (Kubernetes only).
+// Maintains pre-warmed pods to eliminate cold start latency for users.
+if (isKubernetes()) {
+  setTimeout(async () => {
+    try {
+      const { startWarmPool } = await import('./lib/warm-pool-controller')
+      await startWarmPool()
+      console.log('[WarmPool] Warm pool controller started')
+    } catch (err: any) {
+      console.error('[WarmPool] Failed to start warm pool controller (non-fatal):', err.message)
+    }
+  }, 5000)
 }
 

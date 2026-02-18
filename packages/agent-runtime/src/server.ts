@@ -65,7 +65,8 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 
 logTiming('Loading configuration...')
 
-const PROJECT_ID = process.env.PROJECT_ID
+const POOL_PROJECT_ID = '__POOL__'
+let currentProjectId = process.env.PROJECT_ID
 const AGENT_DIR = process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/agent'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const MCP_SERVER_PATH =
@@ -73,14 +74,21 @@ const MCP_SERVER_PATH =
   resolve(MONOREPO_ROOT, 'packages/agent-runtime/src/tools/mcp-server.ts')
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
-if (!PROJECT_ID) {
+const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
+let poolAssigned = false
+
+if (!currentProjectId) {
   console.error(
     '[agent-runtime] ERROR: PROJECT_ID environment variable is required'
   )
   process.exit(1)
 }
 
-logTiming(`Configuration loaded for agent: ${PROJECT_ID}`)
+if (IS_POOL_MODE) {
+  logTiming('Starting in WARM POOL mode (awaiting project assignment)')
+} else {
+  logTiming(`Configuration loaded for agent: ${currentProjectId}`)
+}
 console.log(`[agent-runtime] Agent directory: ${AGENT_DIR}`)
 
 // =============================================================================
@@ -164,12 +172,12 @@ Long-lived facts and learnings are stored here.
 // AI Proxy Configuration
 // =============================================================================
 
-const aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
+let aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
 if (aiProxy.useProxy) {
   Object.assign(process.env, aiProxy.env)
 }
-const claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
-  PROJECT_ID: PROJECT_ID!,
+let claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
+  PROJECT_ID: currentProjectId!,
   AGENT_DIR,
   RUNTIME_PORT: String(PORT),
 })
@@ -208,7 +216,7 @@ function buildAgentSessionOptions(modelName: ModelTier): V2SessionOptions {
         command: 'bun',
         args: ['run', MCP_SERVER_PATH],
         env: {
-          PROJECT_ID: PROJECT_ID!,
+          PROJECT_ID: currentProjectId!,
           AGENT_DIR,
           MCP_CONTEXT: 'agent',
         },
@@ -230,7 +238,7 @@ function buildAgentSessionOptions(modelName: ModelTier): V2SessionOptions {
   }
 }
 
-const sessions = createSessionManager({
+let sessions = createSessionManager({
   buildSessionOptions: buildAgentSessionOptions,
   defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
   logPrefix: 'agent-runtime',
@@ -252,7 +260,7 @@ function writeAgentConfigFiles(): void {
         command: 'bun',
         args: ['run', MCP_SERVER_PATH],
         env: {
-          PROJECT_ID: PROJECT_ID!,
+          PROJECT_ID: currentProjectId!,
           AGENT_DIR,
           MCP_CONTEXT: 'agent',
         },
@@ -282,8 +290,9 @@ app.use('*', cors({ origin: '*' }))
 app.get('/health', (c) =>
   c.json({
     status: 'ok',
-    projectId: PROJECT_ID,
+    projectId: currentProjectId,
     runtimeType: 'agent',
+    poolMode: IS_POOL_MODE && !poolAssigned,
     uptime: Math.floor((Date.now() - SERVER_START_TIME) / 1000),
     gateway: agentGateway?.getStatus() ?? null,
   })
@@ -292,6 +301,72 @@ app.get('/health', (c) =>
 // Readiness probe
 app.get('/ready', (c) => {
   return c.json({ ready: true })
+})
+
+// =============================================================================
+// Warm Pool Assignment Endpoint
+// =============================================================================
+
+app.post('/pool/assign', async (c) => {
+  if (!IS_POOL_MODE) {
+    return c.json({ error: 'Not in pool mode' }, 400)
+  }
+  if (poolAssigned) {
+    return c.json({ error: 'Already assigned', projectId: currentProjectId }, 400)
+  }
+
+  const startTime = Date.now()
+  const body = await c.req.json()
+  const { projectId, env: envVars } = body
+
+  if (!projectId || typeof projectId !== 'string') {
+    return c.json({ error: 'projectId (string) is required' }, 400)
+  }
+
+  logTiming(`Pool assignment starting for project ${projectId}`)
+
+  // 1. Update project identity
+  currentProjectId = projectId
+  process.env.PROJECT_ID = projectId
+
+  // 2. Inject environment variables from the controller
+  if (envVars && typeof envVars === 'object') {
+    for (const [key, value] of Object.entries(envVars)) {
+      if (typeof value === 'string') {
+        process.env[key] = value
+      }
+    }
+  }
+
+  // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
+  aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
+  if (aiProxy.useProxy) {
+    Object.assign(process.env, aiProxy.env)
+  }
+  claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
+    PROJECT_ID: currentProjectId,
+    AGENT_DIR,
+    RUNTIME_PORT: String(PORT),
+  })
+
+  // 4. Recreate session manager with updated config
+  sessions = createSessionManager({
+    buildSessionOptions: buildAgentSessionOptions,
+    defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
+    logPrefix: 'agent-runtime',
+  })
+
+  // 5. Run project-specific initialization
+  try {
+    await initialize()
+    poolAssigned = true
+    const duration = Date.now() - startTime
+    logTiming(`Pool assignment complete for ${projectId} (${duration}ms)`)
+    return c.json({ ok: true, projectId, durationMs: duration })
+  } catch (error: any) {
+    console.error(`[agent-runtime] Pool assignment failed for ${projectId}:`, error.message)
+    return c.json({ error: `Assignment failed: ${error.message}` }, 500)
+  }
 })
 
 // Agent status (detailed)
@@ -560,7 +635,7 @@ async function initialize(): Promise<void> {
   writeAgentConfigFiles()
 
   // Initialize S3 sync if configured
-  if (process.env.S3_BUCKET) {
+  if (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET) {
     try {
       const result = await initializeS3Sync(AGENT_DIR)
       if (result) {
@@ -572,7 +647,7 @@ async function initialize(): Promise<void> {
   }
 
   // Initialize Postgres backup if configured
-  if (process.env.DATABASE_URL && process.env.S3_BUCKET) {
+  if (process.env.DATABASE_URL && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     try {
       const pgBackup = await initializePostgresBackup()
       if (pgBackup) {
@@ -587,7 +662,7 @@ async function initialize(): Promise<void> {
   }
 
   // Start agent gateway
-  agentGateway = new AgentGateway(AGENT_DIR, PROJECT_ID!)
+  agentGateway = new AgentGateway(AGENT_DIR, currentProjectId!)
   await agentGateway.start()
   logTiming('Agent gateway started')
 }
@@ -596,21 +671,33 @@ async function initialize(): Promise<void> {
 // Start Server
 // =============================================================================
 
-initialize()
-  .then(() => {
-    logTiming(`Starting server on port ${PORT}`)
-  })
-  .catch((error) => {
-    console.error('[agent-runtime] Initialization failed:', error)
-  })
+if (IS_POOL_MODE) {
+  // Pool mode: skip project-specific initialization, just start the server.
+  // Pre-warm Claude Code session eagerly so it's hot when a project is assigned.
+  logTiming('Pool mode: skipping project init, server ready for assignment')
+  setTimeout(() => {
+    sessions.prewarm().catch((err) => {
+      console.error('[agent-runtime] Pool pre-warm error:', err.message)
+    })
+  }, 1000)
+} else {
+  // Normal mode: run full project-specific initialization
+  initialize()
+    .then(() => {
+      logTiming(`Starting server on port ${PORT}`)
+    })
+    .catch((error) => {
+      console.error('[agent-runtime] Initialization failed:', error)
+    })
+
+  setTimeout(() => {
+    sessions.prewarm().catch((err) => {
+      console.error('[agent-runtime] Pre-warm error:', err.message)
+    })
+  }, 2000)
+}
 
 export default {
   port: PORT,
   fetch: app.fetch,
 }
-
-setTimeout(() => {
-  sessions.prewarm().catch((err) => {
-    console.error('[agent-runtime] Pre-warm error:', err.message)
-  })
-}, 2000)

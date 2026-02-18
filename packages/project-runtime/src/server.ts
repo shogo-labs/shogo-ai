@@ -56,7 +56,8 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 
 logTiming('Loading configuration...')
 
-const PROJECT_ID = process.env.PROJECT_ID
+const POOL_PROJECT_ID = '__POOL__'
+let currentProjectId = process.env.PROJECT_ID
 const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 // MCP server path: resolve from MONOREPO_ROOT for local dev, fallback to Docker path
@@ -67,13 +68,24 @@ const PORT = parseInt(process.env.PORT || '8080', 10)
 const FAST_START_MODE = process.env.FAST_START_MODE === 'true'
 const BUILD_STATUS_FILE = process.env.BUILD_STATUS_FILE || '/tmp/build-status'
 
+// Warm pool mode: pod starts without a real project, awaiting assignment
+const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
+let poolAssigned = false
+
 // Validate required environment
-if (!PROJECT_ID) {
+if (!currentProjectId) {
   console.error('[project-runtime] ERROR: PROJECT_ID environment variable is required')
   process.exit(1)
 }
 
-logTiming(`Configuration loaded for project: ${PROJECT_ID}`)
+// Alias for backward compatibility (many references throughout this large file)
+const PROJECT_ID = currentProjectId
+
+if (IS_POOL_MODE) {
+  logTiming('Starting in WARM POOL mode (awaiting project assignment)')
+} else {
+  logTiming(`Configuration loaded for project: ${currentProjectId}`)
+}
 console.log(`[project-runtime] Project directory: ${PROJECT_DIR}`)
 console.log(`[project-runtime] Schemas path: ${SCHEMAS_PATH}`)
 console.log(`[project-runtime] MCP server path: ${MCP_SERVER_PATH}`)
@@ -95,7 +107,13 @@ let postgresBackup: PostgresBackup | null = null
 // Writes marker file when complete so background init can proceed
 const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
 
-;(async () => {
+// In pool mode, skip S3 sync until a project is assigned
+if (IS_POOL_MODE) {
+  logTiming('Pool mode: skipping S3 sync (no project assigned yet)')
+  writeFileSync(S3_RESTORE_MARKER, `pool-mode:${Date.now()}`)
+}
+
+;(!IS_POOL_MODE) && (async () => {
   const s3StartTime = Date.now()
   try {
     const result = await initializeS3Sync(PROJECT_DIR)
@@ -595,8 +613,8 @@ const pathRestrictor = createPathRestrictor(PROJECT_DIR)
 console.log(`[project-runtime] ✅ Forbidden command guardrail ACTIVE (${FORBIDDEN_COMMAND_PATTERNS.length} patterns)`)
 
 // AI Proxy Configuration
-const aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
-const claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
+let aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+let claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
   RUNTIME_PORT: String(PORT),
 })
 
@@ -639,7 +657,7 @@ function writeAgentConfigFiles(): void {
         args: ['run', MCP_SERVER_PATH],
         env: {
           SCHEMAS_PATH,
-          PROJECT_ID: PROJECT_ID!,
+          PROJECT_ID: currentProjectId!,
           PROJECT_DIR,
           RUNTIME_PORT: String(PORT),
           NODE_ENV: process.env.NODE_ENV || 'production',
@@ -660,7 +678,9 @@ try {
 } catch (e: any) {
   console.warn(`[project-runtime] Could not chdir to ${PROJECT_DIR}: ${e.message}`)
 }
-writeAgentConfigFiles()
+if (!IS_POOL_MODE) {
+  writeAgentConfigFiles()
+}
 
 function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
   return {
@@ -682,7 +702,7 @@ function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
   }
 }
 
-const sessions = createSessionManager({
+let sessions = createSessionManager({
   buildSessionOptions: buildProjectSessionOptions,
   defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
   logPrefix: 'project-runtime',
@@ -891,13 +911,90 @@ app.get('/health', (c) => {
   const uptimeMs = Date.now() - SERVER_START_TIME
   return c.json({
     status: 'ok',
-    projectId: PROJECT_ID,
+    projectId: currentProjectId,
     projectDir: PROJECT_DIR,
     uptime: process.uptime(),
     uptimeMs,
+    poolMode: IS_POOL_MODE && !poolAssigned,
     fastStartMode: FAST_START_MODE,
     coldStartMs: uptimeMs < 60000 ? uptimeMs : undefined, // Only show for first minute
   })
+})
+
+// =============================================================================
+// Warm Pool Assignment Endpoint
+// =============================================================================
+
+app.post('/pool/assign', async (c) => {
+  if (!IS_POOL_MODE) {
+    return c.json({ error: 'Not in pool mode' }, 400)
+  }
+  if (poolAssigned) {
+    return c.json({ error: 'Already assigned', projectId: currentProjectId }, 400)
+  }
+
+  const startTime = Date.now()
+  const body = await c.req.json()
+  const { projectId, env: envVars } = body
+
+  if (!projectId || typeof projectId !== 'string') {
+    return c.json({ error: 'projectId (string) is required' }, 400)
+  }
+
+  logTiming(`Pool assignment starting for project ${projectId}`)
+
+  // 1. Update project identity
+  currentProjectId = projectId
+  process.env.PROJECT_ID = projectId
+
+  // 2. Inject environment variables from the controller
+  if (envVars && typeof envVars === 'object') {
+    for (const [key, value] of Object.entries(envVars)) {
+      if (typeof value === 'string') {
+        process.env[key] = value
+      }
+    }
+  }
+
+  // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
+  aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+  claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
+    RUNTIME_PORT: String(PORT),
+  })
+
+  // 4. Recreate session manager with updated config
+  sessions = createSessionManager({
+    buildSessionOptions: buildProjectSessionOptions,
+    defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
+    logPrefix: 'project-runtime',
+  })
+
+  // 5. Run project-specific initialization
+  try {
+    // Initialize S3 sync to download project data
+    if (process.env.S3_WORKSPACES_BUCKET) {
+      const result = await initializeS3Sync(PROJECT_DIR)
+      if (result) {
+        const { sync, downloadSucceeded } = result
+        if (downloadSucceeded) {
+          s3Sync = sync
+          logTiming('Pool assign: S3 sync initialized')
+          writeFileSync(S3_RESTORE_MARKER, `pool-assigned:${Date.now()}`)
+        }
+      }
+    }
+
+    // Write config files now that we have a real project
+    writeAgentConfigFiles()
+
+    poolAssigned = true
+    const duration = Date.now() - startTime
+    logTiming(`Pool assignment complete for ${projectId} (${duration}ms)`)
+    return c.json({ ok: true, projectId, durationMs: duration })
+  } catch (error: any) {
+    console.error(`[project-runtime] Pool assignment failed for ${projectId}:`, error.message)
+    return c.json({ error: `Assignment failed: ${error.message}` }, 500)
+  }
 })
 
 // Readiness check - returns 503 until build completes in fast start mode
@@ -6486,9 +6583,10 @@ export default {
 }
 
 // Pre-warm Claude Code after server is listening.
-// Small delay ensures the export/listen completes before we start the warm-up.
+// In pool mode, pre-warm eagerly (the whole point is to have a warm session ready).
+// In normal mode, small delay ensures the export/listen completes first.
 setTimeout(() => {
   sessions.prewarm().catch((err: any) => {
     console.error('[project-runtime] Pre-warm error (non-fatal):', err.message)
   })
-}, 2000)
+}, IS_POOL_MODE ? 1000 : 2000)

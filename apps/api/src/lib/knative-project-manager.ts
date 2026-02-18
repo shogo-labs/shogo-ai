@@ -1022,6 +1022,14 @@ const PENDING_REQUEST_CLEANUP_MS = 5 * 60 * 1000
  * 
  * This function deduplicates concurrent requests - if multiple requests come in
  * for the same project while it's starting, they all share the same wait promise.
+ *
+ * Warm Pool integration:
+ * When a project doesn't have a running Knative Service, this function attempts
+ * to claim a warm pod from the pool first. If a warm pod is available:
+ * 1. The warm pod is assigned the project identity (instant)
+ * 2. The warm pod URL is returned immediately
+ * 3. The real Knative Service is created in the background (for future cold starts)
+ * If no warm pod is available, falls back to cold start.
  */
 export async function getProjectPodUrl(projectId: string): Promise<string> {
   if (!isKubernetes()) {
@@ -1045,21 +1053,34 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
   const workPromise = (async (): Promise<string> => {
     try {
       const manager = getKnativeProjectManager()
+
+      // Check if this project is already served by a warm pool pod
+      const { getWarmPoolController } = await import('./warm-pool-controller')
+      const warmPool = getWarmPoolController()
+      const warmUrl = warmPool.getAssignedUrl(projectId)
+      if (warmUrl) {
+        console.log(`[KnativeProjectManager] Project ${projectId} served by warm pool (elapsed: ${Date.now() - totalStartTime}ms)`)
+        return warmUrl
+      }
+
       const status = await manager.getStatus(projectId)
 
       if (!status.exists) {
-        // Create the project pod
-        console.log(`[KnativeProjectManager] Project ${projectId} does not exist, creating... (elapsed: ${Date.now() - totalStartTime}ms)`)
+        // Project doesn't have a Knative Service — try warm pool first
+        const warmPodUrl = await tryClaimWarmPod(projectId, manager)
+        if (warmPodUrl) {
+          const totalDuration = Date.now() - totalStartTime
+          console.log(`[KnativeProjectManager] getProjectPodUrl completed for ${projectId} via warm pool in ${totalDuration}ms`)
+          return warmPodUrl
+        }
+
+        // No warm pod available — fall back to cold start
+        console.log(`[KnativeProjectManager] Project ${projectId} does not exist, creating (cold start)... (elapsed: ${Date.now() - totalStartTime}ms)`)
         await manager.createProject(projectId)
-        // Wait for the pod to be ready before returning the URL
-        // This prevents "connection refused" errors when proxying immediately after creation
-        // Timeout: 180s to account for image pull (can take 60-90s for 1GB images)
         console.log(`[KnativeProjectManager] Waiting for project ${projectId} to be ready... (elapsed: ${Date.now() - totalStartTime}ms)`)
         await manager.waitForReady(projectId, 180000)
       } else if (!status.ready) {
         // Pod exists but isn't ready (cold start from scale-to-zero)
-        // Wait for it to become ready
-        // Timeout: 120s to account for image pull during cold starts
         console.log(`[KnativeProjectManager] Project ${projectId} exists but not ready (cold start), waiting... (elapsed: ${Date.now() - totalStartTime}ms)`)
         await manager.waitForReady(projectId, 120000)
       } else {
@@ -1091,4 +1112,60 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
   }, PENDING_REQUEST_CLEANUP_MS)
 
   return workPromise
+}
+
+/**
+ * Attempt to claim a warm pod for a project.
+ * If successful, assigns the project to the warm pod and kicks off
+ * background creation of the real Knative Service.
+ * Returns the warm pod URL on success, null on failure/unavailability.
+ */
+async function tryClaimWarmPod(
+  projectId: string,
+  manager: KnativeProjectManager
+): Promise<string | null> {
+  try {
+    const { getWarmPoolController } = await import('./warm-pool-controller')
+    const warmPool = getWarmPoolController()
+    const poolStatus = warmPool.getStatus()
+    if (!poolStatus.enabled) return null
+
+    // Determine runtime type
+    const { prisma } = await import('./prisma')
+    const projectRecord = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { type: true },
+    })
+    const runtimeType = projectRecord?.type === 'AGENT' ? 'agent' as const : 'project' as const
+
+    // Try to claim a warm pod
+    const pod = warmPool.claim(runtimeType)
+    if (!pod) {
+      console.log(`[KnativeProjectManager] No warm ${runtimeType} pod available for ${projectId}`)
+      return null
+    }
+
+    console.log(`[KnativeProjectManager] Claimed warm pod ${pod.serviceName} for ${projectId}`)
+
+    // Build project-specific env vars
+    const envVars = await warmPool.buildProjectEnv(projectId)
+
+    // Assign the project to the warm pod (sends /pool/assign)
+    await warmPool.assign(pod, projectId, envVars)
+
+    // Create the real Knative Service in the background so future
+    // cold starts (after the warm pod scales to zero) work correctly.
+    // This is fire-and-forget — the warm pod is already serving.
+    manager.createProject(projectId).catch((err) => {
+      console.error(
+        `[KnativeProjectManager] Background createProject for ${projectId} failed:`,
+        err.message
+      )
+    })
+
+    return pod.url
+  } catch (err: any) {
+    console.error(`[KnativeProjectManager] Warm pool claim failed for ${projectId}:`, err.message)
+    return null
+  }
 }
