@@ -613,7 +613,15 @@ const pathRestrictor = createPathRestrictor(PROJECT_DIR)
 console.log(`[project-runtime] ✅ Forbidden command guardrail ACTIVE (${FORBIDDEN_COMMAND_PATTERNS.length} patterns)`)
 
 // AI Proxy Configuration
-let aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+// configureAIProxy() throws when AI_PROXY_URL is set but no token is available,
+// preventing silent fallback to a raw platform ANTHROPIC_API_KEY.
+let aiProxy: ReturnType<typeof configureAIProxy>
+try {
+  aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+} catch (err: any) {
+  console.error(`[project-runtime] FATAL: ${err.message}`)
+  process.exit(1)
+}
 let claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
   RUNTIME_PORT: String(PORT),
 })
@@ -957,7 +965,12 @@ app.post('/pool/assign', async (c) => {
   }
 
   // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
-  aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+  try {
+    aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+  } catch (err: any) {
+    console.error(`[project-runtime] FATAL during reconfigure: ${err.message}`)
+    process.exit(1)
+  }
   claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
     RUNTIME_PORT: String(PORT),
   })

@@ -644,23 +644,28 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           console.log(`[RuntimeManager] Using isolated projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
         }
 
-        // AI Proxy configuration — route Claude Code through the API's proxy
-        // instead of requiring a raw ANTHROPIC_API_KEY in the runtime process
+        // AI Proxy configuration — always route Claude Code through the local API proxy.
+        // We generate a fresh, project-scoped token here rather than propagating
+        // process.env.AI_PROXY_TOKEN (which may be a platform-level or stale token).
+        // The raw ANTHROPIC_API_KEY is explicitly deleted from the child env so the
+        // runtime process cannot fall back to the platform API key.
         const apiPort = process.env.API_PORT || '8002'
-        runtimeEnv.AI_PROXY_URL = process.env.AI_PROXY_URL || `http://localhost:${apiPort}/api/ai/v1`
+        const proxyUrl = `http://localhost:${apiPort}/api/ai/v1`
+        runtimeEnv.AI_PROXY_URL = proxyUrl
 
-        if (process.env.AI_PROXY_TOKEN) {
-          runtimeEnv.AI_PROXY_TOKEN = process.env.AI_PROXY_TOKEN
-        } else {
-          try {
-            const { generateProxyToken } = await import('../ai-proxy-token')
-            const workspaceId = await this.getProjectWorkspaceId(projectId) || 'local-dev'
-            runtimeEnv.AI_PROXY_TOKEN = await generateProxyToken(projectId, workspaceId, 'system', 7 * 24 * 60 * 60 * 1000)
-            console.log(`[RuntimeManager] Generated AI proxy token for ${projectId}`)
-          } catch (err: any) {
-            console.warn(`[RuntimeManager] Failed to generate proxy token: ${err.message}`)
-          }
+        try {
+          const { generateProxyToken } = await import('../ai-proxy-token')
+          const workspaceId = await this.getProjectWorkspaceId(projectId) || 'local-dev'
+          runtimeEnv.AI_PROXY_TOKEN = await generateProxyToken(projectId, workspaceId, 'system', 7 * 24 * 60 * 60 * 1000)
+          console.log(`[RuntimeManager] Generated AI proxy token for ${projectId} (workspace: ${workspaceId})`)
+        } catch (err: any) {
+          console.error(`[RuntimeManager] Failed to generate proxy token for ${projectId}: ${err.message}`)
+          console.error(`[RuntimeManager] Runtime will start without AI proxy — LLM calls will fail`)
         }
+
+        // Strip the raw platform API key so the child process cannot bypass the proxy.
+        delete runtimeEnv.ANTHROPIC_API_KEY
+        delete runtimeEnv.ANTHROPIC_BASE_URL
         
         const agentProc = spawn('bun', ['run', runtimeServerPath], {
           cwd: projectDir,

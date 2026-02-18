@@ -172,7 +172,15 @@ Long-lived facts and learnings are stored here.
 // AI Proxy Configuration
 // =============================================================================
 
-let aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
+// configureAIProxy() throws when AI_PROXY_URL is set but no token is available,
+// preventing silent fallback to a raw platform ANTHROPIC_API_KEY.
+let aiProxy: ReturnType<typeof configureAIProxy>
+try {
+  aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
+} catch (err: any) {
+  console.error(`[agent-runtime] FATAL: ${err.message}`)
+  process.exit(1)
+}
 if (aiProxy.useProxy) {
   Object.assign(process.env, aiProxy.env)
 }
@@ -339,7 +347,12 @@ app.post('/pool/assign', async (c) => {
   }
 
   // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
-  aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
+  try {
+    aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
+  } catch (err: any) {
+    console.error(`[agent-runtime] FATAL during reconfigure: ${err.message}`)
+    process.exit(1)
+  }
   if (aiProxy.useProxy) {
     Object.assign(process.env, aiProxy.env)
   }
