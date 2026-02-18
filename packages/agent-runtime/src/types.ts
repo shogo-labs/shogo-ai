@@ -28,8 +28,35 @@ export interface ChannelAdapter {
   connect(config: Record<string, string>): Promise<void>
   disconnect(): Promise<void>
   sendMessage(channelId: string, content: string): Promise<void>
+  /** Edit a previously sent message (for streaming updates). Returns false if unsupported. */
+  editMessage?(channelId: string, messageId: string, content: string): Promise<boolean>
+  /** Send a typing indicator. Called periodically during agent turns. */
+  sendTyping?(channelId: string): Promise<void>
   onMessage(handler: (msg: IncomingMessage) => void): void
   getStatus(): ChannelStatus
+}
+
+export interface StreamChunkConfig {
+  /** Min characters before flushing a chunk (default: 80) */
+  minChars: number
+  /** Max characters before force-flushing (default: 2000) */
+  maxChars: number
+  /** Idle time in ms before flushing whatever is buffered (default: 500) */
+  idleMs: number
+}
+
+export interface SandboxConfig {
+  enabled: boolean
+  /** 'all' sandboxes every session, 'non-main' only sandboxes non-owner sessions */
+  mode: 'all' | 'non-main'
+  /** Docker image to use (default: 'ubuntu:22.04') */
+  image: string
+  /** Allow network access inside sandbox (default: false) */
+  networkEnabled: boolean
+  /** Memory limit (default: '256m') */
+  memoryLimit: string
+  /** CPU quota (default: '0.5') */
+  cpuLimit: string
 }
 
 export interface AgentStatus {
@@ -44,6 +71,20 @@ export interface AgentStatus {
   channels: ChannelStatus[]
   skills: Array<{ name: string; trigger: string; description: string }>
   model: { provider: string; name: string }
+  sessions?: Array<{
+    id: string
+    messageCount: number
+    estimatedTokens: number
+    compactedSummary: boolean
+    compactionCount: number
+    idleSeconds: number
+  }>
+  cronJobs?: Array<{
+    name: string
+    intervalSeconds: number
+    enabled: boolean
+    lastRunAt: string | null
+  }>
 }
 
 export interface SkillDefinition {
