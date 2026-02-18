@@ -375,8 +375,8 @@ jobs:
 
       - name: Restart image prepuller
         run: |
-          # Restart the image-prepuller DaemonSet to pull the new project-runtime image
-          # This ensures the new image is pre-pulled on all nodes for fast cold starts
+          # Restart the image-prepuller DaemonSet to pull new project-runtime and agent-runtime images
+          # This ensures both images are pre-pulled on all nodes for fast cold starts
           echo "🔄 Restarting image-prepuller to pull new project-runtime image..."
           kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} || echo "Image prepuller not found, skipping"
           
