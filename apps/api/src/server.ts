@@ -2075,9 +2075,26 @@ app.delete('/api/projects/:projectId/tests/traces', async (c) => {
 // Security scanning routes - Automated security analysis
 // =============================================================================
 
+// Rate limiting: one scan at a time, 10s cooldown (protects LLM spend)
+let _scanInProgress = false
+let _lastScanTimestamp = 0
+const SCAN_COOLDOWN = 10_000
+
 app.post('/api/projects/:projectId/security/scan', async (c) => {
   const projectId = c.req.param('projectId')
-  
+
+  // In local mode: enforce rate limiting (K8s pods handle their own)
+  if (!isKubernetes()) {
+    if (_scanInProgress) {
+      return c.json({ ok: false, error: { code: 'scan_in_progress', message: 'A security scan is already running.' } }, 429)
+    }
+    const now = Date.now()
+    if (now - _lastScanTimestamp < SCAN_COOLDOWN) {
+      const wait = Math.ceil((SCAN_COOLDOWN - (now - _lastScanTimestamp)) / 1000)
+      return c.json({ ok: false, error: { code: 'rate_limited', message: `Please wait ${wait}s before re-scanning.` } }, 429)
+    }
+  }
+
   if (isKubernetes()) {
     // In Kubernetes: Proxy to project-runtime pod
     try {
@@ -2136,13 +2153,21 @@ app.post('/api/projects/:projectId/security/scan', async (c) => {
   }
   
   // Local/development mode: use local filesystem
-  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = securityRoutes({ workspacesDir })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${projectId}/security/scan`
-  const newReq = new Request(url.toString(), { method: 'POST' })
-  return router.fetch(newReq)
+  _scanInProgress = true
+  try {
+    const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    const router = securityRoutes({ workspacesDir })
+    const url = new URL(c.req.url)
+    url.pathname = `/projects/${projectId}/security/scan`
+    const newReq = new Request(url.toString(), { method: 'POST' })
+    const result = await router.fetch(newReq)
+    _lastScanTimestamp = Date.now()
+    return result
+  } finally {
+    _scanInProgress = false
+  }
 })
+
 
 // =============================================================================
 // Database routes - Prisma Studio management for project workspaces

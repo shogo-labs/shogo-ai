@@ -121,6 +121,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const securityFixNonceRef = useRef(0)
   const [securityFixMessage, setSecurityFixMessage] = useState<string | null>(null)
 
+  // Auto-scan trigger — incremented after AI code generation to auto-run security scan
+  const [autoScanTrigger, setAutoScanTrigger] = useState(0)
+
   // Build error state - shared between RuntimePreviewPanel and TerminalPanel
   const [buildError, setBuildError] = useState<string | null>(null)
   const [buildErrorContext, setBuildErrorContext] = useState<{
@@ -940,6 +943,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 // Increment refresh trigger to reload code editor
                 // Preview auto-refresh is handled by SSE build events from Vite
                 setCodeRefreshTrigger(prev => prev + 1)
+                // Auto-trigger background security scan after AI modifies files
+                setAutoScanTrigger(prev => prev + 1)
               }}
               onActiveToolCall={(toolName) => {
                 // Track template_copy for preview overlay
@@ -1143,6 +1148,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <SecurityPanel
                   projectId={projectId || ''}
                   className="h-full"
+                  autoScanTrigger={autoScanTrigger}
                   onFixWithAI={(message) => {
                     // Uncollapse chat panel so the user can see the AI working
                     if (isChatCollapsed) setIsChatCollapsed(false)

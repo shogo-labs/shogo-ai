@@ -11,7 +11,7 @@
  * Uses the /api/projects/:projectId/security/scan endpoint.
  */
 
-import { useState, useCallback, useMemo } from "react"
+import { useState, useCallback, useMemo, useEffect, useRef } from "react"
 import {
   Shield,
   ShieldAlert,
@@ -33,6 +33,10 @@ import {
   AlertCircle,
   Package,
   Wrench,
+  EyeOff,
+  Eye,
+  Check,
+  Undo2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -231,26 +235,35 @@ function SummaryStat({
   )
 }
 
+/** Finding status: open, resolved (user confirmed fixed), or ignored (user dismissed) */
+type FindingStatus = "open" | "resolved" | "ignored"
+
 /** Single expandable finding */
 function FindingCard({
   finding,
   isExpanded,
+  status,
   onToggle,
   onFix,
+  onStatusChange,
 }: {
   finding: SecurityFinding
   isExpanded: boolean
+  status: FindingStatus
   onToggle: () => void
   onFix?: () => void
+  onStatusChange?: (status: FindingStatus) => void
 }) {
   const config = SEVERITY_CONFIG[finding.severity]
   const Icon = config.icon
+  const isDismissed = status === "resolved" || status === "ignored"
 
   return (
     <div
       className={cn(
         "border rounded-lg overflow-hidden transition-colors",
         config.borderColor,
+        isDismissed && "opacity-50",
         isExpanded && config.bgColor
       )}
     >
@@ -268,14 +281,32 @@ function FindingCard({
           ) : (
             <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
           )}
-          <Icon className={cn("h-4 w-4", config.color)} />
+          {isDismissed ? (
+            status === "resolved" ? (
+              <Check className="h-4 w-4 text-green-500" />
+            ) : (
+              <EyeOff className="h-4 w-4 text-muted-foreground" />
+            )
+          ) : (
+            <Icon className={cn("h-4 w-4", config.color)} />
+          )}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-medium text-foreground">
+            <span className={cn("text-sm font-medium", isDismissed ? "text-muted-foreground line-through" : "text-foreground")}>
               {finding.title}
             </span>
-            <SeverityBadge severity={finding.severity} />
+            {!isDismissed && <SeverityBadge severity={finding.severity} />}
+            {status === "resolved" && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-green-500/10 text-green-600 dark:text-green-400">
+                Resolved
+              </span>
+            )}
+            {status === "ignored" && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-muted text-muted-foreground">
+                Ignored
+              </span>
+            )}
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
               {finding.category}
             </span>
@@ -323,20 +354,64 @@ function FindingCard({
             </div>
           </div>
 
-          {/* Fix with AI button */}
-          {onFix && finding.severity !== "info" && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onFix(); }}
-              className={cn(
-                "mt-3 flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md",
-                "bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20",
-                "hover:bg-purple-500/20 transition-colors"
-              )}
-            >
-              <Wrench className="h-3 w-3" />
-              Fix with AI
-            </button>
-          )}
+          {/* Action buttons */}
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
+            {/* Fix with AI button */}
+            {onFix && finding.severity !== "info" && !isDismissed && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onFix(); }}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md",
+                  "bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20",
+                  "hover:bg-purple-500/20 transition-colors"
+                )}
+              >
+                <Wrench className="h-3 w-3" />
+                Fix with AI
+              </button>
+            )}
+
+            {/* Resolve / Ignore / Reopen buttons */}
+            {onStatusChange && !isDismissed && (
+              <>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onStatusChange("resolved"); }}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md",
+                    "bg-green-500/10 text-green-600 dark:text-green-400 border border-green-500/20",
+                    "hover:bg-green-500/20 transition-colors"
+                  )}
+                >
+                  <Check className="h-3 w-3" />
+                  Resolve
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onStatusChange("ignored"); }}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md",
+                    "bg-muted text-muted-foreground border border-border",
+                    "hover:bg-muted/80 transition-colors"
+                  )}
+                >
+                  <EyeOff className="h-3 w-3" />
+                  Ignore
+                </button>
+              </>
+            )}
+            {onStatusChange && isDismissed && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onStatusChange("open"); }}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md",
+                  "bg-muted text-muted-foreground border border-border",
+                  "hover:bg-muted/80 transition-colors"
+                )}
+              >
+                <Undo2 className="h-3 w-3" />
+                Reopen
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -364,23 +439,38 @@ export interface SecurityPanelProps {
   className?: string
   /** Callback to send a fix message to the chat agent */
   onFixWithAI?: (message: string) => void
+  /**
+   * Auto-scan trigger: increment this number to automatically
+   * trigger a background security scan (e.g. after AI code generation).
+   * Does nothing when 0 or undefined.
+   */
+  autoScanTrigger?: number
 }
 
-export function SecurityPanel({ projectId, className, onFixWithAI }: SecurityPanelProps) {
+export function SecurityPanel({ projectId, className, onFixWithAI, autoScanTrigger }: SecurityPanelProps) {
   // Scan state
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
   const [isScanning, setIsScanning] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
   const [lastScanTime, setLastScanTime] = useState<Date | null>(null)
 
+  // Rate-limit state: tracks 429 responses separately from real errors
+  // Counts down to 0 and auto-retries the scan
+  const [rateLimitCountdown, setRateLimitCountdown] = useState(0)
+
   // UI state
   const [expandedFindings, setExpandedFindings] = useState<Set<string>>(new Set())
   const [filterSeverity, setFilterSeverity] = useState<Severity | "all">("all")
+  const [showDismissed, setShowDismissed] = useState(false)
+
+  // Finding lifecycle state: tracks resolved/ignored findings by ID (client-side only)
+  const [findingStatuses, setFindingStatuses] = useState<Record<string, FindingStatus>>({})
 
   // Run security scan
   const runScan = useCallback(async () => {
     setIsScanning(true)
     setScanError(null)
+    setRateLimitCountdown(0)
 
     try {
       const response = await fetch(`/api/projects/${projectId}/security/scan`, {
@@ -389,6 +479,17 @@ export function SecurityPanel({ projectId, className, onFixWithAI }: SecurityPan
 
       if (!response.ok) {
         const data = await response.json().catch(() => null)
+
+        // Handle rate limiting (429) separately — show friendly countdown, not "Scan Failed"
+        if (response.status === 429 && data?.error) {
+          const waitMatch = data.error.message?.match(/wait (\d+)s/)
+          const waitSeconds = waitMatch ? parseInt(waitMatch[1], 10) : 10
+          console.log(`[SecurityPanel] ⏳ Rate limited (${data.error.code}), auto-retrying in ${waitSeconds}s`)
+          setRateLimitCountdown(waitSeconds)
+          setIsScanning(false)
+          return // Don't treat rate limits as errors
+        }
+
         throw new Error(
           data?.error?.message || `Scan failed with status ${response.status}`
         )
@@ -406,6 +507,64 @@ export function SecurityPanel({ projectId, className, onFixWithAI }: SecurityPan
     }
   }, [projectId])
 
+  // Ref to access runScan without adding it to useEffect dependencies
+  // (prevents re-runs from stale closures or ref identity changes)
+  const runScanRef = useRef(runScan)
+  runScanRef.current = runScan
+
+  // Rate-limit countdown: ticks every second and auto-retries when reaching 0
+  // Uses setTimeout (not setInterval) so each tick is a new effect — StrictMode safe
+  useEffect(() => {
+    if (rateLimitCountdown <= 0) return
+
+    const timer = setTimeout(() => {
+      const next = rateLimitCountdown - 1
+      if (next <= 0) {
+        setRateLimitCountdown(0)
+        console.log('[SecurityPanel] ⏳ Rate-limit cooldown expired, auto-retrying scan...')
+        runScanRef.current()
+      } else {
+        setRateLimitCountdown(next)
+      }
+    }, 1000)
+
+    return () => clearTimeout(timer)
+  }, [rateLimitCountdown])
+
+  // Update finding status (resolve/ignore/reopen)
+  const setFindingStatus = useCallback((findingId: string, status: FindingStatus) => {
+    setFindingStatuses((prev) => ({ ...prev, [findingId]: status }))
+  }, [])
+
+  // Count dismissed findings
+  const dismissedCount = useMemo(() => {
+    if (!scanResult?.findings) return 0
+    return scanResult.findings.filter(
+      (f) => findingStatuses[f.id] === "resolved" || findingStatuses[f.id] === "ignored"
+    ).length
+  }, [scanResult?.findings, findingStatuses])
+
+  // Auto-scan when trigger changes (after AI code generation)
+  // NOTE: Uses runScanRef to avoid including runScan in the dependency array.
+  // Previous pattern (tracking prev value in a ref) broke under React StrictMode
+  // because StrictMode double-invokes effects: the first run updates the ref,
+  // StrictMode cleanup cancels the timer, and the second run sees the ref as
+  // already processed → scan never fires. This simpler pattern avoids that
+  // by only depending on autoScanTrigger and using the natural useEffect
+  // cleanup for debouncing.
+  useEffect(() => {
+    if (!autoScanTrigger || autoScanTrigger === 0) return
+
+    console.log('[SecurityPanel] 🔒 Auto-scan triggered after AI code generation, debouncing 2s...', { autoScanTrigger })
+
+    // Debounce: wait 2s after AI finishes to let file writes settle
+    const timer = setTimeout(() => {
+      console.log('[SecurityPanel] 🔒 Auto-scan executing...')
+      runScanRef.current()
+    }, 2000)
+    return () => clearTimeout(timer)
+  }, [autoScanTrigger])
+
   // Toggle finding expansion
   const toggleFinding = useCallback((findingId: string) => {
     setExpandedFindings((prev) => {
@@ -419,12 +578,20 @@ export function SecurityPanel({ projectId, className, onFixWithAI }: SecurityPan
     })
   }, [])
 
-  // Filtered findings
+  // Filtered findings (respects severity filter and dismissed toggle)
   const filteredFindings = useMemo(() => {
     if (!scanResult?.findings) return []
-    if (filterSeverity === "all") return scanResult.findings
-    return scanResult.findings.filter((f) => f.severity === filterSeverity)
-  }, [scanResult?.findings, filterSeverity])
+    return scanResult.findings.filter((f) => {
+      // Severity filter
+      if (filterSeverity !== "all" && f.severity !== filterSeverity) return false
+      // Dismissed filter
+      if (!showDismissed) {
+        const s = findingStatuses[f.id]
+        if (s === "resolved" || s === "ignored") return false
+      }
+      return true
+    })
+  }, [scanResult?.findings, filterSeverity, showDismissed, findingStatuses])
 
   // Build a prompt to fix all issues with AI
   const handleFixAll = useCallback(() => {
@@ -578,9 +745,23 @@ export function SecurityPanel({ projectId, className, onFixWithAI }: SecurityPan
           </div>
         )}
 
-        {/* Scan metadata */}
+        {/* Dismissed toggle + Scan metadata */}
+        {scanResult && dismissedCount > 0 && (
+          <button
+            onClick={() => setShowDismissed(!showDismissed)}
+            className={cn(
+              "flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md transition-colors ml-auto",
+              showDismissed
+                ? "bg-muted text-foreground"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted"
+            )}
+          >
+            {showDismissed ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+            {dismissedCount} dismissed
+          </button>
+        )}
         {scanResult && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground ml-2">
+          <div className={cn("flex items-center gap-2 text-xs text-muted-foreground", dismissedCount === 0 && "ml-auto", "ml-2")}>
             <Clock className="h-3 w-3" />
             {formatDuration(scanResult.summary.durationMs)}
             <span className="text-muted-foreground/50">•</span>
@@ -591,8 +772,8 @@ export function SecurityPanel({ projectId, className, onFixWithAI }: SecurityPan
 
       {/* Main content area */}
       <div className="flex-1 overflow-y-auto relative">
-        {/* Error state */}
-        {scanError && (
+        {/* Error state (real errors only, not rate limits) */}
+        {scanError && !rateLimitCountdown && (
           <div className="flex flex-col items-center justify-center h-full p-8">
             <div className="flex flex-col items-center gap-4 max-w-md text-center">
               <ShieldX className="h-12 w-12 text-destructive" />
@@ -610,6 +791,36 @@ export function SecurityPanel({ projectId, className, onFixWithAI }: SecurityPan
                 <RefreshCw className="h-4 w-4" />
                 Retry
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Rate-limit state — friendly countdown with auto-retry */}
+        {rateLimitCountdown > 0 && !isScanning && (
+          <div className="flex flex-col items-center justify-center h-full p-8">
+            <div className="flex flex-col items-center gap-4 max-w-md text-center">
+              <div className="relative">
+                <Shield className="h-12 w-12 text-muted-foreground/50" />
+                <Clock className="absolute -bottom-1 -right-1 h-5 w-5 text-amber-500" />
+              </div>
+              <div>
+                <h3 className="text-sm font-medium text-foreground">
+                  Scan Cooldown
+                </h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Auto-retrying in <span className="font-mono font-semibold text-foreground">{rateLimitCountdown}s</span>
+                </p>
+                <p className="text-xs text-muted-foreground/70 mt-2">
+                  Rate limited to prevent overloading — one scan every 10 seconds
+                </p>
+              </div>
+              {/* Progress-style visual countdown */}
+              <div className="w-48 h-1.5 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-amber-500/70 rounded-full transition-all duration-1000 ease-linear"
+                  style={{ width: `${Math.max(0, (rateLimitCountdown / 10) * 100)}%` }}
+                />
+              </div>
             </div>
           </div>
         )}
@@ -635,7 +846,7 @@ export function SecurityPanel({ projectId, className, onFixWithAI }: SecurityPan
         )}
 
         {/* Empty state (no scan run yet) */}
-        {!scanResult && !isScanning && !scanError && (
+        {!scanResult && !isScanning && !scanError && !rateLimitCountdown && (
           <div className="flex flex-col items-center justify-center h-full p-8">
             <div className="flex flex-col items-center gap-6 max-w-md text-center">
               <div className="relative">
@@ -785,8 +996,10 @@ export function SecurityPanel({ projectId, className, onFixWithAI }: SecurityPan
                           key={finding.id}
                           finding={finding}
                           isExpanded={expandedFindings.has(finding.id)}
+                          status={findingStatuses[finding.id] || "open"}
                           onToggle={() => toggleFinding(finding.id)}
                           onFix={onFixWithAI ? () => handleFixSingle(finding) : undefined}
+                          onStatusChange={(status) => setFindingStatus(finding.id, status)}
                         />
                       ))}
                     </div>

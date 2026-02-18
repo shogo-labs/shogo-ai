@@ -4573,6 +4573,7 @@ app.all('/*', async (c, next) => {
       '/terminal/',
       '/tests/',
       '/database/',
+      '/security/',
       '/api/',
       '/lsp',
     ]
@@ -6086,6 +6087,59 @@ app.delete('/tests/traces', async (c) => {
     return c.json({ ok: true, message: 'Test results cleared' })
   } catch (error: any) {
     return c.json({ ok: false, error: error.message }, 500)
+  }
+})
+
+// =============================================================================
+// Security Scanning API — proxied from API server in Kubernetes
+// =============================================================================
+
+import { runSecurityScan } from './security-scanner'
+
+/**
+ * POST /security/scan
+ *
+ * Runs a comprehensive security scan on the project files.
+ * In K8s, the API server proxies POST /api/projects/:id/security/scan → here.
+ *
+ * Rate limited: one concurrent scan at a time per pod.
+ */
+let _securityScanRunning = false
+let _lastScanTime = 0
+const SCAN_COOLDOWN_MS = 10_000 // 10 s cooldown between scans
+
+app.post('/security/scan', async (c) => {
+  // Rate limit: reject if a scan is already in-flight
+  if (_securityScanRunning) {
+    return c.json({
+      ok: false,
+      error: { code: 'scan_in_progress', message: 'A security scan is already running. Please wait.' },
+    }, 429)
+  }
+
+  // Cooldown: reject rapid re-scans
+  const now = Date.now()
+  if (now - _lastScanTime < SCAN_COOLDOWN_MS) {
+    const waitMs = SCAN_COOLDOWN_MS - (now - _lastScanTime)
+    return c.json({
+      ok: false,
+      error: { code: 'rate_limited', message: `Please wait ${Math.ceil(waitMs / 1000)}s before re-scanning.` },
+    }, 429)
+  }
+
+  _securityScanRunning = true
+  try {
+    const result = await runSecurityScan(PROJECT_DIR)
+    _lastScanTime = Date.now()
+    return c.json(result, result.ok ? 200 : 500)
+  } catch (error: any) {
+    console.error('[project-runtime] Security scan error:', error)
+    return c.json({
+      ok: false,
+      error: { code: 'scan_failed', message: error.message || 'Security scan failed' },
+    }, 500)
+  } finally {
+    _securityScanRunning = false
   }
 })
 
