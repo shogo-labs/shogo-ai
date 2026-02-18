@@ -898,10 +898,30 @@ app.post('/api/projects/:projectId/unpublish', async (c) => {
 
 // Start project runtime
 app.post('/api/projects/:projectId/runtime/start', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
+      const knativeManager = getKnativeProjectManager()
+      await knativeManager.ensureProject(projectId)
+      const podUrl = `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`
+      return c.json({
+        success: true,
+        projectId,
+        status: 'running',
+        url: podUrl,
+      })
+    } catch (err: any) {
+      console.error(`[Runtime] Failed to start project ${projectId} in K8s:`, err.message)
+      return c.json({ error: `Failed to start runtime: ${err.message}` }, 500)
+    }
+  }
+
   const manager = getRuntimeManager()
   const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/runtime/start`
+  url.pathname = `/projects/${projectId}/runtime/start`
   const newReq = new Request(url.toString(), { method: 'POST' })
   return router.fetch(newReq)
 })

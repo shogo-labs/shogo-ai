@@ -70,6 +70,26 @@ spec:
             capabilities:
               drop:
                 - ALL
+        # Pre-pull the agent-runtime image
+        - name: agent-runtime-prepull
+          image: shogo-agent-runtime
+          imagePullPolicy: Always
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              memory: "1Mi"
+              cpu: "1m"
+            limits:
+              memory: "8Mi"
+              cpu: "10m"
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
         # Pre-pull the postgres image (used as sidecar in project pods)
         - name: postgres-prepull
           image: postgres:16-alpine
