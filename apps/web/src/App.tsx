@@ -27,6 +27,7 @@ import { ShogoMetaStoreProvider } from './contexts/ShogoMetaStoreContext'
 import { SessionProvider, useSessionContext } from './contexts/SessionProvider'
 import { createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService, MemoryBackend } from '@shogo/state-api'
 import { APIPersistence } from './persistence/APIPersistence'
+import { identifyHotjarUser } from './lib/hotjar'
 // SDK-based provider for new/migrated code
 import { SDKDomainProvider as SDKProvider } from './contexts/SDKDomainProvider'
 // Legacy provider for backward compatibility
@@ -118,6 +119,18 @@ function AppWithSession() {
   useEffect(() => {
     apiPersistence.setUserId(currentUserId ?? null)
   }, [currentUserId])
+
+  // Identify user in Hotjar/Contentsquare for session recordings
+  // NOTE: We intentionally do NOT send email/PII to third-party analytics (GDPR).
+  // Only the opaque userId is sent for session linking.
+  const userName = session.data?.user?.name
+  useEffect(() => {
+    if (currentUserId) {
+      identifyHotjarUser(currentUserId, {
+        name: userName ?? '',
+      })
+    }
+  }, [currentUserId, userName])
 
   // Use the stable ref value, or 'anonymous' only if we've never seen a user
   const authKey = lastKnownUserIdRef.current ?? 'anonymous'

@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App'
+import { initHotjar } from './lib/hotjar'
 
 /**
  * Theme Initialization (runs BEFORE React renders)
@@ -20,6 +21,9 @@ if (theme === 'dark') {
 } else {
   document.documentElement.classList.remove('dark')
 }
+
+// Initialize Hotjar (no-op if VITE_HOTJAR_SITE_ID is not set)
+initHotjar()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
