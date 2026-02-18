@@ -210,6 +210,10 @@ export interface ChatPanelProps {
   onSelectTheme?: (themeId: string) => void
   /** Callback when "Create new theme" is clicked (for compact mode) */
   onCreateTheme?: () => void
+  /** Currently selected project type (for compact mode) */
+  projectType?: "APP" | "AGENT"
+  /** Callback when project type changes (for compact mode) */
+  onProjectTypeChange?: (type: "APP" | "AGENT") => void
 }
 
 // ============================================================
@@ -625,6 +629,8 @@ export const ChatPanel = observer(function ChatPanel({
   selectedThemeId,
   onSelectTheme,
   onCreateTheme,
+  projectType,
+  onProjectTypeChange,
 }: ChatPanelProps) {
   // Access SDK domains for chat persistence (SDK-generated stores)
   const { studioChat } = useSDKDomains()
@@ -2382,6 +2388,8 @@ export const ChatPanel = observer(function ChatPanel({
         selectedThemeId={selectedThemeId}
         onSelectTheme={onSelectTheme}
         onCreateTheme={onCreateTheme}
+        projectType={projectType}
+        onProjectTypeChange={onProjectTypeChange}
       />
     )
   }

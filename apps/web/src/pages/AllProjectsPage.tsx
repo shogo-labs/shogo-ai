@@ -80,6 +80,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useWorkspaceData, useWorkspaceNavigation } from "@/components/app/workspace/hooks"
+import { CreateProjectModal } from "@/components/app/workspace/CreateProjectModal"
 import { Label } from "@/components/ui/label"
 import { useSDKDomain } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
@@ -233,6 +234,9 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
   const [visibilityFilter, setVisibilityFilter] = useState<VisibilityFilter>("any")
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("any")
   
+  // Create project modal state
+  const [showCreateModal, setShowCreateModal] = useState(false)
+
   // Delete dialog state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null)
@@ -925,9 +929,9 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
           // Grid View - 3 columns max to match Lovable's larger card style
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {/* Create new project card */}
-            <Link
-              to="/"
-              className="group flex flex-col rounded-xl border-2 border-dashed border-muted-foreground/20 hover:border-primary/40 transition-colors overflow-hidden"
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="group flex flex-col rounded-xl border-2 border-dashed border-muted-foreground/20 hover:border-primary/40 transition-colors overflow-hidden text-left"
             >
               <div className="relative aspect-[16/10] flex flex-col items-center justify-center gap-2 bg-muted/30">
                 <div className="flex items-center justify-center w-10 h-10 rounded-full bg-muted group-hover:bg-muted-foreground/10 transition-colors">
@@ -937,7 +941,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
               <div className="p-3 text-center">
                 <span className="text-sm text-muted-foreground">Create new project</span>
               </div>
-            </Link>
+            </button>
 
             {/* Folder cards (drop targets) */}
             {currentFolders.map((folder) => (
@@ -1353,11 +1357,9 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
             <p className="text-sm text-muted-foreground mb-4">
               Create your first project to get started
             </p>
-            <Button size="sm" asChild>
-              <Link to="/">
-                <Plus className="mr-2 h-4 w-4" />
-                Create project
-              </Link>
+            <Button size="sm" onClick={() => setShowCreateModal(true)}>
+              <Plus className="mr-2 h-4 w-4" />
+              Create project
             </Button>
           </div>
         )}
@@ -1568,6 +1570,18 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
       <DragOverlay dropAnimation={null}>
         {activeProject ? <DragOverlayCard project={activeProject} /> : null}
       </DragOverlay>
+
+      {/* Create Project Modal */}
+      {currentWorkspace?.id && (
+        <CreateProjectModal
+          open={showCreateModal}
+          onOpenChange={setShowCreateModal}
+          workspaceId={currentWorkspace.id}
+          onSuccess={(projectId) => {
+            navigate(`/projects/${projectId}`)
+          }}
+        />
+      )}
     </div>
     </DndContext>
   )
