@@ -15,6 +15,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
+// Central plan credit config — base tier monthly credits per plan
+// Must match apps/api/src/config/credit-plans.ts
+export const PLAN_CREDITS: Record<string, number> = { free: 50, pro: 100, business: 100, enterprise: 10000 }
+export const DAILY_CREDITS = 5
+
 // Plan tier definitions
 export const PRO_TIERS = [
   { credits: 100, monthly: 25, annual: 250 },

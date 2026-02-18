@@ -2755,7 +2755,7 @@ function fallbackGenerateProjectName(prompt: string): string {
 
 app.post('/api/generate-project-name', async (c) => {
   try {
-    const { prompt } = await c.req.json()
+    const { prompt, workspaceId, userId } = await c.req.json()
 
     if (!prompt || typeof prompt !== 'string') {
       return c.json({ error: 'Prompt is required' }, 400)
@@ -2793,6 +2793,16 @@ Examples:
 
     // Extract and clean the name
     const name = result.text.trim().replace(/['"]/g, '') || 'New Project'
+
+    // Track credit usage (fire-and-forget, small cost for Haiku)
+    if (workspaceId) {
+      const usage = result.usage as any
+      const totalTokens = (usage?.inputTokens || usage?.promptTokens || 0) + (usage?.outputTokens || usage?.completionTokens || 0)
+      if (totalTokens > 0) {
+        const creditCost = calculateCreditCost(totalTokens, 'haiku')
+        billingService.consumeCredits(workspaceId, null, userId || 'system', 'project_name_generation', creditCost, { totalTokens }).catch(() => {})
+      }
+    }
 
     return c.json({ name })
   } catch (error: any) {
@@ -3494,18 +3504,24 @@ app.post('/api/webhooks/stripe', async (c) => {
               ? stripeSubscription.current_period_end * 1000
               : now + (30 * 24 * 60 * 60 * 1000) // Default to 30 days from now
 
+            // Extract base plan type for DB enum (e.g. "pro_200" → "pro")
+            const basePlanId = planId.split('_')[0] as 'pro' | 'business' | 'enterprise'
+
             await billingService.syncFromStripe({
               stripeSubscriptionId: stripeSubscription.id,
               stripeCustomerId: session.customer as string,
               workspaceId,
-              planId: planId as 'pro' | 'business' | 'enterprise',
+              planId: basePlanId,
               status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
               billingInterval: billingInterval as 'monthly' | 'annual',
               currentPeriodStart: new Date(currentPeriodStart),
               currentPeriodEnd: new Date(currentPeriodEnd),
               cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
             })
-            console.log('[Webhook] Subscription created for workspace:', workspaceId)
+
+            // Allocate monthly credits using full tiered planId (e.g. "pro_200" → 200 credits)
+            await billingService.allocateMonthlyCredits(workspaceId, planId)
+            console.log('[Webhook] Subscription created + credits allocated for workspace:', workspaceId, 'plan:', planId)
           } catch (err: any) {
             console.error('[Webhook] Failed to create subscription:', err.message)
           }
