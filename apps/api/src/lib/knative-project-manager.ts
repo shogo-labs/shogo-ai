@@ -34,6 +34,7 @@ import * as databaseService from '../services/database.service'
 
 const NAMESPACE = process.env.PROJECT_NAMESPACE || "shogo-workspaces"
 const PROJECT_RUNTIME_IMAGE = process.env.PROJECT_RUNTIME_IMAGE || "ghcr.io/shogo-ai/project-runtime:latest"
+const AGENT_RUNTIME_IMAGE = process.env.AGENT_RUNTIME_IMAGE || "ghcr.io/shogo-ai/agent-runtime:latest"
 const KNATIVE_GROUP = "serving.knative.dev"
 const KNATIVE_VERSION = "v1"
 
@@ -712,10 +713,22 @@ export class KnativeProjectManager {
    * Includes PostgreSQL sidecar container for per-project database.
    */
   private async buildKnativeService(projectId: string): Promise<any> {
-    // Build environment variables for project-runtime container
+    // Look up project type to select the correct runtime image
+    const { prisma } = await import('./prisma')
+    const projectRecord = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { type: true },
+    })
+    const isAgentProject = projectRecord?.type === 'AGENT'
+    const runtimeImage = isAgentProject ? AGENT_RUNTIME_IMAGE : this.image
+    const runtimeComponent = isAgentProject ? 'agent-runtime' : 'project-runtime'
+    const workDir = isAgentProject ? '/app/agent' : '/app/project'
+
+    // Build environment variables for runtime container
     const env: any[] = [
       { name: "PROJECT_ID", value: projectId },
-      { name: "PROJECT_DIR", value: "/app/project" },
+      { name: "PROJECT_DIR", value: workDir },
+      ...(isAgentProject ? [{ name: "AGENT_DIR", value: workDir }] : []),
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
       // Auth secret for validating preview JWT tokens
       {
@@ -865,8 +878,8 @@ export class KnativeProjectManager {
     // Build containers array
     const containers: any[] = [
       {
-        name: "project-runtime",
-        image: this.image,
+        name: runtimeComponent,
+        image: runtimeImage,
         imagePullPolicy: "Always", // Always pull to get latest staging-latest tag
         ports: [{ containerPort: 8080, name: "http1" }],
         env,
@@ -874,7 +887,7 @@ export class KnativeProjectManager {
           requests: { memory: "256Mi", cpu: "100m" },
           limits: { memory: this.memoryLimit, cpu: this.cpuLimit },
         },
-        volumeMounts: [{ name: "project-data", mountPath: "/app/project" }],
+        volumeMounts: [{ name: "project-data", mountPath: workDir }],
         // Readiness probe - optimized for fast start mode
         // With fast start, /health passes in ~2s, /ready passes after build (~5-10s)
         // Lower initialDelay + higher failureThreshold allows for background build time
@@ -930,7 +943,7 @@ export class KnativeProjectManager {
         labels: {
           "app.kubernetes.io/part-of": "shogo",
           "shogo.io/project": projectId,
-          "shogo.io/component": "project-runtime",
+          "shogo.io/component": runtimeComponent,
         },
       },
       spec: {

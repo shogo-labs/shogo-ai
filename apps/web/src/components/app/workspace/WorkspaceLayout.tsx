@@ -50,6 +50,7 @@ function createProjectViaApi(data: {
   workspaceId: string
   description?: string
   createdBy: string
+  type?: "APP" | "AGENT"
 }) {
   return apiPost<{ id: string; name: string }>("/api/projects", {
     name: data.name,
@@ -60,6 +61,7 @@ function createProjectViaApi(data: {
     status: "draft",
     accessLevel: "anyone",
     schemas: [],
+    type: data.type || "APP",
   })
 }
 
