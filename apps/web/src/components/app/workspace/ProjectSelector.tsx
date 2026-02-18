@@ -17,8 +17,8 @@
  * - Disabled when no workspace selected
  */
 
-import { useState } from "react"
 import { Plus } from "lucide-react"
+import { useNavigate } from "react-router-dom"
 
 import {
   Select,
@@ -30,7 +30,6 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
-import { CreateProjectModal } from "./CreateProjectModal"
 
 /**
  * Project entity shape (from studioCore domain)
@@ -86,20 +85,18 @@ export function ProjectSelector({
   isLoading = false,
   workspaceId,
 }: ProjectSelectorProps) {
-  // State for Create Project modal
-  const [showCreateModal, setShowCreateModal] = useState<boolean>(false)
+  const navigate = useNavigate()
 
   // Handle selection change
   const handleValueChange = (value: string) => {
     onProjectChange(value)
   }
 
-  // Handle Create Project button click
+  // Handle Create Project button click - navigate to home dashboard
   const handleCreateClick = (e: React.MouseEvent) => {
-    // Prevent the select from closing/changing
     e.preventDefault()
     e.stopPropagation()
-    setShowCreateModal(true)
+    navigate('/')
   }
 
   // Show skeleton during loading
@@ -108,54 +105,38 @@ export function ProjectSelector({
   }
 
   return (
-    <>
-      <Select
-        value={currentProject?.id ?? ""}
-        onValueChange={handleValueChange}
-        disabled={disabled || isLoading}
-      >
-        <SelectTrigger className="w-[200px]">
-          <SelectValue placeholder="Select project" />
-        </SelectTrigger>
-        <SelectContent>
-          {/* Project list */}
-          {projects.map((project) => (
-            <SelectItem key={project.id} value={project.id}>
-              {project.name}
-            </SelectItem>
-          ))}
+    <Select
+      value={currentProject?.id ?? ""}
+      onValueChange={handleValueChange}
+      disabled={disabled || isLoading}
+    >
+      <SelectTrigger className="w-[200px]">
+        <SelectValue placeholder="Select project" />
+      </SelectTrigger>
+      <SelectContent>
+        {/* Project list */}
+        {projects.map((project) => (
+          <SelectItem key={project.id} value={project.id}>
+            {project.name}
+          </SelectItem>
+        ))}
 
-          {/* Visual separator */}
-          <SelectSeparator />
+        {/* Visual separator */}
+        <SelectSeparator />
 
-          {/* Create Project button */}
-          <div className="p-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
-              onClick={handleCreateClick}
-              disabled={!workspaceId}
-            >
-              <Plus className="h-4 w-4" />
-              Create Project
-            </Button>
-          </div>
-        </SelectContent>
-      </Select>
-
-      {/* Create Project Modal */}
-      {workspaceId && (
-        <CreateProjectModal
-          open={showCreateModal}
-          onOpenChange={setShowCreateModal}
-          workspaceId={workspaceId}
-          onSuccess={(projectId) => {
-            // Navigate to the newly created project
-            onProjectChange(projectId)
-          }}
-        />
-      )}
-    </>
+        {/* Create Project button */}
+        <div className="p-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+            onClick={handleCreateClick}
+          >
+            <Plus className="h-4 w-4" />
+            Create Project
+          </Button>
+        </div>
+      </SelectContent>
+    </Select>
   )
 }
