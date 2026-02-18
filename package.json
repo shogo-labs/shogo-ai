@@ -45,7 +45,8 @@
     "docker:prod:down": "docker-compose down",
     "screenshots:templates": "bun run scripts/capture-template-screenshots.ts",
     "docs:dev": "bun run --cwd apps/docs dev",
-    "docs:build": "bun run --cwd apps/docs build"
+    "docs:build": "bun run --cwd apps/docs build",
+    "postinstall": "[ -f scripts/patch-claude-sdk.ts ] && bun scripts/patch-claude-sdk.ts || true"
   },
   "devDependencies": {
     "@prisma/adapter-libsql": "^7.3.0",

@@ -29,10 +29,12 @@ import { CodeEditorPanel } from "./CodeEditorPanel"
 import { TerminalPanel } from "./TerminalPanel"
 import { DatabasePanel } from "./DatabasePanel"
 import { TestPanel } from "./TestPanel"
+import { SecurityPanel } from "./SecurityPanel"
 import { HistoryPanel } from "./HistoryPanel"
 import { cn } from "@/lib/utils"
 import { useSession } from "@/contexts/SessionProvider"
 import type { ViewportSize } from "./PreviewControls"
+import { useToast } from "@/hooks/use-toast"
 
 // Default chat panel width in px
 const DEFAULT_CHAT_WIDTH = 480
@@ -95,9 +97,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Preview controls state
   const [currentViewport, setCurrentViewport] = useState<ViewportSize>("desktop")
   const [currentRoute, setCurrentRoute] = useState("/")
+  
+  // Toast notifications
+  const { toast } = useToast()
+  
+  // External preview opening state
+  const [isOpeningExternal, setIsOpeningExternal] = useState(false)
 
-  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'terminal' (TerminalPanel), 'database' (DatabasePanel), 'tests' (TestPanel), or 'history' (HistoryPanel)
-  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'terminal' | 'database' | 'tests' | 'history'>('runtime')
+  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'terminal' (TerminalPanel), 'database' (DatabasePanel), 'tests' (TestPanel), 'security' (SecurityPanel), or 'history' (HistoryPanel)
+  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'terminal' | 'database' | 'tests' | 'security' | 'history'>('runtime')
 
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
@@ -107,6 +115,14 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
   // Chat error state - passed to RuntimePreviewPanel to stop loading on project creation failure
   const [chatError, setChatError] = useState<Error | null>(null)
+
+  // Injected chat message from Security "Fix with AI" — passed to ChatPanel.injectMessage
+  // Nonce is appended to ensure each click produces a unique value for the useEffect dedup
+  const securityFixNonceRef = useRef(0)
+  const [securityFixMessage, setSecurityFixMessage] = useState<string | null>(null)
+
+  // Auto-scan trigger — incremented after AI code generation to auto-run security scan
+  const [autoScanTrigger, setAutoScanTrigger] = useState(0)
 
   // Build error state - shared between RuntimePreviewPanel and TerminalPanel
   const [buildError, setBuildError] = useState<string | null>(null)
@@ -285,7 +301,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
       try {
         // Load workspaces first to ensure safeReference can resolve
         // This prevents MST reference errors when loading projects directly
-        await store.workspaceCollection.loadAll({ userId: session.user.id })
+        await store.workspaceCollection.loadAll({ userId: session.user!.id })
 
         // Load the project from SDK store
         await store.projectCollection.loadAll({ id: projectId })
@@ -574,11 +590,16 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const handleOpenExternal = useCallback(async () => {
     if (!projectId) return
     
+    if (isOpeningExternal) return // Prevent multiple clicks
+    
+    setIsOpeningExternal(true)
+    
     try {
       // Fetch the preview URL using authenticated HTTP client
       const response = await http.get<{
         url: string
         ready: boolean
+        status?: string
         error?: {
           code: string
           message: string
@@ -586,16 +607,91 @@ export const ProjectLayout = observer(function ProjectLayout() {
         }
       }>(`/api/projects/${projectId}/sandbox/url`)
       
-      if (response.data?.url && response.data?.ready) {
-        // Open the preview URL in a new tab
-        window.open(response.data.url, '_blank', 'noopener,noreferrer')
+      if (response.data?.url) {
+        // Build the full preview URL with current route
+        let previewUrl = response.data.url
+        
+        // Append current route if it's not the root path
+        if (currentRoute && currentRoute !== '/') {
+          try {
+            const urlObj = new URL(previewUrl)
+            // Ensure route path starts with /
+            const routePath = currentRoute.startsWith('/') ? currentRoute : `/${currentRoute}`
+            // Append route to pathname, handling trailing slashes
+            if (urlObj.pathname === '/' || urlObj.pathname === '') {
+              urlObj.pathname = routePath
+            } else {
+              // Remove trailing slash from pathname if present, then append route
+              const cleanPathname = urlObj.pathname.endsWith('/') 
+                ? urlObj.pathname.slice(0, -1) 
+                : urlObj.pathname
+              urlObj.pathname = `${cleanPathname}${routePath}`
+            }
+            previewUrl = urlObj.toString()
+          } catch (urlError) {
+            // If URL parsing fails, just append the route as a string
+            console.warn('Failed to parse preview URL, appending route as string:', urlError)
+            const separator = previewUrl.endsWith('/') ? '' : '/'
+            previewUrl = `${previewUrl}${separator}${currentRoute.startsWith('/') ? currentRoute.slice(1) : currentRoute}`
+          }
+        }
+        
+        if (response.data?.ready) {
+          // Open the preview URL in a new tab
+          const newWindow = window.open(previewUrl, '_blank', 'noopener,noreferrer')
+          
+          if (newWindow) {
+            toast({
+              title: "Preview opened",
+              description: "The preview has been opened in a new tab.",
+            })
+          } else {
+            // Popup blocked
+            toast({
+              variant: "destructive",
+              title: "Popup blocked",
+              description: "Please allow popups for this site to open the preview in a new tab.",
+            })
+          }
+        } else {
+          // Preview not ready yet - still open it but show a warning
+          const status = response.data?.status || 'starting'
+          const newWindow = window.open(previewUrl, '_blank', 'noopener,noreferrer')
+          
+          if (newWindow) {
+            toast({
+              title: "Preview opening",
+              description: `The preview is ${status}. It may take a moment to load.`,
+            })
+          } else {
+            toast({
+              variant: "destructive",
+              title: "Popup blocked",
+              description: "Please allow popups for this site to open the preview in a new tab.",
+            })
+          }
+        }
       } else {
-        console.error('Failed to get preview URL:', response.data?.error?.message || 'Preview not ready')
+        const errorMessage = response.data?.error?.message || 'Preview URL not available'
+        toast({
+          variant: "destructive",
+          title: "Failed to open preview",
+          description: errorMessage,
+        })
+        console.error('Failed to get preview URL:', errorMessage)
       }
-    } catch (err) {
+    } catch (err: any) {
+      const errorMessage = err?.response?.data?.error?.message || err?.message || 'Failed to open preview in new tab'
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: errorMessage,
+      })
       console.error('Error opening preview in new tab:', err)
+    } finally {
+      setIsOpeningExternal(false)
     }
-  }, [projectId, http])
+  }, [projectId, http, currentRoute, isOpeningExternal, toast])
 
   // Publish handlers
   const handlePublish = useCallback(
@@ -720,15 +816,17 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const creditLedger = workspaceId
     ? store?.creditLedgerCollection?.all.find((l: any) => l.workspaceId === workspaceId)
     : null
-  // Compute effective balance from raw credit ledger fields
-  const effectiveBalance = creditLedger ? {
-    dailyCredits: creditLedger.dailyCredits ?? 0,
-    monthlyCredits: creditLedger.monthlyCredits ?? 0,
-    rolloverCredits: creditLedger.rolloverCredits ?? 0,
-    total: (creditLedger.dailyCredits ?? 0) + (creditLedger.monthlyCredits ?? 0) + (creditLedger.rolloverCredits ?? 0),
-  } : null
+  // Compute effective balance with lazy daily reset
+  const effectiveBalance = creditLedger ? (() => {
+    const lastReset = creditLedger.lastDailyReset ? new Date(creditLedger.lastDailyReset).toDateString() : ''
+    const needsReset = lastReset !== new Date().toDateString()
+    const daily = needsReset ? 5 : (creditLedger.dailyCredits ?? 0)
+    const monthly = creditLedger.monthlyCredits ?? 0
+    const rollover = creditLedger.rolloverCredits ?? 0
+    return { dailyCredits: daily, monthlyCredits: monthly, rolloverCredits: rollover, total: daily + monthly + rollover }
+  })() : null
   const creditsRemaining = effectiveBalance?.total ?? 5
-  const maxCredits = effectiveBalance ? (effectiveBalance.dailyCredits + effectiveBalance.monthlyCredits + effectiveBalance.rolloverCredits) : 5
+  const maxCredits = creditsRemaining
 
   // Loading state
   if (isLoading || !project) {
@@ -779,6 +877,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
           onOpenPreview={() => setPreviewMode('runtime')}
           onOpenExternal={handleOpenExternal}
           onOpenCode={() => setPreviewMode('code')}
+          isOpeningExternal={isOpeningExternal}
           // Publish callbacks
           onPublish={handlePublish}
           onUnpublish={handleUnpublish}
@@ -824,7 +923,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
               )}
             >
               <ChatPanel
-                featureId={projectId}
+                featureId={projectId ?? null}
                 featureName={project.name}
                 phase={null}
                 chatSessionId={chatSessionId}
@@ -840,11 +939,14 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 inputContainerRef={chatInputContainerRef}
                 messageContainerRef={messageContainerRef}
               onChatError={setChatError}
+              injectMessage={securityFixMessage}
               onFilesChanged={(paths) => {
                 console.log('[ProjectLayout] 📁 Agent modified files:', paths)
                 // Increment refresh trigger to reload code editor
                 // Preview auto-refresh is handled by SSE build events from Vite
                 setCodeRefreshTrigger(prev => prev + 1)
+                // Auto-trigger background security scan after AI modifies files
+                setAutoScanTrigger(prev => prev + 1)
               }}
               onActiveToolCall={(toolName) => {
                 // Track template_copy for preview overlay
@@ -920,6 +1022,17 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 Tests
               </button>
               <button
+                onClick={() => setPreviewMode('security')}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  previewMode === 'security'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Security
+              </button>
+              <button
                 onClick={() => setPreviewMode('history')}
                 className={cn(
                   "px-3 py-1 text-xs font-medium rounded-md transition-colors",
@@ -981,15 +1094,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   buildErrorContext={buildErrorContext}
                   onRebuild={async () => {
                     try {
-                      // Get sandbox URL to call rebuild endpoint
+                      // Get sandbox URL to call rebuild endpoint on the agent server
                       const sandboxResponse = await fetch(`/api/projects/${projectId}/sandbox/url`)
                       if (!sandboxResponse.ok) {
                         console.error('[ProjectLayout] Failed to get sandbox URL')
                         return
                       }
                       const sandboxData = await sandboxResponse.json()
-                      const url = new URL(sandboxData.url)
-                      const baseUrl = `${url.protocol}//${url.host}`
+                      // Use agentUrl (project-runtime) for rebuild, not the Vite URL
+                      const baseUrl = sandboxData.agentUrl || (() => { const u = new URL(sandboxData.url); return `${u.protocol}//${u.host}` })()
                       
                       const response = await fetch(`${baseUrl}/preview/rebuild`, { method: 'POST' })
                       const data = await response.json()
@@ -1027,6 +1140,27 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <TestPanel
                   projectId={projectId || ''}
                   className="h-full"
+                />
+              </div>
+              {/* Security Panel - Automated security scanning */}
+              <div className={cn(
+                "absolute inset-0",
+                previewMode !== 'security' && "invisible pointer-events-none"
+              )}>
+                <SecurityPanel
+                  projectId={projectId || ''}
+                  className="h-full"
+                  autoScanTrigger={autoScanTrigger}
+                  onFixWithAI={(message) => {
+                    // Uncollapse chat panel so the user can see the AI working
+                    if (isChatCollapsed) setIsChatCollapsed(false)
+                    // Close chat sessions panel if open
+                    if (showChatSessions) setShowChatSessions(false)
+                    // Inject the message directly into the chat — it auto-sends
+                    // Nonce ensures each click produces a unique string for dedup
+                    securityFixNonceRef.current += 1
+                    setSecurityFixMessage(`${message}\n\n[nonce:${securityFixNonceRef.current}]`)
+                  }}
                 />
               </div>
               {/* History Panel - Version control checkpoints */}

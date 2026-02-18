@@ -8,7 +8,7 @@ This package provides a complete runtime environment for a single project, inclu
 
 - **Agent Server** (port 8080): Receives chat requests from the API and streams responses
 - **Claude Code Agent**: Executes code generation and file operations
-- **MCP (Wavesmith)**: Provides schema and data management tools
+- **MCP (Shogo)**: Provides schema and data management tools
 - **Vite Dev Server** (port 5173): Serves the project preview
 
 ## Architecture
@@ -38,7 +38,7 @@ This package provides a complete runtime environment for a single project, inclu
 │  ┌──────────────────────┐                                       │
 │  │   Claude Code        │                                       │
 │  │   + MCP subprocess   │                                       │
-│  │   (Wavesmith)        │                                       │
+│  │   (Shogo)            │                                       │
 │  └──────────────────────┘                                       │
 │                                                                  │
 │  Storage:                                                        │

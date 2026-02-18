@@ -35,10 +35,13 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
 
+# Copy scripts needed for postinstall
+COPY scripts ./scripts
+
 # Install all dependencies
 RUN bun install
 
-# Copy source code (including mcp for raw imports in WavesmithMetaDemo)
+# Copy source code (including mcp for raw imports in ShogoMetaDemo)
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 COPY packages/sdk ./packages/sdk

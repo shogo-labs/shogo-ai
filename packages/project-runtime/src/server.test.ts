@@ -14,6 +14,186 @@ import { join } from 'path'
 // Test directory setup
 const TEST_PROJECT_DIR = '/tmp/server-test-project'
 
+// =============================================================================
+// Runtime Command Guardrail Tests
+// =============================================================================
+
+/**
+ * Mirror of the FORBIDDEN_COMMAND_PATTERNS from server.ts
+ * These patterns are tested here to verify the guardrail logic works correctly
+ * without needing to boot the full server.
+ */
+const FORBIDDEN_COMMAND_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /\bvite\s+dev\b/, reason: 'The dev server is already running.' },
+  { pattern: /\bvite\s+build\b/, reason: 'Vite build --watch is already running.' },
+  { pattern: /\bvite\s+serve\b/, reason: 'The server is already running.' },
+  { pattern: /\bvite\s+preview\b/, reason: 'The server is already running.' },
+  { pattern: /\bnpx\s+vite\b/, reason: 'Vite is already running in watch mode.' },
+  { pattern: /\bbunx\s+vite\b/, reason: 'Vite is already running in watch mode.' },
+  { pattern: /\bbun\s+run\s+dev\b/, reason: 'The dev server is already running.' },
+  { pattern: /\bbun\s+run\s+build\b/, reason: 'Vite build --watch handles builds automatically.' },
+  { pattern: /\bnpm\s+run\s+dev\b/, reason: 'The dev server is already running.' },
+  { pattern: /\bnpm\s+run\s+build\b/, reason: 'Vite build --watch handles builds automatically.' },
+  { pattern: /\byarn\s+dev\b/, reason: 'The dev server is already running.' },
+  { pattern: /\byarn\s+build\b/, reason: 'Vite build --watch handles builds automatically.' },
+  { pattern: /\bkill\s+-/, reason: 'Do not kill processes.' },
+  { pattern: /\bkill\s+\d/, reason: 'Do not kill processes.' },
+  { pattern: /\bpkill\b/, reason: 'Do not kill processes.' },
+  { pattern: /\bkillall\b/, reason: 'Do not kill processes.' },
+  { pattern: /\bpm2\s+restart\b/, reason: 'Do not restart processes.' },
+  { pattern: /\bsystemctl\s+restart\b/, reason: 'Do not restart system services.' },
+]
+
+function checkForbiddenCommand(command: string): string | null {
+  const cmd = command.toLowerCase()
+  for (const { pattern, reason } of FORBIDDEN_COMMAND_PATTERNS) {
+    if (pattern.test(cmd)) {
+      return reason
+    }
+  }
+  return null
+}
+
+describe('Runtime Command Guardrail', () => {
+  describe('blocks forbidden commands', () => {
+    test('blocks vite dev', () => {
+      expect(checkForbiddenCommand('vite dev')).not.toBeNull()
+    })
+
+    test('blocks vite build', () => {
+      expect(checkForbiddenCommand('vite build')).not.toBeNull()
+    })
+
+    test('blocks vite serve', () => {
+      expect(checkForbiddenCommand('vite serve')).not.toBeNull()
+    })
+
+    test('blocks npx vite', () => {
+      expect(checkForbiddenCommand('npx vite')).not.toBeNull()
+    })
+
+    test('blocks bunx vite', () => {
+      expect(checkForbiddenCommand('bunx vite dev')).not.toBeNull()
+    })
+
+    test('blocks bun run dev', () => {
+      expect(checkForbiddenCommand('bun run dev')).not.toBeNull()
+    })
+
+    test('blocks bun run build', () => {
+      expect(checkForbiddenCommand('bun run build')).not.toBeNull()
+    })
+
+    test('blocks npm run dev', () => {
+      expect(checkForbiddenCommand('npm run dev')).not.toBeNull()
+    })
+
+    test('blocks npm run build', () => {
+      expect(checkForbiddenCommand('npm run build')).not.toBeNull()
+    })
+
+    test('blocks yarn dev', () => {
+      expect(checkForbiddenCommand('yarn dev')).not.toBeNull()
+    })
+
+    test('blocks yarn build', () => {
+      expect(checkForbiddenCommand('yarn build')).not.toBeNull()
+    })
+
+    test('blocks kill -9 <pid>', () => {
+      expect(checkForbiddenCommand('kill -9 12345')).not.toBeNull()
+    })
+
+    test('blocks kill <pid>', () => {
+      expect(checkForbiddenCommand('kill 12345')).not.toBeNull()
+    })
+
+    test('blocks pkill', () => {
+      expect(checkForbiddenCommand('pkill -f vite')).not.toBeNull()
+    })
+
+    test('blocks killall', () => {
+      expect(checkForbiddenCommand('killall node')).not.toBeNull()
+    })
+
+    test('blocks pm2 restart', () => {
+      expect(checkForbiddenCommand('pm2 restart all')).not.toBeNull()
+    })
+
+    test('blocks systemctl restart', () => {
+      expect(checkForbiddenCommand('systemctl restart nginx')).not.toBeNull()
+    })
+
+    test('blocks commands embedded in longer pipelines', () => {
+      expect(checkForbiddenCommand('cd /app && bun run build')).not.toBeNull()
+      expect(checkForbiddenCommand('pkill -f vite && vite dev')).not.toBeNull()
+    })
+
+    test('blocks commands with different casing', () => {
+      // checkForbiddenCommand lowercases before matching
+      expect(checkForbiddenCommand('Vite Dev')).not.toBeNull()
+      expect(checkForbiddenCommand('BUN RUN BUILD')).not.toBeNull()
+      expect(checkForbiddenCommand('PKILL vite')).not.toBeNull()
+    })
+  })
+
+  describe('allows safe commands', () => {
+    test('allows cat .build.log', () => {
+      expect(checkForbiddenCommand('cat .build.log')).toBeNull()
+    })
+
+    test('allows tail -f .build.log', () => {
+      expect(checkForbiddenCommand('tail -f .build.log')).toBeNull()
+    })
+
+    test('allows reading vite config', () => {
+      expect(checkForbiddenCommand('cat vite.config.ts')).toBeNull()
+    })
+
+    test('allows bun run generate (prisma)', () => {
+      expect(checkForbiddenCommand('bun run generate')).toBeNull()
+    })
+
+    test('allows bun run test', () => {
+      expect(checkForbiddenCommand('bun run test')).toBeNull()
+    })
+
+    test('allows bunx prisma validate', () => {
+      expect(checkForbiddenCommand('bunx prisma validate')).toBeNull()
+    })
+
+    test('allows bunx tsc --noEmit', () => {
+      expect(checkForbiddenCommand('bunx tsc --noEmit')).toBeNull()
+    })
+
+    test('allows ls, pwd, echo commands', () => {
+      expect(checkForbiddenCommand('ls -la')).toBeNull()
+      expect(checkForbiddenCommand('pwd')).toBeNull()
+      expect(checkForbiddenCommand('echo hello')).toBeNull()
+    })
+
+    test('allows file operations', () => {
+      expect(checkForbiddenCommand('mkdir -p src/components')).toBeNull()
+      expect(checkForbiddenCommand('cp src/App.tsx src/App.bak.tsx')).toBeNull()
+    })
+
+    test('allows npm/bun install', () => {
+      expect(checkForbiddenCommand('bun install')).toBeNull()
+      expect(checkForbiddenCommand('npm install react')).toBeNull()
+    })
+
+    test('allows bun run with other scripts', () => {
+      expect(checkForbiddenCommand('bun run lint')).toBeNull()
+      expect(checkForbiddenCommand('bun run format')).toBeNull()
+      expect(checkForbiddenCommand('bun run typecheck')).toBeNull()
+    })
+
+    test('allows ps aux (process listing, not killing)', () => {
+      expect(checkForbiddenCommand('ps aux')).toBeNull()
+    })
+  })
+})
+
 describe('Build Status Verification', () => {
   beforeAll(() => {
     // Clean up any previous test directory

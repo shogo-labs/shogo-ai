@@ -11,12 +11,12 @@
 
 import { useState, useCallback } from "react"
 import { cn } from "@/lib/utils"
-import type { Message } from "@ai-sdk/react"
+import type { UIMessage } from "@ai-sdk/react"
 import { Streamdown } from "streamdown"
 
 export interface MessageContentProps {
   /** The message to render */
-  message: Message
+  message: UIMessage
   /** Whether this message is currently streaming */
   isStreaming?: boolean
   /** Optional class name */
@@ -33,10 +33,10 @@ interface ImagePart {
  * Extract text content from a message.
  * Handles AI SDK v3 parts array format.
  */
-export function extractTextContent(message: Message): string {
+export function extractTextContent(message: UIMessage): string {
   // If message has content string, use it
-  if (typeof message.content === "string" && message.content) {
-    return message.content
+  if (typeof (message as any).content === "string" && (message as any).content) {
+    return (message as any).content
   }
 
   // v3 API: Extract text from parts array
@@ -56,7 +56,7 @@ export function extractTextContent(message: Message): string {
  *
  * task-render-image-history: New function for image detection
  */
-function extractImageParts(message: Message): ImagePart[] {
+function extractImageParts(message: UIMessage): ImagePart[] {
   if (!("parts" in message) || !Array.isArray((message as any).parts)) {
     return []
   }

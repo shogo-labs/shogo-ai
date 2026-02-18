@@ -141,6 +141,7 @@ model Project {
   publishedSubdomain String?       @unique
   publishedAt        DateTime?
   accessLevel        AccessLevel   @default(anyone)
+  category           ProjectCategory?
   siteTitle          String?
   siteDescription    String?
 
@@ -177,6 +178,13 @@ enum AccessLevel {
   anyone
   authenticated
   private
+}
+
+enum ProjectCategory {
+  app
+  website
+  tool
+  game
 }
 
 // =============================================================================

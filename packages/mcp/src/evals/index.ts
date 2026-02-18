@@ -85,6 +85,12 @@ export {
   createNoManualCommandsCriterion,
   createOfferedCustomizationCriterion,
   createErrorHandlingCriterion,
+  // Runtime safety
+  ranForbiddenRuntimeCommands,
+  extractForbiddenCommands,
+  FORBIDDEN_RUNTIME_COMMANDS,
+  createNoForbiddenRuntimeCommandsCriterion,
+  createExplainedAutoRebuildCriterion,
 } from './validators'
 
 // Metrics
@@ -179,3 +185,33 @@ export {
   LEVEL_5_BUSINESS_EVALS,
   LEVEL_6_BUSINESS_EVALS,
 } from './test-cases-business-user'
+
+// API Client Usage Evals (prefer api.* over raw fetch)
+export {
+  ALL_API_CLIENT_EVALS,
+  API_CLIENT_CRUD_EVALS,
+  API_CLIENT_MIXED_EVALS,
+  EVAL_API_CLIENT_TODO_CRUD,
+  EVAL_API_CLIENT_CRM_MIXED,
+  EVAL_API_CLIENT_ADD_DELETE,
+  EVAL_API_CLIENT_EXPENSE,
+  EVAL_API_CLIENT_CUSTOM_ENDPOINT_OK,
+  EVAL_API_CLIENT_INVENTORY,
+} from './test-cases-api-client'
+
+// Runtime Safety Test Cases
+export {
+  RUNTIME_SAFETY_EVALS,
+  EVAL_RESTART_VITE,
+  EVAL_RUN_BUILD,
+  EVAL_START_DEV_SERVER,
+  EVAL_CHANGES_NOT_SHOWING,
+  EVAL_PREVIEW_BROKEN,
+} from './test-cases-runtime-safety'
+
+// shadcn/UI Component Usage Test Cases
+export {
+  ALL_SHADCN_EVALS,
+  SHADCN_COMPONENT_EVALS,
+  SHADCN_IMPORT_EVALS,
+} from './test-cases-shadcn'

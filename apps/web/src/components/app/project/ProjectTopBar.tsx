@@ -66,6 +66,7 @@ export interface ProjectTopBarProps {
   onOpenPreview?: () => void
   onOpenExternal?: () => void
   onOpenCode?: () => void
+  isOpeningExternal?: boolean
   className?: string
 }
 
@@ -106,6 +107,7 @@ export function ProjectTopBar({
   onOpenPreview,
   onOpenExternal,
   onOpenCode,
+  isOpeningExternal = false,
   className,
 }: ProjectTopBarProps) {
   const navigate = useNavigate()
@@ -228,6 +230,7 @@ export function ProjectTopBar({
           onOpenPreview={onOpenPreview}
           onOpenExternal={onOpenExternal}
           onOpenCode={onOpenCode}
+          isOpeningExternal={isOpeningExternal}
         />
       </div>
 

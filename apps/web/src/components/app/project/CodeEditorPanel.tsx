@@ -15,7 +15,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import Editor, { type Monaco } from "@monaco-editor/react"
-import { Loader2, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, RefreshCw, Cloud, CloudOff } from "lucide-react"
+import { Loader2, FileText, Folder, FolderOpen, ChevronRight, ChevronDown, RefreshCw, Cloud, CloudOff, Download } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { getLSPClient, type MonacoLSPClient } from "@/lib/lsp-client"
 
@@ -745,6 +745,33 @@ export function CodeEditorPanel({
     }
   }, [selectedFile, projectId, onFileChange])
 
+  // Download project source code as tar.gz
+  const [isDownloading, setIsDownloading] = useState(false)
+  const handleDownload = useCallback(async () => {
+    setIsDownloading(true)
+    try {
+      const response = await fetch(`/api/projects/${projectId}/download`)
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error?.message || 'Failed to download project')
+      }
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${projectId}.tar.gz`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err: any) {
+      console.error('Download failed:', err)
+      alert(err.message || 'Failed to download project')
+    } finally {
+      setIsDownloading(false)
+    }
+  }, [projectId])
+
   // Ref for debounced type loading
   const typeLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -867,20 +894,38 @@ export function CodeEditorPanel({
           )}>
             Explorer
           </span>
-          <button
-            onClick={() => loadFiles(false)}
-            className={cn(
-              "p-1 rounded transition-colors",
-              isDarkMode ? "hover:bg-[#3c3c3c]" : "hover:bg-gray-200"
-            )}
-            title="Refresh files"
-          >
-            <RefreshCw className={cn(
-              "h-3.5 w-3.5",
-              isDarkMode ? "text-[#888888]" : "text-gray-500",
-              isLoadingFiles && "animate-spin"
-            )} />
-          </button>
+          <div className="flex items-center gap-0.5">
+            <button
+              onClick={handleDownload}
+              disabled={isDownloading}
+              className={cn(
+                "p-1 rounded transition-colors",
+                isDarkMode ? "hover:bg-[#3c3c3c]" : "hover:bg-gray-200",
+                isDownloading && "opacity-50 cursor-not-allowed"
+              )}
+              title="Download project source code"
+            >
+              {isDownloading ? (
+                <Loader2 className={cn("h-3.5 w-3.5 animate-spin", isDarkMode ? "text-[#888888]" : "text-gray-500")} />
+              ) : (
+                <Download className={cn("h-3.5 w-3.5", isDarkMode ? "text-[#888888]" : "text-gray-500")} />
+              )}
+            </button>
+            <button
+              onClick={() => loadFiles(false)}
+              className={cn(
+                "p-1 rounded transition-colors",
+                isDarkMode ? "hover:bg-[#3c3c3c]" : "hover:bg-gray-200"
+              )}
+              title="Refresh files"
+            >
+              <RefreshCw className={cn(
+                "h-3.5 w-3.5",
+                isDarkMode ? "text-[#888888]" : "text-gray-500",
+                isLoadingFiles && "animate-spin"
+              )} />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-auto py-1">
@@ -892,7 +937,7 @@ export function CodeEditorPanel({
             <div className="p-4 text-center">
               <p className="text-sm text-red-500">{filesError}</p>
               <button
-                onClick={loadFiles}
+                onClick={() => loadFiles()}
                 className="mt-2 text-xs text-blue-500 hover:underline"
               >
                 Retry

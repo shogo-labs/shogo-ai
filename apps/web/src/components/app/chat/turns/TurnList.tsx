@@ -7,7 +7,7 @@
  */
 
 import { cn } from "@/lib/utils"
-import type { Message } from "@ai-sdk/react"
+import type { UIMessage } from "@ai-sdk/react"
 import { useTurnGrouping } from "./useTurnGrouping"
 import { TurnGroup } from "./TurnGroup"
 import type { SubagentProgress, RecentTool } from "../subagent"
@@ -15,7 +15,7 @@ import type { ToolCallData } from "../tools/types"
 
 export interface TurnListProps {
   /** Array of AI SDK messages */
-  messages: Message[]
+  messages: UIMessage[]
   /** Whether the chat is currently streaming */
   isStreaming?: boolean
   /** Current phase for styling */

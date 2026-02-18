@@ -149,7 +149,7 @@ export class MCPService {
       params: {
         protocolVersion: '2024-11-05',
         capabilities: {},
-        clientInfo: { name: 'wavesmith-client', version: '1.0.0' }
+        clientInfo: { name: 'shogo-client', version: '1.0.0' }
       }
     }
 

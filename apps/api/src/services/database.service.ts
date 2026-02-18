@@ -8,7 +8,14 @@
  *   - Projects cluster: projects-pg (CloudNativePG managed)
  *   - Admin connection: uses superuser to CREATE/DROP databases
  *   - Project connection: each project gets DATABASE_URL pointing to its own database
+ *   - Credentials: stored in K8s Secrets (project-{id}-db-creds) as source of truth
  *   - Connection pooling: PgBouncer in front of the cluster (future)
+ *
+ * Credential lifecycle:
+ *   1. New DB: generate password → CREATE USER → store in K8s Secret → reference via secretKeyRef
+ *   2. Existing DB: read password from K8s Secret → return existing credentials
+ *   3. Password rotation: update PG user + K8s Secret → roll new Knative revision
+ *   4. Cleanup: delete K8s Secret when project is deleted
  *
  * Works identically on EKS, k3s, and bare-metal Kubernetes.
  */
@@ -16,6 +23,8 @@
 import { Pool } from "pg"
 import type pg from "pg"
 import crypto from "crypto"
+import * as k8s from "@kubernetes/client-node"
+import * as fs from "fs"
 
 // =============================================================================
 // Configuration
@@ -89,6 +98,169 @@ function getAdminPool(): InstanceType<typeof Pool> {
 }
 
 // =============================================================================
+// Kubernetes Client (for managing credential Secrets)
+// =============================================================================
+
+const PROJECT_NAMESPACE = process.env.PROJECT_NAMESPACE || "shogo-workspaces"
+
+let k8sCoreApi: k8s.CoreV1Api | null = null
+
+function getK8sCoreApi(): k8s.CoreV1Api {
+  if (!k8sCoreApi) {
+    const kc = new k8s.KubeConfig()
+    const serviceAccountDir = "/var/run/secrets/kubernetes.io/serviceaccount"
+    const caPath = `${serviceAccountDir}/ca.crt`
+    const tokenPath = `${serviceAccountDir}/token`
+
+    if (fs.existsSync(caPath) && fs.existsSync(tokenPath)) {
+      const ca = fs.readFileSync(caPath, "utf8")
+      const token = fs.readFileSync(tokenPath, "utf8")
+      const host = `https://${process.env.KUBERNETES_SERVICE_HOST}:${process.env.KUBERNETES_SERVICE_PORT}`
+
+      kc.loadFromOptions({
+        clusters: [
+          {
+            name: "in-cluster",
+            server: host,
+            caData: Buffer.from(ca).toString("base64"),
+            skipTLSVerify: true,
+          },
+        ],
+        users: [{ name: "in-cluster", token }],
+        contexts: [
+          { name: "in-cluster", cluster: "in-cluster", user: "in-cluster" },
+        ],
+        currentContext: "in-cluster",
+      })
+    } else {
+      kc.loadFromDefault()
+    }
+    k8sCoreApi = kc.makeApiClient(k8s.CoreV1Api)
+  }
+  return k8sCoreApi
+}
+
+/**
+ * Build the K8s Secret name for a project's database credentials.
+ */
+export function dbSecretName(projectId: string): string {
+  return `project-${projectId}-db-creds`
+}
+
+/**
+ * Store database credentials in a Kubernetes Secret.
+ * Creates the Secret if it doesn't exist, replaces it if it does.
+ */
+async function storeCredentialsSecret(
+  projectId: string,
+  connectionUrl: string,
+  username: string,
+  password: string,
+  namespace: string = PROJECT_NAMESPACE
+): Promise<void> {
+  const api = getK8sCoreApi()
+  const secretName = dbSecretName(projectId)
+
+  const secretBody: k8s.V1Secret = {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      name: secretName,
+      namespace,
+      labels: {
+        "app.kubernetes.io/managed-by": "shogo-database-service",
+        "shogo.ai/project-id": projectId,
+        "shogo.ai/component": "database-credentials",
+      },
+    },
+    type: "Opaque",
+    stringData: {
+      "database-url": connectionUrl,
+      username,
+      password,
+    },
+  }
+
+  try {
+    // Try to read existing secret first
+    await api.readNamespacedSecret({ name: secretName, namespace })
+    // Secret exists — replace it
+    await api.replaceNamespacedSecret({
+      name: secretName,
+      namespace,
+      body: secretBody,
+    })
+    console.log(
+      `[DatabaseService] Updated K8s Secret "${secretName}" in ${namespace}`
+    )
+  } catch (err: any) {
+    if (err?.code === 404 || err?.response?.statusCode === 404) {
+      // Secret doesn't exist — create it
+      await api.createNamespacedSecret({ namespace, body: secretBody })
+      console.log(
+        `[DatabaseService] Created K8s Secret "${secretName}" in ${namespace}`
+      )
+    } else {
+      throw err
+    }
+  }
+}
+
+/**
+ * Read database credentials from a Kubernetes Secret.
+ * Returns null if the Secret doesn't exist.
+ */
+async function readCredentialsSecret(
+  projectId: string,
+  namespace: string = PROJECT_NAMESPACE
+): Promise<{ connectionUrl: string; username: string; password: string } | null> {
+  const api = getK8sCoreApi()
+  const secretName = dbSecretName(projectId)
+
+  try {
+    const response = await api.readNamespacedSecret({ name: secretName, namespace })
+    const secret = response
+    const data = secret.data
+    if (!data) return null
+
+    return {
+      connectionUrl: Buffer.from(data["database-url"] || "", "base64").toString("utf-8"),
+      username: Buffer.from(data["username"] || "", "base64").toString("utf-8"),
+      password: Buffer.from(data["password"] || "", "base64").toString("utf-8"),
+    }
+  } catch (err: any) {
+    if (err?.code === 404 || err?.response?.statusCode === 404) {
+      return null
+    }
+    throw err
+  }
+}
+
+/**
+ * Delete the database credentials Secret for a project.
+ */
+async function deleteCredentialsSecret(
+  projectId: string,
+  namespace: string = PROJECT_NAMESPACE
+): Promise<void> {
+  const api = getK8sCoreApi()
+  const secretName = dbSecretName(projectId)
+
+  try {
+    await api.deleteNamespacedSecret({ name: secretName, namespace })
+    console.log(
+      `[DatabaseService] Deleted K8s Secret "${secretName}" from ${namespace}`
+    )
+  } catch (err: any) {
+    if (err?.code === 404 || err?.response?.statusCode === 404) {
+      // Already gone, that's fine
+    } else {
+      throw err
+    }
+  }
+}
+
+// =============================================================================
 // Database Name Helpers
 // =============================================================================
 
@@ -116,19 +288,26 @@ function generatePassword(): string {
 /**
  * Provision a new database for a project.
  * Creates the database and a dedicated user with full access.
+ * Stores credentials in a Kubernetes Secret as the single source of truth.
  *
  * Fully idempotent and concurrency-safe:
  * - Uses PostgreSQL advisory locks to serialize concurrent provisions for the same project
  * - Uses PL/pgSQL DO blocks for atomic role creation (no TOCTOU race)
+ * - Stores credentials in K8s Secret (project-{id}-db-creds) for retrieval
  * - Handles "already exists" errors gracefully as success
+ *
+ * Options:
+ *   forcePasswordReset: Generate a new password, update PG + K8s Secret (use for rotation)
  */
 export async function provisionDatabase(
-  projectId: string
+  projectId: string,
+  options: { forcePasswordReset?: boolean } = {}
 ): Promise<ProjectDatabase> {
   const pool = getAdminPool()
   const dbName = projectIdToDbName(projectId)
   const username = dbName // Use same name for user and database
-  const password = generatePassword()
+  const host = PROJECTS_DB_HOST
+  const port = parseInt(PROJECTS_DB_PORT, 10)
 
   console.log(
     `[DatabaseService] Provisioning database "${dbName}" for project ${projectId}`
@@ -148,14 +327,76 @@ export async function provisionDatabase(
       )
 
       if (existsResult.rows.length > 0) {
+        // ─── Database already exists ───
         console.log(
-          `[DatabaseService] Database "${dbName}" already exists, updating password`
+          `[DatabaseService] Database "${dbName}" already exists`
         )
-        // Update password for existing user (in case it was lost)
-        await client.query(
-          `ALTER USER "${username}" WITH PASSWORD '${password}'`
+
+        if (options.forcePasswordReset) {
+          // Password rotation: generate new password, update PG + K8s Secret
+          const password = generatePassword()
+          console.log(
+            `[DatabaseService] Force-resetting password for "${username}"`
+          )
+          await client.query(
+            `ALTER USER "${username}" WITH PASSWORD '${password}'`
+          )
+          const connectionUrl = `postgres://${username}:${password}@${host}:${port}/${dbName}`
+
+          // Update the K8s Secret with the new credentials
+          try {
+            await storeCredentialsSecret(projectId, connectionUrl, username, password)
+          } catch (secretErr: any) {
+            console.error(`[DatabaseService] Failed to update K8s Secret after password reset:`, secretErr.message)
+            // Password was already changed in PG — log but don't fail
+          }
+
+          return { databaseName: dbName, username, password, connectionUrl, host, port }
+        }
+
+        // Try to read existing credentials from K8s Secret
+        try {
+          const stored = await readCredentialsSecret(projectId)
+          if (stored && stored.password && stored.connectionUrl) {
+            console.log(
+              `[DatabaseService] Retrieved credentials from K8s Secret for "${dbName}"`
+            )
+            return {
+              databaseName: dbName,
+              username: stored.username || username,
+              password: stored.password,
+              connectionUrl: stored.connectionUrl,
+              host,
+              port,
+            }
+          }
+        } catch (secretErr: any) {
+          console.warn(
+            `[DatabaseService] Could not read K8s Secret for "${dbName}":`,
+            secretErr.message
+          )
+        }
+
+        // K8s Secret doesn't exist or is empty — this is a legacy project
+        // provisioned before we started storing credentials in Secrets.
+        // Return without password. The caller should use existing credentials
+        // from the pod's environment. Log a warning so we can track these.
+        console.warn(
+          `[DatabaseService] No K8s Secret found for existing database "${dbName}". ` +
+          `Run the migration script to backfill credentials from running pods.`
         )
+        return {
+          databaseName: dbName,
+          username,
+          password: "",
+          connectionUrl: `postgres://${username}@${host}:${port}/${dbName}`,
+          host,
+          port,
+        }
       } else {
+        // ─── New database — create everything ───
+        const password = generatePassword()
+
         // Create role atomically using PL/pgSQL DO block.
         // This avoids the TOCTOU race where two concurrent calls both see the role
         // doesn't exist and then one fails on CREATE USER.
@@ -207,19 +448,30 @@ export async function provisionDatabase(
         )
 
         console.log(`[DatabaseService] Database "${dbName}" created successfully`)
-      }
 
-      const host = PROJECTS_DB_HOST
-      const port = parseInt(PROJECTS_DB_PORT, 10)
-      const connectionUrl = `postgres://${username}:${password}@${host}:${port}/${dbName}`
+        const connectionUrl = `postgres://${username}:${password}@${host}:${port}/${dbName}`
 
-      return {
-        databaseName: dbName,
-        username,
-        password,
-        connectionUrl,
-        host,
-        port,
+        // Store credentials in K8s Secret for future retrieval
+        try {
+          await storeCredentialsSecret(projectId, connectionUrl, username, password)
+        } catch (secretErr: any) {
+          // Non-fatal: credentials are in the ksvc env. Log a warning.
+          // The migration script can backfill the Secret later.
+          console.error(
+            `[DatabaseService] Failed to create K8s Secret for "${dbName}":`,
+            secretErr.message,
+            `— credentials are still in the Knative Service env`
+          )
+        }
+
+        return {
+          databaseName: dbName,
+          username,
+          password,
+          connectionUrl,
+          host,
+          port,
+        }
       }
     } finally {
       // Always release the advisory lock, even on error
@@ -267,7 +519,7 @@ export async function getDatabaseStatus(
 }
 
 /**
- * Drop a project database and its user.
+ * Drop a project database, its user, and the credentials Secret.
  * Optionally creates a final backup to S3 before dropping.
  */
 export async function dropDatabase(
@@ -299,6 +551,16 @@ export async function dropDatabase(
     console.log(`[DatabaseService] Database "${dbName}" dropped successfully`)
   } finally {
     client.release()
+  }
+
+  // Delete the credentials K8s Secret (separate from PG connection)
+  try {
+    await deleteCredentialsSecret(projectId)
+  } catch (err: any) {
+    console.warn(
+      `[DatabaseService] Failed to delete credentials Secret for "${dbName}":`,
+      err.message
+    )
   }
 }
 

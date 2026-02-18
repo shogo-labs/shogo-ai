@@ -2,7 +2,7 @@
  * Component Builder Seed Data
  *
  * Seed data constants for the component-builder domain, structured for
- * insertOne() operations via Wavesmith MCP tools.
+ * insertOne() operations via Shogo MCP tools.
  *
  * Exports:
  * - COMPONENT_DEFINITIONS: 73 entries (display, visualization, section components)
@@ -745,13 +745,13 @@ export const COMPONENT_DEFINITIONS: ComponentDefinitionSeed[] = [
     name: "DataGridSection",
     category: "section",
     description:
-      "Generic data grid/table component that renders any Wavesmith collection in tabular format. Supports configurable columns, sorting, row selection, and uses PropertyRenderer for type-aware cell display. Works with any schema/model combination via config.",
+      "Generic data grid/table component that renders any Shogo collection in tabular format. Supports configurable columns, sorting, row selection, and uses PropertyRenderer for type-aware cell display. Works with any schema/model combination via config.",
     implementationRef: "DataGridSection",
     tags: ["section", "data-grid", "table", "collection", "generic", "workspace"],
     supportedConfig: ["schema", "model", "columns", "title", "stickyFirstColumn", "onRowSelect"],
     aiGuidance: `## DataGridSection Configuration Guide
 
-Displays any Wavesmith collection as a sortable, selectable data grid.
+Displays any Shogo collection as a sortable, selectable data grid.
 
 ### Required Config
 - \`schema\`: Schema name (e.g., "platform-features", "studio-chat")
@@ -808,7 +808,7 @@ Displays any Wavesmith collection as a sortable, selectable data grid.
     name: "ChartSection",
     category: "section",
     description:
-      "Visualize data from arbitrary Wavesmith domains as charts and graphs using D3.js. Supports bar and line charts with count aggregation. Controllable via chat-driven virtual tools and composable into various use cases.",
+      "Visualize data from arbitrary Shogo domains as charts and graphs using D3.js. Supports bar and line charts with count aggregation. Controllable via chat-driven virtual tools and composable into various use cases.",
     implementationRef: "ChartSection",
     tags: ["section", "chart", "visualization", "d3", "generic", "workspace"],
     supportedConfig: ["schema", "model", "chartType", "xField", "yField", "title", "onDataPointSelect"],
@@ -1776,7 +1776,7 @@ export const COMPOSITIONS: CompositionSeed[] = [
   // Usage: "load component-showcase" or "show me the component showcase"
   //
   // This demonstrates the new composable architecture:
-  // - sideNav.dataSource loads ComponentDefinitions dynamically from Wavesmith store
+  // - sideNav.dataSource loads ComponentDefinitions dynamically from Shogo store
   // - Items are grouped by category automatically via groupBy
   // - contentComposition uses SectionBrowserSection which reads activeItem from AppShellContext
   // - Example configs provide live previews for components that support them

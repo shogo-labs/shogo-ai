@@ -257,20 +257,50 @@ jobs:
 
       - name: Create or update API secrets
         run: |
-          # Create or update the api-secrets secret with ANTHROPIC_API_KEY
-          # BETTER_AUTH_SECRET is optional - if not set in GitHub, it will use the value from kustomization
+          # Build the api-secrets secret with all required keys
+          # Optional secrets are included only when set in GitHub environment
+          SECRET_ARGS=(
+            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
+          )
+          
+          # Better Auth secret (optional)
           if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
-            kubectl create secret generic api-secrets \
-              --namespace=${{ env.NS_SYSTEM }} \
-              --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
-              --from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-          else
-            kubectl create secret generic api-secrets \
-              --namespace=${{ env.NS_SYSTEM }} \
-              --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
+            SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}")
           fi
+          
+          # Stripe secrets (optional)
+          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}")
+          fi
+          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}")
+          fi
+          
+          # GitHub App secrets (optional - for Git sync integration)
+          # Note: Uses GH_ prefix because GitHub Actions reserves the GITHUB_ prefix
+          if [ -n "${{ secrets.GH_APP_ID }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_PRIVATE_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_PRIVATE_KEY="${{ secrets.GH_APP_PRIVATE_KEY }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_WEBHOOK_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_WEBHOOK_SECRET="${{ secrets.GH_APP_WEBHOOK_SECRET }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_SLUG }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_SLUG="${{ secrets.GH_APP_SLUG }}")
+          fi
+          
+          kubectl create secret generic api-secrets \
+            --namespace=${{ env.NS_SYSTEM }} \
+            "${SECRET_ARGS[@]}" \
+            --dry-run=client -o yaml | kubectl apply -f -
           
           echo "✅ API secrets created/updated in ${{ env.NS_SYSTEM }} namespace"
           

@@ -1,6 +1,11 @@
 import { useState } from 'react'
 import { observer } from 'mobx-react-lite'
+import { Users } from 'lucide-react'
 import { useStores } from '../stores'
+import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/button'
 
 type AuthMode = 'signin' | 'signup'
 
@@ -26,69 +31,78 @@ export const LoginPage = observer(function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-5" style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
-      <div className="bg-white rounded-xl shadow-lg p-6 w-full max-w-md text-center">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">CRM</h1>
-        <p className="text-gray-500 mb-6">Manage your contacts, companies, and deals.</p>
+    <div className="min-h-screen flex items-center justify-center p-5 bg-gradient-to-br from-slate-100 to-slate-200">
+      <Card className="w-full max-w-md text-center">
+        <CardHeader className="items-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 mb-2">
+            <Users className="h-6 w-6 text-primary" />
+          </div>
+          <CardTitle className="text-2xl">CRM</CardTitle>
+          <CardDescription>Manage your contacts, companies, and deals.</CardDescription>
+        </CardHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4 text-left">
-          {mode === 'signup' && (
-            <div>
-              <label className="text-sm font-medium text-gray-700 mb-1 block">Name (optional)</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Your name"
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-4 text-left">
+            {mode === 'signup' && (
+              <div className="space-y-2">
+                <Label htmlFor="name">Name (optional)</Label>
+                <Input
+                  id="name"
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Your name"
+                  disabled={auth.isLoading}
+                />
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="email">Email address</Label>
+              <Input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                placeholder="you@company.com"
                 disabled={auth.isLoading}
-                className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-          )}
-          <div>
-            <label className="text-sm font-medium text-gray-700 mb-1 block">Email address</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              placeholder="you@company.com"
-              disabled={auth.isLoading}
-              className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-700 mb-1 block">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={6}
-              placeholder="••••••••"
-              disabled={auth.isLoading}
-              className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          {auth.error && <p className="text-red-600 text-sm">{auth.error}</p>}
-          <button
-            type="submit"
-            disabled={auth.isLoading}
-            className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
-          >
-            {auth.isLoading ? 'Please wait...' : mode === 'signin' ? 'Sign In' : 'Create Account'}
-          </button>
-        </form>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={6}
+                placeholder="••••••••"
+                disabled={auth.isLoading}
+              />
+            </div>
+            {auth.error && <p className="text-sm text-destructive">{auth.error}</p>}
+            <Button type="submit" disabled={auth.isLoading} className="w-full">
+              {auth.isLoading ? 'Please wait...' : mode === 'signin' ? 'Sign In' : 'Create Account'}
+            </Button>
+          </form>
 
-        <p className="mt-6 text-sm text-gray-500">
-          {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}
-          <button type="button" onClick={toggleMode} className="text-blue-600 font-medium" style={{ background: 'none', border: 'none', cursor: 'pointer' }}>
-            {mode === 'signin' ? 'Sign up' : 'Sign in'}
-          </button>
-        </p>
+          <p className="mt-6 text-sm text-muted-foreground">
+            {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}
+            <button
+              type="button"
+              onClick={toggleMode}
+              className="text-primary font-medium hover:underline bg-transparent border-none cursor-pointer"
+            >
+              {mode === 'signin' ? 'Sign up' : 'Sign in'}
+            </button>
+          </p>
+        </CardContent>
 
-        <p className="mt-6 text-xs text-gray-400">Built with @shogo-ai/sdk + Hono</p>
-      </div>
+        <CardFooter className="justify-center">
+          <p className="text-xs text-muted-foreground">Built with @shogo-ai/sdk + Hono</p>
+        </CardFooter>
+      </Card>
     </div>
   )
 })

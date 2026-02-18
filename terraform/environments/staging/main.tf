@@ -980,6 +980,8 @@ resource "null_resource" "knative_services" {
     # Trigger redeployment when image tag changes
     image_tag    = local.image_tag
     ecr_registry = local.ecr_registry
+    # Force redeploy: bumped API memory from 512Mi to 2Gi
+    api_memory   = "2Gi"
     # Add timestamp trigger for manual refresh (uncomment to force redeploy)
     # timestamp = timestamp()
   }
@@ -1122,10 +1124,10 @@ resource "null_resource" "knative_services" {
                     value: "${var.publish_domain}"
                 resources:
                   requests:
-                    memory: "256Mi"
+                    memory: "512Mi"
                     cpu: "100m"
                   limits:
-                    memory: "512Mi"
+                    memory: "2Gi"
                     cpu: "500m"
       EOF
 

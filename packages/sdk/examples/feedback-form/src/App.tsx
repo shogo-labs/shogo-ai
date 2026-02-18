@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
 import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
+import { api, configureApiClient } from './generated/api-client'
 
 // Types
 interface SubmissionType {
@@ -75,19 +76,25 @@ const DashboardPage = observer(function DashboardPage() {
   const [filter, setFilter] = useState<'all' | 'unread' | 'starred'>('all')
   const [loading, setLoading] = useState(true)
 
+  // Configure API client with user context
+  useEffect(() => {
+    if (auth.user) {
+      configureApiClient({ userId: auth.user.id })
+    }
+  }, [auth.user?.id])
+
   const fetchData = useCallback(async () => {
     if (!auth.user) return
     
     try {
+      // Use API client for standard CRUD, raw fetch only for custom endpoints
       const [subsRes, statsRes] = await Promise.all([
-        fetch(`/api/submissions?userId=${auth.user.id}`),
+        api.submission.list(),
         fetch(`/api/submissions/stats?userId=${auth.user.id}`),
       ])
       
       if (subsRes.ok) {
-        const subsData = await subsRes.json()
-        // Handle SDK response format: { ok: true, items: [...] }
-        setSubmissions(subsData.items || subsData || [])
+        setSubmissions((subsRes.items || []) as any)
       }
       if (statsRes.ok) {
         setStats(await statsRes.json())
@@ -104,26 +111,18 @@ const DashboardPage = observer(function DashboardPage() {
   }, [fetchData])
 
   const handleMarkRead = async (id: string, isRead: boolean) => {
-    await fetch(`/api/submissions/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ isRead }),
-    })
+    await api.submission.update(id, { isRead } as any)
     fetchData()
   }
 
   const handleToggleStar = async (id: string, isStarred: boolean) => {
-    await fetch(`/api/submissions/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ isStarred }),
-    })
+    await api.submission.update(id, { isStarred } as any)
     fetchData()
   }
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this submission?')) return
-    await fetch(`/api/submissions/${id}`, { method: 'DELETE' })
+    await api.submission.delete(id)
     fetchData()
   }
 
@@ -391,18 +390,11 @@ function FeedbackForm({ userId, ownerName }: { userId: string; ownerName: string
     setError('')
 
     try {
+      // Public endpoint — uses fetch directly since this runs without auth context
       const res = await fetch('/api/submissions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId,
-          name,
-          email,
-          rating,
-          category,
-          message,
-          wouldRecommend,
-        }),
+        body: JSON.stringify({ userId, name, email, rating, category, message, wouldRecommend }),
       })
 
       if (!res.ok) {

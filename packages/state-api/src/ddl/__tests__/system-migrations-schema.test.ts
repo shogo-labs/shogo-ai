@@ -2,7 +2,7 @@
  * System Migrations Schema Tests
  *
  * Generated from TestSpecifications for task-mig-006-schema
- * Tests the system-migrations schema structure and Wavesmith integration.
+ * Tests the system-migrations schema structure and Shogo integration.
  */
 
 import { describe, test, expect, beforeEach } from "bun:test"
@@ -117,13 +117,13 @@ describe("system-migrations-schema.ts - Schema File Structure", () => {
   })
 })
 
-describe("system-migrations-schema.ts - Wavesmith Integration", () => {
+describe("system-migrations-schema.ts - Shogo Integration", () => {
   // These integration tests use in-memory database and isolated stores
 
-  describe("Schema can be registered and loaded via Wavesmith", () => {
+  describe("Schema can be registered and loaded via Shogo", () => {
     test("schema registered and models include MigrationRecord", async () => {
       // This test verifies the schema can be processed by the schematic pipeline
-      // The actual Wavesmith integration will be tested when domain.ts is created
+      // The actual Shogo integration will be tested when domain.ts is created
       const schemaExists = existsSync(SYSTEM_MIGRATIONS_SCHEMA_PATH)
       expect(schemaExists).toBe(true)
 

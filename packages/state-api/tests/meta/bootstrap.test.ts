@@ -5,7 +5,7 @@
  * was keyed only by schemaId, causing multiple workspaces to share the same
  * runtime store and corrupting data. Now cache keys include location dimension.
  *
- * Bug Fix: https://github.com/your-org/wavesmith-state-api/issues/XXX
+ * Bug Fix: https://github.com/your-org/shogo-state-api/issues/XXX
  */
 import { describe, test, expect, beforeEach } from 'bun:test'
 import {

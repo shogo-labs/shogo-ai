@@ -339,7 +339,7 @@ body {
 
 /* Tool Category Colors - for visual distinction of tool types */
 :root {
-  --tool-mcp: #8B5CF6;      /* violet-500: MCP/Wavesmith tools */
+  --tool-mcp: #8B5CF6;      /* violet-500: MCP/Shogo tools */
   --tool-file: #10B981;     /* emerald-500: File operations (Read, Write, Edit, Glob, Grep) */
   --tool-skill: #F59E0B;    /* amber-500: Skill invocations */
   --tool-bash: #6B7280;     /* gray-500: Bash/terminal commands */

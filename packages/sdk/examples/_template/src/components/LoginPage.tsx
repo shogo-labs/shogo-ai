@@ -1,15 +1,11 @@
-/**
- * LoginPage - Authentication form component
- *
- * Simple email-based auth using the PostgreSQL database:
- * - Sign up creates a user in the database
- * - Sign in verifies user exists
- * - MobX observer for reactive state
- */
-
 import { useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { useStores } from '../stores'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { Loader2 } from 'lucide-react'
 
 type AuthMode = 'signin' | 'signup'
 
@@ -22,7 +18,6 @@ export const LoginPage = observer(function LoginPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-
     if (mode === 'signin') {
       await auth.signIn({ email, password })
     } else {
@@ -36,147 +31,48 @@ export const LoginPage = observer(function LoginPage() {
   }
 
   return (
-    <div style={styles.container}>
-      <article style={styles.card}>
-        <header style={styles.header}>
-          <h1 style={styles.title}>Welcome</h1>
-          <p style={styles.subtitle}>
-            Built with <strong>@shogo-ai/sdk</strong>
-          </p>
-        </header>
+    <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-900 dark:to-slate-800">
+      <Card className="w-full max-w-md">
+        <CardHeader className="text-center space-y-2">
+          <CardTitle className="text-2xl">Welcome</CardTitle>
+          <CardDescription>Built with @shogo-ai/sdk</CardDescription>
+        </CardHeader>
 
-        {/* Email/Password Form */}
-        <form onSubmit={handleSubmit} style={styles.form}>
-          {mode === 'signup' && (
-            <input
-              type="text"
-              placeholder="Name (optional)"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={auth.isLoading}
-              style={styles.input}
-            />
-          )}
-          <input
-            type="email"
-            placeholder="Email address"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            disabled={auth.isLoading}
-            style={styles.input}
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            minLength={6}
-            disabled={auth.isLoading}
-            style={styles.input}
-          />
+        <form onSubmit={handleSubmit}>
+          <CardContent className="space-y-4">
+            {mode === 'signup' && (
+              <div className="space-y-2">
+                <Label htmlFor="name">Name</Label>
+                <Input id="name" placeholder="Your name (optional)" value={name} onChange={(e) => setName(e.target.value)} disabled={auth.isLoading} />
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input id="email" type="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={auth.isLoading} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input id="password" type="password" placeholder="Enter your password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} disabled={auth.isLoading} />
+            </div>
 
-          {auth.error && <p style={styles.error}>{auth.error}</p>}
+            {auth.error && <p className="text-sm text-destructive">{auth.error}</p>}
 
-          <button type="submit" disabled={auth.isLoading} style={styles.submitButton}>
-            {auth.isLoading
-              ? 'Please wait...'
-              : mode === 'signin'
-                ? 'Sign In'
-                : 'Create Account'}
-          </button>
+            <Button type="submit" disabled={auth.isLoading} className="w-full">
+              {auth.isLoading ? <><Loader2 className="h-4 w-4 animate-spin" />Please wait...</> : mode === 'signin' ? 'Sign In' : 'Create Account'}
+            </Button>
+          </CardContent>
         </form>
 
-        <footer style={styles.footer}>
-          <p>
+        <CardFooter className="flex flex-col items-center gap-4 pb-6">
+          <p className="text-sm text-muted-foreground">
             {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}
-            <button type="button" onClick={toggleMode} style={styles.toggleButton}>
+            <button type="button" onClick={toggleMode} className="text-primary font-medium hover:underline underline-offset-4 cursor-pointer">
               {mode === 'signin' ? 'Sign up' : 'Sign in'}
             </button>
           </p>
-        </footer>
-      </article>
+          <p className="text-xs text-muted-foreground">Built with @shogo-ai/sdk + Hono</p>
+        </CardFooter>
+      </Card>
     </div>
   )
 })
-
-// Inline styles
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    minHeight: '100vh',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '1rem',
-    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-  },
-  card: {
-    backgroundColor: 'white',
-    borderRadius: '12px',
-    boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)',
-    padding: '2rem',
-    width: '100%',
-    maxWidth: '400px',
-  },
-  header: {
-    textAlign: 'center',
-    marginBottom: '1.5rem',
-  },
-  title: {
-    fontSize: '1.5rem',
-    fontWeight: '700',
-    color: '#111827',
-    margin: 0,
-  },
-  subtitle: {
-    color: '#6b7280',
-    fontSize: '0.875rem',
-    marginTop: '0.5rem',
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '0.75rem',
-  },
-  input: {
-    width: '100%',
-    padding: '0.75rem 1rem',
-    border: '1px solid #e5e7eb',
-    borderRadius: '8px',
-    fontSize: '0.875rem',
-    outline: 'none',
-    boxSizing: 'border-box',
-  },
-  error: {
-    color: '#dc2626',
-    fontSize: '0.875rem',
-    margin: '0.25rem 0',
-  },
-  submitButton: {
-    width: '100%',
-    padding: '0.75rem 1rem',
-    backgroundColor: '#3b82f6',
-    color: 'white',
-    border: 'none',
-    borderRadius: '8px',
-    fontSize: '0.875rem',
-    fontWeight: '500',
-    cursor: 'pointer',
-    transition: 'background-color 0.15s',
-  },
-  footer: {
-    marginTop: '1.5rem',
-    textAlign: 'center',
-    fontSize: '0.875rem',
-    color: '#6b7280',
-  },
-  toggleButton: {
-    background: 'none',
-    border: 'none',
-    color: '#3b82f6',
-    cursor: 'pointer',
-    fontWeight: '500',
-    fontSize: 'inherit',
-  },
-}

@@ -1,5 +1,5 @@
 /**
- * Wavesmith State API
+ * Shogo State API
  *
  * Schema-first reactive state management bridging arkType to MST
  * with isomorphic execution and built-in collaboration.

@@ -23,6 +23,9 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/api/package.json ./apps/api/
 COPY apps/web/package.json ./apps/web/
 
+# Copy scripts needed for postinstall (patch-claude-sdk runs during bun install)
+COPY scripts ./scripts
+
 # Install all dependencies
 RUN bun install
 

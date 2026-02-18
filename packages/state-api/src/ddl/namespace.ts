@@ -2,7 +2,7 @@
  * Namespace derivation and table qualification utilities
  *
  * This module provides utilities for schema namespace isolation:
- * - Deriving SQL-safe namespace names from Wavesmith schema names
+ * - Deriving SQL-safe namespace names from Shogo schema names
  * - Generating dialect-specific qualified table names
  *
  * PostgreSQL uses native database schemas: "namespace"."table"
@@ -12,7 +12,7 @@
  */
 
 /**
- * Derives SQL-safe namespace identifier from a Wavesmith schema name.
+ * Derives SQL-safe namespace identifier from a Shogo schema name.
  *
  * Transforms the schema name to be safe for use as:
  * - PostgreSQL schema name (CREATE SCHEMA "namespace")
@@ -27,7 +27,7 @@
  * - Prepend underscore if starts with digit
  * - Trim trailing underscores
  *
- * @param {string} schemaName - Wavesmith schema name
+ * @param {string} schemaName - Shogo schema name
  * @returns {string} SQL-safe namespace identifier
  *
  * @example

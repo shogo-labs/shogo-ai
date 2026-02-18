@@ -133,7 +133,7 @@ async function main() {
   // Build byCategory summary
   const byCategory: Record<string, { total: number; passed: number; passRate: number }> = {}
   for (const r of results) {
-    const category = evals.find(e => e.id === r.evalId)?.category || 'unknown'
+    const category = evals.find(e => e.id === r.eval?.id)?.category || 'unknown'
     if (!byCategory[category]) {
       byCategory[category] = { total: 0, passed: 0, passRate: 0 }
     }
@@ -154,8 +154,10 @@ async function main() {
       failed,
       passRate: passed / results.length * 100,
       averageScore: results.reduce((s, r) => s + r.score, 0) / results.length,
+      totalPoints: results.reduce((s, r) => s + r.score, 0),
+      maxPoints: results.reduce((s, r) => s + r.maxScore, 0),
     },
-    byCategory,
+    byCategory: byCategory as any,
   }
   const report = formatEvalReport(suiteResult)
   console.log(report)
@@ -185,7 +187,7 @@ async function main() {
   console.log(`----------------------------------------`)
   const byLevel = new Map<number, typeof results>()
   for (const r of results) {
-    const level = evals.find(e => e.id === r.evalId)?.level || 0
+    const level = evals.find(e => e.id === r.eval?.id)?.level || 0
     if (!byLevel.has(level)) byLevel.set(level, [])
     byLevel.get(level)!.push(r)
   }
@@ -204,7 +206,7 @@ async function main() {
   console.log(`----------------------------------------`)
   const categoryMap = new Map<string, typeof results>()
   for (const r of results) {
-    const category = evals.find(e => e.id === r.evalId)?.category || 'unknown'
+    const category = evals.find(e => e.id === r.eval?.id)?.category || 'unknown'
     if (!categoryMap.has(category)) categoryMap.set(category, [])
     categoryMap.get(category)!.push(r)
   }
@@ -223,10 +225,10 @@ async function main() {
     console.log('')
     console.log('Failed Evals:')
     for (const r of results.filter(r => !r.passed)) {
-      const ev = evals.find(e => e.id === r.evalId)
+      const ev = evals.find(e => e.id === r.eval?.id)
       console.log('')
-      console.log(`  📋 ${ev?.name || r.evalId}`)
-      console.log(`     Score: ${r.score}/${ev?.maxScore || 100} (${r.scorePercent.toFixed(0)}%)`)
+      console.log(`  📋 ${ev?.name || r.eval?.id}`)
+      console.log(`     Score: ${r.score}/${ev?.maxScore || 100} (${r.percentage.toFixed(0)}%)`)
       console.log(`     Input: "${ev?.input.substring(0, 50)}..."`)
       
       // Show which criteria failed
@@ -234,7 +236,7 @@ async function main() {
       if (failedCriteria.length > 0) {
         console.log(`     Failed criteria:`)
         for (const c of failedCriteria) {
-          console.log(`       ✗ ${c.description} (${c.maxPoints} pts)`)
+          console.log(`       ✗ ${c.criterion.description} (${c.criterion.points} pts)`)
         }
       }
     }

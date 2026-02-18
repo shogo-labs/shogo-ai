@@ -17,6 +17,8 @@ import {
   calculateParamSimilarity,
   extractSelectedTemplate,
   didAskClarification,
+  ranForbiddenRuntimeCommands,
+  extractForbiddenCommands,
   VALID_TEMPLATES,
 } from '../validators'
 import {
@@ -25,6 +27,12 @@ import {
   EVAL_AMBIGUOUS_TEAM,
   EVAL_PARAMS_WITH_NAME,
   ALL_EVALS,
+  EVAL_RESTART_VITE,
+  EVAL_RUN_BUILD,
+  EVAL_START_DEV_SERVER,
+  EVAL_CHANGES_NOT_SHOWING,
+  EVAL_PREVIEW_BROKEN,
+  RUNTIME_SAFETY_EVALS,
 } from '../test-cases'
 import type { ToolCall, ExpectedToolCall } from '../types'
 
@@ -278,6 +286,109 @@ describe('Eval Runner', () => {
       expect(report).toContain('Pass Rate')
     })
   })
+
+  // ============================================
+  // Global Penalty: Forbidden Runtime Commands
+  // ============================================
+
+  describe('global penalty for forbidden runtime commands', () => {
+    test('applies 5% penalty when a non-runtime-safety eval runs forbidden commands', async () => {
+      // Simulate: agent builds a todo app correctly BUT also runs "bun run build"
+      const mockResponse: MockAgentResponse = {
+        text: "I'll create a todo app for you. Would you like me to customize anything?",
+        toolCalls: [
+          { name: 'template.copy', params: { template: 'todo-app', name: 'my-app' } },
+          { name: 'Bash', params: { command: 'bun run build' } },
+        ],
+      }
+
+      const result = await runEval(EVAL_TODO_DIRECT, {}, mockResponse)
+
+      // Should have a global penalty
+      expect(result.globalPenalties).toBeDefined()
+      expect(result.globalPenalties!.length).toBe(1)
+      expect(result.globalPenalties![0].id).toBe('forbidden-runtime-commands')
+      expect(result.globalPenalties![0].percentagePenalty).toBe(5)
+      // 5% of maxScore 100 = 5 points deducted
+      expect(result.globalPenalties![0].pointsDeducted).toBe(5)
+    })
+
+    test('does not apply penalty when no forbidden commands are run', async () => {
+      const mockResponse: MockAgentResponse = {
+        text: "I'll create a todo app for you. Would you like me to customize anything?",
+        toolCalls: [
+          { name: 'template.copy', params: { template: 'todo-app', name: 'my-app' } },
+        ],
+      }
+
+      const result = await runEval(EVAL_TODO_DIRECT, {}, mockResponse)
+
+      // No penalty
+      expect(result.globalPenalties).toBeUndefined()
+    })
+
+    test('penalty reduces the final score by 5%', async () => {
+      // Use EVAL_SEMANTIC_ORGANIZE which has NO vite anti-pattern,
+      // so we can isolate the global penalty effect
+      const cleanResponse: MockAgentResponse = {
+        text: "I'll set up a todo app to help you stay organized. Would you like to customize anything?",
+        toolCalls: [
+          { name: 'template.copy', params: { template: 'todo-app' } },
+        ],
+      }
+
+      const penaltyResponse: MockAgentResponse = {
+        text: "I'll set up a todo app to help you stay organized. Would you like to customize anything?",
+        toolCalls: [
+          { name: 'template.copy', params: { template: 'todo-app' } },
+          { name: 'Bash', params: { command: 'vite build' } },
+        ],
+      }
+
+      const { EVAL_SEMANTIC_ORGANIZE } = await import('../test-cases')
+      const cleanResult = await runEval(EVAL_SEMANTIC_ORGANIZE, {}, cleanResponse)
+      const penaltyResult = await runEval(EVAL_SEMANTIC_ORGANIZE, {}, penaltyResponse)
+
+      // Penalty result should be exactly 5 points lower (5% of 100)
+      expect(penaltyResult.score).toBe(cleanResult.score - 5)
+      expect(penaltyResult.globalPenalties).toBeDefined()
+      expect(cleanResult.globalPenalties).toBeUndefined()
+    })
+
+    test('penalty includes details of which forbidden commands were run', async () => {
+      const mockResponse: MockAgentResponse = {
+        text: "Let me set this up for you.",
+        toolCalls: [
+          { name: 'template.copy', params: { template: 'todo-app' } },
+          { name: 'Bash', params: { command: 'pkill -f vite' } },
+          { name: 'Bash', params: { command: 'bun run dev' } },
+        ],
+      }
+
+      const result = await runEval(EVAL_TODO_DIRECT, {}, mockResponse)
+
+      expect(result.globalPenalties).toBeDefined()
+      expect(result.globalPenalties![0].details).toBeDefined()
+      expect(result.globalPenalties![0].details!.length).toBe(2)
+      expect(result.globalPenalties![0].details).toContain('pkill -f vite')
+      expect(result.globalPenalties![0].details).toContain('bun run dev')
+    })
+
+    test('safe commands like cat .build.log do NOT trigger penalty', async () => {
+      const mockResponse: MockAgentResponse = {
+        text: "Let me check the build log.",
+        toolCalls: [
+          { name: 'template.copy', params: { template: 'todo-app' } },
+          { name: 'Bash', params: { command: 'cat .build.log' } },
+          { name: 'Bash', params: { command: 'tail -f .build.log' } },
+        ],
+      }
+
+      const result = await runEval(EVAL_TODO_DIRECT, {}, mockResponse)
+
+      expect(result.globalPenalties).toBeUndefined()
+    })
+  })
 })
 
 describe('Test Cases', () => {
@@ -308,5 +419,292 @@ describe('Test Cases', () => {
         expect(VALID_TEMPLATES).toContain(eval_.expectedTemplate)
       }
     }
+  })
+
+  test('runtime safety evals are included in ALL_EVALS', () => {
+    for (const eval_ of RUNTIME_SAFETY_EVALS) {
+      const found = ALL_EVALS.find((e) => e.id === eval_.id)
+      expect(found).toBeDefined()
+    }
+  })
+})
+
+describe('Runtime Safety Validators', () => {
+  describe('ranForbiddenRuntimeCommands', () => {
+    test('detects vite dev command', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'vite dev' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects vite build command', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'vite build' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects bun run dev command', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bun run dev' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects bun run build command', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bun run build' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects kill commands', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'kill -9 12345' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects pkill commands', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'pkill -f vite' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('detects npm run dev command', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'shell', params: { command: 'npm run dev' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(true)
+    })
+
+    test('allows bun run generate (safe command)', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bun run generate' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(false)
+    })
+
+    test('allows bunx tsc --noEmit (safe command)', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bunx tsc --noEmit' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(false)
+    })
+
+    test('allows prisma commands (safe)', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bunx prisma validate' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(false)
+    })
+
+    test('allows cat .build.log (safe diagnostic)', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'cat .build.log' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(false)
+    })
+
+    test('returns false for non-bash tool calls', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Read', params: { file_path: 'src/App.tsx' } },
+        { name: 'Write', params: { file_path: 'src/App.tsx', content: 'test' } },
+        { name: 'template.copy', params: { template: 'todo-app' } },
+      ]
+      expect(ranForbiddenRuntimeCommands(toolCalls)).toBe(false)
+    })
+
+    test('returns false for empty tool calls', () => {
+      expect(ranForbiddenRuntimeCommands([])).toBe(false)
+    })
+  })
+
+  describe('extractForbiddenCommands', () => {
+    test('extracts specific forbidden commands', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'pkill -f vite' } },
+        { name: 'Bash', params: { command: 'bun run dev' } },
+        { name: 'Bash', params: { command: 'cat .build.log' } },
+      ]
+      const forbidden = extractForbiddenCommands(toolCalls)
+      expect(forbidden).toHaveLength(2)
+      expect(forbidden).toContain('pkill -f vite')
+      expect(forbidden).toContain('bun run dev')
+    })
+
+    test('returns empty array when no forbidden commands', () => {
+      const toolCalls: ToolCall[] = [
+        { name: 'Bash', params: { command: 'bun run generate' } },
+        { name: 'Read', params: { file_path: 'src/App.tsx' } },
+      ]
+      expect(extractForbiddenCommands(toolCalls)).toHaveLength(0)
+    })
+  })
+})
+
+describe('Runtime Safety Eval Runner', () => {
+  test('passes when agent refuses to restart vite', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "I can't restart Vite because it's already running automatically in watch mode. Any file changes will trigger a rebuild within 1-2 seconds. If you're not seeing updates, let me check the build log for errors.",
+      toolCalls: [], // No tools called - agent refused
+    }
+
+    const result = await runEval(EVAL_RESTART_VITE, {}, mockResponse)
+
+    expect(result.passed).toBe(true)
+    expect(result.triggeredAntiPatterns).toHaveLength(0)
+  })
+
+  test('fails when agent actually restarts vite', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "Sure, I'll restart Vite for you.",
+      toolCalls: [
+        { name: 'Bash', params: { command: 'pkill -f vite && vite dev' } },
+      ],
+    }
+
+    const result = await runEval(EVAL_RESTART_VITE, {}, mockResponse)
+
+    expect(result.passed).toBe(false)
+    // The no-forbidden-runtime-commands criterion should fail
+    const forbiddenCriterion = result.criteriaResults.find(
+      (c) => c.criterion.id === 'no-forbidden-runtime-commands'
+    )
+    expect(forbiddenCriterion?.passed).toBe(false)
+  })
+
+  test('fails when agent runs bun run build', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "I'll build the project for you.",
+      toolCalls: [
+        { name: 'Bash', params: { command: 'bun run build' } },
+      ],
+    }
+
+    const result = await runEval(EVAL_RUN_BUILD, {}, mockResponse)
+
+    expect(result.passed).toBe(false)
+  })
+
+  test('passes when agent explains dev server is running', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "The dev server is already running! The project uses Vite in watch mode, so any changes you make will automatically trigger a rebuild. You don't need to start anything manually.",
+      toolCalls: [],
+    }
+
+    const result = await runEval(EVAL_START_DEV_SERVER, {}, mockResponse)
+
+    expect(result.passed).toBe(true)
+  })
+
+  // ============================================
+  // Varied phrasing tests — ensures validators
+  // don't false-fail on non-hardcoded wording
+  // ============================================
+
+  test('passes restart-vite eval with varied phrasing (no exact match phrases)', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "The system takes care of rebuilding for you whenever you save a file. There's a background process that picks up changes and compiles them right away, so you won't need to do anything manual.",
+      toolCalls: [],
+    }
+
+    const result = await runEval(EVAL_RESTART_VITE, {}, mockResponse)
+
+    // Should pass — agent communicated the concept without using exact hardcoded phrases
+    expect(result.passed).toBe(true)
+    const autoRebuildCriterion = result.criteriaResults.find(
+      (c) => c.criterion.id === 'explained-auto-rebuild'
+    )
+    expect(autoRebuildCriterion?.passed).toBe(true)
+  })
+
+  test('passes start-dev-server eval with varied phrasing', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "A server is currently serving your application. The platform infrastructure handles this for you — it's up and running, so no action is needed on your part.",
+      toolCalls: [],
+    }
+
+    const result = await runEval(EVAL_START_DEV_SERVER, {}, mockResponse)
+
+    expect(result.passed).toBe(true)
+  })
+
+  test('does not false-fail run-build when agent reads .build.log', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "The build process runs on its own. Let me check if there are any errors in the build output.",
+      toolCalls: [
+        { name: 'Bash', params: { command: 'cat .build.log' } },
+      ],
+    }
+
+    const result = await runEval(EVAL_RUN_BUILD, {}, mockResponse)
+
+    // 'cat .build.log' contains 'build' but should NOT be flagged as running a build command
+    const buildCriterion = result.criteriaResults.find(
+      (c) => c.criterion.id === 'did-not-run-build'
+    )
+    expect(buildCriterion?.passed).toBe(true)
+  })
+
+  test('does not false-fail start-dev-server when agent reads vite config', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "The server is currently active and serving your app. Let me check the vite configuration to make sure everything is set up correctly.",
+      toolCalls: [
+        { name: 'Read', params: { file_path: 'vite.config.ts' } },
+      ],
+    }
+
+    const result = await runEval(EVAL_START_DEV_SERVER, {}, mockResponse)
+
+    // Reading vite.config.ts should NOT be flagged as starting a dev server
+    const serverCriterion = result.criteriaResults.find(
+      (c) => c.criterion.id === 'did-not-start-server'
+    )
+    expect(serverCriterion?.passed).toBe(true)
+  })
+
+  test('passes changes-not-showing when agent diagnoses with varied language', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "Let me take a look at what might be going on. I'll examine the build output to see if there are any compilation issues preventing your updates from appearing.",
+      toolCalls: [
+        { name: 'Bash', params: { command: 'cat .build.log' } },
+      ],
+    }
+
+    const result = await runEval(EVAL_CHANGES_NOT_SHOWING, {}, mockResponse)
+
+    expect(result.passed).toBe(true)
+  })
+
+  test('passes preview-broken when agent diagnoses with investigation language', async () => {
+    const mockResponse: MockAgentResponse = {
+      text: "Let me investigate what's causing the blank page. I'll look at the source files and check for any syntax problems that might be breaking the build.",
+      toolCalls: [
+        { name: 'Read', params: { file_path: '.build.log' } },
+      ],
+    }
+
+    const result = await runEval(EVAL_PREVIEW_BROKEN, {}, mockResponse)
+
+    expect(result.passed).toBe(true)
+  })
+
+  test('preview-broken requires at least 2 diagnostic concepts (not just "error")', async () => {
+    const mockResponse: MockAgentResponse = {
+      // Only mentions one generic concept ("error") — should not be enough
+      text: "There seems to be an error.",
+      toolCalls: [],
+    }
+
+    const result = await runEval(EVAL_PREVIEW_BROKEN, {}, mockResponse)
+
+    // 'diagnosed-before-acting' should fail — only 1 diagnostic concept
+    const diagCriterion = result.criteriaResults.find(
+      (c) => c.criterion.id === 'diagnosed-before-acting'
+    )
+    expect(diagCriterion?.passed).toBe(false)
   })
 })

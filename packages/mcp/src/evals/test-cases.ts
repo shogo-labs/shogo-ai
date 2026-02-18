@@ -43,6 +43,7 @@ export const EVAL_TODO_DIRECT: AgentEval = {
     'Asking unnecessary questions when "todo" was specified',
     'Selecting kanban instead of todo-app',
     'Writing custom code without using template',
+    'Restarting vite or running forbidden runtime commands',
   ],
   variations: [
     'Create a todo application',
@@ -77,6 +78,7 @@ export const EVAL_EXPENSE_DIRECT: AgentEval = {
   antiPatterns: [
     'Selecting todo-app because "tracking" was mentioned',
     'Asking clarifying questions',
+    'Restarting vite or running forbidden runtime commands',
   ],
   variations: [
     'Create a budget app',
@@ -111,6 +113,7 @@ export const EVAL_CRM_DIRECT: AgentEval = {
   antiPatterns: [
     'Selecting inventory instead of crm',
     'Asking what CRM means',
+    'Restarting vite or running forbidden runtime commands',
   ],
   variations: [
     'Customer relationship management system',
@@ -144,6 +147,7 @@ export const EVAL_KANBAN_DIRECT: AgentEval = {
   ],
   antiPatterns: [
     'Selecting todo-app instead of kanban',
+    'Restarting vite or running forbidden runtime commands',
   ],
   variations: [
     'Project board with drag and drop',
@@ -513,6 +517,8 @@ import { ALL_HARD_EVALS, MULTI_TURN_EVALS, EDGE_CASE_HARD_EVALS } from './test-c
 import { ALL_CRM_EVALS, CRM_SCHEMA_EVALS, CRM_UI_EVALS, CRM_EDGE_EVALS } from './test-cases-crm'
 import { ALL_INVENTORY_EVALS, INVENTORY_SCHEMA_EVALS, INVENTORY_UI_EVALS, INVENTORY_EDGE_EVALS } from './test-cases-inventory'
 import { ALL_BUSINESS_USER_EVALS } from './test-cases-business-user'
+import { ALL_SHADCN_EVALS, SHADCN_COMPONENT_EVALS, SHADCN_IMPORT_EVALS } from './test-cases-shadcn'
+import { RUNTIME_SAFETY_EVALS } from './test-cases-runtime-safety'
 
 // ============================================
 // Export All Evals
@@ -547,6 +553,8 @@ export const ALL_EVALS: AgentEval[] = [
   ...ALL_CRM_EVALS,
   ...ALL_INVENTORY_EVALS,
   ...ALL_BUSINESS_USER_EVALS,
+  ...ALL_SHADCN_EVALS,
+  ...RUNTIME_SAFETY_EVALS,
 ]
 
 export const TEMPLATE_SELECTION_EVALS = ALL_EVALS.filter(
@@ -584,3 +592,20 @@ export {
   LEVEL_5_BUSINESS_EVALS,
   LEVEL_6_BUSINESS_EVALS,
 } from './test-cases-business-user'
+
+// Re-export shadcn evals (UI component usage tests)
+export {
+  ALL_SHADCN_EVALS,
+  SHADCN_COMPONENT_EVALS,
+  SHADCN_IMPORT_EVALS,
+} from './test-cases-shadcn'
+
+// Re-export runtime safety evals
+export {
+  RUNTIME_SAFETY_EVALS,
+  EVAL_RESTART_VITE,
+  EVAL_RUN_BUILD,
+  EVAL_START_DEV_SERVER,
+  EVAL_CHANGES_NOT_SHOWING,
+  EVAL_PREVIEW_BROKEN,
+} from './test-cases-runtime-safety'
