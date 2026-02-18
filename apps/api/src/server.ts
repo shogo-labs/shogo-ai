@@ -57,6 +57,22 @@ const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 // Namespace for project runtime pods (configurable for staging/production)
 const PROJECT_NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
 
+// Cache of project types to avoid repeated DB lookups on every proxy call.
+// Entries never change after creation so a simple in-memory map is sufficient.
+const projectTypeCache = new Map<string, string>()
+
+async function getProjectType(projectId: string): Promise<string> {
+  const cached = projectTypeCache.get(projectId)
+  if (cached) return cached
+  const row = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { type: true },
+  })
+  const type = row?.type ?? 'APP'
+  projectTypeCache.set(projectId, type)
+  return type
+}
+
 /**
  * Call an MCP tool with proper session handling
  */
@@ -1409,6 +1425,9 @@ app.get('/api/projects/:projectId/files', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ files: [] })
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -1661,6 +1680,9 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ commands: [] })
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -1873,6 +1895,9 @@ app.get('/api/projects/:projectId/tests/list', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ tests: [] })
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -2456,6 +2481,9 @@ app.get('/api/projects/:projectId/database/url', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ url: null, error: { code: 'not_supported', message: 'Database not available for agent projects' } })
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')

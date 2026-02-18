@@ -52,7 +52,7 @@ function createProjectViaApi(data: {
   createdBy: string
   type?: "APP" | "AGENT"
 }) {
-  return apiPost<{ id: string; name: string }>("/api/projects", {
+  return apiPost<{ id: string; name: string; type?: string }>("/api/projects", {
     name: data.name,
     workspaceId: data.workspaceId,
     description: data.description,
@@ -157,7 +157,7 @@ export function WorkspaceLayout() {
 
       navigate(`/projects/${newProject.id}?chatSessionId=${chatSession.id}`, {
         state: {
-          project: { id: newProject.id, name: newProject.name },
+          project: { id: newProject.id, name: newProject.name, type },
           chatSessionId: chatSession.id,
           initialMessage,
         },

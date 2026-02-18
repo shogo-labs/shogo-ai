@@ -197,10 +197,15 @@ export class WarmPoolController {
     // Discover existing warm pool services from Kubernetes
     await this.discoverExistingPods()
 
-    // Clean up stale pods (older than maxPodAgeMs)
+    // Clean up stale pods (older than maxPodAgeMs).
+    // Limit to 1 deletion per pool type per cycle so replacements are created
+    // before all warm pods are gone (prevents empty-pool cold starts).
     const now = Date.now()
+    const recycledTypes = new Set<string>()
     for (const [id, pod] of this.available) {
       if (now - pod.createdAt > this.maxPodAgeMs) {
+        if (recycledTypes.has(pod.type)) continue
+        recycledTypes.add(pod.type)
         console.log(
           `[WarmPool] Recycling stale warm pod ${pod.serviceName} (age: ${Math.round(
             (now - pod.createdAt) / 1000

@@ -112,9 +112,10 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // External preview opening state
   const [isOpeningExternal, setIsOpeningExternal] = useState(false)
 
-  // Preview mode state (default set after project loads)
-  const [previewMode, setPreviewMode] = useState<string>('runtime')
-  const prevProjectTypeRef = useRef<string | null>(null)
+  // Preview mode state — initialise from transition state if available to avoid layout flash
+  const initialType = transitionState?.project?.type || 'APP'
+  const [previewMode, setPreviewMode] = useState<string>(initialType === 'AGENT' ? 'test-chat' : 'runtime')
+  const prevProjectTypeRef = useRef<string | null>(initialType)
 
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)

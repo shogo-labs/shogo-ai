@@ -55,10 +55,24 @@ export async function streamSdkToUI(
   writer.write({ type: 'start' })
   writer.write({ type: 'start-step' })
 
+  // Send periodic keepalive comments to prevent idle connection timeouts
+  // (Knative queue-proxy kills idle streams before Claude Code emits first event)
+  const KEEPALIVE_INTERVAL_MS = 5_000
+  const keepaliveTimer = setInterval(() => {
+    try {
+      writer.write({ type: 'text-delta', id: '__keepalive__', delta: '' })
+    } catch {
+      clearInterval(keepaliveTimer)
+    }
+  }, KEEPALIVE_INTERVAL_MS)
+
   const query = session.stream()
   options?.onQueryCreated?.(query as any)
 
+  try {
+
   for await (const msg of query) {
+    clearInterval(keepaliveTimer)
     const msgAny = msg as any
 
     // --- SDKPartialAssistantMessage — incremental streaming (preferred) ---
@@ -271,5 +285,9 @@ export async function streamSdkToUI(
       })
       break
     }
+  }
+
+  } finally {
+    clearInterval(keepaliveTimer)
   }
 }
