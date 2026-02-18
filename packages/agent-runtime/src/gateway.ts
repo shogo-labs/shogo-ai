@@ -7,15 +7,32 @@
  * Manages:
  * - Heartbeat timer (periodic agent turns reading HEARTBEAT.md)
  * - Channel adapters (Telegram, Discord, etc.)
- * - Session management (per-channel message queuing)
+ * - Session management (per-channel message queuing with multi-turn history)
  * - Skill loading and trigger matching
  * - Memory persistence
+ * - Hook event system
+ * - Slash command handling
+ * - BOOT.md startup execution
+ * - Webhook event queue
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus } from './types'
 import { loadSkills, matchSkill, type Skill } from './skills'
+import { runAgentLoop, type AnthropicMessage, type ToolContext, type LoopDetectorConfig } from './agent-loop'
+import { getAllTools, getHeartbeatTools } from './gateway-tools'
+import { HookEmitter, loadAllHooks } from './hooks'
+import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
+import {
+  ModelFailoverProvider,
+  createFailoverProvider,
+  FailoverExhaustedError,
+  type ModelProfile,
+  type ModelFallback,
+} from './model-failover'
+import { SessionManager, type SessionManagerConfig } from './session-manager'
+import { CronManager, type CronJob } from './cron-manager'
 
 export interface GatewayConfig {
   heartbeatInterval: number
@@ -23,13 +40,14 @@ export interface GatewayConfig {
   quietHours: { start: string; end: string; timezone: string }
   channels: Array<{ type: string; config: Record<string, string> }>
   model: { provider: string; name: string }
-}
-
-interface SessionState {
-  channelId: string
-  queue: IncomingMessage[]
-  processing: boolean
-  history: Array<{ role: 'user' | 'assistant'; content: string; timestamp: number }>
+  maxSessionMessages?: number
+  /** Model failover configuration */
+  modelProfiles?: ModelProfile[]
+  modelFallbacks?: ModelFallback[]
+  /** Session management configuration */
+  session?: Partial<SessionManagerConfig>
+  /** Loop detection configuration (false to disable) */
+  loopDetection?: Partial<LoopDetectorConfig> | false
 }
 
 export class AgentGateway {
@@ -38,16 +56,29 @@ export class AgentGateway {
   private config: GatewayConfig
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private channels: Map<string, ChannelAdapter> = new Map()
-  private sessions: Map<string, SessionState> = new Map()
   private skills: Skill[] = []
   private running = false
   private lastHeartbeatTick: Date | null = null
   private nextHeartbeatTick: Date | null = null
+  private hookEmitter: HookEmitter = new HookEmitter()
+  /** Pending events from webhooks to be included in the next heartbeat */
+  private pendingEvents: string[] = []
+  private failoverProvider: ModelFailoverProvider | null = null
+  private sessionManager: SessionManager
+  private cronManager: CronManager
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
     this.projectId = projectId
     this.config = this.loadConfig()
+    this.sessionManager = new SessionManager(this.config.session)
+    this.cronManager = new CronManager({
+      persistPath: join(workspaceDir, 'cron.json'),
+      onJobFire: (job) => this.agentTurn(
+        `[CRON: ${job.name}]\n${job.prompt}`,
+        `cron:${job.name}`
+      ),
+    })
   }
 
   private loadConfig(): GatewayConfig {
@@ -57,6 +88,7 @@ export class AgentGateway {
       quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+      maxSessionMessages: 30,
     }
     const configPath = join(this.workspaceDir, 'config.json')
     if (existsSync(configPath)) {
@@ -82,9 +114,21 @@ export class AgentGateway {
     console.log('[AgentGateway] Starting...')
     this.running = true
 
+    // Initialize model failover
+    this.initFailoverProvider()
+
     // Load skills
     this.skills = loadSkills(join(this.workspaceDir, 'skills'))
     console.log(`[AgentGateway] Loaded ${this.skills.length} skills`)
+
+    // Load hooks
+    try {
+      const hooks = await loadAllHooks(this.workspaceDir)
+      this.hookEmitter.register(hooks)
+      console.log(`[AgentGateway] Loaded ${hooks.length} hooks`)
+    } catch (error: any) {
+      console.error('[AgentGateway] Failed to load hooks:', error.message)
+    }
 
     // Connect channels
     for (const channelConfig of this.config.channels) {
@@ -103,6 +147,27 @@ export class AgentGateway {
       this.startHeartbeat()
     }
 
+    // Start cron manager
+    this.cronManager.start()
+    const cronJobs = this.cronManager.listJobs()
+    if (cronJobs.length > 0) {
+      console.log(`[AgentGateway] Loaded ${cronJobs.length} cron jobs`)
+    }
+
+    // Start session pruning
+    this.sessionManager.startPruning()
+
+    // Run BOOT.md if it exists
+    await this.runBootMd()
+
+    // Emit gateway:startup hook
+    await this.hookEmitter.emit(
+      HookEmitter.createEvent('gateway', 'startup', 'system', {
+        workspaceDir: this.workspaceDir,
+        projectId: this.projectId,
+      })
+    )
+
     console.log('[AgentGateway] Started successfully')
   }
 
@@ -115,6 +180,9 @@ export class AgentGateway {
       this.heartbeatTimer = null
     }
 
+    this.cronManager.stop()
+    this.sessionManager.destroy()
+
     for (const [name, adapter] of this.channels) {
       try {
         await adapter.disconnect()
@@ -125,7 +193,36 @@ export class AgentGateway {
     }
     this.channels.clear()
 
+    await this.hookEmitter.emit(
+      HookEmitter.createEvent('gateway', 'shutdown', 'system', {
+        workspaceDir: this.workspaceDir,
+      })
+    )
+
     console.log('[AgentGateway] Stopped')
+  }
+
+  // ---------------------------------------------------------------------------
+  // BOOT.md
+  // ---------------------------------------------------------------------------
+
+  private async runBootMd(): Promise<void> {
+    const bootPath = join(this.workspaceDir, 'BOOT.md')
+    if (!existsSync(bootPath)) return
+
+    const bootContent = readFileSync(bootPath, 'utf-8').trim()
+    if (!bootContent) return
+
+    console.log('[AgentGateway] Running BOOT.md...')
+    try {
+      const response = await this.agentTurn(
+        `[BOOT]\nYou are starting up. Execute the following startup instructions:\n\n${bootContent}`,
+        'boot'
+      )
+      console.log('[AgentGateway] BOOT.md result:', response.substring(0, 200))
+    } catch (error: any) {
+      console.error('[AgentGateway] BOOT.md execution failed:', error.message)
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -167,7 +264,6 @@ export class AgentGateway {
     if (startTime <= endTime) {
       return currentTime >= startTime && currentTime < endTime
     }
-    // Crosses midnight
     return currentTime >= startTime || currentTime < endTime
   }
 
@@ -176,7 +272,6 @@ export class AgentGateway {
     const intervalMs = this.config.heartbeatInterval * 1000
     this.nextHeartbeatTick = new Date(Date.now() + intervalMs)
 
-    // Read HEARTBEAT.md
     const heartbeatPath = join(this.workspaceDir, 'HEARTBEAT.md')
     if (!existsSync(heartbeatPath)) {
       return 'HEARTBEAT_OK'
@@ -194,19 +289,41 @@ export class AgentGateway {
 
     console.log('[AgentGateway] Running heartbeat...')
 
-    // Run agent turn with the heartbeat checklist
+    // Include any pending webhook events
+    let pendingSection = ''
+    if (this.pendingEvents.length > 0) {
+      pendingSection = `\n\n[Pending Events]\n${this.pendingEvents.join('\n')}`
+      this.pendingEvents = []
+    }
+
     const response = await this.agentTurn(
-      `[HEARTBEAT]\nYou are performing a scheduled heartbeat check. Review the following checklist and take action as needed. If everything is fine, respond with exactly "HEARTBEAT_OK". If something needs attention, describe the issue and any actions taken.\n\n${checklist}`
+      `[HEARTBEAT]\nYou are performing a scheduled heartbeat check. Review the following checklist and take action as needed. If everything is fine, respond with exactly "HEARTBEAT_OK". If something needs attention, describe the issue and any actions taken.\n\n${checklist}${pendingSection}`,
+      'heartbeat',
+      true
+    )
+
+    await this.hookEmitter.emit(
+      HookEmitter.createEvent('heartbeat', 'tick', 'heartbeat', {
+        workspaceDir: this.workspaceDir,
+        response,
+        hadAlert: response !== 'HEARTBEAT_OK',
+      })
     )
 
     if (response !== 'HEARTBEAT_OK') {
       console.log('[AgentGateway] Heartbeat alert:', response.substring(0, 200))
       await this.deliverAlert(response)
+
+      await this.hookEmitter.emit(
+        HookEmitter.createEvent('heartbeat', 'alert', 'heartbeat', {
+          workspaceDir: this.workspaceDir,
+          alertText: response,
+        })
+      )
     } else {
       console.log('[AgentGateway] Heartbeat OK')
     }
 
-    // Log to daily memory
     this.appendDailyMemory(`Heartbeat: ${response === 'HEARTBEAT_OK' ? 'All clear' : response.substring(0, 200)}`)
 
     return response
@@ -216,38 +333,93 @@ export class AgentGateway {
     return this.heartbeatTick()
   }
 
+  /** Queue an event for the next heartbeat tick */
+  queuePendingEvent(text: string): void {
+    this.pendingEvents.push(text)
+  }
+
   // ---------------------------------------------------------------------------
   // Message Processing
   // ---------------------------------------------------------------------------
 
   async processMessage(input: IncomingMessage): Promise<void> {
     const sessionId = input.channelId || 'default'
-    let session = this.sessions.get(sessionId)
+    const qs = this.getQueueState(sessionId)
+    this.sessionManager.getOrCreate(sessionId)
 
-    if (!session) {
-      session = {
-        channelId: sessionId,
-        queue: [],
-        processing: false,
-        history: [],
-      }
-      this.sessions.set(sessionId, session)
-    }
+    await this.hookEmitter.emit(
+      HookEmitter.createEvent('message', 'received', sessionId, {
+        workspaceDir: this.workspaceDir,
+        from: input.senderId,
+        content: input.text,
+        channelId: input.channelId,
+        channelType: input.channelType,
+      })
+    )
 
-    session.queue.push(input)
+    qs.queue.push(input)
 
-    if (!session.processing) {
-      await this.processQueue(session)
+    if (!qs.processing) {
+      await this.processQueue(sessionId, qs)
     }
   }
 
-  private async processQueue(session: SessionState): Promise<void> {
-    session.processing = true
+  /** Queue state is tracked separately from message history (SessionManager) */
+  private queueState: Map<string, { queue: IncomingMessage[]; processing: boolean }> = new Map()
 
-    while (session.queue.length > 0) {
-      const message = session.queue.shift()!
+  private getQueueState(sessionId: string) {
+    let state = this.queueState.get(sessionId)
+    if (!state) {
+      state = { queue: [], processing: false }
+      this.queueState.set(sessionId, state)
+    }
+    return state
+  }
+
+  private async processQueue(
+    sessionId: string,
+    qs: { queue: IncomingMessage[]; processing: boolean }
+  ): Promise<void> {
+    qs.processing = true
+    const session = this.sessionManager.getOrCreate(sessionId)
+    session.stopRequested = false
+
+    while (qs.queue.length > 0 && !session.stopRequested) {
+      const message = qs.queue.shift()!
 
       try {
+        // Check for slash commands first
+        const cmdResult = parseSlashCommand(message.text, this.buildSlashContext(sessionId))
+        if (cmdResult.handled) {
+          const response = cmdResult.response || ''
+
+          if (cmdResult.hookEvent) {
+            await this.hookEmitter.emit(
+              HookEmitter.createEvent(
+                cmdResult.hookEvent.type,
+                cmdResult.hookEvent.action,
+                sessionId,
+                {
+                  ...cmdResult.hookEvent.context,
+                  senderId: message.senderId,
+                  channelType: message.channelType,
+                }
+              )
+            )
+          }
+
+          if (cmdResult.hookEvent?.action === 'stop') {
+            session.stopRequested = true
+          }
+
+          if (response && message.channelId && this.channels.has(message.channelType || '')) {
+            const adapter = this.channels.get(message.channelType!)
+            await adapter?.sendMessage(message.channelId, response)
+          }
+
+          continue
+        }
+
         // Check for skill match
         const matchedSkill = matchSkill(this.skills, message.text)
         let prompt = message.text
@@ -256,12 +428,24 @@ export class AgentGateway {
           prompt = `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${message.text}`
         }
 
-        const response = await this.agentTurn(prompt)
+        const response = await this.agentTurn(prompt, sessionId)
 
-        session.history.push(
-          { role: 'user', content: message.text, timestamp: Date.now() },
-          { role: 'assistant', content: response, timestamp: Date.now() }
+        // Store in session history via session manager
+        this.sessionManager.addMessages(
+          sessionId,
+          { role: 'user', content: prompt },
+          { role: 'assistant', content: response }
         )
+
+        // Auto-compact if needed
+        if (this.sessionManager.needsCompaction(session)) {
+          const result = await this.sessionManager.compact(sessionId)
+          if (result) {
+            console.log(
+              `[AgentGateway] Session ${sessionId} compacted: ${result.messagesBefore} → ${result.messagesAfter} messages`
+            )
+          }
+        }
 
         // Send response back through the channel
         if (message.channelId && this.channels.has(message.channelType || '')) {
@@ -269,7 +453,15 @@ export class AgentGateway {
           await adapter?.sendMessage(message.channelId, response)
         }
 
-        // Append to daily memory
+        await this.hookEmitter.emit(
+          HookEmitter.createEvent('message', 'sent', sessionId, {
+            workspaceDir: this.workspaceDir,
+            to: message.channelId,
+            content: response,
+            channelType: message.channelType,
+          })
+        )
+
         this.appendDailyMemory(
           `${message.channelType || 'test'}: "${message.text.substring(0, 100)}" -> "${response.substring(0, 100)}"`
         )
@@ -278,7 +470,7 @@ export class AgentGateway {
       }
     }
 
-    session.processing = false
+    qs.processing = false
   }
 
   /** Process a test message (from the builder preview panel) */
@@ -290,18 +482,50 @@ export class AgentGateway {
       prompt = `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${text}`
     }
 
-    return this.agentTurn(prompt)
+    const response = await this.agentTurn(prompt, 'test')
+
+    this.sessionManager.addMessages(
+      'test',
+      { role: 'user', content: prompt },
+      { role: 'assistant', content: response }
+    )
+
+    this.appendDailyMemory(`test: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
+
+    return response
+  }
+
+  /** Run an isolated agent turn for a webhook trigger */
+  async processWebhookMessage(text: string): Promise<string> {
+    return this.agentTurn(text, 'webhook')
+  }
+
+  private buildSlashContext(sessionId: string): SlashCommandContext {
+    const session = this.sessionManager.getOrCreate(sessionId)
+    return {
+      sessionKey: sessionId,
+      workspaceDir: this.workspaceDir,
+      clearHistory: () => {
+        this.sessionManager.clearHistory(sessionId)
+      },
+      getMessages: () => [...session.messages],
+      reloadConfig: () => this.reloadConfig(),
+      setModelOverride: (model: string) => {
+        session.modelOverride = model
+      },
+      getStatus: () => this.getStatus(),
+    }
   }
 
   // ---------------------------------------------------------------------------
-  // Agent Turn (LLM call)
+  // Agent Turn (Agentic Tool-Call Loop)
   // ---------------------------------------------------------------------------
 
-  private async agentTurn(prompt: string): Promise<string> {
-    const context = this.loadBootstrapContext()
-    const fullPrompt = `${context}\n\n${prompt}`
-
-    // Use ANTHROPIC_BASE_URL if set (AI proxy), otherwise direct Anthropic API
+  private async agentTurn(
+    prompt: string,
+    sessionId: string = 'default',
+    isHeartbeat: boolean = false
+  ): Promise<string> {
     const apiKey = process.env.ANTHROPIC_API_KEY
     if (!apiKey) {
       console.error('[AgentGateway] No ANTHROPIC_API_KEY set for agent turns')
@@ -309,47 +533,70 @@ export class AgentGateway {
     }
 
     const baseUrl = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'
-    const messagesUrl = `${baseUrl}/v1/messages`
+    const systemPrompt = this.loadBootstrapContext()
+    const session = this.sessionManager.getOrCreate(sessionId)
+    const model = session.modelOverride || this.config.model.name
+    const tools = isHeartbeat ? getHeartbeatTools() : getAllTools()
+
+    // Build message history using session manager (includes compacted summary)
+    const messages = this.sessionManager.buildMessages(
+      sessionId,
+      { role: 'user', content: prompt }
+    )
+
+    const toolContext: ToolContext = {
+      workspaceDir: this.workspaceDir,
+      channels: this.channels,
+      config: this.config,
+      projectId: this.projectId,
+      cronManager: this.cronManager,
+    }
 
     try {
-      const response = await fetch(messagesUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
+      const result = await runAgentLoop({
+        apiKey,
+        baseUrl,
+        model,
+        system: systemPrompt,
+        messages,
+        tools,
+        toolContext,
+        maxIterations: isHeartbeat ? 5 : 10,
+        loopDetection: this.config.loopDetection,
+        onToolCall: (name, input) => {
+          console.log(`[AgentGateway] Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
         },
-        body: JSON.stringify({
-          model: this.config.model.name,
-          max_tokens: 4096,
-          system: this.loadBootstrapContext(),
-          messages: [{ role: 'user', content: prompt }],
-        }),
       })
 
-      if (!response.ok) {
-        const error = await response.text()
-        console.error('[AgentGateway] API error:', error)
-        return 'HEARTBEAT_OK'
+      if (result.loopBreak) {
+        console.warn(
+          `[AgentGateway] Loop detected in session ${sessionId}: ${result.loopBreak.pattern}`
+        )
       }
 
-      const data = (await response.json()) as {
-        content: Array<{ type: string; text?: string }>
+      if (result.toolCalls.length > 0) {
+        console.log(
+          `[AgentGateway] Agent turn: ${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${result.inputTokens}+${result.outputTokens} tokens`
+        )
       }
-      const text = data.content
-        ?.filter((b) => b.type === 'text')
-        .map((b) => b.text)
-        .join('')
 
-      return text || 'HEARTBEAT_OK'
+      this.sessionManager.touch(sessionId)
+
+      return result.text || 'HEARTBEAT_OK'
     } catch (error: any) {
-      console.error('[AgentGateway] Agent turn failed:', error.message)
+      if (error instanceof FailoverExhaustedError) {
+        console.error(
+          `[AgentGateway] All models exhausted: ${error.failovers.join(', ')}`
+        )
+      } else {
+        console.error('[AgentGateway] Agent turn failed:', error.message)
+      }
       return 'HEARTBEAT_OK'
     }
   }
 
   private loadBootstrapContext(): string {
-    const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md']
+    const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md']
     const parts: string[] = []
 
     for (const filename of files) {
@@ -362,7 +609,6 @@ export class AgentGateway {
       }
     }
 
-    // Load recent memory
     const memoryPath = join(this.workspaceDir, 'MEMORY.md')
     if (existsSync(memoryPath)) {
       const memory = readFileSync(memoryPath, 'utf-8').trim()
@@ -382,7 +628,6 @@ export class AgentGateway {
     type: string,
     config: Record<string, string>
   ): Promise<void> {
-    // Dynamic import of channel adapters
     let adapter: ChannelAdapter
 
     switch (type) {
@@ -486,5 +731,10 @@ export class AgentGateway {
   reloadConfig(): void {
     this.config = this.loadConfig()
     this.skills = loadSkills(join(this.workspaceDir, 'skills'))
+  }
+
+  /** Get the hook emitter (for server.ts to emit events) */
+  getHookEmitter(): HookEmitter {
+    return this.hookEmitter
   }
 }

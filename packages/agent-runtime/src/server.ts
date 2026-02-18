@@ -398,6 +398,88 @@ app.post('/agent/test', async (c) => {
   }
 })
 
+// ---------------------------------------------------------------------------
+// Webhook Ingress Endpoints
+// ---------------------------------------------------------------------------
+
+const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN
+
+function verifyWebhookAuth(c: any): boolean {
+  if (!WEBHOOK_TOKEN) return true
+  const auth = c.req.header('authorization') || ''
+  const token = c.req.header('x-webhook-token') || ''
+  return auth === `Bearer ${WEBHOOK_TOKEN}` || token === WEBHOOK_TOKEN
+}
+
+app.post('/agent/hooks/wake', async (c) => {
+  if (!verifyWebhookAuth(c)) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const body = await c.req.json()
+  const text = body.text as string
+  const mode = (body.mode as string) || 'now'
+
+  if (!text || typeof text !== 'string') {
+    return c.json({ error: 'text (string) is required' }, 400)
+  }
+
+  if (mode === 'next-heartbeat') {
+    agentGateway.queuePendingEvent(text)
+    return c.json({ ok: true, mode: 'next-heartbeat', queued: true })
+  }
+
+  try {
+    const result = await agentGateway.triggerHeartbeat()
+    return c.json({ ok: true, mode: 'now', result: result.substring(0, 500) })
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500)
+  }
+})
+
+app.post('/agent/hooks/agent', async (c) => {
+  if (!verifyWebhookAuth(c)) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const body = await c.req.json()
+  const message = body.message as string
+  const deliver = body.deliver !== false
+  const channel = body.channel as string | undefined
+  const to = body.to as string | undefined
+
+  if (!message || typeof message !== 'string') {
+    return c.json({ error: 'message (string) is required' }, 400)
+  }
+
+  // Run asynchronously — return 202 immediately
+  const runAsync = async () => {
+    try {
+      const response = await agentGateway!.processWebhookMessage(message)
+      if (deliver && channel && to) {
+        const status = agentGateway!.getStatus()
+        const connected = status.channels.find((ch) => ch.type === channel && ch.connected)
+        if (connected) {
+          // Deliver through the gateway's test message path for now
+          console.log(`[agent-runtime] Webhook: delivering to ${channel}:${to}`)
+        }
+      }
+      console.log('[agent-runtime] Webhook agent turn complete:', response.substring(0, 200))
+    } catch (error: any) {
+      console.error('[agent-runtime] Webhook agent error:', error.message)
+    }
+  }
+
+  runAsync()
+  return c.json({ status: 'accepted' }, 202)
+})
+
 // Heartbeat manual trigger
 app.post('/agent/heartbeat/trigger', async (c) => {
   if (!agentGateway) {

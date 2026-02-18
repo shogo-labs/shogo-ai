@@ -904,7 +904,7 @@ app.post('/api/projects/:projectId/runtime/start', async (c) => {
     try {
       const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
       const knativeManager = getKnativeProjectManager()
-      await knativeManager.ensureProject(projectId)
+      await knativeManager.createProject(projectId)
       const podUrl = `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`
       return c.json({
         success: true,
@@ -1132,6 +1132,10 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     // First check current status
     const manager = getKnativeProjectManager()
     const status = await manager.getStatus(projectId)
+
+    // Check if this is an agent project (needed for agentUrl)
+    const projectRecord = await prisma.project.findUnique({ where: { id: projectId }, select: { type: true } })
+    const isAgent = projectRecord?.type === 'AGENT'
     
     // Build the preview URL based on mode
     const host = c.req.header('x-original-host') || c.req.header('host') || 'localhost'
@@ -1161,6 +1165,9 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     console.log(`[sandbox/url] legacyProxyUrl=${legacyProxyUrl}`)
     console.log(`[sandbox/url] status: exists=${status.exists} ready=${status.ready}`)
     
+    // Agent URL for test chat (proxied through API to avoid CORS issues)
+    const agentUrl = isAgent ? `${protocol}://${host}/api/projects/${projectId}/agent-proxy` : undefined
+
     // If pod is already running, return immediately
     if (status.exists && status.ready) {
       console.log(`[sandbox/url] Returning ready response with url=${previewUrl}`)
@@ -1168,6 +1175,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         url: previewUrl,
         proxyUrl: legacyProxyUrl, // Backwards compat - legacy proxy URL
         directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
         ready: true,
@@ -1191,6 +1199,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         url: previewUrl,
         proxyUrl: legacyProxyUrl,
         directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: status.exists ? 'starting' : 'creating',
         ready: false,
@@ -1211,6 +1220,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         url: previewUrl,
         proxyUrl: legacyProxyUrl,
         directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
         ready: true,
@@ -1341,6 +1351,52 @@ app.all('/api/projects/:projectId/preview', async (c) => {
   // Redirect to the path with trailing slash
   const projectId = c.req.param('projectId')
   return c.redirect(`/api/projects/${projectId}/preview/`)
+})
+
+// Agent proxy - forwards requests directly to agent-runtime pod without /preview prefix
+app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (!isKubernetes()) {
+    return c.json({ error: { code: 'not_supported', message: 'Agent proxy only available in Kubernetes' } }, 501)
+  }
+
+  try {
+    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+    const podUrl = await getProjectPodUrl(projectId)
+    const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
+    const targetUrl = `${podUrl}${path}`
+
+    console.log(`[AgentProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
+
+    const headers = new Headers()
+    const contentType = c.req.header('content-type')
+    if (contentType) headers.set('content-type', contentType)
+    const accept = c.req.header('accept')
+    if (accept) headers.set('accept', accept)
+
+    const requestInit: RequestInit = { method: c.req.method, headers }
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+      requestInit.body = await c.req.arrayBuffer()
+    }
+
+    const response = await fetch(targetUrl, requestInit)
+
+    const responseHeaders = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+        responseHeaders.set(key, value)
+      }
+    })
+    responseHeaders.set('access-control-allow-origin', '*')
+    responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
+    responseHeaders.set('access-control-allow-headers', '*')
+
+    return new Response(response.body, { status: response.status, headers: responseHeaders })
+  } catch (error: any) {
+    console.error('[AgentProxy] Error:', error)
+    return c.json({ error: { code: 'proxy_error', message: error.message || 'Failed to proxy request' } }, 502)
+  }
 })
 
 // =============================================================================
