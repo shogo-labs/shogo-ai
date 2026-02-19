@@ -370,7 +370,8 @@ function mapAnthropicStopReason(reason: string | undefined): string {
 async function proxyAnthropicStream(
   request: ChatCompletionRequest,
   apiKey: string,
-  modelConfig: ModelConfig
+  modelConfig: ModelConfig,
+  onComplete?: (inputTokens: number, outputTokens: number) => void
 ): Promise<Response> {
   const body = convertToAnthropicFormat({
     ...request,
@@ -430,8 +431,8 @@ async function proxyAnthropicStream(
       }
     },
     flush(controller) {
-      // Send [DONE] marker
       controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+      onComplete?.(inputTokens, outputTokens)
     },
   })
 
@@ -840,14 +841,15 @@ export function aiProxyRoutes() {
       if (request.stream) {
         let response: Response
         if (modelConfig.provider === 'anthropic') {
-          response = await proxyAnthropicStream(request, apiKey, modelConfig)
+          response = await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok) => {
+            const durationMs = Date.now() - startTime
+            chargeAndLogUsage(tokenPayload, request.model, modelConfig.provider, inTok, outTok, durationMs, true)
+          })
         } else {
           response = await proxyOpenAIStream(request, apiKey, modelConfig)
+          const durationMs = Date.now() - startTime
+          chargeAndLogUsage(tokenPayload, request.model, modelConfig.provider, 0, 0, durationMs, true)
         }
-
-        // Charge minimum credits for streaming (exact tokens unknown)
-        const durationMs = Date.now() - startTime
-        chargeAndLogUsage(tokenPayload, request.model, modelConfig.provider, 0, 0, durationMs, true)
 
         return response
       } else {
@@ -1089,7 +1091,7 @@ export function aiProxyRoutes() {
         return c.json(responseBody)
       }
 
-      // Streaming: copy relevant response headers and forward body as-is
+      // Streaming: tee the body through a transform to extract token usage
       const responseHeaders = new Headers()
       const contentType = response.headers.get('Content-Type')
       if (contentType) responseHeaders.set('Content-Type', contentType)
@@ -1098,10 +1100,41 @@ export function aiProxyRoutes() {
       responseHeaders.set('X-Proxy-Provider', 'anthropic')
       responseHeaders.set('X-Proxy-Project', tokenPayload.projectId)
 
-      const durationMs = Date.now() - startTime
-      chargeAndLogUsage(tokenPayload, model, 'anthropic', 0, 0, durationMs, true)
+      let streamInputTokens = 0
+      let streamOutputTokens = 0
+      const sseDecoder = new TextDecoder()
+      let sseBuffer = ''
 
-      return new Response(response.body, {
+      const tokenTrackingTransform = new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          controller.enqueue(chunk)
+          sseBuffer += sseDecoder.decode(chunk, { stream: true })
+          const lines = sseBuffer.split('\n')
+          sseBuffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6).trim()
+            if (data === '[DONE]') continue
+            try {
+              const event = JSON.parse(data)
+              if (event.type === 'message_start' && event.message?.usage) {
+                streamInputTokens = event.message.usage.input_tokens || 0
+              }
+              if (event.type === 'message_delta' && event.usage) {
+                streamOutputTokens = event.usage.output_tokens || 0
+              }
+            } catch {}
+          }
+        },
+        flush() {
+          const durationMs = Date.now() - startTime
+          chargeAndLogUsage(tokenPayload, model, 'anthropic', streamInputTokens, streamOutputTokens, durationMs, true)
+        },
+      })
+
+      const trackedBody = response.body!.pipeThrough(tokenTrackingTransform)
+
+      return new Response(trackedBody, {
         status: response.status,
         headers: responseHeaders,
       })

@@ -59,6 +59,7 @@ export class AgentGateway {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private channels: Map<string, ChannelAdapter> = new Map()
   private skills: Skill[] = []
+  private configSkills: Array<{ name: string; trigger?: string; description?: string }> = []
   private running = false
   private lastHeartbeatTick: Date | null = null
   private nextHeartbeatTick: Date | null = null
@@ -135,9 +136,10 @@ export class AgentGateway {
     console.log('[AgentGateway] Starting...')
     this.running = true
 
-    // Load skills
+    // Load skills from filesystem and config.json
     this.skills = loadSkills(join(this.workspaceDir, 'skills'))
-    console.log(`[AgentGateway] Loaded ${this.skills.length} skills`)
+    this.configSkills = this.loadConfigSkills()
+    console.log(`[AgentGateway] Loaded ${this.skills.length} file skills, ${this.configSkills.length} config skills`)
 
     // Load hooks
     try {
@@ -281,15 +283,16 @@ export class AgentGateway {
     let hours: number
     let minutes: number
     try {
-      const fmt = new Intl.DateTimeFormat('en-US', {
+      const fmt = new Intl.DateTimeFormat('en-GB', {
         timeZone: tz,
-        hour: 'numeric',
-        minute: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
         hour12: false,
       })
-      const parts = fmt.formatToParts(now)
-      hours = Number(parts.find((p) => p.type === 'hour')?.value ?? 0)
-      minutes = Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
+      const timeStr = fmt.format(now)
+      const [h, m] = timeStr.split(':').map(Number)
+      hours = h % 24
+      minutes = m
     } catch {
       hours = now.getUTCHours()
       minutes = now.getUTCMinutes()
@@ -300,6 +303,10 @@ export class AgentGateway {
     const [endH, endM] = this.config.quietHours.end.split(':').map(Number)
     const startTime = startH * 60 + startM
     const endTime = endH * 60 + endM
+
+    // Log the comparison for debugging
+    const currentStr = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+    console.log(`[AgentGateway] Quiet hours check: current=${currentStr} (${tz}), window=${this.config.quietHours.start}-${this.config.quietHours.end}`)
 
     if (startTime <= endTime) {
       return currentTime >= startTime && currentTime < endTime
@@ -541,7 +548,7 @@ export class AgentGateway {
   }
 
   private isUnconfigured(): boolean {
-    if (this.skills.length > 0) return false
+    if (this.skills.length > 0 || this.configSkills.length > 0) return false
     const agentsPath = join(this.workspaceDir, 'AGENTS.md')
     if (!existsSync(agentsPath)) return true
     const content = readFileSync(agentsPath, 'utf-8')
@@ -557,11 +564,13 @@ export class AgentGateway {
     }
 
     const matchedSkill = matchSkill(this.skills, text)
-    let prompt = text
+    let prompt: string
 
     if (matchedSkill) {
       this.emitLog(`Matched skill: ${matchedSkill.name}`)
       prompt = `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${text}`
+    } else {
+      prompt = `[Test Chat — User Message]\nThis is a direct message from a user testing the agent, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}`
     }
 
     const response = await this.agentTurn(prompt, 'test')
@@ -845,10 +854,28 @@ export class AgentGateway {
   // ---------------------------------------------------------------------------
 
   getStatus(): AgentStatus {
+    // Hot-reload config so the UI always reflects the latest config.json
+    this.reloadConfig()
+
     const channelStatuses: ChannelStatus[] = []
     for (const [type, adapter] of this.channels) {
       channelStatuses.push(adapter.getStatus())
     }
+
+    // Merge skills from filesystem with skills declared in config.json
+    const fsSkills = this.skills.map((s) => ({
+      name: s.name,
+      trigger: s.trigger,
+      description: s.description,
+    }))
+    const fsSkillNames = new Set(fsSkills.map((s) => s.name))
+    const configSkills = (this.configSkills ?? [])
+      .filter((s: any) => s.name && !fsSkillNames.has(s.name))
+      .map((s: any) => ({
+        name: s.name,
+        trigger: s.trigger || '',
+        description: s.description || '',
+      }))
 
     return {
       running: this.running,
@@ -860,11 +887,7 @@ export class AgentGateway {
         quietHours: this.config.quietHours,
       },
       channels: channelStatuses,
-      skills: this.skills.map((s) => ({
-        name: s.name,
-        trigger: s.trigger,
-        description: s.description,
-      })),
+      skills: [...fsSkills, ...configSkills],
       model: this.config.model,
       sessions: this.sessionManager.getAllStats(),
       cronJobs: this.cronManager.listJobs().map((j) => ({
@@ -877,8 +900,26 @@ export class AgentGateway {
   }
 
   reloadConfig(): void {
+    const prevEnabled = this.config.heartbeatEnabled
     this.config = this.loadConfig()
     this.skills = loadSkills(join(this.workspaceDir, 'skills'))
+    this.configSkills = this.loadConfigSkills()
+
+    // Auto-start heartbeat if it was just enabled via config change
+    if (this.config.heartbeatEnabled && !prevEnabled && this.config.heartbeatInterval > 0) {
+      this.startHeartbeat()
+    }
+  }
+
+  private loadConfigSkills(): Array<{ name: string; trigger?: string; description?: string }> {
+    const configPath = join(this.workspaceDir, 'config.json')
+    if (!existsSync(configPath)) return []
+    try {
+      const raw = JSON.parse(readFileSync(configPath, 'utf-8'))
+      return Array.isArray(raw.skills) ? raw.skills : []
+    } catch {
+      return []
+    }
   }
 
   getHookEmitter(): HookEmitter {

@@ -119,12 +119,12 @@ async function trackUsageFromStream(
           accumulatedText += data.delta
         }
 
-        // Track tool calls
-        if (type === 'tool-call-start' || type === 'tool-call') {
+        // Track tool calls (streamSdkToUI emits tool-input-start for each tool invocation)
+        if (type === 'tool-input-start' || type === 'tool-call-start' || type === 'tool-call') {
           toolCallCount++
           toolCalls.push({
             toolName: data.toolName || data.name || 'unknown',
-            args: typeof data.args === 'string' ? data.args : JSON.stringify(data.args || {}),
+            args: typeof data.args === 'string' ? data.args : JSON.stringify(data.args || data.input || {}),
           })
         }
 

@@ -39,7 +39,8 @@ import {
   AgentChannelsPanel,
   AgentLogsPanel,
 } from "./agent"
-import { cn } from "@/lib/utils"
+import { cn, getTotalCreditsForPlan } from "@/lib/utils"
+import { PLAN_CREDITS, DAILY_CREDITS } from "../billing/PlanSelector"
 import { useSession } from "@/contexts/SessionProvider"
 import type { ViewportSize } from "./PreviewControls"
 import { useToast } from "@/hooks/use-toast"
@@ -838,6 +839,11 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const creditLedger = workspaceId
     ? store?.creditLedgerCollection?.all.find((l: any) => l.workspaceId === workspaceId)
     : null
+  const subscription = workspaceId
+    ? store?.subscriptionCollection?.all
+        .filter((s: any) => s.workspaceId === workspaceId && s.isActive)
+        .sort((a: any, b: any) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0] ?? null
+    : null
   // Compute effective balance with lazy daily reset
   const effectiveBalance = creditLedger ? (() => {
     const lastReset = creditLedger.lastDailyReset ? new Date(creditLedger.lastDailyReset).toDateString() : ''
@@ -848,7 +854,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
     return { dailyCredits: daily, monthlyCredits: monthly, rolloverCredits: rollover, total: daily + monthly + rollover }
   })() : null
   const creditsRemaining = effectiveBalance?.total ?? 5
-  const maxCredits = creditsRemaining
+  const maxCredits = getTotalCreditsForPlan(subscription?.planId, PLAN_CREDITS, DAILY_CREDITS)
 
   // Loading state
   if (isLoading || !project) {
@@ -901,6 +907,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
           onOpenCode={() => setPreviewMode('code')}
           isOpeningExternal={isOpeningExternal}
           isAgentProject={isAgentProject}
+          projectSubtitle={isAgentProject ? "Agent project" : undefined}
           // Publish callbacks
           onPublish={handlePublish}
           onUnpublish={handleUnpublish}
