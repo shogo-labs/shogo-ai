@@ -237,7 +237,7 @@ const EMBEDDED_TEMPLATES: TemplateInfo[] = [
   { name: 'form-builder', description: 'Build custom forms and collect responses', path: 'form-builder', complexity: 'intermediate', tags: ['forms', 'surveys'], features: ['form-builder', 'responses'], useCases: ['surveys', 'data collection'], models: ['Form', 'Field', 'Response', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
   { name: 'feedback-form', description: 'Collect user feedback', path: 'feedback-form', complexity: 'beginner', tags: ['feedback', 'forms'], features: ['feedback', 'ratings'], useCases: ['user feedback'], models: ['Feedback', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
   { name: 'booking-app', description: 'Schedule appointments', path: 'booking-app', complexity: 'intermediate', tags: ['scheduling', 'appointments'], features: ['calendar', 'bookings', 'availability'], useCases: ['appointment scheduling'], models: ['Booking', 'TimeSlot', 'Service', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
-  { name: 'expo-app', description: 'Mobile app with Expo and React Native', path: 'expo-app', complexity: 'beginner', tags: ['mobile', 'expo', 'react-native'], features: ['CRUD', 'mobile', 'expo-router'], useCases: ['mobile todo app', 'cross-platform app'], models: ['Todo', 'User'], techStack: { frontend: 'React Native', backend: 'Hono', database: 'PostgreSQL', bundler: 'Metro' } },
+  // { name: 'expo-app', description: 'Mobile app with Expo and React Native', path: 'expo-app', complexity: 'beginner', tags: ['mobile', 'expo', 'react-native'], features: ['CRUD', 'mobile', 'expo-router'], useCases: ['mobile todo app', 'cross-platform app'], models: ['Todo', 'User'], techStack: { frontend: 'React Native', backend: 'Hono', database: 'PostgreSQL', bundler: 'Metro' } },
 ]
 
 /**
@@ -1110,10 +1110,10 @@ app.get('/ready', (c) => {
     logTiming(`READY! First ready after ${firstReadyTime}ms (${readyCheckCount} checks)`)
     
     // Auto-start vite watch mode for automatic rebuilds (don't block response)
-    // Expo uses Metro bundler, so watch mode doesn't apply
-    const isExpo = existsSync(join(PROJECT_DIR, 'app.json')) || existsSync(join(PROJECT_DIR, 'expo.json'))
+    // [EXPO DISABLED] Expo uses Metro bundler, so watch mode doesn't apply
+    // const isExpo = existsSync(join(PROJECT_DIR, 'app.json')) || existsSync(join(PROJECT_DIR, 'expo.json'))
     
-    if (!isExpo && !buildWatchProcess) {
+    if (!buildWatchProcess) {
       console.log('[project-runtime] 🔄 Auto-starting Vite watch mode...')
       startViteBuildWatch().catch((err) => {
         console.error('[project-runtime] Failed to auto-start vite watch:', err)
@@ -1623,17 +1623,18 @@ const DIST_DIR = join(PROJECT_DIR, 'dist')
 // Port configuration: Vite UI on 3000, Backend API on 3001
 const VITE_DEV_PORT = parseInt(process.env.VITE_DEV_PORT || '3000', 10)
 const SERVER_PORT = parseInt(process.env.SERVER_PORT || '3001', 10)
-const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '8081', 10)
+// [EXPO DISABLED] const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '8081', 10)
 
 // Track current preview mode and server processes
-let isExpo = process.env.IS_EXPO === 'true'
+// [EXPO DISABLED] let isExpo = process.env.IS_EXPO === 'true'
+const isExpo = false
 let serverProcess: any = null
-let expoServerProcess: any = null
+// [EXPO DISABLED] let expoServerProcess: any = null
 
 // Dev mode: use vite dev server with HMR instead of production builds
 let isDevMode = false
 let viteDevProcess: ReturnType<typeof Bun.spawn> | null = null
-let expoDevProcess: ReturnType<typeof Bun.spawn> | null = null
+// [EXPO DISABLED] let expoDevProcess: ReturnType<typeof Bun.spawn> | null = null
 let devModeStarting = false  // Track if dev mode is currently being started
 
 // Circuit breaker state for dev mode auto-start
@@ -2720,11 +2721,11 @@ app.post('/preview/restart', async (c) => {
       serverProcess.kill()
       serverProcess = null
     }
-    if (expoServerProcess) {
-      console.log('[project-runtime] Stopping existing Expo server...')
-      expoServerProcess.kill()
-      expoServerProcess = null
-    }
+    // [EXPO DISABLED] if (expoServerProcess) {
+    //   console.log('[project-runtime] Stopping existing Expo server...')
+    //   expoServerProcess.kill()
+    //   expoServerProcess = null
+    // }
     if (viteDevProcess) {
       // Note: Killing vite will cause exit code 143 (SIGTERM) - this is expected
       console.log('[project-runtime] Stopping existing Vite dev server (exit code 143 is expected)...')
@@ -2733,11 +2734,11 @@ app.post('/preview/restart', async (c) => {
       isDevMode = false
       devModeStarting = false
     }
-    if (expoDevProcess) {
-      console.log('[project-runtime] Stopping existing Expo dev server...')
-      expoDevProcess.kill()
-      expoDevProcess = null
-    }
+    // [EXPO DISABLED] if (expoDevProcess) {
+    //   console.log('[project-runtime] Stopping existing Expo dev server...')
+    //   expoDevProcess.kill()
+    //   expoDevProcess = null
+    // }
     // Stop build watch process if running
     stopViteBuildWatch()
     markStep('killExistingServer')
@@ -2751,11 +2752,11 @@ app.post('/preview/restart', async (c) => {
     
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
-    isExpo = !!deps['expo']
+    // [EXPO DISABLED] isExpo = !!deps['expo']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
     markStep('parsePackageJson')
 
-    const projectType = isExpo ? 'Expo (React Native)' : 'Vite + Hono'
+    const projectType = 'Vite + Hono'
     console.log(`[project-runtime] Project type: ${projectType}`)
     
     // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
@@ -2892,11 +2893,11 @@ app.post('/preview/restart', async (c) => {
     const forceRebuild = url.searchParams.get('force') === 'true'
     
     const viteDistPath = join(PROJECT_DIR, 'dist', 'index.html')
-    const expoDistPath = join(PROJECT_DIR, 'dist', 'index.html')
-    const expoServerPath = join(PROJECT_DIR, 'server.ts')
+    // [EXPO DISABLED] const expoDistPath = join(PROJECT_DIR, 'dist', 'index.html')
+    // [EXPO DISABLED] const expoServerPath = join(PROJECT_DIR, 'server.ts')
     const viteDistExists = existsSync(viteDistPath)
-    const expoDistExists = existsSync(expoDistPath) && existsSync(expoServerPath) && isExpo
-    const buildExists = isExpo ? expoDistExists : viteDistExists
+    // [EXPO DISABLED] const expoDistExists = existsSync(expoDistPath) && existsSync(expoServerPath) && isExpo
+    const buildExists = viteDistExists
     
     // Check if source files have been modified since the last build
     let sourceFilesModified = false
@@ -2943,31 +2944,30 @@ app.post('/preview/restart', async (c) => {
         console.log('[project-runtime] ⏱️  Building project...')
       }
       console.log('[project-runtime] ════════════════════════════════════════')
-      console.log(`[project-runtime] 🔨 ${isExpo ? 'EXPO' : 'VITE'} BUILD STARTING...`)
+      console.log(`[project-runtime] 🔨 VITE BUILD STARTING...`)
       console.log('[project-runtime] ════════════════════════════════════════')
       const buildStartTime = performance.now()
 
       let buildProc: ReturnType<typeof Bun.spawn>
-      if (isExpo) {
-        // For Expo: export web build to dist/
-        buildProc = Bun.spawn(['bunx', 'expo', 'export', '--platform', 'web', '--output-dir', 'dist'], {
-          cwd: PROJECT_DIR,
-          stdout: 'inherit',
-          stderr: 'inherit',
-        })
-      } else {
-        buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
-          cwd: PROJECT_DIR,
-          stdout: 'inherit',
-          stderr: 'inherit',
-        })
-      }
+      // [EXPO DISABLED] if (isExpo) {
+      //   buildProc = Bun.spawn(['bunx', 'expo', 'export', '--platform', 'web', '--output-dir', 'dist'], {
+      //     cwd: PROJECT_DIR,
+      //     stdout: 'inherit',
+      //     stderr: 'inherit',
+      //   })
+      // } else {
+      buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      // }
       await buildProc.exited
       const buildDuration = Math.round(performance.now() - buildStartTime)
       console.log('[project-runtime] ════════════════════════════════════════')
-      console.log(`[project-runtime] ✅ ${isExpo ? 'EXPO' : 'VITE'} BUILD COMPLETED: ${buildDuration}ms (${(buildDuration / 1000).toFixed(2)}s)`)
+      console.log(`[project-runtime] ✅ VITE BUILD COMPLETED: ${buildDuration}ms (${(buildDuration / 1000).toFixed(2)}s)`)
       console.log('[project-runtime] ════════════════════════════════════════')
-      markStep(isExpo ? 'expoBuild' : 'viteBuild')
+      markStep('viteBuild')
       
       if (buildProc.exitCode !== 0) {
         console.error('[project-runtime] Build failed')
@@ -2977,12 +2977,12 @@ app.post('/preview/restart', async (c) => {
     }
     
     // After initial build completes, start watch mode for future automatic rebuilds
-    // Expo uses Metro bundler, so watch mode doesn't apply
-    if (!isExpo) {
-      console.log('[project-runtime] 🔄 Starting Vite watch mode for automatic rebuilds...')
-      await startViteBuildWatch()
-      markStep('startViteBuildWatch')
-    }
+    // [EXPO DISABLED] Expo uses Metro bundler, so watch mode doesn't apply
+    // if (!isExpo) {
+    console.log('[project-runtime] 🔄 Starting Vite watch mode for automatic rebuilds...')
+    await startViteBuildWatch()
+    markStep('startViteBuildWatch')
+    // }
     
     // 6. Start Hono/API server if server.ts or server.tsx exists
     // For Expo: required (serves both API routes and static files)
@@ -2992,47 +2992,47 @@ app.post('/preview/restart', async (c) => {
     const serverPath = existsSync(serverTsxPath) ? serverTsxPath : serverTsPath
     const hasServerFile = existsSync(serverPath)
     
-    if (isExpo) {
-      if (!hasServerFile) {
-        const totalMs = Math.round(performance.now() - startTime)
-        return c.json({ success: false, error: 'Expo server.ts not found', timings: { steps: timings, totalMs } }, 500)
-      }
-
-      console.log(`[project-runtime] ⏱️  Starting Expo Hono server on port ${EXPO_SERVER_PORT}...`)
-      appendToConsoleLog(`--- Expo server starting on port ${EXPO_SERVER_PORT} ---`, 'stdout')
-      expoServerProcess = Bun.spawn(['bun', 'run', serverPath], {
-        cwd: PROJECT_DIR,
-        env: { ...process.env, PORT: String(EXPO_SERVER_PORT) },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      streamProcessOutput(expoServerProcess, 'expo')
-
-      // Wait for server to be ready with exponential backoff
-      let serverReady = false
-      const maxAttempts = 10
-      const baseDelayMs = 100
-
-      for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
-        try {
-          const healthCheck = await fetch(`http://localhost:${EXPO_SERVER_PORT}/`, {
-            signal: AbortSignal.timeout(500),
-          })
-          if (healthCheck.ok || healthCheck.status < 500) {
-            serverReady = true
-            console.log(`[project-runtime] ⏱️  Expo Hono server ready after ${attempt} attempt(s)`)
-          }
-        } catch (e) {
-          const delay = Math.min(baseDelayMs * attempt, 500)
-          await new Promise(resolve => setTimeout(resolve, delay))
-        }
-      }
-      markStep('startExpoServer')
-
-      if (!serverReady) {
-        console.warn('[project-runtime] Expo Hono server may still be starting after health checks...')
-      }
-    } else if (hasServerFile) {
+    // [EXPO DISABLED] if (isExpo) {
+    //   if (!hasServerFile) {
+    //     const totalMs = Math.round(performance.now() - startTime)
+    //     return c.json({ success: false, error: 'Expo server.ts not found', timings: { steps: timings, totalMs } }, 500)
+    //   }
+    //
+    //   console.log(`[project-runtime] ⏱️  Starting Expo Hono server on port ${EXPO_SERVER_PORT}...`)
+    //   appendToConsoleLog(`--- Expo server starting on port ${EXPO_SERVER_PORT} ---`, 'stdout')
+    //   expoServerProcess = Bun.spawn(['bun', 'run', serverPath], {
+    //     cwd: PROJECT_DIR,
+    //     env: { ...process.env, PORT: String(EXPO_SERVER_PORT) },
+    //     stdout: 'pipe',
+    //     stderr: 'pipe',
+    //   })
+    //   streamProcessOutput(expoServerProcess, 'expo')
+    //
+    //   let serverReady = false
+    //   const maxAttempts = 10
+    //   const baseDelayMs = 100
+    //
+    //   for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+    //     try {
+    //       const healthCheck = await fetch(`http://localhost:${EXPO_SERVER_PORT}/`, {
+    //         signal: AbortSignal.timeout(500),
+    //       })
+    //       if (healthCheck.ok || healthCheck.status < 500) {
+    //         serverReady = true
+    //         console.log(`[project-runtime] ⏱️  Expo Hono server ready after ${attempt} attempt(s)`)
+    //       }
+    //     } catch (e) {
+    //       const delay = Math.min(baseDelayMs * attempt, 500)
+    //       await new Promise(resolve => setTimeout(resolve, delay))
+    //     }
+    //   }
+    //   markStep('startExpoServer')
+    //
+    //   if (!serverReady) {
+    //     console.warn('[project-runtime] Expo Hono server may still be starting after health checks...')
+    //   }
+    // } else
+    if (hasServerFile) {
       // Plain Vite project with server.ts — start it for API route handling
       // This allows projects with a Hono backend (e.g., /api/* routes) to work correctly.
       // Without this, /api/* requests fall through to static file serving and return HTML.
@@ -3089,8 +3089,10 @@ app.post('/preview/restart', async (c) => {
     }
     console.log('[project-runtime] ════════════════════════════════════════')
 
-    const mode = isExpo ? 'expo' : (serverProcess ? 'static+api' : 'static')
-    const port = isExpo ? EXPO_SERVER_PORT : (serverProcess ? SERVER_PORT : null)
+    // [EXPO DISABLED] const mode = isExpo ? 'expo' : (serverProcess ? 'static+api' : 'static')
+    // [EXPO DISABLED] const port = isExpo ? EXPO_SERVER_PORT : (serverProcess ? SERVER_PORT : null)
+    const mode = serverProcess ? 'static+api' : 'static'
+    const port = serverProcess ? SERVER_PORT : null
 
     return c.json({
       success: true,
@@ -3412,22 +3414,22 @@ app.post('/preview/dev', async (c) => {
       serverProcess.kill()
       serverProcess = null
     }
-    if (expoServerProcess) {
-      console.log('[project-runtime] Stopping existing Expo server...')
-      expoServerProcess.kill()
-      expoServerProcess = null
-    }
+    // [EXPO DISABLED] if (expoServerProcess) {
+    //   console.log('[project-runtime] Stopping existing Expo server...')
+    //   expoServerProcess.kill()
+    //   expoServerProcess = null
+    // }
     if (viteDevProcess) {
       // Note: Killing vite will cause exit code 143 (SIGTERM) - this is expected
       console.log('[project-runtime] Stopping existing Vite dev server (exit code 143 is expected)...')
       viteDevProcess.kill()
       viteDevProcess = null
     }
-    if (expoDevProcess) {
-      console.log('[project-runtime] Stopping existing Expo dev server...')
-      expoDevProcess.kill()
-      expoDevProcess = null
-    }
+    // [EXPO DISABLED] if (expoDevProcess) {
+    //   console.log('[project-runtime] Stopping existing Expo dev server...')
+    //   expoDevProcess.kill()
+    //   expoDevProcess = null
+    // }
     markStep('killExistingServers')
     
     // 2. Check project type
@@ -3441,11 +3443,12 @@ app.post('/preview/dev', async (c) => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
     // Use local variables first, only update globals after successful start
-    const detectedExpo = !!deps['expo']
+    // [EXPO DISABLED] const detectedExpo = !!deps['expo']
+    const detectedExpo = false
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
     markStep('parsePackageJson')
 
-    const projectType = detectedExpo ? 'Expo (React Native)' : 'Vite + Hono'
+    const projectType = 'Vite + Hono'
     console.log(`[project-runtime] Project type: ${projectType}`)
     
     // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
@@ -3553,63 +3556,60 @@ app.post('/preview/dev', async (c) => {
     const maxAttempts = 20
     const baseDelayMs = 200
 
-    if (detectedExpo) {
-      // For Expo: run the Hono server directly (it serves dist/ or can proxy to Metro)
-      // For now, use production build + Hono server for simpler dev experience
-      console.log('[project-runtime] ════════════════════════════════════════')
-      console.log(`[project-runtime] 🚀 STARTING EXPO SERVER ON PORT ${EXPO_SERVER_PORT}...`)
-      console.log('[project-runtime] ════════════════════════════════════════')
-
-      const serverPath = join(PROJECT_DIR, 'server.ts')
-      if (!existsSync(serverPath)) {
-        devModeStarting = false  // Reset flag on failure
-        const totalMs = Math.round(performance.now() - startTime)
-        return c.json({ success: false, error: 'Expo server.ts not found', timings: { steps: timings, totalMs } }, 500)
-      }
-
-      // First build the Expo web app
-      console.log('[project-runtime] Building Expo web app...')
-      const buildProc = Bun.spawn(['bunx', 'expo', 'export', '--platform', 'web', '--output-dir', 'dist'], {
-        cwd: PROJECT_DIR,
-        stdout: 'inherit',
-        stderr: 'inherit',
-      })
-      await buildProc.exited
-
-      if (buildProc.exitCode !== 0) {
-        devModeStarting = false  // Reset flag on failure
-        const totalMs = Math.round(performance.now() - startTime)
-        return c.json({ success: false, error: 'Expo build failed', timings: { steps: timings, totalMs } }, 500)
-      }
-      markStep('expoBuild')
-
-      // Start the Hono server
-      appendToConsoleLog(`--- Expo server starting on port ${EXPO_SERVER_PORT} ---`, 'stdout')
-      expoServerProcess = Bun.spawn(['bun', 'run', serverPath], {
-        cwd: PROJECT_DIR,
-        env: { ...process.env, PORT: String(EXPO_SERVER_PORT) },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      streamProcessOutput(expoServerProcess, 'expo')
-      serverPort = EXPO_SERVER_PORT
-
-      for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
-        try {
-          const healthCheck = await fetch(`http://localhost:${EXPO_SERVER_PORT}/`, {
-            signal: AbortSignal.timeout(500),
-          })
-          if (healthCheck.ok || healthCheck.status < 500) {
-            serverReady = true
-            console.log(`[project-runtime] ✅ Expo Hono server ready after ${attempt} attempt(s)`)
-          }
-        } catch (e) {
-          const delay = Math.min(baseDelayMs * attempt, 500)
-          await new Promise(resolve => setTimeout(resolve, delay))
-        }
-      }
-      markStep('startExpoServer')
-    } else {
+    // [EXPO DISABLED] if (detectedExpo) {
+    //   console.log('[project-runtime] ════════════════════════════════════════')
+    //   console.log(`[project-runtime] 🚀 STARTING EXPO SERVER ON PORT ${EXPO_SERVER_PORT}...`)
+    //   console.log('[project-runtime] ════════════════════════════════════════')
+    //
+    //   const serverPath = join(PROJECT_DIR, 'server.ts')
+    //   if (!existsSync(serverPath)) {
+    //     devModeStarting = false
+    //     const totalMs = Math.round(performance.now() - startTime)
+    //     return c.json({ success: false, error: 'Expo server.ts not found', timings: { steps: timings, totalMs } }, 500)
+    //   }
+    //
+    //   console.log('[project-runtime] Building Expo web app...')
+    //   const buildProc = Bun.spawn(['bunx', 'expo', 'export', '--platform', 'web', '--output-dir', 'dist'], {
+    //     cwd: PROJECT_DIR,
+    //     stdout: 'inherit',
+    //     stderr: 'inherit',
+    //   })
+    //   await buildProc.exited
+    //
+    //   if (buildProc.exitCode !== 0) {
+    //     devModeStarting = false
+    //     const totalMs = Math.round(performance.now() - startTime)
+    //     return c.json({ success: false, error: 'Expo build failed', timings: { steps: timings, totalMs } }, 500)
+    //   }
+    //   markStep('expoBuild')
+    //
+    //   appendToConsoleLog(`--- Expo server starting on port ${EXPO_SERVER_PORT} ---`, 'stdout')
+    //   expoServerProcess = Bun.spawn(['bun', 'run', serverPath], {
+    //     cwd: PROJECT_DIR,
+    //     env: { ...process.env, PORT: String(EXPO_SERVER_PORT) },
+    //     stdout: 'pipe',
+    //     stderr: 'pipe',
+    //   })
+    //   streamProcessOutput(expoServerProcess, 'expo')
+    //   serverPort = EXPO_SERVER_PORT
+    //
+    //   for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+    //     try {
+    //       const healthCheck = await fetch(`http://localhost:${EXPO_SERVER_PORT}/`, {
+    //         signal: AbortSignal.timeout(500),
+    //       })
+    //       if (healthCheck.ok || healthCheck.status < 500) {
+    //         serverReady = true
+    //         console.log(`[project-runtime] ✅ Expo Hono server ready after ${attempt} attempt(s)`)
+    //       }
+    //     } catch (e) {
+    //       const delay = Math.min(baseDelayMs * attempt, 500)
+    //       await new Promise(resolve => setTimeout(resolve, delay))
+    //     }
+    //   }
+    //   markStep('startExpoServer')
+    // } else {
+    {
       console.log('[project-runtime] ════════════════════════════════════════')
       console.log(`[project-runtime] 🚀 STARTING VITE DEV SERVER ON PORT ${VITE_DEV_PORT}...`)
       console.log('[project-runtime] ════════════════════════════════════════')
@@ -3650,12 +3650,12 @@ app.post('/preview/dev', async (c) => {
     }
 
     if (!serverReady) {
-      console.warn(`[project-runtime] ⚠️  ${detectedExpo ? 'Expo' : 'Vite'} dev server may still be starting...`)
+      console.warn(`[project-runtime] ⚠️  Vite dev server may still be starting...`)
     }
 
     // Only update globals after successful start
     // This prevents state inconsistency when dev mode fails to start
-    isExpo = detectedExpo
+    // [EXPO DISABLED] isExpo = detectedExpo
     isDevMode = true
     devModeStarting = false
 
@@ -3700,20 +3700,20 @@ app.post('/preview/dev/stop', async (c) => {
     isDevMode = false
     return c.json({ success: true, message: 'Dev mode stopped' })
   }
-  if (expoDevProcess) {
-    console.log('[project-runtime] Stopping Expo dev server...')
-    expoDevProcess.kill()
-    expoDevProcess = null
-    isDevMode = false
-    return c.json({ success: true, message: 'Expo dev mode stopped' })
-  }
-  if (expoServerProcess) {
-    console.log('[project-runtime] Stopping Expo Hono server...')
-    expoServerProcess.kill()
-    expoServerProcess = null
-    isDevMode = false
-    return c.json({ success: true, message: 'Expo server stopped' })
-  }
+  // [EXPO DISABLED] if (expoDevProcess) {
+  //   console.log('[project-runtime] Stopping Expo dev server...')
+  //   expoDevProcess.kill()
+  //   expoDevProcess = null
+  //   isDevMode = false
+  //   return c.json({ success: true, message: 'Expo dev mode stopped' })
+  // }
+  // [EXPO DISABLED] if (expoServerProcess) {
+  //   console.log('[project-runtime] Stopping Expo Hono server...')
+  //   expoServerProcess.kill()
+  //   expoServerProcess = null
+  //   isDevMode = false
+  //   return c.json({ success: true, message: 'Expo server stopped' })
+  // }
   return c.json({ success: true, message: 'Dev mode was not running' })
 })
 
@@ -3734,7 +3734,8 @@ app.post('/__console', async (c) => {
   }
 })
 
-const previewMode = isExpo ? 'Expo (Hono server)' : 'Static files'
+// [EXPO DISABLED] const previewMode = isExpo ? 'Expo (Hono server)' : 'Static files'
+const previewMode = 'Static files'
 console.log(`[project-runtime] Preview mode: ${previewMode}`)
 
 /**
@@ -3805,9 +3806,9 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   html = html.replace(/<link([^>]*)\s+href="\/@([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}@$2"$3>`)
 
-  // Rewrite Expo paths (/_expo/static/js/...)
-  html = html.replace(/<link([^>]*)\s+href="\/_expo\/([^"]+)"([^>]*)>/gi,
-    `<link$1 href="${basePath}_expo/$2"$3>`)
+  // [EXPO DISABLED] Rewrite Expo paths (/_expo/static/js/...)
+  // html = html.replace(/<link([^>]*)\s+href="\/_expo\/([^"]+)"([^>]*)>/gi,
+  //   `<link$1 href="${basePath}_expo/$2"$3>`)
 
   // Rewrite absolute paths in script tags
   html = html.replace(/<script([^>]*)\s+src="\/assets\/([^"]+)"([^>]*)>/gi,
@@ -3819,9 +3820,9 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   html = html.replace(/<script([^>]*)\s+src="\/@([^"]+)"([^>]*)>/gi,
     `<script$1 src="${basePath}@$2"$3>`)
 
-  // Rewrite Expo script paths (/_expo/static/js/...)
-  html = html.replace(/<script([^>]*)\s+src="\/_expo\/([^"]+)"([^>]*)>/gi,
-    `<script$1 src="${basePath}_expo/$2"$3>`)
+  // [EXPO DISABLED] Rewrite Expo script paths (/_expo/static/js/...)
+  // html = html.replace(/<script([^>]*)\s+src="\/_expo\/([^"]+)"([^>]*)>/gi,
+  //   `<script$1 src="${basePath}_expo/$2"$3>`)
   
   // Rewrite inline script imports for Vite dev paths
   html = html.replace(/from\s+["']\/@([^"']+)["']/gi, `from "${basePath}@$1"`)
@@ -3846,8 +3847,8 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   // Helper to check if URL needs rewriting
   function needsRewrite(url) {
     return url.startsWith('/assets/') || url.startsWith('/src/') ||
-           url.startsWith('/@') || url.startsWith('/node_modules/') ||
-           url.startsWith('/_expo/');
+           url.startsWith('/@') || url.startsWith('/node_modules/');
+           // [EXPO DISABLED] || url.startsWith('/_expo/');
   }
   
   // Store original fetch
@@ -3987,82 +3988,79 @@ app.get('/preview/*', async (c) => {
     }
   }
   
-  // Expo: proxy to the Expo Hono server (serves both API routes and static files)
-  if (isExpo && expoServerProcess) {
-    const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
-    console.log(`[project-runtime] Proxying preview to Expo Hono server: ${targetUrl}`)
-
-    try {
-      const response = await fetch(targetUrl, {
-        method: c.req.method,
-        headers: {
-          'Host': `localhost:${EXPO_SERVER_PORT}`,
-          'Accept': c.req.header('Accept') || '*/*',
-          'Accept-Encoding': c.req.header('Accept-Encoding') || '',
-        },
-      })
-
-      // Get response body
-      const contentType = response.headers.get('Content-Type') || 'text/html'
-      const body = await response.arrayBuffer()
-
-      // Rewrite HTML responses to fix asset paths when accessed through proxy
-      if (contentType.includes('text/html')) {
-        const html = new TextDecoder().decode(body)
-        const rewrittenHtml = rewritePreviewHtml(html, externalBasePath)
-        return new Response(rewrittenHtml, {
-          status: response.status,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(Buffer.byteLength(rewrittenHtml)),
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
-      }
-
-      // Rewrite JavaScript responses to fix dynamic import paths
-      if (contentType.includes('javascript') || contentType.includes('application/javascript')) {
-        let js = new TextDecoder().decode(body)
-        js = js.replace(/import\(["']\/assets\//g, `import("${externalBasePath}assets/`)
-        js = js.replace(/import\(["']\/src\//g, `import("${externalBasePath}src/`)
-        js = js.replace(/"\/assets\//g, `"${externalBasePath}assets/`)
-        js = js.replace(/'\/assets\//g, `'${externalBasePath}assets/`)
-        js = js.replace(/"\/src\//g, `"${externalBasePath}src/`)
-        js = js.replace(/'\/src\//g, `'${externalBasePath}src/`)
-        return new Response(js, {
-          status: response.status,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(Buffer.byteLength(js)),
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
-      }
-
-      return new Response(body, {
-        status: response.status,
-        headers: {
-          'Content-Type': contentType,
-          'Cache-Control': 'no-cache',
-          'Access-Control-Allow-Origin': '*',
-        },
-      })
-    } catch (error: any) {
-      console.error('[project-runtime] Expo proxy error:', error)
-      return c.html(`
-        <html>
-          <body style="font-family: system-ui; padding: 2rem;">
-            <h1>Preview Loading...</h1>
-            <p>The Expo server is starting up. Please wait a moment and refresh.</p>
-            <p style="color: #666; font-size: 0.9em;">Error: ${error.message}</p>
-            <script>setTimeout(() => location.reload(), 3000)</script>
-          </body>
-        </html>
-      `, 503)
-    }
-  }
+  // [EXPO DISABLED] Expo proxy to the Expo Hono server
+  // if (isExpo && expoServerProcess) {
+  //   const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
+  //   console.log(`[project-runtime] Proxying preview to Expo Hono server: ${targetUrl}`)
+  //
+  //   try {
+  //     const response = await fetch(targetUrl, {
+  //       method: c.req.method,
+  //       headers: {
+  //         'Host': `localhost:${EXPO_SERVER_PORT}`,
+  //         'Accept': c.req.header('Accept') || '*/*',
+  //         'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+  //       },
+  //     })
+  //
+  //     const contentType = response.headers.get('Content-Type') || 'text/html'
+  //     const body = await response.arrayBuffer()
+  //
+  //     if (contentType.includes('text/html')) {
+  //       const html = new TextDecoder().decode(body)
+  //       const rewrittenHtml = rewritePreviewHtml(html, externalBasePath)
+  //       return new Response(rewrittenHtml, {
+  //         status: response.status,
+  //         headers: {
+  //           'Content-Type': contentType,
+  //           'Content-Length': String(Buffer.byteLength(rewrittenHtml)),
+  //           'Cache-Control': 'no-cache',
+  //           'Access-Control-Allow-Origin': '*',
+  //         },
+  //       })
+  //     }
+  //
+  //     if (contentType.includes('javascript') || contentType.includes('application/javascript')) {
+  //       let js = new TextDecoder().decode(body)
+  //       js = js.replace(/import\(["']\/assets\//g, `import("${externalBasePath}assets/`)
+  //       js = js.replace(/import\(["']\/src\//g, `import("${externalBasePath}src/`)
+  //       js = js.replace(/"\/assets\//g, `"${externalBasePath}assets/`)
+  //       js = js.replace(/'\/assets\//g, `'${externalBasePath}assets/`)
+  //       js = js.replace(/"\/src\//g, `"${externalBasePath}src/`)
+  //       js = js.replace(/'\/src\//g, `'${externalBasePath}src/`)
+  //       return new Response(js, {
+  //         status: response.status,
+  //         headers: {
+  //           'Content-Type': contentType,
+  //           'Content-Length': String(Buffer.byteLength(js)),
+  //           'Cache-Control': 'no-cache',
+  //           'Access-Control-Allow-Origin': '*',
+  //         },
+  //       })
+  //     }
+  //
+  //     return new Response(body, {
+  //       status: response.status,
+  //       headers: {
+  //         'Content-Type': contentType,
+  //         'Cache-Control': 'no-cache',
+  //         'Access-Control-Allow-Origin': '*',
+  //       },
+  //     })
+  //   } catch (error: any) {
+  //     console.error('[project-runtime] Expo proxy error:', error)
+  //     return c.html(`
+  //       <html>
+  //         <body style="font-family: system-ui; padding: 2rem;">
+  //           <h1>Preview Loading...</h1>
+  //           <p>The Expo server is starting up. Please wait a moment and refresh.</p>
+  //           <p style="color: #666; font-size: 0.9em;">Error: ${error.message}</p>
+  //           <script>setTimeout(() => location.reload(), 3000)</script>
+  //         </body>
+  //       </html>
+  //     `, 503)
+  //   }
+  // }
 
   // Plain Vite: serve static files from dist/
   let filePath = relativePath
@@ -4672,14 +4670,15 @@ app.all('/*', async (c, next) => {
   // Use build+restart approach instead of dev mode for reliability and simplicity
   // This avoids HMR complexity and provides consistent preview updates
   // For plain Vite: only auto-start if dist/ doesn't exist (prevents redundant builds)
-  // For Expo: always auto-start if process isn't running
-  const needsAutoStart = !serverProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
+  // [EXPO DISABLED] const needsAutoStart = !serverProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
+  const needsAutoStart = !serverProcess && !devModeStarting && !isInBackoff && !distExists
   
   // Also check: dist/ exists but the backend server isn't running and a server.tsx exists.
   // This happens on cold starts from S3 restore (bg-init builds dist/ but doesn't start the backend).
   // For published domains (*.shogo.one), we need the backend server for /api/* routes.
   const serverTsxExists = existsSync(join(PROJECT_DIR, 'server.tsx')) || existsSync(join(PROJECT_DIR, 'server.ts'))
-  const needsBackendStart = !serverProcess && !isExpo && !devModeStarting && !isInBackoff && distExists && serverTsxExists
+  // [EXPO DISABLED] const needsBackendStart = !serverProcess && !isExpo && !devModeStarting && !isInBackoff && distExists && serverTsxExists
+  const needsBackendStart = !serverProcess && !devModeStarting && !isInBackoff && distExists && serverTsxExists
   
   if (needsAutoStart) {
     console.log('[project-runtime] Auto-starting build mode on first subdomain request...')
@@ -4743,10 +4742,10 @@ app.all('/*', async (c, next) => {
   
   // Show loading page while build is starting
   // For plain Vite: only show loading if dist/ doesn't exist yet
-  // For Expo: show loading if respective process isn't running
-  const needsProcess = existsSync(join(PROJECT_DIR, 'app.json')) // Expo
+  // [EXPO DISABLED] const needsProcess = existsSync(join(PROJECT_DIR, 'app.json'))
   
-  if (devModeStarting || (!distExists && !serverProcess && !expoServerProcess && !isInBackoff)) {
+  // [EXPO DISABLED] if (devModeStarting || (!distExists && !serverProcess && !expoServerProcess && !isInBackoff)) {
+  if (devModeStarting || (!distExists && !serverProcess && !isInBackoff)) {
     return c.html(`
 <!DOCTYPE html>
 <html lang="en">
@@ -4869,87 +4868,78 @@ app.all('/*', async (c, next) => {
     }
   }
   
-  // Expo: proxy to the Expo Hono server (serves both API routes and static files)
-  if (isExpo && expoServerProcess) {
-    const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
-    const method = c.req.method
-    console.log(`[project-runtime] Subdomain: proxying ${method} to Expo Hono server at ${targetUrl}`)
-
-    try {
-      // Build headers for the proxy request
-      const proxyHeaders: Record<string, string> = {
-        'Host': `localhost:${EXPO_SERVER_PORT}`,
-        'Accept': c.req.header('Accept') || '*/*',
-        'Accept-Encoding': c.req.header('Accept-Encoding') || '',
-      }
-
-      // Forward Content-Type for POST/PUT/PATCH requests
-      const contentType = c.req.header('Content-Type')
-      if (contentType) {
-        proxyHeaders['Content-Type'] = contentType
-      }
-
-      // Forward cookies for auth
-      const cookies = c.req.header('Cookie')
-      if (cookies) {
-        proxyHeaders['Cookie'] = cookies
-      }
-
-      // Build fetch options
-      const fetchOptions: RequestInit = {
-        method,
-        headers: proxyHeaders,
-      }
-
-      // Forward request body for POST/PUT/PATCH
-      if (method !== 'GET' && method !== 'HEAD') {
-        try {
-          const bodyBuffer = await c.req.arrayBuffer()
-          if (bodyBuffer.byteLength > 0) {
-            fetchOptions.body = bodyBuffer
-          }
-        } catch {
-          // No body or couldn't read body - that's ok
-        }
-      }
-
-      const response = await fetch(targetUrl, fetchOptions)
-
-      const responseContentType = response.headers.get('Content-Type') || 'text/html'
-      const body = await response.arrayBuffer()
-
-      // Build response headers
-      const responseHeaders: Record<string, string> = {
-        'Content-Type': responseContentType,
-        'Cache-Control': 'no-cache',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Credentials': 'true',
-      }
-
-      // Forward Set-Cookie headers for auth
-      const setCookie = response.headers.get('Set-Cookie')
-      if (setCookie) {
-        responseHeaders['Set-Cookie'] = setCookie
-      }
-
-      // No rewriting needed for subdomain access - serve directly!
-      return new Response(body, {
-        status: response.status,
-        headers: responseHeaders,
-      })
-    } catch (error: any) {
-      console.error('[project-runtime] Subdomain Expo proxy error:', error)
-      return c.html(`
-        <html>
-          <body style="font-family: system-ui; padding: 2rem;">
-            <h1>Preview Loading...</h1>
-            <p>The Expo server is starting up. Please wait a moment and refresh.</p>
-            <script>setTimeout(() => location.reload(), 3000)</script>
-          </body>
-        </html>
-      `, 503)
-    }
-  }
+  // [EXPO DISABLED] Subdomain Expo proxy
+  // if (isExpo && expoServerProcess) {
+  //   const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
+  //   const method = c.req.method
+  //   console.log(`[project-runtime] Subdomain: proxying ${method} to Expo Hono server at ${targetUrl}`)
+  //
+  //   try {
+  //     const proxyHeaders: Record<string, string> = {
+  //       'Host': `localhost:${EXPO_SERVER_PORT}`,
+  //       'Accept': c.req.header('Accept') || '*/*',
+  //       'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+  //     }
+  //
+  //     const contentType = c.req.header('Content-Type')
+  //     if (contentType) {
+  //       proxyHeaders['Content-Type'] = contentType
+  //     }
+  //
+  //     const cookies = c.req.header('Cookie')
+  //     if (cookies) {
+  //       proxyHeaders['Cookie'] = cookies
+  //     }
+  //
+  //     const fetchOptions: RequestInit = {
+  //       method,
+  //       headers: proxyHeaders,
+  //     }
+  //
+  //     if (method !== 'GET' && method !== 'HEAD') {
+  //       try {
+  //         const bodyBuffer = await c.req.arrayBuffer()
+  //         if (bodyBuffer.byteLength > 0) {
+  //           fetchOptions.body = bodyBuffer
+  //         }
+  //       } catch {
+  //       }
+  //     }
+  //
+  //     const response = await fetch(targetUrl, fetchOptions)
+  //
+  //     const responseContentType = response.headers.get('Content-Type') || 'text/html'
+  //     const body = await response.arrayBuffer()
+  //
+  //     const responseHeaders: Record<string, string> = {
+  //       'Content-Type': responseContentType,
+  //       'Cache-Control': 'no-cache',
+  //       'Access-Control-Allow-Origin': '*',
+  //       'Access-Control-Allow-Credentials': 'true',
+  //     }
+  //
+  //     const setCookie = response.headers.get('Set-Cookie')
+  //     if (setCookie) {
+  //       responseHeaders['Set-Cookie'] = setCookie
+  //     }
+  //
+  //     return new Response(body, {
+  //       status: response.status,
+  //       headers: responseHeaders,
+  //     })
+  //   } catch (error: any) {
+  //     console.error('[project-runtime] Subdomain Expo proxy error:', error)
+  //     return c.html(`
+  //       <html>
+  //         <body style="font-family: system-ui; padding: 2rem;">
+  //           <h1>Preview Loading...</h1>
+  //           <p>The Expo server is starting up. Please wait a moment and refresh.</p>
+  //           <script>setTimeout(() => location.reload(), 3000)</script>
+  //         </body>
+  //       </html>
+  //     `, 503)
+  //   }
+  // }
 
   // Plain Vite: serve static files from dist/
   let filePath = relativePath
