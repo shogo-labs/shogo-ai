@@ -55,16 +55,28 @@ export async function streamSdkToUI(
   writer.write({ type: 'start' })
   writer.write({ type: 'start-step' })
 
-  // Send periodic keepalive comments to prevent idle connection timeouts
-  // (Knative queue-proxy kills idle streams before Claude Code emits first event)
+  // Send periodic keepalive pings to prevent idle connection timeouts.
+  // (Knative queue-proxy kills idle streams before Claude Code emits first event.)
+  // We open a proper text block so the AI SDK client sees text-start before any text-delta.
   const KEEPALIVE_INTERVAL_MS = 5_000
+  const keepaliveTextId = '__keepalive__'
+  let keepaliveClosed = false
+  writer.write({ type: 'text-start', id: keepaliveTextId })
   const keepaliveTimer = setInterval(() => {
     try {
-      writer.write({ type: 'text-delta', id: '__keepalive__', delta: '' })
+      writer.write({ type: 'text-delta', id: keepaliveTextId, delta: '' })
     } catch {
       clearInterval(keepaliveTimer)
     }
   }, KEEPALIVE_INTERVAL_MS)
+
+  function closeKeepalive() {
+    if (!keepaliveClosed) {
+      keepaliveClosed = true
+      clearInterval(keepaliveTimer)
+      writer.write({ type: 'text-end', id: keepaliveTextId })
+    }
+  }
 
   const query = session.stream()
   options?.onQueryCreated?.(query as any)
@@ -72,7 +84,7 @@ export async function streamSdkToUI(
   try {
 
   for await (const msg of query) {
-    clearInterval(keepaliveTimer)
+    closeKeepalive()
     const msgAny = msg as any
 
     // --- SDKPartialAssistantMessage — incremental streaming (preferred) ---
@@ -288,6 +300,6 @@ export async function streamSdkToUI(
   }
 
   } finally {
-    clearInterval(keepaliveTimer)
+    closeKeepalive()
   }
 }

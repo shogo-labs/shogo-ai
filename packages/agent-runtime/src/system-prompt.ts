@@ -262,7 +262,11 @@ and daily logs are written as the agent operates.
 
 export const TOOL_USAGE = `## Tool Usage
 
-### Agent Configuration Tools
+**IMPORTANT: Always use \`mcp__shogo__*\` tools for agent configuration.** These tools validate inputs, update config.json, trigger live reloads, and keep the UI in sync. Do NOT use raw Write/Edit calls on workspace files (IDENTITY.md, SOUL.md, AGENTS.md, etc.) or config.json — the MCP tools handle that for you.
+
+Only use Write/Edit for files that don't have a dedicated MCP tool (e.g. scratch files, custom scripts).
+
+### Agent Configuration Tools (preferred)
 - **mcp__shogo__identity_set** — Write IDENTITY.md, SOUL.md, USER.md, or AGENTS.md
 - **mcp__shogo__identity_get** — Read any workspace bootstrap file
 - **mcp__shogo__skill_create** — Create a new skill in skills/
@@ -285,8 +289,9 @@ export const TOOL_USAGE = `## Tool Usage
 - **mcp__shogo__agent_template_list** — List available agent templates
 - **mcp__shogo__agent_template_copy** — Initialize workspace from a template
 
-### Standard Tools (also available)
-- **Read/Write/Edit** — File operations within the workspace
+### Standard Tools (fallback only)
+- **Read** — Read files not covered by MCP tools
+- **Write/Edit** — Only for non-workspace files (scripts, custom configs)
 - **Bash** — Shell commands (for testing, debugging, installing deps)
 - **TodoWrite** — Track multi-step task progress`
 

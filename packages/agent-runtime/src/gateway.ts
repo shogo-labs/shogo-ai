@@ -69,6 +69,8 @@ export class AgentGateway {
   private sessionPersistence: SqliteSessionPersistence | null = null
   /** Optional custom stream function, injected for testing */
   private _streamFn?: StreamFn
+  /** Optional log callback for forwarding gateway events to the UI Logs tab */
+  private _onLog?: (line: string) => void
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -87,6 +89,17 @@ export class AgentGateway {
   /** Inject a custom streamFn (used in tests to mock the LLM) */
   setStreamFn(fn: StreamFn): void {
     this._streamFn = fn
+  }
+
+  /** Set a log callback for forwarding gateway events to the UI Logs tab */
+  setLogCallback(fn: (line: string) => void): void {
+    this._onLog = fn
+  }
+
+  private emitLog(line: string): void {
+    const ts = new Date().toISOString()
+    const formatted = `[${ts}] ${line}`
+    this._onLog?.(formatted)
   }
 
   private loadConfig(): GatewayConfig {
@@ -179,6 +192,7 @@ export class AgentGateway {
     )
 
     console.log('[AgentGateway] Started successfully')
+    this.emitLog('Agent gateway started')
   }
 
   async stop(): Promise<void> {
@@ -263,8 +277,23 @@ export class AgentGateway {
     }
 
     const now = new Date()
-    const hours = now.getHours()
-    const minutes = now.getMinutes()
+    const tz = this.config.quietHours.timezone || 'UTC'
+    let hours: number
+    let minutes: number
+    try {
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        hour: 'numeric',
+        minute: 'numeric',
+        hour12: false,
+      })
+      const parts = fmt.formatToParts(now)
+      hours = Number(parts.find((p) => p.type === 'hour')?.value ?? 0)
+      minutes = Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
+    } catch {
+      hours = now.getUTCHours()
+      minutes = now.getUTCMinutes()
+    }
     const currentTime = hours * 60 + minutes
 
     const [startH, startM] = this.config.quietHours.start.split(':').map(Number)
@@ -295,10 +324,12 @@ export class AgentGateway {
 
     if (this.isInQuietHours()) {
       console.log('[AgentGateway] Heartbeat skipped (quiet hours)')
+      this.emitLog('Heartbeat skipped (quiet hours)')
       return 'HEARTBEAT_OK'
     }
 
     console.log('[AgentGateway] Running heartbeat...')
+    this.emitLog('Running heartbeat...')
 
     let pendingSection = ''
     if (this.pendingEvents.length > 0) {
@@ -322,6 +353,7 @@ export class AgentGateway {
 
     if (response !== 'HEARTBEAT_OK') {
       console.log('[AgentGateway] Heartbeat alert:', response.substring(0, 200))
+      this.emitLog(`Heartbeat alert: ${response.substring(0, 200)}`)
       await this.deliverAlert(response)
 
       await this.hookEmitter.emit(
@@ -332,6 +364,7 @@ export class AgentGateway {
       )
     } else {
       console.log('[AgentGateway] Heartbeat OK')
+      this.emitLog('Heartbeat OK')
     }
 
     this.appendDailyMemory(`Heartbeat: ${response === 'HEARTBEAT_OK' ? 'All clear' : response.substring(0, 200)}`)
@@ -352,6 +385,7 @@ export class AgentGateway {
   // ---------------------------------------------------------------------------
 
   async processMessage(input: IncomingMessage): Promise<void> {
+    this.emitLog(`Channel message from ${input.channelType || 'unknown'}: "${(input.text || '').substring(0, 100)}"`)
     const sessionId = input.channelId || 'default'
     const qs = this.getQueueState(sessionId)
     this.sessionManager.getOrCreate(sessionId)
@@ -506,15 +540,33 @@ export class AgentGateway {
     qs.processing = false
   }
 
+  private isUnconfigured(): boolean {
+    if (this.skills.length > 0) return false
+    const agentsPath = join(this.workspaceDir, 'AGENTS.md')
+    if (!existsSync(agentsPath)) return true
+    const content = readFileSync(agentsPath, 'utf-8')
+    return content.includes('Respond concisely and helpfully') && content.includes('# Agent Instructions')
+  }
+
   async processTestMessage(text: string): Promise<string> {
+    this.emitLog(`Test message received: "${text.substring(0, 100)}"`)
+
+    if (this.isUnconfigured()) {
+      this.emitLog('Agent is not configured — returning setup guidance')
+      return 'This agent has not been configured yet. Use the builder chat (left panel) to describe what you want your agent to do — it will set up the identity, skills, and heartbeat for you.'
+    }
+
     const matchedSkill = matchSkill(this.skills, text)
     let prompt = text
 
     if (matchedSkill) {
+      this.emitLog(`Matched skill: ${matchedSkill.name}`)
       prompt = `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${text}`
     }
 
     const response = await this.agentTurn(prompt, 'test')
+    this.emitLog(`Test response: "${response.substring(0, 100)}"`)
+
 
     this.sessionManager.addMessages(
       'test',

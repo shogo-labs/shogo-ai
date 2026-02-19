@@ -16,6 +16,7 @@ import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import { calculateCreditCost, proxyModelToBillingModel } from "../lib/credit-cost"
 import * as billingService from "../services/billing.service"
+import { setProjectUser } from "../lib/project-user-context"
 
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
@@ -430,9 +431,25 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       console.log(`[ProjectChat] Proxying to: ${podUrl}/agent/chat`)
 
       // Get the request body and parse for billing context
-      const body = await c.req.text()
+      let body = await c.req.text()
       let parsedBody: any = {}
       try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
+
+      // Enforce basic agent mode for free-plan workspaces (server-side guard)
+      if (parsedBody.agentMode && parsedBody.agentMode !== 'basic') {
+        const isPaid = await billingService.hasPaidSubscription(project.workspaceId)
+        if (!isPaid) {
+          parsedBody.agentMode = 'basic'
+          body = JSON.stringify(parsedBody)
+        }
+      }
+
+      // Track the user who initiated this chat so AI proxy requests from the
+      // runtime (which use a generic 'system' token) can be attributed correctly.
+      const billingUserId = parsedBody?.userId || c.req.header("X-Billing-User-Id")
+      if (billingUserId && billingUserId !== 'system') {
+        setProjectUser(projectId, billingUserId)
+      }
 
       // Forward headers
       const headers: Record<string, string> = {

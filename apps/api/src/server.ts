@@ -2948,7 +2948,15 @@ Examples:
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, ccSessionId, chatSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
+    let { messages, ccSessionId, chatSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
+
+    // Enforce basic agent mode for free-plan workspaces (server-side guard)
+    if (workspaceId && agentMode && agentMode !== 'basic') {
+      const isPaid = await billingService.hasPaidSubscription(workspaceId)
+      if (!isPaid) {
+        agentMode = 'basic'
+      }
+    }
 
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
     if (workspaceId) {

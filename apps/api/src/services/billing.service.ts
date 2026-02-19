@@ -93,6 +93,20 @@ export async function allocateMonthlyCredits(
 }
 
 /**
+ * Check if workspace has an active paid subscription (pro, business, enterprise).
+ * Free users have no subscription record.
+ */
+export async function hasPaidSubscription(workspaceId: string): Promise<boolean> {
+  const sub = await prisma.subscription.findFirst({
+    where: {
+      workspaceId,
+      status: { in: ['active', 'trialing'] },
+    },
+  });
+  return !!sub;
+}
+
+/**
  * Check if workspace has sufficient credits (without deducting).
  * Uses lazy daily reset logic for accurate balance.
  */
@@ -187,11 +201,24 @@ export async function consumeCredits(
       },
     });
 
+    // Validate projectId exists before inserting (avoids FK constraint violations
+    // when usage events race with project creation)
+    let validProjectId = projectId
+    if (projectId) {
+      const projectExists = await tx.project.findUnique({
+        where: { id: projectId },
+        select: { id: true },
+      })
+      if (!projectExists) {
+        validProjectId = null
+      }
+    }
+
     // Record usage event
     await tx.usageEvent.create({
       data: {
         workspaceId,
-        projectId,
+        projectId: validProjectId,
         memberId,
         actionType,
         actionMetadata: actionMetadata as Prisma.InputJsonValue,

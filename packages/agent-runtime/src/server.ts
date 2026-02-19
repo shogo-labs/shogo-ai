@@ -195,7 +195,7 @@ let claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
 // =============================================================================
 
 function getModelFromAgentMode(agentMode?: string): ModelTier {
-  if (agentMode === 'haiku' || agentMode === 'fast') return 'haiku'
+  if (agentMode === 'basic' || agentMode === 'haiku' || agentMode === 'fast') return 'haiku'
   if (agentMode === 'opus' || agentMode === 'deep') return 'opus'
   return 'sonnet'
 }
@@ -676,6 +676,10 @@ async function initialize(): Promise<void> {
 
   // Start agent gateway
   agentGateway = new AgentGateway(AGENT_DIR, currentProjectId!)
+  agentGateway.setLogCallback((line) => {
+    consoleLogs.push(line)
+    if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
+  })
   await agentGateway.start()
   logTiming('Agent gateway started')
 }

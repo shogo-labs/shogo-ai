@@ -900,6 +900,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
           onOpenExternal={handleOpenExternal}
           onOpenCode={() => setPreviewMode('code')}
           isOpeningExternal={isOpeningExternal}
+          isAgentProject={isAgentProject}
           // Publish callbacks
           onPublish={handlePublish}
           onUnpublish={handleUnpublish}

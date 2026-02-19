@@ -678,7 +678,14 @@ export const ChatPanel = observer(function ChatPanel({
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
 
   // Agent mode state for switching between basic (Haiku) and advanced (Sonnet) models
-  const [agentMode, setAgentMode] = useState<AgentMode>("advanced")
+  // Default to "basic" — upgraded to "advanced" once billing data confirms Pro subscription
+  const [agentMode, setAgentMode] = useState<AgentMode>("basic")
+
+  useEffect(() => {
+    if (hasActiveSubscription) {
+      setAgentMode("advanced")
+    }
+  }, [hasActiveSubscription])
 
   // Claude Code session ID for continuity (task-cc-chatpanel-integration)
   // Initialized from existing session's claudeCodeSessionId on load
@@ -885,6 +892,28 @@ export const ChatPanel = observer(function ChatPanel({
       // Critical: Handle errors to ensure isLoading gets cleared
       // Without this handler, errors leave isLoading=true indefinitely
       console.error("[ChatPanel] Stream error:", err)
+
+      // Mark any in-flight tool calls as errored so spinners resolve
+      setMessages((prev) =>
+        prev.map((msg) => {
+          if (msg.role !== 'assistant' || !msg.parts) return msg
+          const hasStuckTool = msg.parts.some(
+            (p: any) => (p.type === 'tool-invocation' || p.type === 'dynamic-tool') &&
+              (p.state === 'partial-call' || p.state === 'call' || p.state === 'input-streaming' || p.state === 'input-available')
+          )
+          if (!hasStuckTool) return msg
+          return {
+            ...msg,
+            parts: msg.parts.map((p: any) => {
+              if ((p.type === 'tool-invocation' || p.type === 'dynamic-tool') &&
+                  (p.state === 'partial-call' || p.state === 'call' || p.state === 'input-streaming' || p.state === 'input-available')) {
+                return { ...p, state: 'error', output: { error: 'Interrupted' } }
+              }
+              return p
+            }),
+          }
+        })
+      )
     },
     // Handle transient data parts via AI SDK 6.x data-{name} format
     // Server sends: { type: 'data-progress', id: string, data: SubagentProgressEvent }
