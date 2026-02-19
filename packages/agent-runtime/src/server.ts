@@ -545,8 +545,8 @@ app.get('/agent/test/history', async (c) => {
     return c.json({ messages: [] })
   }
 
-  const session = agentGateway.getSessionManager().get('test')
-  if (!session || session.messages.length === 0) {
+  const session = await agentGateway.getSessionManager().getOrCreateAsync('test')
+  if (session.messages.length === 0) {
     return c.json({ messages: [] })
   }
 

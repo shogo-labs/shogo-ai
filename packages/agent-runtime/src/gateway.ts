@@ -21,7 +21,7 @@ import { join } from 'path'
 import type { Message, UserMessage } from '@mariozechner/pi-ai'
 import type { StreamFn } from '@mariozechner/pi-agent-core'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
-import { loadSkills, matchSkill, type Skill } from './skills'
+import { loadSkills, loadBundledSkills, matchSkill, type Skill } from './skills'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
 import { createAllTools, createHeartbeatTools } from './gateway-tools'
 import { HookEmitter, loadAllHooks } from './hooks'
@@ -31,6 +31,7 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { CronManager, type CronJob } from './cron-manager'
 import { userMessage } from './pi-adapter'
 import { BlockChunker } from './block-chunker'
+import { MCPClientManager, type MCPServerConfig } from './mcp-client'
 
 export interface GatewayConfig {
   heartbeatInterval: number
@@ -50,6 +51,8 @@ export interface GatewayConfig {
   sandbox?: Partial<SandboxConfig>
   /** Main session IDs that bypass sandbox (direct owner chats) */
   mainSessionIds?: string[]
+  /** MCP servers to spawn on gateway start — tools from these become available to the agent */
+  mcpServers?: Record<string, MCPServerConfig>
 }
 
 export class AgentGateway {
@@ -68,6 +71,7 @@ export class AgentGateway {
   private sessionManager: SessionManager
   private cronManager: CronManager
   private sessionPersistence: SqliteSessionPersistence | null = null
+  private mcpClientManager: MCPClientManager = new MCPClientManager()
   /** Optional custom stream function, injected for testing */
   private _streamFn?: StreamFn
   /** Optional log callback for forwarding gateway events to the UI Logs tab */
@@ -136,10 +140,13 @@ export class AgentGateway {
     console.log('[AgentGateway] Starting...')
     this.running = true
 
-    // Load skills from filesystem and config.json
+    // Load skills from filesystem, bundled, and config.json
     this.skills = loadSkills(join(this.workspaceDir, 'skills'))
+    const workspaceSkillNames = new Set(this.skills.map((s) => s.name))
+    const bundled = loadBundledSkills(workspaceSkillNames)
+    this.skills = [...this.skills, ...bundled]
     this.configSkills = this.loadConfigSkills()
-    console.log(`[AgentGateway] Loaded ${this.skills.length} file skills, ${this.configSkills.length} config skills`)
+    console.log(`[AgentGateway] Loaded ${this.skills.length} skills (${workspaceSkillNames.size} workspace + ${bundled.length} bundled), ${this.configSkills.length} config skills`)
 
     // Load hooks
     try {
@@ -172,6 +179,15 @@ export class AgentGateway {
     const cronJobs = this.cronManager.listJobs()
     if (cronJobs.length > 0) {
       console.log(`[AgentGateway] Loaded ${cronJobs.length} cron jobs`)
+    }
+
+    // Start configured MCP servers
+    if (this.config.mcpServers && Object.keys(this.config.mcpServers).length > 0) {
+      try {
+        await this.mcpClientManager.startAll(this.config.mcpServers)
+      } catch (error: any) {
+        console.error('[AgentGateway] MCP server startup error:', error.message)
+      }
     }
 
     // Initialize session persistence and restore sessions
@@ -209,6 +225,7 @@ export class AgentGateway {
     this.cronManager.stop()
     this.sessionManager.destroy()
     this.sessionPersistence?.close()
+    await this.mcpClientManager.stopAll()
 
     for (const [name, adapter] of this.channels) {
       try {
@@ -696,9 +713,12 @@ export class AgentGateway {
       mainSessionIds: this.config.mainSessionIds,
     }
 
-    const tools = isHeartbeat
+    const baseTools = isHeartbeat
       ? createHeartbeatTools(toolContext)
       : createAllTools(toolContext)
+
+    const mcpTools = this.mcpClientManager.getTools()
+    const tools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
 
     const history = this.sessionManager.buildHistory(sessionId)
 
@@ -879,6 +899,11 @@ export class AgentGateway {
         adapter = new DiscordAdapter(config)
         break
       }
+      case 'email': {
+        const { EmailAdapter } = await import('./channels/email')
+        adapter = new EmailAdapter()
+        break
+      }
       default:
         throw new Error(`Unknown channel type: ${type}`)
     }
@@ -989,7 +1014,9 @@ export class AgentGateway {
   reloadConfig(): void {
     const prevEnabled = this.config.heartbeatEnabled
     this.config = this.loadConfig()
-    this.skills = loadSkills(join(this.workspaceDir, 'skills'))
+    const wsSkills = loadSkills(join(this.workspaceDir, 'skills'))
+    const wsNames = new Set(wsSkills.map((s) => s.name))
+    this.skills = [...wsSkills, ...loadBundledSkills(wsNames)]
     this.configSkills = this.loadConfigSkills()
 
     // Auto-start heartbeat if it was just enabled via config change
@@ -1019,5 +1046,9 @@ export class AgentGateway {
 
   getSessionManager(): SessionManager {
     return this.sessionManager
+  }
+
+  getMCPClientManager(): MCPClientManager {
+    return this.mcpClientManager
   }
 }

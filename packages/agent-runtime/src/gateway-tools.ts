@@ -374,7 +374,11 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   filesystem: ['read_file', 'write_file'],
   web_fetch: ['web_fetch'],
   web_search: ['web_fetch'],
-  browser: ['web_fetch'],
+  browser: [
+    'mcp_playwright_browser_navigate', 'mcp_playwright_browser_snapshot',
+    'mcp_playwright_browser_click', 'mcp_playwright_browser_type',
+    'mcp_playwright_browser_screenshot', 'mcp_playwright_browser_close',
+  ],
   memory: ['memory_read', 'memory_write'],
   messaging: ['send_message'],
   cron: ['cron'],
@@ -396,6 +400,8 @@ export function resolveToolNames(refs: string[]): string[] {
     if (group) {
       for (const name of group) resolved.add(name)
     } else if ((ALL_TOOL_NAMES as readonly string[]).includes(ref)) {
+      resolved.add(ref)
+    } else if (ref.startsWith('mcp_')) {
       resolved.add(ref)
     }
   }

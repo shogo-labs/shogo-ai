@@ -8,7 +8,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'fs'
-import { join, extname } from 'path'
+import { join, extname, dirname } from 'path'
 
 const AGENT_DIR = process.env.AGENT_DIR || '/app/agent'
 const PROJECT_ID = process.env.PROJECT_ID || 'unknown'
@@ -361,11 +361,11 @@ defineTool({
 
 defineTool({
   name: 'channel_connect',
-  description: 'Connect a messaging channel (telegram or discord)',
+  description: 'Connect a messaging channel (telegram, discord, or email)',
   inputSchema: {
     type: 'object',
     properties: {
-      type: { type: 'string', enum: ['telegram', 'discord'], description: 'Channel type' },
+      type: { type: 'string', enum: ['telegram', 'discord', 'email'], description: 'Channel type' },
       config: {
         type: 'object',
         description: 'Channel configuration (e.g., botToken for Telegram)',
@@ -454,6 +454,84 @@ defineTool({
     return {
       info: 'Channel testing requires the agent to be running. Use agent_start first, then test from the preview panel.',
     }
+  },
+})
+
+// =============================================================================
+// MCP Server Configuration Tools
+// =============================================================================
+
+defineTool({
+  name: 'mcp_server_configure',
+  description: 'Add or update an MCP server in the agent config. MCP servers provide additional tools (e.g. browser automation via @playwright/mcp). The server will be spawned when the agent starts.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Server name (e.g. "playwright", "database")' },
+      command: { type: 'string', description: 'Command to start the server (e.g. "npx")' },
+      args: { type: 'array', items: { type: 'string' }, description: 'Command arguments (e.g. ["@playwright/mcp@latest"])' },
+      env: { type: 'object', description: 'Optional environment variables for the server' },
+    },
+    required: ['name', 'command'],
+  },
+  handler: async (input) => {
+    const configPath = join(AGENT_DIR, 'config.json')
+    let config: Record<string, any> = {}
+    if (existsSync(configPath)) {
+      config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    }
+
+    config.mcpServers = config.mcpServers || {}
+    config.mcpServers[input.name as string] = {
+      command: input.command,
+      ...(input.args ? { args: input.args } : {}),
+      ...(input.env ? { env: input.env } : {}),
+    }
+
+    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    return {
+      ok: true,
+      server: input.name,
+      message: `MCP server "${input.name}" configured. Restart the agent to activate.`,
+    }
+  },
+})
+
+defineTool({
+  name: 'mcp_server_remove',
+  description: 'Remove an MCP server from the agent config',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Server name to remove' },
+    },
+    required: ['name'],
+  },
+  handler: async (input) => {
+    const configPath = join(AGENT_DIR, 'config.json')
+    if (!existsSync(configPath)) return { ok: false, error: 'No config.json found' }
+
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    if (!config.mcpServers?.[input.name as string]) {
+      return { ok: false, error: `MCP server "${input.name}" not found in config` }
+    }
+
+    delete config.mcpServers[input.name as string]
+    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    return { ok: true, removed: input.name }
+  },
+})
+
+defineTool({
+  name: 'mcp_server_list',
+  description: 'List configured MCP servers',
+  inputSchema: { type: 'object', properties: {} },
+  handler: async () => {
+    const configPath = join(AGENT_DIR, 'config.json')
+    if (!existsSync(configPath)) return { servers: {} }
+
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    return { servers: config.mcpServers || {} }
   },
 })
 
@@ -654,8 +732,8 @@ defineTool({
     for (const [filename, content] of Object.entries(templateData.files)) {
       try {
         const filepath = join(AGENT_DIR, filename)
-        const parentDir = filepath.substring(0, filepath.lastIndexOf('/'))
-        if (parentDir && parentDir !== AGENT_DIR) {
+        const parentDir = dirname(filepath)
+        if (parentDir !== AGENT_DIR) {
           mkdirSync(parentDir, { recursive: true })
         }
         const resolvedContent = content.replace(/\{\{AGENT_NAME\}\}/g, agentName)
@@ -714,8 +792,11 @@ function getAgentTemplate(id: string): AgentTemplate | null {
           quietHours: { start: '00:00', end: '06:00', timezone: 'UTC' },
           channels: [],
           model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+          mcpServers: {
+            playwright: { command: 'npx', args: ['@playwright/mcp@latest'] },
+          },
         }, null, 2),
-        'skills/check-github.md': `---\nname: check-github\nversion: 1.0.0\ndescription: Check GitHub repos for new activity\ntrigger: "check github|repo status|ci status"\ntools: [web_fetch, exec]\n---\n\n# Check GitHub\n\nWhen triggered, check configured GitHub repositories for:\n1. Open pull requests needing review\n2. CI/CD pipeline status on default branch\n3. New issues in the last 24 hours\n4. Any failing checks or actions\n\nProvide a concise summary with links.\n`,
+        'skills/check-github.md': `---\nname: check-github\nversion: 1.0.0\ndescription: Check GitHub repos for new activity\ntrigger: "check github|repo status|ci status"\ntools: [web_fetch, exec, browser]\n---\n\n# Check GitHub\n\nWhen triggered, check configured GitHub repositories for:\n1. Open pull requests needing review\n2. CI/CD pipeline status on default branch\n3. New issues in the last 24 hours\n4. Any failing checks or actions\n\nProvide a concise summary with links.\n`,
       },
     },
 
@@ -766,8 +847,11 @@ function getAgentTemplate(id: string): AgentTemplate | null {
           quietHours: { start: '22:00', end: '07:00', timezone: 'UTC' },
           channels: [],
           model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+          mcpServers: {
+            playwright: { command: 'npx', args: ['@playwright/mcp@latest'] },
+          },
         }, null, 2),
-        'skills/web-research.md': `---\nname: web-research\nversion: 1.0.0\ndescription: Research a topic using web search and provide a structured summary\ntrigger: "research|look up|find out about|what is"\ntools: [web_fetch, memory_read, memory_write]\n---\n\n# Web Research\n\nWhen triggered, perform thorough web research:\n1. Search for the topic using web search\n2. Visit top 3-5 relevant results\n3. Synthesize findings into a structured summary\n4. Include source URLs\n5. Save key findings to MEMORY.md\n`,
+        'skills/web-research.md': `---\nname: web-research\nversion: 1.0.0\ndescription: Research a topic using web search and provide a structured summary\ntrigger: "research|look up|find out about|what is"\ntools: [web_fetch, memory_read, memory_write, browser]\n---\n\n# Web Research\n\nWhen triggered, perform thorough web research:\n1. Search for the topic using web search\n2. Visit top 3-5 relevant results\n3. Synthesize findings into a structured summary\n4. Include source URLs\n5. Save key findings to MEMORY.md\n`,
       },
     },
   }
@@ -779,9 +863,11 @@ function getAgentTemplate(id: string): AgentTemplate | null {
 // MCP Protocol (stdio JSON-RPC)
 // =============================================================================
 
+const TOOL_TIMEOUT_MS = 30_000
+
 async function handleRequest(request: {
   jsonrpc: string
-  id: number | string
+  id?: number | string
   method: string
   params?: any
 }): Promise<any> {
@@ -792,6 +878,10 @@ async function handleRequest(request: {
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'shogo-agent-tools', version: '0.1.0' },
       }
+
+    case 'notifications/initialized':
+    case 'initialized':
+      return undefined
 
     case 'tools/list':
       return {
@@ -815,26 +905,52 @@ async function handleRequest(request: {
       }
 
       try {
-        const result = await tool.handler(toolInput)
+        const result = await Promise.race([
+          tool.handler(toolInput),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT_MS / 1000}s`)), TOOL_TIMEOUT_MS)
+          ),
+        ])
+
+        const hasError = result && typeof result === 'object' && 'error' in result
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          ...(hasError ? { isError: true } : {}),
         }
       } catch (error: any) {
+        console.error(`[MCP] Tool "${toolName}" error:`, error.message)
         return {
-          content: [{ type: 'text', text: `Error: ${error.message}` }],
+          content: [{ type: 'text', text: `Error in ${toolName}: ${error.message}` }],
           isError: true,
         }
       }
     }
 
     default:
+      if (request.method?.startsWith('notifications/')) {
+        return undefined
+      }
       return { error: { code: -32601, message: `Unknown method: ${request.method}` } }
   }
 }
 
-// Stdio transport
+function sendResponse(data: object): void {
+  const json = JSON.stringify(data)
+  const bytes = new TextEncoder().encode(json)
+  process.stdout.write(`Content-Length: ${bytes.length}\r\n\r\n${json}`)
+}
+
 async function main() {
   console.error(`[MCP] Server starting — AGENT_DIR=${AGENT_DIR}, PROJECT_ID=${PROJECT_ID}, tools=${tools.length}`)
+
+  // Verify stdout is writable
+  try {
+    process.stdout.write('')
+    console.error('[MCP] stdout health check: OK')
+  } catch (err: any) {
+    console.error(`[MCP] FATAL: stdout not writable: ${err.message}`)
+    process.exit(1)
+  }
 
   const decoder = new TextDecoder()
   let buffer = ''
@@ -871,37 +987,32 @@ async function main() {
 
         const result = await handleRequest(request)
 
+        // Notifications (no id) don't get responses
         if (request.id === undefined) continue
+        // Handlers returning undefined are silent acks (e.g. notifications with id)
+        if (result === undefined) continue
 
-        const response = JSON.stringify({
-          jsonrpc: '2.0',
-          id: request.id,
-          result,
-        })
-
-        const responseBytes = new TextEncoder().encode(response)
-        process.stdout.write(
-          `Content-Length: ${responseBytes.length}\r\n\r\n${response}`
-        )
+        if (result?.error && result.error.code) {
+          sendResponse({ jsonrpc: '2.0', id: request.id, error: result.error })
+        } else {
+          sendResponse({ jsonrpc: '2.0', id: request.id, result })
+        }
 
         if (request.method === 'tools/call') {
-          const isError = result?.isError || result?.content?.[0]?.text?.startsWith('Error:')
+          const isError = result?.isError || result?.content?.[0]?.text?.includes('Error')
           console.error(`[MCP] Tool call #${requestCount} ${request.params?.name}: ${isError ? 'FAILED' : 'OK'}`)
         }
       } catch (error: any) {
         console.error(`[MCP] Request #${requestCount} parse error:`, error.message)
 
-        // Return proper JSON-RPC error if we can extract an id
         try {
           const partial = JSON.parse(body)
           if (partial.id !== undefined) {
-            const errResponse = JSON.stringify({
+            sendResponse({
               jsonrpc: '2.0',
               id: partial.id,
               error: { code: -32700, message: `Parse error: ${error.message}` },
             })
-            const errBytes = new TextEncoder().encode(errResponse)
-            process.stdout.write(`Content-Length: ${errBytes.length}\r\n\r\n${errResponse}`)
           }
         } catch {}
       }

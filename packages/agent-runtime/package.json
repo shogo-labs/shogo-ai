@@ -16,16 +16,21 @@
     "@hono/node-server": "^1.13.1",
     "@mariozechner/pi-agent-core": "^0.53.0",
     "@mariozechner/pi-ai": "^0.53.0",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@playwright/mcp": "^0.0.68",
     "@shogo/shared-runtime": "workspace:*",
     "@sinclair/typebox": "^0.34.48",
     "ai": "^6.0.73",
     "hono": "^4.7.10",
+    "imapflow": "^1.2.10",
+    "nodemailer": "^8.0.1",
     "tar": "^7.4.3",
     "yaml": "^2.7.1",
     "zod": "^3.24.4"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/nodemailer": "^7.0.10",
     "typescript": "^5.8.3"
   }
 }

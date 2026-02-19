@@ -32,6 +32,11 @@ const CHANNEL_INFO: Record<string, { name: string; icon: string; setupUrl: strin
     icon: '🎮',
     setupUrl: 'https://discord.com/developers/applications',
   },
+  email: {
+    name: 'Email (IMAP/SMTP)',
+    icon: '📧',
+    setupUrl: 'https://support.google.com/mail/answer/7126229',
+  },
 }
 
 export function AgentChannelsPanel({ projectId, visible }: AgentChannelsPanelProps) {

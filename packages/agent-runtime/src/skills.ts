@@ -7,8 +7,12 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from 'fs'
-import { join, extname } from 'path'
+import { join, extname, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import { resolveToolNames } from './gateway-tools'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
 export interface Skill {
   name: string
@@ -98,6 +102,18 @@ export function loadSkills(skillsDir: string): Skill[] {
   }
 
   return skills
+}
+
+/**
+ * Load bundled skills shipped with agent-runtime.
+ * Only includes bundled skills whose names don't conflict with workspace skills.
+ */
+export function loadBundledSkills(existingSkillNames: Set<string>): Skill[] {
+  const bundledDir = join(__dirname, 'bundled-skills')
+  if (!existsSync(bundledDir)) return []
+
+  const all = loadSkills(bundledDir)
+  return all.filter((s) => !existingSkillNames.has(s.name))
 }
 
 /**

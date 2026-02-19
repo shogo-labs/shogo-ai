@@ -1,0 +1,223 @@
+/**
+ * MCP Client Manager
+ *
+ * Spawns and manages external MCP servers for the agent runtime.
+ * Discovers their tools and bridges them to Pi Agent Core's AgentTool format
+ * so the gateway can use any MCP server as additional agent tools.
+ *
+ * Lifecycle: startAll() on gateway start, stopAll() on gateway stop.
+ */
+
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { Type } from '@sinclair/typebox'
+import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
+
+export interface MCPServerConfig {
+  command: string
+  args?: string[]
+  env?: Record<string, string>
+  cwd?: string
+}
+
+interface ManagedServer {
+  name: string
+  config: MCPServerConfig
+  client: Client
+  transport: StdioClientTransport
+  tools: AgentTool[]
+}
+
+function jsonSchemaToTypebox(schema: Record<string, any>): any {
+  if (!schema || schema.type !== 'object') {
+    return Type.Object({})
+  }
+
+  const properties: Record<string, any> = {}
+  const required = new Set(schema.required || [])
+
+  for (const [key, prop] of Object.entries(schema.properties || {} as Record<string, any>)) {
+    const p = prop as Record<string, any>
+    let typeboxProp: any
+
+    switch (p.type) {
+      case 'string':
+        typeboxProp = Type.String({ description: p.description })
+        break
+      case 'number':
+      case 'integer':
+        typeboxProp = Type.Number({ description: p.description })
+        break
+      case 'boolean':
+        typeboxProp = Type.Boolean({ description: p.description })
+        break
+      case 'array':
+        typeboxProp = Type.Array(Type.Any(), { description: p.description })
+        break
+      default:
+        typeboxProp = Type.Any({ description: p.description })
+    }
+
+    properties[key] = required.has(key) ? typeboxProp : Type.Optional(typeboxProp)
+  }
+
+  return Type.Object(properties)
+}
+
+function textResult(data: any): AgentToolResult<any> {
+  return {
+    content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data) }],
+    details: data,
+  }
+}
+
+export class MCPClientManager {
+  private servers: Map<string, ManagedServer> = new Map()
+
+  async startServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {
+    if (this.servers.has(name)) {
+      console.warn(`[MCPClient] Server "${name}" already running, skipping`)
+      return this.servers.get(name)!.tools
+    }
+
+    console.log(`[MCPClient] Starting MCP server "${name}": ${config.command} ${(config.args || []).join(' ')}`)
+
+    const transport = new StdioClientTransport({
+      command: config.command,
+      args: config.args,
+      env: config.env ? { ...process.env, ...config.env } as Record<string, string> : undefined,
+      cwd: config.cwd,
+      stderr: 'pipe',
+    })
+
+    const client = new Client(
+      { name: `shogo-agent-${name}`, version: '1.0.0' },
+      { capabilities: {} },
+    )
+
+    try {
+      await client.connect(transport)
+      console.log(`[MCPClient] Connected to "${name}"`)
+    } catch (err: any) {
+      console.error(`[MCPClient] Failed to connect to "${name}":`, err.message)
+      throw err
+    }
+
+    // Log stderr from the server
+    const stderr = transport.stderr
+    if (stderr && 'on' in stderr) {
+      (stderr as any).on('data', (chunk: Buffer) => {
+        const text = chunk.toString().trim()
+        if (text) console.error(`[MCPClient:${name}] ${text}`)
+      })
+    }
+
+    let mcpTools: any[] = []
+    try {
+      const result = await client.listTools()
+      mcpTools = result.tools || []
+      console.log(`[MCPClient] "${name}" provides ${mcpTools.length} tools: ${mcpTools.map((t: any) => t.name).join(', ')}`)
+    } catch (err: any) {
+      console.error(`[MCPClient] Failed to list tools from "${name}":`, err.message)
+      mcpTools = []
+    }
+
+    const agentTools: AgentTool[] = mcpTools.map((mcpTool: any) => {
+      const toolName = `mcp_${name}_${mcpTool.name}`
+      const parameters = jsonSchemaToTypebox(mcpTool.inputSchema || {})
+
+      return {
+        name: toolName,
+        description: mcpTool.description || `MCP tool: ${mcpTool.name} (from ${name})`,
+        label: `${name}: ${mcpTool.name}`,
+        parameters,
+        execute: async (_toolCallId: string, params: unknown) => {
+          const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
+          try {
+            const result = await client.callTool({
+              name: mcpTool.name,
+              arguments: args,
+            })
+
+            const texts = (result.content as any[])
+              ?.filter((c: any) => c.type === 'text')
+              .map((c: any) => c.text)
+              .join('\n') || ''
+
+            if (result.isError) {
+              return textResult({ error: texts || 'MCP tool returned an error' })
+            }
+
+            return textResult(texts || JSON.stringify(result.content))
+          } catch (err: any) {
+            return textResult({ error: `MCP tool "${mcpTool.name}" failed: ${err.message}` })
+          }
+        },
+      } as AgentTool
+    })
+
+    this.servers.set(name, { name, config, client, transport, tools: agentTools })
+    return agentTools
+  }
+
+  async startAll(configs: Record<string, MCPServerConfig>): Promise<AgentTool[]> {
+    const allTools: AgentTool[] = []
+    const entries = Object.entries(configs)
+
+    if (entries.length === 0) return allTools
+
+    console.log(`[MCPClient] Starting ${entries.length} MCP server(s)...`)
+
+    const results = await Promise.allSettled(
+      entries.map(async ([name, config]) => {
+        const tools = await this.startServer(name, config)
+        return { name, tools }
+      })
+    )
+
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        allTools.push(...result.value.tools)
+      } else {
+        console.error(`[MCPClient] Server startup failed:`, result.reason?.message || result.reason)
+      }
+    }
+
+    console.log(`[MCPClient] ${allTools.length} MCP tools available from ${this.servers.size} server(s)`)
+    return allTools
+  }
+
+  async stopServer(name: string): Promise<void> {
+    const server = this.servers.get(name)
+    if (!server) return
+
+    try {
+      await server.transport.close()
+      console.log(`[MCPClient] Stopped "${name}"`)
+    } catch (err: any) {
+      console.error(`[MCPClient] Error stopping "${name}":`, err.message)
+    }
+    this.servers.delete(name)
+  }
+
+  async stopAll(): Promise<void> {
+    const names = [...this.servers.keys()]
+    await Promise.allSettled(names.map((name) => this.stopServer(name)))
+  }
+
+  getTools(): AgentTool[] {
+    const tools: AgentTool[] = []
+    for (const server of this.servers.values()) {
+      tools.push(...server.tools)
+    }
+    return tools
+  }
+
+  getServerNames(): string[] {
+    return [...this.servers.keys()]
+  }
+
+  isRunning(name: string): boolean {
+    return this.servers.has(name)
+  }
+}
