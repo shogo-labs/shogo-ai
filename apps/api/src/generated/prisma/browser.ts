@@ -48,6 +48,11 @@ export type Workspace = Prisma.WorkspaceModel
  */
 export type Project = Prisma.ProjectModel
 /**
+ * Model AgentConfig
+ * 
+ */
+export type AgentConfig = Prisma.AgentConfigModel
+/**
  * Model ProjectCheckpoint
  * 
  */

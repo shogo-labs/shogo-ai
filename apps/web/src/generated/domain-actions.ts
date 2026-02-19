@@ -88,7 +88,8 @@ export function createDomainActions(store: IDomainStore) {
       name: string,
       workspaceId: string,
       description: string | undefined,
-      userId: string
+      userId: string,
+      type?: "APP" | "AGENT"
     ) => {
       const project = await store.projectCollection.create({
         name,
@@ -99,6 +100,7 @@ export function createDomainActions(store: IDomainStore) {
         status: "draft",
         accessLevel: "anyone",
         schemas: [],
+        type: type || "APP",
       })
 
       return project

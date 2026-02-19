@@ -57,6 +57,22 @@ const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 // Namespace for project runtime pods (configurable for staging/production)
 const PROJECT_NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
 
+// Cache of project types to avoid repeated DB lookups on every proxy call.
+// Entries never change after creation so a simple in-memory map is sufficient.
+const projectTypeCache = new Map<string, string>()
+
+async function getProjectType(projectId: string): Promise<string> {
+  const cached = projectTypeCache.get(projectId)
+  if (cached) return cached
+  const row = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { type: true },
+  })
+  const type = row?.type ?? 'APP'
+  projectTypeCache.set(projectId, type)
+  return type
+}
+
 /**
  * Call an MCP tool with proper session handling
  */
@@ -898,10 +914,30 @@ app.post('/api/projects/:projectId/unpublish', async (c) => {
 
 // Start project runtime
 app.post('/api/projects/:projectId/runtime/start', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
+      const knativeManager = getKnativeProjectManager()
+      await knativeManager.createProject(projectId)
+      const podUrl = `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`
+      return c.json({
+        success: true,
+        projectId,
+        status: 'running',
+        url: podUrl,
+      })
+    } catch (err: any) {
+      console.error(`[Runtime] Failed to start project ${projectId} in K8s:`, err.message)
+      return c.json({ error: `Failed to start runtime: ${err.message}` }, 500)
+    }
+  }
+
   const manager = getRuntimeManager()
   const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/runtime/start`
+  url.pathname = `/projects/${projectId}/runtime/start`
   const newReq = new Request(url.toString(), { method: 'POST' })
   return router.fetch(newReq)
 })
@@ -1112,6 +1148,10 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     // First check current status
     const manager = getKnativeProjectManager()
     const status = await manager.getStatus(projectId)
+
+    // Check if this is an agent project (needed for agentUrl)
+    const projectRecord = await prisma.project.findUnique({ where: { id: projectId }, select: { type: true } })
+    const isAgent = projectRecord?.type === 'AGENT'
     
     // Build the preview URL based on mode
     const host = c.req.header('x-original-host') || c.req.header('host') || 'localhost'
@@ -1141,6 +1181,9 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     console.log(`[sandbox/url] legacyProxyUrl=${legacyProxyUrl}`)
     console.log(`[sandbox/url] status: exists=${status.exists} ready=${status.ready}`)
     
+    // Agent URL for test chat (proxied through API to avoid CORS issues)
+    const agentUrl = isAgent ? `${protocol}://${host}/api/projects/${projectId}/agent-proxy` : undefined
+
     // If pod is already running, return immediately
     if (status.exists && status.ready) {
       console.log(`[sandbox/url] Returning ready response with url=${previewUrl}`)
@@ -1148,6 +1191,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         url: previewUrl,
         proxyUrl: legacyProxyUrl, // Backwards compat - legacy proxy URL
         directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
         ready: true,
@@ -1171,6 +1215,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         url: previewUrl,
         proxyUrl: legacyProxyUrl,
         directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: status.exists ? 'starting' : 'creating',
         ready: false,
@@ -1191,6 +1236,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         url: previewUrl,
         proxyUrl: legacyProxyUrl,
         directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
         ready: true,
@@ -1323,6 +1369,52 @@ app.all('/api/projects/:projectId/preview', async (c) => {
   return c.redirect(`/api/projects/${projectId}/preview/`)
 })
 
+// Agent proxy - forwards requests directly to agent-runtime pod without /preview prefix
+app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (!isKubernetes()) {
+    return c.json({ error: { code: 'not_supported', message: 'Agent proxy only available in Kubernetes' } }, 501)
+  }
+
+  try {
+    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+    const podUrl = await getProjectPodUrl(projectId)
+    const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
+    const targetUrl = `${podUrl}${path}`
+
+    console.log(`[AgentProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
+
+    const headers = new Headers()
+    const contentType = c.req.header('content-type')
+    if (contentType) headers.set('content-type', contentType)
+    const accept = c.req.header('accept')
+    if (accept) headers.set('accept', accept)
+
+    const requestInit: RequestInit = { method: c.req.method, headers }
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+      requestInit.body = await c.req.arrayBuffer()
+    }
+
+    const response = await fetch(targetUrl, requestInit)
+
+    const responseHeaders = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+        responseHeaders.set(key, value)
+      }
+    })
+    responseHeaders.set('access-control-allow-origin', '*')
+    responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
+    responseHeaders.set('access-control-allow-headers', '*')
+
+    return new Response(response.body, { status: response.status, headers: responseHeaders })
+  } catch (error: any) {
+    console.error('[AgentProxy] Error:', error)
+    return c.json({ error: { code: 'proxy_error', message: error.message || 'Failed to proxy request' } }, 502)
+  }
+})
+
 // =============================================================================
 // Files routes - Project file listing and reading
 // In Kubernetes mode, proxies to project-runtime pod's /files endpoint
@@ -1333,6 +1425,9 @@ app.get('/api/projects/:projectId/files', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ files: [] })
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -1585,6 +1680,9 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ commands: [] })
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -1797,6 +1895,9 @@ app.get('/api/projects/:projectId/tests/list', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ tests: [] })
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -2075,9 +2176,26 @@ app.delete('/api/projects/:projectId/tests/traces', async (c) => {
 // Security scanning routes - Automated security analysis
 // =============================================================================
 
+// Rate limiting: one scan at a time, 10s cooldown (protects LLM spend)
+let _scanInProgress = false
+let _lastScanTimestamp = 0
+const SCAN_COOLDOWN = 10_000
+
 app.post('/api/projects/:projectId/security/scan', async (c) => {
   const projectId = c.req.param('projectId')
-  
+
+  // In local mode: enforce rate limiting (K8s pods handle their own)
+  if (!isKubernetes()) {
+    if (_scanInProgress) {
+      return c.json({ ok: false, error: { code: 'scan_in_progress', message: 'A security scan is already running.' } }, 429)
+    }
+    const now = Date.now()
+    if (now - _lastScanTimestamp < SCAN_COOLDOWN) {
+      const wait = Math.ceil((SCAN_COOLDOWN - (now - _lastScanTimestamp)) / 1000)
+      return c.json({ ok: false, error: { code: 'rate_limited', message: `Please wait ${wait}s before re-scanning.` } }, 429)
+    }
+  }
+
   if (isKubernetes()) {
     // In Kubernetes: Proxy to project-runtime pod
     try {
@@ -2136,13 +2254,21 @@ app.post('/api/projects/:projectId/security/scan', async (c) => {
   }
   
   // Local/development mode: use local filesystem
-  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = securityRoutes({ workspacesDir })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${projectId}/security/scan`
-  const newReq = new Request(url.toString(), { method: 'POST' })
-  return router.fetch(newReq)
+  _scanInProgress = true
+  try {
+    const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    const router = securityRoutes({ workspacesDir })
+    const url = new URL(c.req.url)
+    url.pathname = `/projects/${projectId}/security/scan`
+    const newReq = new Request(url.toString(), { method: 'POST' })
+    const result = await router.fetch(newReq)
+    _lastScanTimestamp = Date.now()
+    return result
+  } finally {
+    _scanInProgress = false
+  }
 })
+
 
 // =============================================================================
 // Database routes - Prisma Studio management for project workspaces
@@ -2355,6 +2481,9 @@ app.get('/api/projects/:projectId/database/url', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ url: null, error: { code: 'not_supported', message: 'Database not available for agent projects' } })
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -2670,6 +2799,17 @@ app.post('/api/admin/projects/:projectId/warmup', async (c) => {
   return router.fetch(newReq)
 })
 
+// GET /api/admin/warm-pool - Get warm pool status
+app.get('/api/admin/warm-pool', async (c) => {
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    return c.json(controller.getStatus())
+  } catch (err: any) {
+    return c.json({ enabled: false, error: err.message })
+  }
+})
+
 // DELETE /api/admin/projects/:projectId - Delete project pod
 app.delete('/api/admin/projects/:projectId', async (c) => {
   const router = projectAdminRoutes()
@@ -2730,7 +2870,7 @@ function fallbackGenerateProjectName(prompt: string): string {
 
 app.post('/api/generate-project-name', async (c) => {
   try {
-    const { prompt } = await c.req.json()
+    const { prompt, workspaceId, userId } = await c.req.json()
 
     if (!prompt || typeof prompt !== 'string') {
       return c.json({ error: 'Prompt is required' }, 400)
@@ -2769,6 +2909,16 @@ Examples:
     // Extract and clean the name
     const name = result.text.trim().replace(/['"]/g, '') || 'New Project'
 
+    // Track credit usage (fire-and-forget, small cost for Haiku)
+    if (workspaceId) {
+      const usage = result.usage as any
+      const totalTokens = (usage?.inputTokens || usage?.promptTokens || 0) + (usage?.outputTokens || usage?.completionTokens || 0)
+      if (totalTokens > 0) {
+        const creditCost = calculateCreditCost(totalTokens, 'haiku')
+        billingService.consumeCredits(workspaceId, null, userId || 'system', 'project_name_generation', creditCost, { totalTokens }).catch(() => {})
+      }
+    }
+
     return c.json({ name })
   } catch (error: any) {
     console.error('[/api/generate-project-name] Error:', error)
@@ -2798,7 +2948,15 @@ Examples:
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, ccSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
+    let { messages, ccSessionId, chatSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
+
+    // Enforce basic agent mode for free-plan workspaces (server-side guard)
+    if (workspaceId && agentMode && agentMode !== 'basic') {
+      const isPaid = await billingService.hasPaidSubscription(workspaceId)
+      if (!isPaid) {
+        agentMode = 'basic'
+      }
+    }
 
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
     if (workspaceId) {
@@ -2900,6 +3058,10 @@ app.post('/api/chat', async (c) => {
         const streamedToolIds = new Set<string>()
         let resultUsage: any = null
         let resultSessionId: string | undefined
+
+        // server-side-persistence: Accumulate content for DB persistence
+        let accumulatedText = ''
+        const toolCallDetails: { toolCallId: string; toolName: string; input: any }[] = []
         // Track whether we're receiving incremental stream_events.
         // When streaming, the 'assistant' message is redundant (it's the complete
         // version of what was already streamed incrementally).
@@ -2970,6 +3132,8 @@ app.post('/api/chat', async (c) => {
                       writer.write({ type: 'text-start', id: currentTextId })
                     }
                     writer.write({ type: 'text-delta', id: currentTextId, delta: delta.text })
+                    // server-side-persistence: accumulate text for DB persistence
+                    accumulatedText += delta.text
                   } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
                     currentToolInput += delta.partial_json
                     writer.write({
@@ -2995,6 +3159,12 @@ app.post('/api/chat', async (c) => {
                       toolName: currentToolName || 'unknown',
                       input: parsedInput,
                       dynamic: true,
+                    })
+                    // server-side-persistence: capture tool call details for message parts
+                    toolCallDetails.push({
+                      toolCallId: currentToolId,
+                      toolName: currentToolName || 'unknown',
+                      input: parsedInput,
                     })
                     // Track for result emission when next turn starts
                     pendingToolResults.set(currentToolId, currentToolName || 'unknown')
@@ -3070,6 +3240,12 @@ app.post('/api/chat', async (c) => {
                     input: block.input || {},
                     dynamic: true,
                   })
+                  // server-side-persistence: capture non-streamed tool calls
+                  toolCallDetails.push({
+                    toolCallId: block.id,
+                    toolName: block.name,
+                    input: block.input || {},
+                  })
                   pendingToolResults.set(block.id, block.name)
                 }
                 // Don't emit finish-step/start-step — message_stop already did
@@ -3082,6 +3258,8 @@ app.post('/api/chat', async (c) => {
                       writer.write({ type: 'text-start', id: textId })
                       writer.write({ type: 'text-delta', id: textId, delta: block.text })
                       writer.write({ type: 'text-end', id: textId })
+                      // server-side-persistence: accumulate text for non-streaming path
+                      accumulatedText += block.text
                     } else if (block.type === 'tool_use') {
                       writer.write({
                         type: 'tool-input-start',
@@ -3102,6 +3280,12 @@ app.post('/api/chat', async (c) => {
                         toolName: block.name,
                         input: block.input || {},
                         dynamic: true,
+                      })
+                      // server-side-persistence: capture tool call for non-streaming path
+                      toolCallDetails.push({
+                        toolCallId: block.id,
+                        toolName: block.name,
+                        input: block.input || {},
                       })
                       pendingToolResults.set(block.id, block.name)
                     }
@@ -3173,6 +3357,44 @@ app.post('/api/chat', async (c) => {
           progressEvents.off('progress', onProgress)
           virtualToolEvents.off('virtual-tool', onVirtualTool)
           streamWriter = null
+
+          // server-side-persistence: Persist assistant message to database (fire-and-forget)
+          // This ensures messages survive page refreshes and client disconnects.
+          if (chatSessionId && (accumulatedText || toolCallDetails.length > 0)) {
+            (async () => {
+              try {
+                const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
+                if (session) {
+                  const parts: any[] = []
+                  if (accumulatedText) {
+                    parts.push({ type: 'text', text: accumulatedText })
+                  }
+                  for (const tc of toolCallDetails) {
+                    parts.push({
+                      type: 'dynamic-tool',
+                      toolCallId: tc.toolCallId,
+                      toolName: tc.toolName,
+                      input: tc.input,
+                      output: { success: true },
+                      state: 'output-available',
+                    })
+                  }
+
+                  await prisma.chatMessage.create({
+                    data: {
+                      sessionId: chatSessionId,
+                      role: 'assistant',
+                      content: accumulatedText,
+                      parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
+                    },
+                  })
+                  console.log(`[/api/chat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallDetails.length} tool calls) for session ${chatSessionId}`)
+                }
+              } catch (persistError: any) {
+                console.error(`[/api/chat] ⚠️ Failed to persist assistant message:`, persistError.message)
+              }
+            })()
+          }
 
           // Credit tracking (fire-and-forget)
           if (workspaceId && userId && resultUsage) {
@@ -3405,18 +3627,24 @@ app.post('/api/webhooks/stripe', async (c) => {
               ? stripeSubscription.current_period_end * 1000
               : now + (30 * 24 * 60 * 60 * 1000) // Default to 30 days from now
 
+            // Extract base plan type for DB enum (e.g. "pro_200" → "pro")
+            const basePlanId = planId.split('_')[0] as 'pro' | 'business' | 'enterprise'
+
             await billingService.syncFromStripe({
               stripeSubscriptionId: stripeSubscription.id,
               stripeCustomerId: session.customer as string,
               workspaceId,
-              planId: planId as 'pro' | 'business' | 'enterprise',
+              planId: basePlanId,
               status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
               billingInterval: billingInterval as 'monthly' | 'annual',
               currentPeriodStart: new Date(currentPeriodStart),
               currentPeriodEnd: new Date(currentPeriodEnd),
               cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
             })
-            console.log('[Webhook] Subscription created for workspace:', workspaceId)
+
+            // Allocate monthly credits using full tiered planId (e.g. "pro_200" → 200 credits)
+            await billingService.allocateMonthlyCredits(workspaceId, planId)
+            console.log('[Webhook] Subscription created + credits allocated for workspace:', workspaceId, 'plan:', planId)
           } catch (err: any) {
             console.error('[Webhook] Failed to create subscription:', err.message)
           }
@@ -3574,5 +3802,19 @@ if (PREWARM_ENABLED) {
       console.error('[ClaudeCode] ⚠️ Pre-warm error (non-fatal):', err.message)
     })
   }, 3000)
+}
+
+// Start warm pool controller (Kubernetes only).
+// Maintains pre-warmed pods to eliminate cold start latency for users.
+if (isKubernetes()) {
+  setTimeout(async () => {
+    try {
+      const { startWarmPool } = await import('./lib/warm-pool-controller')
+      await startWarmPool()
+      console.log('[WarmPool] Warm pool controller started')
+    } catch (err: any) {
+      console.error('[WarmPool] Failed to start warm pool controller (non-fatal):', err.message)
+    }
+  }, 5000)
 }
 

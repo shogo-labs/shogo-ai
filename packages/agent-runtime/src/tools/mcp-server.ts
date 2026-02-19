@@ -1,0 +1,828 @@
+/**
+ * Agent Builder MCP Server
+ *
+ * Provides tools for the builder AI (Claude Code) to configure
+ * the agent workspace: identity files, skills, heartbeat, channels, memory.
+ *
+ * Runs as a subprocess spawned by the Claude Code SDK via .mcp.json.
+ */
+
+import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'fs'
+import { join, extname } from 'path'
+
+const AGENT_DIR = process.env.AGENT_DIR || '/app/agent'
+const PROJECT_ID = process.env.PROJECT_ID || 'unknown'
+
+// =============================================================================
+// Tool definitions (MCP protocol over stdio)
+// =============================================================================
+
+interface ToolDef {
+  name: string
+  description: string
+  inputSchema: Record<string, any>
+  handler: (input: Record<string, any>) => Promise<any>
+}
+
+const tools: ToolDef[] = []
+
+function defineTool(def: ToolDef) {
+  tools.push(def)
+}
+
+// =============================================================================
+// Identity Tools
+// =============================================================================
+
+const IDENTITY_FILES = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md']
+
+defineTool({
+  name: 'identity_get',
+  description: 'Read an agent workspace file (AGENTS.md, SOUL.md, USER.md, IDENTITY.md, TOOLS.md)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      file: {
+        type: 'string',
+        enum: IDENTITY_FILES,
+        description: 'Which workspace file to read',
+      },
+    },
+    required: ['file'],
+  },
+  handler: async (input) => {
+    const file = input.file as string
+    if (!IDENTITY_FILES.includes(file)) {
+      return { error: `Invalid file: ${file}. Must be one of: ${IDENTITY_FILES.join(', ')}` }
+    }
+    const filepath = join(AGENT_DIR, file)
+    if (!existsSync(filepath)) {
+      return { content: '', exists: false }
+    }
+    return { content: readFileSync(filepath, 'utf-8'), exists: true }
+  },
+})
+
+defineTool({
+  name: 'identity_set',
+  description: 'Write an agent workspace file (AGENTS.md, SOUL.md, USER.md, IDENTITY.md, TOOLS.md)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      file: {
+        type: 'string',
+        enum: IDENTITY_FILES,
+        description: 'Which workspace file to write',
+      },
+      content: {
+        type: 'string',
+        description: 'Full content of the file',
+      },
+    },
+    required: ['file', 'content'],
+  },
+  handler: async (input) => {
+    const file = input.file as string
+    if (!IDENTITY_FILES.includes(file)) {
+      return { error: `Invalid file: ${file}` }
+    }
+    const filepath = join(AGENT_DIR, file)
+    writeFileSync(filepath, input.content as string, 'utf-8')
+    return { ok: true, file, bytes: (input.content as string).length }
+  },
+})
+
+// =============================================================================
+// Skill Tools
+// =============================================================================
+
+defineTool({
+  name: 'skill_list',
+  description: 'List all installed agent skills',
+  inputSchema: { type: 'object', properties: {} },
+  handler: async () => {
+    const skillsDir = join(AGENT_DIR, 'skills')
+    if (!existsSync(skillsDir)) return { skills: [] }
+
+    const files = readdirSync(skillsDir).filter((f) => extname(f) === '.md')
+    const skills = files.map((file) => {
+      const content = readFileSync(join(skillsDir, file), 'utf-8')
+      const match = content.match(/^---\n([\s\S]*?)\n---/)
+      const metadata: Record<string, string> = {}
+      if (match) {
+        for (const line of match[1].split('\n')) {
+          const idx = line.indexOf(':')
+          if (idx !== -1) {
+            metadata[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
+          }
+        }
+      }
+      return {
+        file,
+        name: metadata.name || file.replace('.md', ''),
+        description: metadata.description || '',
+        trigger: metadata.trigger || '',
+      }
+    })
+
+    return { skills }
+  },
+})
+
+defineTool({
+  name: 'skill_create',
+  description: 'Create a new agent skill as a Markdown file with YAML frontmatter',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Skill name (used as filename)' },
+      trigger: { type: 'string', description: 'Pipe-separated trigger keywords' },
+      description: { type: 'string', description: 'What the skill does' },
+      tools: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Required tool groups',
+      },
+      content: { type: 'string', description: 'Skill instructions (Markdown body)' },
+    },
+    required: ['name', 'trigger', 'content'],
+  },
+  handler: async (input) => {
+    const skillsDir = join(AGENT_DIR, 'skills')
+    mkdirSync(skillsDir, { recursive: true })
+
+    const filename = `${(input.name as string).replace(/[^a-z0-9-]/gi, '-').toLowerCase()}.md`
+    const filepath = join(skillsDir, filename)
+
+    if (existsSync(filepath)) {
+      return { error: `Skill "${input.name}" already exists. Use skill_edit to modify it.` }
+    }
+
+    const toolsArr = Array.isArray(input.tools) ? input.tools : []
+    const skillContent = `---
+name: ${input.name}
+version: 1.0.0
+description: ${input.description || ''}
+trigger: "${input.trigger}"
+tools: [${toolsArr.join(', ')}]
+---
+
+${input.content}
+`
+
+    writeFileSync(filepath, skillContent, 'utf-8')
+    return { ok: true, file: filename }
+  },
+})
+
+defineTool({
+  name: 'skill_edit',
+  description: 'Edit an existing agent skill file',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Skill name or filename' },
+      content: { type: 'string', description: 'Complete new file content (including frontmatter)' },
+    },
+    required: ['name', 'content'],
+  },
+  handler: async (input) => {
+    const skillsDir = join(AGENT_DIR, 'skills')
+    const name = input.name as string
+    const filename = name.endsWith('.md') ? name : `${name}.md`
+    const filepath = join(skillsDir, filename)
+
+    if (!existsSync(filepath)) {
+      return { error: `Skill "${name}" not found` }
+    }
+
+    writeFileSync(filepath, input.content as string, 'utf-8')
+    return { ok: true, file: filename }
+  },
+})
+
+defineTool({
+  name: 'skill_delete',
+  description: 'Delete an agent skill',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Skill name or filename' },
+    },
+    required: ['name'],
+  },
+  handler: async (input) => {
+    const skillsDir = join(AGENT_DIR, 'skills')
+    const name = input.name as string
+    const filename = name.endsWith('.md') ? name : `${name}.md`
+    const filepath = join(skillsDir, filename)
+
+    if (!existsSync(filepath)) {
+      return { error: `Skill "${name}" not found` }
+    }
+
+    unlinkSync(filepath)
+    return { ok: true, deleted: filename }
+  },
+})
+
+// =============================================================================
+// Heartbeat Tools
+// =============================================================================
+
+defineTool({
+  name: 'heartbeat_configure',
+  description: 'Configure the heartbeat system (interval, quiet hours, enable/disable)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      interval: { type: 'number', description: 'Heartbeat interval in seconds (default: 1800)' },
+      enabled: { type: 'boolean', description: 'Enable or disable heartbeat' },
+      quietHoursStart: { type: 'string', description: 'Quiet hours start (HH:MM)' },
+      quietHoursEnd: { type: 'string', description: 'Quiet hours end (HH:MM)' },
+      timezone: { type: 'string', description: 'Timezone for quiet hours' },
+    },
+  },
+  handler: async (input) => {
+    const configPath = join(AGENT_DIR, 'config.json')
+    let config: Record<string, any> = {}
+    if (existsSync(configPath)) {
+      config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    }
+
+    if (input.interval !== undefined) config.heartbeatInterval = input.interval
+    if (input.enabled !== undefined) config.heartbeatEnabled = input.enabled
+    if (input.quietHoursStart || input.quietHoursEnd || input.timezone) {
+      config.quietHours = config.quietHours || {}
+      if (input.quietHoursStart) config.quietHours.start = input.quietHoursStart
+      if (input.quietHoursEnd) config.quietHours.end = input.quietHoursEnd
+      if (input.timezone) config.quietHours.timezone = input.timezone
+    }
+
+    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    return { ok: true, config }
+  },
+})
+
+defineTool({
+  name: 'heartbeat_status',
+  description: 'Get current heartbeat configuration and status',
+  inputSchema: { type: 'object', properties: {} },
+  handler: async () => {
+    const configPath = join(AGENT_DIR, 'config.json')
+    let config: Record<string, any> = {}
+    if (existsSync(configPath)) {
+      config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    }
+
+    const heartbeatPath = join(AGENT_DIR, 'HEARTBEAT.md')
+    const heartbeatContent = existsSync(heartbeatPath)
+      ? readFileSync(heartbeatPath, 'utf-8')
+      : ''
+
+    return {
+      enabled: config.heartbeatEnabled ?? false,
+      interval: config.heartbeatInterval ?? 1800,
+      quietHours: config.quietHours ?? null,
+      checklistLength: heartbeatContent.trim().length,
+      checklistPreview: heartbeatContent.substring(0, 500),
+    }
+  },
+})
+
+defineTool({
+  name: 'heartbeat_trigger',
+  description: 'Manually trigger one heartbeat tick (for testing)',
+  inputSchema: { type: 'object', properties: {} },
+  handler: async () => {
+    // This sends an HTTP request to the agent-runtime server's trigger endpoint
+    const port = process.env.PORT || '8080'
+    try {
+      const response = await fetch(
+        `http://localhost:${port}/agent/heartbeat/trigger`,
+        { method: 'POST' }
+      )
+      return await response.json()
+    } catch (error: any) {
+      return { error: `Failed to trigger heartbeat: ${error.message}` }
+    }
+  },
+})
+
+// =============================================================================
+// Channel Tools
+// =============================================================================
+
+defineTool({
+  name: 'channel_connect',
+  description: 'Connect a messaging channel (telegram or discord)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      type: { type: 'string', enum: ['telegram', 'discord'], description: 'Channel type' },
+      config: {
+        type: 'object',
+        description: 'Channel configuration (e.g., botToken for Telegram)',
+      },
+    },
+    required: ['type', 'config'],
+  },
+  handler: async (input) => {
+    const configPath = join(AGENT_DIR, 'config.json')
+    let config: Record<string, any> = {}
+    if (existsSync(configPath)) {
+      config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    }
+
+    config.channels = config.channels || []
+    const existing = config.channels.findIndex(
+      (c: any) => c.type === input.type
+    )
+    if (existing >= 0) {
+      config.channels[existing] = { type: input.type, config: input.config }
+    } else {
+      config.channels.push({ type: input.type, config: input.config })
+    }
+
+    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    return {
+      ok: true,
+      message: `${input.type} channel configured. Restart the agent to connect.`,
+    }
+  },
+})
+
+defineTool({
+  name: 'channel_disconnect',
+  description: 'Remove a messaging channel configuration',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      type: { type: 'string', description: 'Channel type to disconnect' },
+    },
+    required: ['type'],
+  },
+  handler: async (input) => {
+    const configPath = join(AGENT_DIR, 'config.json')
+    let config: Record<string, any> = {}
+    if (existsSync(configPath)) {
+      config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    }
+
+    config.channels = (config.channels || []).filter(
+      (c: any) => c.type !== input.type
+    )
+    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    return { ok: true, message: `${input.type} removed. Restart to apply.` }
+  },
+})
+
+defineTool({
+  name: 'channel_list',
+  description: 'List configured messaging channels',
+  inputSchema: { type: 'object', properties: {} },
+  handler: async () => {
+    const configPath = join(AGENT_DIR, 'config.json')
+    let config: Record<string, any> = {}
+    if (existsSync(configPath)) {
+      config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    }
+    return { channels: config.channels || [] }
+  },
+})
+
+defineTool({
+  name: 'channel_test',
+  description: 'Send a test message through a connected channel',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      type: { type: 'string', description: 'Channel type' },
+      channelId: { type: 'string', description: 'Target channel/chat ID' },
+      message: { type: 'string', description: 'Test message to send' },
+    },
+    required: ['type', 'channelId', 'message'],
+  },
+  handler: async (input) => {
+    // Not directly possible from MCP subprocess — needs to go through server
+    return {
+      info: 'Channel testing requires the agent to be running. Use agent_start first, then test from the preview panel.',
+    }
+  },
+})
+
+// =============================================================================
+// Memory Tools
+// =============================================================================
+
+defineTool({
+  name: 'memory_read',
+  description: 'Read agent memory (MEMORY.md or daily logs)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      file: {
+        type: 'string',
+        description: 'File to read: "MEMORY.md" or a date like "2026-02-18"',
+      },
+    },
+    required: ['file'],
+  },
+  handler: async (input) => {
+    const file = input.file as string
+    let filepath: string
+
+    if (file === 'MEMORY.md') {
+      filepath = join(AGENT_DIR, 'MEMORY.md')
+    } else {
+      filepath = join(AGENT_DIR, 'memory', `${file}.md`)
+    }
+
+    if (!existsSync(filepath)) {
+      return { content: '', exists: false }
+    }
+
+    return { content: readFileSync(filepath, 'utf-8'), exists: true }
+  },
+})
+
+defineTool({
+  name: 'memory_write',
+  description: 'Write to agent memory (MEMORY.md or daily logs)',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      file: { type: 'string', description: '"MEMORY.md" or a date' },
+      content: { type: 'string', description: 'Content to write' },
+      append: { type: 'boolean', description: 'Append instead of overwrite' },
+    },
+    required: ['file', 'content'],
+  },
+  handler: async (input) => {
+    const file = input.file as string
+    let filepath: string
+
+    if (file === 'MEMORY.md') {
+      filepath = join(AGENT_DIR, 'MEMORY.md')
+    } else {
+      const memoryDir = join(AGENT_DIR, 'memory')
+      mkdirSync(memoryDir, { recursive: true })
+      filepath = join(memoryDir, `${file}.md`)
+    }
+
+    if (input.append && existsSync(filepath)) {
+      const existing = readFileSync(filepath, 'utf-8')
+      writeFileSync(filepath, existing + '\n' + (input.content as string), 'utf-8')
+    } else {
+      writeFileSync(filepath, input.content as string, 'utf-8')
+    }
+
+    return { ok: true, file: filepath }
+  },
+})
+
+defineTool({
+  name: 'memory_search',
+  description: 'Search across all agent memory files for a keyword or phrase',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search query' },
+    },
+    required: ['query'],
+  },
+  handler: async (input) => {
+    const query = (input.query as string).toLowerCase()
+    const results: Array<{ file: string; line: string; lineNumber: number }> = []
+
+    // Search MEMORY.md
+    const memoryPath = join(AGENT_DIR, 'MEMORY.md')
+    if (existsSync(memoryPath)) {
+      const content = readFileSync(memoryPath, 'utf-8')
+      content.split('\n').forEach((line, i) => {
+        if (line.toLowerCase().includes(query)) {
+          results.push({ file: 'MEMORY.md', line: line.trim(), lineNumber: i + 1 })
+        }
+      })
+    }
+
+    // Search daily logs
+    const memoryDir = join(AGENT_DIR, 'memory')
+    if (existsSync(memoryDir)) {
+      for (const file of readdirSync(memoryDir)) {
+        if (!file.endsWith('.md')) continue
+        const content = readFileSync(join(memoryDir, file), 'utf-8')
+        content.split('\n').forEach((line, i) => {
+          if (line.toLowerCase().includes(query)) {
+            results.push({ file: `memory/${file}`, line: line.trim(), lineNumber: i + 1 })
+          }
+        })
+      }
+    }
+
+    return { query: input.query, results, totalMatches: results.length }
+  },
+})
+
+// =============================================================================
+// Agent Control Tools
+// =============================================================================
+
+defineTool({
+  name: 'agent_status',
+  description: 'Get the current agent gateway status (running, heartbeat, channels, skills)',
+  inputSchema: { type: 'object', properties: {} },
+  handler: async () => {
+    const port = process.env.PORT || '8080'
+    try {
+      const response = await fetch(`http://localhost:${port}/agent/status`)
+      return await response.json()
+    } catch (error: any) {
+      return { error: `Agent not reachable: ${error.message}` }
+    }
+  },
+})
+
+defineTool({
+  name: 'agent_template_list',
+  description: 'List available agent starter templates',
+  inputSchema: { type: 'object', properties: {} },
+  handler: async () => {
+    return {
+      templates: [
+        {
+          id: 'personal-assistant',
+          name: 'Personal Assistant',
+          description: 'General-purpose assistant with memory and heartbeat',
+        },
+        {
+          id: 'github-monitor',
+          name: 'GitHub Monitor',
+          description: 'Watches repos for issues, PRs, CI failures',
+        },
+        {
+          id: 'system-monitor',
+          name: 'System Monitor',
+          description: 'Checks server health, disk space, SSL certs, APIs',
+        },
+        {
+          id: 'slack-bot',
+          name: 'Slack Bot',
+          description: 'Team productivity bot with custom commands',
+        },
+        {
+          id: 'research-agent',
+          name: 'Research Agent',
+          description: 'Web research with periodic briefings',
+        },
+      ],
+    }
+  },
+})
+
+defineTool({
+  name: 'agent_template_copy',
+  description: 'Initialize the agent workspace from a starter template',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      template: { type: 'string', description: 'Template ID' },
+      name: { type: 'string', description: 'Agent name' },
+    },
+    required: ['template'],
+  },
+  handler: async (input) => {
+    const templateId = input.template as string
+    const agentName = (input.name as string) || 'My Agent'
+
+    // Templates are embedded in code (no filesystem lookup needed)
+    const templateData = getAgentTemplate(templateId)
+    if (!templateData) {
+      return { error: `Template "${templateId}" not found` }
+    }
+
+    // Write workspace files from template
+    for (const [filename, content] of Object.entries(templateData.files)) {
+      const filepath = join(AGENT_DIR, filename)
+      mkdirSync(join(AGENT_DIR, ...filename.split('/').slice(0, -1)), { recursive: true })
+      const resolvedContent = content.replace(/\{\{AGENT_NAME\}\}/g, agentName)
+      writeFileSync(filepath, resolvedContent, 'utf-8')
+    }
+
+    return { ok: true, template: templateId, name: agentName }
+  },
+})
+
+// =============================================================================
+// Agent Templates (Embedded)
+// =============================================================================
+
+interface AgentTemplate {
+  files: Record<string, string>
+}
+
+function getAgentTemplate(id: string): AgentTemplate | null {
+  const templates: Record<string, AgentTemplate> = {
+    'personal-assistant': {
+      files: {
+        'IDENTITY.md': `# Identity\n\n- **Name:** {{AGENT_NAME}}\n- **Emoji:** 🤖\n- **Tagline:** Your personal AI assistant\n`,
+        'SOUL.md': `# Soul\n\nYou are a helpful, reliable personal assistant. You communicate clearly, concisely, and warmly. You proactively remind about tasks and deadlines.\n\n## Boundaries\n- Never execute destructive commands without confirmation\n- Respect quiet hours\n- Keep responses concise unless asked for detail\n`,
+        'AGENTS.md': `# Agent Instructions\n\n## Core Behavior\n- Be proactive about reminders and follow-ups\n- Keep track of ongoing tasks in MEMORY.md\n- Summarize daily activity at end of day\n\n## Priorities\n1. Urgent messages — respond immediately\n2. Reminders and deadlines — check on heartbeat\n3. General requests — handle promptly\n`,
+        'USER.md': `# User\n\n- **Name:** (not set)\n- **Timezone:** UTC\n`,
+        'HEARTBEAT.md': `# Heartbeat Checklist\n\n## Reminders\n- Check for any upcoming deadlines or events\n- Review pending tasks that need follow-up\n`,
+        'config.json': JSON.stringify({
+          heartbeatInterval: 1800,
+          heartbeatEnabled: true,
+          quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
+          channels: [],
+          model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+        }, null, 2),
+      },
+    },
+
+    'github-monitor': {
+      files: {
+        'IDENTITY.md': `# Identity\n\n- **Name:** {{AGENT_NAME}}\n- **Emoji:** 🐙\n- **Tagline:** Your GitHub watchdog\n`,
+        'SOUL.md': `# Soul\n\nYou are a focused, technical GitHub monitoring agent. You report concisely with links. You prioritize CI failures and security alerts above feature discussions.\n\n## Boundaries\n- Only alert on actionable items\n- Batch non-urgent updates into daily digests\n- Never modify repository code\n`,
+        'AGENTS.md': `# Agent Instructions\n\n## Core Behavior\n- Monitor configured GitHub repositories\n- Alert immediately on CI failures and security issues\n- Daily digest of new issues, PRs, and releases\n\n## Priorities\n1. CI failures on main/default branch — immediate alert\n2. Security advisories — immediate alert\n3. New issues labeled "critical" or "urgent" — immediate alert\n4. New PRs — daily digest\n5. New releases — daily digest\n`,
+        'USER.md': `# User\n\n- **Name:** (not set)\n- **Timezone:** UTC\n- **GitHub repos:** (configure repos to watch in HEARTBEAT.md)\n`,
+        'HEARTBEAT.md': `# Heartbeat Checklist\n\n## GitHub Monitoring (every heartbeat)\n- Check github.com/OWNER/REPO for new issues and PRs\n- Check if CI is passing on the default branch\n- Look for any new security advisories\n- Alert on anything labeled "critical" or "urgent"\n\n## Daily Digest (once per day)\n- Summarize all new issues, PRs, and releases from the last 24 hours\n- List PRs awaiting review\n`,
+        'config.json': JSON.stringify({
+          heartbeatInterval: 900,
+          heartbeatEnabled: true,
+          quietHours: { start: '00:00', end: '06:00', timezone: 'UTC' },
+          channels: [],
+          model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+        }, null, 2),
+        'skills/check-github.md': `---\nname: check-github\nversion: 1.0.0\ndescription: Check GitHub repos for new activity\ntrigger: "check github|repo status|ci status"\ntools: [web_fetch, shell]\n---\n\n# Check GitHub\n\nWhen triggered, check configured GitHub repositories for:\n1. Open pull requests needing review\n2. CI/CD pipeline status on default branch\n3. New issues in the last 24 hours\n4. Any failing checks or actions\n\nProvide a concise summary with links.\n`,
+      },
+    },
+
+    'system-monitor': {
+      files: {
+        'IDENTITY.md': `# Identity\n\n- **Name:** {{AGENT_NAME}}\n- **Emoji:** 🔍\n- **Tagline:** Your infrastructure guardian\n`,
+        'SOUL.md': `# Soul\n\nYou are a vigilant systems monitoring agent. You are precise, technical, and always lead with the most critical information. You use clear severity levels: CRITICAL, WARNING, INFO.\n\n## Boundaries\n- Never restart services without explicit confirmation\n- Always include timestamps in alerts\n- Suppress duplicate alerts within 1 hour\n`,
+        'AGENTS.md': `# Agent Instructions\n\n## Core Behavior\n- Monitor system health endpoints on every heartbeat\n- Track trends (disk usage growing, memory creeping up)\n- Alert immediately on CRITICAL issues\n- Batch WARNING items into periodic summaries\n\n## Severity Levels\n- CRITICAL: Service down, disk > 95%, memory > 95%\n- WARNING: Disk > 85%, memory > 85%, high error rate\n- INFO: SSL cert expiring within 30 days, new deployment detected\n`,
+        'USER.md': `# User\n\n- **Name:** (not set)\n- **Timezone:** UTC\n`,
+        'HEARTBEAT.md': `# Heartbeat Checklist\n\n## Health Checks (every heartbeat)\n- Check https://YOUR-API.com/health returns 200\n- Check disk usage, alert if > 85%\n- Check memory usage, alert if > 85%\n- Check SSL certificate expiry for YOUR-DOMAIN.com\n\n## Log Monitoring\n- Check /var/log/app/errors.log for new errors in last 30 minutes\n- Alert on any 5xx error rate > 1%\n`,
+        'config.json': JSON.stringify({
+          heartbeatInterval: 600,
+          heartbeatEnabled: true,
+          quietHours: { start: '', end: '', timezone: 'UTC' },
+          channels: [],
+          model: { provider: 'anthropic', name: 'claude-haiku-4-5-20251001' },
+        }, null, 2),
+      },
+    },
+
+    'slack-bot': {
+      files: {
+        'IDENTITY.md': `# Identity\n\n- **Name:** {{AGENT_NAME}}\n- **Emoji:** 💬\n- **Tagline:** Your team's AI companion\n`,
+        'SOUL.md': `# Soul\n\nYou are a friendly, professional team assistant. You help with productivity, answer questions, and facilitate team communication. You use threads for long discussions.\n\n## Boundaries\n- Never share DM content in public channels\n- Keep responses under 500 words unless asked for more\n- Always be professional and inclusive\n`,
+        'AGENTS.md': `# Agent Instructions\n\n## Core Behavior\n- Respond to mentions and DMs promptly\n- Help with information lookup and summarization\n- Facilitate team standups and check-ins when asked\n\n## Skills\n- Summarize long threads\n- Look up documentation\n- Track action items from meetings\n`,
+        'USER.md': `# User\n\n- **Team:** (not set)\n- **Timezone:** UTC\n`,
+        'HEARTBEAT.md': '',
+        'config.json': JSON.stringify({
+          heartbeatInterval: 1800,
+          heartbeatEnabled: false,
+          quietHours: { start: '22:00', end: '08:00', timezone: 'UTC' },
+          channels: [],
+          model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+        }, null, 2),
+      },
+    },
+
+    'research-agent': {
+      files: {
+        'IDENTITY.md': `# Identity\n\n- **Name:** {{AGENT_NAME}}\n- **Emoji:** 📚\n- **Tagline:** Your personal research assistant\n`,
+        'SOUL.md': `# Soul\n\nYou are a thorough, analytical research assistant. You cite sources, distinguish facts from opinions, and present findings in a structured format. You're great at synthesizing information from multiple sources.\n\n## Boundaries\n- Always cite sources with URLs\n- Clearly label speculation vs facts\n- Present balanced viewpoints on controversial topics\n`,
+        'AGENTS.md': `# Agent Instructions\n\n## Core Behavior\n- Research topics thoroughly using web search\n- Save key findings in MEMORY.md\n- Provide daily briefings on tracked topics\n\n## Output Format\n- Use headers for different topics\n- Include source links\n- Highlight key takeaways at the top\n`,
+        'USER.md': `# User\n\n- **Name:** (not set)\n- **Timezone:** UTC\n- **Research interests:** (configure in HEARTBEAT.md)\n`,
+        'HEARTBEAT.md': `# Heartbeat Checklist\n\n## Morning Briefing (daily)\n- Top 5 Hacker News stories relevant to my interests\n- Any new developments in topics I'm tracking (see MEMORY.md)\n- Notable new releases or announcements in my field\n`,
+        'config.json': JSON.stringify({
+          heartbeatInterval: 3600,
+          heartbeatEnabled: true,
+          quietHours: { start: '22:00', end: '07:00', timezone: 'UTC' },
+          channels: [],
+          model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+        }, null, 2),
+        'skills/web-research.md': `---\nname: web-research\nversion: 1.0.0\ndescription: Research a topic using web search and provide a structured summary\ntrigger: "research|look up|find out about|what is"\ntools: [web_search, web_fetch, memory]\n---\n\n# Web Research\n\nWhen triggered, perform thorough web research:\n1. Search for the topic using web search\n2. Visit top 3-5 relevant results\n3. Synthesize findings into a structured summary\n4. Include source URLs\n5. Save key findings to MEMORY.md\n`,
+      },
+    },
+  }
+
+  return templates[id] || null
+}
+
+// =============================================================================
+// MCP Protocol (stdio JSON-RPC)
+// =============================================================================
+
+async function handleRequest(request: {
+  jsonrpc: string
+  id: number | string
+  method: string
+  params?: any
+}): Promise<any> {
+  switch (request.method) {
+    case 'initialize':
+      return {
+        protocolVersion: '2024-11-05',
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: 'shogo-agent-tools', version: '0.1.0' },
+      }
+
+    case 'tools/list':
+      return {
+        tools: tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        })),
+      }
+
+    case 'tools/call': {
+      const toolName = request.params?.name
+      const toolInput = request.params?.arguments || {}
+      const tool = tools.find((t) => t.name === toolName)
+
+      if (!tool) {
+        return {
+          content: [{ type: 'text', text: `Unknown tool: ${toolName}` }],
+          isError: true,
+        }
+      }
+
+      try {
+        const result = await tool.handler(toolInput)
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        }
+      } catch (error: any) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error.message}` }],
+          isError: true,
+        }
+      }
+    }
+
+    default:
+      return { error: { code: -32601, message: `Unknown method: ${request.method}` } }
+  }
+}
+
+// Stdio transport
+async function main() {
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  for await (const chunk of Bun.stdin.stream()) {
+    buffer += decoder.decode(chunk)
+
+    // Process complete JSON-RPC messages
+    while (true) {
+      const headerEnd = buffer.indexOf('\r\n\r\n')
+      if (headerEnd === -1) break
+
+      const header = buffer.substring(0, headerEnd)
+      const contentLengthMatch = header.match(/Content-Length:\s*(\d+)/i)
+      if (!contentLengthMatch) {
+        buffer = buffer.substring(headerEnd + 4)
+        continue
+      }
+
+      const contentLength = parseInt(contentLengthMatch[1], 10)
+      const bodyStart = headerEnd + 4
+      if (buffer.length < bodyStart + contentLength) break
+
+      const body = buffer.substring(bodyStart, bodyStart + contentLength)
+      buffer = buffer.substring(bodyStart + contentLength)
+
+      try {
+        const request = JSON.parse(body)
+        const result = await handleRequest(request)
+
+        // Notifications (no id) don't get responses
+        if (request.id === undefined) continue
+
+        const response = JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result,
+        })
+
+        const responseBytes = new TextEncoder().encode(response)
+        process.stdout.write(
+          `Content-Length: ${responseBytes.length}\r\n\r\n${response}`
+        )
+      } catch (error: any) {
+        console.error('[MCP] Parse error:', error.message)
+      }
+    }
+  }
+}
+
+main().catch((error) => {
+  console.error('[MCP] Fatal error:', error)
+  process.exit(1)
+})

@@ -1,6 +1,12 @@
 node_modules/
 .output/
 dist/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
 prisma/dev.db
 prisma/dev.db-journal
 .vinxi/

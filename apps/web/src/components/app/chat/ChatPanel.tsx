@@ -210,6 +210,10 @@ export interface ChatPanelProps {
   onSelectTheme?: (themeId: string) => void
   /** Callback when "Create new theme" is clicked (for compact mode) */
   onCreateTheme?: () => void
+  /** Currently selected project type (for compact mode) */
+  projectType?: "APP" | "AGENT"
+  /** Callback when project type changes (for compact mode) */
+  onProjectTypeChange?: (type: "APP" | "AGENT") => void
 }
 
 // ============================================================
@@ -540,10 +544,11 @@ function getModifiedFilePaths(toolCalls: ExtractedToolCall[]): string[] {
       continue
     }
     
-    // Extract path from args
+    // Extract path from args (Claude Code tools use "file_path", others may use "path" or "filePath")
     const args = toolCall.args as Record<string, unknown> | undefined
-    if (args?.path && typeof args.path === 'string') {
-      paths.push(args.path)
+    const filePath = (args?.file_path ?? args?.path ?? args?.filePath) as string | undefined
+    if (filePath && typeof filePath === 'string') {
+      paths.push(filePath)
     }
     
     // For template.copy, mark as "all files changed" with special marker
@@ -624,6 +629,8 @@ export const ChatPanel = observer(function ChatPanel({
   selectedThemeId,
   onSelectTheme,
   onCreateTheme,
+  projectType,
+  onProjectTypeChange,
 }: ChatPanelProps) {
   // Access SDK domains for chat persistence (SDK-generated stores)
   const { studioChat } = useSDKDomains()
@@ -671,7 +678,14 @@ export const ChatPanel = observer(function ChatPanel({
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
 
   // Agent mode state for switching between basic (Haiku) and advanced (Sonnet) models
-  const [agentMode, setAgentMode] = useState<AgentMode>("advanced")
+  // Default to "basic" — upgraded to "advanced" once billing data confirms Pro subscription
+  const [agentMode, setAgentMode] = useState<AgentMode>("basic")
+
+  useEffect(() => {
+    if (hasActiveSubscription) {
+      setAgentMode("advanced")
+    }
+  }, [hasActiveSubscription])
 
   // Claude Code session ID for continuity (task-cc-chatpanel-integration)
   // Initialized from existing session's claudeCodeSessionId on load
@@ -878,6 +892,28 @@ export const ChatPanel = observer(function ChatPanel({
       // Critical: Handle errors to ensure isLoading gets cleared
       // Without this handler, errors leave isLoading=true indefinitely
       console.error("[ChatPanel] Stream error:", err)
+
+      // Mark any in-flight tool calls as errored so spinners resolve
+      setMessages((prev) =>
+        prev.map((msg) => {
+          if (msg.role !== 'assistant' || !msg.parts) return msg
+          const hasStuckTool = msg.parts.some(
+            (p: any) => (p.type === 'tool-invocation' || p.type === 'dynamic-tool') &&
+              (p.state === 'partial-call' || p.state === 'call' || p.state === 'input-streaming' || p.state === 'input-available')
+          )
+          if (!hasStuckTool) return msg
+          return {
+            ...msg,
+            parts: msg.parts.map((p: any) => {
+              if ((p.type === 'tool-invocation' || p.type === 'dynamic-tool') &&
+                  (p.state === 'partial-call' || p.state === 'call' || p.state === 'input-streaming' || p.state === 'input-available')) {
+                return { ...p, state: 'error', output: { error: 'Interrupted' } }
+              }
+              return p
+            }),
+          }
+        })
+      )
     },
     // Handle transient data parts via AI SDK 6.x data-{name} format
     // Server sends: { type: 'data-progress', id: string, data: SubagentProgressEvent }
@@ -1260,25 +1296,10 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
-      // Persist assistant message in onFinish callback
-      // NOTE: All persistence operations are fire-and-forget to prevent hanging
-      // if backend is slow. The UI already shows the message, persistence is just logging.
+      // server-side-persistence: Assistant messages are now persisted by the backend
+      // after streaming completes. This eliminates data loss on page refresh/disconnect.
+      // The chatSessionId is sent in the request body so the backend knows where to save.
       if (currentSessionId) {
-        // Fire-and-forget: persist assistant message
-        // chat-session-sync-fix: Use extractTextContent for v3 API compatibility
-        // feat-toolcall-rendering-on-reload: Serialize parts for tool call rendering on reload
-        const partsJson = hasToolCalls(message)
-          ? serializeParts((message as any).parts)
-          : undefined
-        actions.addMessage({
-          sessionId: currentSessionId,
-          role: "assistant",
-          content: extractTextContent(message),
-          parts: partsJson,
-        }).catch((err) => {
-          console.warn("[ChatPanel] Failed to persist assistant message:", err)
-        })
-
         // Refresh credit balance after every message (credits are deducted server-side)
         // Fire-and-forget: this updates the MobX store which reactively updates
         // WorkspaceSwitcher, ProjectNameDropdown, and other credit displays
@@ -1351,6 +1372,7 @@ export const ChatPanel = observer(function ChatPanel({
             const modifiedPaths = getModifiedFilePaths(toolCalls)
             if (modifiedPaths.length > 0) {
               console.log("[ChatPanel] 📁 Files modified by agent:", modifiedPaths)
+              filesChangedFiredRef.current = true
               onFilesChanged(modifiedPaths)
             }
           }
@@ -1361,6 +1383,9 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Derive isStreaming from v3 status for backward compatibility
   const isStreaming = status === 'streaming' || status === 'submitted'
+
+  // Track whether onFilesChanged was already called by onFinish (prevents double-trigger)
+  const filesChangedFiredRef = useRef(false)
 
   // Notify parent when chat error changes (for RuntimePreviewPanel to stop loading)
   useEffect(() => {
@@ -1468,6 +1493,33 @@ export const ChatPanel = observer(function ChatPanel({
       }
     }
   }, [isStreaming, messages, handleStop])
+
+  // Fallback: detect file changes when streaming ends (handles idle-timeout stop())
+  // onFinish doesn't always fire when stop() is called, so we re-check here.
+  const prevStreamingForScanRef = useRef(false)
+  useEffect(() => {
+    const wasStreaming = prevStreamingForScanRef.current
+    prevStreamingForScanRef.current = isStreaming
+
+    // Only run on streaming → not-streaming transition
+    if (wasStreaming && !isStreaming && !filesChangedFiredRef.current && onFilesChanged) {
+      // Check the latest assistant message for file-modifying tool calls
+      const latestAssistant = [...messages].reverse().find(m => m.role === 'assistant')
+      if (latestAssistant) {
+        const toolCalls = extractToolCalls(latestAssistant)
+        const modifiedPaths = getModifiedFilePaths(toolCalls)
+        if (modifiedPaths.length > 0) {
+          console.log("[ChatPanel] 📁 Fallback: Files modified by agent (onFinish missed):", modifiedPaths)
+          onFilesChanged(modifiedPaths)
+        }
+      }
+    }
+
+    // Reset flag when streaming starts (for the next cycle)
+    if (isStreaming && !wasStreaming) {
+      filesChangedFiredRef.current = false
+    }
+  }, [isStreaming, messages, onFilesChanged])
 
   // Process progress events from message parts (task-subagent-progress-streaming)
   useEffect(() => {
@@ -2045,6 +2097,7 @@ export const ChatPanel = observer(function ChatPanel({
               featureId,
               phase,
               ccSessionId: ccSessionIdRef.current,
+              chatSessionId: currentSessionId,
               workspaceId,
               userId,
               projectId,
@@ -2364,6 +2417,8 @@ export const ChatPanel = observer(function ChatPanel({
         selectedThemeId={selectedThemeId}
         onSelectTheme={onSelectTheme}
         onCreateTheme={onCreateTheme}
+        projectType={projectType}
+        onProjectTypeChange={onProjectTypeChange}
       />
     )
   }

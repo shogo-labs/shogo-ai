@@ -14,8 +14,10 @@ import { useState, useRef, useCallback, forwardRef, useEffect } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Paperclip, Send, Loader2, X, File, FileText, Image as ImageIcon } from "lucide-react"
+import { Paperclip, Send, Loader2, X, File, FileText, Image as ImageIcon, AppWindow, Bot } from "lucide-react"
 import { ThemeSelector } from "@/components/app/shared/ThemeSelector"
+
+export type ProjectType = "APP" | "AGENT"
 
 // Maximum file size in bytes (10MB for all files)
 const MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -52,6 +54,10 @@ export interface CompactChatInputProps {
   onSelectTheme?: (themeId: string) => void
   /** Callback when "Create new theme" is clicked */
   onCreateTheme?: () => void
+  /** Currently selected project type */
+  projectType?: ProjectType
+  /** Callback when project type changes */
+  onProjectTypeChange?: (type: ProjectType) => void
 }
 
 export const CompactChatInput = forwardRef<HTMLDivElement, CompactChatInputProps>(
@@ -60,13 +66,15 @@ export const CompactChatInput = forwardRef<HTMLDivElement, CompactChatInputProps
       onSubmit,
       disabled = false,
       isLoading = false,
-      placeholder = "Ask Shogo to create a web app that...",
+      placeholder: placeholderProp,
       className,
       value: controlledValue,
       onChange: controlledOnChange,
       selectedThemeId = "default",
       onSelectTheme,
       onCreateTheme,
+      projectType = "APP",
+      onProjectTypeChange,
     },
     ref
   ) {
@@ -92,6 +100,12 @@ export const CompactChatInput = forwardRef<HTMLDivElement, CompactChatInputProps
     // Use controlled or uncontrolled value
     const value = controlledValue ?? internalValue
     const setValue = controlledOnChange ?? setInternalValue
+
+    const placeholder = placeholderProp ?? (
+      projectType === "AGENT"
+        ? "Describe the agent you want to build..."
+        : "Ask Shogo to create a web app that..."
+    )
 
     /**
      * Generate a unique ID from a file
@@ -443,6 +457,38 @@ export const CompactChatInput = forwardRef<HTMLDivElement, CompactChatInputProps
                 disabled={disabled || isLoading}
                 variant="compact"
               />
+              {onProjectTypeChange && (
+                <div className="flex items-center h-8 rounded-md border border-border bg-muted/50 p-0.5">
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex items-center gap-1 px-2 h-7 rounded text-xs font-medium transition-colors",
+                      projectType === "APP"
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                    onClick={() => onProjectTypeChange("APP")}
+                    disabled={disabled || isLoading}
+                  >
+                    <AppWindow className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">App</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex items-center gap-1 px-2 h-7 rounded text-xs font-medium transition-colors",
+                      projectType === "AGENT"
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                    onClick={() => onProjectTypeChange("AGENT")}
+                    disabled={disabled || isLoading}
+                  >
+                    <Bot className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Agent</span>
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-2">

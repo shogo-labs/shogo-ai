@@ -29,13 +29,18 @@ logTiming('Server module loading...')
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
-import { unstable_v2_createSession, type SDKSession, type SDKSessionOptions } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
 import { existsSync, readdirSync, readFileSync, writeFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
-import { initializeS3Sync, type S3Sync } from './s3-sync'
-import { initializePostgresBackup, type PostgresBackup } from './postgres-backup'
-import { verifyPreviewToken, type PreviewTokenPayload } from './preview-token'
+import {
+  initializeS3Sync, type S3Sync,
+  initializePostgresBackup, type PostgresBackup,
+  verifyPreviewToken, type PreviewTokenPayload,
+  configureAIProxy, buildClaudeCodeEnv,
+  createSessionManager, type ModelTier, type V2SessionOptions,
+  extractUserText, findLastUserMessage,
+  streamSdkToUI,
+} from '@shogo/shared-runtime'
 import { buildSystemPrompt } from './system-prompt'
 import { fileURLToPath } from 'url'
 
@@ -51,7 +56,8 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 
 logTiming('Loading configuration...')
 
-const PROJECT_ID = process.env.PROJECT_ID
+const POOL_PROJECT_ID = '__POOL__'
+let currentProjectId = process.env.PROJECT_ID
 const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 // MCP server path: resolve from MONOREPO_ROOT for local dev, fallback to Docker path
@@ -62,13 +68,24 @@ const PORT = parseInt(process.env.PORT || '8080', 10)
 const FAST_START_MODE = process.env.FAST_START_MODE === 'true'
 const BUILD_STATUS_FILE = process.env.BUILD_STATUS_FILE || '/tmp/build-status'
 
+// Warm pool mode: pod starts without a real project, awaiting assignment
+const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
+let poolAssigned = false
+
 // Validate required environment
-if (!PROJECT_ID) {
+if (!currentProjectId) {
   console.error('[project-runtime] ERROR: PROJECT_ID environment variable is required')
   process.exit(1)
 }
 
-logTiming(`Configuration loaded for project: ${PROJECT_ID}`)
+// Alias for backward compatibility (many references throughout this large file)
+const PROJECT_ID = currentProjectId
+
+if (IS_POOL_MODE) {
+  logTiming('Starting in WARM POOL mode (awaiting project assignment)')
+} else {
+  logTiming(`Configuration loaded for project: ${currentProjectId}`)
+}
 console.log(`[project-runtime] Project directory: ${PROJECT_DIR}`)
 console.log(`[project-runtime] Schemas path: ${SCHEMAS_PATH}`)
 console.log(`[project-runtime] MCP server path: ${MCP_SERVER_PATH}`)
@@ -90,7 +107,13 @@ let postgresBackup: PostgresBackup | null = null
 // Writes marker file when complete so background init can proceed
 const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
 
-;(async () => {
+// In pool mode, skip S3 sync until a project is assigned
+if (IS_POOL_MODE) {
+  logTiming('Pool mode: skipping S3 sync (no project assigned yet)')
+  writeFileSync(S3_RESTORE_MARKER, `pool-mode:${Date.now()}`)
+}
+
+;(!IS_POOL_MODE) && (async () => {
   const s3StartTime = Date.now()
   try {
     const result = await initializeS3Sync(PROJECT_DIR)
@@ -430,35 +453,88 @@ const THEME_CSS: Record<string, { light: string; dark: string; radius: string }>
 }
 
 /**
- * Apply a theme to the project's index.css
+ * Apply a theme to the project's index.css.
+ * Output is Tailwind v4–compatible (@import "tailwindcss", @theme inline) so that
+ * utilities like border-border and bg-background work with the project's Tailwind v4 setup.
+ */
+function formatThemeVars(inlineCSS: string, indent = '  '): string {
+  return inlineCSS
+    .split(';')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(decl => {
+      const colonIdx = decl.indexOf(':')
+      if (colonIdx === -1) return ''
+      const prop = decl.slice(0, colonIdx).trim()
+      const value = decl.slice(colonIdx + 1).trim()
+      return `${indent}${prop}: hsl(${value});`
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+/**
+ * Apply a theme to the project's index.css using Tailwind v4 syntax.
  */
 function applyThemeToProject(projectDir: string, themeId: string): void {
   const theme = THEME_CSS[themeId] || THEME_CSS.default
   const indexCssPath = join(projectDir, 'src', 'index.css')
-  
-  const themeCSS = `@tailwind base;
-@tailwind components;
-@tailwind utilities;
+  // Theme presets use HSL triplets (e.g. --border: 214.3 31.8% 91.4%); map to Tailwind v4 theme via hsl(var(--x))
+  const themeCSS = `@import "tailwindcss";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@plugin "tailwindcss-animate";
 
 /* Theme: ${themeId} */
 
-@layer base {
-  :root {
-    ${theme.light}
-    --radius: ${theme.radius}rem;
-  }
+:root {
+  ${theme.light}
+  --radius: ${theme.radius}rem;
+}
 
-  .dark {
-    ${theme.dark}
-  }
+.dark {
+  ${theme.dark}
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card, 0 0% 100%));
+  --color-card-foreground: hsl(var(--card-foreground, 222.2 84% 4.9%));
+  --color-popover: hsl(var(--popover, 0 0% 100%));
+  --color-popover-foreground: hsl(var(--popover-foreground, 222.2 84% 4.9%));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground, 210 40% 98%));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
 }
 
 @layer base {
   * {
-    @apply border-border;
+    @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+      Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
   }
 }
 `
@@ -508,6 +584,9 @@ const FORBIDDEN_COMMAND_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   // Server restart commands
   { pattern: /\bpm2\s+restart\b/, reason: 'Do not restart processes. The runtime manages the server automatically.' },
   { pattern: /\bsystemctl\s+restart\b/, reason: 'Do not restart system services. The runtime manages everything.' },
+  // Destructive database commands (would wipe all user data)
+  { pattern: /--force-reset/, reason: 'Database reset would destroy all user data. Use `prisma migrate dev` for schema changes that require data migration, or ask the user for confirmation first.' },
+  { pattern: /--accept-data-loss/, reason: 'This flag would destroy user data. Use `prisma migrate dev` for schema changes that require data migration, or ask the user for confirmation first.' },
 ]
 
 /**
@@ -590,44 +669,18 @@ const pathRestrictor = createPathRestrictor(PROJECT_DIR)
 console.log(`[project-runtime] ✅ Forbidden command guardrail ACTIVE (${FORBIDDEN_COMMAND_PATTERNS.length} patterns)`)
 
 // AI Proxy Configuration
-// When AI_PROXY_URL and AI_PROXY_TOKEN are set, route Claude Code CLI through
-// the proxy instead of directly to Anthropic. This prevents exposing the raw
-// ANTHROPIC_API_KEY to the project pod.
-//
-// How it works:
-// - ANTHROPIC_BASE_URL is set to the proxy's Anthropic-native endpoint
-// - ANTHROPIC_API_KEY is set to the proxy token (proxy validates it)
-// - The proxy forwards requests to the real Anthropic API with server-side keys
-const AI_PROXY_URL = process.env.AI_PROXY_URL
-const AI_PROXY_TOKEN = process.env.AI_PROXY_TOKEN
-const useAIProxy = !!(AI_PROXY_URL && AI_PROXY_TOKEN)
-
-if (useAIProxy) {
-  // Derive the Anthropic-native proxy base URL from AI_PROXY_URL
-  // AI_PROXY_URL is like: http://api-server/api/ai/v1
-  // Anthropic base URL should be: http://api-server/api/ai/anthropic
-  const anthropicProxyBase = AI_PROXY_URL.replace(/\/v1$/, '/anthropic')
-  console.log(`[project-runtime] AI Proxy enabled: Claude Code → ${anthropicProxyBase}`)
-  console.log(`[project-runtime] Proxy token: ${AI_PROXY_TOKEN.slice(0, 20)}...`)
-} else {
-  console.log(`[project-runtime] AI Proxy not configured, using direct ANTHROPIC_API_KEY`)
+// configureAIProxy() throws when AI_PROXY_URL is set but no token is available,
+// preventing silent fallback to a raw platform ANTHROPIC_API_KEY.
+let aiProxy: ReturnType<typeof configureAIProxy>
+try {
+  aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+} catch (err: any) {
+  console.error(`[project-runtime] FATAL: ${err.message}`)
+  process.exit(1)
 }
-
-// Build environment overrides for Claude Code process
-// When proxy is enabled, override ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY
-// IMPORTANT: Spread process.env first so DATABASE_URL and other runtime vars are inherited
-const claudeCodeEnv: Record<string, string> = {
-  ...Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
-  ),
-}
-if (useAIProxy) {
-  const anthropicProxyBase = AI_PROXY_URL!.replace(/\/v1$/, '/anthropic')
-  claudeCodeEnv.ANTHROPIC_BASE_URL = anthropicProxyBase
-  claudeCodeEnv.ANTHROPIC_API_KEY = AI_PROXY_TOKEN!
-}
-// Expose runtime port so the agent can call template endpoints via curl
-claudeCodeEnv.RUNTIME_PORT = String(PORT)
+let claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
+  RUNTIME_PORT: String(PORT),
+})
 
 // =============================================================================
 // V2 Agent SDK Session Management
@@ -635,41 +688,40 @@ claudeCodeEnv.RUNTIME_PORT = String(PORT)
 // Uses the V2 session-based API from @anthropic-ai/claude-agent-sdk.
 // Sessions persist across HTTP requests, keeping the CLI subprocess alive.
 // This eliminates the 7-12s cold start overhead per message.
+//
+// IMPORTANT: The V2 SDK's unstable_v2_createSession() only forwards a subset
+// of options to the CLI process (model, env, allowedTools, permissionMode,
+// settingSources, canUseTool, hooks, includePartialMessages). It does NOT
+// forward systemPrompt, mcpServers, or cwd — these are silently dropped.
+//
+// To work around this, we write file-based configuration that the CLI reads
+// via settingSources: ['project']:
+//   - CLAUDE.md in PROJECT_DIR → system prompt (loaded as project instructions)
+//   - .mcp.json in PROJECT_DIR → MCP server config (loaded as project MCP servers)
 
-/** V1 QueryOptions fields that V2 runtime accepts but aren't yet typed */
-interface ExtendedSessionOptions extends SDKSessionOptions {
-  cwd?: string
-  mcpServers?: Record<string, any>
-  systemPrompt?: string | { type: 'preset'; preset: 'claude_code'; append?: string }
-  settingSources?: string[]
-  allowDangerouslySkipPermissions?: boolean
-  includePartialMessages?: boolean
-  persistSession?: boolean
-}
+/**
+ * Write CLAUDE.md and .mcp.json to the project directory so the V2 SDK CLI
+ * picks them up via settingSources: ['project']. This is necessary because
+ * the V2 session constructor does not forward systemPrompt or mcpServers
+ * from the programmatic options.
+ */
+function writeAgentConfigFiles(): void {
+  // Write CLAUDE.md with the system prompt
+  const claudeMdPath = resolve(PROJECT_DIR, 'CLAUDE.md')
+  const systemPromptContent = buildSystemPrompt(PROJECT_DIR, { previewUrl: process.env.PREVIEW_URL })
+  writeFileSync(claudeMdPath, systemPromptContent, 'utf-8')
+  console.log(`[project-runtime] Wrote CLAUDE.md to ${claudeMdPath} (${systemPromptContent.length} chars)`)
 
-// Session cache: one persistent session per model name
-const sessionCache = new Map<string, SDKSession>()
-
-function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
-  return {
-    model: modelName === 'haiku' ? 'claude-3-5-haiku-latest'
-         : modelName === 'opus' ? 'claude-opus-4-20250514'
-         : 'claude-sonnet-4-20250514',
-    cwd: PROJECT_DIR,
-    canUseTool: pathRestrictor,
-    settingSources: ['project', 'local'],
-    env: claudeCodeEnv,
-    includePartialMessages: true,
-    // Base system prompt (dynamic context like theme/build status appended to user messages per-request)
-    systemPrompt: buildSystemPrompt(PROJECT_DIR, { previewUrl: process.env.PREVIEW_URL }),
-    // MCP server provides template tools as native tool calls
+  // Write .mcp.json with the template MCP server config
+  const mcpJsonPath = resolve(PROJECT_DIR, '.mcp.json')
+  const mcpConfig = {
     mcpServers: {
       shogo: {
         command: 'bun',
         args: ['run', MCP_SERVER_PATH],
         env: {
           SCHEMAS_PATH,
-          PROJECT_ID: PROJECT_ID!,
+          PROJECT_ID: currentProjectId!,
           PROJECT_DIR,
           RUNTIME_PORT: String(PORT),
           NODE_ENV: process.env.NODE_ENV || 'production',
@@ -677,6 +729,32 @@ function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
         },
       },
     },
+  }
+  writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
+  console.log(`[project-runtime] Wrote .mcp.json to ${mcpJsonPath}`)
+}
+
+// Write config files and ensure CLI will run in the project directory.
+// process.chdir() is safe here because the server uses absolute paths everywhere.
+try {
+  process.chdir(PROJECT_DIR)
+  console.log(`[project-runtime] Changed cwd to ${PROJECT_DIR}`)
+} catch (e: any) {
+  console.warn(`[project-runtime] Could not chdir to ${PROJECT_DIR}: ${e.message}`)
+}
+if (!IS_POOL_MODE) {
+  writeAgentConfigFiles()
+}
+
+function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
+  return {
+    model: modelName === 'haiku' ? 'claude-haiku-4-5'
+         : modelName === 'opus' ? 'claude-opus-4-6'
+         : 'claude-sonnet-4-5',
+    canUseTool: pathRestrictor,
+    settingSources: ['project', 'local'],
+    env: claudeCodeEnv,
+    includePartialMessages: true,
     allowedTools: [
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
       'Bash',
@@ -685,113 +763,14 @@ function buildProjectSessionOptions(modelName: string): ExtendedSessionOptions {
       'mcp__shogo__template_copy',
     ],
     permissionMode: 'default',
-  } as ExtendedSessionOptions
-}
-
-// Track which sessions are actively handling a chat message
-const activeSessions = new Set<string>()
-
-// Track active stream queries per model so we can interrupt them
-const activeQueries = new Map<string, AsyncGenerator<any, void>>()
-
-/**
- * Interrupt an active session for a given model.
- * 
- * The V2 SDK session's stream() returns an AsyncGenerator that wraps the
- * underlying Claude Code CLI subprocess. Calling generator.return() only
- * stops JavaScript iteration but does NOT stop the CLI from generating.
- * When session.send() is called again, the old buffered tokens leak into
- * the new response, causing garbled output.
- * 
- * The fix: close the entire session (kills the CLI process) and remove it
- * from cache. The next getOrCreateProjectSession() call will create a fresh
- * session. Conversation history is maintained by the frontend, not the backend.
- */
-async function interruptActiveQuery(modelName: string): Promise<void> {
-  console.log(`[project-runtime] Interrupting active session for ${modelName} — closing session to kill CLI process`)
-  
-  // 1. Stop JS-level iteration on the active query
-  const activeQuery = activeQueries.get(modelName)
-  if (activeQuery) {
-    try { await activeQuery.return(undefined as any) } catch {}
-    activeQueries.delete(modelName)
-  }
-
-  // 2. Close the session (kills the CLI subprocess)
-  const session = sessionCache.get(modelName)
-  if (session) {
-    try {
-      session.close()
-      console.log(`[project-runtime] Closed session for ${modelName}`)
-    } catch (err) {
-      console.warn(`[project-runtime] Error closing session for ${modelName}:`, err)
-    }
-    sessionCache.delete(modelName)
-  }
-
-  // 3. Clean up tracking state
-  activeSessions.delete(modelName)
-  
-  console.log(`[project-runtime] Session cleanup complete for ${modelName} — next request will create fresh session`)
-}
-
-function getOrCreateProjectSession(modelName: 'haiku' | 'sonnet' | 'opus'): SDKSession {
-  const existing = sessionCache.get(modelName)
-  if (existing && !(existing as any).closed) {
-    return existing
-  }
-  if (existing) {
-    console.log(`[project-runtime] Session for ${modelName} was closed, creating new one`)
-    sessionCache.delete(modelName)
-    activeSessions.delete(modelName)
-  }
-
-  const options = buildProjectSessionOptions(modelName)
-  const session = unstable_v2_createSession(options as any)
-  sessionCache.set(modelName, session)
-  console.log(`[project-runtime] Created V2 session for model: ${modelName}`)
-  return session
-}
-
-// =============================================================================
-// Pre-warm: Create a V2 session and send a ping to initialize the CLI
-// =============================================================================
-async function prewarmClaudeCode() {
-  const defaultModel = (process.env.AGENT_MODEL || 'sonnet') as 'haiku' | 'sonnet' | 'opus'
-  const startTime = performance.now()
-
-  // Skip prewarm if a chat is already using this session (race condition guard)
-  if (activeSessions.has(defaultModel)) {
-    console.log(`[project-runtime] ⏭️ Pre-warm skipped — session ${defaultModel} is already active`)
-    return
-  }
-
-  console.log(`[project-runtime] 🔥 Pre-warming V2 session (${defaultModel})...`)
-  try {
-    const session = getOrCreateProjectSession(defaultModel)
-
-    // Double-check after session creation — a chat request might have arrived
-    if (activeSessions.has(defaultModel)) {
-      console.log(`[project-runtime] ⏭️ Pre-warm aborted — session ${defaultModel} became active`)
-      return
-    }
-
-    activeSessions.add(defaultModel) // Mark as active during prewarm
-    await session.send('ping')
-
-    for await (const msg of session.stream()) {
-      if (msg.type === 'result') break
-    }
-    activeSessions.delete(defaultModel) // Release after prewarm completes
-
-    const elapsed = performance.now() - startTime
-    console.log(`[project-runtime] ✅ Pre-warm complete in ${(elapsed / 1000).toFixed(2)}s — session is hot (id: ${session.sessionId})`)
-  } catch (error: any) {
-    activeSessions.delete(defaultModel) // Release on error too
-    const elapsed = performance.now() - startTime
-    console.error(`[project-runtime] ⚠️ Pre-warm failed after ${(elapsed / 1000).toFixed(2)}s:`, error.message)
   }
 }
+
+let sessions = createSessionManager({
+  buildSessionOptions: buildProjectSessionOptions,
+  defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
+  logPrefix: 'project-runtime',
+})
 
 // =============================================================================
 // Stream Keep-Alive Utility
@@ -996,13 +975,95 @@ app.get('/health', (c) => {
   const uptimeMs = Date.now() - SERVER_START_TIME
   return c.json({
     status: 'ok',
-    projectId: PROJECT_ID,
+    projectId: currentProjectId,
     projectDir: PROJECT_DIR,
     uptime: process.uptime(),
     uptimeMs,
+    poolMode: IS_POOL_MODE && !poolAssigned,
     fastStartMode: FAST_START_MODE,
     coldStartMs: uptimeMs < 60000 ? uptimeMs : undefined, // Only show for first minute
   })
+})
+
+// =============================================================================
+// Warm Pool Assignment Endpoint
+// =============================================================================
+
+app.post('/pool/assign', async (c) => {
+  if (!IS_POOL_MODE) {
+    return c.json({ error: 'Not in pool mode' }, 400)
+  }
+  if (poolAssigned) {
+    return c.json({ error: 'Already assigned', projectId: currentProjectId }, 400)
+  }
+
+  const startTime = Date.now()
+  const body = await c.req.json()
+  const { projectId, env: envVars } = body
+
+  if (!projectId || typeof projectId !== 'string') {
+    return c.json({ error: 'projectId (string) is required' }, 400)
+  }
+
+  logTiming(`Pool assignment starting for project ${projectId}`)
+
+  // 1. Update project identity
+  currentProjectId = projectId
+  process.env.PROJECT_ID = projectId
+
+  // 2. Inject environment variables from the controller
+  if (envVars && typeof envVars === 'object') {
+    for (const [key, value] of Object.entries(envVars)) {
+      if (typeof value === 'string') {
+        process.env[key] = value
+      }
+    }
+  }
+
+  // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
+  try {
+    aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+  } catch (err: any) {
+    console.error(`[project-runtime] FATAL during reconfigure: ${err.message}`)
+    process.exit(1)
+  }
+  claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
+    RUNTIME_PORT: String(PORT),
+  })
+
+  // 4. Recreate session manager with updated config
+  sessions = createSessionManager({
+    buildSessionOptions: buildProjectSessionOptions,
+    defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
+    logPrefix: 'project-runtime',
+  })
+
+  // 5. Run project-specific initialization
+  try {
+    // Initialize S3 sync to download project data
+    if (process.env.S3_WORKSPACES_BUCKET) {
+      const result = await initializeS3Sync(PROJECT_DIR)
+      if (result) {
+        const { sync, downloadSucceeded } = result
+        if (downloadSucceeded) {
+          s3Sync = sync
+          logTiming('Pool assign: S3 sync initialized')
+          writeFileSync(S3_RESTORE_MARKER, `pool-assigned:${Date.now()}`)
+        }
+      }
+    }
+
+    // Write config files now that we have a real project
+    writeAgentConfigFiles()
+
+    poolAssigned = true
+    const duration = Date.now() - startTime
+    logTiming(`Pool assignment complete for ${projectId} (${duration}ms)`)
+    return c.json({ ok: true, projectId, durationMs: duration })
+  } catch (error: any) {
+    console.error(`[project-runtime] Pool assignment failed for ${projectId}:`, error.message)
+    return c.json({ error: `Assignment failed: ${error.message}` }, 500)
+  }
 })
 
 // Readiness check - returns 503 until build completes in fast start mode
@@ -1252,7 +1313,7 @@ app.post('/templates/copy', async (c) => {
       return c.json(copyResult, 400)
     }
     
-    // Step 2: Apply theme if specified
+    // Step 2: Apply theme if specified.
     if (body.theme) {
       applyThemeToProject(PROJECT_DIR, body.theme)
     }
@@ -1309,8 +1370,8 @@ app.post('/agent/stop', async (c) => {
     const body = await c.req.json().catch(() => ({}))
     const modelName = (body as any)?.modelName || 'sonnet'
     
-    if (activeSessions.has(modelName)) {
-      await interruptActiveQuery(modelName)
+    if (sessions.isActive(modelName)) {
+      await sessions.interrupt(modelName)
       return c.json({ success: true, message: `Interrupted ${modelName} session` })
     }
     
@@ -1352,39 +1413,22 @@ app.post('/agent/chat', async (c) => {
     console.log(`[project-runtime] Using model: ${modelName} (agentMode: ${agentMode || 'default'})`)
 
     // If a previous query is still active for this model, interrupt it first.
-    // This handles the case where the user clicked stop (aborting the HTTP connection)
-    // but the SDK session is still generating the previous response.
-    if (activeSessions.has(modelName)) {
+    if (sessions.isActive(modelName)) {
       console.log(`[project-runtime] Previous session still active for ${modelName}, interrupting...`)
-      await interruptActiveQuery(modelName)
+      await sessions.interrupt(modelName)
     }
 
-    // Get or create a persistent V2 session for this model
-    const session = getOrCreateProjectSession(modelName)
-    activeSessions.add(modelName) // Mark session as active to prevent prewarm interference
+    const session = sessions.getOrCreate(modelName)
+    sessions.markActive(modelName)
 
-    // Extract the last user message from the full message array.
-    // V2 sessions maintain conversation history internally.
-    const lastUserMessage = [...messages].reverse().find((m: any) => m.role === 'user')
+    const lastUserMessage = findLastUserMessage(messages)
     if (!lastUserMessage) {
       return c.json({ error: { code: 'no_user_message', message: 'No user message found' } }, 400)
     }
 
-    // Convert UIMessage parts to plain text for V2 session.send()
-    let userText: string
-    if (typeof lastUserMessage.content === 'string') {
-      userText = lastUserMessage.content
-    } else if (Array.isArray(lastUserMessage.parts)) {
-      userText = lastUserMessage.parts
-        .filter((p: any) => p.type === 'text')
-        .map((p: any) => p.text)
-        .join('\n')
-    } else {
-      userText = String(lastUserMessage.content ?? '')
-    }
+    const userText = extractUserText(lastUserMessage)
 
     // Prepend dynamic context (build status, theme) to the user message
-    // The base system prompt is set at session creation; per-request context goes here
     const buildContext = getBuildStatusContext()
     let contextPrefix = ''
     if (buildContext) contextPrefix += `[Build Status]\n${buildContext}\n\n`
@@ -1394,286 +1438,37 @@ app.post('/agent/chat', async (c) => {
 
     console.log(`[project-runtime] Processing message (${fullUserText.length} chars, context prefix: ${contextPrefix.length} chars)`)
 
-    // Send the user message to the persistent V2 session
     await session.send(fullUserText)
 
-    // Create UIMessageStream that converts V2 SDK messages to UIMessageChunks
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        let currentTextId: string | null = null
-        let currentToolId: string | null = null
-        let currentToolName: string | null = null
-        let currentToolInput = ''
-        // Track tool IDs already emitted via stream_event to avoid duplicates
-        const streamedToolIds = new Set<string>()
-        let resultUsage: any = null
-        // Track whether we're receiving incremental stream_events.
-        // When streaming, the 'assistant' message is redundant (it's the complete
-        // version of what was already streamed incrementally).
-        let receivedStreamEvents = false
-        // Track tool calls that are pending execution by the SDK.
-        // When the next turn starts, we know all pending tools completed.
-        const pendingToolResults = new Map<string, string>() // toolCallId → toolName
-
         try {
-          writer.write({ type: 'start' })
-          writer.write({ type: 'start-step' })
-
-          // Store the stream query reference so it can be interrupted
-          // if the user stops generation and sends a new message
-          const query = session.stream()
-          activeQueries.set(modelName, query)
-
-          for await (const msg of query) {
-            const msgAny = msg as any
-
-            // SDKPartialAssistantMessage — incremental streaming (preferred)
-            // These arrive before the complete 'assistant' message and provide
-            // real-time text and tool call deltas for the UI.
-            if (msg.type === 'stream_event') {
-              receivedStreamEvents = true
-              const event = msgAny.event as any
-              switch (event.type) {
-                case 'message_start': {
-                  // New turn beginning — all previously pending tools have completed
-                  for (const [tcId] of pendingToolResults) {
-                    writer.write({
-                      type: 'tool-output-available',
-                      toolCallId: tcId,
-                      output: { success: true },
-                    })
-                  }
-                  pendingToolResults.clear()
-                  break
-                }
-                case 'content_block_start': {
-                  const block = event.content_block
-                  if (block?.type === 'text') {
-                    currentTextId = `text-${Date.now()}-${event.index}`
-                    writer.write({ type: 'text-start', id: currentTextId })
-                  } else if (block?.type === 'tool_use') {
-                    if (currentTextId) {
-                      writer.write({ type: 'text-end', id: currentTextId })
-                      currentTextId = null
-                    }
-                    currentToolId = block.id
-                    currentToolName = block.name
-                    currentToolInput = ''
-                    // Mark as streamed immediately so the assistant handler skips it
-                    streamedToolIds.add(block.id)
-                    writer.write({
-                      type: 'tool-input-start',
-                      toolCallId: block.id,
-                      toolName: block.name,
-                      dynamic: true,
-                    })
-                  }
-                  break
-                }
-                case 'content_block_delta': {
-                  const delta = event.delta
-                  if (delta?.type === 'text_delta' && delta.text) {
-                    if (!currentTextId) {
-                      currentTextId = `text-${Date.now()}-${event.index}`
-                      writer.write({ type: 'text-start', id: currentTextId })
-                    }
-                    writer.write({ type: 'text-delta', id: currentTextId, delta: delta.text })
-                  } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
-                    currentToolInput += delta.partial_json
-                    writer.write({
-                      type: 'tool-input-delta',
-                      toolCallId: currentToolId || `tool-${event.index}`,
-                      inputTextDelta: delta.partial_json,
-                    })
-                  }
-                  break
-                }
-                case 'content_block_stop': {
-                  if (currentTextId) {
-                    writer.write({ type: 'text-end', id: currentTextId })
-                    currentTextId = null
-                  }
-                  if (currentToolId) {
-                    // Finalize tool input — emit tool-input-available so UI shows it as "executing"
-                    let parsedInput: any = {}
-                    try { parsedInput = JSON.parse(currentToolInput || '{}') } catch {}
-                    writer.write({
-                      type: 'tool-input-available',
-                      toolCallId: currentToolId,
-                      toolName: currentToolName || 'unknown',
-                      input: parsedInput,
-                      dynamic: true,
-                    })
-                    // Track for result emission when next turn starts
-                    pendingToolResults.set(currentToolId, currentToolName || 'unknown')
-                    currentToolId = null
-                    currentToolName = null
-                    currentToolInput = ''
-                  }
-                  break
-                }
-                case 'message_stop': {
-                  if (currentTextId) {
-                    writer.write({ type: 'text-end', id: currentTextId })
-                    currentTextId = null
-                  }
-                  currentToolId = null
-                  currentToolName = null
-                  currentToolInput = ''
-                  writer.write({ type: 'finish-step' })
-                  writer.write({ type: 'start-step' })
-                  break
-                }
-              }
-            }
-
-            // SDKAssistantMessage — complete assistant response per turn
-            // The V2 SDK handles tools internally and may NOT stream tool_use
-            // blocks via stream_event. The assistant message is the only reliable
-            // source of tool call information. We always extract tool_use blocks,
-            // but skip text when it was already streamed.
-            else if (msg.type === 'assistant') {
-              const content = msgAny.message?.content as Array<any> | undefined
-
-              // Resolve any pending tool results from the previous turn
-              for (const [tcId] of pendingToolResults) {
-                writer.write({
-                  type: 'tool-output-available',
-                  toolCallId: tcId,
-                  output: { success: true },
-                })
-              }
-              pendingToolResults.clear()
-
-              // Check if there are tool_use blocks to emit
-              const toolBlocks = content?.filter((b: any) => b.type === 'tool_use') || []
-
-              if (receivedStreamEvents) {
-                // Text was already streamed. Only emit tool calls that weren't
-                // already emitted via stream_event (avoid duplicates).
-                for (const block of toolBlocks) {
-                  if (streamedToolIds.has(block.id)) continue // Already emitted
-                  writer.write({
-                    type: 'tool-input-start',
-                    toolCallId: block.id,
-                    toolName: block.name,
-                    dynamic: true,
-                  })
-                  if (block.input) {
-                    writer.write({
-                      type: 'tool-input-delta',
-                      toolCallId: block.id,
-                      inputTextDelta: JSON.stringify(block.input),
-                    })
-                  }
-                  writer.write({
-                    type: 'tool-input-available',
-                    toolCallId: block.id,
-                    toolName: block.name,
-                    input: block.input || {},
-                    dynamic: true,
-                  })
-                  pendingToolResults.set(block.id, block.name)
-                }
-                // Don't emit finish-step/start-step — message_stop already did
-              } else {
-                // No streaming — emit everything from the complete message
-                if (content && Array.isArray(content)) {
-                  for (const block of content) {
-                    if (block.type === 'text' && block.text) {
-                      const textId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-                      writer.write({ type: 'text-start', id: textId })
-                      writer.write({ type: 'text-delta', id: textId, delta: block.text })
-                      writer.write({ type: 'text-end', id: textId })
-                    } else if (block.type === 'tool_use') {
-                      writer.write({
-                        type: 'tool-input-start',
-                        toolCallId: block.id,
-                        toolName: block.name,
-                        dynamic: true,
-                      })
-                      if (block.input) {
-                        writer.write({
-                          type: 'tool-input-delta',
-                          toolCallId: block.id,
-                          inputTextDelta: JSON.stringify(block.input),
-                        })
-                      }
-                      writer.write({
-                        type: 'tool-input-available',
-                        toolCallId: block.id,
-                        toolName: block.name,
-                        input: block.input || {},
-                        dynamic: true,
-                      })
-                      pendingToolResults.set(block.id, block.name)
-                    }
-                  }
-                }
-                writer.write({ type: 'finish-step' })
-                writer.write({ type: 'start-step' })
-              }
-
-              // Reset streaming flag for the next turn
-              receivedStreamEvents = false
-            }
-
-            // SDKResultMessage — turn complete with usage
-            else if (msg.type === 'result') {
-              const result = msg as any
-              resultUsage = result.usage
-              console.log(`[project-runtime] Result: ${result.subtype}, tokens: ${JSON.stringify(resultUsage)}`)
-
-              if (currentTextId) {
-                writer.write({ type: 'text-end', id: currentTextId })
-                currentTextId = null
-              }
-
-              // Resolve any remaining pending tool results
-              for (const [tcId] of pendingToolResults) {
-                writer.write({
-                  type: 'tool-output-available',
-                  toolCallId: tcId,
-                  output: { success: true },
-                })
-              }
-              pendingToolResults.clear()
-
-              // Emit usage as custom data event (matches old format)
-              if (resultUsage) {
-                const inputTokens = resultUsage.input_tokens ?? 0
-                const outputTokens = resultUsage.output_tokens ?? 0
-                writer.write({
-                  type: 'data-usage' as any,
-                  data: {
-                    inputTokens,
-                    outputTokens,
-                    totalTokens: inputTokens + outputTokens,
-                  },
-                })
-              }
-
+          await streamSdkToUI(session, writer, {
+            logPrefix: 'project-runtime',
+            onQueryCreated: (query) => sessions.setActiveQuery(modelName, query),
+            onUsage: (usage) => {
               writer.write({
-                type: 'finish',
-                finishReason: result.subtype === 'success' ? 'stop' : 'error',
+                type: 'data-usage' as any,
+                data: {
+                  inputTokens: usage.inputTokens,
+                  outputTokens: usage.outputTokens,
+                  totalTokens: usage.inputTokens + usage.outputTokens,
+                },
               })
-              break
-            }
-          }
+            },
+          })
         } finally {
-          // Release active session lock and query reference
-          activeSessions.delete(modelName)
-          activeQueries.delete(modelName)
+          sessions.markInactive(modelName)
+          sessions.deleteActiveQuery(modelName)
 
-          // Trigger S3 sync after agent chat completes
-                  if (s3Sync) {
-                    s3Sync.triggerSync()
-                  }
+          if (s3Sync) {
+            s3Sync.triggerSync()
+          }
         }
       },
       onError: (error) => {
-        activeSessions.delete(modelName)
-        activeQueries.delete(modelName)
+        sessions.markInactive(modelName)
+        sessions.deleteActiveQuery(modelName)
         console.error('[project-runtime] Stream error:', error)
         return 'An error occurred during streaming'
       },
@@ -2967,10 +2762,14 @@ app.post('/preview/restart', async (c) => {
     const nodeModulesPath = join(PROJECT_DIR, 'node_modules')
     const nodeModulesExists = existsSync(nodeModulesPath)
     
-    // Check if node_modules appears complete (has key packages)
+    // Check if node_modules appears complete (has key packages AND lockfile)
+    // Without bun.lock, bun install must run to properly resolve the dependency graph.
+    // This prevents PostCSS/devDependency errors (e.g. @tailwindcss/postcss) when
+    // node_modules is copied from a template without a lockfile.
     const hasReact = existsSync(join(nodeModulesPath, 'react'))
     const hasVite = existsSync(join(nodeModulesPath, 'vite'))
-    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite
+    const hasLockfile = existsSync(join(PROJECT_DIR, 'bun.lock'))
+    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite && hasLockfile
     
     // Check if package.json has overrides - if so, we MUST run bun install to apply them
     // This is critical for templates using rolldown-vite via "overrides": { "vite": "npm:rolldown-vite@latest" }
@@ -3654,16 +3453,18 @@ app.post('/preview/dev', async (c) => {
     const nodeModulesExists = existsSync(nodeModulesPath)
     const hasReact = existsSync(join(nodeModulesPath, 'react'))
     const hasVite = existsSync(join(nodeModulesPath, 'vite'))
-    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite
-    
+    const hasLockfile = existsSync(join(PROJECT_DIR, 'bun.lock'))
+    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite && hasLockfile
+
     // Check if package.json has overrides - if so, we MUST run bun install to apply them
     // This is critical for templates using rolldown-vite via "overrides": { "vite": "npm:rolldown-vite@latest" }
     const hasOverrides = !!(packageJson.overrides || packageJson.resolutions)
     if (hasOverrides) {
       console.log('[project-runtime] Package has overrides/resolutions - will run bun install to apply them')
     }
-    
-    if (nodeModulesComplete && !hasOverrides) {
+
+    // Skip check disabled for now: always run bun install
+    if (false && nodeModulesComplete && !hasOverrides) {
       console.log('[project-runtime] ⚡ node_modules already exists - skipping bun install')
       markStep('bunInstall (skipped)')
     } else {
@@ -4537,6 +4338,7 @@ app.all('/*', async (c, next) => {
       '/terminal/',
       '/tests/',
       '/database/',
+      '/security/',
       '/api/',
       '/lsp',
     ]
@@ -6054,6 +5856,59 @@ app.delete('/tests/traces', async (c) => {
 })
 
 // =============================================================================
+// Security Scanning API — proxied from API server in Kubernetes
+// =============================================================================
+
+import { runSecurityScan } from './security-scanner'
+
+/**
+ * POST /security/scan
+ *
+ * Runs a comprehensive security scan on the project files.
+ * In K8s, the API server proxies POST /api/projects/:id/security/scan → here.
+ *
+ * Rate limited: one concurrent scan at a time per pod.
+ */
+let _securityScanRunning = false
+let _lastScanTime = 0
+const SCAN_COOLDOWN_MS = 10_000 // 10 s cooldown between scans
+
+app.post('/security/scan', async (c) => {
+  // Rate limit: reject if a scan is already in-flight
+  if (_securityScanRunning) {
+    return c.json({
+      ok: false,
+      error: { code: 'scan_in_progress', message: 'A security scan is already running. Please wait.' },
+    }, 429)
+  }
+
+  // Cooldown: reject rapid re-scans
+  const now = Date.now()
+  if (now - _lastScanTime < SCAN_COOLDOWN_MS) {
+    const waitMs = SCAN_COOLDOWN_MS - (now - _lastScanTime)
+    return c.json({
+      ok: false,
+      error: { code: 'rate_limited', message: `Please wait ${Math.ceil(waitMs / 1000)}s before re-scanning.` },
+    }, 429)
+  }
+
+  _securityScanRunning = true
+  try {
+    const result = await runSecurityScan(PROJECT_DIR)
+    _lastScanTime = Date.now()
+    return c.json(result, result.ok ? 200 : 500)
+  } catch (error: any) {
+    console.error('[project-runtime] Security scan error:', error)
+    return c.json({
+      ok: false,
+      error: { code: 'scan_failed', message: error.message || 'Security scan failed' },
+    }, 500)
+  } finally {
+    _securityScanRunning = false
+  }
+})
+
+// =============================================================================
 // Database API (Prisma Studio) - Simplified for Kubernetes
 // =============================================================================
 
@@ -6803,9 +6658,10 @@ export default {
 }
 
 // Pre-warm Claude Code after server is listening.
-// Small delay ensures the export/listen completes before we start the warm-up.
+// In pool mode, pre-warm eagerly (the whole point is to have a warm session ready).
+// In normal mode, small delay ensures the export/listen completes first.
 setTimeout(() => {
-  prewarmClaudeCode().catch((err: any) => {
-    console.error('[project-runtime] ⚠️ Pre-warm error (non-fatal):', err.message)
+  sessions.prewarm().catch((err: any) => {
+    console.error('[project-runtime] Pre-warm error (non-fatal):', err.message)
   })
-}, 2000)
+}, IS_POOL_MODE ? 1000 : 2000)

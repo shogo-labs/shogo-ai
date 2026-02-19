@@ -152,6 +152,10 @@ jobs:
             dockerfile: packages/project-runtime/Dockerfile
             ecr_name: project-runtime
             build_args: ""
+          - image: agent-runtime
+            dockerfile: packages/agent-runtime/Dockerfile
+            ecr_name: agent-runtime
+            build_args: ""
           - image: docs
             dockerfile: apps/docs/Dockerfile
             ecr_name: shogo-docs
@@ -162,8 +166,8 @@ jobs:
       contents: read
 
     steps:
-      - name: Free disk space (project-runtime only)
-        if: matrix.image == 'project-runtime'
+      - name: Free disk space (large runtime images)
+        if: matrix.image == 'project-runtime' || matrix.image == 'agent-runtime'
         uses: jlumbroso/free-disk-space@main
         with:
           # Frees ~31GB - keeps only what's needed for Docker builds
@@ -371,8 +375,8 @@ jobs:
 
       - name: Restart image prepuller
         run: |
-          # Restart the image-prepuller DaemonSet to pull the new project-runtime image
-          # This ensures the new image is pre-pulled on all nodes for fast cold starts
+          # Restart the image-prepuller DaemonSet to pull new project-runtime and agent-runtime images
+          # This ensures both images are pre-pulled on all nodes for fast cold starts
           echo "🔄 Restarting image-prepuller to pull new project-runtime image..."
           kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} || echo "Image prepuller not found, skipping"
           
@@ -412,6 +416,7 @@ jobs:
           echo "| MCP | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| API | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Web | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Agent Runtime | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Docs | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Endpoints" >> $GITHUB_STEP_SUMMARY

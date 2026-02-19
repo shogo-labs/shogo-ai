@@ -10,6 +10,7 @@
 
 import { useState, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
+import { formatCredits } from "@/lib/utils"
 import {
   ChevronDown,
   ChevronLeft,
@@ -26,7 +27,6 @@ import {
   BookOpen,
   Keyboard,
   Bug,
-  Gift,
   Sparkles,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -196,10 +196,7 @@ export function ProjectNameDropdown({
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-sm">
                 <span>Credits</span>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-emerald-500 font-medium">{credits} left</span>
-                  <ChevronDown className="h-3 w-3 opacity-50" />
-                </div>
+                <span className="text-emerald-500 font-medium">{formatCredits(credits ?? 0)} left</span>
               </div>
               <Progress value={creditsPercentage} className="h-1.5 bg-muted" />
               <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
@@ -208,14 +205,6 @@ export function ProjectNameDropdown({
               </div>
             </div>
           </div>
-
-          <DropdownMenuSeparator />
-
-          {/* Get free credits */}
-          <DropdownMenuItem className="gap-2">
-            <Gift className="h-4 w-4" />
-            Get free credits
-          </DropdownMenuItem>
 
           <DropdownMenuSeparator />
 

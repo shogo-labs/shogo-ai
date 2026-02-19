@@ -390,6 +390,7 @@ export const ModelName = {
   Verification: 'Verification',
   Workspace: 'Workspace',
   Project: 'Project',
+  AgentConfig: 'AgentConfig',
   ProjectCheckpoint: 'ProjectCheckpoint',
   GitHubConnection: 'GitHubConnection',
   StarredProject: 'StarredProject',
@@ -437,7 +438,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec"
+    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "agentConfig" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -882,6 +883,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         count: {
           args: Prisma.ProjectCountArgs<ExtArgs>
           result: runtime.Types.Utils.Optional<Prisma.ProjectCountAggregateOutputType> | number
+        }
+      }
+    }
+    AgentConfig: {
+      payload: Prisma.$AgentConfigPayload<ExtArgs>
+      fields: Prisma.AgentConfigFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.AgentConfigFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentConfigPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.AgentConfigFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentConfigPayload>
+        }
+        findFirst: {
+          args: Prisma.AgentConfigFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentConfigPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.AgentConfigFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentConfigPayload>
+        }
+        findMany: {
+          args: Prisma.AgentConfigFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentConfigPayload>[]
+        }
+        create: {
+          args: Prisma.AgentConfigCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentConfigPayload>
+        }
+        createMany: {
+          args: Prisma.AgentConfigCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.AgentConfigCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentConfigPayload>[]
+        }
+        delete: {
+          args: Prisma.AgentConfigDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentConfigPayload>
+        }
+        update: {
+          args: Prisma.AgentConfigUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentConfigPayload>
+        }
+        deleteMany: {
+          args: Prisma.AgentConfigDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.AgentConfigUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.AgentConfigUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentConfigPayload>[]
+        }
+        upsert: {
+          args: Prisma.AgentConfigUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentConfigPayload>
+        }
+        aggregate: {
+          args: Prisma.AgentConfigAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateAgentConfig>
+        }
+        groupBy: {
+          args: Prisma.AgentConfigGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AgentConfigGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.AgentConfigCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AgentConfigCountAggregateOutputType> | number
         }
       }
     }
@@ -3380,11 +3455,27 @@ export const ProjectScalarFieldEnum = {
   publishedAt: 'publishedAt',
   accessLevel: 'accessLevel',
   category: 'category',
+  type: 'type',
   siteTitle: 'siteTitle',
   siteDescription: 'siteDescription'
 } as const
 
 export type ProjectScalarFieldEnum = (typeof ProjectScalarFieldEnum)[keyof typeof ProjectScalarFieldEnum]
+
+
+export const AgentConfigScalarFieldEnum = {
+  id: 'id',
+  projectId: 'projectId',
+  heartbeatInterval: 'heartbeatInterval',
+  heartbeatEnabled: 'heartbeatEnabled',
+  channels: 'channels',
+  modelProvider: 'modelProvider',
+  modelName: 'modelName',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type AgentConfigScalarFieldEnum = (typeof AgentConfigScalarFieldEnum)[keyof typeof AgentConfigScalarFieldEnum]
 
 
 export const ProjectCheckpointScalarFieldEnum = {
@@ -4059,6 +4150,20 @@ export type ListEnumProjectCategoryFieldRefInput<$PrismaModel> = FieldRefInputTy
 
 
 /**
+ * Reference to a field of type 'ProjectType'
+ */
+export type EnumProjectTypeFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'ProjectType'>
+    
+
+
+/**
+ * Reference to a field of type 'ProjectType[]'
+ */
+export type ListEnumProjectTypeFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'ProjectType[]'>
+    
+
+
+/**
  * Reference to a field of type 'Int'
  */
 export type IntFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'Int'>
@@ -4550,6 +4655,7 @@ export type GlobalOmitConfig = {
   verification?: Prisma.VerificationOmit
   workspace?: Prisma.WorkspaceOmit
   project?: Prisma.ProjectOmit
+  agentConfig?: Prisma.AgentConfigOmit
   projectCheckpoint?: Prisma.ProjectCheckpointOmit
   gitHubConnection?: Prisma.GitHubConnectionOmit
   starredProject?: Prisma.StarredProjectOmit

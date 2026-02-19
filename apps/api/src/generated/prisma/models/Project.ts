@@ -39,6 +39,7 @@ export type ProjectMinAggregateOutputType = {
   publishedAt: Date | null
   accessLevel: $Enums.AccessLevel | null
   category: $Enums.ProjectCategory | null
+  type: $Enums.ProjectType | null
   siteTitle: string | null
   siteDescription: string | null
 }
@@ -58,6 +59,7 @@ export type ProjectMaxAggregateOutputType = {
   publishedAt: Date | null
   accessLevel: $Enums.AccessLevel | null
   category: $Enums.ProjectCategory | null
+  type: $Enums.ProjectType | null
   siteTitle: string | null
   siteDescription: string | null
 }
@@ -78,6 +80,7 @@ export type ProjectCountAggregateOutputType = {
   publishedAt: number
   accessLevel: number
   category: number
+  type: number
   siteTitle: number
   siteDescription: number
   _all: number
@@ -99,6 +102,7 @@ export type ProjectMinAggregateInputType = {
   publishedAt?: true
   accessLevel?: true
   category?: true
+  type?: true
   siteTitle?: true
   siteDescription?: true
 }
@@ -118,6 +122,7 @@ export type ProjectMaxAggregateInputType = {
   publishedAt?: true
   accessLevel?: true
   category?: true
+  type?: true
   siteTitle?: true
   siteDescription?: true
 }
@@ -138,6 +143,7 @@ export type ProjectCountAggregateInputType = {
   publishedAt?: true
   accessLevel?: true
   category?: true
+  type?: true
   siteTitle?: true
   siteDescription?: true
   _all?: true
@@ -231,6 +237,7 @@ export type ProjectGroupByOutputType = {
   publishedAt: Date | null
   accessLevel: $Enums.AccessLevel
   category: $Enums.ProjectCategory | null
+  type: $Enums.ProjectType
   siteTitle: string | null
   siteDescription: string | null
   _count: ProjectCountAggregateOutputType | null
@@ -272,6 +279,7 @@ export type ProjectWhereInput = {
   publishedAt?: Prisma.DateTimeNullableFilter<"Project"> | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFilter<"Project"> | $Enums.AccessLevel
   category?: Prisma.EnumProjectCategoryNullableFilter<"Project"> | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFilter<"Project"> | $Enums.ProjectType
   siteTitle?: Prisma.StringNullableFilter<"Project"> | string | null
   siteDescription?: Prisma.StringNullableFilter<"Project"> | string | null
   workspace?: Prisma.XOR<Prisma.WorkspaceScalarRelationFilter, Prisma.WorkspaceWhereInput>
@@ -283,6 +291,7 @@ export type ProjectWhereInput = {
   checkpoints?: Prisma.ProjectCheckpointListRelationFilter
   githubConnection?: Prisma.XOR<Prisma.GitHubConnectionNullableScalarRelationFilter, Prisma.GitHubConnectionWhereInput> | null
   starredBy?: Prisma.StarredProjectListRelationFilter
+  agentConfig?: Prisma.XOR<Prisma.AgentConfigNullableScalarRelationFilter, Prisma.AgentConfigWhereInput> | null
 }
 
 export type ProjectOrderByWithRelationInput = {
@@ -301,6 +310,7 @@ export type ProjectOrderByWithRelationInput = {
   publishedAt?: Prisma.SortOrderInput | Prisma.SortOrder
   accessLevel?: Prisma.SortOrder
   category?: Prisma.SortOrderInput | Prisma.SortOrder
+  type?: Prisma.SortOrder
   siteTitle?: Prisma.SortOrderInput | Prisma.SortOrder
   siteDescription?: Prisma.SortOrderInput | Prisma.SortOrder
   workspace?: Prisma.WorkspaceOrderByWithRelationInput
@@ -312,6 +322,7 @@ export type ProjectOrderByWithRelationInput = {
   checkpoints?: Prisma.ProjectCheckpointOrderByRelationAggregateInput
   githubConnection?: Prisma.GitHubConnectionOrderByWithRelationInput
   starredBy?: Prisma.StarredProjectOrderByRelationAggregateInput
+  agentConfig?: Prisma.AgentConfigOrderByWithRelationInput
 }
 
 export type ProjectWhereUniqueInput = Prisma.AtLeast<{
@@ -333,6 +344,7 @@ export type ProjectWhereUniqueInput = Prisma.AtLeast<{
   publishedAt?: Prisma.DateTimeNullableFilter<"Project"> | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFilter<"Project"> | $Enums.AccessLevel
   category?: Prisma.EnumProjectCategoryNullableFilter<"Project"> | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFilter<"Project"> | $Enums.ProjectType
   siteTitle?: Prisma.StringNullableFilter<"Project"> | string | null
   siteDescription?: Prisma.StringNullableFilter<"Project"> | string | null
   workspace?: Prisma.XOR<Prisma.WorkspaceScalarRelationFilter, Prisma.WorkspaceWhereInput>
@@ -344,6 +356,7 @@ export type ProjectWhereUniqueInput = Prisma.AtLeast<{
   checkpoints?: Prisma.ProjectCheckpointListRelationFilter
   githubConnection?: Prisma.XOR<Prisma.GitHubConnectionNullableScalarRelationFilter, Prisma.GitHubConnectionWhereInput> | null
   starredBy?: Prisma.StarredProjectListRelationFilter
+  agentConfig?: Prisma.XOR<Prisma.AgentConfigNullableScalarRelationFilter, Prisma.AgentConfigWhereInput> | null
 }, "id" | "publishedSubdomain">
 
 export type ProjectOrderByWithAggregationInput = {
@@ -362,6 +375,7 @@ export type ProjectOrderByWithAggregationInput = {
   publishedAt?: Prisma.SortOrderInput | Prisma.SortOrder
   accessLevel?: Prisma.SortOrder
   category?: Prisma.SortOrderInput | Prisma.SortOrder
+  type?: Prisma.SortOrder
   siteTitle?: Prisma.SortOrderInput | Prisma.SortOrder
   siteDescription?: Prisma.SortOrderInput | Prisma.SortOrder
   _count?: Prisma.ProjectCountOrderByAggregateInput
@@ -388,6 +402,7 @@ export type ProjectScalarWhereWithAggregatesInput = {
   publishedAt?: Prisma.DateTimeNullableWithAggregatesFilter<"Project"> | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelWithAggregatesFilter<"Project"> | $Enums.AccessLevel
   category?: Prisma.EnumProjectCategoryNullableWithAggregatesFilter<"Project"> | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeWithAggregatesFilter<"Project"> | $Enums.ProjectType
   siteTitle?: Prisma.StringNullableWithAggregatesFilter<"Project"> | string | null
   siteDescription?: Prisma.StringNullableWithAggregatesFilter<"Project"> | string | null
 }
@@ -406,6 +421,7 @@ export type ProjectCreateInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
@@ -417,6 +433,7 @@ export type ProjectCreateInput = {
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateInput = {
@@ -435,6 +452,7 @@ export type ProjectUncheckedCreateInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
@@ -444,6 +462,7 @@ export type ProjectUncheckedCreateInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUpdateInput = {
@@ -460,6 +479,7 @@ export type ProjectUpdateInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
@@ -471,6 +491,7 @@ export type ProjectUpdateInput = {
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateInput = {
@@ -489,6 +510,7 @@ export type ProjectUncheckedUpdateInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
@@ -498,6 +520,7 @@ export type ProjectUncheckedUpdateInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUncheckedUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateManyInput = {
@@ -516,6 +539,7 @@ export type ProjectCreateManyInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
 }
@@ -534,6 +558,7 @@ export type ProjectUpdateManyMutationInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
 }
@@ -554,6 +579,7 @@ export type ProjectUncheckedUpdateManyInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
 }
@@ -592,6 +618,7 @@ export type ProjectCountOrderByAggregateInput = {
   publishedAt?: Prisma.SortOrder
   accessLevel?: Prisma.SortOrder
   category?: Prisma.SortOrder
+  type?: Prisma.SortOrder
   siteTitle?: Prisma.SortOrder
   siteDescription?: Prisma.SortOrder
 }
@@ -611,6 +638,7 @@ export type ProjectMaxOrderByAggregateInput = {
   publishedAt?: Prisma.SortOrder
   accessLevel?: Prisma.SortOrder
   category?: Prisma.SortOrder
+  type?: Prisma.SortOrder
   siteTitle?: Prisma.SortOrder
   siteDescription?: Prisma.SortOrder
 }
@@ -630,6 +658,7 @@ export type ProjectMinOrderByAggregateInput = {
   publishedAt?: Prisma.SortOrder
   accessLevel?: Prisma.SortOrder
   category?: Prisma.SortOrder
+  type?: Prisma.SortOrder
   siteTitle?: Prisma.SortOrder
   siteDescription?: Prisma.SortOrder
 }
@@ -709,6 +738,24 @@ export type EnumAccessLevelFieldUpdateOperationsInput = {
 
 export type NullableEnumProjectCategoryFieldUpdateOperationsInput = {
   set?: $Enums.ProjectCategory | null
+}
+
+export type EnumProjectTypeFieldUpdateOperationsInput = {
+  set?: $Enums.ProjectType
+}
+
+export type ProjectCreateNestedOneWithoutAgentConfigInput = {
+  create?: Prisma.XOR<Prisma.ProjectCreateWithoutAgentConfigInput, Prisma.ProjectUncheckedCreateWithoutAgentConfigInput>
+  connectOrCreate?: Prisma.ProjectCreateOrConnectWithoutAgentConfigInput
+  connect?: Prisma.ProjectWhereUniqueInput
+}
+
+export type ProjectUpdateOneRequiredWithoutAgentConfigNestedInput = {
+  create?: Prisma.XOR<Prisma.ProjectCreateWithoutAgentConfigInput, Prisma.ProjectUncheckedCreateWithoutAgentConfigInput>
+  connectOrCreate?: Prisma.ProjectCreateOrConnectWithoutAgentConfigInput
+  upsert?: Prisma.ProjectUpsertWithoutAgentConfigInput
+  connect?: Prisma.ProjectWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.ProjectUpdateToOneWithWhereWithoutAgentConfigInput, Prisma.ProjectUpdateWithoutAgentConfigInput>, Prisma.ProjectUncheckedUpdateWithoutAgentConfigInput>
 }
 
 export type ProjectCreateNestedOneWithoutCheckpointsInput = {
@@ -873,6 +920,7 @@ export type ProjectCreateWithoutWorkspaceInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
@@ -883,6 +931,7 @@ export type ProjectCreateWithoutWorkspaceInput = {
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutWorkspaceInput = {
@@ -900,6 +949,7 @@ export type ProjectUncheckedCreateWithoutWorkspaceInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
@@ -909,6 +959,7 @@ export type ProjectUncheckedCreateWithoutWorkspaceInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutWorkspaceInput = {
@@ -956,8 +1007,137 @@ export type ProjectScalarWhereInput = {
   publishedAt?: Prisma.DateTimeNullableFilter<"Project"> | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFilter<"Project"> | $Enums.AccessLevel
   category?: Prisma.EnumProjectCategoryNullableFilter<"Project"> | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFilter<"Project"> | $Enums.ProjectType
   siteTitle?: Prisma.StringNullableFilter<"Project"> | string | null
   siteDescription?: Prisma.StringNullableFilter<"Project"> | string | null
+}
+
+export type ProjectCreateWithoutAgentConfigInput = {
+  id?: string
+  name: string
+  description?: string | null
+  tier?: $Enums.ProjectTier
+  status?: $Enums.ProjectStatus
+  schemas?: Prisma.ProjectCreateschemasInput | string[]
+  createdBy?: string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  publishedSubdomain?: string | null
+  publishedAt?: Date | string | null
+  accessLevel?: $Enums.AccessLevel
+  category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
+  siteTitle?: string | null
+  siteDescription?: string | null
+  workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
+  folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
+  members?: Prisma.MemberCreateNestedManyWithoutProjectInput
+  featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
+  chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
+  usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
+  starredBy?: Prisma.StarredProjectCreateNestedManyWithoutProjectInput
+}
+
+export type ProjectUncheckedCreateWithoutAgentConfigInput = {
+  id?: string
+  name: string
+  description?: string | null
+  workspaceId: string
+  tier?: $Enums.ProjectTier
+  status?: $Enums.ProjectStatus
+  schemas?: Prisma.ProjectCreateschemasInput | string[]
+  createdBy?: string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  folderId?: string | null
+  publishedSubdomain?: string | null
+  publishedAt?: Date | string | null
+  accessLevel?: $Enums.AccessLevel
+  category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
+  siteTitle?: string | null
+  siteDescription?: string | null
+  members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
+  featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
+  chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
+  usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
+  starredBy?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutProjectInput
+}
+
+export type ProjectCreateOrConnectWithoutAgentConfigInput = {
+  where: Prisma.ProjectWhereUniqueInput
+  create: Prisma.XOR<Prisma.ProjectCreateWithoutAgentConfigInput, Prisma.ProjectUncheckedCreateWithoutAgentConfigInput>
+}
+
+export type ProjectUpsertWithoutAgentConfigInput = {
+  update: Prisma.XOR<Prisma.ProjectUpdateWithoutAgentConfigInput, Prisma.ProjectUncheckedUpdateWithoutAgentConfigInput>
+  create: Prisma.XOR<Prisma.ProjectCreateWithoutAgentConfigInput, Prisma.ProjectUncheckedCreateWithoutAgentConfigInput>
+  where?: Prisma.ProjectWhereInput
+}
+
+export type ProjectUpdateToOneWithWhereWithoutAgentConfigInput = {
+  where?: Prisma.ProjectWhereInput
+  data: Prisma.XOR<Prisma.ProjectUpdateWithoutAgentConfigInput, Prisma.ProjectUncheckedUpdateWithoutAgentConfigInput>
+}
+
+export type ProjectUpdateWithoutAgentConfigInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  tier?: Prisma.EnumProjectTierFieldUpdateOperationsInput | $Enums.ProjectTier
+  status?: Prisma.EnumProjectStatusFieldUpdateOperationsInput | $Enums.ProjectStatus
+  schemas?: Prisma.ProjectUpdateschemasInput | string[]
+  createdBy?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  publishedSubdomain?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
+  category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
+  siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
+  folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
+  members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
+  featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
+  chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
+  usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
+  starredBy?: Prisma.StarredProjectUpdateManyWithoutProjectNestedInput
+}
+
+export type ProjectUncheckedUpdateWithoutAgentConfigInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  workspaceId?: Prisma.StringFieldUpdateOperationsInput | string
+  tier?: Prisma.EnumProjectTierFieldUpdateOperationsInput | $Enums.ProjectTier
+  status?: Prisma.EnumProjectStatusFieldUpdateOperationsInput | $Enums.ProjectStatus
+  schemas?: Prisma.ProjectUpdateschemasInput | string[]
+  createdBy?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  folderId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  publishedSubdomain?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
+  category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
+  siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
+  featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
+  chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
+  usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
+  checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
+  githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
+  starredBy?: Prisma.StarredProjectUncheckedUpdateManyWithoutProjectNestedInput
 }
 
 export type ProjectCreateWithoutCheckpointsInput = {
@@ -974,6 +1154,7 @@ export type ProjectCreateWithoutCheckpointsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
@@ -984,6 +1165,7 @@ export type ProjectCreateWithoutCheckpointsInput = {
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutCheckpointsInput = {
@@ -1002,6 +1184,7 @@ export type ProjectUncheckedCreateWithoutCheckpointsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
@@ -1010,6 +1193,7 @@ export type ProjectUncheckedCreateWithoutCheckpointsInput = {
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutCheckpointsInput = {
@@ -1042,6 +1226,7 @@ export type ProjectUpdateWithoutCheckpointsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
@@ -1052,6 +1237,7 @@ export type ProjectUpdateWithoutCheckpointsInput = {
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutCheckpointsInput = {
@@ -1070,6 +1256,7 @@ export type ProjectUncheckedUpdateWithoutCheckpointsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
@@ -1078,6 +1265,7 @@ export type ProjectUncheckedUpdateWithoutCheckpointsInput = {
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUncheckedUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateWithoutGithubConnectionInput = {
@@ -1094,6 +1282,7 @@ export type ProjectCreateWithoutGithubConnectionInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
@@ -1104,6 +1293,7 @@ export type ProjectCreateWithoutGithubConnectionInput = {
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
   starredBy?: Prisma.StarredProjectCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutGithubConnectionInput = {
@@ -1122,6 +1312,7 @@ export type ProjectUncheckedCreateWithoutGithubConnectionInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
@@ -1130,6 +1321,7 @@ export type ProjectUncheckedCreateWithoutGithubConnectionInput = {
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
   starredBy?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutGithubConnectionInput = {
@@ -1162,6 +1354,7 @@ export type ProjectUpdateWithoutGithubConnectionInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
@@ -1172,6 +1365,7 @@ export type ProjectUpdateWithoutGithubConnectionInput = {
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutGithubConnectionInput = {
@@ -1190,6 +1384,7 @@ export type ProjectUncheckedUpdateWithoutGithubConnectionInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
@@ -1198,6 +1393,7 @@ export type ProjectUncheckedUpdateWithoutGithubConnectionInput = {
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUncheckedUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateWithoutStarredByInput = {
@@ -1214,6 +1410,7 @@ export type ProjectCreateWithoutStarredByInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
@@ -1224,6 +1421,7 @@ export type ProjectCreateWithoutStarredByInput = {
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutStarredByInput = {
@@ -1242,6 +1440,7 @@ export type ProjectUncheckedCreateWithoutStarredByInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
@@ -1250,6 +1449,7 @@ export type ProjectUncheckedCreateWithoutStarredByInput = {
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutStarredByInput = {
@@ -1282,6 +1482,7 @@ export type ProjectUpdateWithoutStarredByInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
@@ -1292,6 +1493,7 @@ export type ProjectUpdateWithoutStarredByInput = {
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutStarredByInput = {
@@ -1310,6 +1512,7 @@ export type ProjectUncheckedUpdateWithoutStarredByInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
@@ -1318,6 +1521,7 @@ export type ProjectUncheckedUpdateWithoutStarredByInput = {
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateWithoutMembersInput = {
@@ -1334,6 +1538,7 @@ export type ProjectCreateWithoutMembersInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
@@ -1344,6 +1549,7 @@ export type ProjectCreateWithoutMembersInput = {
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutMembersInput = {
@@ -1362,6 +1568,7 @@ export type ProjectUncheckedCreateWithoutMembersInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
@@ -1370,6 +1577,7 @@ export type ProjectUncheckedCreateWithoutMembersInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutMembersInput = {
@@ -1402,6 +1610,7 @@ export type ProjectUpdateWithoutMembersInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
@@ -1412,6 +1621,7 @@ export type ProjectUpdateWithoutMembersInput = {
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutMembersInput = {
@@ -1430,6 +1640,7 @@ export type ProjectUncheckedUpdateWithoutMembersInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
@@ -1438,6 +1649,7 @@ export type ProjectUncheckedUpdateWithoutMembersInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUncheckedUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateWithoutFolderInput = {
@@ -1454,6 +1666,7 @@ export type ProjectCreateWithoutFolderInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
@@ -1464,6 +1677,7 @@ export type ProjectCreateWithoutFolderInput = {
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutFolderInput = {
@@ -1481,6 +1695,7 @@ export type ProjectUncheckedCreateWithoutFolderInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
@@ -1490,6 +1705,7 @@ export type ProjectUncheckedCreateWithoutFolderInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutFolderInput = {
@@ -1532,6 +1748,7 @@ export type ProjectCreateWithoutUsageEventsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
@@ -1542,6 +1759,7 @@ export type ProjectCreateWithoutUsageEventsInput = {
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutUsageEventsInput = {
@@ -1560,6 +1778,7 @@ export type ProjectUncheckedCreateWithoutUsageEventsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
@@ -1568,6 +1787,7 @@ export type ProjectUncheckedCreateWithoutUsageEventsInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutUsageEventsInput = {
@@ -1600,6 +1820,7 @@ export type ProjectUpdateWithoutUsageEventsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
@@ -1610,6 +1831,7 @@ export type ProjectUpdateWithoutUsageEventsInput = {
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutUsageEventsInput = {
@@ -1628,6 +1850,7 @@ export type ProjectUncheckedUpdateWithoutUsageEventsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
@@ -1636,6 +1859,7 @@ export type ProjectUncheckedUpdateWithoutUsageEventsInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUncheckedUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateWithoutChatSessionsInput = {
@@ -1652,6 +1876,7 @@ export type ProjectCreateWithoutChatSessionsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
@@ -1662,6 +1887,7 @@ export type ProjectCreateWithoutChatSessionsInput = {
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutChatSessionsInput = {
@@ -1680,6 +1906,7 @@ export type ProjectUncheckedCreateWithoutChatSessionsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
@@ -1688,6 +1915,7 @@ export type ProjectUncheckedCreateWithoutChatSessionsInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutChatSessionsInput = {
@@ -1720,6 +1948,7 @@ export type ProjectUpdateWithoutChatSessionsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
@@ -1730,6 +1959,7 @@ export type ProjectUpdateWithoutChatSessionsInput = {
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutChatSessionsInput = {
@@ -1748,6 +1978,7 @@ export type ProjectUncheckedUpdateWithoutChatSessionsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
@@ -1756,6 +1987,7 @@ export type ProjectUncheckedUpdateWithoutChatSessionsInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUncheckedUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateWithoutFeatureSessionsInput = {
@@ -1772,6 +2004,7 @@ export type ProjectCreateWithoutFeatureSessionsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
@@ -1782,6 +2015,7 @@ export type ProjectCreateWithoutFeatureSessionsInput = {
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectUncheckedCreateWithoutFeatureSessionsInput = {
@@ -1800,6 +2034,7 @@ export type ProjectUncheckedCreateWithoutFeatureSessionsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
@@ -1808,6 +2043,7 @@ export type ProjectUncheckedCreateWithoutFeatureSessionsInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
   githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
   starredBy?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutProjectInput
+  agentConfig?: Prisma.AgentConfigUncheckedCreateNestedOneWithoutProjectInput
 }
 
 export type ProjectCreateOrConnectWithoutFeatureSessionsInput = {
@@ -1840,6 +2076,7 @@ export type ProjectUpdateWithoutFeatureSessionsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
@@ -1850,6 +2087,7 @@ export type ProjectUpdateWithoutFeatureSessionsInput = {
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutFeatureSessionsInput = {
@@ -1868,6 +2106,7 @@ export type ProjectUncheckedUpdateWithoutFeatureSessionsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
@@ -1876,6 +2115,7 @@ export type ProjectUncheckedUpdateWithoutFeatureSessionsInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUncheckedUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectCreateManyWorkspaceInput = {
@@ -1893,6 +2133,7 @@ export type ProjectCreateManyWorkspaceInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
 }
@@ -1911,6 +2152,7 @@ export type ProjectUpdateWithoutWorkspaceInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
@@ -1921,6 +2163,7 @@ export type ProjectUpdateWithoutWorkspaceInput = {
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutWorkspaceInput = {
@@ -1938,6 +2181,7 @@ export type ProjectUncheckedUpdateWithoutWorkspaceInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
@@ -1947,6 +2191,7 @@ export type ProjectUncheckedUpdateWithoutWorkspaceInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUncheckedUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateManyWithoutWorkspaceInput = {
@@ -1964,6 +2209,7 @@ export type ProjectUncheckedUpdateManyWithoutWorkspaceInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
 }
@@ -1983,6 +2229,7 @@ export type ProjectCreateManyFolderInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
+  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
 }
@@ -2001,6 +2248,7 @@ export type ProjectUpdateWithoutFolderInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
@@ -2011,6 +2259,7 @@ export type ProjectUpdateWithoutFolderInput = {
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateWithoutFolderInput = {
@@ -2028,6 +2277,7 @@ export type ProjectUncheckedUpdateWithoutFolderInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
@@ -2037,6 +2287,7 @@ export type ProjectUncheckedUpdateWithoutFolderInput = {
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
   githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
   starredBy?: Prisma.StarredProjectUncheckedUpdateManyWithoutProjectNestedInput
+  agentConfig?: Prisma.AgentConfigUncheckedUpdateOneWithoutProjectNestedInput
 }
 
 export type ProjectUncheckedUpdateManyWithoutFolderInput = {
@@ -2054,6 +2305,7 @@ export type ProjectUncheckedUpdateManyWithoutFolderInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
+  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
 }
@@ -2150,6 +2402,7 @@ export type ProjectSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs 
   publishedAt?: boolean
   accessLevel?: boolean
   category?: boolean
+  type?: boolean
   siteTitle?: boolean
   siteDescription?: boolean
   workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
@@ -2161,6 +2414,7 @@ export type ProjectSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs 
   checkpoints?: boolean | Prisma.Project$checkpointsArgs<ExtArgs>
   githubConnection?: boolean | Prisma.Project$githubConnectionArgs<ExtArgs>
   starredBy?: boolean | Prisma.Project$starredByArgs<ExtArgs>
+  agentConfig?: boolean | Prisma.Project$agentConfigArgs<ExtArgs>
   _count?: boolean | Prisma.ProjectCountOutputTypeDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["project"]>
 
@@ -2180,6 +2434,7 @@ export type ProjectSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Exten
   publishedAt?: boolean
   accessLevel?: boolean
   category?: boolean
+  type?: boolean
   siteTitle?: boolean
   siteDescription?: boolean
   workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
@@ -2202,6 +2457,7 @@ export type ProjectSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Exten
   publishedAt?: boolean
   accessLevel?: boolean
   category?: boolean
+  type?: boolean
   siteTitle?: boolean
   siteDescription?: boolean
   workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
@@ -2224,11 +2480,12 @@ export type ProjectSelectScalar = {
   publishedAt?: boolean
   accessLevel?: boolean
   category?: boolean
+  type?: boolean
   siteTitle?: boolean
   siteDescription?: boolean
 }
 
-export type ProjectOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "description" | "workspaceId" | "tier" | "status" | "schemas" | "createdBy" | "createdAt" | "updatedAt" | "folderId" | "publishedSubdomain" | "publishedAt" | "accessLevel" | "category" | "siteTitle" | "siteDescription", ExtArgs["result"]["project"]>
+export type ProjectOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "description" | "workspaceId" | "tier" | "status" | "schemas" | "createdBy" | "createdAt" | "updatedAt" | "folderId" | "publishedSubdomain" | "publishedAt" | "accessLevel" | "category" | "type" | "siteTitle" | "siteDescription", ExtArgs["result"]["project"]>
 export type ProjectInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
   folder?: boolean | Prisma.Project$folderArgs<ExtArgs>
@@ -2239,6 +2496,7 @@ export type ProjectInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs
   checkpoints?: boolean | Prisma.Project$checkpointsArgs<ExtArgs>
   githubConnection?: boolean | Prisma.Project$githubConnectionArgs<ExtArgs>
   starredBy?: boolean | Prisma.Project$starredByArgs<ExtArgs>
+  agentConfig?: boolean | Prisma.Project$agentConfigArgs<ExtArgs>
   _count?: boolean | Prisma.ProjectCountOutputTypeDefaultArgs<ExtArgs>
 }
 export type ProjectIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
@@ -2262,6 +2520,7 @@ export type $ProjectPayload<ExtArgs extends runtime.Types.Extensions.InternalArg
     checkpoints: Prisma.$ProjectCheckpointPayload<ExtArgs>[]
     githubConnection: Prisma.$GitHubConnectionPayload<ExtArgs> | null
     starredBy: Prisma.$StarredProjectPayload<ExtArgs>[]
+    agentConfig: Prisma.$AgentConfigPayload<ExtArgs> | null
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
@@ -2279,6 +2538,7 @@ export type $ProjectPayload<ExtArgs extends runtime.Types.Extensions.InternalArg
     publishedAt: Date | null
     accessLevel: $Enums.AccessLevel
     category: $Enums.ProjectCategory | null
+    type: $Enums.ProjectType
     siteTitle: string | null
     siteDescription: string | null
   }, ExtArgs["result"]["project"]>
@@ -2684,6 +2944,7 @@ export interface Prisma__ProjectClient<T, Null = never, ExtArgs extends runtime.
   checkpoints<T extends Prisma.Project$checkpointsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$checkpointsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$ProjectCheckpointPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   githubConnection<T extends Prisma.Project$githubConnectionArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$githubConnectionArgs<ExtArgs>>): Prisma.Prisma__GitHubConnectionClient<runtime.Types.Result.GetResult<Prisma.$GitHubConnectionPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
   starredBy<T extends Prisma.Project$starredByArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$starredByArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$StarredProjectPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
+  agentConfig<T extends Prisma.Project$agentConfigArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$agentConfigArgs<ExtArgs>>): Prisma.Prisma__AgentConfigClient<runtime.Types.Result.GetResult<Prisma.$AgentConfigPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -2728,6 +2989,7 @@ export interface ProjectFieldRefs {
   readonly publishedAt: Prisma.FieldRef<"Project", 'DateTime'>
   readonly accessLevel: Prisma.FieldRef<"Project", 'AccessLevel'>
   readonly category: Prisma.FieldRef<"Project", 'ProjectCategory'>
+  readonly type: Prisma.FieldRef<"Project", 'ProjectType'>
   readonly siteTitle: Prisma.FieldRef<"Project", 'String'>
   readonly siteDescription: Prisma.FieldRef<"Project", 'String'>
 }
@@ -3305,6 +3567,25 @@ export type Project$starredByArgs<ExtArgs extends runtime.Types.Extensions.Inter
   take?: number
   skip?: number
   distinct?: Prisma.StarredProjectScalarFieldEnum | Prisma.StarredProjectScalarFieldEnum[]
+}
+
+/**
+ * Project.agentConfig
+ */
+export type Project$agentConfigArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the AgentConfig
+   */
+  select?: Prisma.AgentConfigSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the AgentConfig
+   */
+  omit?: Prisma.AgentConfigOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.AgentConfigInclude<ExtArgs> | null
+  where?: Prisma.AgentConfigWhereInput
 }
 
 /**

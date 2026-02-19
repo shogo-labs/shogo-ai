@@ -31,6 +31,14 @@ import { DatabasePanel } from "./DatabasePanel"
 import { TestPanel } from "./TestPanel"
 import { SecurityPanel } from "./SecurityPanel"
 import { HistoryPanel } from "./HistoryPanel"
+import {
+  AgentTestChatPanel,
+  AgentWorkspacePanel,
+  AgentSkillsPanel,
+  AgentHeartbeatPanel,
+  AgentChannelsPanel,
+  AgentLogsPanel,
+} from "./agent"
 import { cn } from "@/lib/utils"
 import { useSession } from "@/contexts/SessionProvider"
 import type { ViewportSize } from "./PreviewControls"
@@ -104,8 +112,10 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // External preview opening state
   const [isOpeningExternal, setIsOpeningExternal] = useState(false)
 
-  // Preview mode: 'runtime' (RuntimePreviewPanel), 'code' (CodeEditorPanel), 'terminal' (TerminalPanel), 'database' (DatabasePanel), 'tests' (TestPanel), 'security' (SecurityPanel), or 'history' (HistoryPanel)
-  const [previewMode, setPreviewMode] = useState<'runtime' | 'code' | 'terminal' | 'database' | 'tests' | 'security' | 'history'>('runtime')
+  // Preview mode state — initialise from transition state if available to avoid layout flash
+  const initialType = transitionState?.project?.type || 'APP'
+  const [previewMode, setPreviewMode] = useState<string>(initialType === 'AGENT' ? 'test-chat' : 'runtime')
+  const prevProjectTypeRef = useRef<string | null>(initialType)
 
   // Code editor refresh trigger - incremented when agent modifies files
   const [codeRefreshTrigger, setCodeRefreshTrigger] = useState(0)
@@ -120,6 +130,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Nonce is appended to ensure each click produces a unique value for the useEffect dedup
   const securityFixNonceRef = useRef(0)
   const [securityFixMessage, setSecurityFixMessage] = useState<string | null>(null)
+
+  // Auto-scan trigger — incremented after AI code generation to auto-run security scan
+  const [autoScanTrigger, setAutoScanTrigger] = useState(0)
 
   // Build error state - shared between RuntimePreviewPanel and TerminalPanel
   const [buildError, setBuildError] = useState<string | null>(null)
@@ -158,6 +171,18 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Use transition state if available (from homepage flow) to avoid loading flash
   const [project, setProject] = useState<any>(transitionState?.project ?? null)
   const [isLoading, setIsLoading] = useState(!transitionState?.project)
+
+  // Derive project type for conditional UI rendering
+  const isAgentProject = project?.type === 'AGENT'
+
+  // Reset preview mode when project type changes (e.g. on initial load)
+  useEffect(() => {
+    const currentType = project?.type || 'APP'
+    if (prevProjectTypeRef.current !== currentType) {
+      prevProjectTypeRef.current = currentType
+      setPreviewMode(currentType === 'AGENT' ? 'test-chat' : 'runtime')
+    }
+  }, [project?.type])
 
   // Transition overlay state - for animating from homepage to chat panel
   const chatInputContainerRef = useRef<HTMLDivElement>(null)
@@ -813,15 +838,17 @@ export const ProjectLayout = observer(function ProjectLayout() {
   const creditLedger = workspaceId
     ? store?.creditLedgerCollection?.all.find((l: any) => l.workspaceId === workspaceId)
     : null
-  // Compute effective balance from raw credit ledger fields
-  const effectiveBalance = creditLedger ? {
-    dailyCredits: creditLedger.dailyCredits ?? 0,
-    monthlyCredits: creditLedger.monthlyCredits ?? 0,
-    rolloverCredits: creditLedger.rolloverCredits ?? 0,
-    total: (creditLedger.dailyCredits ?? 0) + (creditLedger.monthlyCredits ?? 0) + (creditLedger.rolloverCredits ?? 0),
-  } : null
+  // Compute effective balance with lazy daily reset
+  const effectiveBalance = creditLedger ? (() => {
+    const lastReset = creditLedger.lastDailyReset ? new Date(creditLedger.lastDailyReset).toDateString() : ''
+    const needsReset = lastReset !== new Date().toDateString()
+    const daily = needsReset ? 5 : (creditLedger.dailyCredits ?? 0)
+    const monthly = creditLedger.monthlyCredits ?? 0
+    const rollover = creditLedger.rolloverCredits ?? 0
+    return { dailyCredits: daily, monthlyCredits: monthly, rolloverCredits: rollover, total: daily + monthly + rollover }
+  })() : null
   const creditsRemaining = effectiveBalance?.total ?? 5
-  const maxCredits = effectiveBalance ? (effectiveBalance.dailyCredits + effectiveBalance.monthlyCredits + effectiveBalance.rolloverCredits) : 5
+  const maxCredits = creditsRemaining
 
   // Loading state
   if (isLoading || !project) {
@@ -873,6 +900,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
           onOpenExternal={handleOpenExternal}
           onOpenCode={() => setPreviewMode('code')}
           isOpeningExternal={isOpeningExternal}
+          isAgentProject={isAgentProject}
           // Publish callbacks
           onPublish={handlePublish}
           onUnpublish={handleUnpublish}
@@ -940,6 +968,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 // Increment refresh trigger to reload code editor
                 // Preview auto-refresh is handled by SSE build events from Vite
                 setCodeRefreshTrigger(prev => prev + 1)
+                // Auto-trigger background security scan after AI modifies files
+                setAutoScanTrigger(prev => prev + 1)
               }}
               onActiveToolCall={(toolName) => {
                 // Track template_copy for preview overlay
@@ -957,85 +987,40 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
           {/* Preview/Workspace Container - with border styling */}
           <div className="flex-1 min-w-0 overflow-hidden p-3 bg-muted/30">
-            {/* Preview Mode Toggle (subtle tabs) */}
+            {/* Preview Mode Toggle (subtle tabs) - different for App vs Agent */}
             <div className="flex items-center gap-1 mb-2">
-              <button
-                onClick={() => setPreviewMode('runtime')}
-                className={cn(
-                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
-                  previewMode === 'runtime'
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                )}
-              >
-                Preview
-              </button>
-              <button
-                onClick={() => setPreviewMode('code')}
-                className={cn(
-                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
-                  previewMode === 'code'
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                )}
-              >
-                Code
-              </button>
-              <button
-                onClick={() => setPreviewMode('terminal')}
-                className={cn(
-                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
-                  previewMode === 'terminal'
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                )}
-              >
-                Terminal
-              </button>
-              <button
-                onClick={() => setPreviewMode('database')}
-                className={cn(
-                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
-                  previewMode === 'database'
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                )}
-              >
-                Database
-              </button>
-              <button
-                onClick={() => setPreviewMode('tests')}
-                className={cn(
-                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
-                  previewMode === 'tests'
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                )}
-              >
-                Tests
-              </button>
-              <button
-                onClick={() => setPreviewMode('security')}
-                className={cn(
-                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
-                  previewMode === 'security'
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                )}
-              >
-                Security
-              </button>
-              <button
-                onClick={() => setPreviewMode('history')}
-                className={cn(
-                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
-                  previewMode === 'history'
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                )}
-              >
-                History
-              </button>
+              {(isAgentProject
+                ? [
+                    { id: 'test-chat', label: 'Test Chat' },
+                    { id: 'workspace', label: 'Workspace' },
+                    { id: 'skills', label: 'Skills' },
+                    { id: 'heartbeat', label: 'Heartbeat' },
+                    { id: 'channels', label: 'Channels' },
+                    { id: 'logs', label: 'Logs' },
+                  ]
+                : [
+                    { id: 'runtime', label: 'Preview' },
+                    { id: 'code', label: 'Code' },
+                    { id: 'terminal', label: 'Terminal' },
+                    { id: 'database', label: 'Database' },
+                    { id: 'tests', label: 'Tests' },
+                    { id: 'security', label: 'Security' },
+                    { id: 'history', label: 'History' },
+                  ]
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setPreviewMode(tab.id)}
+                  className={cn(
+                    "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                    previewMode === tab.id
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  )}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
 
             {/* Preview Frame with border - all panels stay mounted for state persistence */}
@@ -1143,6 +1128,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 <SecurityPanel
                   projectId={projectId || ''}
                   className="h-full"
+                  autoScanTrigger={autoScanTrigger}
                   onFixWithAI={(message) => {
                     // Uncollapse chat panel so the user can see the AI working
                     if (isChatCollapsed) setIsChatCollapsed(false)
@@ -1173,6 +1159,36 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   }}
                 />
               </div>
+
+              {/* Agent Builder Panels */}
+              {isAgentProject && (
+                <>
+                  <AgentTestChatPanel
+                    projectId={projectId || ''}
+                    visible={previewMode === 'test-chat'}
+                  />
+                  <AgentWorkspacePanel
+                    projectId={projectId || ''}
+                    visible={previewMode === 'workspace'}
+                  />
+                  <AgentSkillsPanel
+                    projectId={projectId || ''}
+                    visible={previewMode === 'skills'}
+                  />
+                  <AgentHeartbeatPanel
+                    projectId={projectId || ''}
+                    visible={previewMode === 'heartbeat'}
+                  />
+                  <AgentChannelsPanel
+                    projectId={projectId || ''}
+                    visible={previewMode === 'channels'}
+                  />
+                  <AgentLogsPanel
+                    projectId={projectId || ''}
+                    visible={previewMode === 'logs'}
+                  />
+                </>
+              )}
             </div>
           </div>
         </div>

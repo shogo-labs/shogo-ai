@@ -55,6 +55,14 @@ export const ProjectCategory = {
 export type ProjectCategory = (typeof ProjectCategory)[keyof typeof ProjectCategory]
 
 
+export const ProjectType = {
+  APP: 'APP',
+  AGENT: 'AGENT'
+} as const
+
+export type ProjectType = (typeof ProjectType)[keyof typeof ProjectType]
+
+
 export const MemberRole = {
   owner: 'owner',
   admin: 'admin',

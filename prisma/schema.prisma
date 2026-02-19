@@ -142,6 +142,7 @@ model Project {
   publishedAt        DateTime?
   accessLevel        AccessLevel   @default(anyone)
   category           ProjectCategory?
+  type               ProjectType        @default(APP)
   siteTitle          String?
   siteDescription    String?
 
@@ -155,10 +156,27 @@ model Project {
   checkpoints      ProjectCheckpoint[]
   githubConnection GitHubConnection?
   starredBy        StarredProject[]
+  agentConfig      AgentConfig?
 
   @@index([workspaceId])
   @@index([folderId])
   @@map("projects")
+}
+
+model AgentConfig {
+  id                String   @id @default(uuid())
+  projectId         String   @unique
+  heartbeatInterval Int      @default(1800)
+  heartbeatEnabled  Boolean  @default(false)
+  channels          Json     @default("[]")
+  modelProvider     String   @default("anthropic")
+  modelName         String   @default("claude-sonnet-4-5")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("agent_configs")
 }
 
 enum ProjectTier {
@@ -185,6 +203,11 @@ enum ProjectCategory {
   website
   tool
   game
+}
+
+enum ProjectType {
+  APP
+  AGENT
 }
 
 // =============================================================================

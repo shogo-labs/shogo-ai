@@ -1,0 +1,31 @@
+{
+  "name": "@shogo/agent-runtime",
+  "version": "0.0.1",
+  "description": "Agent runtime - runs AI agent gateway with heartbeat, channels, and skills in per-agent pods",
+  "type": "module",
+  "main": "src/server.ts",
+  "scripts": {
+    "dev": "bun run --watch src/server.ts",
+    "start": "bun run src/server.ts",
+    "build": "bun build src/server.ts --outdir dist --target bun",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.41",
+    "@aws-sdk/client-s3": "^3.700.0",
+    "@hono/node-server": "^1.13.1",
+    "@mariozechner/pi-agent-core": "^0.53.0",
+    "@mariozechner/pi-ai": "^0.53.0",
+    "@shogo/shared-runtime": "workspace:*",
+    "@sinclair/typebox": "^0.34.48",
+    "ai": "^6.0.73",
+    "hono": "^4.7.10",
+    "tar": "^7.4.3",
+    "yaml": "^2.7.1",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.8.3"
+  }
+}

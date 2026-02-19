@@ -1087,6 +1087,8 @@ resource "null_resource" "knative_services" {
                   # Pod-per-project configuration
                   - name: PROJECT_RUNTIME_IMAGE
                     value: "${local.ecr_registry}/shogo/project-runtime:${local.image_tag}"
+                  - name: AGENT_RUNTIME_IMAGE
+                    value: "${local.ecr_registry}/shogo/agent-runtime:${local.image_tag}"
                   - name: PROJECT_NAMESPACE
                     value: "shogo-staging-workspaces"
                   - name: ANTHROPIC_API_KEY
