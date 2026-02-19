@@ -31,7 +31,7 @@ import { cors } from 'hono/cors'
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
-import { existsSync, readdirSync, readFileSync, writeFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
 import {
   initializeS3Sync, type S3Sync,
   initializePostgresBackup, type PostgresBackup,
@@ -450,6 +450,55 @@ const THEME_CSS: Record<string, { light: string; dark: string; radius: string }>
     dark: `--background: 120 30% 5%; --foreground: 120 30% 98%; --primary: 142 71% 45%; --primary-foreground: 120 30% 5%; --secondary: 120 20% 17%; --secondary-foreground: 120 30% 98%; --muted: 120 20% 17%; --muted-foreground: 120 20% 65%; --border: 120 20% 17%; --input: 120 20% 17%; --ring: 142 71% 45%;`,
     radius: '0.5',
   },
+}
+
+/**
+ * Merge _template base infrastructure into the project directory.
+ * Ensures all templates get Tailwind v4 deps, PostCSS config, and shadcn setup
+ * regardless of whether the template itself declares them.
+ * _template's deps form the base layer; the template's own deps override on conflict.
+ */
+function ensureBaseInfrastructure(projectDir: string): void {
+  const baseTemplateDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples/_template')
+  if (!existsSync(baseTemplateDir)) {
+    console.warn('[project-runtime] _template directory not found, skipping base infrastructure merge')
+    return
+  }
+
+  const basePackagePath = join(baseTemplateDir, 'package.json')
+  const projectPackagePath = join(projectDir, 'package.json')
+  if (existsSync(basePackagePath) && existsSync(projectPackagePath)) {
+    try {
+      const basePkg = JSON.parse(readFileSync(basePackagePath, 'utf-8'))
+      const projectPkg = JSON.parse(readFileSync(projectPackagePath, 'utf-8'))
+
+      projectPkg.dependencies = { ...basePkg.dependencies, ...projectPkg.dependencies }
+      projectPkg.devDependencies = { ...basePkg.devDependencies, ...projectPkg.devDependencies }
+
+      writeFileSync(projectPackagePath, JSON.stringify(projectPkg, null, 2) + '\n', 'utf-8')
+      console.log('[project-runtime] Merged _template base deps into package.json')
+    } catch (err: any) {
+      console.warn(`[project-runtime] Warning: Could not merge base package.json: ${err.message}`)
+    }
+  }
+
+  const postcssConfig = join(projectDir, 'postcss.config.mjs')
+  if (!existsSync(postcssConfig)) {
+    const basePostcss = join(baseTemplateDir, 'postcss.config.mjs')
+    if (existsSync(basePostcss)) {
+      copyFileSync(basePostcss, postcssConfig)
+      console.log('[project-runtime] Copied postcss.config.mjs from _template')
+    }
+  }
+
+  const componentsJson = join(projectDir, 'components.json')
+  if (!existsSync(componentsJson)) {
+    const baseComponents = join(baseTemplateDir, 'components.json')
+    if (existsSync(baseComponents)) {
+      copyFileSync(baseComponents, componentsJson)
+      console.log('[project-runtime] Copied components.json from _template')
+    }
+  }
 }
 
 /**
@@ -1296,8 +1345,9 @@ app.get('/templates/list', (c) => {
  * 
  * This endpoint:
  * 1. Copies template files to the project directory
- * 2. Applies optional theme
- * 3. Triggers /preview/restart to install deps, generate Prisma, build, and start
+ * 2. Merges _template base infrastructure (Tailwind deps, PostCSS, shadcn)
+ * 3. Applies optional theme
+ * 4. Triggers /preview/restart to install deps, generate Prisma, build, and start
  */
 app.post('/templates/copy', async (c) => {
   try {
@@ -1313,12 +1363,15 @@ app.post('/templates/copy', async (c) => {
       return c.json(copyResult, 400)
     }
     
-    // Step 2: Apply theme if specified.
+    // Step 2: Merge _template base infrastructure (Tailwind deps, PostCSS, shadcn)
+    ensureBaseInfrastructure(PROJECT_DIR)
+    
+    // Step 3: Apply theme if specified.
     if (body.theme) {
       applyThemeToProject(PROJECT_DIR, body.theme)
     }
     
-    // Step 3: Trigger restart to install deps, generate Prisma, build, and start
+    // Step 4: Trigger restart to install deps, generate Prisma, build, and start
     try {
       console.log(`[templates/copy] Triggering preview restart after template copy...`)
       const restartResponse = await fetch(`http://localhost:${PORT}/preview/restart`, {

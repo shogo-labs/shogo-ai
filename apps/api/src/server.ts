@@ -848,7 +848,9 @@ async function loadTemplates(): Promise<TemplateMetadata[]> {
  */
 app.get('/api/templates', async (c) => {
   try {
-    const templates = await loadTemplates()
+    const allTemplates = await loadTemplates()
+    // [EXPO DISABLED] Filter out expo-app template
+    const templates = allTemplates.filter(t => t.name !== 'expo-app')
     return c.json({ templates }, 200)
   } catch (error: any) {
     console.error('[Templates] Error loading templates:', error)

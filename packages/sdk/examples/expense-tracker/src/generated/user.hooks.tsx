@@ -51,19 +51,33 @@ export interface UserHooks {
   afterDelete?: (id: string, ctx: HookContext) => Promise<void>
 }
 
+const DEFAULT_CATEGORIES = [
+  { name: 'Food & Dining', icon: '🍔', color: '#EF4444', type: 'expense' },
+  { name: 'Transportation', icon: '🚗', color: '#F59E0B', type: 'expense' },
+  { name: 'Shopping', icon: '🛍️', color: '#8B5CF6', type: 'expense' },
+  { name: 'Entertainment', icon: '🎬', color: '#EC4899', type: 'expense' },
+  { name: 'Bills & Utilities', icon: '💡', color: '#6366F1', type: 'expense' },
+  { name: 'Health', icon: '🏥', color: '#14B8A6', type: 'expense' },
+  { name: 'Housing', icon: '🏠', color: '#F97316', type: 'expense' },
+  { name: 'Other', icon: '📦', color: '#6B7280', type: 'expense' },
+  { name: 'Salary', icon: '💰', color: '#10B981', type: 'income' },
+  { name: 'Freelance', icon: '💻', color: '#3B82F6', type: 'income' },
+  { name: 'Investments', icon: '📈', color: '#22C55E', type: 'income' },
+  { name: 'Other Income', icon: '💵', color: '#06B6D4', type: 'income' },
+]
+
 /**
- * Default User hooks (customize as needed)
+ * Default User hooks
  */
 export const userHooks: UserHooks = {
-  // beforeList: async (ctx) => {
-  //   // Query params are automatically added to where clause
-  //   // Example: GET /api/projects?workspaceId=123 => where: { workspaceId: "123" }
-  //   
-  //   // You can override or extend the where clause:
-  //   // return { ok: true, data: { where: { ...ctx.query, userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  afterCreate: async (record, ctx) => {
+    try {
+      await ctx.prisma.category.createMany({
+        data: DEFAULT_CATEGORIES.map((cat) => ({ ...cat, userId: record.id })),
+        skipDuplicates: true,
+      })
+    } catch (err) {
+      console.error('[User Hook] Failed to seed categories:', err)
+    }
+  },
 }

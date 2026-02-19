@@ -530,6 +530,55 @@ function generateThemeCSS(themeId: string): string {
 }
 
 /**
+ * Merge _template base infrastructure into the project directory.
+ * Ensures all templates get Tailwind v4 deps, PostCSS config, and shadcn setup
+ * regardless of whether the template itself declares them.
+ * _template's deps form the base layer; the template's own deps override on conflict.
+ */
+function ensureBaseInfrastructure(projectDir: string): void {
+  const baseTemplateDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples/_template')
+  if (!existsSync(baseTemplateDir)) {
+    console.warn('[template.copy] _template directory not found, skipping base infrastructure merge')
+    return
+  }
+
+  const basePackagePath = join(baseTemplateDir, 'package.json')
+  const projectPackagePath = join(projectDir, 'package.json')
+  if (existsSync(basePackagePath) && existsSync(projectPackagePath)) {
+    try {
+      const basePkg = JSON.parse(readFileSync(basePackagePath, 'utf-8'))
+      const projectPkg = JSON.parse(readFileSync(projectPackagePath, 'utf-8'))
+
+      projectPkg.dependencies = { ...basePkg.dependencies, ...projectPkg.dependencies }
+      projectPkg.devDependencies = { ...basePkg.devDependencies, ...projectPkg.devDependencies }
+
+      writeFileSync(projectPackagePath, JSON.stringify(projectPkg, null, 2) + '\n', 'utf-8')
+      console.log('[template.copy] Merged _template base deps into package.json')
+    } catch (err: any) {
+      console.warn(`[template.copy] Warning: Could not merge base package.json: ${err.message}`)
+    }
+  }
+
+  const postcssConfig = join(projectDir, 'postcss.config.mjs')
+  if (!existsSync(postcssConfig)) {
+    const basePostcss = join(baseTemplateDir, 'postcss.config.mjs')
+    if (existsSync(basePostcss)) {
+      copyFileSync(basePostcss, postcssConfig)
+      console.log('[template.copy] Copied postcss.config.mjs from _template')
+    }
+  }
+
+  const componentsJson = join(projectDir, 'components.json')
+  if (!existsSync(componentsJson)) {
+    const baseComponents = join(baseTemplateDir, 'components.json')
+    if (existsSync(baseComponents)) {
+      copyFileSync(baseComponents, componentsJson)
+      console.log('[template.copy] Copied components.json from _template')
+    }
+  }
+}
+
+/**
  * Apply theme to project by writing index.css
  */
 function applyThemeToProject(projectDir: string, themeId: string): void {
@@ -1014,6 +1063,10 @@ export async function executeTemplateCopy(
     // Update package.json with new name
     updatePackageJson(projectDir, args.name)
     timer.mark('updatePackageJson')
+
+    // Merge _template base infrastructure (Tailwind deps, PostCSS, shadcn)
+    ensureBaseInfrastructure(projectDir)
+    timer.mark('ensureBaseInfrastructure')
 
     // Handle database configuration based on environment
     if (isEvalMode()) {

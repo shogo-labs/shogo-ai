@@ -1,6 +1,6 @@
 /**
  * Feedback Form App
- * 
+ *
  * Uses Hono API routes and MobX for state management.
  * Supports both authenticated dashboard and public form pages.
  */
@@ -10,8 +10,16 @@ import { observer } from 'mobx-react-lite'
 import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
 import { api, configureApiClient } from './generated/api-client'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  LogOut, Copy, ExternalLink, Star, Mail, Trash2, Eye, EyeOff,
+  Loader2, MessageSquare, Send, CheckCircle2, AlertCircle, Inbox,
+} from 'lucide-react'
 
-// Types
 interface SubmissionType {
   id: string
   name: string
@@ -42,7 +50,6 @@ interface User {
 }
 
 export default function App() {
-  // Simple hash-based routing for public form
   const [route, setRoute] = useState(() => window.location.hash.slice(1) || '/')
 
   useEffect(() => {
@@ -51,13 +58,11 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHash)
   }, [])
 
-  // Check if this is a public form route
   if (route.startsWith('/form/')) {
     const userId = route.replace('/form/', '')
     return <PublicFormPage userId={userId} />
   }
 
-  // Protected dashboard
   return (
     <AuthGate>
       <DashboardPage />
@@ -66,7 +71,7 @@ export default function App() {
 }
 
 // =============================================================================
-// Dashboard Page (authenticated)
+// Dashboard
 // =============================================================================
 
 const DashboardPage = observer(function DashboardPage() {
@@ -75,8 +80,8 @@ const DashboardPage = observer(function DashboardPage() {
   const [stats, setStats] = useState<SubmissionStats | null>(null)
   const [filter, setFilter] = useState<'all' | 'unread' | 'starred'>('all')
   const [loading, setLoading] = useState(true)
+  const [copied, setCopied] = useState(false)
 
-  // Configure API client with user context
   useEffect(() => {
     if (auth.user) {
       configureApiClient({ userId: auth.user.id })
@@ -85,14 +90,13 @@ const DashboardPage = observer(function DashboardPage() {
 
   const fetchData = useCallback(async () => {
     if (!auth.user) return
-    
+
     try {
-      // Use API client for standard CRUD, raw fetch only for custom endpoints
       const [subsRes, statsRes] = await Promise.all([
         api.submission.list(),
         fetch(`/api/submissions/stats?userId=${auth.user.id}`),
       ])
-      
+
       if (subsRes.ok) {
         setSubmissions((subsRes.items || []) as any)
       }
@@ -126,201 +130,224 @@ const DashboardPage = observer(function DashboardPage() {
     fetchData()
   }
 
-  const filteredSubmissions = submissions.filter(s => {
+  const filteredSubmissions = submissions.filter((s) => {
     if (filter === 'unread') return !s.isRead
     if (filter === 'starred') return s.isStarred
     return true
   })
 
-  const formUrl = typeof window !== 'undefined' 
+  const formUrl = typeof window !== 'undefined'
     ? `${window.location.origin}/#/form/${auth.user?.id}`
     : `/#/form/${auth.user?.id}`
 
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(formUrl)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
   if (loading) {
     return (
-      <div style={{ textAlign: 'center', padding: '4rem' }}>
-        <p>Loading...</p>
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
+  const filterCounts = {
+    all: submissions.length,
+    unread: submissions.filter((s) => !s.isRead).length,
+    starred: submissions.filter((s) => s.isStarred).length,
+  }
+
   return (
-    <div>
-      <header style={{ marginBottom: '2rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+    <div className="min-h-screen bg-background">
+      <div className="mx-auto max-w-3xl px-4 py-8">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 style={{ fontSize: '1.5rem', fontWeight: 700 }}>Feedback Dashboard</h1>
-            <p style={{ color: '#6b7280' }}>{auth.user?.name || auth.user?.email}</p>
+            <h1 className="text-2xl font-bold tracking-tight">Feedback Dashboard</h1>
+            <p className="text-sm text-muted-foreground">{auth.user?.name || auth.user?.email}</p>
           </div>
-          <button
-            onClick={() => auth.signOut()}
-            style={{ background: '#f3f4f6', color: '#374151' }}
-          >
+          <Button variant="ghost" size="sm" onClick={() => auth.signOut()}>
+            <LogOut className="size-4" />
             Sign Out
-          </button>
+          </Button>
         </div>
-        
-        {/* Share form link */}
-        <div style={{ background: '#eff6ff', padding: '1rem', borderRadius: '8px', marginTop: '1rem' }}>
-          <p style={{ fontWeight: 500, marginBottom: '0.5rem' }}>Share your feedback form:</p>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <input 
-              type="text" 
-              value={formUrl} 
-              readOnly 
-              style={{ flex: 1, marginBottom: 0 }}
-            />
-            <button onClick={() => navigator.clipboard.writeText(formUrl)}>
-              Copy
-            </button>
-            <button 
-              onClick={() => window.location.hash = `/form/${auth.user?.id}`}
-              style={{ background: 'white', color: '#374151', border: '1px solid #d1d5db' }}
-            >
-              Preview
-            </button>
-          </div>
-        </div>
-      </header>
 
-      {/* Stats */}
-      {stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
-          <StatCard label="Total" value={stats.total} />
-          <StatCard label="Unread" value={stats.unread} />
-          <StatCard label="Avg Rating" value={stats.averageRating} />
-          <StatCard label="Would Recommend" value={`${stats.recommendRate}%`} />
-        </div>
-      )}
-
-      {/* Filter tabs */}
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-        {(['all', 'unread', 'starred'] as const).map((f) => (
-          <button 
-            key={f}
-            onClick={() => setFilter(f)}
-            style={{
-              background: filter === f ? '#3b82f6' : 'white',
-              color: filter === f ? 'white' : '#374151',
-              border: filter === f ? 'none' : '1px solid #d1d5db',
-            }}
-          >
-            {f.charAt(0).toUpperCase() + f.slice(1)} ({
-              f === 'all' ? submissions.length :
-              f === 'unread' ? submissions.filter(s => !s.isRead).length :
-              submissions.filter(s => s.isStarred).length
-            })
-          </button>
-        ))}
-      </div>
-
-      {/* Submissions list */}
-      {filteredSubmissions.length === 0 ? (
-        <p style={{ textAlign: 'center', color: '#9ca3af', padding: '2rem' }}>
-          {submissions.length === 0 
-            ? 'No submissions yet. Share your form link to start collecting feedback!'
-            : 'No submissions match the current filter.'}
-        </p>
-      ) : (
-        <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden' }}>
-          {filteredSubmissions.map((submission, i) => (
-            <div 
-              key={submission.id} 
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: '1rem',
-                padding: '1rem',
-                borderBottom: i < filteredSubmissions.length - 1 ? '1px solid #f3f4f6' : 'none',
-                background: !submission.isRead ? '#eff6ff' : 'white',
-              }}
-            >
-              {/* Star button */}
-              <button
-                onClick={() => handleToggleStar(submission.id, !submission.isStarred)}
-                style={{
-                  background: 'none',
-                  padding: '0.25rem',
-                  fontSize: '1.25rem',
-                  color: submission.isStarred ? '#fbbf24' : '#d1d5db',
-                }}
+        {/* Share link */}
+        <Card className="mb-6">
+          <CardContent className="pt-6">
+            <p className="text-sm font-medium mb-2">Share your feedback form:</p>
+            <div className="flex gap-2">
+              <Input value={formUrl} readOnly className="font-mono text-xs" />
+              <Button variant="outline" size="sm" onClick={handleCopy}>
+                {copied ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
+                {copied ? 'Copied' : 'Copy'}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => (window.location.hash = `/form/${auth.user?.id}`)}
               >
-                ★
-              </button>
-
-              {/* Content */}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-                  <strong>{submission.name}</strong>
-                  <span style={{
-                    padding: '0.125rem 0.5rem',
-                    borderRadius: '9999px',
-                    fontSize: '0.75rem',
-                    fontWeight: 500,
-                    background: 
-                      submission.category === 'feedback' ? '#dbeafe' :
-                      submission.category === 'bug' ? '#fee2e2' :
-                      submission.category === 'feature' ? '#dcfce7' :
-                      '#fef3c7',
-                    color:
-                      submission.category === 'feedback' ? '#1e40af' :
-                      submission.category === 'bug' ? '#991b1b' :
-                      submission.category === 'feature' ? '#166534' :
-                      '#92400e',
-                  }}>
-                    {submission.category}
-                  </span>
-                  <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
-                    {'★'.repeat(submission.rating)}{'☆'.repeat(5 - submission.rating)}
-                  </span>
-                </div>
-                <p style={{ color: '#4b5563', fontSize: '0.875rem', marginBottom: '0.25rem' }} className="line-clamp-2">
-                  {submission.message}
-                </p>
-                <p style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
-                  {submission.email} · {new Date(submission.createdAt).toLocaleDateString()}
-                  {submission.wouldRecommend && ' · Would recommend'}
-                </p>
-              </div>
-
-              {/* Actions */}
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button
-                  onClick={() => handleMarkRead(submission.id, !submission.isRead)}
-                  style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', background: 'white', color: '#374151', border: '1px solid #d1d5db' }}
-                >
-                  {submission.isRead ? 'Mark Unread' : 'Mark Read'}
-                </button>
-                <button
-                  onClick={() => handleDelete(submission.id)}
-                  style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', background: 'white', color: '#374151', border: '1px solid #d1d5db' }}
-                >
-                  Delete
-                </button>
-              </div>
+                <ExternalLink className="size-4" />
+                Preview
+              </Button>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Stats */}
+        {stats && (
+          <div className="grid grid-cols-2 gap-3 mb-6 sm:grid-cols-4">
+            <StatCard label="Total" value={stats.total} />
+            <StatCard label="Unread" value={stats.unread} />
+            <StatCard label="Avg Rating" value={stats.averageRating} />
+            <StatCard label="Would Recommend" value={`${stats.recommendRate}%`} />
+          </div>
+        )}
+
+        {/* Filter tabs */}
+        <div className="flex gap-1 mb-4">
+          {(['all', 'unread', 'starred'] as const).map((f) => (
+            <Button
+              key={f}
+              variant={filter === f ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setFilter(f)}
+            >
+              {f.charAt(0).toUpperCase() + f.slice(1)} ({filterCounts[f]})
+            </Button>
           ))}
         </div>
-      )}
 
-      <footer style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.875rem', color: '#9ca3af' }}>
-        <p>Built with <strong>@shogo-ai/sdk</strong> + Hono</p>
-      </footer>
+        {/* Submissions */}
+        {filteredSubmissions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-16 text-center">
+            <Inbox className="size-10 text-muted-foreground/40 mb-3" />
+            <p className="text-sm text-muted-foreground">
+              {submissions.length === 0
+                ? 'No submissions yet. Share your form link to start collecting feedback!'
+                : 'No submissions match the current filter.'}
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-lg border overflow-hidden divide-y">
+            {filteredSubmissions.map((submission) => (
+              <SubmissionRow
+                key={submission.id}
+                submission={submission}
+                onMarkRead={handleMarkRead}
+                onToggleStar={handleToggleStar}
+                onDelete={handleDelete}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Footer */}
+        <p className="mt-8 text-center text-xs text-muted-foreground">
+          Built with <span className="font-medium">@shogo-ai/sdk</span> + Hono
+        </p>
+      </div>
     </div>
   )
 })
 
 function StatCard({ label, value }: { label: string; value: string | number }) {
   return (
-    <div style={{ background: '#f9fafb', borderRadius: '8px', padding: '1rem', textAlign: 'center' }}>
-      <p style={{ fontSize: '1.5rem', fontWeight: 700 }}>{value}</p>
-      <p style={{ fontSize: '0.875rem', color: '#6b7280' }}>{label}</p>
+    <Card>
+      <CardContent className="pt-6 text-center">
+        <p className="text-2xl font-bold">{value}</p>
+        <p className="text-xs text-muted-foreground mt-1">{label}</p>
+      </CardContent>
+    </Card>
+  )
+}
+
+const CATEGORY_STYLES: Record<string, string> = {
+  feedback: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
+  bug: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
+  feature: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
+  question: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300',
+}
+
+function SubmissionRow({
+  submission,
+  onMarkRead,
+  onToggleStar,
+  onDelete,
+}: {
+  submission: SubmissionType
+  onMarkRead: (id: string, isRead: boolean) => void
+  onToggleStar: (id: string, isStarred: boolean) => void
+  onDelete: (id: string) => void
+}) {
+  return (
+    <div className={`flex items-start gap-3 p-4 ${!submission.isRead ? 'bg-accent/50' : ''}`}>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        className="mt-0.5 shrink-0"
+        onClick={() => onToggleStar(submission.id, !submission.isStarred)}
+      >
+        <Star
+          className={`size-4 ${submission.isStarred ? 'fill-amber-400 text-amber-400' : 'text-muted-foreground/40'}`}
+        />
+      </Button>
+
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="font-medium text-sm">{submission.name}</span>
+          <span
+            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${CATEGORY_STYLES[submission.category] || CATEGORY_STYLES.question}`}
+          >
+            {submission.category}
+          </span>
+          <span className="text-xs text-amber-500">
+            {'★'.repeat(submission.rating)}
+            <span className="text-muted-foreground/30">{'★'.repeat(5 - submission.rating)}</span>
+          </span>
+        </div>
+        <p className="text-sm text-muted-foreground line-clamp-2 mb-1">{submission.message}</p>
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Mail className="size-3" />
+          <span>{submission.email}</span>
+          <span>·</span>
+          <span>{new Date(submission.createdAt).toLocaleDateString()}</span>
+          {submission.wouldRecommend && (
+            <>
+              <span>·</span>
+              <Badge variant="secondary" className="text-[10px] py-0 h-4">Would recommend</Badge>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="flex gap-1 shrink-0">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={() => onMarkRead(submission.id, !submission.isRead)}
+          title={submission.isRead ? 'Mark unread' : 'Mark read'}
+        >
+          {submission.isRead ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={() => onDelete(submission.id)}
+          title="Delete"
+        >
+          <Trash2 className="size-3.5" />
+        </Button>
+      </div>
     </div>
   )
 }
 
 // =============================================================================
-// Public Form Page (no auth required)
+// Public Form
 // =============================================================================
 
 function PublicFormPage({ userId }: { userId: string }) {
@@ -330,14 +357,14 @@ function PublicFormPage({ userId }: { userId: string }) {
 
   useEffect(() => {
     fetch(`/api/users/${userId}`)
-      .then(res => {
+      .then((res) => {
         if (!res.ok) {
           setNotFound(true)
           return null
         }
         return res.json()
       })
-      .then(user => {
+      .then((user) => {
         if (user) setFormOwner(user)
       })
       .finally(() => setLoading(false))
@@ -345,21 +372,27 @@ function PublicFormPage({ userId }: { userId: string }) {
 
   if (loading) {
     return (
-      <div style={{ textAlign: 'center', padding: '4rem' }}>
-        <p>Loading...</p>
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
   if (notFound || !formOwner) {
     return (
-      <article style={{ maxWidth: '500px', margin: '4rem auto', textAlign: 'center' }}>
-        <h1>Form Not Found</h1>
-        <p>This feedback form doesn't exist or has been removed.</p>
-        <button onClick={() => window.location.hash = '/'} style={{ marginTop: '1rem' }}>
-          Go to Dashboard
-        </button>
-      </article>
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <Card className="w-full max-w-md text-center">
+          <CardHeader>
+            <CardTitle>Form Not Found</CardTitle>
+            <CardDescription>This feedback form doesn't exist or has been removed.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button variant="outline" onClick={() => (window.location.hash = '/')}>
+              Go to Dashboard
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
     )
   }
 
@@ -371,7 +404,6 @@ function FeedbackForm({ userId, ownerName }: { userId: string; ownerName: string
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  // Form fields
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [rating, setRating] = useState(0)
@@ -390,7 +422,6 @@ function FeedbackForm({ userId, ownerName }: { userId: string; ownerName: string
     setError('')
 
     try {
-      // Public endpoint — uses fetch directly since this runs without auth context
       const res = await fetch('/api/submissions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -422,110 +453,147 @@ function FeedbackForm({ userId, ownerName }: { userId: string; ownerName: string
 
   if (submitted) {
     return (
-      <article style={{ maxWidth: '500px', margin: '4rem auto', textAlign: 'center' }}>
-        <div style={{ fontSize: '4rem', marginBottom: '1rem', color: '#22c55e' }}>✓</div>
-        <h1>Thank You!</h1>
-        <p>Your feedback has been submitted successfully.</p>
-        <button onClick={resetForm} style={{ marginTop: '1rem' }}>
-          Submit Another Response
-        </button>
-      </article>
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <Card className="w-full max-w-md text-center">
+          <CardHeader>
+            <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400">
+              <CheckCircle2 className="size-6" />
+            </div>
+            <CardTitle>Thank You!</CardTitle>
+            <CardDescription>Your feedback has been submitted successfully.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={resetForm}>Submit Another Response</Button>
+          </CardContent>
+        </Card>
+      </div>
     )
   }
 
   return (
-    <article style={{ maxWidth: '500px', margin: '2rem auto' }}>
-      <header style={{ textAlign: 'center', marginBottom: '2rem' }}>
-        <h1>Share Your Feedback</h1>
-        <p style={{ color: '#6b7280' }}>for {ownerName}</p>
-      </header>
-
-      <form onSubmit={handleSubmit}>
-        <label>
-          Your Name *
-          <input
-            type="text"
-            placeholder="John Doe"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            required
-          />
-        </label>
-
-        <label>
-          Your Email *
-          <input
-            type="email"
-            placeholder="john@example.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-        </label>
-
-        <label>
-          Rating *
-          <div className="star-rating" style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>
-            {[1, 2, 3, 4, 5].map((star) => (
-              <button
-                key={star}
-                type="button"
-                className={rating >= star ? 'filled' : ''}
-                onClick={() => setRating(star)}
-              >
-                ★
-              </button>
-            ))}
+    <div className="min-h-screen flex items-center justify-center p-4 bg-muted/30">
+      <Card className="w-full max-w-md">
+        <CardHeader className="text-center">
+          <div className="mx-auto mb-2 flex size-10 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+            <MessageSquare className="size-5" />
           </div>
-        </label>
+          <CardTitle>Share Your Feedback</CardTitle>
+          <CardDescription>for {ownerName}</CardDescription>
+        </CardHeader>
 
-        <label>
-          Category
-          <select value={category} onChange={(e) => setCategory(e.target.value)}>
-            <option value="feedback">General Feedback</option>
-            <option value="bug">Bug Report</option>
-            <option value="feature">Feature Request</option>
-            <option value="question">Question</option>
-          </select>
-        </label>
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="form-name">Your Name *</Label>
+              <Input
+                id="form-name"
+                placeholder="John Doe"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+              />
+            </div>
 
-        <label>
-          Your Message *
-          <textarea
-            placeholder="Tell us what you think..."
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            rows={4}
-            required
-          />
-        </label>
+            <div className="space-y-2">
+              <Label htmlFor="form-email">Your Email *</Label>
+              <Input
+                id="form-email"
+                type="email"
+                placeholder="john@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </div>
 
-        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginBottom: '1rem' }}>
-          <input
-            type="checkbox"
-            checked={wouldRecommend}
-            onChange={(e) => setWouldRecommend(e.target.checked)}
-            style={{ width: 'auto', marginBottom: 0 }}
-          />
-          Would you recommend us to others?
-        </label>
+            <div className="space-y-2">
+              <Label>Rating *</Label>
+              <div className="flex gap-1">
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <button
+                    key={star}
+                    type="button"
+                    className={`text-2xl transition-colors cursor-pointer ${
+                      rating >= star
+                        ? 'text-amber-400'
+                        : 'text-muted-foreground/30 hover:text-amber-300'
+                    }`}
+                    onClick={() => setRating(star)}
+                  >
+                    ★
+                  </button>
+                ))}
+              </div>
+            </div>
 
-        {error && <p style={{ color: '#dc2626', fontSize: '0.875rem', marginBottom: '1rem' }}>{error}</p>}
+            <div className="space-y-2">
+              <Label htmlFor="form-category">Category</Label>
+              <select
+                id="form-category"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none"
+              >
+                <option value="feedback">General Feedback</option>
+                <option value="bug">Bug Report</option>
+                <option value="feature">Feature Request</option>
+                <option value="question">Question</option>
+              </select>
+            </div>
 
-        <button type="submit" disabled={loading} style={{ width: '100%' }}>
-          {loading ? 'Submitting...' : 'Submit Feedback'}
-        </button>
-      </form>
+            <div className="space-y-2">
+              <Label htmlFor="form-message">Your Message *</Label>
+              <textarea
+                id="form-message"
+                placeholder="Tell us what you think..."
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                rows={4}
+                required
+                className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none resize-none"
+              />
+            </div>
 
-      <footer style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.75rem', color: '#6b7280' }}>
-        <p>Powered by Shogo SDK</p>
-        <button 
-          onClick={() => window.location.hash = '/'}
-          style={{ marginTop: '0.5rem', background: 'transparent', color: '#3b82f6', padding: '0.25rem' }}
-        >
-          Back to Dashboard
-        </button>
-      </footer>
-    </article>
+            <label className="flex items-center gap-2 cursor-pointer text-sm">
+              <input
+                type="checkbox"
+                checked={wouldRecommend}
+                onChange={(e) => setWouldRecommend(e.target.checked)}
+                className="size-4 rounded border-input accent-primary"
+              />
+              Would you recommend us to others?
+            </label>
+
+            {error && (
+              <div className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
+                <AlertCircle className="size-4 shrink-0" />
+                {error}
+              </div>
+            )}
+
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Send className="size-4" />
+              )}
+              {loading ? 'Submitting...' : 'Submit Feedback'}
+            </Button>
+          </form>
+        </CardContent>
+
+        <div className="px-6 pb-6 text-center">
+          <p className="text-xs text-muted-foreground">Powered by Shogo SDK</p>
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto mt-1 p-0 text-xs"
+            onClick={() => (window.location.hash = '/')}
+          >
+            Back to Dashboard
+          </Button>
+        </div>
+      </Card>
+    </div>
   )
 }

@@ -1,6 +1,11 @@
 import { useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { useStores } from '../stores'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { MessageSquare, Loader2, AlertCircle } from 'lucide-react'
 
 type AuthMode = 'signin' | 'signup'
 
@@ -27,147 +32,86 @@ export const LoginPage = observer(function LoginPage() {
   }
 
   return (
-    <div style={styles.container}>
-      <article style={styles.card}>
-        <header style={styles.header}>
-          <h1 style={styles.title}>Feedback Form</h1>
-          <p style={styles.subtitle}>
-            Built with <strong>@shogo-ai/sdk</strong>
-          </p>
-        </header>
+    <div className="min-h-screen flex items-center justify-center p-4 bg-muted/40">
+      <Card className="w-full max-w-sm">
+        <CardHeader className="text-center">
+          <div className="mx-auto mb-2 flex size-10 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+            <MessageSquare className="size-5" />
+          </div>
+          <CardTitle className="text-xl">Feedback Form</CardTitle>
+          <CardDescription>
+            Built with <span className="font-medium">@shogo-ai/sdk</span>
+          </CardDescription>
+        </CardHeader>
 
-        <form onSubmit={handleSubmit} style={styles.form}>
-          {mode === 'signup' && (
-            <input
-              type="text"
-              placeholder="Name (optional)"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={auth.isLoading}
-              style={styles.input}
-            />
-          )}
-          <input
-            type="email"
-            placeholder="Email address"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            disabled={auth.isLoading}
-            style={styles.input}
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            minLength={6}
-            disabled={auth.isLoading}
-            style={styles.input}
-          />
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {mode === 'signup' && (
+              <div className="space-y-2">
+                <Label htmlFor="name">Name</Label>
+                <Input
+                  id="name"
+                  type="text"
+                  placeholder="Name (optional)"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  disabled={auth.isLoading}
+                />
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                disabled={auth.isLoading}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={6}
+                disabled={auth.isLoading}
+              />
+            </div>
 
-          {auth.error && <p style={styles.error}>{auth.error}</p>}
+            {auth.error && (
+              <div className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
+                <AlertCircle className="size-4 shrink-0" />
+                {auth.error}
+              </div>
+            )}
 
-          <button type="submit" disabled={auth.isLoading} style={styles.submitButton}>
-            {auth.isLoading
-              ? 'Please wait...'
-              : mode === 'signin'
-                ? 'Sign In'
-                : 'Create Account'}
-          </button>
-        </form>
+            <Button type="submit" className="w-full" disabled={auth.isLoading}>
+              {auth.isLoading && <Loader2 className="size-4 animate-spin" />}
+              {auth.isLoading
+                ? 'Please wait...'
+                : mode === 'signin'
+                  ? 'Sign In'
+                  : 'Create Account'}
+            </Button>
+          </form>
+        </CardContent>
 
-        <footer style={styles.footer}>
-          <p>
+        <CardFooter className="justify-center">
+          <p className="text-sm text-muted-foreground">
             {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}
-            <button type="button" onClick={toggleMode} style={styles.toggleButton}>
+            <Button variant="link" size="sm" className="h-auto p-0" onClick={toggleMode}>
               {mode === 'signin' ? 'Sign up' : 'Sign in'}
-            </button>
+            </Button>
           </p>
-        </footer>
-      </article>
+        </CardFooter>
+      </Card>
     </div>
   )
 })
-
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    minHeight: '100vh',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '1rem',
-    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-  },
-  card: {
-    width: '100%',
-    maxWidth: '400px',
-    background: 'white',
-    borderRadius: '16px',
-    padding: '2rem',
-    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
-  },
-  header: {
-    textAlign: 'center',
-    marginBottom: '2rem',
-  },
-  title: {
-    fontSize: '1.5rem',
-    fontWeight: 700,
-    color: '#1f2937',
-    marginBottom: '0.5rem',
-  },
-  subtitle: {
-    color: '#6b7280',
-    fontSize: '0.875rem',
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '1rem',
-  },
-  input: {
-    width: '100%',
-    padding: '0.75rem 1rem',
-    fontSize: '0.875rem',
-    border: '1px solid #e5e7eb',
-    borderRadius: '8px',
-    outline: 'none',
-    transition: 'border-color 0.15s, box-shadow 0.15s',
-  },
-  error: {
-    color: '#dc2626',
-    fontSize: '0.875rem',
-    margin: 0,
-    padding: '0.5rem',
-    background: '#fef2f2',
-    borderRadius: '4px',
-  },
-  submitButton: {
-    width: '100%',
-    padding: '0.75rem',
-    fontSize: '0.875rem',
-    fontWeight: 600,
-    color: 'white',
-    background: '#3b82f6',
-    border: 'none',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    transition: 'background 0.15s',
-  },
-  footer: {
-    marginTop: '1.5rem',
-    textAlign: 'center',
-    fontSize: '0.875rem',
-    color: '#6b7280',
-  },
-  toggleButton: {
-    background: 'none',
-    border: 'none',
-    color: '#3b82f6',
-    fontWeight: 500,
-    cursor: 'pointer',
-    padding: 0,
-  },
-}
