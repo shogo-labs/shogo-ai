@@ -51,7 +51,7 @@ export default defineConfig(({ mode }) => {
       // HMR config for Docker - client connects to host machine
       // When VITE_HMR_HOST is set (Docker), configure HMR to use that host
       // Otherwise, use default (works for native dev)
-      hmr: hmrHost ? {
+      hmr: !enableHMR ? false : hmrHost ? {
         host: hmrHost,
         port: hmrPort || VITE_PORT,
         protocol: 'ws',
