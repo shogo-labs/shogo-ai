@@ -136,7 +136,7 @@ async function main() {
     writeFileSync(join(OUTPUT_DIR, 'index.ts'), generateIndexFile())
     console.log('   ✅ index.ts')
 
-    // Run db:push to apply schema changes to database
+    // Run db:push to apply schema changes to database (non-destructive)
     console.log('')
     console.log('🗄️  Pushing schema to database...')
     const dbPush = Bun.spawn(['bun', 'run', 'db:push'], {
@@ -145,13 +145,31 @@ async function main() {
       stderr: 'pipe',
     })
     
-    const exitCode = await dbPush.exited
-    if (exitCode !== 0) {
-      const stderr = await new Response(dbPush.stderr).text()
-      console.error('❌ db:push failed:', stderr)
-      process.exit(1)
+    const pushExitCode = await dbPush.exited
+    if (pushExitCode !== 0) {
+      const pushStderr = await new Response(dbPush.stderr).text()
+      console.warn('⚠️  db:push failed (incompatible schema change), falling back to prisma migrate dev...')
+      console.warn('   Reason:', pushStderr.split('\n')[0])
+
+      const migrate = Bun.spawn(['bunx', '--bun', 'prisma', 'migrate', 'dev', '--name', 'auto'], {
+        cwd: PROJECT_DIR,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+
+      const migrateExitCode = await migrate.exited
+      if (migrateExitCode !== 0) {
+        const migrateStderr = await new Response(migrate.stderr).text()
+        console.error('❌ prisma migrate dev also failed:', migrateStderr)
+        console.error('')
+        console.error('The schema change may require manual intervention.')
+        console.error('Your existing data has NOT been deleted.')
+        process.exit(1)
+      }
+      console.log('   ✅ Database schema updated via migration (existing data preserved)')
+    } else {
+      console.log('   ✅ Database schema updated')
     }
-    console.log('   ✅ Database schema updated')
 
     console.log('')
     console.log('✨ Generation complete! The app will auto-rebuild.')

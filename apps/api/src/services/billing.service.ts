@@ -123,11 +123,44 @@ export async function hasCredits(workspaceId: string, minimumRequired = 0.5): Pr
   return (daily + ledger.monthlyCredits + ledger.rolloverCredits) >= minimumRequired;
 }
 
+const FK_RETRY_DELAYS = [1000, 2000, 4000]
+
+function isFkConstraintError(err: unknown): boolean {
+  if (err && typeof err === 'object' && 'code' in err) {
+    const prismaErr = err as { code: string; meta?: { field_name?: string } }
+    return prismaErr.code === 'P2003' && prismaErr.meta?.field_name === 'usage_events_projectId_fkey'
+  }
+  return false
+}
+
 /**
  * Consume credits for an action.
  * Deduction order: daily → monthly → rollover → insufficient.
+ * Retries on projectId FK constraint violations (race with project creation).
  */
 export async function consumeCredits(
+  workspaceId: string,
+  projectId: string | null,
+  memberId: string,
+  actionType: string,
+  creditCost: number,
+  actionMetadata?: Record<string, unknown>
+): Promise<{ success: boolean; error?: string; remainingCredits?: number }> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await _consumeCreditsTransaction(workspaceId, projectId, memberId, actionType, creditCost, actionMetadata)
+    } catch (err) {
+      if (projectId && isFkConstraintError(err) && attempt < FK_RETRY_DELAYS.length) {
+        console.warn(`[billing] Project ${projectId} not found yet, retrying in ${FK_RETRY_DELAYS[attempt]}ms (attempt ${attempt + 1}/${FK_RETRY_DELAYS.length})`)
+        await new Promise(r => setTimeout(r, FK_RETRY_DELAYS[attempt]))
+        continue
+      }
+      throw err
+    }
+  }
+}
+
+async function _consumeCreditsTransaction(
   workspaceId: string,
   projectId: string | null,
   memberId: string,
@@ -201,24 +234,11 @@ export async function consumeCredits(
       },
     });
 
-    // Validate projectId exists before inserting (avoids FK constraint violations
-    // when usage events race with project creation)
-    let validProjectId = projectId
-    if (projectId) {
-      const projectExists = await tx.project.findUnique({
-        where: { id: projectId },
-        select: { id: true },
-      })
-      if (!projectExists) {
-        validProjectId = null
-      }
-    }
-
     // Record usage event
     await tx.usageEvent.create({
       data: {
         workspaceId,
-        projectId: validProjectId,
+        projectId,
         memberId,
         actionType,
         actionMetadata: actionMetadata as Prisma.InputJsonValue,

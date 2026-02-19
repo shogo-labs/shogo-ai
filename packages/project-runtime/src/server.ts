@@ -453,35 +453,99 @@ const THEME_CSS: Record<string, { light: string; dark: string; radius: string }>
 }
 
 /**
- * Apply a theme to the project's index.css
+ * Parse inline theme CSS (semicolon-separated declarations) into formatted
+ * lines with HSL values wrapped in hsl() for Tailwind v4 compatibility.
+ */
+function formatThemeVars(inlineCSS: string, indent = '  '): string {
+  return inlineCSS
+    .split(';')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(decl => {
+      const colonIdx = decl.indexOf(':')
+      if (colonIdx === -1) return ''
+      const prop = decl.slice(0, colonIdx).trim()
+      const value = decl.slice(colonIdx + 1).trim()
+      return `${indent}${prop}: hsl(${value});`
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+/**
+ * Apply a theme to the project's index.css using Tailwind v4 syntax.
  */
 function applyThemeToProject(projectDir: string, themeId: string): void {
   const theme = THEME_CSS[themeId] || THEME_CSS.default
   const indexCssPath = join(projectDir, 'src', 'index.css')
   
-  const themeCSS = `@tailwind base;
-@tailwind components;
-@tailwind utilities;
+  const themeCSS = `@import "tailwindcss";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@plugin "tailwindcss-animate";
 
 /* Theme: ${themeId} */
 
-@layer base {
-  :root {
-    ${theme.light}
-    --radius: ${theme.radius}rem;
-  }
+:root {
+${formatThemeVars(theme.light)}
+  --radius: ${theme.radius}rem;
+}
 
-  .dark {
-    ${theme.dark}
-  }
+.dark {
+${formatThemeVars(theme.dark)}
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card, var(--background));
+  --color-card-foreground: var(--card-foreground, var(--foreground));
+  --color-popover: var(--popover, var(--background));
+  --color-popover-foreground: var(--popover-foreground, var(--foreground));
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted, var(--secondary));
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent, var(--secondary));
+  --color-accent-foreground: var(--accent-foreground, var(--secondary-foreground));
+  --color-destructive: var(--destructive, hsl(0 84% 60%));
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1, var(--primary));
+  --color-chart-2: var(--chart-2, var(--secondary));
+  --color-chart-3: var(--chart-3, var(--muted, var(--secondary)));
+  --color-chart-4: var(--chart-4, var(--accent, var(--secondary)));
+  --color-chart-5: var(--chart-5, var(--ring));
+  --color-sidebar: var(--sidebar, var(--background));
+  --color-sidebar-foreground: var(--sidebar-foreground, var(--foreground));
+  --color-sidebar-primary: var(--sidebar-primary, var(--primary));
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground, var(--primary-foreground));
+  --color-sidebar-accent: var(--sidebar-accent, var(--accent, var(--secondary)));
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground, var(--accent-foreground, var(--secondary-foreground)));
+  --color-sidebar-border: var(--sidebar-border, var(--border));
+  --color-sidebar-ring: var(--sidebar-ring, var(--ring));
 }
 
 @layer base {
   * {
-    @apply border-border;
+    @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+      Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
   }
 }
 `
@@ -531,6 +595,9 @@ const FORBIDDEN_COMMAND_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   // Server restart commands
   { pattern: /\bpm2\s+restart\b/, reason: 'Do not restart processes. The runtime manages the server automatically.' },
   { pattern: /\bsystemctl\s+restart\b/, reason: 'Do not restart system services. The runtime manages everything.' },
+  // Destructive database commands (would wipe all user data)
+  { pattern: /--force-reset/, reason: 'Database reset would destroy all user data. Use `prisma migrate dev` for schema changes that require data migration, or ask the user for confirmation first.' },
+  { pattern: /--accept-data-loss/, reason: 'This flag would destroy user data. Use `prisma migrate dev` for schema changes that require data migration, or ask the user for confirmation first.' },
 ]
 
 /**

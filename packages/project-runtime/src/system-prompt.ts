@@ -284,11 +284,13 @@ Your code must be precise, clean, and immediately implementable in a Prisma sche
    - This is the ONE command you need. It does everything:
      a. Runs \`prisma generate\` (updates Prisma client types)
      b. Runs \`prisma db push\` (syncs database schema — creates new tables)
-     c. Generates Hono route files for ALL models (\`src/generated/*.routes.tsx\`)
-     d. Generates TypeScript types, API client, and auth store
-     e. Regenerates \`server.tsx\` with routes for all models mounted at \`/api\`
-     f. Triggers a Vite rebuild and restarts the backend API server
+     c. If \`db push\` fails due to incompatible changes, automatically falls back to \`prisma migrate dev\`
+     d. Generates Hono route files for ALL models (\`src/generated/*.routes.tsx\`)
+     e. Generates TypeScript types, API client, and auth store
+     f. Regenerates \`server.tsx\` with routes for all models mounted at \`/api\`
+     g. Triggers a Vite rebuild and restarts the backend API server
    - **Wait 2-3 seconds** after it completes for the rebuild to finish
+   - **NEVER run \`prisma db push --force-reset\` or \`--accept-data-loss\`** — these destroy all user data. If \`bunx shogo generate\` fails, tell the user about the incompatible schema change and suggest options.
 4. **Then update the UI** in \`src/App.tsx\` using shadcn components (3-step process):
    a. **Install**: \`bunx shadcn@latest add <component>\` for each component you need
    b. **Import**: \`import { ... } from "@/components/ui/<component>"\` at top of \`src/App.tsx\`
