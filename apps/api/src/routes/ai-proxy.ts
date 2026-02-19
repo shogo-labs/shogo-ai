@@ -418,7 +418,6 @@ async function proxyAnthropicStream(
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(openAIChunk)}\n\n`))
           }
 
-          // Track usage
           if (event.type === 'message_start' && event.message?.usage) {
             inputTokens = event.message.usage.input_tokens || 0
           }
@@ -675,61 +674,59 @@ async function proxyOpenAINonStream(
 }
 
 // =============================================================================
-// Usage Logging
+// Billing
 // =============================================================================
 
 import { calculateCreditCost, proxyModelToBillingModel } from '../lib/credit-cost'
 import * as billingService from '../services/billing.service'
 import { getProjectUser } from '../lib/project-user-context'
+import { accumulateUsage, hasSession } from '../lib/proxy-billing-session'
 
 /**
- * Charge credits and log usage event (fire-and-forget).
- * If totalTokens is 0 (streaming), charges the model's minimum cost.
+ * Record token usage for billing.
+ *
+ * If there's an active billing session for this project (opened by
+ * project-chat or /api/chat), tokens are accumulated and charged once
+ * when the session closes. Otherwise, charge immediately per-call.
  */
-async function chargeAndLogUsage(
+async function recordUsage(
   tokenPayload: ProxyTokenPayload,
   model: string,
-  provider: Provider,
   inputTokens: number,
   outputTokens: number,
-  durationMs: number,
-  success: boolean,
-  errorMessage?: string
 ) {
-  try {
+  // If a billing session is open, accumulate — the session closer will charge
+  if (accumulateUsage(tokenPayload.projectId, model, inputTokens, outputTokens)) {
     const totalTokens = inputTokens + outputTokens
+    console.log(`[AI Proxy] 📊 Accumulated ${totalTokens} tokens for session (project: ${tokenPayload.projectId})`)
+    return
+  }
+
+  // No billing session — charge immediately (direct proxy usage)
+  const totalTokens = inputTokens + outputTokens
+  if (totalTokens === 0) return
+
+  try {
     const billingModel = proxyModelToBillingModel(model)
-    // For streaming with unknown tokens, charge minimum cost for the model
-    const creditCost = success
-      ? (totalTokens > 0 ? calculateCreditCost(totalTokens, billingModel) : calculateCreditCost(0, billingModel))
-      : 0
+    const creditCost = calculateCreditCost(totalTokens, billingModel)
+    const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
 
-    const actionMetadata = {
-      model, provider, inputTokens, outputTokens, totalTokens,
-      durationMs, success, errorMessage,
-      stream: totalTokens === 0,
-    }
+    const result = await billingService.consumeCredits(
+      tokenPayload.workspaceId,
+      tokenPayload.projectId || null,
+      billingUserId,
+      'ai_proxy_completion',
+      creditCost,
+      { model, billingModel, inputTokens, outputTokens, totalTokens }
+    )
 
-    if (creditCost > 0) {
-      // Prefer the real user from the per-project context (set by project-chat)
-      // over the token's userId which is typically 'system' for runtime tokens
-      const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
-      const result = await billingService.consumeCredits(
-        tokenPayload.workspaceId,
-        tokenPayload.projectId || null,
-        billingUserId,
-        'ai_proxy_completion',
-        creditCost,
-        actionMetadata
-      )
-      if (result.success) {
-        console.log(`[AI Proxy] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${billingModel}) — remaining: ${result.remainingCredits}`)
-      } else {
-        console.warn(`[AI Proxy] ⚠️ Could not charge credits: ${result.error}`)
-      }
+    if (result.success) {
+      console.log(`[AI Proxy] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${billingModel}) — remaining: ${result.remainingCredits}`)
+    } else {
+      console.warn(`[AI Proxy] ⚠️ Could not charge credits: ${result.error}`)
     }
   } catch (err) {
-    console.error('[AI Proxy] Failed to log usage event:', err)
+    console.error('[AI Proxy] Failed to charge credits:', err)
   }
 }
 
@@ -756,8 +753,6 @@ export function aiProxyRoutes() {
   // POST /ai/v1/chat/completions - OpenAI-compatible chat completions proxy
   // =========================================================================
   router.post('/ai/v1/chat/completions', async (c) => {
-    const startTime = Date.now()
-
     // Authenticate
     const tokenPayload = await validateProxyAuth(c)
     if (!tokenPayload) {
@@ -839,19 +834,13 @@ export function aiProxyRoutes() {
 
       // Route to provider
       if (request.stream) {
-        let response: Response
         if (modelConfig.provider === 'anthropic') {
-          response = await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok) => {
-            const durationMs = Date.now() - startTime
-            chargeAndLogUsage(tokenPayload, request.model, modelConfig.provider, inTok, outTok, durationMs, true)
+          return await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok) => {
+            recordUsage(tokenPayload, request.model, inTok, outTok)
           })
         } else {
-          response = await proxyOpenAIStream(request, apiKey, modelConfig)
-          const durationMs = Date.now() - startTime
-          chargeAndLogUsage(tokenPayload, request.model, modelConfig.provider, 0, 0, durationMs, true)
+          return await proxyOpenAIStream(request, apiKey, modelConfig)
         }
-
-        return response
       } else {
         let result: any
         if (modelConfig.provider === 'anthropic') {
@@ -860,25 +849,17 @@ export function aiProxyRoutes() {
           result = await proxyOpenAINonStream(request, apiKey, modelConfig)
         }
 
-        // Charge credits with actual token counts
-        const durationMs = Date.now() - startTime
-        chargeAndLogUsage(
+        recordUsage(
           tokenPayload,
           request.model,
-          modelConfig.provider,
           result.usage?.prompt_tokens || 0,
           result.usage?.completion_tokens || 0,
-          durationMs,
-          true
         )
 
         return c.json(result)
       }
     } catch (error: any) {
-      const durationMs = Date.now() - startTime
       console.error('[AI Proxy] Error:', error.message)
-
-      chargeAndLogUsage(tokenPayload, 'unknown', 'anthropic', 0, 0, durationMs, false, error.message)
 
       // Return OpenAI-compatible error format
       const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
@@ -1012,8 +993,6 @@ export function aiProxyRoutes() {
    * request to the real Anthropic API with our server-side API key.
    */
   router.post('/ai/anthropic/v1/messages', async (c) => {
-    const startTime = Date.now()
-
     // Authenticate via x-api-key (proxy token)
     const tokenPayload = await validateAnthropicAuth(c)
     if (!tokenPayload) {
@@ -1072,8 +1051,6 @@ export function aiProxyRoutes() {
       })
 
       if (!response.ok) {
-        const durationMs = Date.now() - startTime
-        chargeAndLogUsage(tokenPayload, model, 'anthropic', 0, 0, durationMs, false, `HTTP ${response.status}`)
         const errorBody = await response.text()
         return new Response(errorBody, {
           status: response.status,
@@ -1082,16 +1059,14 @@ export function aiProxyRoutes() {
       }
 
       if (!isStream) {
-        // Non-streaming: parse response to extract token usage, then charge accurately
         const responseBody = await response.json() as any
-        const durationMs = Date.now() - startTime
-        const inputTokens = responseBody.usage?.input_tokens || 0
-        const outputTokens = responseBody.usage?.output_tokens || 0
-        chargeAndLogUsage(tokenPayload, model, 'anthropic', inputTokens, outputTokens, durationMs, true)
+        const inTok = responseBody.usage?.input_tokens || 0
+        const outTok = responseBody.usage?.output_tokens || 0
+        recordUsage(tokenPayload, model, inTok, outTok)
         return c.json(responseBody)
       }
 
-      // Streaming: tee the body through a transform to extract token usage
+      // Streaming: pass through with token tracking
       const responseHeaders = new Headers()
       const contentType = response.headers.get('Content-Type')
       if (contentType) responseHeaders.set('Content-Type', contentType)
@@ -1127,8 +1102,7 @@ export function aiProxyRoutes() {
           }
         },
         flush() {
-          const durationMs = Date.now() - startTime
-          chargeAndLogUsage(tokenPayload, model, 'anthropic', streamInputTokens, streamOutputTokens, durationMs, true)
+          recordUsage(tokenPayload, model, streamInputTokens, streamOutputTokens)
         },
       })
 
@@ -1139,9 +1113,7 @@ export function aiProxyRoutes() {
         headers: responseHeaders,
       })
     } catch (error: any) {
-      const durationMs = Date.now() - startTime
       console.error('[AI Proxy] Anthropic pass-through error:', error.message)
-      chargeAndLogUsage(tokenPayload, 'unknown', 'anthropic', 0, 0, durationMs, false, error.message)
       return c.json(
         { type: 'error', error: { type: 'api_error', message: error.message || 'Proxy error' } },
         500

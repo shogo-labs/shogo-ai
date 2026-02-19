@@ -29,7 +29,8 @@ import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
-import { calculateCreditCost, agentModeToModel, MODEL_CREDIT_CONFIG, type ModelName, type AgentMode } from './lib/credit-cost'
+import { calculateCreditCost } from './lib/credit-cost'
+import { openSession as openBillingSession, closeSession as closeBillingSession } from './lib/proxy-billing-session'
 import { adminRoutes } from './routes/admin'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { requireSuperAdmin } from './middleware/super-admin'
@@ -2981,6 +2982,12 @@ app.post('/api/chat', async (c) => {
       }
     }
 
+    // Open a billing session so the AI proxy accumulates tokens across
+    // all API calls in the agentic loop instead of charging per-call.
+    if (projectId && workspaceId) {
+      openBillingSession(projectId, workspaceId, userId || 'system')
+    }
+
     // Get or create a persistent V2 session for this scope.
     // The session keeps the CLI subprocess alive across requests — no more cold starts.
     const scopeKey = projectId || '__platform__'
@@ -3396,36 +3403,16 @@ app.post('/api/chat', async (c) => {
             })()
           }
 
-          // Credit tracking (fire-and-forget)
-          if (workspaceId && userId && resultUsage) {
-            (async () => {
-              try {
-                const inputTokens = resultUsage.input_tokens ?? resultUsage.inputTokens ?? 0
-                const outputTokens = resultUsage.output_tokens ?? resultUsage.outputTokens ?? 0
-                const totalTokens = inputTokens + outputTokens
-                const creditCost = calculateCreditCost(totalTokens, agentMode as AgentMode | undefined)
-                const modelUsed = agentMode === 'basic' ? 'haiku' : 'sonnet'
-
-                await billingService.consumeCredits(
-                  workspaceId,
-                  projectId || null,
-                  userId,
-                  'chat_message',
-                  creditCost,
-                  {
-                    ccSessionId: resultSessionId ?? ccSessionId,
-                    inputTokens,
-                    outputTokens,
-                    totalTokens,
-                    agentMode,
-                    modelUsed,
-                  }
-                )
-                console.log(`[/api/chat] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${modelUsed})`)
-              } catch (creditError: any) {
-                console.error(`[/api/chat] ⚠️ Failed to charge credits:`, creditError.message)
+          // Close the billing session — the AI proxy accumulated tokens
+          // across all API calls, and this triggers the single charge.
+          if (projectId) {
+            closeBillingSession(projectId).then(({ creditCost }) => {
+              if (creditCost > 0) {
+                console.log(`[/api/chat] 💰 Billing session closed — charged ${creditCost} credits`)
               }
-            })()
+            }).catch((err) => {
+              console.error(`[/api/chat] ⚠️ Failed to close billing session:`, err)
+            })
           }
         }
       },

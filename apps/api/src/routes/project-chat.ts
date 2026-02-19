@@ -14,9 +14,9 @@ import { Hono } from "hono"
 import { getProjectPodUrl } from "../lib/knative-project-manager"
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
-import { calculateCreditCost, proxyModelToBillingModel } from "../lib/credit-cost"
 import * as billingService from "../services/billing.service"
 import { setProjectUser } from "../lib/project-user-context"
+import { openSession, closeSession } from "../lib/proxy-billing-session"
 
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
@@ -177,11 +177,9 @@ async function trackUsageFromStream(
     reader.releaseLock()
   }
 
-  // Extract billing context
-  const workspaceId = requestBody?.workspaceId || project.workspaceId
-  const userId = requestBody?.userId || 'system'
-  const agentMode = requestBody?.agentMode || 'advanced'
+  // Extract context
   const chatSessionId = requestBody?.chatSessionId || null
+  const agentMode = requestBody?.agentMode || 'advanced'
 
   const inputTokens = lastUsage?.promptTokens || 0
   const outputTokens = lastUsage?.completionTokens || 0
@@ -191,40 +189,14 @@ async function trackUsageFromStream(
     `[ProjectChat] 📊 Stream complete — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
   )
 
-  // Charge credits if we have token data
-  if (totalTokens > 0 && workspaceId) {
-    const billingModel = proxyModelToBillingModel(agentMode === 'basic' ? 'haiku' : 'sonnet')
-    const creditCost = calculateCreditCost(totalTokens, billingModel)
-    const modelUsed = agentMode === 'basic' ? 'haiku' : 'sonnet'
+  // Credit billing is handled by the AI proxy billing session (opened before
+  // proxying, closed after stream completes in the route handler).
 
-    try {
-      const result = await billingService.consumeCredits(
-        workspaceId,
-        project.id,
-        userId,
-        'chat_message',
-        creditCost,
-        {
-          inputTokens,
-          outputTokens,
-          totalTokens,
-          agentMode,
-          modelUsed,
-          toolCallCount,
-          ccSessionId: chatSessionId,
-        }
-      )
-
-      if (result.success) {
-        console.log(
-          `[ProjectChat] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${modelUsed}) for workspace ${workspaceId} — remaining: ${result.remainingCredits}`
-        )
-      } else {
-        console.warn(`[ProjectChat] ⚠️ Could not charge credits: ${result.error}`)
-      }
-    } catch (err) {
-      console.error("[ProjectChat] Failed to charge credits:", err)
-    }
+  // Close the billing session — this triggers the actual credit charge
+  // based on total accumulated tokens across all API calls in the agentic loop.
+  const { creditCost } = await closeSession(project.id)
+  if (creditCost > 0) {
+    console.log(`[ProjectChat] 💰 Billing session closed — charged ${creditCost} credits for project ${project.id}`)
   }
 
   // Log tool calls to the database
@@ -450,6 +422,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       if (billingUserId && billingUserId !== 'system') {
         setProjectUser(projectId, billingUserId)
       }
+
+      // Open a billing session so the AI proxy accumulates tokens across
+      // all API calls in the agentic loop instead of charging per-call.
+      // The session is closed in trackUsageFromStream after the stream ends.
+      openSession(projectId, project.workspaceId, billingUserId || 'system')
 
       // Forward headers
       const headers: Record<string, string> = {

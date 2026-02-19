@@ -22,6 +22,16 @@ mock.module('../lib/prisma', () => ({
     usageEvent: {
       create: async () => ({}),
     },
+    creditLedger: {
+      findUnique: async () => ({
+        workspaceId: 'test-workspace',
+        dailyCredits: 5,
+        monthlyCredits: 100,
+        rolloverCredits: 0,
+        lastDailyReset: new Date(),
+      }),
+      create: async (data: any) => data,
+    },
   },
 }))
 
